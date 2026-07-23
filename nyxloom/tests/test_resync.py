@@ -23,6 +23,8 @@ from nyxloom.resync import (
     ACTION_ADVANCE,
     ACTION_NEEDS_OPERATOR,
     ACTION_NONE,
+    MERGE_SOURCE_CONTENT,
+    MERGE_SOURCE_REFS,
     GitFacts,
     ProposedTransition,
     gather_git_facts,
@@ -155,6 +157,46 @@ def test_resync_plan_content_merge_evidence_used_when_not_in_merged_refs():
     assert plan[0].ground_truth == "merged"
     assert plan[0].proposed_action == ACTION_ADVANCE
     assert plan[0].evidence == "archived path: docs/archive/x.md"
+    assert plan[0].merge_source == MERGE_SOURCE_CONTENT
+
+
+def test_resync_plan_present_handoff_outranks_content_merge_evidence():
+    """The dstdns-P31/P32 fix: a still-present handoff is authoritatively
+    OPEN even when the LOW-confidence content channel has a (false-positive)
+    entry for it — e.g. a carve commit whose message names the task id when
+    creating its handoff. Content evidence must NOT retire a handoff that is
+    physically still in the trove (a bare `--apply` would otherwise be one
+    `--apply-content-merges` away from dropping live forward work)."""
+    states = {
+        "dstdns-P31": _tsf("dstdns-P31", TaskState.QUEUED,
+                           handoff_path="nyxloom-trove/handoffs/dstdns-P31.md"),
+    }
+    frontmatters = {"dstdns-P31": True}  # still present in handoffs/
+    git_facts = GitFacts(content_merged={
+        "dstdns-P31": "commit-log match for 'dstdns-P31' on main: f4776ef2 carve(...): P30->P31->P32",
+    })
+
+    plan = resync_plan(states, frontmatters, git_facts)
+
+    assert len(plan) == 1
+    assert plan[0].ground_truth == "open"
+    assert plan[0].proposed_action == ACTION_NONE
+    assert plan[0].merge_source is None
+
+
+def test_resync_plan_merged_ref_still_wins_over_present_handoff():
+    """The precedence guard's other side: a genuine `git branch --merged` ref
+    DOES outrank physical presence (a merged branch whose handoff file was
+    not yet archived) -> still proposes advance, tagged MERGE_SOURCE_REFS."""
+    states = {"demo-linger": _tsf("demo-linger", TaskState.MERGE_READY)}
+    frontmatters = {"demo-linger": True}  # file lingers, but branch is merged
+    git_facts = GitFacts(merged_refs=frozenset({"demo-linger", "feat/demo-linger"}))
+
+    plan = resync_plan(states, frontmatters, git_facts)
+
+    assert plan[0].ground_truth == "merged"
+    assert plan[0].proposed_action == ACTION_ADVANCE
+    assert plan[0].merge_source == MERGE_SOURCE_REFS
 
 
 def test_resync_plan_missing_frontmatter_entry_defaults_to_not_present():
@@ -201,7 +243,7 @@ def test_gather_handoff_presence_present_missing_none_and_malformed(sample_proje
         "t-malformed": _tsf("t-malformed", TaskState.QUEUED, handoff_path="handoff/broken.md"),
     }
 
-    out = gather_handoff_presence(root, states)
+    out = gather_handoff_presence(sample_project, states)
 
     assert out == {
         "t-present": True,
@@ -209,6 +251,26 @@ def test_gather_handoff_presence_present_missing_none_and_malformed(sample_proje
         "t-none": False,
         "t-malformed": False,
     }
+
+
+def test_gather_handoff_presence_id_scan_survives_stale_handoff_path(sample_project, tmp_state):
+    """The topos fix: a statefile whose `handoff_path` is STALE (a
+    pre-standardization location that no longer exists — topos carried
+    `handoff/<id>.md` while the file lives at `nyxloom-trove/handoffs/`) is
+    STILL 'present' when a handoff carrying its id is discoverable under the
+    project's handoff_globs. Presence is a fact about the trove, not the path
+    string. (sample_project already ships handoff/demo-P01-sample.md with
+    frontmatter id 'demo-P01-sample'.)"""
+    states = {
+        "demo-P01-sample": _tsf(
+            "demo-P01-sample", TaskState.QUEUED,
+            handoff_path="legacy/old-location/demo-P01-sample.md",  # stale, gone
+        ),
+    }
+
+    out = gather_handoff_presence(sample_project, states)
+
+    assert out == {"demo-P01-sample": True}
 
 
 # ---------------------------------------------------------------------------

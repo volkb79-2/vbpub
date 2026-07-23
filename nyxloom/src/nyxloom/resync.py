@@ -32,7 +32,7 @@ explicit extra opt-in (`allow_content_merge=True` / the CLI's
 Two I/O boundaries feed the pure planner, mirroring reconcile.py's own
 purity discipline (ReconcileInput as a precomputed snapshot):
 
-  gather_handoff_presence(root, states)  -> dict[task_id, bool]
+  gather_handoff_presence(cfg, states)   -> dict[task_id, bool]
   gather_git_facts(repo_root, branch, states) -> GitFacts
 
   resync_plan(states, frontmatters, git_facts) -> list[ProposedTransition]
@@ -67,6 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import frontmatter, storage
+from .config import ProjectConfig
 from .types import (
     TERMINAL_TASK_STATES, Actor, ActorKind, Event, EventType, TaskState,
     TaskStateFile,
@@ -125,20 +126,40 @@ class GitFacts:
 # ---------------------------------------------------------------------------
 # I/O boundary #1 — handoff presence (filesystem + frontmatter parse)
 
-def gather_handoff_presence(root: Path, states: dict[str, TaskStateFile]) -> dict[str, bool]:
+def gather_handoff_presence(cfg: ProjectConfig, states: dict[str, TaskStateFile]) -> dict[str, bool]:
     """task_id -> is its handoff still present + parseable in the trove?
 
-    Mirrors render.py's `_load_frontmatter`: never raises. Absent
-    `handoff_path`, a missing file, or a parse failure are ALL "not
-    present" (the handoff is gone/archived from this task's point of
-    view) — resync only cares about presence, not the frontmatter's
-    content.
+    Never raises (a parse failure or a missing file is simply "not
+    present"). Two channels, EITHER sufficient:
+
+      1. ID SCAN (authoritative, path-drift-proof): the set of frontmatter
+         `id`s physically discoverable+parseable under the project's
+         `handoff_globs` right now. A task whose statefile `handoff_path`
+         is STALE — a pre-standardization or relocated path, e.g. topos's
+         legacy `handoff/<id>.md` vs the current
+         `nyxloom-trove/handoffs/<id>.md` — is STILL correctly "present"
+         when a handoff carrying its id exists in the trove. Presence is a
+         fact about the trove, not about a possibly-outdated path string in
+         the statefile.
+      2. HANDOFF_PATH fallback: an explicit `handoff_path` that resolves and
+         parses — covers a handoff whose file id does not equal its task_id,
+         or one living outside the active glob but still pointed-to.
+
+    resync only cares about presence, not the frontmatter's content.
     """
+    present_ids: set[str] = set()
+    for handoff_file in frontmatter.discover_handoffs(cfg):
+        try:
+            fm, _ = frontmatter.parse_handoff(handoff_file)
+            present_ids.add(fm.id)
+        except Exception:
+            continue
+
     out: dict[str, bool] = {}
     for task_id, tsf in states.items():
-        present = False
-        if tsf.handoff_path:
-            handoff_file = root / tsf.handoff_path
+        present = task_id in present_ids
+        if not present and tsf.handoff_path:
+            handoff_file = cfg.root / tsf.handoff_path
             if handoff_file.exists():
                 try:
                     frontmatter.parse_handoff(handoff_file)
@@ -237,23 +258,24 @@ def gather_git_facts(repo_root: str, default_branch: str,
 # ---------------------------------------------------------------------------
 # the pure planner (B.2's decision table)
 
-def _merge_evidence(task_id: str, tsf: TaskStateFile,
-                     git_facts: GitFacts) -> tuple[str, str] | None:
-    """None when not merged by either signal; else `(evidence, source)` —
-    a human-readable evidence string naming WHICH signal fired, and which
-    channel (MERGE_SOURCE_REFS | MERGE_SOURCE_CONTENT) it came from. The
-    `merged_refs` channel is checked FIRST and wins even if the (weaker)
-    content-check also happens to have an entry for this task — a
-    genuine `--merged` hit is always the higher-confidence signal when
-    both are present (see `gather_git_facts`: it only populates
-    `content_merged` for tasks NOT already resolved by `--merged`, so this
-    branch order also matches how the facts were gathered)."""
+def _refs_merge_evidence(task_id: str, tsf: TaskStateFile,
+                         git_facts: GitFacts) -> str | None:
+    """HIGH-confidence merge evidence ONLY: the task's branch (bare id,
+    `feat/<id>`, or a recorded attempt branch) appears in `git branch
+    --merged <default_branch>`. Returns the evidence string, or None.
+
+    This is the ONE signal authoritative enough to outrank physical trove
+    presence in `resync_plan`: a real merged ref means the work landed even
+    if the handoff file still lingers un-archived. The LOWER-confidence
+    content channel (`GitFacts.content_merged` — a commit-log grep / archive
+    scan that CAN match an unrelated commit, most dangerously the carve
+    commit that merely NAMES a task id when creating its handoff) is
+    deliberately NOT consulted here; `resync_plan` consults it only AFTER
+    confirming the handoff is gone from the trove."""
     candidates = _task_branch_candidates(task_id, tsf)
     hit = candidates & git_facts.merged_refs
     if hit:
-        return f"branch {sorted(hit)[0]!r} present in `git branch --merged`", MERGE_SOURCE_REFS
-    if task_id in git_facts.content_merged:
-        return git_facts.content_merged[task_id], MERGE_SOURCE_CONTENT
+        return f"branch {sorted(hit)[0]!r} present in `git branch --merged`"
     return None
 
 
@@ -266,17 +288,23 @@ def resync_plan(
     with identical inputs, yields an identical plan (list order is sorted
     task_id, so even list equality — not just set equality — holds).
 
-    Precedence (case-by-case, first match wins):
+    Precedence (case-by-case, first match wins). CONFIDENCE-ORDERED so the
+    low-confidence content channel can never override physical trove
+    presence (the dstdns-P31/P32 carve-commit false-positive fix):
       1. already TERMINAL (COMPLETED/SUPERSEDED/CANCELLED) -> no-op; ground
          truth is already settled regardless of any git signal.
-      2. merged (either git_facts channel) -> propose MERGED/COMPLETED —
-         B.2 rows 1 and 2 collapse into one case: ANY non-terminal believed
-         state with a confirmed merge proposes the same advance.
-      3. not merged, handoff still present -> no-op ("genuinely open" —
-         B.2 row 5's counterpart: a statefile WITH its handoff is left to
-         normal carve/dispatch, resync makes no claim).
-      4. not merged, handoff gone -> NEEDS_OPERATOR ("orphan" / stale;
-         B.2 rows 3 and 4 — never silently dropped).
+      2. merged by a real `git branch --merged` REF (MERGE_SOURCE_REFS) ->
+         propose MERGED/COMPLETED. Authoritative even if the handoff file
+         still lingers un-archived.
+      3. handoff still PRESENT+parseable in the trove -> no-op ("genuinely
+         open"). Physical presence outranks the content channel: a loose
+         commit-log/archive match (e.g. the carve commit that merely NAMES
+         this id) must NOT retire a handoff that is still on disk.
+      4. handoff GONE, but the CONTENT channel has evidence (squash /
+         deleted-branch / archived-path, MERGE_SOURCE_CONTENT) -> propose
+         MERGED/COMPLETED (still confidence-gated at apply time).
+      5. handoff gone AND no merge evidence anywhere -> NEEDS_OPERATOR
+         ("orphan" / stale — never silently dropped).
     """
     out: list[ProposedTransition] = []
     for task_id in sorted(states):
@@ -293,19 +321,26 @@ def resync_plan(
             ))
             continue
 
-        merge_result = _merge_evidence(task_id, tsf, git_facts)
-        if merge_result is not None:
-            merge_evidence, merge_source = merge_result
+        # (2) HIGH-CONFIDENCE merge: a real `git branch --merged` ref is
+        # authoritative even if the handoff file still lingers in the trove.
+        refs_evidence = _refs_merge_evidence(task_id, tsf, git_facts)
+        if refs_evidence is not None:
             out.append(ProposedTransition(
                 task_id=task_id,
                 believed_state=believed,
                 ground_truth="merged",
                 proposed_action=ACTION_ADVANCE,
-                evidence=merge_evidence,
-                merge_source=merge_source,
+                evidence=refs_evidence,
+                merge_source=MERGE_SOURCE_REFS,
             ))
             continue
 
+        # (3) PHYSICAL PRESENCE outranks the LOW-confidence content channel:
+        # a handoff still present+parseable in the active trove is
+        # authoritatively OPEN. The content-check (commit-log grep / archive
+        # scan) CAN match an unrelated commit — most dangerously the carve
+        # commit that merely NAMES this task id when creating its handoff —
+        # so it must never retire a task whose handoff is still on disk.
         handoff_present = frontmatters.get(task_id, False)
         if handoff_present:
             out.append(ProposedTransition(
@@ -315,15 +350,33 @@ def resync_plan(
                 proposed_action=ACTION_NONE,
                 evidence="handoff present in trove; no merge detected — genuinely open",
             ))
-        else:
+            continue
+
+        # (4) handoff GONE: only now does the lower-confidence content channel
+        # speak (squash / deleted-branch / archived-path). Its rows are still
+        # confidence-gated at apply time — a MERGE_SOURCE_CONTENT row needs
+        # the explicit --apply-content-merges opt-in (see `resync_apply`).
+        content_evidence = git_facts.content_merged.get(task_id)
+        if content_evidence is not None:
             out.append(ProposedTransition(
                 task_id=task_id,
                 believed_state=believed,
-                ground_truth="orphan",
-                proposed_action=ACTION_NEEDS_OPERATOR,
-                evidence="handoff missing from trove and no merge detected "
-                         "— flagged for operator, never silently dropped",
+                ground_truth="merged",
+                proposed_action=ACTION_ADVANCE,
+                evidence=content_evidence,
+                merge_source=MERGE_SOURCE_CONTENT,
             ))
+            continue
+
+        # (5) gone AND no merge evidence anywhere -> orphan (never dropped).
+        out.append(ProposedTransition(
+            task_id=task_id,
+            believed_state=believed,
+            ground_truth="orphan",
+            proposed_action=ACTION_NEEDS_OPERATOR,
+            evidence="handoff missing from trove and no merge detected "
+                     "— flagged for operator, never silently dropped",
+        ))
     return out
 
 
