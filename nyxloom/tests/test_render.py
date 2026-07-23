@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import structlog.contextvars
 
-from nyxloom import log, paths, storage, render
+from nyxloom import capability_map, log, paths, storage, render
 from nyxloom.types import (
     TaskStateFile, Attempt, Route, Usage, Basis, AttemptState,
     Receipt, ReceiptResult, TaskState, Actor, ActorKind, Event,
@@ -122,6 +122,7 @@ def test_render_all_creates_pages(seed_data, sample_project):
     assert (www / "dag.html").exists()
     assert (www / "timeline.html").exists()
     assert (www / "quality.html").exists()
+    assert (www / "routing.html").exists()
     assert (www / "live.html").exists()
     assert (www / "task" / "demo" / "demo-P01-sample.html").exists()
     assert (www / "task" / "demo" / "demo-P02-done.html").exists()
@@ -663,6 +664,124 @@ def test_idempotence(seed_data, sample_project):
     content2 = (paths.www_dir() / "index.html").read_bytes()
 
     assert content1 == content2
+
+
+# ---------------------------------------------------------------------------
+# B19: persisted routing/capability dashboard
+
+@pytest.fixture()
+def routing_catalog():
+    """Local B19 catalog fixture; conftest.py is frozen."""
+    return [capability_map.CapabilityRecord(
+        model_id="vendor/model-a", source="aa",
+        scores={"intelligence": 0.5, "coding": 0.7, "agentic": 0.9},
+        price_input=1.0, price_output=2.0, context_length=128000,
+        bands={"intelligence": 2, "coding": 3, "agentic": 3},
+        may_review=True, may_carve=False, raw={"vision": True},
+    )]
+
+
+def test_routing_html_renders_catalog_and_declared_winner(
+        seed_data, sample_project, routing_catalog):
+    """B19 O2/O4: catalog rows and tier order render read-only."""
+    capability_map.write_capability_catalog(paths.routes_path(), routing_catalog)
+
+    render.render_all({"demo": sample_project.root})
+
+    content = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert 'id="capability-catalog"' in content
+    assert "vendor/model-a" in content
+    assert "0.7" in content
+    assert ">3<" in content
+    assert 'id="tier-resolution"' in content
+    assert "flash-high" in content
+    assert "fake-cli" in content
+    assert ">winner<" in content
+
+
+def test_routing_html_absent_and_empty_catalog_render_cleanly(seed_data, sample_project):
+    """B19 O3: both an absent table and explicit empty records degrade cleanly."""
+    render.render_all({"demo": sample_project.root})
+    absent = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert "No persisted capability catalog." in absent
+
+    capability_map.write_capability_catalog(paths.routes_path(), [])
+    render.render_all({"demo": sample_project.root})
+    empty = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert "No persisted capability catalog." in empty
+
+
+def test_routing_html_escapes_catalog_model_id(seed_data, sample_project, routing_catalog):
+    """B19 O5: persisted model ids are HTML escaped."""
+    record = routing_catalog[0]
+    unsafe = capability_map.CapabilityRecord(
+        model_id="vendor/<script>", source=record.source, scores=record.scores,
+        price_input=record.price_input, price_output=record.price_output,
+        context_length=record.context_length, bands=record.bands,
+        may_review=record.may_review, may_carve=record.may_carve, raw=record.raw,
+    )
+    capability_map.write_capability_catalog(paths.routes_path(), [unsafe])
+
+    render.render_all({"demo": sample_project.root})
+
+    content = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert "<script>" not in content
+    assert "&lt;script&gt;" in content
+
+
+def test_routing_html_is_deterministic(seed_data, sample_project, routing_catalog):
+    """B19 O7: repeated persisted-data renders are byte-identical."""
+    capability_map.write_capability_catalog(paths.routes_path(), routing_catalog)
+    registry = {"demo": sample_project.root}
+
+    render.render_all(registry)
+    first = (paths.www_dir() / "routing.html").read_bytes()
+    render.render_all(registry)
+    second = (paths.www_dir() / "routing.html").read_bytes()
+
+    assert first == second
+
+
+def test_routing_html_degrades_for_load_errors_and_empty_tiers(
+        seed_data, sample_project, monkeypatch):
+    """B19 coverage: failed loads and a tier without candidates stay renderable."""
+    class EmptyRoutes:
+        tiers = {"empty-tier": []}
+        routes = {}
+
+        def for_tier(self, tier):
+            return []
+
+    monkeypatch.setattr(render.capability_map, "load_capability_catalog",
+                        lambda: (_ for _ in ()).throw(ValueError("bad catalog")))
+    monkeypatch.setattr(render.config.Routes, "load", lambda: EmptyRoutes())
+    render.render_all({"demo": sample_project.root})
+    content = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert "No persisted capability catalog." in content
+    assert "empty-tier" in content
+    assert "No declared candidates" in content
+
+
+def test_routing_html_degrades_when_routes_load_raises(
+        seed_data, sample_project, monkeypatch):
+    """B19 coverage: a RAISING config.Routes.load still leaves routing.html
+    renderable, with an explicit no-tiers state.
+
+    Distinct from the EmptyRoutes case above: that one RETURNS a routes object,
+    so it never exercises _render_routing's `except Exception: routes = None`
+    arm. Raising globally is safe because all three config.Routes.load() call
+    sites in render.py (_render_routing, _render_quality, _render_config) are
+    individually try/except-guarded and each checks the None result, so every
+    page degrades rather than breaking render_all."""
+    def _boom():
+        raise ValueError("bad routes")
+
+    monkeypatch.setattr(render.config.Routes, "load", _boom)
+
+    render.render_all({"demo": sample_project.root})
+
+    content = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert "No declared tiers." in content
 
 
 def test_render_after_event_is_alias(seed_data, sample_project):

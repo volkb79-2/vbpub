@@ -280,6 +280,37 @@ class TestEmptyCatalog:
 
 
 # ---------------------------------------------------------------------------
+# B19 -- persisted catalog reader
+
+class TestCatalogLoader:
+    def test_round_trip_returns_equal_records(self, tmp_path):
+        p = tmp_path / "routes.toml"
+        cfg = capability_map.CapabilityMapConfig.default()
+        [record] = capability_map.assemble_catalog([_rec(raw={"vision": True})], cfg)
+        capability_map.write_capability_catalog(p, [record])
+        assert capability_map.load_capability_catalog(p) == [record]
+
+    def test_missing_file_table_and_empty_records_return_empty(self, tmp_path):
+        p = tmp_path / "routes.toml"
+        assert capability_map.load_capability_catalog(p) == []
+        p.write_text('revision = "r1"\n', encoding="utf-8")
+        assert capability_map.load_capability_catalog(p) == []
+        capability_map.write_capability_catalog(p, [])
+        assert capability_map.load_capability_catalog(p) == []
+
+    def test_missing_optional_fields_load_as_none(self, tmp_path):
+        p = tmp_path / "routes.toml"
+        cfg = capability_map.CapabilityMapConfig.default()
+        [record] = capability_map.assemble_catalog([
+            _rec(price_input=None, price_output=None, context_length=None)], cfg)
+        capability_map.write_capability_catalog(p, [record])
+        [loaded] = capability_map.load_capability_catalog(p)
+        assert loaded.price_input is None
+        assert loaded.price_output is None
+        assert loaded.context_length is None
+
+
+# ---------------------------------------------------------------------------
 # CapabilityMapConfig -- default()/from_dict()/load()
 
 class TestCapabilityMapConfig:

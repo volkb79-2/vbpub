@@ -149,6 +149,35 @@ class CapabilityMapConfig:
         return AxisThresholds(cutoffs=self.cutoffs)
 
 
+def load_capability_catalog(path: Path | None = None) -> list[CapabilityRecord]:
+    """Load this module's persisted capability catalog, if one exists."""
+    p = path or paths.routes_path()
+    if not p.exists():
+        return []
+    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    catalog = data.get("capability_catalog")
+    if catalog is None:
+        return []
+    rows = catalog.get("records", [])
+    if not rows:
+        return []
+    return [
+        CapabilityRecord(
+            model_id=row["model_id"],
+            source=row["source"],
+            scores=dict(row.get("scores", {})),
+            price_input=row.get("price_input"),
+            price_output=row.get("price_output"),
+            context_length=row.get("context_length"),
+            bands=dict(row.get("bands", {})),
+            may_review=row.get("may_review", False),
+            may_carve=row.get("may_carve", False),
+            raw=json.loads(row["raw_json"]),
+        )
+        for row in rows
+    ]
+
+
 # ---------------------------------------------------------------------------
 # catalog assembly
 
