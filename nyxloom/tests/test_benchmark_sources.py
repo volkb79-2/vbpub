@@ -48,36 +48,64 @@ def _json_cfg(**kw):
 
 
 class TestArtificialAnalysisSource:
-    def test_happy_path_maps_scores_prices_context_and_raw(self, monkeypatch):
+    def test_rich_endpoint_maps_axes_effort_prices_and_raw(self, monkeypatch):
         monkeypatch.setenv("AA_TEST_KEY", "secret")
         payload = {"data": [
-            {"id": "b8e3-uuid", "slug": "gpt-5-6-luna", "name": "GPT-5.6 Luna",
-             "evaluations": {"artificial_analysis_intelligence_index": 61.2,
-                             "artificial_analysis_coding_index": 58.0,
-                             "artificial_analysis_agentic_index": 44.5},
-             "pricing": {"price_1m_input_tokens": 0.15,
-                         "price_1m_output_tokens": 0.60}},
-            {"id": "c9f4-uuid", "slug": "some-model", "name": "Some Model",
+            {"slug": "claude-opus-4-8", "name": "Claude Opus 4.8",
+             "evaluations": {"artificial_analysis_intelligence_index": 55.7,
+                             "artificial_analysis_coding_index": 74.3,
+                             "terminalbench_v2_1": 0.8, "terminalbench_hard": 0.6,
+                             "livecodebench": 0.55, "scicode": 0.5, "tau2": 0.9},
+             "pricing": {"price_1m_input_tokens": 3.0,
+                         "price_1m_output_tokens": 15.0},
+             "context_window_tokens": "200000"},
+            {"slug": "gpt-oss-120b", "name": "GPT-OSS 120B",
              "evaluations": {"artificial_analysis_intelligence_index": 40.0,
-                             "artificial_analysis_coding_index": 35.0},
-             "pricing": {"price_1m_input_tokens": 0.05,
-                         "price_1m_output_tokens": 0.20}},
+                             "artificial_analysis_coding_index": 30.4,
+                             "terminalbench_v2_1": 0.3, "terminalbench_hard": 0.2,
+                             "tau2": 0.7},
+             "pricing": {"price_1m_input_tokens": 0.1,
+                         "price_1m_output_tokens": 0.4}},
+            {"slug": "gpt-oss-120b-low", "name": "GPT-OSS 120B (low)",
+             "evaluations": {"artificial_analysis_coding_index": 21.2,
+                             "terminalbench_v2_1": 0.1, "terminalbench_hard": 0.1,
+                             "tau2": 0.5}},
+            {"slug": "gemini-3-5-flash-lite", "name": "Gemini 3.5 Flash Lite",
+             "evaluations": {"artificial_analysis_coding_index": 49.3}},
+            {"name": "fallback-model", "evaluations": {
+                "artificial_analysis_coding_index": 12.5}},
+            {"slug": "no-signal", "evaluations": {
+                "terminalbench_v2_1": 0.8, "livecodebench": 0.7}},
             {"slug": ""}, {"not-a-model": True}, "malformed",
         ]}
         with patch("nyxloom.benchmark_sources._fetch_json", return_value=payload) as fetch:
             records = benchmark_sources.ArtificialAnalysisSource("aa", _aa_cfg()).fetch()
-        fetch.assert_called_once_with("https://aa.example/api/v2/language/models/free",
+        fetch.assert_called_once_with("https://aa.example/api/v2/data/llms/models",
                                       headers={"x-api-key": "secret"},
                                       timeout=benchmark_sources._HTTP_TIMEOUT)
-        assert records[0] == benchmark_sources.BenchmarkRecord(
-            "gpt-5-6-luna", "aa",
-            {"intelligence": 61.2, "coding": 58.0, "agentic": 44.5},
-            0.15, 0.6, None, payload["data"][0])
-        assert records[0].model_id != payload["data"][0]["id"]
-        assert records[1].model_id == "some-model"
-        assert records[1].scores == {"intelligence": 40.0, "coding": 35.0}
-        assert records[1].price_input == 0.05
-        assert records[1].price_output == 0.2
+        claude = records[0]
+        assert claude.model_id == "claude-opus-4-8"
+        assert claude.scores == {"intelligence": 55.7, "coding": 74.3, "agentic": 75.0}
+        assert claude.effort is None
+        assert claude.price_input == 3.0
+        assert claude.price_output == 15.0
+        assert claude.context_length == 200000
+        assert claude.benchmark == "artificial-analysis"
+        assert claude.version is None
+        assert claude.raw["evaluations"]["terminalbench_v2_1"] == 0.8
+
+        base = next(record for record in records if record.model_id == "gpt-oss-120b"
+                    and record.effort is None)
+        assert base.scores == {"intelligence": 40.0, "coding": 30.4, "agentic": 45.0}
+        low = next(record for record in records if record.effort == "low")
+        assert low.model_id == "gpt-oss-120b"
+        assert low.scores == {"coding": 21.2, "agentic": 30.0}
+
+        lite = next(record for record in records if record.model_id == "gemini-3-5-flash-lite")
+        assert lite.effort is None
+        assert lite.scores == {"coding": 49.3}
+        assert all(record.model_id != "no-signal" for record in records)
+        assert next(record for record in records if record.model_id == "fallback-model")
 
     def test_missing_key_raises_before_network(self, monkeypatch):
         monkeypatch.delenv("AA_TEST_KEY", raising=False)
@@ -94,10 +122,12 @@ class TestArtificialAnalysisSource:
 
     def test_defaults_and_list_payload_are_supported(self, monkeypatch):
         monkeypatch.setenv("AA_API_KEY", "key")
-        with patch("nyxloom.benchmark_sources._fetch_json", return_value=[{"slug": "m"}]) as fetch:
+        with patch("nyxloom.benchmark_sources._fetch_json", return_value=[
+            {"slug": "m", "evaluations": {
+                "artificial_analysis_coding_index": 1.0}}]) as fetch:
             records = benchmark_sources.ArtificialAnalysisSource("aa", {"kind": "artificial-analysis"}).fetch()
         fetch.assert_called_once_with(
-            "https://artificialanalysis.ai/api/v2/language/models/free",
+            "https://artificialanalysis.ai/api/v2/data/llms/models",
             headers={"x-api-key": "key"}, timeout=benchmark_sources._HTTP_TIMEOUT)
         assert records[0].model_id == "m"
 
@@ -112,7 +142,7 @@ class TestArtificialAnalysisSource:
             "artificial_analysis_intelligence_index": "not-a-number"}}]}
         with patch("nyxloom.benchmark_sources._fetch_json", return_value=payload):
             records = benchmark_sources.ArtificialAnalysisSource("aa", _aa_cfg()).fetch()
-        assert records[0].scores == {}
+        assert records == []
         cfg = _json_cfg(records_path="items", field_map={"model_id": None})
         with patch("nyxloom.benchmark_sources._fetch_json", return_value={"items": [{"model": "m"}]}):
             assert benchmark_sources.JSONHTTPSource("lb", cfg).fetch()[0].model_id == "m"
