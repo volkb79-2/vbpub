@@ -12,6 +12,10 @@ delivery inverted**. Why: [REVIEW-OF-DRAFT1.md](REVIEW-OF-DRAFT1.md).
 > draft changes *how the system is stored, built, and adopted*, not what it
 > guarantees.
 
+> **Using or adopting nyxloom?** Start with the practical guide —
+> [`docs/USAGE.md`](docs/USAGE.md): concepts, onboarding a project's direction
+> spine, the full CLI reference, and free-model discovery.
+
 ## Deciding log
 
 - 2026-07-15 · **Accepted by user, with one amendment: the daemon from the
