@@ -93,6 +93,9 @@ class CapabilityRecord:
     may_review: bool
     may_carve: bool
     raw: dict
+    benchmark: str | None = None
+    version: str | None = None
+    effort: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +176,9 @@ def load_capability_catalog(path: Path | None = None) -> list[CapabilityRecord]:
             may_review=row.get("may_review", False),
             may_carve=row.get("may_carve", False),
             raw=json.loads(row["raw_json"]),
+            benchmark=row.get("benchmark"),
+            version=row.get("version"),
+            effort=row.get("effort"),
         )
         for row in rows
     ]
@@ -223,6 +229,9 @@ def assemble_catalog(records: list[BenchmarkRecord],
             may_review=may_review,
             may_carve=may_carve,
             raw=record.raw,
+            benchmark=record.benchmark,
+            version=record.version,
+            effort=record.effort,
         ))
     return out
 
@@ -258,6 +267,12 @@ def _render_record_block(rec: CapabilityRecord) -> str:
     lines = ["[[capability_catalog.records]]\n"]
     lines.append(f"model_id = {_toml_str(rec.model_id)}\n")
     lines.append(f"source = {_toml_str(rec.source)}\n")
+    if rec.benchmark is not None:
+        lines.append(f"benchmark = {_toml_str(rec.benchmark)}\n")
+    if rec.version is not None:
+        lines.append(f"version = {_toml_str(rec.version)}\n")
+    if rec.effort is not None:
+        lines.append(f"effort = {_toml_str(rec.effort)}\n")
     scores = ", ".join(f"{axis} = {rec.scores[axis]}" for axis in sorted(rec.scores))
     lines.append(f"scores = {{{scores}}}\n")
     if rec.price_input is not None:

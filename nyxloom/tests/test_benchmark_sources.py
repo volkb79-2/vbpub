@@ -7,6 +7,7 @@ and its internals get a dedicated urllib test, matching test_free_models.py.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -49,22 +50,33 @@ class TestArtificialAnalysisSource:
     def test_happy_path_maps_scores_prices_context_and_raw(self, monkeypatch):
         monkeypatch.setenv("AA_TEST_KEY", "secret")
         payload = {"data": [
-            {"model_id": "vendor/model-a", "Intelligence Index": 91,
-             "Coding Index": "88.5", "Agentic/Tool-use Index": 77,
-             "Input price": 1.25, "Output price": "4.50", "Context Length": 128000},
-            {"model_id": "vendor/model-b", "Coding Index": 70},
-            {"model_id": ""}, {"not-a-model": True}, "malformed",
+            {"id": "b8e3-uuid", "slug": "gpt-5-6-luna", "name": "GPT-5.6 Luna",
+             "evaluations": {"artificial_analysis_intelligence_index": 61.2,
+                             "artificial_analysis_coding_index": 58.0,
+                             "artificial_analysis_agentic_index": 44.5},
+             "pricing": {"price_1m_input_tokens": 0.15,
+                         "price_1m_output_tokens": 0.60}},
+            {"id": "c9f4-uuid", "slug": "some-model", "name": "Some Model",
+             "evaluations": {"artificial_analysis_intelligence_index": 40.0,
+                             "artificial_analysis_coding_index": 35.0},
+             "pricing": {"price_1m_input_tokens": 0.05,
+                         "price_1m_output_tokens": 0.20}},
+            {"slug": ""}, {"not-a-model": True}, "malformed",
         ]}
         with patch("nyxloom.benchmark_sources._fetch_json", return_value=payload) as fetch:
             records = benchmark_sources.ArtificialAnalysisSource("aa", _aa_cfg()).fetch()
-        fetch.assert_called_once_with("https://aa.example/api/v2/data/llms/models",
+        fetch.assert_called_once_with("https://aa.example/api/v2/language/models/free",
                                       headers={"x-api-key": "secret"},
                                       timeout=benchmark_sources._HTTP_TIMEOUT)
         assert records[0] == benchmark_sources.BenchmarkRecord(
-            "vendor/model-a", "aa", {"intelligence": 91.0, "coding": 88.5, "agentic": 77.0},
-            1.25, 4.5, 128000, payload["data"][0])
-        assert records[1].scores == {"coding": 70.0}
-        assert records[1].price_input is None
+            "gpt-5-6-luna", "aa",
+            {"intelligence": 61.2, "coding": 58.0, "agentic": 44.5},
+            0.15, 0.6, None, payload["data"][0])
+        assert records[0].model_id != payload["data"][0]["id"]
+        assert records[1].model_id == "some-model"
+        assert records[1].scores == {"intelligence": 40.0, "coding": 35.0}
+        assert records[1].price_input == 0.05
+        assert records[1].price_output == 0.2
 
     def test_missing_key_raises_before_network(self, monkeypatch):
         monkeypatch.delenv("AA_TEST_KEY", raising=False)
@@ -81,10 +93,10 @@ class TestArtificialAnalysisSource:
 
     def test_defaults_and_list_payload_are_supported(self, monkeypatch):
         monkeypatch.setenv("AA_API_KEY", "key")
-        with patch("nyxloom.benchmark_sources._fetch_json", return_value=[{"Model": "m"}]) as fetch:
+        with patch("nyxloom.benchmark_sources._fetch_json", return_value=[{"slug": "m"}]) as fetch:
             records = benchmark_sources.ArtificialAnalysisSource("aa", {"kind": "artificial-analysis"}).fetch()
         fetch.assert_called_once_with(
-            "https://artificialanalysis.ai/api/v2/data/llms/models",
+            "https://artificialanalysis.ai/api/v2/language/models/free",
             headers={"x-api-key": "key"}, timeout=benchmark_sources._HTTP_TIMEOUT)
         assert records[0].model_id == "m"
 
@@ -93,15 +105,71 @@ class TestArtificialAnalysisSource:
         with patch("nyxloom.benchmark_sources._fetch_json", return_value={"data": {}}):
             assert benchmark_sources.ArtificialAnalysisSource("aa", _aa_cfg()).fetch() == []
 
-    def test_case_insensitive_alias_and_invalid_mapped_key_are_tolerated(self, monkeypatch):
+    def test_invalid_nested_values_and_invalid_mapped_key_are_tolerated(self, monkeypatch):
         monkeypatch.setenv("AA_TEST_KEY", "secret")
-        payload = {"data": [{"model": "m", "intelligence index": 10}]}
+        payload = {"data": [{"slug": "m", "evaluations": {
+            "artificial_analysis_intelligence_index": "not-a-number"}}]}
         with patch("nyxloom.benchmark_sources._fetch_json", return_value=payload):
             records = benchmark_sources.ArtificialAnalysisSource("aa", _aa_cfg()).fetch()
-        assert records[0].scores == {"intelligence": 10.0}
+        assert records[0].scores == {}
         cfg = _json_cfg(records_path="items", field_map={"model_id": None})
         with patch("nyxloom.benchmark_sources._fetch_json", return_value={"items": [{"model": "m"}]}):
             assert benchmark_sources.JSONHTTPSource("lb", cfg).fetch()[0].model_id == "m"
+
+
+class TestStaticBenchmarkSource:
+    def test_reads_absolute_seed_and_preserves_benchmark_metadata(self):
+        seed = Path(__file__).parents[1] / "data" / "benchmarks" / "deepswe-v1.1.toml"
+        source = benchmark_sources.StaticBenchmarkSource(
+            "deepswe", {"kind": "static", "path": str(seed.resolve())})
+
+        records = source.fetch()
+
+        assert len(records) == 45
+        high = next(record for record in records
+                    if record.model_id == "gpt-5.6-luna" and record.effort == "high")
+        assert high.scores["coding"] == 44.0
+        assert high.effort == "high"
+        assert high.version == "1.1"
+        assert high.benchmark == "DeepSWE"
+        no_effort = next(record for record in records
+                         if record.model_id == "kimi-k2.7-code")
+        assert no_effort.effort is None
+        assert high.raw["pass1"] == 44.0
+
+    def test_relative_seed_skips_empty_models_and_missing_scores(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        seed = tmp_path / "seed.toml"
+        seed.write_text(
+            'source = "fixture"\nbenchmark = "Fixture"\nversion = "v1"\n'
+            'score_axis = "intelligence"\n\n'
+            '[[records]]\nmodel = "model-a"\npass1 = "12.5"\neffort = "low"\n\n'
+            '[[records]]\nmodel = ""\npass1 = 99\n\n'
+            '[[records]]\npass1 = 98\n\n'
+            '[[records]]\nmodel = "model-b"\n', encoding="utf-8")
+
+        records = benchmark_sources.StaticBenchmarkSource(
+            "fixture", {"kind": "static", "path": "seed.toml",
+                         "score_axis": "override"}).fetch()
+
+        assert [record.model_id for record in records] == ["model-a", "model-b"]
+        assert records[0].scores == {"override": 12.5}
+        assert records[0].effort == "low"
+        assert records[1].scores == {}
+
+    def test_non_mapping_records_are_skipped(self, tmp_path):
+        seed = tmp_path / "malformed-records.toml"
+        seed.write_text('records = ["malformed"]\n', encoding="utf-8")
+
+        assert benchmark_sources.StaticBenchmarkSource(
+            "fixture", {"kind": "static", "path": str(seed)}).fetch() == []
+
+    def test_missing_path_and_unreadable_seed_raise(self, tmp_path):
+        with pytest.raises(benchmark_sources.BenchmarkSourceError, match="path is required"):
+            benchmark_sources.StaticBenchmarkSource("static", {"kind": "static"}).fetch()
+        with pytest.raises(benchmark_sources.BenchmarkSourceError, match="seed read failed"):
+            benchmark_sources.StaticBenchmarkSource(
+                "static", {"kind": "static", "path": str(tmp_path / "missing.toml")}).fetch()
 
 
 class TestJSONHTTPSource:
@@ -171,6 +239,9 @@ class TestRegistryAndFactory:
                           benchmark_sources.ArtificialAnalysisSource)
         assert isinstance(benchmark_sources.source_from_config("json", _json_cfg()),
                           benchmark_sources.JSONHTTPSource)
+        assert isinstance(benchmark_sources.source_from_config(
+            "static", {"kind": "static", "path": "seed.toml"}),
+            benchmark_sources.StaticBenchmarkSource)
         assert isinstance(benchmark_sources.source_from_config("custom", {"kind": "custom-test"}),
                           CustomSource)
 

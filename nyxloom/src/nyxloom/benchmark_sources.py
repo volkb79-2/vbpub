@@ -36,6 +36,9 @@ class BenchmarkRecord:
     price_output: float | None
     context_length: int | None
     raw: dict
+    benchmark: str | None = None
+    version: str | None = None
+    effort: str | None = None
 
 
 class BenchmarkSourceError(Exception):
@@ -210,21 +213,18 @@ class ArtificialAnalysisSource(BenchmarkSource):
             raise BenchmarkSourceError(
                 f"benchmark source {self.name!r}: API key env {key_env!r} is unset")
         base_url = self.cfg.get("base_url", _AA_DEFAULT_URL)
-        url = f"{str(base_url).rstrip('/')}/data/llms/models"
+        url = f"{str(base_url).rstrip('/')}/language/models/free"
         payload = _fetch_source_json(self.name, url, headers={"x-api-key": key},
                                      timeout=_HTTP_TIMEOUT)
         aliases = {
-            "model_id": ("model_id", "Model", "model", "id", "slug", "name"),
-            "intelligence": ("Intelligence Index", "intelligence_index", "intelligence"),
-            "coding": ("Coding Index", "coding_index", "coding"),
-            "agentic": ("Agentic/Tool-use Index", "Agentic Index", "Tool-use Index",
-                         "agentic_index", "tool_use_index", "agentic"),
-            "price_input": ("Input price", "input_price", "price_input",
-                            "input_cost_per_million", "input_cost"),
-            "price_output": ("Output price", "output_price", "price_output",
-                             "output_cost_per_million", "output_cost"),
-            "context_length": ("Context Length", "context_length",
-                                "max_context_length", "context_window"),
+            "model_id": ("slug", "name", "model_id", "id"),
+            "intelligence": ("evaluations.artificial_analysis_intelligence_index",),
+            "coding": ("evaluations.artificial_analysis_coding_index",),
+            "agentic": ("evaluations.artificial_analysis_agentic_index",),
+            "price_input": ("pricing.price_1m_input_tokens",),
+            "price_output": ("pricing.price_1m_output_tokens",),
+            "context_length": ("context_window_tokens", "pricing.context_window_tokens",
+                                "context_length"),
         }
         out: list[BenchmarkRecord] = []
         for item in _records(payload):
@@ -244,6 +244,47 @@ class ArtificialAnalysisSource(BenchmarkSource):
                 price_output=_as_float(_first_value(item, aliases["price_output"])),
                 context_length=_as_int(_first_value(item, aliases["context_length"])),
                 raw=item))
+        return out
+
+
+@register_kind("static")
+class StaticBenchmarkSource(BenchmarkSource):
+    """Offline benchmark source backed by a TOML seed file."""
+
+    kind = "static"
+
+    def fetch(self) -> list[BenchmarkRecord]:
+        path_value = self.cfg.get("path")
+        if not path_value:
+            raise BenchmarkSourceError(
+                f"benchmark source {self.name!r}: path is required")
+        try:
+            path = Path(path_value)
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            with path.open("rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
+            raise BenchmarkSourceError(
+                f"benchmark source {self.name!r} seed read failed: {exc}") from exc
+
+        source = str(data.get("source", self.name))
+        benchmark = data.get("benchmark")
+        version = data.get("version")
+        score_axis = str(self.cfg.get("score_axis", data.get("score_axis", "coding")))
+        out: list[BenchmarkRecord] = []
+        for row in data.get("records", []):
+            if not isinstance(row, dict):
+                continue
+            model = row.get("model")
+            if model is None or str(model) == "":
+                continue
+            scores = {score_axis: float(row["pass1"])} if "pass1" in row else {}
+            out.append(BenchmarkRecord(
+                model_id=str(model), source=source, scores=scores,
+                price_input=None, price_output=None, context_length=None,
+                benchmark=benchmark, version=version, effort=row.get("effort"),
+                raw=dict(row)))
         return out
 
 

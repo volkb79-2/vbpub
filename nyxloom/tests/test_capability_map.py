@@ -34,13 +34,15 @@ def _silence_nyxloom_logging():
 
 
 def _rec(model_id="vendor/model-a", source="aa", scores=None, price_input=1.0,
-        price_output=2.0, context_length=128000, raw=None) -> BenchmarkRecord:
+        price_output=2.0, context_length=128000, raw=None, benchmark=None,
+        version=None, effort=None) -> BenchmarkRecord:
     return BenchmarkRecord(
         model_id=model_id, source=source,
         scores=dict(scores if scores is not None else
                     {"intelligence": 0.5, "coding": 0.70, "agentic": 0.9}),
         price_input=price_input, price_output=price_output,
-        context_length=context_length, raw=dict(raw or {}))
+        context_length=context_length, raw=dict(raw or {}), benchmark=benchmark,
+        version=version, effort=effort)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +232,16 @@ class TestWriterOptionalFields:
         assert "price_output" not in row
         assert "context_length" not in row
 
+    def test_none_benchmark_version_and_effort_are_omitted(self, tmp_path):
+        p = tmp_path / "routes.toml"
+        [record] = capability_map.assemble_catalog([_rec()],
+                                                     capability_map.CapabilityMapConfig.default())
+        capability_map.write_capability_catalog(p, [record])
+        [row] = tomllib.loads(p.read_text(encoding="utf-8"))["capability_catalog"]["records"]
+        assert "benchmark" not in row
+        assert "version" not in row
+        assert "effort" not in row
+
 
 # ---------------------------------------------------------------------------
 # O6 -- round-trip parse (tomllib + config.Routes.load)
@@ -260,6 +272,27 @@ class TestRoundTrip:
         routes = config.Routes.load(p)
         assert routes.tiers == {}
         assert routes.routes == {}
+
+    def test_benchmark_version_effort_round_trip_and_idempotence(self, tmp_path):
+        p = tmp_path / "routes.toml"
+        cfg = capability_map.CapabilityMapConfig.default()
+        [record] = capability_map.assemble_catalog([
+            _rec(model_id="metadata-model", benchmark="DeepSWE", version="1.1",
+                 effort="high")], cfg)
+        assert record.benchmark == "DeepSWE"
+        assert record.version == "1.1"
+        assert record.effort == "high"
+
+        capability_map.write_capability_catalog(p, [record])
+        first = p.read_bytes()
+        text = p.read_text(encoding="utf-8")
+        assert 'benchmark = "DeepSWE"' in text
+        assert 'version = "1.1"' in text
+        assert 'effort = "high"' in text
+        assert capability_map.load_capability_catalog(p) == [record]
+
+        capability_map.write_capability_catalog(p, [record])
+        assert p.read_bytes() == first
 
 
 # ---------------------------------------------------------------------------
