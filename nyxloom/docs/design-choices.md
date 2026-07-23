@@ -114,9 +114,17 @@ actually run nyxloom once it ships?* Ownership falls out of the deployment model
 **Decision.** The doctrine is **part of the product**, not of any trove:
 
 - **Canonical `reference/` ships inside the nyxloom package/image, outside every trove** —
-  `AUTHORING.md`, `STANDARD.md`, `STANDING.md`, a new `DOCTRINE.md` (operational lessons), plus
-  the orchestration docs nyxloom now owns (`controller-workflow*.md`,
-  `reasonix-controller-guide.md`).
+  `AUTHORING.md`, `STANDARD.md`, and a new `DOCTRINE.md` (operational lessons).
+
+  **Correction, made while implementing this (2026-07-23):** `STANDING.md` is **not** canonical.
+  Its content is nyxloom's own wave/frozen-file contract — project-specific, which is exactly why
+  it was never stamped to any consumer. Promoting it would have pushed nyxloom's frozen-file list
+  onto every client. It stays in nyxloom's own trove as a project delta; the *mechanism* (a trove
+  may carry a `STANDING.md` inherited by every handoff there) is documented in canonical
+  `STANDARD.md`. This is the sibling-overlay model working as designed: canonical defines the
+  mechanism, the trove carries the project's actual contract. Also note `controller-workflow-v2.md`
+  is already nyxloom-owned (`nyxloom/legacy-workflow-origin/`), and no
+  `reasonix-controller-guide.md` exists in either repo — it was referenced but never written.
 - **Names and locations are spec constants** (this doc + `SPEC.md`), never discovered at runtime.
   *Why not an env var / lookup verb:* discovery only pays off when a location is unknown or
   deployment-variable. Here the product defines both the reference dir and the trove name
@@ -150,16 +158,18 @@ not assumed — every stamped copy was diffed against canonical:
 **Decisive result: 0 consumer-only lines in any stamped copy** — all drift is canonical-newer.
 No project-specific content is trapped in the duplicates, so deleting them is lossless. What must
 be preserved is the genuinely consumer-authored material: dstdns's `GUIDE.md` and naf's
-`STATE.md` (both already project docs; both stay). Note also that `STANDING.md` is **absent from
-every consumer** — it is referenced by code (`daemon.py:522`, `decision_chat.py:23`) but was never
-stamped; the reference model closes that gap for free (nothing to stamp — it is read from the
-product).
+`STATE.md` (both already project docs; both stay). `STANDING.md`'s absence from every consumer is
+**correct, not a gap** (see the correction above): it is nyxloom's own project contract, read by
+nyxloom's code (`daemon.py:522`, `decision_chat.py:23`), and was never meant to be stamped.
+
+One more find, surfaced during migration: dstdns's `CLAUDE.md` is **gitignored** — a local-only
+file. Shared doctrine living there never reaches another clone at all, which independently
+justifies moving the general layer into the tracked, cross-tool `AGENTS.md`.
 
 **Concrete changes** (a carve-able package):
 
-1. Create `reference/` in the nyxloom package; `git mv` AUTHORING/STANDARD/STANDING out of
-   `nyxloom-trove/`; add `DOCTRINE.md`; bring `controller-workflow*.md` +
-   `reasonix-controller-guide.md` under nyxloom ownership.
+1. Create `reference/` in the nyxloom package; `git mv` AUTHORING/STANDARD out of
+   `nyxloom-trove/` (NOT STANDING — see the correction above); add `DOCTRINE.md`.
 2. Write `DOCTRINE.md` — promote the operational lessons that today live only in a *consumer's*
    `CLAUDE.md` + session memory: serialize gate runs (one gate container at a time); an agent that
    parks on a backgrounded gate reads as a false-done; trust git state, never receipts; a
@@ -181,5 +191,8 @@ product).
 handoffs were authored against, so an upgrade that changes AUTHORING rules surfaces loudly instead
 of silently invalidating work.
 
-**Sequencing constraint:** change 4 edits `adapters.py`, which is in the active `scope.touch` of
-in-flight package B21 — this refactor must sequence *after* B21 merges, or the two will collide.
+**Sequencing:** change 4 edits `adapters.py`, which was in in-flight package B21's scope; this
+refactor was executed *after* B21 merged. Implementation note: the dispatch manifest is emitted as
+a **pointer, budgeted against `argv_max` minus the 200-char headroom** the codebase reserves for
+long real paths — so it lands on IMPLEMENTER/CARVER and is skipped for the argv-tight
+FRONTIER_REVIEW. A convenience pointer must never be what strands a dispatch.
