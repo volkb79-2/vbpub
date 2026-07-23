@@ -79,6 +79,14 @@ capacity = 1
 [policy]
 max_active_tasks = 4
 ready_queue_target = 5
+carve_ahead_target = 0
+# 2026-07-19 EMERGENCY STOPGAP (same issue confirmed live on dstdns):
+# reconcile.py's untargeted carve trigger never checks project_paused, so a
+# "paused" project can still get NEW carve dispatches fired against it. topos
+# hadn't actually fired one yet (its existing ready-state backlog volume
+# happened to already sit >= the default carve_ahead_target=5), but it is
+# equally exposed to the same gap. Restore once the real fix (carve trigger
+# respecting project_paused) lands and topos is deliberately un-paused.
 max_attempts_per_task = 3
 merge_mode = "manual"
 retention_days = 60
