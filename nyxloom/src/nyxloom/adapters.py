@@ -356,6 +356,25 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
 
     argv_max = route.argv_max or 1500
 
+    # Doc-ownership 2026-07-23: canonical doctrine ships WITH the product under
+    # `reference/`; a project's additions/overrides live in the same-named
+    # `nyxloom-trove/` sibling. This emits the read-first POINTER, never the
+    # content (the docs are mounted into the agent's environment, so inlining
+    # them would burn argv on every dispatch). Appended ONLY if it fits: the
+    # frontier-review prompt already runs close to argv_max with real paths
+    # (test_frontier_review_prompt_stays_under_argv_max_with_real_paths), and a
+    # doc pointer must never be the thing that strands a dispatch.
+    # Budgeted against argv_max MINUS the 200-char headroom the codebase already
+    # reserves for longer real-world paths: a convenience pointer must not eat the
+    # margin that keeps argv-tight roles dispatchable. In practice this lands on
+    # IMPLEMENTER/CARVER (room to spare) and is skipped for FRONTIER_REVIEW (already
+    # near the cap) -- acceptable, because the docs are mounted in the agent's
+    # environment regardless; the pointer only saves it a lookup.
+    manifest = ("\nDoctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; "
+                "then any same-named `nyxloom-trove/` sibling for project overrides.")
+    if len(prompt) + len(manifest) <= argv_max - 200:
+        prompt += manifest
+
     # B4b 2026-07-20 (D-060 triage; critique "re-dispatch packets embed the review
     # verdict"): on a re-queued IMPLEMENTER fix after a REJECTED review, append the
     # reviewer's rejection prose so this pass targets exactly what was flagged --

@@ -698,8 +698,8 @@ def test_unknown_subcommand(capsys):
 
 def test_init_scaffolds_trove(tmp_path, capsys):
     """Oracle O1: `init <dir>` creates <dir>/nyxloom-trove/ with the full
-    STANDARD.md tree, scaffolded from the bundled templates; nyxloom.toml
-    is valid TOML with a [project] id."""
+    tree plus an informational README; canonical doctrine is NOT copied in
+    (it ships with the product); nyxloom.toml is valid TOML with a [project] id."""
     import tomllib
 
     project_folder = tmp_path / "myproj"
@@ -710,7 +710,7 @@ def test_init_scaffolds_trove(tmp_path, capsys):
     trove = project_folder / "nyxloom-trove"
     assert trove.is_dir()
 
-    for name in ("nyxloom.toml", "STANDARD.md", "AUTHORING.md", "decisions.md",
+    for name in ("nyxloom.toml", "README.md", "decisions.md",
                  "roadmap.md", "backlog.md", ".gitignore"):
         assert (trove / name).is_file(), name
 
@@ -724,10 +724,11 @@ def test_init_scaffolds_trove(tmp_path, capsys):
     data = tomllib.loads((trove / "nyxloom.toml").read_text())
     assert data["project"]["id"] == "myproj"
 
-    # STANDARD.md/AUTHORING.md copied verbatim from the repo's canonical trove
-    canonical = Path(__file__).resolve().parent.parent / "nyxloom-trove"
-    assert (trove / "STANDARD.md").read_text() == (canonical / "STANDARD.md").read_text()
-    assert (trove / "AUTHORING.md").read_text() == (canonical / "AUTHORING.md").read_text()
+    # Canonical doctrine is NOT copied into the trove -- it ships with the
+    # product under reference/ and is read from there (doc-ownership 2026-07-23).
+    for absent in ("STANDARD.md", "AUTHORING.md", "DOCTRINE.md"):
+        assert not (trove / absent).exists(), absent
+    assert "reference/AUTHORING.md" in (trove / "README.md").read_text()
 
     out = capsys.readouterr().out
     assert str(trove) in out
@@ -770,7 +771,7 @@ def test_init_refuses_existing_trove(tmp_path, capsys):
     # untouched: no scaffolded files, marker survives
     assert marker.read_text() == "do not touch"
     assert not (trove / "nyxloom.toml").exists()
-    assert not (trove / "STANDARD.md").exists()
+    assert not (trove / "README.md").exists()
 
 
 def test_init_missing_project_folder_exits_2(capsys):
@@ -803,7 +804,7 @@ def test_onboard_greenfield_scaffolds_and_instantiates(tmp_path, capsys):
     trove = project_folder / "nyxloom-trove"
     for name in ("1-north-star.md", "2-product-definition.md",
                  "3-roadmap.md", "4-backlog.md", "onboarding-answers.json",
-                 "STANDARD.md", "nyxloom.toml"):
+                 "README.md", "nyxloom.toml"):
         assert (trove / name).is_file(), name
 
     out = capsys.readouterr().out

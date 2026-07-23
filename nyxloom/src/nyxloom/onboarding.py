@@ -37,8 +37,8 @@ INTERFACE CONTRACT:
   only the answers file (step 4) is meant to move.
 - `scaffold_trove(project_folder)` -- PACKAGE P23's trove scaffold, MOVED
   here from cli.py so `run_wizard` (and `cli.cmd_init`) share one
-  implementation. Raises `TroveAlreadyExists` / `TemplatesMissing`; never
-  overwrites.
+  implementation. Raises `TroveAlreadyExists`; never overwrites. Canonical
+  doctrine is NOT copied in -- it ships with the product (see reference/).
 
 Deliberately NOT built here:
 - Any read of the project's actual code/docs content (the `/review`-style
@@ -71,12 +71,6 @@ class TroveAlreadyExists(OnboardingError):
     def __init__(self, trove_dir: Path):
         self.trove_dir = trove_dir
         super().__init__(f"{trove_dir} already exists")
-
-
-class TemplatesMissing(OnboardingError):
-    def __init__(self, template_dir: Path):
-        self.template_dir = template_dir
-        super().__init__(f"bundled trove templates not found under {template_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -224,37 +218,72 @@ http_port = 8942
 '''
 
 
+_INIT_TROVE_README = """\
+# {project_id} — nyxloom trove
+
+This folder is **{project_id}'s own** nyxloom content: its direction documents,
+handoffs, reports, decisions, and project-specific instructions.
+
+## Where the rules live (upstream, not here)
+
+nyxloom's canonical doctrine — how to author a handoff, the trove spec, the
+operational lessons — **ships with the nyxloom product** and is read from there.
+It is deliberately **not copied into this folder**, so this trove can never hold
+a stale duplicate of a rule that has since changed upstream:
+
+| Canonical doc | What it covers |
+|---|---|
+| `reference/AUTHORING.md` | how to write a handoff an agent can actually implement |
+| `reference/STANDARD.md`  | the trove spec: what lives here, and the declaration model |
+| `reference/DOCTRINE.md`  | operational lessons: gates, evidence, review, merge discipline |
+
+## Adding or overriding a rule for this project
+
+Create the **same-named sibling** here. Need project-specific authoring rules?
+Add `nyxloom-trove/AUTHORING.md` — agents read the canonical file first, then
+yours, which **refines (never replaces)** it. Keep it to the delta; never copy
+the upstream text back in.
+
+A project may also keep:
+
+- `GUIDE.md` — how to operate this project's environment (gate invocation, stack
+  and worktree setup, teardown rules). Point at it from repo-root `AGENTS.md`.
+- `STANDING.md` — standing contracts inherited by every handoff in this trove.
+
+## What nyxloom manages here
+
+`handoffs/`, `reports/`, `archive/`, `agent-logs/`, `decisions.md`, and the
+direction spine (`1-north-star.md` … `4-backlog.md`) if adopted. Configuration
+lives in `nyxloom.toml`.
+"""
+
+
 def scaffold_trove(project_folder: Path, *, trove_name: str = "nyxloom-trove") -> Path:
-    """Scaffold `<project_folder>/<trove_name>/` from this package's bundled
-    templates (STANDARD.md + AUTHORING.md copied verbatim, a fresh
-    nyxloom.toml with [project] id = basename(<project_folder>)).
+    """Scaffold `<project_folder>/<trove_name>/`: the project's own nyxloom
+    content plus an informational README.
+
+    Canonical doctrine (AUTHORING / STANDARD / DOCTRINE) is deliberately NOT
+    copied here -- it ships with the nyxloom product and is read from there,
+    so a trove can never hold a stale duplicate. A project that needs to add
+    to or override a canonical doc creates the same-named sibling in its own
+    trove; see `reference/STANDARD.md`.
 
     Raises TroveAlreadyExists if the trove folder already exists (never
-    overwrites) and TemplatesMissing if this package's own bundled
-    STANDARD.md/AUTHORING.md cannot be found. `run_wizard` calls this only
-    when no trove exists yet; `cli.cmd_init` is a thin wrapper around it.
+    overwrites). `run_wizard` calls this only when no trove exists yet;
+    `cli.cmd_init` is a thin wrapper around it.
     """
-    import shutil
-
     trove_dir = project_folder / trove_name
     if trove_dir.exists():
         raise TroveAlreadyExists(trove_dir)
 
-    # This package's own canonical trove ships STANDARD.md/AUTHORING.md;
-    # src/nyxloom/onboarding.py -> src/ -> nyxloom/ (repo root of this package).
-    template_dir = Path(__file__).resolve().parent.parent.parent / "nyxloom-trove"
-    standard_src = template_dir / "STANDARD.md"
-    authoring_src = template_dir / "AUTHORING.md"
-    if not standard_src.exists() or not authoring_src.exists():
-        raise TemplatesMissing(template_dir)
-
     trove_dir.mkdir(parents=True)
-    shutil.copyfile(standard_src, trove_dir / "STANDARD.md")
-    shutil.copyfile(authoring_src, trove_dir / "AUTHORING.md")
 
     project_id = project_folder.resolve().name
     (trove_dir / "nyxloom.toml").write_text(
         _INIT_NYXLOOM_TOML.format(project_id=project_id), encoding="utf-8"
+    )
+    (trove_dir / "README.md").write_text(
+        _INIT_TROVE_README.format(project_id=project_id), encoding="utf-8"
     )
 
     (trove_dir / "handoffs").mkdir()
