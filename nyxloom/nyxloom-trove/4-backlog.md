@@ -92,6 +92,27 @@ items:
   component: dispatch
   context_estimate: medium
   folds_into: F005
+- id: B14
+  title: 'onboarding must be interview-driven + content-preserving at ANY project
+    maturity: never one-shot derive-from-code a canonical spine. Required design:
+    an extensive user-in-the-loop interview PLUS a migration that absorbs existing
+    curated docs (roadmap/backlog/product-definition) into the spine schema and
+    retires the source docs afterward. Supersedes the F4b --questionnaire code-regen
+    as the default (operator directive 2026-07-23; proven need by the dstdns/topos
+    content-preserving migrations, which the code-regen path would have thinned).'
+  type: feature
+  component: onboarding
+  context_estimate: large
+  folds_into: F002
+- id: B15
+  title: 'free-models refresh follow-ups: (a) validate Tier-2 provider route
+    addressing (groq/<model>, cerebras/<model>, ...) with a live probe before real
+    traffic (folds into B1 route doctor); (b) honor an operator exclude-list so a
+    refresh does not re-include manually vetted-out free models.'
+  type: feature
+  component: routing
+  context_estimate: small
+  folds_into: F009
 ---
 
 # nyxloom — backlog
