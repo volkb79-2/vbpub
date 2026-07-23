@@ -31,6 +31,15 @@ red gate reads as green. Always capture the real status:
 `<gate-command> 2>&1 | tail -40; echo "EXIT=${PIPESTATUS[0]}"`.
 This has produced false "all green" reports more than once.
 
+**A gate container must give its run-uid a full identity.**
+A gate that runs as a specific uid:gid (to match host-owned bind mounts) must
+provide that identity completely — a `/etc/passwd` entry, an `/etc/group` entry, a
+WRITABLE `HOME`, and `XDG_*` set. Otherwise tests fail on `pwd.getpwuid` /
+`grp.getgrgid` KeyErrors and `PermissionError` under `$HOME/.config`, which read as
+product breakage but are pure environment. (One project saw 108 spurious failures
+go to zero from this fix alone.) Suspect it whenever a suite fails *only* in the
+gate and only with identity/permission errors.
+
 **The gate is not the cockpit.**
 The environment you *inspect* from (a devcontainer, an admin shell) generally does
 not carry the application's real dependency closure. "Green in my shell" is not a
@@ -75,6 +84,27 @@ is a bounded scope amendment, not a hard block plus a full re-carve.
 **When scope is genuinely wrong, block mechanically — do not improvise.**
 A blocked agent should state exactly which file it needs and why, write that to its
 log, and stop. Partial credit improvisation produces code that must be thrown away.
+
+## 3a. Carving from documents — verify premises, do not trust status lines
+
+**A document's `Status:` line is authored once and never self-updates.** Neither do
+backlog rows, plan headers, or "ready to implement" banners. Carving a package from
+them without checking produces work that is already done, already obsolete, or
+aimed at a defect that no longer exists.
+
+The failure this encodes: 13 packages were carved from plan and report documents in
+one day; **nine were withdrawn the same day** because the work had already merged.
+One had already reached ACTIVE and had to be killed mid-attempt. Two independent
+agent digests of those documents *also* missed it — because they summarised the
+documents, not the repository. **An agent digest of stale docs inherits the
+staleness and adds confidence to it.**
+
+**Therefore, before carving from any plan / backlog / workstream row:** verify each
+premise mechanically against the repo — `git log --grep` for the feature or phase
+name, plus a direct read of the exact files the contract would touch (does the
+defect still exist? does the target still look pre-change?). Carve only contracts
+whose premises verify *today*, and record the verifying revision. Git is the only
+self-updating record of what is done.
 
 ## 4. Review
 
