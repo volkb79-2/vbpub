@@ -83,8 +83,11 @@ features:
 - id: F009
   title: Capability-matched, cost-aware routing
   acceptance:
-  - Tiers name the task (type x complexity), not the model.
-  - A reviewer route is strictly more capable than the implementer route it reviews.
+  - Tier keys are verb-band (implement/review/carve x 1-3), never a model or provider
+    name; the model becomes a route selected at dispatch.
+  - A reviewer route is strictly more capable than the implementer route it reviews,
+    compared per-axis (implementer on the coding axis, reviewer/carver on the
+    reasoning/agentic axis) against the F014 capability catalog.
   - A disabled CLI, provider, or model is skipped during route selection without removing
     its config.
   - Route selection honors a configurable cost posture and per-project route policy.
@@ -114,6 +117,8 @@ features:
   - A dashboard surfaces task state, gaps, escalations, and pending decisions.
   - A human can steer direction and answer escalations through chat.
   - An ambiguous or stuck call escalates to a human and is never silently guessed.
+  - A read-only routing panel surfaces the capability catalog and, per tier, the resolved
+    route with runners-up and the filters (policy, availability, cost posture) that fired.
   status: building
   milestone: M6
 - id: F013
@@ -126,6 +131,30 @@ features:
     not after.
   status: shipped
   milestone: M1
+- id: F014
+  title: Model capability catalog
+  acceptance:
+  - Every discoverable model (free and paid, across providers) is mapped to a per-axis
+    capability vector (coding / agentic / reasoning) plus price, context, and privacy,
+    from a pluggable registry of benchmark sources.
+  - Band membership is decided per-axis by operator-set thresholds, so a newly-discovered
+    model bins itself without shifting other models' bands.
+  - The complexity band is auto-assigned; review/carve role-eligibility is operator-gated
+    unless capability_map.role_gating is set to auto.
+  - The catalog is written as a sibling managed block; the frozen config core is never
+    edited.
+  status: planned
+  milestone: M4
+- id: F015
+  title: Scheduled-jobs subsystem
+  acceptance:
+  - The daemon owns scheduled jobs; the capability-catalog refresh is the first consumer.
+  - Config-driven jobs are read-only in the UI (config is their source of truth);
+    user-driven jobs added through the UI are editable there; neither origin silently
+    overwrites the other.
+  - Every scheduled job is also invocable ad-hoc without waiting for its next tick.
+  status: planned
+  milestone: M6
 non_goals:
 - Not a general-purpose CI/CD system.
 - Not an interactive IDE / coding-assistant for a human at the keyboard.

@@ -1,9 +1,14 @@
 # nyxloom routing-model redesign — design (capability-matched, cost-aware dispatch)
 
-> Status: design · 2026-07-17 · decisions **D-R1..D-R9** captured from the
-> operator interview. **Build AFTER F5** (gap-engine); the tier-rename (D-R1)
-> folds into task #34 (role-scoped `build_dispatch`), which already touches the
-> dispatch path. Companion to `nyxloom-operating-model.md`.
+> Status: design · 2026-07-17, extended 2026-07-23 · decisions **D-R1..D-R15**
+> captured from operator interviews. **Correction (2026-07-23):** the earlier
+> note that the tier-rename (D-R1) "folds into P44" was wrong — P44 delivered
+> only role-scoped *prompt text*; the tier taxonomy is still model-named in the
+> live matrix (`sonnet5-high`, `flash-high`, …). D-R1 and the
+> capability/catalog/UI work (D-R12..D-R15) form a bundle that is
+> **file-disjoint from F5 (gap-engine) and therefore parallelizable with it**;
+> only D-R3 (carver complexity→tier prediction) couples to the carve path and
+> rides with F5. Companion to `nyxloom-operating-model.md`.
 
 ## Motivation
 
@@ -14,27 +19,48 @@ models no availability/cost/policy, and provides **no capability guarantee**
 between an implementer and its reviewer. This redesign makes the *tier describe
 the work* and the *route a swappable, policy-driven selection*.
 
-## D-R1 — Tiers name the TASK, not the model
+## D-R1 — Tiers name the TASK, not the model · canonical vocabulary locked 2026-07-23
 
-Tier = `<task-type>-<complexity>`:
-`implementation-{easy,average,complex}`, `review-{easy,average,complex}`
-(carve / intake / decision keep task-typed tiers too). The model/effort/provider
-becomes a **route**, selected at dispatch. Multiple routes per tier, e.g.:
-- `implementation-easy`: haiku-high, deepseek-flash-high, openrouter-free
-- `implementation-average`: sonnet-high, deepseek-flash-max
+Tier = `<verb>-<band>` where verb ∈ {`implement`, `review`, `carve`, `intake`,
+`decide`} and band ∈ {`1`, `2`, `3`} (1 = simplest, 3 = hardest). Examples:
+`implement-2`, `review-3`, `carve-2`. A short legend lives beside the matrix
+(band 1/2/3 ≈ low/medium/high complexity), since numeric bands are deliberately
+compact rather than self-documenting (operator choice 2026-07-23). The
+model/effort/provider becomes a **route**, selected at dispatch; multiple routes
+per tier, ordered by the cost posture (D-R5), e.g.:
+- `implement-1`: haiku-high, deepseek-flash-high, openrouter-free
+- `implement-2`: sonnet-high, deepseek-flash-max
 - `review-*` resolve to strictly stronger routes than the same-band impl tier (D-R2).
+
+**This is a DATA migration, not a schema change.** The handoff frontmatter
+*already* carries a single abstract `tier:` field (schema
+`handoff-frontmatter.schema.json`: *"Never a CLI or provider name."*); only the
+VALUES in use are still model proxies (`sonnet5-high` ×32, `flash-high` ×2,
+`frontier-review` ×1 across the live troves). D-R1 is therefore:
+1. rename the `[tiers.*]` keys in `routes.toml` (`sonnet5-high`→`implement-2`, …);
+2. rewrite the `tier:` values in existing handoffs;
+3. replace the 3 hardcoded `"frontier-review"` string literals
+   (`reconcile.py:875`, `daemon.py:2428`, `daemon.py:3707`) with a per-role tier
+   lookup;
+4. wire the currently-**dead** `RouteDef.role_default` (`config.py:464`, read
+   nowhere today) as that lookup's backing — a pre-cut socket for exactly this.
+
+**Status: NOT built.** The live matrix is still model-named.
 
 ## D-R2 — Capability-matched review (invariants)
 
 - **(a)** A reviewer must be capable enough to review.
 - **(b)** A reviewer is **strictly more capable** than the implementer it reviews.
-- **(c)** Review tier follows implementation tier by complexity band
-  (impl-easy→review-easy, impl-average→review-average, impl-complex→review-complex)
-  — but within a band the review ROUTE resolves to a **stronger model** than the
-  impl route, so (b) always holds (e.g. impl-easy=haiku-high → review-easy=sonnet-high).
-- **(d)** Carve authority by review tier: `review-average`/`review-complex` may
-  carve any handoff; `review-easy` may carve **only** `implementation-easy`
-  handoffs. A follow-up carve cannot exceed the carver's own review capability.
+- **(c)** Review tier follows implementation tier by band
+  (`implement-1`→`review-1`, …) — but within a band the review ROUTE resolves to
+  a **stronger model** than the impl route, so (b) always holds
+  (e.g. `implement-1`=haiku-high → `review-1`=sonnet-high).
+- **(d)** Carve authority by review tier: `review-2`/`review-3` may carve any
+  handoff; `review-1` may carve **only** `implement-1` handoffs. A follow-up
+  carve cannot exceed the carver's own review capability.
+- **(2026-07-23)** "Strictly more capable" is evaluated on the **per-axis
+  capability vector** of D-R13: `review-*`/`carve-*` compare on the
+  reasoning/agentic axis, not the coding axis a `implement-*` tier gates on.
 
 ## D-R3 — Tier PREDICTION is the crux (carver responsibility)
 
@@ -45,6 +71,11 @@ an under-provisioned agent hits **BLOCKED** → the reconciler escalates up a ti
 Over-estimation wastes money. So estimation quality is a first-class cost lever:
 **track predicted-vs-actual** (did it BLOCK / need escalation / pass first try?)
 to calibrate future predictions.
+
+**(2026-07-23) This is the ONE routing decision that couples to F5/gap-engine** —
+both write the carve path (gap-engine emits carve candidates; D-R3 stamps each
+candidate's band). So D-R3 sequences **with** F5, while the rest of the routing
+bundle (D-R1, D-R12..D-R15) is parallelizable ahead of it.
 
 ## D-R4 — Availability layer (temporary disable, config preserved)
 
@@ -74,7 +105,9 @@ price awareness** — OpenRouter (≤ +5.5% fee) vs native, noting the **cache-h
 asymmetry**: native deepseek cache-hit input `$0.0028`/M vs openrouter/deepinfra
 `$0.018`/M, but OpenRouter is cheaper on cache-*miss* input + output. Cost-optimal
 therefore depends on the **cache-hit ratio** of the workload. (4) optional
-free-model use (openrouter free coding models).
+free-model use (openrouter free coding models). Price data is sourced from the
+D-R13 capability catalog (Artificial Analysis pricing arrives in the same schema
+as the scores).
 
 Reference prices (per 1M tokens, 2026-07-17):
 
@@ -171,14 +204,14 @@ This is the daemon-side mechanism **B10** ("session-limit monitoring +
 per-job token estimation") was already scoped to cover — D-R11 folds into B10
 rather than adding a new backlog item.
 
-## D-R12 — Benchmark/pricing-API-driven route scoring
+## D-R12 — Benchmark/pricing sources → a pluggable registry
 
 Two machine-readable sources checked live (2026-07-19), relevant to D-R3's
 tier-prediction and D-R5's cost model:
 - **Artificial Analysis Data API** (`GET /data/llms/models`,
-  `x-api-key` auth, free tier 1,000 req/day) — returns BOTH a capability score
-  (Intelligence/Coding/Agentic Index) and pricing per model in one schema; the
-  natural backing table for tier→route scoring.
+  `x-api-key` auth, free tier 1,000 req/day) — returns BOTH per-axis capability
+  scores (Intelligence / Coding / Agentic Index) and pricing per model in one
+  schema; the natural backing table for tier→route scoring.
 - **OpenRouter `/api/v1/models`** (public, no auth) — the right source for
   D-R4's availability layer to dynamically discover currently-`:free`-suffixed
   models instead of hand-curating `routes.host.toml`'s `[tiers.free-high]`
@@ -186,24 +219,112 @@ tier-prediction and D-R5's cost model:
 - **LMArena/Chatbot Arena** — no official API (only unofficial community
   mirrors); a secondary cross-check signal at most, never a hard dependency.
 
+**Decision 2026-07-23:** sources are a **pluggable `BenchmarkSource` registry**
+that mirrors `free_models.py`'s shipped `@register_kind` / `FreeModelSource`
+pattern — Artificial Analysis, LMArena, Aider-polyglot, LiveBench, SWE-bench
+each a swappable plugin; blend/prefer configurable per deployment. Only the
+OpenRouter free-model-discovery half is built today (`free_models.py`); the
+capability-scoring half is D-R13.
+
+## D-R13 — Model capability catalog (per-axis vector; operator thresholds) — decided 2026-07-23
+
+The concrete artifact D-R12's sources feed, and the **capability half** bolted
+onto `free_models.py`'s **discovery half**. A persisted, refreshable catalog
+maps EVERY model (free + paid, all providers) to a **capability vector**, not a
+scalar:
+
+- **Per-axis scores** (operator choice): distinct axes — Coding, Agentic,
+  Intelligence/reasoning — kept **separate, never blended**. `implement-N` tiers
+  gate on the **coding** axis; `review-N` / `carve-N` gate on the
+  **reasoning/agentic** axis. A model can be `implement-3` yet only `review-2`.
+  This is the faithful "work types" mapping the operator asked for (a strong
+  coder is not automatically a strong reviewer).
+- **Hard filters on top of scores:** `context_length` (already in
+  `DiscoveredModel`) and capability flags (vision, tool-use/function-calling)
+  hard-exclude a route when a task declares it needs them, regardless of score.
+- **Band cutoffs = operator-set per-axis thresholds** (operator choice): config
+  declares `band 3 = coding_index ≥ N`, etc. Deterministic, inspectable, and
+  stable — a newly-discovered model bins itself without shifting everyone else's
+  band (the rejected alternative, relative-ranking, would have drifted bands as
+  the roster changed).
+- **Role authority = hybrid, with an auto switch** (operator choice): the
+  benchmark auto-sets the complexity BAND; role-eligibility (may-review /
+  may-carve) is operator-confirmed before a model goes live in a review/carve
+  tier. A config flag (`capability_map.role_gating = "auto"`) opts into
+  fully-automatic role assignment for operators who trust the feed.
+- **Managed-block writer**, exactly like `free_models.write_routes_toml`: the
+  catalog is a sibling managed block; **`config.py` stays frozen core** (no edit).
+
+Shape: extends `DiscoveredModel` → a `CapabilityRecord` (adds per-axis scores,
+price, band-per-axis, `may_review`/`may_carve` flags). New module
+`capability_map.py`; benchmark plugins live in `benchmark_sources.py` (the D-R12
+registry).
+
+## D-R14 — Routing/capability UI panel (read-only, inside the F012 dashboard) — decided 2026-07-23
+
+A read-only view surfacing BOTH the catalog and the live resolution (operator
+choice "catalog + live resolution + why"):
+- **Catalog table:** every model × per-axis scores × price × privacy ×
+  availability × band.
+- **Per-tier resolution:** for each `<verb>-<band>` tier — the resolved winning
+  route, the runners-up in order, and **which filters fired** (policy hard-block,
+  availability/health, cost posture) — i.e. *why did `carve-3` pick THIS model.*
+
+Renders from the same files the resolver reads; **no second aggregation engine**
+(consistent with the north-star's thin-client rule). Folds into F012.
+
+## D-R15 — Scheduled-jobs subsystem (daemon-owned cron) — decided 2026-07-23
+
+The operator chose daemon-scheduled capability refresh (benchmarks move slowly;
+availability/health stays a separate fast live probe) and, in doing so,
+generalized it into a first-class subsystem — "the daemon kicking off its own
+cron definitions is trivial":
+
+- The daemon owns a set of scheduled jobs. **Capability-catalog refresh is the
+  first consumer;** free-models refresh and `route doctor` probes (D-R9) are
+  natural follow-ons.
+- **Two job origins, one resolved conflict** (operator's design call):
+  **config-driven** jobs (declared in toml, e.g. `capability_map.refresh_interval`)
+  are the source of truth and render **read-only** in the UI; **user-driven**
+  jobs added through the UI are mutable there. This dissolves the
+  settings-interval-vs-hand-edited-cron ambiguity: config owns config-jobs, the
+  UI owns UI-jobs, neither silently overwrites the other.
+- The UI **shows all defined jobs** (both origins) with schedule + last-run; only
+  user-driven rows are editable.
+
+The underlying refresh operation stays a plain callable (a cron firing is just a
+scheduled invocation), so it remains invocable ad-hoc via `exec-nyxloom` at zero
+extra cost — same as `free-models refresh` today.
+
 ## What folds where
 
 - **North-star** (identity-level): capability-matched review (D-R2), the
   self-contained sandboxed runtime (D-R7), cost-aware/policy-driven routing
   (D-R1/R5/R6), and the human control/escalation surface. See north-star draft.
-- **This design doc**: the full D-R1..R12 contract.
+- **This design doc**: the full D-R1..R15 contract.
+- **Spine features:** D-R1/R2/R3/R5/R6 → **F009** (capability-matched, cost-aware
+  routing). D-R12/R13 → **F014** (model capability catalog — new 2026-07-23).
+  D-R14 → **F012** (human control surface, routing panel). D-R15 → **F015**
+  (scheduled-jobs subsystem — new 2026-07-23). D-R7 → F010. D-R8 → B4. D-R9 → B1.
 - **Pulled forward (2026-07-19, operator directive):** D-R10 + D-R11 are
   P44 (role-scoped `build_dispatch`, closes #34/B7) + P45 (`READY_TO_CARVE`
-  dead-end fix + review-initiated micro-carve routing, closes #25/#26/B8),
-  ahead of the "after F5" sequencing below.
-- **Build epic** (still after F5): tier-taxonomy rename (D-R1); availability
-  layer, cost model, per-project policy, self-contained runtime, reviewer-fix
-  policy, `route doctor`, and D-R12's benchmark-API scoring are phased
-  packages.
+  dead-end fix + review-initiated micro-carve routing, closes #25/#26/B8).
+- **Build epic:** the **parallelizable bundle** (D-R1 tier rename; D-R12 benchmark
+  registry; D-R13 capability catalog; D-R14 routing UI; D-R15 scheduled jobs) is
+  file-disjoint from F5 and can be carved now. The **F5-coupled** piece (D-R3
+  carver band-prediction) sequences with the gap-engine. Availability layer (D-R4),
+  cost model (D-R5), per-project policy (D-R6), self-contained runtime (D-R7),
+  reviewer-fix policy (D-R8), and `route doctor` (D-R9) are phased packages after
+  the bundle lands.
 
 ## Sequencing
 
-Design now (this doc). D-R10/D-R11 build **now** (P44/P45, operator-prioritized
-2026-07-19). Everything else builds **after F5** (gap-engine). D-R1 (tier
-rename) folds into #34 (role-scoped `build_dispatch`, delivered by P44); the
-rest is a phased epic to be carved once F5 lands.
+- **Now, parallelizable with F5:** D-R1 (tier rename — a small data migration +
+  wiring the dead `role_default`), D-R12 (benchmark registry), D-R13 (capability
+  catalog), D-R14 (routing UI), D-R15 (scheduled jobs). These touch new modules
+  (`capability_map.py`, `benchmark_sources.py`), the dashboard, and `routes.toml`
+  — none of the carve-path files F5 rewrites.
+- **With F5:** D-R3 (carver complexity→tier prediction).
+- **After the bundle:** D-R4/R5/R6 (availability + cost posture + policy), then
+  D-R7 (self-contained runtime), D-R8 (reviewer fixes), D-R9 (`route doctor`).
+- D-R10/D-R11 already built (P44/P45).

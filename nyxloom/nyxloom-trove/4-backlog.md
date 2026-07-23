@@ -113,6 +113,54 @@ items:
   component: routing
   context_estimate: small
   folds_into: F009
+- id: B16
+  title: 'tier taxonomy rename to verb-band ({implement,review,carve}-{1,2,3}): a data
+    migration, not a schema change. Rename the [tiers.*] keys in routes.toml, rewrite the
+    tier: values in existing handoffs, replace the 3 hardcoded "frontier-review" string
+    literals (reconcile.py:875, daemon.py:2428, daemon.py:3707) with a per-role tier
+    lookup, and wire the currently-dead RouteDef.role_default (config.py:464) as its
+    backing. Parallelizable with F5 (disjoint from the carve path).'
+  type: feature
+  component: routing
+  context_estimate: medium
+  folds_into: F009
+- id: B17
+  title: 'benchmark_sources.py: pluggable BenchmarkSource registry mirroring free_models.py
+    @register_kind/FreeModelSource. Plugins for Artificial Analysis (capability + price in
+    one schema), plus LMArena / Aider-polyglot / LiveBench / SWE-bench as swappable
+    sources; blend/prefer configurable. All HTTP mocked in tests.'
+  type: feature
+  component: routing
+  context_estimate: medium
+  folds_into: F014
+- id: B18
+  title: 'capability_map.py: extend DiscoveredModel to a CapabilityRecord (per-axis coding/
+    agentic/reasoning scores + price + band-per-axis + may_review/may_carve). Operator-set
+    per-axis band thresholds; complexity band auto-assigned, role-eligibility operator-gated
+    unless capability_map.role_gating=auto; context/flags hard-filter. Managed-block writer
+    (frozen config.py untouched). This is the capability half onto free_models.py discovery.'
+  type: feature
+  component: routing
+  context_estimate: large
+  folds_into: F014
+- id: B19
+  title: 'routing/capability dashboard panel (read-only): catalog table (model x per-axis
+    scores x price x privacy x availability x band) plus per-tier resolution (winner,
+    runners-up, which filters fired). Renders from the files the resolver reads; no second
+    aggregation engine.'
+  type: feature
+  component: control
+  context_estimate: medium
+  folds_into: F012
+- id: B20
+  title: 'scheduled-jobs subsystem: daemon-owned cron with capability-catalog refresh as
+    first consumer. Config-driven jobs are read-only in the UI (config is source of truth);
+    user-driven jobs added via UI are editable there; neither origin overwrites the other.
+    Every job stays invocable ad-hoc. Generalizes B10s session-limit monitoring cadence.'
+  type: feature
+  component: control
+  context_estimate: medium
+  folds_into: F015
 ---
 
 # nyxloom — backlog
