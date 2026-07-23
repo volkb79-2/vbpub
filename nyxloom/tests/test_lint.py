@@ -784,7 +784,7 @@ class TestL13OracleScopeCoverage:
         findings = lint.lint_file(path, sample_project)
         l13 = [f for f in findings if f.rule == "L13"]
         assert len(l13) == 1
-        assert l13[0].severity == "error"
+        assert l13[0].severity == "warning"
         assert "O1" in l13[0].message
         assert "src/nyxloom/foo.py" in l13[0].message
 
@@ -880,7 +880,7 @@ class TestL13OracleScopeCoverage:
         lint._check_l13(findings, Path("demo-P01-test.md"), fm)
         assert len(findings) == 1
         assert findings[0].rule == "L13"
-        assert findings[0].severity == "error"
+        assert findings[0].severity == "warning"
 
     def test_empty_scope_touch_no_path_reference_no_finding(self):
         """Same empty scope.touch, but the oracle has no path token at all --

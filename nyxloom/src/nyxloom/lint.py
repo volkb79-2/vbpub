@@ -66,7 +66,7 @@ L11 error   body must contain (case-insens.) a worktree path mention
 L12 error   body must contain the BLOCKED rule marker 'BLOCKED:' and must
             not instruct violating project policy (heuristic: 'skip the
             gate', 'without running', 'ignore lint' -> flag).
-L13 error   every oracle (its observable/negative/gate fields) is scanned for
+L13 warning every oracle (its observable/negative/gate fields) is scanned for
             CONSERVATIVE repo-path tokens: a '/'-bearing token counts as an
             unambiguous file-path reference only when it also carries a file
             extension (e.g. '.py') or starts with a known top-level project
@@ -76,7 +76,16 @@ L13 error   every oracle (its observable/negative/gate fields) is scanned for
             referencing a path matched by none of scope.touch is flagged
             'oracle references path not covered by scope.touch' (B22) -- the
             implementer cannot satisfy that oracle without editing a
-            forbidden file.
+            forbidden file. Severity is 'warning' (not 'error'), mirroring
+            L7's OWN split: L7 uses 'error' only for structured-field checks
+            (scope.touch/forbid/source.ref -- explicit, unambiguous path
+            arrays) and 'warning' for heuristic regex-extracted candidate
+            paths pulled out of free-form prose (its body cross-repo/
+            relative-up checks). L13's extraction is the latter case (oracle
+            prose, not a structured field), so it follows the same split --
+            it does not (yet) participate in has_blocking/lint_clean, so it
+            surfaces the defect without gating existing CARVED->QUEUED
+            dispatch on a brand-new heuristic rule across the whole corpus.
 
 RULE NAMESPACE S1-S5 (PACKAGE F1, docs/spine-documents-spec.md -- the
 "direction spine" documents: nyxloom.toml's optional north_star/
@@ -1098,7 +1107,7 @@ def _check_l13(findings: list[LintFinding], path: Path, fm) -> None:
                 if not any(fnmatch.fnmatch(candidate, glob) for glob in touch_globs):
                     findings.append(LintFinding(
                         rule="L13",
-                        severity="error",
+                        severity="warning",
                         message=f"oracle '{oracle.id}' references path '{candidate}' "
                                 f"not covered by scope.touch",
                         path=str(path)
