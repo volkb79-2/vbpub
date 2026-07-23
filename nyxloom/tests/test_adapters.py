@@ -171,6 +171,52 @@ def test_build_dispatch_codex_default_sandbox():
     assert argv[sandbox_idx + 1] == "workspace-write"
 
 
+def test_build_dispatch_codex_effort_passthrough():
+    """codex route passes reasoning effort as a `-c` config override.
+
+    Regression guard: codex has no --effort flag, so route.effort was silently
+    dropped and every codex route ran at the ~/.codex/config.toml default.
+    """
+    route = RouteDef(
+        route_id="codex-luna-high",
+        cli="codex",
+        model="gpt-5.6-luna",
+        sandbox="danger-full-access",
+        effort="high",
+    )
+    argv, _ = adapters.build_dispatch(
+        route,
+        handoff_path="/path/to/handoff.md",
+        worktree="/tmp/wt",
+        branch="feat-x",
+        task_id="T-123",
+        gate_hint="pytest-q",
+        receipt_path="/path/receipt.json",
+    )
+    assert "-c" in argv
+    c_idx = argv.index("-c")
+    assert argv[c_idx + 1] == 'model_reasoning_effort="high"'
+
+
+def test_build_dispatch_codex_no_effort_omits_override():
+    """codex route without effort emits no `-c` reasoning override (negative)."""
+    route = RouteDef(
+        route_id="codex-test",
+        cli="codex",
+        model="gpt-5.6-terra",
+    )
+    argv, _ = adapters.build_dispatch(
+        route,
+        handoff_path="/path/to/handoff.md",
+        worktree="/tmp/wt",
+        branch="feat-x",
+        task_id="T-123",
+        gate_hint="pytest-q",
+        receipt_path="/path/receipt.json",
+    )
+    assert "-c" not in argv
+
+
 def test_build_dispatch_opencode():
     """Oracle 2: opencode route constructs correct argv."""
     route = RouteDef(
