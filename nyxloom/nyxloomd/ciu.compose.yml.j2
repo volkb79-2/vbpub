@@ -56,6 +56,7 @@ services:
     working_dir: /workspaces/vbpub/nyxloom
     env_file:
       - .env                                    # NTFY_TOKEN, NTFY_CMD_TOKEN (gitignored)
+      - secrets.env                             # AA_API_KEY / OPENROUTER_API_KEY / DEEPSEEK_API_KEY (gitignored)
     environment:
       HOME: /home/vscode
       TZ: UTC

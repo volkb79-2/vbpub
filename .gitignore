@@ -272,3 +272,4 @@ core
 /logs/
 **/logs/
 nyxloom/ntfy/.secrets/
+nyxloom/nyxloomd/secrets.env
