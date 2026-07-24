@@ -449,6 +449,34 @@ def test_main_all_killed_passes(monkeypatch, tmp_path, capsys):
     assert "mutation OK" in out
 
 
+def test_main_missing_file_warning(monkeypatch, tmp_path, capsys):
+    """A changed path that does not exist on disk prints a warning to stderr
+    and is skipped without crashing; other changed files are still processed."""
+    repo = _make_small_repo(tmp_path)
+    monkeypatch.setattr(
+        cg, "_resolve_base",
+        lambda repo_arg, base: "HEAD",
+    )
+    # hello.py exists; deleted.py does not
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {
+            "src/nyxloom/hello.py": {1},
+            "src/nyxloom/deleted.py": {2},
+        },
+    )
+    rc = mg.main([
+        "--repo", str(repo),
+        "--test", "true",
+    ])
+    out = capsys.readouterr()
+    # Warning on stderr for the missing file
+    assert "mutation-gate WARNING: changed file not found: src/nyxloom/deleted.py" in out.err
+    # hello.py has no mutable operators on line 1 → no mutants → clean pass
+    assert "mutation OK" in out.out
+    assert rc == 0
+
+
 def test_main_survivor_output(monkeypatch, tmp_path, capsys):
     """main prints SURVIVED for surviving mutants."""
     repo = _make_small_repo(tmp_path)
