@@ -401,3 +401,41 @@ def refresh_catalog(cfg: CapabilityMapConfig | None = None,
     catalog = assemble_catalog(source_records, resolved_cfg)
     catalog = surface_unrated(catalog, resolved_cfg)
     return catalog, errors
+
+
+# ---------------------------------------------------------------------------
+# cost-crossover detection (FN-5)
+
+def detect_cost_crossovers(catalog, *, score_epsilon: float = 2.0,
+                           cost_ratio_max: float = 0.5) -> list[dict]:
+    """Per benchmark, find a model that ~matches the top scorer (within
+    score_epsilon points) at <= cost_ratio_max of its total price. Returns one
+    finding-dict per benchmark (the CHEAPEST qualifying crossover), with keys
+    matching the cost_crossover finding kind (cheap_model, ref_model, metric,
+    ratio) plus score_a/score_b. A record is comparable only if it has a
+    non-empty scores dict and a positive total price (price_input+price_output)."""
+    from collections import defaultdict
+    groups: dict[str, list] = defaultdict(list)
+    for rec in catalog:
+        if not rec.scores:
+            continue
+        price = (rec.price_input or 0.0) + (rec.price_output or 0.0)
+        if price <= 0:
+            continue
+        groups[rec.benchmark or "unknown"].append(
+            (rec.model_id, max(rec.scores.values()), price))
+    out: list[dict] = []
+    for bench, rows in sorted(groups.items()):
+        ref_model, ref_score, ref_price = max(rows, key=lambda r: r[1])
+        if ref_price <= 0:  # pragma: no cover — rows pre-filtered to price>0 (line ~423)
+            continue
+        candidates = [r for r in rows if r[0] != ref_model
+                      and r[1] >= ref_score - score_epsilon
+                      and r[2] <= ref_price * cost_ratio_max]
+        if not candidates:
+            continue
+        cheap_model, cheap_score, cheap_price = min(candidates, key=lambda r: r[2])
+        out.append({"cheap_model": cheap_model, "ref_model": ref_model,
+                    "metric": bench, "ratio": round(cheap_price / ref_price, 3),
+                    "score_a": cheap_score, "score_b": ref_score})
+    return out

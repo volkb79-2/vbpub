@@ -1219,6 +1219,29 @@ def cmd_capability_map_refresh(args) -> int:
         print(f"  source {name} error: {err}")
     print(f"dry-run: {paths.routes_path()} not written" if dry
           else f"wrote {paths.routes_path()} and {store_path}")
+
+    emit_project = getattr(args, "emit_findings", None)
+    if not dry and emit_project:
+        from . import findings
+        from .config import load_registry
+        if emit_project not in load_registry():
+            print(f"error: --emit-findings project {emit_project!r} is not registered",
+                  file=sys.stderr)
+            return 2
+        seen = {(f.fields.get("cheap_model"), f.fields.get("ref_model"),
+                 f.fields.get("metric"))
+                for f in findings.load_findings(emit_project)
+                if f.kind == "cost_crossover"}
+        for cc in capability_map.detect_cost_crossovers(catalog):
+            key = (cc["cheap_model"], cc["ref_model"], cc["metric"])
+            if key in seen:
+                continue
+            findings.record_finding(
+                emit_project, "cost_crossover",
+                title=f"{cc['cheap_model']} ~= {cc['ref_model']} on {cc['metric']}",
+                fields=cc, severity="note")
+            print(f"  finding: cost_crossover {cc['cheap_model']} vs "
+                  f"{cc['ref_model']} on {cc['metric']}")
     return 0
 
 
@@ -1395,6 +1418,9 @@ def main(argv: list[str] | None = None) -> int:
     cm_refresh_parser = capmap_subs.add_parser("refresh")
     cm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                     help="Compute the catalog without writing routes.toml")
+    cm_refresh_parser.add_argument("--emit-findings", dest="emit_findings",
+                                   metavar="PROJECT", default=None,
+                                   help="record cost_crossover findings under this registered project")
 
     # finding (FN-4: CLI verbs)
     finding_parser = subparsers.add_parser("finding")

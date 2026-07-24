@@ -1198,3 +1198,135 @@ def test_finding_no_subcommand_exits_2(capsys):
     """Bare `finding` (no subcommand) prints help to stderr and returns 2."""
     exit_code = cli.main(["finding"])
     assert exit_code == 2
+
+
+# ==========================================================================
+# FN-5 -- capability-map refresh --emit-findings
+# ==========================================================================
+
+def test_capability_map_emit_findings_records_finding(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """capability-map refresh --emit-findings demo records a cost_crossover."""
+    from nyxloom import findings
+    from nyxloom.benchmark_sources import BenchmarkRecord
+
+    cheap = BenchmarkRecord(
+        model_id="cheap-model", source="test",
+        scores={"coding": 0.70}, price_input=0.01, price_output=0.01,
+        context_length=128000, raw={}, benchmark="swe",
+    )
+    expensive = BenchmarkRecord(
+        model_id="expensive-model", source="test",
+        scores={"coding": 0.71}, price_input=2.0, price_output=3.0,
+        context_length=128000, raw={}, benchmark="swe",
+    )
+    monkeypatch.setattr(
+        "nyxloom.capability_map.benchmark_sources.fetch_all",
+        lambda sources: ([cheap, expensive], {}),
+    )
+
+    exit_code = cli.main(["capability-map", "refresh", "--emit-findings", "demo"])
+
+    assert exit_code == 0
+    found = findings.load_findings("demo")
+    crossovers = [f for f in found if f.kind == "cost_crossover"]
+    assert len(crossovers) >= 1
+    cc = crossovers[0]
+    assert cc.fields["cheap_model"] == "cheap-model"
+    assert cc.fields["ref_model"] == "expensive-model"
+    assert cc.fields["metric"] == "swe"
+    assert cc.severity == "note"
+
+
+def test_capability_map_emit_findings_dedup(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """Running --emit-findings twice does NOT create a duplicate."""
+    from nyxloom import findings
+    from nyxloom.benchmark_sources import BenchmarkRecord
+
+    cheap = BenchmarkRecord(
+        model_id="cheap-model", source="test",
+        scores={"coding": 0.70}, price_input=0.01, price_output=0.01,
+        context_length=128000, raw={}, benchmark="swe",
+    )
+    expensive = BenchmarkRecord(
+        model_id="expensive-model", source="test",
+        scores={"coding": 0.71}, price_input=2.0, price_output=3.0,
+        context_length=128000, raw={}, benchmark="swe",
+    )
+    monkeypatch.setattr(
+        "nyxloom.capability_map.benchmark_sources.fetch_all",
+        lambda sources: ([cheap, expensive], {}),
+    )
+
+    # First run
+    exit_code = cli.main(["capability-map", "refresh", "--emit-findings", "demo"])
+    assert exit_code == 0
+    capsys.readouterr()  # discard
+
+    # Second run (same catalog, same detector)
+    exit_code = cli.main(["capability-map", "refresh", "--emit-findings", "demo"])
+    assert exit_code == 0
+
+    found = findings.load_findings("demo")
+    crossovers = [f for f in found if f.kind == "cost_crossover"]
+    assert len(crossovers) == 1
+
+
+def test_capability_map_emit_findings_dry_run(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """--dry-run --emit-findings records nothing."""
+    from nyxloom import findings
+    from nyxloom.benchmark_sources import BenchmarkRecord
+
+    cheap = BenchmarkRecord(
+        model_id="cheap-model", source="test",
+        scores={"coding": 0.70}, price_input=0.01, price_output=0.01,
+        context_length=128000, raw={}, benchmark="swe",
+    )
+    expensive = BenchmarkRecord(
+        model_id="expensive-model", source="test",
+        scores={"coding": 0.71}, price_input=2.0, price_output=3.0,
+        context_length=128000, raw={}, benchmark="swe",
+    )
+    monkeypatch.setattr(
+        "nyxloom.capability_map.benchmark_sources.fetch_all",
+        lambda sources: ([cheap, expensive], {}),
+    )
+
+    exit_code = cli.main([
+        "capability-map", "refresh", "--dry-run", "--emit-findings", "demo",
+    ])
+
+    assert exit_code == 0
+    found = findings.load_findings("demo")
+    crossovers = [f for f in found if f.kind == "cost_crossover"]
+    assert len(crossovers) == 0
+
+
+def test_capability_map_emit_findings_unregistered_project(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """--emit-findings with an unregistered project prints error and exits 2."""
+    from nyxloom.benchmark_sources import BenchmarkRecord
+
+    record = BenchmarkRecord(
+        model_id="m", source="test", scores={"x": 0.5},
+        price_input=1.0, price_output=1.0, context_length=128000,
+        raw={}, benchmark="b",
+    )
+    monkeypatch.setattr(
+        "nyxloom.capability_map.benchmark_sources.fetch_all",
+        lambda sources: ([record], {}),
+    )
+
+    exit_code = cli.main([
+        "capability-map", "refresh", "--emit-findings", "nonexistent",
+    ])
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "not registered" in err
