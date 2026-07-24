@@ -496,6 +496,8 @@ def resolve_level(registry: dict[str, Path] | None = None) -> tuple[str, str]:
 _CONFIG_POST_PATHS = frozenset({
     "/api/config/policy", "/api/config/pause", "/api/config/tier",
     "/api/decision/reply", "/api/intake", "/api/config/log-level",
+    # FN-6 2026-07-24: promote a finding to an interactive intake conversation
+    "/api/finding/promote",
 })
 
 # /api/intake is the one route that lets a caller NAME the record it writes
@@ -4417,6 +4419,10 @@ class Daemon:
         if path == "/api/config/log-level":
             self._post_config_log_level(handler, body)
             return
+        # FN-6: promote a finding to an interactive intake conversation
+        if path == "/api/finding/promote":
+            self._post_finding_promote(handler, body)
+            return
 
         self._send_json(handler, 404, b'{"error":"not found"}')
 
@@ -4530,6 +4536,42 @@ class Daemon:
             self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
             return
 
+        render.render_after_event(self.registry)
+        self._send_json(handler, 200, json.dumps(
+            {"ok": True, "intake_id": intake_id, "reply": reply}).encode("utf-8"))
+
+    def _post_finding_promote(self, handler, body: dict) -> None:
+        """FN-6: promote a finding to an interactive intake conversation. The
+        finding's typed content seeds a NEW intake (new_id('intake')); everything
+        downstream is the existing intake pipeline. Loopback-only, same surface as
+        /api/intake. `finding_id`/`project` are validated against real records; the
+        minted intake_id (not any client value) names the file."""
+        from . import findings as findings_mod
+        project = body.get("project")
+        finding_id = body.get("finding_id")
+        if not isinstance(project, str) or project not in self.registry:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        if not isinstance(finding_id, str) or not finding_id.strip():
+            self._send_json(handler, 400, b'{"error":"missing finding_id"}')
+            return
+        match = next((f for f in findings_mod.load_findings(project)
+                      if f.finding_id == finding_id), None)
+        if match is None:
+            self._send_json(handler, 404, b'{"error":"finding not found"}')
+            return
+        try:
+            cfg = config.ProjectConfig.load(self.registry[project])
+        except Exception:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        intake_id = new_id("intake")
+        seed = findings_mod.promote_seed_text(match)
+        try:
+            reply = intake_chat.advance_intake(cfg, project, intake_id, seed)
+        except Exception as exc:
+            self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
+            return
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps(
             {"ok": True, "intake_id": intake_id, "reply": reply}).encode("utf-8"))

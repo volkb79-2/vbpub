@@ -187,3 +187,21 @@ def load_findings(project: str, *, since: int = 0) -> list[Finding]:
     ]
     out.sort(key=lambda f: f.sequence, reverse=True)
     return out
+
+
+def promote_seed_text(finding: "Finding") -> str:
+    """Build the first-turn intake message that seeds a discussion of a finding.
+    A fixed template over the finding's own fields -- this becomes intake prompt/
+    transcript text (NOT a notification), so free-text is acceptable here."""
+    lines = [
+        f"Let's discuss this finding and decide what action to take (if any).",
+        f"Finding {finding.finding_id} [{finding.kind}]: {finding.title}",
+    ]
+    if finding.body:
+        lines.append(finding.body)
+    if finding.fields:
+        pairs = ", ".join(f"{k}={v}" for k, v in sorted(finding.fields.items()))
+        lines.append(f"Details: {pairs}")
+    if finding.task_id:
+        lines.append(f"Related task: {finding.task_id}")
+    return "\n".join(lines)

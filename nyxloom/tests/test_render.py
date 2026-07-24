@@ -1377,3 +1377,21 @@ def test_findings_html_skips_broken_project(sample_project, tmp_state, tmp_path)
     render.render_all(registry)  # must not raise
 
     assert (paths.www_dir() / "findings.html").exists()
+
+
+def test_findings_html_has_promote_button_and_js(sample_project, tmp_state):
+    """FN-6 O1: findings.html has the 'Discuss / Act' button wired to
+    promoteFinding() and the /api/finding/promote endpoint."""
+    from nyxloom import findings
+
+    registry = {"demo": sample_project.root}
+
+    findings.record_finding("demo", "generic", title="test finding",
+                            body="test body")
+
+    render.render_all(registry)
+    content = (paths.www_dir() / "findings.html").read_text(encoding="utf-8")
+
+    assert "promoteFinding(" in content
+    assert "/api/finding/promote" in content
+    assert "Discuss / Act" in content
