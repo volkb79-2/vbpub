@@ -16,7 +16,7 @@ import urllib.request
 import pytest
 import structlog.contextvars
 
-from nyxloom import daemon, findings, intake_chat, lint, log, paths, reconcile, render
+from nyxloom import config, daemon, findings, intake_chat, lint, log, paths, reconcile, render
 
 
 @pytest.fixture(autouse=True)
@@ -299,3 +299,41 @@ def test_promote_get_not_allowed(http_daemon):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(f"{base}/api/finding/promote", timeout=5)
     assert exc.value.code == 405
+
+
+def test_promote_advance_intake_raises_500(http_daemon, monkeypatch):
+    """advance_intake raises -> POST /api/finding/promote returns 500."""
+    def fake_raise(*a, **k):
+        raise RuntimeError("intake chat bomb")
+    monkeypatch.setattr(intake_chat, "advance_intake", fake_raise)
+
+    ev = findings.record_finding("demo", "generic", title="bomb finding", body="")
+    finding_id = f"F-demo-{ev.sequence}"
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "demo",
+                       "finding_id": finding_id}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 500
+
+
+def test_promote_config_load_raises_404(http_daemon, monkeypatch):
+    """config.ProjectConfig.load raises -> POST /api/finding/promote returns 404."""
+    def fake_load(*a, **k):
+        raise RuntimeError("config bomb")
+    monkeypatch.setattr(config.ProjectConfig, "load", fake_load)
+
+    ev = findings.record_finding("demo", "generic", title="config bomb finding", body="")
+    finding_id = f"F-demo-{ev.sequence}"
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "demo",
+                       "finding_id": finding_id}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 404
