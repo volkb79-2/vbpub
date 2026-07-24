@@ -793,13 +793,51 @@ class TestScaleSealSource:
         assert rows == []
 
     def test_extract_valid_keys_but_malformed_json(self):
-        """Cover _extract_scale_rows second except (lines 475-476)."""
-        # Chunk has model/score/rank keys but body is broken JSON.
-        chunk = '11:{"model":"x","score":"y","rank":1,'
+        """A chunk with model/score/rank keys whose `[{` begins a TRUNCATED
+        (unparseable) array → raw_decode raises ValueError → no rows return."""
         import json as _json
+        chunk = '11:[{"model":"x","score":1,"rank":1,'   # truncated, unparseable
         html = '<script>self.__next_f.push([1,{}])</script>'.format(_json.dumps(chunk))
         rows = benchmark_sources._extract_scale_rows(html)
         assert rows == []
+
+    def test_extract_component_tree_nested(self):
+        """LIVE-SHAPE regression: the row array is nested inside a React
+        component tree (`NN:["$","div",null,{...}]`) with a decoy `[{...}]`
+        (no model) before it. The scanner must skip the decoy via raw_decode
+        and return the real row array — a single greedy `[{.*}]` regex could not."""
+        import json as _json
+        rows = [
+            {"model": "claude-opus-4-8 (max)", "rank": 1, "score": 82.2, "deprecated": False},
+            {"model": "gpt-5.6 (sol)", "rank": 2, "score": 80.0, "deprecated": False},
+        ]
+        tree = ["$", "table", None, {
+            "columns": [{"tag": "th", "label": "Model"}],        # decoy [{...}] — no model/score
+            "children": ["$", "tbody", None, {"data": rows}],     # real data array, nested
+        }]
+        chunk = "1e:" + _json.dumps(tree)
+        html = '<html><script>self.__next_f.push([1,{}])</script></html>'.format(_json.dumps(chunk))
+        extracted = benchmark_sources._extract_scale_rows(html)
+        assert [r["model"] for r in extracted] == ["claude-opus-4-8 (max)", "gpt-5.6 (sol)"]
+
+    def test_trailing_star_footnote_stripped(self):
+        """A trailing '*' footnote marker (Scale flags some rows) is stripped so
+        the effort suffix still parses and the model_id stays clean."""
+        rows = [
+            {"model": "gpt-5.4 (xHigh)*", "version": "", "rank": 1, "score": 61.0,
+             "company": "openai", "isNew": False, "createdAt": "", "deprecated": False, "maxScore": 100},
+            {"model": "Muse Spark 1.1*", "version": "", "rank": 2, "score": 59.0,
+             "company": "meta", "isNew": False, "createdAt": "", "deprecated": False, "maxScore": 100},
+        ]
+        html = _scale_html(rows)
+        url = "https://labs.scale.com/leaderboard/mcp_atlas"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})):
+            records = benchmark_sources.ScaleSealSource("scale", self._cfg(min_rows=2)).fetch()
+        by_id = {r.model_id: r for r in records}
+        assert by_id["gpt-5.4"].effort == "xhigh"
+        assert "Muse Spark 1.1" in by_id
+        assert by_id["Muse Spark 1.1"].effort is None
 
     def test_page_missing_axis_raises(self):
         """Cover line 508 — page dict missing url/axis/benchmark."""
