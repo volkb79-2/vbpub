@@ -38,7 +38,7 @@ adopts all of these (operator decision 2026-07-24).**
 |---|---|---|
 | the line is **reached** | diff-coverage gate (100% floor, merge-base) | LIVE (`coverage_gate.py`) |
 | the line's **behavior is asserted** (kills hollow tests) | **changed-lines mutation gate** — mutate the diff's code, re-run tests; a surviving mutant = a hollow test | **BUILDING** (this doc's flagship change) |
-| the **contract** is real | **negative-oracle enforcement** — every handoff oracle must carry a real `negative:` assertion; lint rejects all-positive oracles | **BUILDING** (lint rule) |
+| the **contract** is real | **negative-oracle enforcement** — every handoff oracle must carry a real `negative:` assertion | **ALREADY LIVE** — lint rule **L3** rejects a `negative` that is empty, `n/a`, or a copy of `observable`. (Possible strengthening: assert the negative is *test-backed*, not just present.) |
 | cross-cutting **invariants** hold | `test_invariants.py` — every new EventType is projection-classified, transitions well-formed, etc. Grow this set. | LIVE + ongoing doctrine |
 | **type** correctness | strict typing on the changed surface | ongoing doctrine |
 | **state** correctness | the deterministic reconcile state machine (§5) | LIVE (`reconcile.plan_project`) |
@@ -158,12 +158,28 @@ separate), (d) is **externally compacted** by the daemon (retention-steered: KEE
 open decisions + recent merges; DROP resolved carves), and (e) is the **human-intake
 surface** — new user plans/raw feature ideas go here to be fitted into current work-state.
 
-Full design: **`docs/plan-long-running-carver.md`** (authored by sol@high). External-
-compaction mechanism: **`docs/research-external-compaction.md`** (findings). Durable-ground-
-truth mitigation: the spine files are the always-re-readable truth, so the session holds
-only WORKING context and a lossy compaction is recoverable. Model tier: carving is the
-highest-judgment role → run it a tier UP (strong), or flash-carver + a review-the-spec gate;
-justified in the plan. Feeds the mechanical reconcile via **typed carve proposals** (§5d).
+Full design: **`docs/plan-long-running-carver.md`** (authored by sol@high — 6 gated
+packages P1..P6). Key architectural decision: **"long-running" = a resumed PROVIDER session
+across many bounded daemon-launched turns, NOT a resident process** — this preserves the
+crash-safe detached-wrapper model (the wrapper acquires the `<project>.strategic-carver`
+lease per turn; the durable session id / generation / event-cursor live in event-sourced
+state). Every merge emits a bounded **typed merge-digest** (no repo re-scan); every carver
+result is a **schema-checked proposal** that pure `plan_project` admits mechanically (§5d).
+Model tier: **carve-3 on sol@high** (carving is the highest-judgment role; review is
+capability-MATCHED to the implementation, not auto-max — a deliberate rejection of
+inverted-effort). Disabled for carve-less `gated`/`lean` presets.
+
+**External compaction mechanism** — `docs/research-external-compaction.md` (findings): the
+only tool with a *documented external-compaction trigger* is **codex via app-server
+(`thread/compact/start` + wait for `contextCompaction`, with a `compact_prompt` retention
+template)** — the recommended production path. reasonix (v1.17.12) has no mid-turn force;
+use bounded `run -c/--resume` cycles + tune `compact_ratio`/`compact_force_ratio`/
+`cold_resume_prune` (its automatic policy). Claude Code: Agent SDK resume + `/compact` +
+`max_turns=1`. **Single-owner discipline** (one controller per session; record
+session/compaction ids + pre/post token telemetry + the spine revision used for retention).
+**Durable-ground-truth mitigation:** the spine files are the always-re-readable truth, so
+the session holds only WORKING context and a lossy compaction is recoverable — the daemon
+writes/validates spine revision N *before* compacting and the carver re-reads it *after*.
 
 ---
 
