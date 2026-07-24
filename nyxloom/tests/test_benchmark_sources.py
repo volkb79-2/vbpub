@@ -763,3 +763,95 @@ class TestScaleSealSource:
                 pages=[{"url": url, "axis": "coding", "benchmark": "b"}], min_rows=1)).fetch()
         assert len(records) == 1
         assert records[0].scores == {"coding": 73.5}
+
+    def test_fetch_text_decodes_body(self):
+        """Cover _fetch_text body (lines 87-89)."""
+        response = MagicMock()
+        response.read.return_value = b"<html>hi</html>"
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return response
+
+        with patch("nyxloom.benchmark_sources.urllib.request.urlopen", side_effect=fake_urlopen):
+            body = benchmark_sources._fetch_text("http://x", timeout=5)
+
+        assert body == "<html>hi</html>"
+        assert captured["request"].get_full_url() == "http://x"
+        assert captured["timeout"] == 5
+
+    def test_extract_malformed_push_string_literal(self):
+        """Cover _extract_scale_rows first except (lines 463-464)."""
+        # \\x is not a valid JSON escape, so json.loads(lit) raises.
+        html = '<script>self.__next_f.push([1,"\\x"])</script>'
+        rows = benchmark_sources._extract_scale_rows(html)
+        assert rows == []
+
+    def test_extract_valid_keys_but_malformed_json(self):
+        """Cover _extract_scale_rows second except (lines 475-476)."""
+        # Chunk has model/score/rank keys but body is broken JSON.
+        chunk = '11:{"model":"x","score":"y","rank":1,'
+        import json as _json
+        html = '<script>self.__next_f.push([1,{}])</script>'.format(_json.dumps(chunk))
+        rows = benchmark_sources._extract_scale_rows(html)
+        assert rows == []
+
+    def test_page_missing_axis_raises(self):
+        """Cover line 508 — page dict missing url/axis/benchmark."""
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({})):
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="must have url, axis"):
+                benchmark_sources.ScaleSealSource("scale", self._cfg(
+                    pages=[{"url": "u", "benchmark": "b"}], min_rows=1)).fetch()
+
+    def test_invalid_axis_raises(self):
+        """Cover line 512 — axis not in valid set."""
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({})):
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="axis must be one of"):
+                benchmark_sources.ScaleSealSource("scale", self._cfg(
+                    pages=[{"url": "u", "axis": "bogus", "benchmark": "b"}], min_rows=1)).fetch()
+
+    def test_non_dict_row_is_skipped(self):
+        """Cover line 524 — non-dict element in rows array."""
+        rows = [
+            {"model": "valid", "version": "", "rank": 1, "score": 50.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+            "not-a-dict",
+            {"model": "also-valid", "version": "", "rank": 2, "score": 60.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+        ]
+        html = _scale_html(rows)
+        url = "https://labs.scale.com/leaderboard/some_page"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})):
+            records = benchmark_sources.ScaleSealSource("scale", self._cfg(
+                pages=[{"url": url, "axis": "coding", "benchmark": "b"}], min_rows=1)).fetch()
+        assert len(records) == 2
+        assert all(r.model_id in ("valid", "also-valid") for r in records)
+
+    def test_effort_only_name_becomes_empty_model_id_is_skipped(self):
+        """Cover line 545 — model name entirely an effort token => empty model_id."""
+        rows = [
+            {"model": "(max)", "version": "", "rank": 1, "score": 80.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+            {"model": "real-model", "version": "", "rank": 2, "score": 75.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+        ]
+        html = _scale_html(rows)
+        url = "https://labs.scale.com/leaderboard/some_page"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})):
+            records = benchmark_sources.ScaleSealSource("scale", self._cfg(
+                pages=[{"url": url, "axis": "coding", "benchmark": "b"}], min_rows=1)).fetch()
+        assert len(records) == 1
+        assert records[0].model_id == "real-model"
