@@ -334,8 +334,11 @@ def test_run_is_killed_restores_on_exception(tmp_path):
         mutated_source="x = 2\n",
     )
 
-    # A non-existent command will raise FileNotFoundError
-    with pytest.raises(FileNotFoundError):
+    # A non-existent command makes the subprocess fail to start. The exact
+    # OSError subclass is environment-dependent (FileNotFoundError in some
+    # environments, PermissionError in the tester-unified gate), so assert the
+    # common parent OSError to keep the test environment-stable.
+    with pytest.raises(OSError):
         mg._run_is_killed(
             str(tmp_path), "my_mod.py", mutant, ["nonexistent_cmd_xyzzy"],
         )
