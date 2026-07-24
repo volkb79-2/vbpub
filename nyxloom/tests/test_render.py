@@ -1364,3 +1364,15 @@ def test_findings_html_nav_and_render_all(sample_project, tmp_state):
 
     index_content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
     assert 'href="findings.html"' in index_content
+
+
+def test_findings_html_skips_broken_project(sample_project, tmp_state, tmp_path):
+    """FN-3 O5: a project in the registry whose config fails to load
+    is silently skipped without breaking render_all."""
+    registry = {
+        "demo": sample_project.root,
+        "broken": tmp_path / "no-such-repo",
+    }
+    render.render_all(registry)  # must not raise
+
+    assert (paths.www_dir() / "findings.html").exists()
