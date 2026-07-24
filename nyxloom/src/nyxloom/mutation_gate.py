@@ -310,14 +310,41 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="source path prefix the gate enforces (default: src/nyxloom)")
     p.add_argument("--repo", default=".",
                    help="git repo/worktree to run diff in (default: cwd)")
-    p.add_argument("--test", required=True,
-                   help="test command, e.g. 'pytest -q -x tests/'")
+    p.add_argument("--test", required=False, default=None,
+                   help="test command, e.g. 'pytest -q -x tests/' (default: derive"
+                        " from changed source files)")
     return p
+
+
+def _derive_test_command(path: str) -> list[str] | None:
+    """Map a changed source file path to its sibling test command.
+
+    Converts `src/nyxloom/<mod>.py` -> `tests/test_<mod>.py` and returns
+    `["python", "-m", "pytest", "-q", "<test_file>"]` if that file exists.
+    Returns None when no sibling test file exists.
+    """
+    mod = path.replace("\\", "/")
+    if not mod.endswith(".py"):
+        return None
+    if "/" in mod:
+        parts = mod.split("/")
+        mod_name = parts[-1]
+    else:
+        mod_name = mod
+    test_file = mod_name.replace(".py", "")
+    if test_file.startswith("test_"):
+        return None
+    test_file = f"tests/test_{test_file}.py"
+    return ["python", "-m", "pytest", "-q", test_file]
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
-    test_argv = shlex.split(args.test)
+    explicit_test = args.test is not None
+    if explicit_test:
+        test_argv = shlex.split(args.test)
+    else:
+        test_argv = None  # derived per-file below
 
     try:
         added = _resolve_added_lines(args.repo, args.base, args.source)
@@ -327,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Build targets: read each changed source file
     targets: dict[str, tuple[str, set[int]]] = {}
+    missing_test: list[str] = []
     for path, lines in added.items():
         full_path = os.path.join(args.repo, path)
         if not os.path.isfile(full_path):
@@ -339,6 +367,43 @@ def main(argv: list[str] | None = None) -> int:
     if not targets:
         print("mutation OK: no changed source files to mutate")
         return 0
+
+    # When --test is omitted, derive the test command per file and check for
+    # missing sibling tests BEFORE mutating.
+    if not explicit_test:
+        derived_test_argv: dict[str, list[str]] = {}
+        for path in targets:
+            cmd = _derive_test_command(path)
+            if cmd is None:
+                missing_test.append(path)
+            else:
+                # Only add if the sibling test file actually exists on disk
+                # (cmd[-1] is the test file path relative to repo)
+                test_file = os.path.join(args.repo, cmd[-1])
+                if os.path.isfile(test_file):
+                    derived_test_argv[path] = cmd
+                else:
+                    missing_test.append(path)
+        if missing_test:
+            missing_test.sort()
+            for mp in missing_test:
+                print(f"mutation-gate FAIL: changed file {mp} has no sibling test file"
+                      " (no test to mutate against)",
+                      file=sys.stderr)
+            return 1
+        # All paths have tests; use a single deduped test command for all mutants
+        all_cmds = list(dict.fromkeys(
+            tuple(cmd) for cmd in derived_test_argv.values()))
+        if len(all_cmds) == 1:
+            test_argv = list(all_cmds[0])
+        else:
+            # Multiple distinct test commands; concatenate the test file args
+            base = ["python", "-m", "pytest", "-q"]
+            test_files = list(dict.fromkeys(
+                cmd[-1] for cmd in derived_test_argv.values()))
+            test_argv = base + test_files
+    # test_argv is now guaranteed to be set (either explicit or derived)
+    assert test_argv is not None
 
     def _run_is_killed_bound(path: str, mutant: Mutant) -> bool:
         return _run_is_killed(args.repo, path, mutant, test_argv)
