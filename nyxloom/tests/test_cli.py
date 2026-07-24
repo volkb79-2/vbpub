@@ -1028,6 +1028,12 @@ def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, mo
     assert routes_path_str in out
 
 
+def test_capability_map_no_subcommand_prints_help(capsys):
+    """Bare `capability-map` (no subcommand) prints help to stderr and returns 2."""
+    exit_code = cli.main(["capability-map"])
+    assert exit_code == 2
+
+
 def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monkeypatch):
     """capability-map refresh --dry-run prints without writing."""
     from nyxloom.capability_map import CapabilityRecord
