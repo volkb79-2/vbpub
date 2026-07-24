@@ -453,10 +453,15 @@ def _extract_scale_rows(html: str) -> list[dict[str, Any]]:
     """Pull the leaderboard row array out of the Next.js RSC flight.
 
     Decodes each ``self.__next_f.push([1,"..."])`` JS string literal with
-    ``json.loads``, finds the chunk containing ``model``/``score``/``rank``
-    keys, and returns the JSON array of row dicts. Returns ``[]`` if no
-    matching chunk is found.
+    ``json.loads``, then scans the decoded chunk for the JSON array of row
+    dicts. On the live site the array is usually NESTED inside a React
+    component tree (``NN:["$","div",null,{...}]``) rather than a bare
+    ``NN:[{...}]`` chunk, so a single greedy ``[{.*}]`` regex over the whole
+    chunk does not yield valid JSON. Instead we try ``JSONDecoder.raw_decode``
+    at every ``[{`` position and return the first array that is a list of
+    dicts carrying ``model``/``score`` keys. Returns ``[]`` if none matches.
     """
+    decoder = json.JSONDecoder()
     for lit in re.findall(r'self\.__next_f\.push\(\[1,(".*?")\]\)', html, re.DOTALL):
         try:
             chunk: str = json.loads(lit)
@@ -464,17 +469,17 @@ def _extract_scale_rows(html: str) -> list[dict[str, Any]]:
             continue
         if '"model"' not in chunk or '"score"' not in chunk or '"rank"' not in chunk:
             continue
-        body = chunk.split(":", 1)[1] if ":" in chunk else chunk
-        # Try the full body first, then a bracketed array within it.
-        for candidate in (body,):
-            m = re.search(r'\[\{.*\}\]', body, re.DOTALL)
-            if m:
-                candidate = m.group(0)
+        for match in re.finditer(r'\[\s*\{', chunk):
             try:
-                data = json.loads(candidate)
-            except Exception:
+                data, _ = decoder.raw_decode(chunk[match.start():])
+            except ValueError:
                 continue
-            if isinstance(data, list) and data and isinstance(data[0], dict) and "model" in data[0]:
+            # Identify the data array by its first element (a row dict with
+            # model+score). Non-dict elements later in the array are tolerated
+            # and skipped per-row in fetch(), matching the original contract.
+            if (isinstance(data, list) and data
+                    and isinstance(data[0], dict)
+                    and "model" in data[0] and "score" in data[0]):
                 return data
     return []
 
@@ -522,7 +527,9 @@ class ScaleSealSource(BenchmarkSource):
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                name = str(row.get("model") or "").strip()
+                # Strip a trailing '*' footnote marker (Scale flags some rows,
+                # e.g. "gpt-5.4 (xHigh)*") so effort parses + model_id stays clean.
+                name = str(row.get("model") or "").strip().rstrip("*").strip()
                 if not name:
                     continue
                 if row.get("deprecated") is True:
