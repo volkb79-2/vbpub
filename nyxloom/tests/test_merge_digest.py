@@ -886,3 +886,381 @@ class TestMergePayloadAdditive:
         assert payload["task_id"] == "ghost"
         assert payload["handoff"]["path"] is None
         assert payload["review"]["verdict"] is None
+
+
+# =========================================================================
+# Degradation / error branches (coverage gate)
+# =========================================================================
+
+def _patch_siblings_local(monkeypatch):
+    """Suppress daemon side-effects for the auto-merge degradation test
+    (mirrors test_auto_merge.py::patch_siblings)."""
+    from nyxloom import lint, notify, render
+    monkeypatch.setattr(render, "render_after_event", lambda registry: None)
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+
+
+class TestDegradationBranches:
+    """Exercise every exception-handler and degradation path so the
+    diff-coverage gate stays at 100%."""
+
+    # ---- cli.cmd_merge try/except (lines 761-764) --------------------
+
+    def test_cli_merge_carver_digest_raises_still_records(
+            self, tmp_state, sample_project, monkeypatch):
+        """When ``carver_digest_payload`` raises inside ``cmd_merge``,
+        the function does NOT crash — ``MERGE_RECORDED`` is still emitted
+        without the ``carver_digest`` key."""
+        import argparse
+        from nyxloom import cli, storage
+        from nyxloom.types import (
+            Actor, ActorKind, Attempt, AttemptState, EventType, Receipt,
+            ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
+        )
+
+        cfg = sample_project
+        root = cfg.root
+        # Create a merge-ready task
+        handoff_rel = "handoff/demo-cover.md"
+        (root / handoff_rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / handoff_rel).write_text(
+            "---\nschema_version: 1\nid: demo-cover\n"
+            "project: demo\ntitle: Cov\ntier: flash-high\n"
+            "input_revision: '0000000'\nsource: {kind: review}\n"
+            "scope:\n  touch: []\noracles: []\ngates: []\n"
+            "escalate_if: []\n---\n")
+        _run(root, "add", handoff_rel)
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "add handoff")
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+
+        tsf = TaskStateFile(
+            schema_version=storage.SCHEMA_VERSION, task_id="demo-cover",
+            project="demo", state=TaskState.MERGE_READY, since=utc_now(),
+            handoff_path=handoff_rel,
+            attempts=[
+                Attempt(attempt_id="att-impl", role=Role.IMPLEMENTER,
+                        state=AttemptState.EXITED,
+                        route=Route(route_id="fake", cli="fake", model="fake"),
+                        started=utc_now()),
+            ],
+        )
+        storage.save_state(tsf)
+
+        # Monkeypatch carver_digest_payload to raise
+        monkeypatch.setattr(
+            merge_digest, "carver_digest_payload",
+            lambda *a, **kw: (_ for _ in ()).throw(ValueError("test error")),
+        )
+
+        args = argparse.Namespace(project="demo", task="demo-cover",
+                                   commit=mc)
+        rc = cli.cmd_merge(args)
+        assert rc == 0, f"cmd_merge should not crash, got rc={rc}"
+
+        events = list(storage.iter_events("demo"))
+        merge_events = [e for e in events
+                        if e.type is EventType.MERGE_RECORDED
+                        and e.task_id == "demo-cover"]
+        assert len(merge_events) >= 1
+        payload = merge_events[-1].payload
+        assert payload.get("merge_commit") == mc
+        assert payload.get("source_kind") == "review"
+        # carver_digest should be absent when the build raised
+        assert "carver_digest" not in payload, (
+            "carver_digest must be absent when the build raised"
+        )
+
+    # ---- daemon._execute_auto_merge try/except (lines 2290-2291) -----
+
+    def test_daemon_auto_merge_carver_digest_raises_still_records(
+            self, tmp_state, sample_project, monkeypatch):
+        """When ``carver_digest_payload`` raises inside the daemon's
+        auto-merge, the ``MERGE_RECORDED`` event is still emitted without
+        ``carver_digest`` (no state/git divergence)."""
+        import dataclasses
+        from nyxloom import daemon as daemon_mod
+        _patch_siblings_local(monkeypatch)
+
+        cfg = sample_project
+        cfg = dataclasses.replace(
+            cfg,
+            policy=dataclasses.replace(cfg.policy,
+                                        merge_mode="guarded-automatic"),
+        )
+        monkeypatch.setattr(
+            type(cfg), "load", classmethod(lambda cls, root: cfg),
+        )
+        root = cfg.root
+        task_id = "demo-P00-cover"
+        _make_branch_with_file(root, f"feat/{task_id}", "cov.txt", "cov\n")
+
+        # Inline _seed_merge_ready: write handoff + seed state
+        handoff_rel = f"handoff/{task_id}.md"
+        (root / handoff_rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / handoff_rel).write_text(
+            "---\nschema_version: 1\n"
+            f"id: {task_id}\n"
+            "project: demo\ntitle: Test package\n"
+            "tier: flash-high\n"
+            "input_revision: '0000000'\n"
+            "source: {kind: roadmap, ref: docs/ROADMAP.md}\n"
+            "scope:\n  touch: [\"src/demo/thing.py\"]\n"
+            "oracles:\n"
+            "  - id: O1\n"
+            "    observable: passes\n"
+            "    negative: fails\n"
+            "    gate: pytest-q\n"
+            "gates: [pytest-q]\n"
+            "escalate_if: [\"a contract cannot be met\"]\n---\n")
+        _run(root, "add", handoff_rel)
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", f"add {task_id}")
+
+        from nyxloom import storage as st
+        from nyxloom.types import (
+            Attempt as _Attempt, AttemptState as _AS,
+            Route as _Route, Role as _Role, TaskState as _TS,
+            TaskStateFile as _TSF, utc_now as _now,
+        )
+        tsf = _TSF(
+            schema_version=st.SCHEMA_VERSION, task_id=task_id,
+            project="demo", state=_TS.CARVED, since=_now(),
+            handoff_path=handoff_rel,
+        )
+        st.append_and_apply(
+            "demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.TASK_CREATED,
+            payload={"statefile": tsf.to_dict()}, task_id=task_id,
+        )
+        cur = st.load_state("demo", task_id)
+        cur.state = _TS.MERGE_READY
+        cur.attempts = [
+            _Attempt(
+                attempt_id="att-impl", role=_Role.IMPLEMENTER,
+                state=_AS.EXITED,
+                route=_Route(route_id="fake-cli", cli="fake",
+                             model="fake-model"),
+                started=_now(), branch=f"feat/{task_id}",
+            ),
+        ]
+        st.save_state(cur)
+
+        monkeypatch.setattr(
+            merge_digest, "carver_digest_payload",
+            lambda *a, **kw: (_ for _ in ()).throw(ValueError("test error")),
+        )
+
+        d = daemon_mod.Daemon({"demo": root})
+        d.run_pass("demo")
+
+        from nyxloom import storage as st
+        events = list(st.iter_events("demo"))
+        merge_events = [e for e in events
+                        if e.type is EventType.MERGE_RECORDED
+                        and e.task_id == task_id]
+        assert len(merge_events) >= 1
+        payload = merge_events[-1].payload
+        assert payload.get("merge_commit") is not None
+        assert payload.get("source_kind") == "review"
+        # carver_digest must be absent when the build raised
+        assert "carver_digest" not in payload, (
+            "carver_digest must be absent when the daemon build raised"
+        )
+
+    # ---- _parse_name_status edge lines 219 / 222 / 227 / 234 ---------
+
+    def test_parse_name_status_empty_line(self):
+        """Empty line → skipped."""
+        assert merge_digest._parse_name_status("\n\n") == []
+
+    def test_parse_name_status_no_tab(self):
+        """Line without tab → skipped (no parts beyond code)."""
+        assert merge_digest._parse_name_status("X") == []
+
+    def test_parse_name_status_unknown_code(self):
+        """Unknown change code ``U`` or ``X`` → skipped."""
+        result = merge_digest._parse_name_status("U\tbad.txt")
+        assert result == []
+
+    def test_parse_name_status_no_path(self):
+        """A valid code with ``len(parts)==1`` (no path after tab) → skipped."""
+        result = merge_digest._parse_name_status("M")
+        assert result == []
+
+    # ---- _parse_numstat edge lines 280 / 283 / 288 / 292 ------------
+
+    def test_parse_numstat_empty_line(self):
+        """Empty line → skipped."""
+        assert merge_digest._parse_numstat("\n") == {
+            "files_changed": 0, "insertions": 0, "deletions": 0,
+        }
+
+    def test_parse_numstat_malformed_line(self):
+        """Line with <3 tab-separated parts → skipped."""
+        result = merge_digest._parse_numstat("1\tfile.py\n")
+        assert result["files_changed"] == 0
+
+    def test_parse_numstat_valueerror_add(self):
+        """Non-numeric add value → treated as 0."""
+        result = merge_digest._parse_numstat("foo\t5\tf.py\n")
+        assert result["insertions"] == 0
+        assert result["deletions"] == 5
+        assert result["files_changed"] == 1
+
+    def test_parse_numstat_valueerror_del(self):
+        """Non-numeric delete value → treated as 0."""
+        result = merge_digest._parse_numstat("5\tbar\tf.py\n")
+        assert result["insertions"] == 5
+        assert result["deletions"] == 0
+        assert result["files_changed"] == 1
+
+    # ---- _diff_name_status / _diff_numstat git-failure branches ------
+
+    def test_diff_name_status_first_parent_none(self, tmp_path):
+        """``_diff_name_status`` with a commit that has no parent returns
+        empty list (graceful)."""
+        root = tmp_path / "repo"
+        _init_repo(root)  # single root commit, no parent
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        result = merge_digest._diff_name_status(root, mc)
+        assert result == []
+
+    def test_diff_numstat_first_parent_none(self, tmp_path):
+        """``_diff_numstat`` with a commit that has no parent returns
+        zero stat (graceful)."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        result = merge_digest._diff_numstat(root, mc)
+        assert result == {"files_changed": 0, "insertions": 0,
+                          "deletions": 0}
+
+    def test_diff_name_status_oserror(self, tmp_path, monkeypatch):
+        """``_diff_name_status`` when subprocess.run raises OSError."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("no git")),
+        )
+        result = merge_digest._diff_name_status(root, mc)
+        assert result == []
+
+    def test_diff_numstat_oserror(self, tmp_path, monkeypatch):
+        """``_diff_numstat`` when subprocess.run raises OSError."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("no git")),
+        )
+        result = merge_digest._diff_numstat(root, mc)
+        assert result == {"files_changed": 0, "insertions": 0,
+                          "deletions": 0}
+
+    # ---- _git_rev_parse / _git_show / _repo_root OSError branches ----
+
+    def test_git_rev_parse_oserror(self, tmp_path, monkeypatch):
+        """``_git_rev_parse`` when subprocess.run raises OSError."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError()),
+        )
+        result = merge_digest._git_rev_parse(tmp_path, "HEAD")
+        assert result is None
+
+    def test_git_show_oserror(self, tmp_path, monkeypatch):
+        """``_git_show`` when subprocess.run raises OSError."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError()),
+        )
+        result = merge_digest._git_show(tmp_path, "HEAD", "f.py")
+        assert result is None
+
+    def test_repo_root_oserror(self, tmp_path, monkeypatch):
+        """``_repo_root`` when subprocess.run raises OSError falls back
+        to *root*."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError()),
+        )
+        result = merge_digest._repo_root(tmp_path)
+        assert result == str(tmp_path)
+
+    # ---- _build_handoff edge: ./ prefix (line 338) -------------------
+
+    def test_handoff_normalize_dot_slash(self, tmp_path):
+        """Handoff path with ``./`` prefix is normalised."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        (root / "hf.md").write_text(
+            "---\ntitle: T\ninput_revision: r1\n---\n")
+        _run(root, "add", "hf.md")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "add hf")
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        cfg = _make_cfg(root)
+
+        tsf = _statefile_for("P1", "./hf.md")  # path starts with ./
+        digest = merge_digest.build_merge_digest(cfg, {"P1": tsf}, "P1", mc)
+        assert digest.handoff["path"] == "hf.md"  # normalised
+
+    # ---- _parse_frontmatter_raw edges: no closing / YAML error -------
+
+    def test_frontmatter_no_closing(self, tmp_path):
+        """File with leading ``---`` but no closing ``---`` → frontmatter
+        is None (graceful)."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        (root / "f.md").write_text("---\ntitle: dangling\n")
+        _run(root, "add", "f.md")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "add f")
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        result = merge_digest._parse_frontmatter_raw(root, mc, "f.md")
+        assert result is None
+
+    def test_frontmatter_yaml_error(self, tmp_path):
+        """File with unparseable YAML in frontmatter → None (graceful)."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        (root / "f.md").write_text(
+            "---\ninvalid: !!binary bad\n---\nbody\n")
+        _run(root, "add", "f.md")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "add f")
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        result = merge_digest._parse_frontmatter_raw(root, mc, "f.md")
+        assert result is None
+
+    def test_frontmatter_not_a_dict(self, tmp_path):
+        """File whose frontmatter parses to a list (not dict) → None."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        (root / "f.md").write_text("---\n- item\n- item\n---\nbody\n")
+        _run(root, "add", "f.md")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "add f")
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        result = merge_digest._parse_frontmatter_raw(root, mc, "f.md")
+        assert result is None
+
+    # ---- _extract_ids fm None (line 539) -----------------------------
+
+    def test_extract_ids_no_frontmatter(self, tmp_path):
+        """``_extract_ids`` when the committed file has no frontmatter
+        → returns empty set (no crash)."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        (root / "plain.md").write_text("just plain body\n")
+        _run(root, "add", "plain.md")
+        _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "add plain")
+        mc = _run(root, "rev-parse", "HEAD").stdout.strip()
+        result = merge_digest._extract_ids(root, mc, "plain.md")
+        assert result == set()
