@@ -775,6 +775,40 @@ features:
         assert digest.review["attempt_id"] is None
 
 
+    # ---- regression: receipt with result=None -----------------------
+
+    def test_review_receipt_result_none(self, tmp_path):
+        """A REVIEW_INDEPENDENT attempt whose receipt has ``result=None``
+        does NOT raise — the review block degrades to all-None instead
+        of crashing with ``AttributeError`` (guard at ~line 427 merges)."""
+        root = tmp_path / "repo"
+        _init_repo(root)
+        mc = _create_merge_scenario(root)
+        cfg = _make_cfg(root)
+
+        tsf = _statefile_for("demo-P99", "handoff/demo-P01-sample.md")
+        tsf.attempts = [
+            Attempt(
+                attempt_id="rev-none",
+                role=Role.REVIEW_INDEPENDENT,
+                state=AttemptState.EXITED,
+                route=Route(route_id="fake-cli", cli="fake", model="fake"),
+                started=utc_now(),
+                receipt=Receipt(
+                    result=None,  # type: ignore[arg-type]
+                    exit_code=0,
+                ),
+            ),
+        ]
+        digest = merge_digest.build_merge_digest(
+            cfg, {"demo-P99": tsf}, "demo-P99", mc,
+        )
+        assert digest.review["verdict"] is None
+        assert digest.review["attempt_id"] is None
+        assert digest.review["report_path"] is None
+        assert digest.review["report_sha256"] is None
+
+
 # =========================================================================
 # Integration: existing merge tests still pass with additive payload
 # =========================================================================

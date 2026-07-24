@@ -424,7 +424,9 @@ def _build_review(
     # a receipt.
     rev_attempt = None
     for att in reversed(tsf.attempts):
-        if att.role == Role.REVIEW_INDEPENDENT and att.receipt is not None:
+        if (att.role == Role.REVIEW_INDEPENDENT
+                and att.receipt is not None
+                and att.receipt.result is not None):
             rev_attempt = att
             break
 
