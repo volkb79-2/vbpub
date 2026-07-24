@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 import urllib.parse
 import urllib.request
@@ -78,6 +79,14 @@ def _fetch_json(url: str, *, headers: dict[str, str] | None = None,
         url, headers={"Accept": "application/json", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+def _fetch_text(url: str, *, headers: dict[str, str] | None = None,
+                timeout: float = _HTTP_TIMEOUT) -> str:
+    """HTTP GET returning the decoded response body (NOT JSON-parsed)."""
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
 
 def _fetch_source_json(name: str, url: str, *, headers: dict[str, str] | None = None,
@@ -434,6 +443,117 @@ class OpenRouterBenchmarksSource(BenchmarkSource):
                 context_length=_as_int(model.get("context_length")),
                 benchmark="openrouter", version=None, effort=None,
                 raw={"model": model, "scores": rows}))
+        return out
+
+
+EFFORT_TOKENS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max", "minimal"})
+
+
+def _extract_scale_rows(html: str) -> list[dict[str, Any]]:
+    """Pull the leaderboard row array out of the Next.js RSC flight.
+
+    Decodes each ``self.__next_f.push([1,"..."])`` JS string literal with
+    ``json.loads``, finds the chunk containing ``model``/``score``/``rank``
+    keys, and returns the JSON array of row dicts. Returns ``[]`` if no
+    matching chunk is found.
+    """
+    for lit in re.findall(r'self\.__next_f\.push\(\[1,(".*?")\]\)', html, re.DOTALL):
+        try:
+            chunk: str = json.loads(lit)
+        except Exception:
+            continue
+        if '"model"' not in chunk or '"score"' not in chunk or '"rank"' not in chunk:
+            continue
+        body = chunk.split(":", 1)[1] if ":" in chunk else chunk
+        # Try the full body first, then a bracketed array within it.
+        for candidate in (body,):
+            m = re.search(r'\[\{.*\}\]', body, re.DOTALL)
+            if m:
+                candidate = m.group(0)
+            try:
+                data = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(data, list) and data and isinstance(data[0], dict) and "model" in data[0]:
+                return data
+    return []
+
+
+@register_kind("scale-seal")
+class ScaleSealSource(BenchmarkSource):
+    """Scale SEAL leaderboard benchmark source.
+
+    Fetches Next.js server-rendered HTML pages from ``labs.scale.com/leaderboard/<name>``
+    and extracts per-model scores from the embedded RSC flight data.
+    """
+
+    kind = "scale-seal"
+
+    def fetch(self) -> list[BenchmarkRecord]:
+        pages = self.cfg.get("pages")
+        if not isinstance(pages, list) or not pages:
+            raise BenchmarkSourceError(
+                f"benchmark source {self.name!r}: pages must be a non-empty list")
+        min_rows = int(self.cfg.get("min_rows", 5))
+        user_agent = str(self.cfg.get("user_agent", "Mozilla/5.0 (X11; Linux x86_64)"))
+
+        out: list[BenchmarkRecord] = []
+        for page in pages:
+            url = page.get("url")
+            axis = page.get("axis")
+            benchmark = page.get("benchmark")
+            version = page.get("version")
+
+            if not url or not axis or not benchmark:
+                raise BenchmarkSourceError(
+                    f"benchmark source {self.name!r}: each page must have url, axis, and benchmark")
+
+            if axis not in ("intelligence", "coding", "agentic"):
+                raise BenchmarkSourceError(
+                    f"benchmark source {self.name!r}: axis must be one of intelligence/coding/agentic")
+
+            html = _fetch_text(url, headers={"User-Agent": user_agent})
+            rows = _extract_scale_rows(html)
+            if len(rows) < min_rows:
+                raise BenchmarkSourceError(
+                    f"benchmark source {self.name!r}: page {url!r} yielded {len(rows)} rows "
+                    f"(min_rows={min_rows})")
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("model") or "").strip()
+                if not name:
+                    continue
+                if row.get("deprecated") is True:
+                    continue
+                score = _as_float(row.get("score"))
+                if score is None:
+                    continue
+
+                # Parse effort from trailing parenthesised token at end of name.
+                effort: str | None = None
+                model_id: str = name
+                m = re.search(r'\s*\(([^)]+)\)\s*$', name)
+                if m:
+                    token = m.group(1).strip().lower()
+                    if token in EFFORT_TOKENS:
+                        effort = token
+                        model_id = name[:m.start()].strip()
+
+                if not model_id:
+                    continue
+
+                out.append(BenchmarkRecord(
+                    model_id=model_id, source=self.name,
+                    scores={axis: score},
+                    price_input=None, price_output=None,
+                    context_length=None,
+                    benchmark=benchmark,
+                    version=version,
+                    effort=effort,
+                    raw=dict(row)))
+
         return out
 
 
