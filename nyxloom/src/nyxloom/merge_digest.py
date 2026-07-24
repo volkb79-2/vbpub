@@ -218,7 +218,7 @@ def _parse_name_status(raw: str) -> list[dict[str, str]]:
         if not line:
             continue
         parts = line.split("\t")
-        if not parts:
+        if not parts:  # pragma: no cover -- unreachable: a non-empty stripped line always splits to >=1 element
             continue
         raw_code = parts[0]
         # Normalise change code: R<score> -> R
