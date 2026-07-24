@@ -87,7 +87,7 @@ from nyxloom.reconcile import (
 )
 from nyxloom.types import (
     TASK_TRANSITIONS, TERMINAL_TASK_STATES, RESERVED_ROLES,
-    Actor, ActorKind, Attempt, AttemptState, Event, EventType, Frontmatter,
+    Actor, ActorKind, Attempt, AttemptState, CarverStatus, Event, EventType, Frontmatter,
     Receipt, ReceiptResult, Role, Route, Scope, Source, TaskState,
     TaskStateFile,
 )
@@ -617,6 +617,18 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.DAEMON_STOPPED,
     EventType.TICK_ERROR,
     EventType.CONFIG_CHANGED,
+    # F018 P1 2026-07-24 (plan-long-running-carver.md §2.2): audit-only carver
+    # session events — no TaskStateFile projection. Consumed by the pure
+    # carver_session.project_session projector, never by storage.apply_event.
+    # See carver_session.py.
+    EventType.CARVER_SESSION_STARTED,
+    EventType.CARVER_SESSION_RESUMED,
+    EventType.CARVER_CONTEXT_CONSUMED,
+    EventType.CARVER_PROPOSAL_RECORDED,
+    EventType.CARVER_COMPACTION_REQUESTED,
+    EventType.CARVER_COMPACTION_FINISHED,
+    EventType.CARVER_SESSION_ROTATED,
+    EventType.CARVER_SESSION_DEGRADED,
 })
 
 
