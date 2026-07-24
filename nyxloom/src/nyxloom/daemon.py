@@ -1921,6 +1921,13 @@ class Daemon:
             return sorted(impl, key=lambda g: g.gate_id)[0]
         return None
 
+    def _select_mutation_gate(self, cfg: ProjectConfig) -> GateDef | None:
+        """Return the lowest-gate_id gate with phase == 'mutation', or None."""
+        mutation = [g for g in cfg.gates.values() if g.phase == "mutation"]
+        if mutation:
+            return sorted(mutation, key=lambda g: g.gate_id)[0]
+        return None
+
     def _post_merge_worktree_value(self, cfg: ProjectConfig) -> str:
         """The {worktree} substitution for a gate re-run against the
         already-MERGED default branch (as opposed to a feature-branch
@@ -2204,6 +2211,38 @@ class Daemon:
                     events.append(self._transition(project, cfg, states, task_id,
                         TaskState.REVIEW_REJECTED,
                         f"pre-merge gate failed (exit {exit_code}); not published"))
+                    return events
+
+        # F017: opt-in deterministic MUTATION gate on the same scratch merge tree,
+        # after the coverage gate. A surviving mutant on a changed line is a hollow
+        # test -> route back to REVIEW_REJECTED, never publish. Skipped entirely
+        # when policy.mutation_gate is False (default) or no phase=="mutation" gate
+        # is declared. Mirrors the D-CORRECT-1 block above.
+        if getattr(cfg.policy, "mutation_gate", False):
+            mgate = self._select_mutation_gate(cfg)
+            if mgate is not None:
+                margv = [tok.replace("{worktree}", str(scratch)) for tok in mgate.argv]
+                mstarted = utc_now()
+                try:
+                    mproc = subprocess.run(margv, cwd=str(scratch), capture_output=True,
+                                           text=True, timeout=mgate.timeout_seconds)
+                    mexit = mproc.returncode
+                except subprocess.TimeoutExpired:
+                    mexit = 124
+                except OSError:
+                    mexit = 127
+                mresult = GateResult(gate_id=mgate.gate_id, phase="mutation",
+                    commit=new_commit, exit_code=mexit, started=mstarted,
+                    ended=utc_now(), environment=mgate.environment)
+                events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
+                    {"gate_result": mresult.to_dict()}, task_id=task_id))
+                if mexit != 0:
+                    subprocess.run(
+                        ["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                        capture_output=True, text=True)
+                    events.append(self._transition(project, cfg, states, task_id,
+                        TaskState.REVIEW_REJECTED,
+                        f"mutation gate failed (exit {mexit}); not published"))
                     return events
 
         subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],

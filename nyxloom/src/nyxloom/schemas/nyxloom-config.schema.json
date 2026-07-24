@@ -37,7 +37,7 @@
         "required": ["argv", "phase", "timeout_seconds"],
         "properties": {
           "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-          "phase": {"enum": ["implementation", "review", "pre-merge", "post-merge"]},
+          "phase": {"enum": ["implementation", "review", "pre-merge", "post-merge", "mutation"]},
           "timeout_seconds": {"type": "integer", "minimum": 1},
           "environment": {"type": "string", "minLength": 1}
         }
@@ -78,7 +78,8 @@
         "carve_authority": {"enum": ["branch", "main", "files"]},
         "headroom_warn": {"type": "integer", "minimum": 0},
         "test_health_interval_days": {"type": "integer", "minimum": 0},
-        "pre_merge_gate": {"type": "boolean"}
+        "pre_merge_gate": {"type": "boolean"},
+        "mutation_gate": {"type": "boolean"}
       }
     },
     "notify": {

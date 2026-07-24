@@ -153,6 +153,10 @@ class Policy:
     # in the scratch worktree, BEFORE the ref is published. True by default
     # (safety), settable per-project.
     pre_merge_gate: bool = True
+    # F017 2026-07-24: opt-in deterministic mutation gate on the merged tree
+    # in the scratch worktree, after the coverage gate, before publish. False
+    # by default (expensive: re-runs tests per mutant).
+    mutation_gate: bool = False
 
 
 @dataclass

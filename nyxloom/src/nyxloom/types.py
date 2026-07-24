@@ -509,7 +509,7 @@ class Attempt(_Serde):
 @dataclass
 class GateResult(_Serde):
     gate_id: str
-    phase: str                     # implementation|review|pre-merge|post-merge
+    phase: str                     # implementation|review|pre-merge|post-merge|mutation
     commit: str
     exit_code: int
     started: datetime

@@ -553,3 +553,118 @@ def test_arg_parser_defaults():
         "main", "src/nyxloom", "."
     )
     assert args.test == "pytest -x"
+
+
+# --------------------------------------------------------------------------- #
+# _derive_test_command — sibling test derivation (F017)
+# --------------------------------------------------------------------------- #
+
+def test_derive_test_command_derives_sibling():
+    """src/nyxloom/foo.py -> tests/test_foo.py."""
+    cmd = mg._derive_test_command("src/nyxloom/foo.py")
+    assert cmd == ["python", "-m", "pytest", "-q", "tests/test_foo.py"]
+
+
+def test_derive_test_command_deep_module():
+    """A deeper path still takes the last component."""
+    cmd = mg._derive_test_command("src/nyxloom/sub/mod.py")
+    assert cmd == ["python", "-m", "pytest", "-q", "tests/test_mod.py"]
+
+
+def test_derive_test_command_no_py_suffix():
+    """A path without .py returns None."""
+    assert mg._derive_test_command("src/nyxloom/data.json") is None
+
+
+def test_derive_test_command_already_test():
+    """A path starting with test_ returns None (test files have no test-of-test)."""
+    assert mg._derive_test_command("tests/test_foo.py") is None
+
+
+def test_derive_test_command_windows_path():
+    """Windows backslash paths are normalized."""
+    cmd = mg._derive_test_command("src\\nyxloom\\bar.py")
+    assert cmd == ["python", "-m", "pytest", "-q", "tests/test_bar.py"]
+
+
+# --------------------------------------------------------------------------- #
+# main — derivation mode (no --test)
+# --------------------------------------------------------------------------- #
+
+def test_main_derived_test_finds_sibling(monkeypatch, tmp_path, capsys):
+    """Omitting --test derives the test command from the changed source file;
+    when the sibling test exists, mutation runs against it."""
+    repo = _make_small_repo(tmp_path)
+    monkeypatch.setattr(
+        cg, "_resolve_base",
+        lambda repo_arg, base: "HEAD",
+    )
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {
+            "src/nyxloom/hello.py": {1},
+        },
+    )
+    rc = mg.main([
+        "--repo", str(repo),
+        # no --test → derive
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "mutation OK" in out
+
+
+def test_main_derived_test_missing_sibling_fails(monkeypatch, tmp_path, capsys):
+    """Omitting --test when a changed source file has NO sibling test file
+    causes a nonzero exit with a message naming the file — never a silent
+    whole-suite run."""
+    repo = _make_small_repo(tmp_path)
+    # Add a source file WITH NO sibling test
+    src_dir = repo / "src" / "nyxloom"
+    (src_dir / "calc.py").write_text("def is_positive(x):\n    return x > 0\n")
+
+    monkeypatch.setattr(
+        cg, "_resolve_base",
+        lambda repo_arg, base: "HEAD",
+    )
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {
+            "src/nyxloom/calc.py": {2},
+        },
+    )
+    rc = mg.main([
+        "--repo", str(repo),
+        # no --test → derive (no test/calc.py exists)
+    ])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "src/nyxloom/calc.py" in err
+    assert "no sibling test file" in err
+
+
+def test_main_explicit_test_overrides_derivation(monkeypatch, tmp_path, capsys):
+    """When --test is given explicitly, derivation is NOT used — the explicit
+    command runs as-is, even if the sibling test is missing."""
+    repo = _make_small_repo(tmp_path)
+    src_dir = repo / "src" / "nyxloom"
+    (src_dir / "calc.py").write_text("def is_positive(x):\n    return x > 0\n")
+
+    monkeypatch.setattr(
+        cg, "_resolve_base",
+        lambda repo_arg, base: "HEAD",
+    )
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {
+            "src/nyxloom/calc.py": {2},
+        },
+    )
+    # explicit --test "false" (exits 1 = mutant killed → pass)
+    rc = mg.main([
+        "--repo", str(repo),
+        "--test", "false",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "mutation OK" in out
