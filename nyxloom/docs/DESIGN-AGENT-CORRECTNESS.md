@@ -188,8 +188,14 @@ writes/validates spine revision N *before* compacting and the carver re-reads it
   ✅ **DONE** (merged `a8772860`): `_execute_auto_merge` gates the merged scratch tree before
   `update-ref`; fail → REVIEW_REJECTED; `policy.pre_merge_gate` (default on).
 - **D-CORRECT-2** — rename `frontier_review` → `review_independent` (decouple name from tier).
-  ⏳ **NEXT** (wide mechanical rename: Role enum + adapters/daemon/reconcile + PRESETS + routing
-  matrix + tests; watch config back-compat for pipelines naming `frontier_review`).
+  ✅ **DONE** (merged `a2c9e50e`): all three string forms renamed (`Role.FRONTIER_REVIEW` →
+  `REVIEW_INDEPENDENT`, value `"frontier-review"` → `"review-independent"`, stage key
+  `frontier_review` → `review_independent`) with narrow read-compat at 3 persistence boundaries
+  (`Role._missing_`, `Routes.for_role` legacy-tier fallback, statefile schema enum accepts both).
+  The four `*_AGENT_TIER` tier constants (decision/intake/assessment/questionnaire) are a SEPARATE
+  tier migration and were intentionally left `"frontier-review"` + guard-tested — a naive rename of
+  those would pass tests yet silently break routing against the live config. pro-max review caught a
+  missed top-level `schemas/statefile.schema.json` duplicate.
 - **D-CORRECT-3** — `triage_class` via a long-running cheap model (typed, safe).
   ⏳ **folds into F018** (same long-running-cheap-agent-emits-typed-judgment pattern as the carver).
 - **D-CORRECT-4** — changed-lines mutation gate (behavior proof).
