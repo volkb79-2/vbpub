@@ -16,7 +16,7 @@ import urllib.request
 import pytest
 import structlog.contextvars
 
-from nyxloom import daemon, intake_chat, lint, log, paths, reconcile, render
+from nyxloom import daemon, findings, intake_chat, lint, log, paths, reconcile, render
 
 
 @pytest.fixture(autouse=True)
@@ -204,4 +204,98 @@ def test_post_intake_get_not_allowed(http_daemon):
     base = f"http://127.0.0.1:{http_daemon.http_port}"
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(f"{base}/api/intake", timeout=5)
+    assert exc.value.code == 405
+
+
+# --------------------------------------------------------------------------
+# FN-6: promote a finding to an interactive intake conversation
+
+def test_promote_advances_intake_seeded_from_finding(http_daemon, monkeypatch):
+    """record a finding, POST /api/finding/promote -> 200, intake_id starts
+    'intake-', and the fake advance_intake received a seeded text containing
+    the finding's title."""
+    calls = []
+
+    def fake_advance_intake(cfg, project, intake_id, user_text):
+        calls.append((project, intake_id, user_text))
+        return "let's discuss this finding"
+
+    monkeypatch.setattr(intake_chat, "advance_intake", fake_advance_intake)
+
+    # Record a finding first; capture its event to compute finding_id
+    # (the daemon may have appended events before this, so the sequence
+    # is not predictable -- use the event's own sequence)
+    ev = findings.record_finding("demo", "generic", title="performance regression",
+                                  body="observed on model-fast v2", task_id="demo-P01")
+    finding_id = f"F-demo-{ev.sequence}"
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "demo",
+                       "finding_id": finding_id}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    resp = urllib.request.urlopen(req, timeout=5)
+    assert resp.status == 200
+    data = json.loads(resp.read())
+    assert data["ok"] is True
+    assert data["reply"] == "let's discuss this finding"
+    assert isinstance(data["intake_id"], str) and data["intake_id"].startswith("intake-")
+
+    assert len(calls) == 1
+    project, intake_id, user_text = calls[0]
+    assert project == "demo"
+    assert "performance regression" in user_text
+
+
+def test_promote_unknown_project_404(http_daemon, monkeypatch):
+    calls = []
+    monkeypatch.setattr(intake_chat, "advance_intake",
+                        lambda *a, **k: calls.append(a) or "x")
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "no-such-project",
+                       "finding_id": "F-x-1"}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 404
+    assert calls == [], "advance_intake must not be called on unknown project"
+
+
+def test_promote_missing_finding_id_400(http_daemon, monkeypatch):
+    calls = []
+    monkeypatch.setattr(intake_chat, "advance_intake",
+                        lambda *a, **k: calls.append(a) or "x")
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "demo"}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 400
+    assert calls == [], "advance_intake must not be called on missing finding_id"
+
+
+def test_promote_unknown_finding_id_404(http_daemon, monkeypatch):
+    calls = []
+    monkeypatch.setattr(intake_chat, "advance_intake",
+                        lambda *a, **k: calls.append(a) or "x")
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "demo",
+                       "finding_id": "F-demo-no-such"}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 404
+    assert calls == [], "advance_intake must not be called on unknown finding_id"
+
+
+def test_promote_get_not_allowed(http_daemon):
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(f"{base}/api/finding/promote", timeout=5)
     assert exc.value.code == 405

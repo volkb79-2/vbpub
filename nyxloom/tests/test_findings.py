@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from nyxloom import findings, storage
-from nyxloom.findings import FINDING_KINDS, Finding, FindingError, record_finding, load_findings
+from nyxloom.findings import FINDING_KINDS, Finding, FindingError, promote_seed_text, record_finding, load_findings
 from nyxloom.types import Actor, ActorKind, EventType, utc_now
 
 
@@ -124,3 +124,39 @@ def test_finding_pushable_false_for_unregistered_kind():
     f = Finding(finding_id="F-x-1", sequence=1, created="2026-07-24T00:00:00+00:00",
                 project="x", kind="dropped_kind", title="t", body="")
     assert f.pushable is False
+
+
+# --------------------------------------------------------------------------
+# FN-6 promote_seed_text
+
+def test_promote_seed_text_full_finding():
+    """Build seed from a Finding with body, fields, and task_id."""
+    f = Finding(
+        finding_id="F-demo-42", sequence=42, created="2026-07-24T00:00:00+00:00",
+        project="demo", kind="generic", title="test finding",
+        body="observed something interesting",
+        fields={"score": 0.95, "model": "deepseek"},
+        task_id="demo-P01",
+    )
+    seed = promote_seed_text(f)
+    assert f.finding_id in seed
+    assert f.kind in seed
+    assert f.title in seed
+    assert "score=0.95" in seed
+    assert "model=deepseek" in seed
+    assert f.task_id in seed
+
+
+def test_promote_seed_text_minimal_finding():
+    """Build seed from a bare Finding with no optional fields."""
+    f = Finding(
+        finding_id="F-demo-1", sequence=1, created="2026-07-24T00:00:00+00:00",
+        project="demo", kind="generic", title="minimal", body="",
+    )
+    seed = promote_seed_text(f)
+    assert "Finding F-demo-1" in seed
+    assert "[generic]" in seed
+    assert "minimal" in seed
+    # optional branches skipped: no body, fields, task_id
+    # the seed is just two lines (header + finding line)
+    assert seed.count("\n") == 1

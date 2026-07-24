@@ -1753,7 +1753,9 @@ def _render_findings(www: Path, registry: dict[str, Path]) -> None:
       <div class="finding-card severity-{html.escape(f.severity)}" data-kind="{html.escape(f.kind)}">
         <h3>{html.escape(f.title)} <small>({html.escape(f.kind)} · {html.escape(f.project)})</small></h3>
         <p class="finding-body">{html.escape(f.body)}</p>
-        <p class="finding-meta">{html.escape(f.created)}{task_link}</p>
+        <p class="finding-meta">{html.escape(f.created)}{task_link}
+          <button type="button" onclick="promoteFinding('{html.escape(f.project)}', '{html.escape(f.finding_id)}')">Discuss / Act</button>
+        </p>
       </div>
     """)
 
@@ -1763,8 +1765,24 @@ def _render_findings(www: Path, registry: dict[str, Path]) -> None:
     </div>
     """
 
-    html_content = _html_head("Findings") + content + _html_foot()
+    html_content = _html_head("Findings") + content + _html_foot() + _FINDINGS_JS
     (www / "findings.html").write_text(html_content, encoding="utf-8")
+
+
+_FINDINGS_JS = """
+<script>
+function promoteFinding(project, findingId) {
+    fetch('/api/finding/promote', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({project: project, finding_id: findingId})
+    }).then(function(resp) {
+        if (resp.ok) { window.location = 'intake.html'; return; }
+        resp.json().then(function(d){ alert('promote failed: ' + (d.error || ('http '+resp.status))); })
+            .catch(function(){ alert('promote failed: http ' + resp.status); });
+    }).catch(function(err){ alert('promote failed: ' + String(err)); });
+}
+</script>
+"""
 
 
 _INTAKE_JS = """
