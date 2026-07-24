@@ -577,9 +577,21 @@ _SCALE_SEAL_DEFAULT_CONFIG = {
     ],
 }
 
+# DeepSWE per-effort coding curve (committed seed). Resolve the seed path
+# relative to THIS module (not the cwd) so a `capability-map refresh` works
+# from any working directory — the seed ships in the source tree at
+# nyxloom/data/benchmarks/deepswe-v1.1.toml.
+_DEEPSWE_DEFAULT_CONFIG = {
+    "kind": "static",
+    "enabled": True,
+    "path": str(Path(__file__).resolve().parent.parent.parent
+                / "data" / "benchmarks" / "deepswe-v1.1.toml"),
+}
+
 DEFAULT_SOURCES: dict[str, dict[str, Any]] = {
     "artificial-analysis": _AA_DEFAULT_CONFIG,
     "scale-seal": _SCALE_SEAL_DEFAULT_CONFIG,
+    "deepswe-v1.1": _DEEPSWE_DEFAULT_CONFIG,
 }
 
 

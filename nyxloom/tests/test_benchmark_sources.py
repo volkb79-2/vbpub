@@ -874,13 +874,25 @@ class TestDefaultSources:
         assert pages[2] == {"url": "https://labs.scale.com/leaderboard/swe_bench_pro_private",
                             "axis": "coding", "benchmark": "scale-swe-bench-pro-private", "version": None}
 
+    def test_deepswe_static_default_config(self):
+        from pathlib import Path
+        cfg = benchmark_sources.DEFAULT_SOURCES.get("deepswe-v1.1")
+        assert cfg is not None
+        assert cfg["kind"] == "static"
+        assert cfg["enabled"] is True
+        assert cfg["path"].endswith("data/benchmarks/deepswe-v1.1.toml")
+        # the module-relative path must resolve to the committed seed file
+        assert Path(cfg["path"]).is_file()
+
     def test_default_config_contains_both_sources(self):
         cfg = benchmark_sources.BenchmarkConfig.default()
         sources = cfg.sources
         assert "artificial-analysis" in sources
         assert "scale-seal" in sources
+        assert "deepswe-v1.1" in sources
 
     def test_benchmark_config_default_sources_enabled(self):
         cfg = benchmark_sources.BenchmarkConfig.default()
         assert cfg.sources["artificial-analysis"]["enabled"] is True
         assert cfg.sources["scale-seal"]["enabled"] is True
+        assert cfg.sources["deepswe-v1.1"]["enabled"] is True
