@@ -855,3 +855,32 @@ class TestScaleSealSource:
                 pages=[{"url": url, "axis": "coding", "benchmark": "b"}], min_rows=1)).fetch()
         assert len(records) == 1
         assert records[0].model_id == "real-model"
+
+
+class TestDefaultSources:
+    """DEFAULT_SOURCES includes both artificial-analysis and scale-seal."""
+
+    def test_scale_seal_default_config(self):
+        cfg = benchmark_sources.DEFAULT_SOURCES.get("scale-seal")
+        assert cfg is not None
+        assert cfg["kind"] == "scale-seal"
+        assert cfg["enabled"] is True
+        pages = cfg["pages"]
+        assert len(pages) == 3
+        assert pages[0] == {"url": "https://labs.scale.com/leaderboard/mcp_atlas",
+                            "axis": "agentic", "benchmark": "scale-mcp-atlas", "version": None}
+        assert pages[1] == {"url": "https://labs.scale.com/leaderboard/swe_bench_pro_public",
+                            "axis": "coding", "benchmark": "scale-swe-bench-pro-public", "version": None}
+        assert pages[2] == {"url": "https://labs.scale.com/leaderboard/swe_bench_pro_private",
+                            "axis": "coding", "benchmark": "scale-swe-bench-pro-private", "version": None}
+
+    def test_default_config_contains_both_sources(self):
+        cfg = benchmark_sources.BenchmarkConfig.default()
+        sources = cfg.sources
+        assert "artificial-analysis" in sources
+        assert "scale-seal" in sources
+
+    def test_benchmark_config_default_sources_enabled(self):
+        cfg = benchmark_sources.BenchmarkConfig.default()
+        assert cfg.sources["artificial-analysis"]["enabled"] is True
+        assert cfg.sources["scale-seal"]["enabled"] is True

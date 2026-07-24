@@ -564,8 +564,22 @@ _AA_DEFAULT_CONFIG = {
     "enabled": True,
 }
 
+_SCALE_SEAL_DEFAULT_CONFIG = {
+    "kind": "scale-seal",
+    "enabled": True,
+    "pages": [
+        {"url": "https://labs.scale.com/leaderboard/mcp_atlas",
+         "axis": "agentic", "benchmark": "scale-mcp-atlas", "version": None},
+        {"url": "https://labs.scale.com/leaderboard/swe_bench_pro_public",
+         "axis": "coding", "benchmark": "scale-swe-bench-pro-public", "version": None},
+        {"url": "https://labs.scale.com/leaderboard/swe_bench_pro_private",
+         "axis": "coding", "benchmark": "scale-swe-bench-pro-private", "version": None},
+    ],
+}
+
 DEFAULT_SOURCES: dict[str, dict[str, Any]] = {
     "artificial-analysis": _AA_DEFAULT_CONFIG,
+    "scale-seal": _SCALE_SEAL_DEFAULT_CONFIG,
 }
 
 
