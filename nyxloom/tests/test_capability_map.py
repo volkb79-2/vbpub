@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 import structlog.contextvars
 
-from nyxloom import capability_map, config, free_models, log
+from nyxloom import benchmark_store, capability_map, config, free_models, log
 from nyxloom.band_thresholds import DEFAULT_CUTOFFS
 from nyxloom.benchmark_sources import BenchmarkRecord
 
@@ -549,3 +549,64 @@ class TestRefreshCatalog:
         # default config is role_gating="operator" with no grants -> no role
         assert cat.may_review is False
         assert cat.may_carve is False
+
+    def test_refresh_catalog_accumulates_and_persists_store(self, tmp_path, monkeypatch):
+        store_path = tmp_path / "benchmark-store.toml"
+        records = [_rec(model_id="model-a"), _rec(model_id="model-b")]
+
+        def fetch_all(sources):
+            return records, {}
+
+        monkeypatch.setattr(capability_map.benchmark_sources, "fetch_all", fetch_all)
+
+        catalog, errors = capability_map.refresh_catalog(
+            capability_map.CapabilityMapConfig.default(),
+            store_path=store_path,
+            now="T1",
+        )
+
+        assert errors == {}
+        assert store_path.exists()
+        stored = benchmark_store.load_store(store_path)
+        assert {row.model_id for row in stored} == {"model-a", "model-b"}
+        assert len(catalog) == 2
+
+    def test_refresh_catalog_retains_unseen_rows_across_refreshes(
+        self, tmp_path, monkeypatch
+    ):
+        store_path = tmp_path / "benchmark-store.toml"
+        responses = iter([
+            ([_rec(model_id="model-a"), _rec(model_id="model-b")], {}),
+            ([_rec(model_id="model-a")], {}),
+        ])
+
+        def fetch_all(sources):
+            return next(responses)
+
+        monkeypatch.setattr(capability_map.benchmark_sources, "fetch_all", fetch_all)
+        cfg = capability_map.CapabilityMapConfig.default()
+
+        capability_map.refresh_catalog(cfg, store_path=store_path, now="T1")
+        catalog, errors = capability_map.refresh_catalog(
+            cfg, store_path=store_path, now="T2")
+
+        assert errors == {}
+        stored = {row.model_id: row for row in benchmark_store.load_store(store_path)}
+        assert stored["model-b"].present_upstream is False
+        assert {record.model_id for record in catalog} == {"model-a", "model-b"}
+
+    def test_refresh_catalog_without_store_uses_fresh_records(self, tmp_path, monkeypatch):
+        store_path = tmp_path / "benchmark-store.toml"
+        fresh = [_rec(model_id="fresh-model")]
+
+        def fetch_all(sources):
+            return fresh, {}
+
+        monkeypatch.setattr(capability_map.benchmark_sources, "fetch_all", fetch_all)
+
+        catalog, errors = capability_map.refresh_catalog(
+            capability_map.CapabilityMapConfig.default())
+
+        assert errors == {}
+        assert [record.model_id for record in catalog] == ["fresh-model"]
+        assert not store_path.exists()
