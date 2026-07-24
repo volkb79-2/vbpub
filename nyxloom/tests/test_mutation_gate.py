@@ -668,3 +668,73 @@ def test_main_explicit_test_overrides_derivation(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "mutation OK" in out
+
+
+def test_derive_test_command_bare_filename_no_slash():
+    """A bare filename (no directory separator) hits the else branch
+    of the '/' check."""
+    cmd = mg._derive_test_command("foo.py")
+    assert cmd == ["python", "-m", "pytest", "-q", "tests/test_foo.py"]
+
+
+def test_main_derived_test_non_py_target_hits_missing_append(
+        monkeypatch, tmp_path, capsys):
+    """A changed file that is not a .py file causes _derive_test_command
+    to return None, hitting the cmd is None -> missing_test.append branch."""
+    repo = _make_small_repo(tmp_path)
+    # Write data.json so it exists on disk and enters the target loop
+    src_dir = repo / "src" / "nyxloom"
+    (src_dir / "data.json").write_text('{"key": "value"}\n')
+    monkeypatch.setattr(
+        cg, "_resolve_base",
+        lambda repo_arg, base: "HEAD",
+    )
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {
+            "src/nyxloom/hello.py": {1},
+            "src/nyxloom/data.json": {1},
+        },
+    )
+    rc = mg.main([
+        "--repo", str(repo),
+    ])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "src/nyxloom/data.json" in err
+    assert "no sibling test file" in err
+
+
+def test_main_derived_test_multiple_modules_concatenates(
+        monkeypatch, tmp_path, capsys):
+    """Two changed source modules, each with a sibling test file, produce
+    a combined test command when the modules differ."""
+    repo = _make_small_repo(tmp_path)
+    # Add a second source module. Target line 1 has no mutable operators,
+    # so no mutants are generated regardless of test outcome.
+    src_dir = repo / "src" / "nyxloom"
+    (src_dir / "calc.py").write_text("def is_positive(x):\n    return x > 0\n")
+    test_dir = repo / "tests"
+    (test_dir / "test_calc.py").write_text(
+        "from src.nyxloom.calc import is_positive\n"
+        "def test_is_positive():\n"
+        "    assert is_positive(1)\n"
+    )
+    monkeypatch.setattr(
+        cg, "_resolve_base",
+        lambda repo_arg, base: "HEAD",
+    )
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {
+            "src/nyxloom/hello.py": {1},
+            # calc.py line 1 = "def is_positive(x):" has no mutable ops
+            "src/nyxloom/calc.py": {1},
+        },
+    )
+    rc = mg.main([
+        "--repo", str(repo),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "mutation OK" in out

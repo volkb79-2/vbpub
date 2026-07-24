@@ -5276,3 +5276,91 @@ def test_mutation_gate_no_declared_gate_skips(
                             if e.type is EventType.GATE_FINISHED
                             and e.payload.get("gate_result", {}).get("phase") == "mutation"]
     assert len(mutation_gate_events) == 0
+
+
+def test_mutation_gate_timeout_expired(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """mutation_gate=True + subprocess.TimeoutExpired -> exit_code 124,
+    task REVIEW_REJECTED, main unchanged."""
+    import dataclasses
+    from nyxloom import config as config_mod
+    from nyxloom.config import GateDef
+
+    cfg = sample_project
+    cfg2 = dataclasses.replace(cfg,
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic",
+                                    mutation_gate=True, pre_merge_gate=False),
+        gates={"mut-gate": GateDef(gate_id="mut-gate", argv=["sleep", "5"],
+                                    phase="mutation", timeout_seconds=1)},
+    )
+    monkeypatch.setattr(config_mod.ProjectConfig, "load", classmethod(lambda cls, root: cfg2))
+
+    task_id = "demo-P90"
+    branch = f"feat/{task_id}"
+    _setup_merge_task(cfg, tmp_state, task_id, branch)
+
+    old_commit = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", "main"],
+        capture_output=True, text=True).stdout.strip()
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.REVIEW_REJECTED
+
+    new_commit = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", "main"],
+        capture_output=True, text=True).stdout.strip()
+    assert new_commit == old_commit
+
+    events = list(storage.iter_events("demo"))
+    mg_events = [e for e in events
+                 if e.type is EventType.GATE_FINISHED
+                 and e.payload.get("gate_result", {}).get("phase") == "mutation"]
+    assert len(mg_events) == 1
+    assert mg_events[0].payload["gate_result"]["exit_code"] == 124
+
+
+def test_mutation_gate_oserror(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """mutation_gate=True + OSError -> exit_code 127, task REVIEW_REJECTED,
+    main unchanged."""
+    import dataclasses
+    from nyxloom import config as config_mod
+    from nyxloom.config import GateDef
+
+    cfg = sample_project
+    cfg2 = dataclasses.replace(cfg,
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic",
+                                    mutation_gate=True, pre_merge_gate=False),
+        gates={"mut-gate": GateDef(gate_id="mut-gate", argv=["nonexistent_cmd_xyzzy"],
+                                    phase="mutation", timeout_seconds=10)},
+    )
+    monkeypatch.setattr(config_mod.ProjectConfig, "load", classmethod(lambda cls, root: cfg2))
+
+    task_id = "demo-P89"
+    branch = f"feat/{task_id}"
+    _setup_merge_task(cfg, tmp_state, task_id, branch)
+
+    old_commit = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", "main"],
+        capture_output=True, text=True).stdout.strip()
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.REVIEW_REJECTED
+
+    new_commit = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", "main"],
+        capture_output=True, text=True).stdout.strip()
+    assert new_commit == old_commit
+
+    events = list(storage.iter_events("demo"))
+    mg_events = [e for e in events
+                 if e.type is EventType.GATE_FINISHED
+                 and e.payload.get("gate_result", {}).get("phase") == "mutation"]
+    assert len(mg_events) == 1
+    assert mg_events[0].payload["gate_result"]["exit_code"] == 127
