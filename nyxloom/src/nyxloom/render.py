@@ -596,7 +596,7 @@ def render_all(registry: dict[str, Path]) -> Path:
     # Render decisions.html (P18 2026-07-16: decision-chat bridge)
     _render_decisions(www, registry)
 
-    # Render findings.html (FN-3 2026-07-30: findings dashboard)
+    # Render findings.html (FN-3 2026-07-24: findings dashboard)
     _render_findings(www, registry)
 
     # Render intake.html (P30 2026-07-16: intake-chat bridge)
