@@ -138,6 +138,25 @@ def test_multiple_ops_on_one_line():
     assert "or" in m2_source      # And → Or in third mutant
 
 
+def test_chained_comparison_produces_distinct_mutants():
+    """Chained comparison a < b < c yields two distinct mutants,
+    one for each operator position."""
+    mutants = mg.generate_mutants("x = a < b < c\n", {1})
+    # One Compare node with two Lt ops → two compare-swap mutants
+    assert len(mutants) == 2
+    assert mutants[0].operator == "compare-swap"
+    assert mutants[0].description == "Lt->LtE"
+    assert mutants[1].operator == "compare-swap"
+    assert mutants[1].description == "Lt->LtE"
+    # Each must mutate a different operator position
+    assert "a <= b" in mutants[0].mutated_source
+    assert "b < c" in mutants[0].mutated_source
+    assert "a < b" in mutants[1].mutated_source
+    assert "b <= c" in mutants[1].mutated_source
+    # Verify they are genuinely different
+    assert mutants[0].mutated_source != mutants[1].mutated_source
+
+
 def test_compare_eq_ne_swap():
     """Eq ↔ NotEq swap works."""
     src = "x == y\n"
@@ -403,16 +422,13 @@ def test_main_pass_with_true_command(monkeypatch, tmp_path, capsys):
     assert "mutation OK" in out
 
 
-def test_main_survivor_path(monkeypatch, tmp_path, capsys):
-    """main returns 1 when mutants survive, with SURVIVED lines printed."""
+def test_main_all_killed_passes(monkeypatch, tmp_path, capsys):
+    """All mutants killed (--test false) → pass exit 0, mutation OK."""
     repo = _make_small_repo(tmp_path)
     monkeypatch.setattr(
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
     )
-    # hello.py line 1 is "def greet(name):" — no mutable operators
-    # We need a source file with a mutable operator to test survivor output
-    # Let's modify the approach: point to a new file that has < operator
     src_dir = repo / "src" / "nyxloom"
     (src_dir / "calc.py").write_text(
         "def is_positive(x):\n    return x > 0\n"
@@ -429,7 +445,6 @@ def test_main_survivor_path(monkeypatch, tmp_path, capsys):
         "--test", "false",  # false exits 1 → mutant killed
     ])
     out = capsys.readouterr().out
-    # false always fails, so all mutants are killed — this should pass
     assert rc == 0
     assert "mutation OK" in out
 

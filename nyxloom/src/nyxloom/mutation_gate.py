@@ -88,9 +88,12 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
         return []
 
     # Collect all mutation sites deterministically.
-    # Each site: (sort_key, lineno, operator, description, target_cls_or_value, node_index)
-    # node_index tracks which Nth node of that type on the line (disambiguation).
-    sites: list[tuple[tuple[int, int, int], int, str, str, type | object, int]] = []
+    # Each site: (sort_key, lineno, operator, description, target_cls_or_value,
+    #             node_idx, op_idx_or_0)
+    # node_idx tracks which Nth node of that type on the line (disambiguation).
+    # op_idx_or_0 is the operator index within a Compare node's .ops list;
+    # 0 for BoolOp/Constant (ignored).
+    sites: list[tuple[tuple[int, int, int], int, str, str, type | object, int, int]] = []
 
     # Per-line counters for disambiguation
     _compare_idx: dict[int, int] = {}
@@ -112,7 +115,8 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
                             "compare-swap",
                             f"{op_cls.__name__}->{target_cls.__name__}",
                             target_cls,
-                            idx,  # which compare node on this line
+                            idx,   # which compare node on this line
+                            i,     # which operator within .ops
                         ))
             self.generic_visit(node)
 
@@ -130,6 +134,7 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
                         f"{op_cls.__name__}->{target_cls.__name__}",
                         target_cls,
                         idx,  # which boolop node on this line
+                        0,
                     ))
             self.generic_visit(node)
 
@@ -145,6 +150,7 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
                     f"{node.value}->{new_val}",
                     new_val,
                     idx,  # which bool constant on this line
+                    0,
                 ))
             self.generic_visit(node)
 
@@ -152,7 +158,7 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
     sites.sort(key=lambda s: s[0])
 
     mutants: list[Mutant] = []
-    for sort_key, lineno, operator, description, target_val, node_idx in sites:
+    for sort_key, lineno, operator, description, target_val, node_idx, op_i in sites:
         tree_copy = copy.deepcopy(tree)
 
         class _Mutator(ast.NodeTransformer):
@@ -163,10 +169,7 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
             def visit_Compare(self, node):
                 if node.lineno == lineno and operator == "compare-swap":
                     if self._compare_visited == node_idx:
-                        for i, op in enumerate(node.ops):
-                            if type(op) in _COMPARE_SWAP:
-                                node.ops[i] = target_val()  # type: ignore[operator]
-                                break
+                        node.ops[op_i] = target_val()  # type: ignore[operator]
                     self._compare_visited += 1
                 return self.generic_visit(node)
 
