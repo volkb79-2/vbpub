@@ -74,7 +74,12 @@ def _make_merge(root: Path, branch: str, task_id: str) -> str:
     Returns the merge commit SHA.
     """
     _run(root, "checkout", "main")
-    r = _run(root, "merge", "--no-ff", "-m", f"Merge {task_id}", branch)
+    # `git merge --no-ff` creates a merge COMMIT, so it needs a committer
+    # identity. The tester-unified container has no global git identity (unlike
+    # a dev env), so pass it inline exactly as _init_repo/_add_and_commit do —
+    # otherwise the merge fails with "Committer identity unknown" (exit 128).
+    r = _run(root, "-c", "user.email=t@t", "-c", "user.name=t",
+             "merge", "--no-ff", "-m", f"Merge {task_id}", branch)
     assert r.returncode == 0, f"merge failed: {r.stderr}"
     return _run(root, "rev-parse", "HEAD").stdout.strip()
 
