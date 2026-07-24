@@ -427,7 +427,7 @@ def detect_cost_crossovers(catalog, *, score_epsilon: float = 2.0,
     out: list[dict] = []
     for bench, rows in sorted(groups.items()):
         ref_model, ref_score, ref_price = max(rows, key=lambda r: r[1])
-        if ref_price <= 0:
+        if ref_price <= 0:  # pragma: no cover — rows pre-filtered to price>0 (line ~423)
             continue
         candidates = [r for r in rows if r[0] != ref_model
                       and r[1] >= ref_score - score_epsilon

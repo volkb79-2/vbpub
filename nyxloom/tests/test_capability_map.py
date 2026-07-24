@@ -620,7 +620,7 @@ def _cap_rec(model_id="m", scores=None, price_input=1.0, price_output=1.0,
     """Build an in-memory CapabilityRecord for crossover tests."""
     return capability_map.CapabilityRecord(
         model_id=model_id, source="test",
-        scores=dict(scores or {"coding": 0.7}),
+        scores=dict(scores if scores is not None else {"coding": 0.7}),
         price_input=price_input, price_output=price_output,
         context_length=128000,
         bands={"intelligence": 0, "coding": 2, "agentic": 0},
@@ -690,3 +690,22 @@ class TestDetectCostCrossovers:
         result = capability_map.detect_cost_crossovers(catalog)
         # No group has at least 2 comparable records → empty result
         assert result == []
+
+    def test_empty_scores_record_excluded_from_crossover(self):
+        """A record with empty scores is skipped — it never becomes
+        cheap_model or ref_model in a finding."""
+        catalog = [
+            _cap_rec(model_id="empty", scores={},
+                     price_input=0.01, price_output=0.01, benchmark="swe"),
+            _cap_rec(model_id="cheap", scores={"acc": 0.70},
+                     price_input=0.01, price_output=0.01, benchmark="swe"),
+            _cap_rec(model_id="ref", scores={"acc": 0.71},
+                     price_input=2.0, price_output=3.0, benchmark="swe"),
+        ]
+        result = capability_map.detect_cost_crossovers(catalog)
+        # "empty" has no scores → skipped.  The crossover is cheap↔ref.
+        assert len(result) == 1
+        cc = result[0]
+        assert cc["cheap_model"] == "cheap"
+        assert cc["ref_model"] == "ref"
+        assert cc["metric"] == "swe"
