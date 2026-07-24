@@ -147,6 +147,33 @@ items:
   type: bugfix
   component: testing
   context_estimate: small
+- id: B26
+  title: 'per-handoff processing-trace artifact: capture each dispatched agent
+    summary + insights across legs (implementation, review, gate, merge) as a
+    structured, drill-down-able record surfaced in the dashboard, so a human can
+    trace how a handoff was processed leg-by-leg (agent A implemented with these
+    insights; agent B reviewed and found these; gate result; merge). Generalizes
+    the ad-hoc controller session log into a first-class per-task trace view
+    (operator ask 2026-07-24). Relates to the Logging-P04 log-stream UI and the
+    LOG/REPORT handoff artifacts.'
+  type: feature
+  component: control
+  context_estimate: medium
+- id: B27
+  title: 'Scale SEAL (labs.scale.com) benchmark source: ingest SWE-Bench Pro
+    (public+private) resolve-rate and MCP Atlas tool-use pass-rate -- both live
+    (2026-07 rows, frontier models) and on-domain (coding / agentic-ops), covering
+    a non-saturated SWE benchmark plus a new MCP tool-discovery axis that AA-direct
+    and DeepSWE do not. Data path: plain curl GET + regex-extract the embedded
+    self.__next_f.push RSC JSON (no Playwright), then regex-split the free-text
+    effort suffix out of the model name, with a manual company/effort normalization
+    table. Defensive: schema-validate every field, fail loud on shape drift
+    (undocumented internal Next.js serialization, may change on their redeploy).
+    Explicitly SKIP the stale Legacy bucket (Coding / Agentic-Tool-Use frozen at
+    o1/o3-mini era) and the off-domain Frontier/Safety buckets. Scout report 2026-07-24.'
+  type: feature
+  component: routing
+  context_estimate: medium
 ---
 
 # nyxloom — backlog
