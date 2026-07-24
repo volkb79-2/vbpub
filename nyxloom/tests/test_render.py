@@ -124,6 +124,7 @@ def test_render_all_creates_pages(seed_data, sample_project):
     assert (www / "quality.html").exists()
     assert (www / "routing.html").exists()
     assert (www / "live.html").exists()
+    assert (www / "findings.html").exists()
     assert (www / "task" / "demo" / "demo-P01-sample.html").exists()
     assert (www / "task" / "demo" / "demo-P02-done.html").exists()
 
