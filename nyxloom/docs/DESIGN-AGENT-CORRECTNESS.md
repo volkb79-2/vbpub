@@ -184,9 +184,21 @@ writes/validates spine revision N *before* compacting and the carver re-reads it
 ---
 
 ## Decisions opened by this doc
-- **D-CORRECT-1** — deterministic `gate` stage before `auto_merge` (main never red). *Build.*
+- **D-CORRECT-1** — deterministic pre-merge gate before publish (main never red).
+  ✅ **DONE** (merged `a8772860`): `_execute_auto_merge` gates the merged scratch tree before
+  `update-ref`; fail → REVIEW_REJECTED; `policy.pre_merge_gate` (default on).
 - **D-CORRECT-2** — rename `frontier_review` → `review_independent` (decouple name from tier).
+  ⏳ **NEXT** (wide mechanical rename: Role enum + adapters/daemon/reconcile + PRESETS + routing
+  matrix + tests; watch config back-compat for pipelines naming `frontier_review`).
 - **D-CORRECT-3** — `triage_class` via a long-running cheap model (typed, safe).
-- **D-CORRECT-4** — changed-lines mutation gate (behavior proof). *Building now.*
-- **D-CORRECT-5** — negative-oracle lint enforcement (contract proof). *Build.*
-- **D-CORRECT-6** — long-running externally-compacted carver. *Planning (sol@high).*
+  ⏳ **folds into F018** (same long-running-cheap-agent-emits-typed-judgment pattern as the carver).
+- **D-CORRECT-4** — changed-lines mutation gate (behavior proof).
+  ✅ **DONE** (merged `0ea18888`): `mutation_gate.py`. NOTE: it is a standalone tool; wiring it
+  into the pipeline as an actual gate is the remaining half of F017.
+- **D-CORRECT-5** — negative-oracle enforcement. ✅ **ALREADY LIVE** = lint rule L3.
+- **D-CORRECT-6 / F018** — long-running, harness-portable, externally-compacted carver.
+  📋 **PLANNED** (`docs/plan-long-running-carver.md`, sol@high, 6 packages P1–P6). Refinement
+  from the compaction discussion: durable state = spine + a HARNESS-NEUTRAL working summary, so
+  runner+model are a per-turn choice (cheap reasonix by default, escalate a hard carve to
+  sol/Claude by re-seeding from spine+summary); compaction is per-runner (Claude `/compact`,
+  codex app-server `thread/compact/start`, reasonix/opencode tuned auto-compaction).
