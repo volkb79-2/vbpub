@@ -124,6 +124,7 @@ def test_render_all_creates_pages(seed_data, sample_project):
     assert (www / "quality.html").exists()
     assert (www / "routing.html").exists()
     assert (www / "live.html").exists()
+    assert (www / "findings.html").exists()
     assert (www / "task" / "demo" / "demo-P01-sample.html").exists()
     assert (www / "task" / "demo" / "demo-P02-done.html").exists()
 
@@ -1296,3 +1297,83 @@ def test_nyxloomd_compose_mounts_netcup_api_filter():
     for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
         sources = _compose_volume_sources(NYXLOOMD_DIR / fname)
         assert netcup_source in sources, f"{fname} missing netcup-api-filter bind"
+
+
+# ---------------------------------------------------------------------------
+# FN-3 findings dashboard tests
+
+
+def test_findings_html_xss_escaped(sample_project, tmp_state):
+    """FN-3 O1: findings.html lists a finding with html.escape'd title/body;
+    raw markup is never present."""
+    from nyxloom import findings
+
+    project_id = "demo"
+    registry = {"demo": sample_project.root}
+
+    findings.record_finding(
+        "demo", "generic",
+        title="<script>alert(1)</script>",
+        body="<b>x</b>",
+    )
+
+    render.render_all(registry)
+    content = (paths.www_dir() / "findings.html").read_text(encoding="utf-8")
+
+    assert 'id="findings"' in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
+    assert "<script>alert(1)</script>" not in content
+    assert "&lt;b&gt;x&lt;/b&gt;" in content
+    assert "<b>x</b>" not in content
+
+
+def test_findings_html_task_link(sample_project, tmp_state):
+    """FN-3 O2: task link rendered when task_id is set on a finding."""
+    from nyxloom import findings
+
+    registry = {"demo": sample_project.root}
+
+    findings.record_finding(
+        "demo", "generic",
+        title="Task-linked finding",
+        body="This finding references a task.",
+        task_id="demo-P01-sample",
+    )
+
+    render.render_all(registry)
+    content = (paths.www_dir() / "findings.html").read_text(encoding="utf-8")
+
+    assert "task/demo/demo-P01-sample.html" in content
+
+
+def test_findings_html_empty(sample_project, tmp_state):
+    """FN-3 O3: findings.html shows 'No findings yet.' when none exist."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "findings.html").read_text(encoding="utf-8")
+
+    assert "No findings yet." in content
+
+
+def test_findings_html_nav_and_render_all(sample_project, tmp_state):
+    """FN-3 O4: findings.html exists after render_all and nav contains
+    its link."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+
+    assert (paths.www_dir() / "findings.html").exists()
+
+    index_content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+    assert 'href="findings.html"' in index_content
+
+
+def test_findings_html_skips_broken_project(sample_project, tmp_state, tmp_path):
+    """FN-3 O5: a project in the registry whose config fails to load
+    is silently skipped without breaking render_all."""
+    registry = {
+        "demo": sample_project.root,
+        "broken": tmp_path / "no-such-repo",
+    }
+    render.render_all(registry)  # must not raise
+
+    assert (paths.www_dir() / "findings.html").exists()
