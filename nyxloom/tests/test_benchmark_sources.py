@@ -76,6 +76,7 @@ class TestArtificialAnalysisSource:
                 "artificial_analysis_coding_index": 12.5}},
             {"slug": "no-signal", "evaluations": {
                 "terminalbench_v2_1": 0.8, "livecodebench": 0.7}},
+            {"slug": "no-evals"},
             {"slug": ""}, {"not-a-model": True}, "malformed",
         ]}
         with patch("nyxloom.benchmark_sources._fetch_json", return_value=payload) as fetch:
@@ -105,6 +106,9 @@ class TestArtificialAnalysisSource:
         assert lite.effort is None
         assert lite.scores == {"coding": 49.3}
         assert all(record.model_id != "no-signal" for record in records)
+        # A model with a valid slug but no evaluations block at all is skipped
+        # (exercises the non-dict `evaluations` -> {} reassignment, then no-signal skip).
+        assert all(record.model_id != "no-evals" for record in records)
         assert next(record for record in records if record.model_id == "fallback-model")
 
     def test_missing_key_raises_before_network(self, monkeypatch):
