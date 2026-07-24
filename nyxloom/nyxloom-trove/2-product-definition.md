@@ -143,7 +143,7 @@ features:
     unless capability_map.role_gating is set to auto.
   - The catalog is written as a sibling managed block; the frozen config core is never
     edited.
-  status: planned
+  status: shipped
   milestone: M4
 - id: F015
   title: Scheduled-jobs subsystem
@@ -155,6 +155,45 @@ features:
   - Every scheduled job is also invocable ad-hoc without waiting for its next tick.
   status: planned
   milestone: M6
+- id: F016
+  title: System-to-user findings channel
+  acceptance:
+  - An advisory insight that is neither a task event nor a blocking decision is recorded as
+    a typed FINDING_RECORDED event (event-first), rendered as an html-escaped dashboard card.
+  - A pushable finding kind builds its notification from a fixed template over typed fields
+    only, never from model-authored free text (the SPEC-13 injection boundary).
+  - A finding is actionable, not a dead end - the operator can promote it into an intake
+    conversation that flows into the existing decision/carve pipeline.
+  - Cost-equivalence findings are auto-emitted from the capability catalog (a cheap model
+    matching a stronger one at a fraction of the cost), closing the loop to a routing choice.
+  status: shipped
+  milestone: M6
+- id: F017
+  title: Mechanized correctness gates (behavior and pre-merge)
+  acceptance:
+  - Beyond line-reach coverage, a changed-lines mutation gate proves each changed line's
+    behavior is asserted (a surviving mutant is a hollow test), scoped to the diff.
+  - The deterministic gate runs BEFORE publish on the merged tree, so an unattended merge
+    never leaves the default branch red; a failing pre-merge gate routes back for a fix.
+  - The independent-review stage is named for its role, not a model tier; state transitions
+    stay mechanical and an LLM only emits typed judgments consumed by the state machine.
+  status: building
+  milestone: M1
+- id: F018
+  title: Long-running, harness-portable strategic carver
+  acceptance:
+  - One resumed carver session per project holds north-star/roadmap/backlog context across
+    bounded daemon turns, fed a typed merge-digest after each merge (no repo re-scan).
+  - Its output is a schema-checked carve proposal the deterministic planner admits
+    mechanically; it does not review its own work.
+  - Its durable context is the spine (ground truth) plus a harness-neutral working summary,
+    so the runner (claude/codex/reasonix/opencode) and model are a per-turn choice and
+    context survives a harness switch; compaction is per-runner (explicit where supported,
+    tuned auto-compaction otherwise) and lossy-safe against the spine.
+  - It is the entry point for a human's new plan or raw feature idea, fitting it into the
+    current machine work-state.
+  status: planned
+  milestone: M4
 non_goals:
 - Not a general-purpose CI/CD system.
 - Not an interactive IDE / coding-assistant for a human at the keyboard.

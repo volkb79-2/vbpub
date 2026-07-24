@@ -12,6 +12,7 @@ milestones:
   - F005
   - F006
   - F013
+  - F017
   status: done
 - id: M2
   title: Guided onboarding
@@ -32,6 +33,7 @@ milestones:
   - F008
   - F009
   - F014
+  - F018
   status: planned
 - id: M5
   title: Self-contained runtime + multi-tenant envs
@@ -46,6 +48,7 @@ milestones:
   features:
   - F012
   - F015
+  - F016
   status: planned
 ---
 
