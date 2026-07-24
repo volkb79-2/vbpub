@@ -773,7 +773,7 @@ def test_carver_exited_active_task_emits_exit():
     own exit) whose synthetic carve task is still ACTIVE and has a receipt
     -> EmitAttemptExit, so daemon.py's CARVER branch runs
     _consume_carve_exit and retires the carve to SUPERSEDED. Regression
-    guard: previously only IMPLEMENTER/FRONTIER_REVIEW re-fired here, so a
+    guard: previously only IMPLEMENTER/REVIEW_INDEPENDENT re-fired here, so a
     carve whose live exit-pass was missed stayed ACTIVE forever."""
     cfg = make_config()
     routes = make_routes()
@@ -853,7 +853,7 @@ def test_carver_exited_superseded_task_no_refire():
 
 def test_carver_exited_non_active_task_no_exit():
     """P32 Oracle O2 (bound): the CARVER branch fires ONLY for an ACTIVE task,
-    exactly like the IMPLEMENTER/FRONTIER_REVIEW branches it mirrors.
+    exactly like the IMPLEMENTER/REVIEW_INDEPENDENT branches it mirrors.
 
     Uses NON-terminal, non-ACTIVE task states so the TERMINAL_TASK_STATES skip
     cannot be what makes this pass — this fails if `tsf.state == ACTIVE` is
@@ -1107,7 +1107,7 @@ def test_interrupted_review_no_handle_relaunches_not_blocks_and_dies():
     routes = make_routes()
     fm = make_frontmatter(id="P01")
     att = make_attempt(attempt_id="att-rev1", state=AttemptState.INTERRUPTED,
-                       role=Role.FRONTIER_REVIEW, receipt=None)
+                       role=Role.REVIEW_INDEPENDENT, receipt=None)
     assert att.session_handle is None
     tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
     tsf.wave_id = "wave-1"   # already waved -> the wave loop relaunches the review
@@ -1136,7 +1136,7 @@ def test_plan_never_dead_ends_and_launches_same_task():
     routes = make_routes()
     fm = make_frontmatter(id="P01")
     att = make_attempt(attempt_id="att-rev1", state=AttemptState.INTERRUPTED,
-                       role=Role.FRONTIER_REVIEW, receipt=None)
+                       role=Role.REVIEW_INDEPENDENT, receipt=None)
     tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
     tsf.wave_id = "wave-1"
     inp = ReconcileInput(
@@ -2337,7 +2337,7 @@ def test_waves_launch_review_no_running_attempt():
     att = make_attempt(
         attempt_id="att-1",
         state=AttemptState.FAILED,
-        role=Role.FRONTIER_REVIEW,
+        role=Role.REVIEW_INDEPENDENT,
     )
     tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
     tsf.wave_id = "wave-001"
@@ -2783,7 +2783,7 @@ def test_waves_no_duplicate_review_launch_while_preflighting():
         (AttemptState.FAILED, None, True),
     ]:
         att = make_attempt(attempt_id="att-1", state=state,
-                           role=Role.FRONTIER_REVIEW)
+                           role=Role.REVIEW_INDEPENDENT)
         att.session_handle = handle
         tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW,
                        attempts=[att])
@@ -2915,14 +2915,14 @@ def make_carve_routes() -> Routes:
     """flash-high (ordinary implementer tier) + frontier-review (the carver's
     own review route, module contract item 9's route-availability gate).
     B16/D-R1: the gate resolves via Routes.for_role, not tier membership, so
-    route-review carries role_default="frontier-review" (not the tier key)."""
+    route-review carries role_default="review-independent" (not the tier key)."""
     return Routes(
         revision="test",
-        tiers={"flash-high": ["route-1"], "frontier-review": ["route-review"]},
+        tiers={"flash-high": ["route-1"], "review-independent": ["route-review"]},
         routes={
             "route-1": RouteDef(route_id="route-1", cli="fake", model="fake-model"),
             "route-review": RouteDef(route_id="route-review", cli="fake", model="review-model",
-                                      role_default="frontier-review"),
+                                      role_default="review-independent"),
         },
     )
 
@@ -3170,7 +3170,7 @@ def test_attempts_used_counts_only_implementer_not_review_or_carve():
     count against the implementer budget, and a LIMIT attempt is free."""
     impl = make_attempt(attempt_id="i1", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
                         receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
-    review = make_attempt(attempt_id="r1", state=AttemptState.EXITED, role=Role.FRONTIER_REVIEW,
+    review = make_attempt(attempt_id="r1", state=AttemptState.EXITED, role=Role.REVIEW_INDEPENDENT,
                           receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
     limited = make_attempt(attempt_id="i2", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
                            receipt=Receipt(result=ReceiptResult.LIMIT, exit_code=1))
@@ -3203,7 +3203,7 @@ def test_review_reject_cycle_counts_one_implementer_unit_not_two():
     fm = make_frontmatter(id="P01")
     impl = make_attempt(attempt_id="i1", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
                         receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
-    review = make_attempt(attempt_id="r1", state=AttemptState.EXITED, role=Role.FRONTIER_REVIEW,
+    review = make_attempt(attempt_id="r1", state=AttemptState.EXITED, role=Role.REVIEW_INDEPENDENT,
                           receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
     tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED, attempts=[impl, review])
     inp = ReconcileInput(**_carve_base_kwargs(
@@ -3561,7 +3561,7 @@ def test_validating_autocompletes_when_pipeline_omits_gate():
     Neuter the reconcile item-11 gate check (always emit RunPostMergeGate) and
     this fails -- a real discriminator, not a hollow assert."""
     cfg = replace(make_config(), pipeline=[
-        "carve", "implement", "frontier_review", "triage", "auto_merge"])
+        "carve", "implement", "review_independent", "triage", "auto_merge"])
     assert "post_merge_gate" not in cfg.pipeline
     fm = make_frontmatter(id="P01")
     tsf = make_tsf(task_id="P01", state=TaskState.VALIDATING)
@@ -3662,7 +3662,7 @@ def test_exhausted_reject_escalates_to_needs_decision_when_carveless():
     NEEDS_DECISION instead of stranding it in READY_TO_CARVE with no owner.
     Neuter the `"carve" in pipeline` guard and it wrongly plans READY_TO_CARVE."""
     cfg = replace(make_config(max_attempts_per_task=1),
-                  pipeline=["implement", "frontier_review", "triage", "auto_merge"])
+                  pipeline=["implement", "review_independent", "triage", "auto_merge"])
     assert "carve" not in cfg.pipeline
     t = [a for a in plan_project(_exhausted_reject_inp(cfg))
          if isinstance(a, Transition) and a.task_id == "P01"]
@@ -3833,7 +3833,7 @@ def test_review_rejected_precedence_product_beats_drift():
 
 # -- carve-less pipeline closure (gated/lean) --------------------------------
 
-_NO_CARVE_PIPELINE = ["implement", "self_review", "frontier_review", "triage", "auto_merge"]
+_NO_CARVE_PIPELINE = ["implement", "self_review", "review_independent", "triage", "auto_merge"]
 
 
 def test_review_rejected_stale_premise_no_carve_escalates():
@@ -3900,16 +3900,16 @@ def _awaiting_task(task_id="demo-P01", wave_id="wave-2"):
 
 
 def _prior_review_session(task_id="demo-P00", handle="sess-rev-1"):
-    """A COMPLETED (inert) task carrying a prior wave's EXITED FRONTIER_REVIEW
+    """A COMPLETED (inert) task carrying a prior wave's EXITED REVIEW_INDEPENDENT
     attempt whose session_handle B6 resumes for the cache hit."""
     rev = make_attempt(attempt_id="att-rev-1", state=AttemptState.EXITED,
-                       role=Role.FRONTIER_REVIEW)
+                       role=Role.REVIEW_INDEPENDENT)
     rev.session_handle = handle
     return make_tsf(task_id=task_id, state=TaskState.COMPLETED, attempts=[rev])
 
 
 def test_review_resumes_most_recent_prior_review_session():
-    """B6 2026-07-20 (P74, D-R10): when the frontier_review stage's context
+    """B6 2026-07-20 (P74, D-R10): when the review_independent stage's context
     declares "session-reuse" and a prior EXITED review session exists, the wave's
     LaunchReview carries resume_session = that handle -- so the daemon WARM-resumes
     it (prompt-cache hit on the ~35-40k role/orientation prefix) instead of a cold
@@ -3928,10 +3928,10 @@ def test_review_resume_picks_the_newest_of_several_prior_sessions():
     sessions, the WARMEST (most-recently started) handle is chosen -- an older,
     likely cache-expired session is never preferred over a newer one."""
     old = make_attempt(attempt_id="att-old", state=AttemptState.EXITED,
-                       role=Role.FRONTIER_REVIEW)
+                       role=Role.REVIEW_INDEPENDENT)
     old.session_handle, old.started = "sess-OLD", utc(2026, 7, 18)
     new = make_attempt(attempt_id="att-new", state=AttemptState.EXITED,
-                       role=Role.FRONTIER_REVIEW)
+                       role=Role.REVIEW_INDEPENDENT)
     new.session_handle, new.started = "sess-NEW", utc(2026, 7, 20)
     prior = make_tsf(task_id="demo-P00", state=TaskState.COMPLETED, attempts=[old, new])
     states = {"demo-P01": _awaiting_task(), "demo-P00": prior}
@@ -3958,7 +3958,7 @@ def test_review_cold_when_no_prior_review_session_exists():
 
 def test_review_cold_when_stage_context_lacks_session_reuse(monkeypatch):
     """Negative (the gate is the STAGE CONTEXT, not just "a prior session
-    exists"): with the SAME prior review session present but the frontier_review
+    exists"): with the SAME prior review session present but the review_independent
     stage's context stripped of "session-reuse", resume_session is None. Proves
     B6 consults stages-as-data -- a project could compose a cold reviewer and the
     reuse would correctly not fire. Neutering the context check would make this

@@ -512,9 +512,19 @@ class Routes:
         Prefers routes explicitly flagged via RouteDef.role_default (D-R1);
         falls back to a tier named after the role, so tier-named routing
         configs keep resolving (back-compat: the review role's value equals
-        the pre-migration tier name, so no flag-day)."""
+        the pre-migration tier name, so no flag-day).
+        Read-compat (D-CORRECT-2): the review role's value was "frontier-review"
+        before the rename; a pre-rename routes.toml (no role_default flag, tier
+        still named "frontier-review") still resolves via the legacy alias below."""
         flagged = [r for r in self.routes.values() if r.role_default == role]
-        return flagged or self.for_tier(role)
+        if flagged:
+            return flagged
+        tier_routes = self.for_tier(role)
+        if tier_routes:
+            return tier_routes
+        if role == "review-independent":          # legacy tier name, pre-D-CORRECT-2
+            return self.for_tier("frontier-review")
+        return []
 
 
 # ---------------------------------------------------------------------------

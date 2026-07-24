@@ -410,7 +410,7 @@ class TestRoutesForRole:
             '[routes.claude-opus-high]\n'
             'cli = "claude"\n'
             'model = "opus"\n'
-            'role_default = "frontier-review"\n\n'
+            'role_default = "review-independent"\n\n'
             '[routes.claude-haiku]\n'
             'cli = "claude"\n'
             'model = "haiku"\n',
@@ -418,7 +418,7 @@ class TestRoutesForRole:
         )
         routes = Routes.load(path=p)
 
-        matches = routes.for_role("frontier-review")
+        matches = routes.for_role("review-independent")
         assert [r.route_id for r in matches] == ["claude-opus-high"]
 
     def test_for_role_returns_empty_when_no_route_defaults_to_it(self, tmp_path):
@@ -436,12 +436,12 @@ class TestRoutesForRole:
         )
         routes = Routes.load(path=p)
 
-        assert routes.for_role("frontier-review") == []
+        assert routes.for_role("review-independent") == []
         assert routes.for_role("nonexistent") == []
 
     def test_for_role_falls_back_to_tier_named_after_role(self, tmp_path):
         """Back-compat: with no role_default anywhere but a tier whose name
-        equals the role, for_role resolves via that tier (so pre-migration
+        equals the old role value, for_role resolves via that tier (so pre-migration
         tier-named configs keep working, e.g. the many test fixtures that
         declare [tiers.frontier-review])."""
         from nyxloom.config import Routes
@@ -458,7 +458,7 @@ class TestRoutesForRole:
         )
         routes = Routes.load(path=p)
 
-        matches = routes.for_role("frontier-review")
+        matches = routes.for_role("review-independent")
         assert [r.route_id for r in matches] == ["fake-review"]
 
 

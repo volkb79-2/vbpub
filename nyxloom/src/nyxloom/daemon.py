@@ -112,7 +112,7 @@ INTERFACE CONTRACT (frozen):
     LaunchReview -> assemble packet dir under attempts dir of a synthetic
       review attempt: per task, `git -C root diff <default_branch>...HEAD`
       of its branch dumped to <packet>/<task_id>.diff + --stat + handoff/
-      report paths list in packet.md; create Attempt (role FRONTIER_REVIEW,
+      report paths list in packet.md; create Attempt (role REVIEW_INDEPENDENT,
       route = first route of tier 'frontier-review'), dispatch via wrapper
       like an implementer with the packet path in the prompt.
     SpecAttention -> SPEC_ATTENTION event.
@@ -239,7 +239,7 @@ summary each cycle):
   headroom_rationale str, outcome one of the 7 v2 §8 outcomes). On
   EmitAttemptExit (reconcile.py's existing per-attempt scan already detects
   this generically; the daemon adds a role == CARVER branch here, checked
-  BEFORE the FRONTIER_REVIEW/implementer branches): read+parse that file;
+  BEFORE the REVIEW_INDEPENDENT/implementer branches): read+parse that file;
   persist the FULL CarveSummary (+ 'seq' + a 'timestamp') to
   `$XDG_STATE/nyxloom/<project>/carves/<seq>.json` (daemon-written; NOT in
   the consumer repo even when authority puts the .md there too -- this is
@@ -1149,7 +1149,7 @@ class Daemon:
                             and ((tsf.state == TaskState.ACTIVE
                                   and att.role == Role.IMPLEMENTER)
                                  or (tsf.state == TaskState.AWAITING_REVIEW
-                                     and att.role == Role.FRONTIER_REVIEW)
+                                     and att.role == Role.REVIEW_INDEPENDENT)
                                  or (tsf.state == TaskState.ACTIVE
                                      and att.role == Role.CARVER)
                                  # B5 2026-07-20: a self_review exit while the
@@ -2668,7 +2668,7 @@ class Daemon:
         # planning and execution within the same pass. Never mint a
         # synthetic task / worktree we cannot actually dispatch into.
         routes_obj = config.Routes.load()
-        review_routes = routes_obj.for_role(Role.FRONTIER_REVIEW.value)
+        review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
         if not review_routes:
             events.append(self._append_ev(
                 project, cfg, states, EventType.NEEDS_OPERATOR,
@@ -2805,7 +2805,7 @@ class Daemon:
                              states: dict[str, TaskStateFile], task_id: str,
                              attempt_id: str) -> list[Event]:
         """P16 2026-07-15: role == CARVER branch of EmitAttemptExit (called
-        from _execute BEFORE the FRONTIER_REVIEW/implementer branches).
+        from _execute BEFORE the REVIEW_INDEPENDENT/implementer branches).
         Parses the carver's REQUIRED OUTPUT CONTRACT file, persists the
         full CarveSummary for the dashboard, emits a typed-only
         CARVE_OUTCOME, raises headroom/roadmap-exhausted SPEC_ATTENTION and
@@ -3040,7 +3040,7 @@ class Daemon:
         so a real APPROVED anywhere for this task is found regardless of
         which file it landed in.
 
-        Return values (a plain str; the FRONTIER_REVIEW call site only ever
+        Return values (a plain str; the REVIEW_INDEPENDENT call site only ever
         compares `== "approved"`, so any non-"approved" value already takes
         the existing fail-safe REVIEW_REJECTED path unchanged):
           "approved" -- exactly one unambiguous APPROVED verdict pooled
@@ -3219,11 +3219,11 @@ class Daemon:
     def _parse_reject_class(self, cfg: ProjectConfig, task_id: str) -> str | None:
         """B4b (D-060 triage Tier-2; D-066): extract the reviewer's self-stamped
         `REJECT_CLASS: <fixable|architectural|product>` line from the committed
-        review report (adapters.build_dispatch's FRONTIER_REVIEW prompt requires
+        review report (adapters.build_dispatch's REVIEW_INDEPENDENT prompt requires
         it on a REJECTED verdict). Returns the class lowercased, or None when the
         line is absent or its value is unrecognised -> the task stays unclassified
         and reconcile falls back to the mechanical attempt-budget path. Only
-        meaningful on a rejection; the FRONTIER_REVIEW consumption site calls it
+        meaningful on a rejection; the REVIEW_INDEPENDENT consumption site calls it
         only when the verdict is not 'approved'."""
         text = self._review_report_text(cfg, task_id)
         if not text:
@@ -3646,7 +3646,7 @@ class Daemon:
                 events.extend(self._consume_carve_exit(project, cfg, states, task_id, action.attempt_id))
                 return events
 
-            if attempt.role == Role.FRONTIER_REVIEW:
+            if attempt.role == Role.REVIEW_INDEPENDENT:
                 # 2026-07-15: consume the REVIEW receipt (was unmapped —
                 # live deadlock). merge_mode=manual: MERGE_READY is declared,
                 # never auto-merged (SPEC §7).
@@ -3687,14 +3687,14 @@ class Daemon:
                 if result is ReceiptResult.DONE:
                     for member in members:
                         # P59b (A7): bind the verdict to THIS review attempt,
-                        # per member. A re-review (a prior FRONTIER_REVIEW
+                        # per member. A re-review (a prior REVIEW_INDEPENDENT
                         # attempt for this member exists) counts only verdicts
                         # stamped with the current attempt id; the first review
                         # keeps the unbound path (no prior attempt -> no
                         # staleness possible).
                         prior_reviews = [
                             a for a in states[member].attempts
-                            if a.role == Role.FRONTIER_REVIEW
+                            if a.role == Role.REVIEW_INDEPENDENT
                             and a.attempt_id != action.attempt_id
                         ]
                         verdict = self._parse_review_verdict(
@@ -3924,13 +3924,13 @@ class Daemon:
                 "",
             ]
             # B6/P74: reference the carver-maintained spine digest BY POINTER
-            # (never slurp its body) when the frontier_review stage's context
+            # (never slurp its body) when the review_independent stage's context
             # declares "spine-digest" -- standing invariants/risks/reflections at
             # file-pointer cost, framing every task's review. The path is emitted
             # whether or not the file exists yet (the carver creates/maintains it);
             # the reviewer reads it from the repo, so the packet never inlines it.
             spine_pointer = None
-            if "spine-digest" in stages.stage_context("frontier_review"):
+            if "spine-digest" in stages.stage_context("review_independent"):
                 spine_pointer = f"{cfg.reports_dir}/SPINE-DIGEST.md"
                 packet_lines.extend([
                     "## Standing spine digest (read from the repo; not inlined here)",
@@ -3998,7 +3998,7 @@ class Daemon:
             (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
 
             routes_obj = config.Routes.load()
-            review_routes = routes_obj.for_role(Role.FRONTIER_REVIEW.value)
+            review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
             route_def = review_routes[0]
             # P05a (§5): review launch -> INFO. Carries every wave member
             # (not a single `task`, since one review attempt can cover a
@@ -4012,7 +4012,7 @@ class Daemon:
             first_task = members[0] if members else None
             # A launch with no members is a no-op (nothing to review).
             record_on = members or ([first_task] if first_task else [])
-            attempt = Attempt(attempt_id=attempt_id, role=Role.FRONTIER_REVIEW,
+            attempt = Attempt(attempt_id=attempt_id, role=Role.REVIEW_INDEPENDENT,
                                state=AttemptState.CREATED, route=route_snap, started=utc_now(),
                                wave_id=wave_id)
             # P61 2026-07-20 (A9): record the ONE review attempt on EVERY wave
@@ -4022,7 +4022,7 @@ class Daemon:
             # is_first_review reads a correct review history. The wrapper writes
             # ATTEMPT_STARTED/EXITED keyed to first_task only; the secondary
             # members' copies are healed to EXITED when the fan-out consumer
-            # runs (see the EmitAttemptExit FRONTIER_REVIEW branch) and, until
+            # runs (see the EmitAttemptExit REVIEW_INDEPENDENT branch) and, until
             # then, the receipt-based reconcile scan (which keys on attempt_id,
             # not task) drives their exit consumption.
             for t in record_on:
@@ -4070,7 +4070,7 @@ class Daemon:
                 argv, _prompt = adapters.build_dispatch(
                     route_def, handoff_path=packet_md, worktree=str(cfg.root),
                     branch=cfg.default_branch, task_id=first_task or wave_id or "review",
-                    gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
+                    gate_hint=gate_hint, receipt_path=receipt_path, role=Role.REVIEW_INDEPENDENT,
                     attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
                     approved_amendments=approved_amendments,
                 )

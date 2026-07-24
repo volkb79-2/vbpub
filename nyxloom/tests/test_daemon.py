@@ -578,7 +578,7 @@ def test_carve_dispatch_branch_authority_creates_worktree_and_carver_attempt(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
     d = daemon.Daemon({"demo": cfg.root})
@@ -628,7 +628,7 @@ def test_carve_dispatch_wrapper_spec_carries_strategic_carver_lease(
     two racing carve dispatches could both spawn a real CARVER attempt."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
     d = daemon.Daemon({"demo": cfg.root})
@@ -647,7 +647,7 @@ def test_dispatch_targeted_carve_wrapper_spec_carries_strategic_carver_lease(
     the same lease population as the untargeted trigger above."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     backlog = cfg.root / "nyxloom-trove" / "4-backlog.md"
     backlog.parent.mkdir(parents=True, exist_ok=True)
@@ -669,7 +669,7 @@ def test_carve_dispatch_main_authority_uses_project_root_no_worktree(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     ptoml = cfg.root / ".nyxloom" / "project.toml"
     text = ptoml.read_text(encoding="utf-8").replace(
@@ -697,7 +697,7 @@ def test_carve_dispatch_files_authority_uses_project_root_no_git(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     ptoml = cfg.root / ".nyxloom" / "project.toml"
     text = ptoml.read_text(encoding="utf-8").replace(
@@ -884,7 +884,7 @@ def test_execute_carve_dispatch_rescope_supersedes_origin_with_rescoped_outcome(
     -> _execute_carve_dispatch plumbing is exercised, not just the leaf method."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n")
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
     _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
     _commit_review_report(
         cfg.root, "demo-P01", cfg.reports_dir,
@@ -951,7 +951,7 @@ def test_execute_carve_dispatch_untargeted_supersedes_nothing(
     every headroom carve try to supersede a None task."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n")
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
@@ -992,7 +992,7 @@ def test_emit_attempt_exit_done_legacy_pipeline(tmp_state, sample_project, patch
     byte-identical to pre-B5. Discrimination partner of test_emit_attempt_exit_
     done: same seed and receipt, only the composed pipeline differs. Neutering
     the `"self_review" in cfg.pipeline` guard would send this to SELF_REVIEWING."""
-    _set_pipeline(sample_project, ["carve", "implement", "frontier_review",
+    _set_pipeline(sample_project, ["carve", "implement", "review_independent",
                                    "triage", "auto_merge", "post_merge_gate"])
     task_id, attempt_id = "t-done-legacy", "att-done-legacy"
     _seed_running_attempt("demo", task_id, attempt_id)
@@ -1158,7 +1158,7 @@ def test_emit_attempt_exit_head_commit_receipt_trusted_when_present(
 
 
 # --------------------------------------------------------------------------
-# P33 2026-07-16: robust review verdict -- derive the FRONTIER_REVIEW merge
+# P33 2026-07-16: robust review verdict -- derive the REVIEW_INDEPENDENT merge
 # decision from the committed <task>-REVIEW.md verdict, never from bare
 # process exit (live P26 incident: a REJECTED review report + clean process
 # exit -> receipt DONE -> rubber-stamped MERGE_READY).
@@ -1169,7 +1169,7 @@ def _seed_review_attempt(project, task_id, attempt_id, wave_id="wave-1"):
         state=TaskState.AWAITING_REVIEW, since=utc_now(), handoff_path=None, wave_id=wave_id,
     )
     route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
-    attempt = Attempt(attempt_id=attempt_id, role=Role.FRONTIER_REVIEW, state=AttemptState.RUNNING,
+    attempt = Attempt(attempt_id=attempt_id, role=Role.REVIEW_INDEPENDENT, state=AttemptState.RUNNING,
                        route=route, started=utc_now(), wave_id=wave_id)
     tsf.attempts.append(attempt)
     storage.append_and_apply(
@@ -1194,7 +1194,7 @@ def _commit_review_report(root, task_id, reports_dir, content):
     subprocess.run(["git", "-C", str(root), "checkout", "main"], check=True, capture_output=True)
 
 
-def test_frontier_review_done_receipt_rejected_report_yields_review_rejected(
+def test_review_independent_done_receipt_rejected_report_yields_review_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """Oracle O1: reproduces the live P26 incident exactly -- a clean
@@ -1223,7 +1223,7 @@ def test_frontier_review_done_receipt_rejected_report_yields_review_rejected(
     assert recorded.payload["result"] == "rejected"
 
 
-def test_frontier_review_done_receipt_approved_report_yields_merge_ready(
+def test_review_independent_done_receipt_approved_report_yields_merge_ready(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """Oracle O2: the approval path is preserved -- a DONE receipt whose
@@ -1446,7 +1446,7 @@ def test_attempt_scan_surfaces_self_review_receipt_only_when_self_reviewing(
     assert receipts2.get(attempt_id) is None  # NOT surfaced -- state-scoped, not role-alone
 
 
-def test_frontier_review_wave_exit_fans_out_per_member_verdicts(
+def test_review_independent_wave_exit_fans_out_per_member_verdicts(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """P61 2026-07-20 (A9): ONE review attempt covers a whole wave; its single
@@ -1491,7 +1491,7 @@ def test_frontier_review_wave_exit_fans_out_per_member_verdicts(
     assert len(recorded2) == len(recorded), "no duplicate REVIEW_RECORDED on the idempotent sibling exit"
 
 
-def test_frontier_review_missing_report_fails_safe_to_rejected(
+def test_review_independent_missing_report_fails_safe_to_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """Oracle O3 (missing): a DONE receipt whose <task>-REVIEW.md was never
@@ -1520,7 +1520,7 @@ def test_frontier_review_missing_report_fails_safe_to_rejected(
     assert recorded.payload["result"] == "missing"
 
 
-def test_frontier_review_ambiguous_report_fails_safe_to_rejected(
+def test_review_independent_ambiguous_report_fails_safe_to_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """Oracle O3 (ambiguous): a REVIEW.md with conflicting VERDICT lines (no
@@ -1543,7 +1543,7 @@ def test_frontier_review_ambiguous_report_fails_safe_to_rejected(
     assert tsf.state is TaskState.REVIEW_REJECTED
 
 
-def test_frontier_review_nondone_receipt_is_defense_in_depth_rejected(
+def test_review_independent_nondone_receipt_is_defense_in_depth_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """Non-DONE receipt (BLOCKED/nonzero) stays REVIEW_REJECTED regardless
@@ -1568,7 +1568,7 @@ def test_frontier_review_nondone_receipt_is_defense_in_depth_rejected(
     assert tsf.state is TaskState.REVIEW_REJECTED
 
 
-def test_frontier_review_limit_receipt_is_incomplete_not_rejected_and_pauses_provider(
+def test_review_independent_limit_receipt_is_incomplete_not_rejected_and_pauses_provider(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """P56 2026-07-20 (M7, decoupled subset). A non-DONE review receipt is an
@@ -1611,7 +1611,7 @@ def test_launch_review_packet_requires_machine_readable_verdict_line(
     in addition to the existing BLOCKED: rejected final-line signal."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     _seed_task("demo", "t1", TaskState.AWAITING_REVIEW, handoff_path=None)
     _make_feature_branch(cfg.root, "t1", "t1.py", "# t1\n")
@@ -2149,7 +2149,7 @@ def test_transient_escalate_excludes_non_matching_tasks(tmp_state, sample_projec
         state=TaskState.ACTIVE, since=utc_now(), attempts=[running_att])
 
     review_att = _make_transient_attempt("att-review-role")
-    review_att.role = Role.FRONTIER_REVIEW
+    review_att.role = Role.REVIEW_INDEPENDENT
     _at_cap_dir(review_att.attempt_id)
     tsf_review = TaskStateFile(
         schema_version=storage.SCHEMA_VERSION, task_id="t-review", project=project,
@@ -2422,7 +2422,7 @@ def test_run_pass_isolates_a_failing_action_from_the_rest(
 def test_open_wave_and_launch_review(tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
 
     for tid in ("t1", "t2"):
@@ -2453,7 +2453,7 @@ def test_open_wave_and_launch_review(tmp_state, sample_project, patch_siblings, 
     assert {e.attempt_id for e in created} == {created[0].attempt_id}, "must be ONE frontier session"
     assert sorted(e.task_id for e in created) == ["t1", "t2"], "recorded on every member"
     for e in created:
-        assert e.payload["attempt"]["role"] == "frontier-review"
+        assert e.payload["attempt"]["role"] == "review-independent"
         assert e.payload["attempt"]["route"]["route_id"] == "fake-cli"
     # both members carry the review attempt in their state
     assert any(a.attempt_id == created[0].attempt_id
@@ -2483,7 +2483,7 @@ def test_launch_review_packet_captures_uncommitted_worktree(
     rather than a silent omission."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
 
     for tid in ("t1", "t2"):
@@ -2525,7 +2525,7 @@ def test_launch_review_packet_reviewer_text_has_git_truth_clause(
     when real work was committed)."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     _seed_task("demo", "t1", TaskState.AWAITING_REVIEW, handoff_path=None)
     _make_feature_branch(cfg.root, "t1", "t1.py", "# t1\n")
@@ -3695,7 +3695,7 @@ def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
 # re-dispatch verdict embed (_review_rationale) are computed for reconcile.
 # Each oracle carries a NEGATIVE control so none passes hollowly.
 
-def test_frontier_review_rejected_stamps_reject_class(
+def test_review_independent_rejected_stamps_reject_class(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """A REJECTED review whose committed report carries a REJECT_CLASS line ->
@@ -3719,7 +3719,7 @@ def test_frontier_review_rejected_stamps_reject_class(
     assert recorded.payload["reject_class"] == "architectural"
 
 
-def test_frontier_review_approved_has_no_reject_class(
+def test_review_independent_approved_has_no_reject_class(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """NEGATIVE: an APPROVED review records NO reject_class (the class is a
@@ -3741,7 +3741,7 @@ def test_frontier_review_approved_has_no_reject_class(
     assert "reject_class" not in recorded.payload
 
 
-def test_frontier_review_rejected_without_class_omits_key(
+def test_review_independent_rejected_without_class_omits_key(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """NEGATIVE/graceful: a REJECTED review whose reviewer stamped NO
@@ -3935,7 +3935,7 @@ def test_build_input_plumbs_head_revision_and_triage_class(
 
 def _frontier_routes():
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n")
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
 
 
 def test_review_warm_resume_uses_build_resume_and_stamps_fresh_attempt_id(
@@ -4695,7 +4695,7 @@ def test_launch_review_emits_info_review_launch(
     """§5: review launch -> INFO."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
     )
     for tid in ("rt1", "rt2"):
         _seed_task("demo", tid, TaskState.AWAITING_REVIEW, handoff_path=None)

@@ -352,7 +352,7 @@ def test_build_dispatch_prompt_commit_instruction_is_truthful():
 
 
 # P44 (O1/O2): role-scoped build_dispatch -- IMPLEMENTER keeps today's exact
-# text (regression pin), CARVER/FRONTIER_REVIEW get their own role-correct
+# text (regression pin), CARVER/REVIEW_INDEPENDENT get their own role-correct
 # prompt instead of inheriting the implementer's commit instruction.
 _P44_KW = dict(
     handoff_path="handoff/P44.md",
@@ -418,7 +418,7 @@ def test_build_dispatch_role_carver_branch_or_main_keeps_commit_instruction(auth
     assert "git commit" in prompt
 
 
-def test_build_dispatch_role_frontier_review_commits_verdict_never_main_or_code():
+def test_build_dispatch_role_review_independent_commits_verdict_never_main_or_code():
     """P59 2026-07-20 (M6a -- corrects P44's O1(c)). The daemon derives the
     merge verdict EXCLUSIVELY from the reviewer's COMMITTED <task>-REVIEW.md
     (_parse_review_verdict via `git show`); the receipt carries no verdict.
@@ -431,7 +431,7 @@ def test_build_dispatch_role_frontier_review_commits_verdict_never_main_or_code(
     original safety intent (never main, never a code change)."""
     route = RouteDef(route_id="test", cli="fake", model="fake-model")
     _argv, prompt = adapters.build_dispatch(
-        route, role=Role.FRONTIER_REVIEW, **_P44_KW)
+        route, role=Role.REVIEW_INDEPENDENT, **_P44_KW)
     # tells the reviewer to commit its verdict report (consistent with the
     # packet AND with what _parse_review_verdict actually reads):
     assert "git commit" in prompt
@@ -446,7 +446,7 @@ def test_build_dispatch_role_frontier_review_commits_verdict_never_main_or_code(
     assert "/tmp/receipt.json" in prompt
 
 
-def test_build_dispatch_frontier_review_stamps_attempt_id_on_verdict():
+def test_build_dispatch_review_independent_stamps_attempt_id_on_verdict():
     """P59b 2026-07-20 (A7, M6/I8). When an attempt_id is threaded in, the
     review prompt must instruct the reviewer to stamp `(attempt <id>)` on the
     VERDICT line and flag it as REQUIRED/copied-exactly, so the daemon can
@@ -456,7 +456,7 @@ def test_build_dispatch_frontier_review_stamps_attempt_id_on_verdict():
     route = RouteDef(route_id="test", cli="fake", model="fake-model")
     att = "att-abc123def456"
     _argv, prompt = adapters.build_dispatch(
-        route, role=Role.FRONTIER_REVIEW, attempt_id=att, **_P44_KW)
+        route, role=Role.REVIEW_INDEPENDENT, attempt_id=att, **_P44_KW)
     assert f"VERDICT: APPROVED (attempt {att})" in prompt
     assert f"VERDICT: REJECTED (attempt {att})" in prompt
     assert "REQUIRED" in prompt and "EXACTLY" in prompt
@@ -464,20 +464,20 @@ def test_build_dispatch_frontier_review_stamps_attempt_id_on_verdict():
     assert "VERDICT: APPROVED`" not in prompt
 
 
-def test_build_dispatch_frontier_review_unbound_when_no_attempt_id():
+def test_build_dispatch_review_independent_unbound_when_no_attempt_id():
     """Back-compat: no attempt_id => byte-for-byte the pre-P59b unbound prompt
     (the bound suffix and note are empty), so callers that don't thread an id
     are unchanged."""
     route = RouteDef(route_id="test", cli="fake", model="fake-model")
-    _a, bound = adapters.build_dispatch(route, role=Role.FRONTIER_REVIEW, attempt_id=None, **_P44_KW)
-    _a2, plain = adapters.build_dispatch(route, role=Role.FRONTIER_REVIEW, **_P44_KW)
+    _a, bound = adapters.build_dispatch(route, role=Role.REVIEW_INDEPENDENT, attempt_id=None, **_P44_KW)
+    _a2, plain = adapters.build_dispatch(route, role=Role.REVIEW_INDEPENDENT, **_P44_KW)
     assert bound == plain
     assert "(attempt" not in bound
 
 
 def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
     """O2 (grep-provable): all three daemon.py build_dispatch call sites
-    (CARVER ~L1725, IMPLEMENTER ~L2026, FRONTIER_REVIEW ~L2362) pass their
+    (CARVER ~L1725, IMPLEMENTER ~L2026, REVIEW_INDEPENDENT ~L2362) pass their
     own role= explicitly -- guards against the exact silent-mismatch this
     package exists to close (a call site importing Role but never actually
     passing role= to build_dispatch, silently keeping the wrong-role
@@ -496,7 +496,7 @@ def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
         m = re.search(r"role\s*=\s*Role\.(\w+)", call)
         assert m is not None, f"a build_dispatch call site is missing role=Role.*:\n{call}"
         roles_seen.add(m.group(1))
-    assert roles_seen == {"CARVER", "IMPLEMENTER", "FRONTIER_REVIEW"}
+    assert roles_seen == {"CARVER", "IMPLEMENTER", "REVIEW_INDEPENDENT"}
 
 
 # Oracle 3: Prompt-length guard
@@ -1340,7 +1340,7 @@ def test_self_review_prompt_is_mechanical_oracle_anchored():
 
 # ============================================================================
 # B4b 2026-07-20 (D-060 triage; critique CRITIQUE.md:207). Two prompt
-# contracts: (1) the FRONTIER_REVIEW prompt makes the reviewer self-stamp a
+# contracts: (1) the REVIEW_INDEPENDENT prompt makes the reviewer self-stamp a
 # REJECT_CLASS on a rejection (the Tier-2 producer, D-066); (2) an IMPLEMENTER
 # re-dispatch embeds the prior review verdict so a re-queued fix is targeted,
 # never the "bare same-model context-free retry" the critique bans. Each pins
@@ -1351,14 +1351,14 @@ def _fake_route():
     return RouteDef(route_id="r-b4b", cli="fake", model="m")
 
 
-def test_frontier_review_prompt_requires_reject_class():
+def test_review_independent_prompt_requires_reject_class():
     """The reviewer prompt instructs a REJECT_CLASS line with all three classes
     on a REJECTED verdict (the Tier-2 producer). NEGATIVE: the IMPLEMENTER and
     CARVER prompts carry NO such instruction -- only the reviewer classifies."""
     _argv, prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
-        role=Role.FRONTIER_REVIEW,
+        role=Role.REVIEW_INDEPENDENT,
     )
     assert "REJECT_CLASS" in prompt
     for cls in ("fixable", "architectural", "product"):
@@ -1373,7 +1373,7 @@ def test_frontier_review_prompt_requires_reject_class():
     assert "REJECT_CLASS" not in impl_prompt
 
 
-def test_frontier_review_prompt_stays_under_argv_max_with_real_paths():
+def test_review_independent_prompt_stays_under_argv_max_with_real_paths():
     """B4b REGRESSION GUARD (the live gate catch): the REJECT_CLASS block must
     NOT push the reviewer prompt past argv_max. The first cut used minimal paths
     in the content test above and passed at ~1490 chars, but real deep-worktree
@@ -1389,7 +1389,7 @@ def test_frontier_review_prompt_stays_under_argv_max_with_real_paths():
         branch=f"feat/{long_task}", task_id=long_task,
         gate_hint="cd .. && MOCK_MODE=true pytest tests -q",
         receipt_path=f"/state/attempts/att-0123456789abcdef/receipt.json",
-        role=Role.FRONTIER_REVIEW, attempt_id="att-0123456789abcdef",
+        role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
     )
     # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
     assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim the REJECT_CLASS block"
@@ -1421,13 +1421,13 @@ def test_implementer_re_dispatch_embeds_prior_verdict():
 
 def test_prior_verdict_only_embedded_for_implementer():
     """The docstring's claim 'Only the IMPLEMENTER branch consults it' pinned:
-    a prior_verdict passed to a FRONTIER_REVIEW dispatch is NOT embedded (the
+    a prior_verdict passed to a REVIEW_INDEPENDENT dispatch is NOT embedded (the
     reviewer is reviewing fresh, not fixing a prior rejection)."""
     rationale = "Findings: unique-marker-xyz should not leak into the reviewer prompt."
     _argv, prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
-        role=Role.FRONTIER_REVIEW, prior_verdict=rationale,
+        role=Role.REVIEW_INDEPENDENT, prior_verdict=rationale,
     )
     assert "unique-marker-xyz" not in prompt
 
@@ -1453,7 +1453,7 @@ def test_implementer_prior_verdict_bounded_to_argv_max():
 # IMPLEMENTER dispatch carries the standing escape-hatch instruction. Oracle
 # O2: a re-dispatch with approved_amendments actually widens the PROMPT (the
 # mechanism D-B21-1's overlay depends on -- the handoff file itself is never
-# rewritten). Oracle O6: the FRONTIER_REVIEW prompt tells the reviewer about
+# rewritten). Oracle O6: the REVIEW_INDEPENDENT prompt tells the reviewer about
 # approved amendments so it does not reject the now-legitimate out-of-scope
 # edit. Each pins a NEGATIVE so the assertion cannot pass hollowly.
 # ============================================================================
@@ -1507,19 +1507,19 @@ def test_implementer_re_dispatch_widens_prompt_with_approved_amendments():
 
 def test_approved_amendments_only_embedded_for_implementer():
     """The docstring's claim generalizes prior_verdict's own pin (test
-    above): approved_amendments passed to a FRONTIER_REVIEW dispatch does NOT
+    above): approved_amendments passed to a REVIEW_INDEPENDENT dispatch does NOT
     get the IMPLEMENTER-worded 'you MAY also edit' embed (the reviewer gets
     its OWN differently-worded note instead -- see the O6 test below)."""
     _argv, prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
-        role=Role.FRONTIER_REVIEW, approved_amendments=["src/demo/shared_helper.py"],
+        role=Role.REVIEW_INDEPENDENT, approved_amendments=["src/demo/shared_helper.py"],
     )
     assert "you MAY also edit" not in prompt
 
 
-def test_frontier_review_prompt_tells_reviewer_about_approved_amendments():
-    """O6: the FRONTIER_REVIEW prompt for a task with approved amendments
+def test_review_independent_prompt_tells_reviewer_about_approved_amendments():
+    """O6: the REVIEW_INDEPENDENT prompt for a task with approved amendments
     includes the granted file(s) as in-scope, so the reviewer does not reject
     the (now-legitimate) out-of-scope edit as a scope violation. NEGATIVE: no
     approved_amendments (the common case -- most reviews have no amendment
@@ -1527,7 +1527,7 @@ def test_frontier_review_prompt_tells_reviewer_about_approved_amendments():
     _argv, prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
-        role=Role.FRONTIER_REVIEW, approved_amendments=["src/demo/shared_helper.py"],
+        role=Role.REVIEW_INDEPENDENT, approved_amendments=["src/demo/shared_helper.py"],
     )
     assert "src/demo/shared_helper.py" in prompt
     assert "legitimately in-scope" in prompt
@@ -1535,7 +1535,7 @@ def test_frontier_review_prompt_tells_reviewer_about_approved_amendments():
     _a2, plain_prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
-        role=Role.FRONTIER_REVIEW,
+        role=Role.REVIEW_INDEPENDENT,
     )
     assert "src/demo/shared_helper.py" not in plain_prompt
     assert "Scope-amendment note" not in plain_prompt
@@ -1543,7 +1543,7 @@ def test_frontier_review_prompt_tells_reviewer_about_approved_amendments():
 
 def test_implementer_amendment_note_skipped_when_argv_max_too_tight():
     """B21 regression guard (found LIVE while writing the behavioral test:
-    an earlier unconditional version of the FRONTIER_REVIEW counterpart of
+    an earlier unconditional version of the REVIEW_INDEPENDENT counterpart of
     this note overflowed argv_max for a realistic packet path and
     permanently stranded a review attempt at CREATED -- see LOG.md). The
     amendment-approved note must be BOUNDED like prior_verdict's embed:
@@ -1572,7 +1572,7 @@ def test_implementer_amendment_note_skipped_when_argv_max_too_tight():
     assert prompt == tight_base                  # byte-identical to the no-amendments dispatch
 
 
-def test_frontier_review_amendment_note_skipped_when_argv_max_too_tight():
+def test_review_independent_amendment_note_skipped_when_argv_max_too_tight():
     """B21 regression guard: the LIVE-observed failure mode (see LOG.md/
     the test above) was specifically on THIS branch -- the reviewer prompt
     is already close to argv_max with real packet paths, so an unconditional
@@ -1583,16 +1583,16 @@ def test_frontier_review_amendment_note_skipped_when_argv_max_too_tight():
               task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
     route_wide = _fake_route()
     _a, base_prompt = adapters.build_dispatch(
-        route_wide, role=Role.FRONTIER_REVIEW, attempt_id="att-x", **kw)
+        route_wide, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
 
     tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(base_prompt) + 20)
     # Baseline must be built under the SAME route: the doctrine manifest is
     # argv-budgeted too (doc-ownership 2026-07-23), so comparing a tight build
     # against a WIDE-route baseline would conflate two independent variables.
     _b, tight_base = adapters.build_dispatch(
-        tight_route, role=Role.FRONTIER_REVIEW, attempt_id="att-x", **kw)
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
     _argv, prompt = adapters.build_dispatch(
-        tight_route, role=Role.FRONTIER_REVIEW, attempt_id="att-x",
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
         approved_amendments=["src/demo/shared_helper.py"], **kw)
 
     assert "Scope-amendment note" not in prompt

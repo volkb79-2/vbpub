@@ -89,7 +89,7 @@ usage_source = "output-format-json"     # -p --output-format json: usage + total
 [routes.claude-opus-high]
 inherit = "claude-sonnet5-high"
 model = "opus"
-role_default = "frontier-review"
+role_default = "review-independent"
 
 # Experimental (probe before first use — unprobed as of 2026-07-12):
 # [routes.claude-deepseek-direct]  # scripts/claude-deepseek.sh — best harness, cheapest model

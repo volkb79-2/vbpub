@@ -145,8 +145,18 @@ ATTEMPT_TRANSITIONS: dict[AttemptState, frozenset[AttemptState]] = {
 class Role(enum.Enum):
     IMPLEMENTER = "implementer"
     SELF_REVIEW = "self-review"
-    FRONTIER_REVIEW = "frontier-review"
+    REVIEW_INDEPENDENT = "review-independent"
     CARVER = "carver"
+
+    @classmethod
+    def _missing_(cls, value):
+        # D-CORRECT-2 read-compat: this role was serialized as "frontier-review"
+        # (a model-tier name) before the rename. Map the legacy value so
+        # Attempt.from_dict (_FIELD_TYPES {"role": Role} -> Role(value)) keeps
+        # loading attempts from statefiles/events written before the rename.
+        if value == "frontier-review":
+            return cls.REVIEW_INDEPENDENT
+        return None
 
 
 # Roles intentionally defined but not yet dispatched. Each member here must be

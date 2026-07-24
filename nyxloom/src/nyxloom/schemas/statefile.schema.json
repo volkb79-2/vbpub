@@ -42,7 +42,7 @@
         "required": ["attempt_id", "role", "state", "route", "started"],
         "properties": {
           "attempt_id": {"type": "string", "minLength": 1},
-          "role": {"enum": ["implementer", "self-review", "frontier-review", "carver"]},
+          "role": {"enum": ["implementer", "self-review", "review-independent", "frontier-review", "carver"]},
           "state": {
             "enum": ["CREATED", "PREFLIGHTING", "RUNNING", "STALLED", "INTERRUPTED", "EXITED", "FAILED", "ABANDONED"],
             "description": "Draft 1 attempt states, inherited unchanged."

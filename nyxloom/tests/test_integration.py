@@ -99,7 +99,7 @@ def test_full_dispatch_cycle_reaches_awaiting_review(e2e_project):
     ptoml = e2e_project.root / ".nyxloom" / "project.toml"
     ptoml.write_text(ptoml.read_text().replace(
         "[project]\n",
-        '[project]\npipeline = ["carve", "implement", "frontier_review", '
+        '[project]\npipeline = ["carve", "implement", "review_independent", '
         '"triage", "auto_merge", "post_merge_gate"]\n', 1))
     # Pass 1: discover handoff -> CARVED. Pass 2: lint-clean -> QUEUED.
     # Pass 3: dispatch (worktree + wrapper + fake CLI).

@@ -169,7 +169,7 @@ def test_real_plan_project_actually_plans_emit_attempt_exit_for_exited_carver(
     reconcile.plan_project, fed by the real daemon._attempt_scan, ever
     ACTUALLY PLANS that action for a real exited carver attempt. It never
     did: _attempt_scan's receipt-inclusion filter checked only (task ACTIVE
-    + role IMPLEMENTER) or (task AWAITING_REVIEW + role FRONTIER_REVIEW),
+    + role IMPLEMENTER) or (task AWAITING_REVIEW + role REVIEW_INDEPENDENT),
     never (task ACTIVE + role CARVER) -- so a carver's receipt.json was
     silently excluded from ReconcileInput.receipts, has_receipt was always
     False for it, and reconcile.py's own already-written CARVER branch
