@@ -214,36 +214,58 @@ class ArtificialAnalysisSource(BenchmarkSource):
             raise BenchmarkSourceError(
                 f"benchmark source {self.name!r}: API key env {key_env!r} is unset")
         base_url = self.cfg.get("base_url", _AA_DEFAULT_URL)
-        url = f"{str(base_url).rstrip('/')}/language/models/free"
+        url = f"{str(base_url).rstrip('/')}/data/llms/models"
         payload = _fetch_source_json(self.name, url, headers={"x-api-key": key},
                                      timeout=_HTTP_TIMEOUT)
-        aliases = {
-            "model_id": ("slug", "name", "model_id", "id"),
-            "intelligence": ("evaluations.artificial_analysis_intelligence_index",),
-            "coding": ("evaluations.artificial_analysis_coding_index",),
-            "agentic": ("evaluations.artificial_analysis_agentic_index",),
-            "price_input": ("pricing.price_1m_input_tokens",),
-            "price_output": ("pricing.price_1m_output_tokens",),
-            "context_length": ("context_window_tokens", "pricing.context_window_tokens",
-                                "context_length"),
-        }
+        effort_suffixes = {"low", "medium", "high", "xhigh", "max", "minimal"}
         out: list[BenchmarkRecord] = []
         for item in _records(payload):
             if not isinstance(item, dict):
                 continue
-            model_id = _first_value(item, aliases["model_id"])
-            if model_id is _MISSING or model_id is None or str(model_id) == "":
+
+            raw_slug = item.get("slug", _MISSING)
+            if raw_slug is _MISSING or raw_slug is None or str(raw_slug) == "":
+                raw_slug = item.get("name", _MISSING)
+            if raw_slug is _MISSING or raw_slug is None or str(raw_slug) == "":
                 continue
+            raw_slug = str(raw_slug)
+            model_id = raw_slug
+            effort: str | None = None
+            prefix, separator, suffix = raw_slug.rpartition("-")
+            if separator and suffix in effort_suffixes:
+                model_id = prefix
+                effort = suffix
+            if not model_id:
+                continue
+
+            evaluations = item.get("evaluations")
+            if not isinstance(evaluations, dict):
+                evaluations = {}
             scores: dict[str, float] = {}
-            for axis in ("intelligence", "coding", "agentic"):
-                value = _as_float(_first_value(item, aliases[axis]))
+            intelligence = _as_float(evaluations.get(
+                "artificial_analysis_intelligence_index", _MISSING))
+            if intelligence is not None:
+                scores["intelligence"] = intelligence
+            coding = _as_float(evaluations.get(
+                "artificial_analysis_coding_index", _MISSING))
+            if coding is not None:
+                scores["coding"] = coding
+            agentic_values = []
+            for key in ("terminalbench_hard", "tau2"):
+                value = _as_float(evaluations.get(key, _MISSING))
                 if value is not None:
-                    scores[axis] = value
+                    agentic_values.append(value)
+            if agentic_values:
+                # Keep the derived 0-100 axis stable to two decimal places.
+                scores["agentic"] = round(sum(agentic_values) / len(agentic_values) * 100, 2)
+            if not scores:
+                continue
             out.append(BenchmarkRecord(
-                model_id=str(model_id), source=self.name, scores=scores,
-                price_input=_as_float(_first_value(item, aliases["price_input"])),
-                price_output=_as_float(_first_value(item, aliases["price_output"])),
-                context_length=_as_int(_first_value(item, aliases["context_length"])),
+                model_id=model_id, source=self.name, scores=scores,
+                price_input=_as_float(_lookup(item, "pricing.price_1m_input_tokens")),
+                price_output=_as_float(_lookup(item, "pricing.price_1m_output_tokens")),
+                context_length=_as_int(_lookup(item, "context_window_tokens")),
+                benchmark="artificial-analysis", version=None, effort=effort,
                 raw=item))
         return out
 
