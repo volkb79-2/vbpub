@@ -257,3 +257,224 @@ def test_post_merge_gate_runs_on_merge_commit_not_live_checkout(
     assert not (cfg.root / "new_thing.txt").exists()   # live checkout untouched
     # the scratch worktree was cleaned up
     assert not (cfg.root / ".worktrees" / "postmerge-demo-P78").exists()
+
+
+# -- D-CORRECT-1: deterministic pre-merge gate -----------------------------
+
+
+def test_pre_merge_gate_passes_merges(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-CORRECT-1: pre-merge gate passes (exit 0) -> task reaches MERGED,
+    default branch advances, GATE_FINISHED event recorded with phase
+    'pre-merge' and exit_code 0."""
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+
+    # sample_project's default gate is ["true"] (exit 0)
+    before_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    _make_branch_with_file(cfg.root, "feat/demo-P91", "gate_pass.txt", "pass\n")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P91", "feat/demo-P91")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P91")
+    assert tsf.state is TaskState.MERGED
+    assert tsf.merge_commit is not None
+
+    after_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    assert after_main != before_main
+    assert after_main == tsf.merge_commit
+
+    events = list(storage.iter_events("demo"))
+    gates = [e for e in events
+             if e.type is EventType.GATE_FINISHED and e.task_id == "demo-P91"]
+    assert len(gates) >= 1
+    pre_merge_gates = [g for g in gates
+                       if g.payload.get("gate_result", {}).get("phase") == "pre-merge"]
+    assert len(pre_merge_gates) == 1
+    assert pre_merge_gates[0].payload["gate_result"]["exit_code"] == 0
+
+
+def test_pre_merge_gate_fails_not_published_review_rejected(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-CORRECT-1: pre-merge gate fails (exit 1) -> task ends REVIEW_REJECTED,
+    default branch UNCHANGED, GATE_FINISHED event with phase 'pre-merge' and
+    non-zero exit_code, scratch worktree removed."""
+    failing_gate = config.GateDef(
+        gate_id="failing-gate",
+        argv=["false"], phase="implementation",
+        timeout_seconds=30, environment="local")
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, gates={"failing-gate": failing_gate},
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+
+    before_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    _make_branch_with_file(cfg.root, "feat/demo-P92", "will_not_merge.txt", "nope\n")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P92", "feat/demo-P92")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P92")
+    assert tsf.state is TaskState.REVIEW_REJECTED
+    assert tsf.merge_commit is None
+
+    # default branch is UNCHANGED
+    after_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    assert after_main == before_main
+
+    events = list(storage.iter_events("demo"))
+    pre_merge_gates = [e for e in events
+                       if e.type is EventType.GATE_FINISHED and e.task_id == "demo-P92"
+                       and e.payload.get("gate_result", {}).get("phase") == "pre-merge"]
+    assert len(pre_merge_gates) == 1
+    assert pre_merge_gates[0].payload["gate_result"]["exit_code"] != 0
+
+    # scratch worktree was removed
+    wt_list = _run(cfg.root, "worktree", "list").stdout
+    assert "automerge-demo-P92" not in wt_list
+
+
+def test_pre_merge_gate_skipped_when_policy_disabled(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-CORRECT-1: policy.pre_merge_gate=False -> behaves exactly as today
+    (no pre-merge GATE_FINISHED event, task reaches MERGED)."""
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, policy=dataclasses.replace(
+            cfg.policy, merge_mode="guarded-automatic", pre_merge_gate=False))
+    _freeze_cfg(monkeypatch, cfg)
+
+    before_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    _make_branch_with_file(cfg.root, "feat/demo-P93", "skipped_test.txt", "skip\n")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P93", "feat/demo-P93")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P93")
+    assert tsf.state is TaskState.MERGED
+
+    after_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    assert after_main != before_main
+
+    events = list(storage.iter_events("demo"))
+    pre_merge_gates = [e for e in events
+                       if e.type is EventType.GATE_FINISHED and e.task_id == "demo-P93"
+                       and e.payload.get("gate_result", {}).get("phase") == "pre-merge"]
+    assert len(pre_merge_gates) == 0, "no pre-merge GATE_FINISHED when policy disabled"
+
+
+def test_pre_merge_gate_no_gate_declared_still_merges(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-CORRECT-1: no gates declared -> _select_post_merge_gate returns None,
+    merges without running any gate (same as pre-D-CORRECT-1)."""
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, gates={},
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+
+    before_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    _make_branch_with_file(cfg.root, "feat/demo-P94", "no_gate.txt", "merges\n")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P94", "feat/demo-P94")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P94")
+    assert tsf.state is TaskState.MERGED
+
+    after_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    assert after_main != before_main
+
+
+def test_pre_merge_gate_timeout_not_published(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-CORRECT-1: pre-merge gate times out (TimeoutExpired) -> task ends
+    REVIEW_REJECTED, default branch UNCHANGED, GATE_FINISHED exit_code == 124.
+    Uses a sleep gate argv with a short timeout so the subprocess block itself
+    raises, without monkeypatching subprocess.run globally."""
+    gate = config.GateDef(
+        gate_id="sleepy-gate",
+        argv=["sleep", "5"], phase="implementation",
+        timeout_seconds=1, environment="local")
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, gates={"sleepy-gate": gate},
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+
+    before_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    _make_branch_with_file(cfg.root, "feat/demo-P95", "timeout_test.txt", "x\n")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P95", "feat/demo-P95")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P95")
+    assert tsf.state is TaskState.REVIEW_REJECTED
+    assert tsf.merge_commit is None
+
+    # default branch is UNCHANGED (never published)
+    after_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    assert after_main == before_main
+
+    events = list(storage.iter_events("demo"))
+    pre_merge_gates = [e for e in events
+                       if e.type is EventType.GATE_FINISHED and e.task_id == "demo-P95"
+                       and e.payload.get("gate_result", {}).get("phase") == "pre-merge"]
+    assert len(pre_merge_gates) == 1
+    assert pre_merge_gates[0].payload["gate_result"]["exit_code"] == 124
+
+    # scratch worktree was removed
+    wt_list = _run(cfg.root, "worktree", "list").stdout
+    assert "automerge-demo-P95" not in wt_list
+
+
+def test_pre_merge_gate_exec_failure_not_published(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-CORRECT-1: gate command cannot be executed (OSError) -> task ends
+    REVIEW_REJECTED, default branch UNCHANGED, GATE_FINISHED exit_code == 127.
+    An unrunnable binary triggers FileNotFoundError (OSError subclass) in
+    subprocess.run, which the daemon catches and maps to 127."""
+    gate = config.GateDef(
+        gate_id="missing-gate",
+        argv=["nonexistent_cmd_xyzzy"], phase="implementation",
+        timeout_seconds=30, environment="local")
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, gates={"missing-gate": gate},
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+
+    before_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    _make_branch_with_file(cfg.root, "feat/demo-P96", "exec_fail.txt", "x\n")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P96", "feat/demo-P96")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P96")
+    assert tsf.state is TaskState.REVIEW_REJECTED
+    assert tsf.merge_commit is None
+
+    # default branch is UNCHANGED (never published)
+    after_main = _run(cfg.root, "rev-parse", "main").stdout.strip()
+    assert after_main == before_main
+
+    events = list(storage.iter_events("demo"))
+    pre_merge_gates = [e for e in events
+                       if e.type is EventType.GATE_FINISHED and e.task_id == "demo-P96"
+                       and e.payload.get("gate_result", {}).get("phase") == "pre-merge"]
+    assert len(pre_merge_gates) == 1
+    assert pre_merge_gates[0].payload["gate_result"]["exit_code"] == 127
+
+    # scratch worktree was removed
+    wt_list = _run(cfg.root, "worktree", "list").stdout
+    assert "automerge-demo-P96" not in wt_list
