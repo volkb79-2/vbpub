@@ -881,6 +881,13 @@ environment, never replaced with a cockpit venv command.
 
 ### Package 1 — contracts, events, projection, and stage naming
 
+> **✅ SHIPPED** (merged `facdac74`, 2026-07-24). `carver_session.py` (6 `_Serde`
+> dataclasses, `CarverStatus`, pure `project_session` projector, atomic
+> `session.json` IO), 8 `CARVER_*` audit events (task-less no-ops registered in
+> `KNOWN_IGNORED_EVENT_TYPES`), default-off `[stage.carve]` config
+> (`CarveStageConfig`). Stage rename was done separately by D-CORRECT-2 (plan
+> §7.1 superseded — the serialized value was also renamed, with read-compat).
+
 **Purpose.** Establish schemas and durable vocabulary without launching a
 persistent session.
 
@@ -918,6 +925,16 @@ event/session JSON schemas; `storage.py`/SQLite audit handling and rebuild;
 and serialize this package; no parallel package may own those files.
 
 ### Package 2 — deterministic planner actions and merge-digest production
+
+> **SPLIT into P2a + P2b to isolate reconcile.py risk.**
+> **P2a ✅ SHIPPED** (merged `7b0913b7`, 2026-07-24): the merge-digest producer —
+> `merge_digest.py` builds a byte-identical typed `carver_digest` from both the
+> manual (`cli.cmd_merge`) and automatic (`daemon._execute_auto_merge`) merge
+> paths (parity-tested), added additively to `MERGE_RECORDED`; digest produced
+> but not yet consumed. **P2b ⏳ PENDING**: the deterministic-planner half —
+> pending feed/proposal/intake snapshots into `ReconcileInput` + the
+> `Start/Resume/Compact/Admit` actions + one-turn priority order in `reconcile.py`
+> (HIGH frozen-core; the deterministic scheduler core — build carefully/serial).
 
 **Purpose.** Put all new nondeterministic observations into typed
 `ReconcileInput` fields and make `plan_project()` schedule them mechanically.
