@@ -160,6 +160,21 @@ class Policy:
 
 
 @dataclass
+class CarveStageConfig:
+    """F018 P1 (plan-long-running-carver.md §9): per-stage config for the
+    `carve` stage. ALL fields are optional with safe defaults that mean
+    'feature off'. Resolved from `[stage.carve]` in TOML. Not wired into any
+    scheduling/behavior in P1 — inert config until P2+."""
+    session: str = "fresh"                    # "fresh" | "project-persistent"
+    compact_context_ratio: float = 0.70
+    compact_after_turns: int = 24
+    compact_hard_after_turns: int = 32
+    retain_merge_digests: int = 10
+    max_resume_failures: int = 2
+    max_proposal_repairs: int = 2
+
+
+@dataclass
 class ProjectConfig:
     project_id: str
     root: Path
@@ -207,6 +222,10 @@ class ProjectConfig:
     # ONE field happens to be read from a specific project's config as the
     # "static default if nothing else overrides it" layer).
     logging_level: str | None = None
+    # F018 P1 (plan-long-running-carver.md §9): carve stage config. Default
+    # instance means 'feature off' (session="fresh"). Not wired into
+    # scheduling/behavior in P1 -- inert config until P2+.
+    carve: CarveStageConfig = field(default_factory=CarveStageConfig)
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
@@ -305,6 +324,12 @@ class ProjectConfig:
             token_env=noti.token_env,
             cmd_token_env=noti.cmd_token_env,
         )
+        # F018 P1: resolve carve stage config from [stage.carve] TOML.
+        carve_data = stage_overrides.get("carve", {})
+        carve_kw = {k: v for k, v in carve_data.items()
+                     if k in CarveStageConfig.__dataclass_fields__}
+        carve_cfg = CarveStageConfig(**carve_kw)
+        log.debug("carve stage config resolved", session=carve_cfg.session)
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -326,6 +351,7 @@ class ProjectConfig:
             pipeline=pipeline,
             stage_overrides=stage_overrides,
             logging_level=logging_level if isinstance(logging_level, str) else None,
+            carve=carve_cfg,
         )
 
     def redact(self, text: str) -> str:

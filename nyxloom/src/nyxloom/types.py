@@ -218,6 +218,17 @@ class BlockerType(enum.Enum):
     BUDGET = "budget"
 
 
+class CarverStatus(enum.Enum):
+    """F018 P1 (plan-long-running-carver.md §2.4): durable session status."""
+    ABSENT = "ABSENT"
+    COLD = "COLD"
+    STARTING = "STARTING"
+    WARM = "WARM"
+    COMPACTING = "COMPACTING"
+    DEGRADED = "DEGRADED"
+    ROTATING = "ROTATING"
+
+
 class EventType(enum.Enum):
     PROJECT_REGISTERED = "PROJECT_REGISTERED"
     DOCTOR_FINDING = "DOCTOR_FINDING"
@@ -278,6 +289,18 @@ class EventType(enum.Enum):
     DAEMON_STOPPED = "DAEMON_STOPPED"
     TICK_ERROR = "TICK_ERROR"
     CONFIG_CHANGED = "CONFIG_CHANGED"
+    # F018 P1 2026-07-24 (plan-long-running-carver.md §2.2): audit-only carver
+    # session events — no TaskStateFile projection (see
+    # KNOWN_IGNORED_EVENT_TYPES in test_invariants.py). Consumed by the pure
+    # carver_session.project_session projector, never by storage.apply_event.
+    CARVER_SESSION_STARTED = "CARVER_SESSION_STARTED"
+    CARVER_SESSION_RESUMED = "CARVER_SESSION_RESUMED"
+    CARVER_CONTEXT_CONSUMED = "CARVER_CONTEXT_CONSUMED"
+    CARVER_PROPOSAL_RECORDED = "CARVER_PROPOSAL_RECORDED"
+    CARVER_COMPACTION_REQUESTED = "CARVER_COMPACTION_REQUESTED"
+    CARVER_COMPACTION_FINISHED = "CARVER_COMPACTION_FINISHED"
+    CARVER_SESSION_ROTATED = "CARVER_SESSION_ROTATED"
+    CARVER_SESSION_DEGRADED = "CARVER_SESSION_DEGRADED"
 
 
 class ActorKind(enum.Enum):

@@ -15,7 +15,7 @@ import pytest
 import structlog.contextvars
 
 from nyxloom import log
-from nyxloom.config import NotifyConfig, ProjectConfig, Prices
+from nyxloom.config import CarveStageConfig, NotifyConfig, ProjectConfig, Prices
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -480,3 +480,91 @@ class TestPricesLoad:
         prices = Prices.load(path=p)
         assert prices.revision == "2026-07"
         assert "demo-model" in prices.models
+
+
+# =========================================================================
+# F018 P1: carve stage config (plan-long-running-carver.md §9)
+# =========================================================================
+
+class TestCarveStageConfigDefaults:
+    """CarveStageConfig has safe defaults that mean 'feature off'."""
+
+    def test_defaults_are_fresh_session(self):
+        cfg = CarveStageConfig()
+        assert cfg.session == "fresh"
+        assert cfg.compact_context_ratio == 0.70
+        assert cfg.compact_after_turns == 24
+        assert cfg.compact_hard_after_turns == 32
+        assert cfg.retain_merge_digests == 10
+        assert cfg.max_resume_failures == 2
+        assert cfg.max_proposal_repairs == 2
+
+    def test_custom_session(self):
+        cfg = CarveStageConfig(session="project-persistent")
+        assert cfg.session == "project-persistent"
+
+    def test_compat_context_ratio_bounds(self):
+        CarveStageConfig(compact_context_ratio=0.0)
+        CarveStageConfig(compact_context_ratio=1.0)
+
+    def test_zero_compact_after_turns_disabled(self):
+        cfg = CarveStageConfig(compact_after_turns=0)
+        assert cfg.compact_after_turns == 0
+
+
+class TestProjectConfigCarveDefaults:
+    """A project TOML with no [stage.carve] loads clean and carve is off."""
+
+    def _write_minimal(self, root: Path) -> Path:
+        trove = root / "nyxloom-trove"
+        trove.mkdir(parents=True, exist_ok=True)
+        (trove / "nyxloom.toml").write_text(
+            '[project]\n'
+            'id = "carvecfg"\n'
+            'default_branch = "main"\n'
+            'worktree_root = ".worktrees"\n'
+            'handoff_globs = ["handoff/*.md"]\n',
+            encoding="utf-8",
+        )
+        return root
+
+    def test_default_carve_is_fresh(self, tmp_path):
+        root = self._write_minimal(tmp_path)
+        cfg = ProjectConfig.load(root)
+        assert cfg.carve.session == "fresh"
+
+    def test_carve_keys_loaded_from_toml(self, tmp_path):
+        root = tmp_path
+        trove = root / "nyxloom-trove"
+        trove.mkdir(parents=True, exist_ok=True)
+        (trove / "nyxloom.toml").write_text(
+            '[project]\n'
+            'id = "carvecfg"\n'
+            'default_branch = "main"\n'
+            'worktree_root = ".worktrees"\n'
+            'handoff_globs = ["handoff/*.md"]\n'
+            '\n'
+            '[stage.carve]\n'
+            'session = "project-persistent"\n'
+            'compact_context_ratio = 0.50\n'
+            'compact_after_turns = 12\n'
+            'compact_hard_after_turns = 20\n'
+            'retain_merge_digests = 5\n'
+            'max_resume_failures = 3\n'
+            'max_proposal_repairs = 1\n',
+            encoding="utf-8",
+        )
+        cfg = ProjectConfig.load(root)
+        assert cfg.carve.session == "project-persistent"
+        assert cfg.carve.compact_context_ratio == 0.50
+        assert cfg.carve.compact_after_turns == 12
+        assert cfg.carve.compact_hard_after_turns == 20
+        assert cfg.carve.retain_merge_digests == 5
+        assert cfg.carve.max_resume_failures == 3
+        assert cfg.carve.max_proposal_repairs == 1
+
+    def test_no_stage_section_keeps_defaults(self, tmp_path):
+        root = self._write_minimal(tmp_path)
+        cfg = ProjectConfig.load(root)
+        assert cfg.carve.session == "fresh"
+        assert cfg.carve.compact_context_ratio == 0.70
