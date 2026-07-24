@@ -2171,6 +2171,41 @@ class Daemon:
             ["git", "-C", str(scratch), "rev-parse", "HEAD"],
             capture_output=True, text=True,
         ).stdout.strip()
+
+        # D-CORRECT-1: deterministic pre-merge gate on the MERGED tree in the
+        # scratch worktree. Publish only on pass; a failure routes back to
+        # REVIEW_REJECTED and main is never touched. Skipped entirely when
+        # policy.pre_merge_gate is False (parity with the pre-D-CORRECT-1
+        # behaviour).
+        if getattr(cfg.policy, "pre_merge_gate", True):
+            gate = self._select_post_merge_gate(cfg)
+            if gate is not None:
+                merge_commit_sha = new_commit
+                argv = [tok.replace("{worktree}", str(scratch)) for tok in gate.argv]
+                started = utc_now()
+                try:
+                    proc = subprocess.run(argv, cwd=str(scratch), capture_output=True,
+                                          text=True, timeout=gate.timeout_seconds)
+                    exit_code = proc.returncode
+                except subprocess.TimeoutExpired:
+                    exit_code = 124
+                except OSError:
+                    exit_code = 127
+                gate_result = GateResult(gate_id=gate.gate_id, phase="pre-merge",
+                    commit=merge_commit_sha, exit_code=exit_code, started=started,
+                    ended=utc_now(), environment=gate.environment)
+                events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
+                    {"gate_result": gate_result.to_dict()}, task_id=task_id))
+                if exit_code != 0:
+                    # DO NOT publish. Clean up the scratch and route back for a fix.
+                    subprocess.run(
+                        ["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                        capture_output=True, text=True)
+                    events.append(self._transition(project, cfg, states, task_id,
+                        TaskState.REVIEW_REJECTED,
+                        f"pre-merge gate failed (exit {exit_code}); not published"))
+                    return events
+
         subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
                         capture_output=True, text=True)
 
