@@ -171,6 +171,30 @@ def notification_for(ev: Event) -> dict | None:
             "tags": ["provider"],
         }
 
+    # FINDING_RECORDED (FN-2): only PUSHABLE kinds notify, and the body comes
+    # from the kind's FIXED code-owned push_template over its typed
+    # required_fields ONLY -- never the finding's free-text title/body
+    # (SPEC-13). Unknown/generic kinds -> None (dashboard-only).
+    if t is EventType.FINDING_RECORDED:
+        from .findings import FINDING_KINDS
+        kind = ev.payload.get("kind", "generic")
+        spec = FINDING_KINDS.get(kind)
+        if spec is None or not spec.pushable or spec.push_template is None:
+            return None
+        fields = ev.payload.get("fields") or {}
+        try:
+            body = spec.push_template.format(
+                **{k: fields[k] for k in spec.required_fields})
+        except (KeyError, IndexError, ValueError):
+            return None
+        return {
+            "title": f"Finding: {kind}",
+            "body": body,
+            "click": "http://127.0.0.1:8942/www/findings.html",
+            "priority": 3,
+            "tags": [spec.tag],
+        }
+
     # Unhandled event type
     return None
 
