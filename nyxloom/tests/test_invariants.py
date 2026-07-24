@@ -610,6 +610,9 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.BUDGET_WARNING,
     EventType.BUDGET_EXHAUSTED,
     EventType.ARTIFACT_REGISTERED,
+    # FN-1 2026-07-24: findings are advisory, projection-less informational
+    # events (same no-op shape as ARTIFACT_REGISTERED). See findings.py.
+    EventType.FINDING_RECORDED,
     EventType.DAEMON_STARTED,
     EventType.DAEMON_STOPPED,
     EventType.TICK_ERROR,

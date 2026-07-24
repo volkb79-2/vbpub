@@ -259,6 +259,11 @@ class EventType(enum.Enum):
     BUDGET_WARNING = "BUDGET_WARNING"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     ARTIFACT_REGISTERED = "ARTIFACT_REGISTERED"
+    # FN-1 2026-07-24 (findings channel, option C): an advisory, one-way
+    # system->user insight. No TaskStateFile projection (informational only,
+    # same shape as ARTIFACT_REGISTERED) -> registered in
+    # test_invariants.KNOWN_IGNORED_EVENT_TYPES. See findings.py.
+    FINDING_RECORDED = "FINDING_RECORDED"
     DAEMON_STARTED = "DAEMON_STARTED"
     DAEMON_STOPPED = "DAEMON_STOPPED"
     TICK_ERROR = "TICK_ERROR"
