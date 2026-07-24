@@ -339,8 +339,8 @@ from typing import Any
 
 from . import (
     adapters, backlog_items, commands, config, decision_chat, decisions, frontmatter,
-    intake_chat, leases, lint, notify, paths, reconcile, render, stages, storage, watchdog,
-    wrapper,
+    intake_chat, leases, lint, merge_digest, notify, paths, reconcile, render, stages,
+    storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -2285,7 +2285,10 @@ class Daemon:
             project, cfg, states, EventType.MERGE_RECORDED,
             {"merge_commit": new_commit,
              "progress_units": self._merge_progress_units(cfg, new_commit),
-             "source_kind": "review"},
+             "source_kind": "review",
+             "carver_digest": merge_digest.carver_digest_payload(
+                 cfg, states, task_id, new_commit, source_kind="review",
+             )},
             task_id=task_id))
 
         # Best-effort backlog auto-tick, same parity as cmd_merge (cli.py) --
