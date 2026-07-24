@@ -177,7 +177,7 @@ features:
     never leaves the default branch red; a failing pre-merge gate routes back for a fix.
   - The independent-review stage is named for its role, not a model tier; state transitions
     stay mechanical and an LLM only emits typed judgments consumed by the state machine.
-  status: building
+  status: shipped
   milestone: M1
 - id: F018
   title: Long-running, harness-portable strategic carver

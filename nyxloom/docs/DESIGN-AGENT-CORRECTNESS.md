@@ -199,8 +199,11 @@ writes/validates spine revision N *before* compacting and the carver re-reads it
 - **D-CORRECT-3** — `triage_class` via a long-running cheap model (typed, safe).
   ⏳ **folds into F018** (same long-running-cheap-agent-emits-typed-judgment pattern as the carver).
 - **D-CORRECT-4** — changed-lines mutation gate (behavior proof).
-  ✅ **DONE** (merged `0ea18888`): `mutation_gate.py`. NOTE: it is a standalone tool; wiring it
-  into the pipeline as an actual gate is the remaining half of F017.
+  ✅ **DONE** (tool merged `0ea18888`; WIRED into the pipeline `438777a7`): `mutation_gate.py` is
+  now an opt-in gate (`policy.mutation_gate`, default off) run in `_execute_auto_merge` after the
+  D-CORRECT-1 pre-merge coverage gate, on the same scratch tree — a surviving mutant routes to
+  REVIEW_REJECTED and never publishes. `--test` self-derives a focused per-mutant command from the
+  1:1 src↔tests layout (fail-closed on a missing sibling). This completes F017.
 - **D-CORRECT-5** — negative-oracle enforcement. ✅ **ALREADY LIVE** = lint rule L3.
 - **D-CORRECT-6 / F018** — long-running, harness-portable, externally-compacted carver.
   📋 **PLANNED** (`docs/plan-long-running-carver.md`, sol@high, 6 packages P1–P6). Refinement
