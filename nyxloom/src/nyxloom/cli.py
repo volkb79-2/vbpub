@@ -1154,6 +1154,49 @@ def cmd_free_models_refresh(args) -> int:
     return 0
 
 
+def cmd_finding_record(args) -> int:
+    """finding record --project P --kind K --title T [--body B]
+    [--field KEY=VALUE ...] [--task-id ID] [--severity S]"""
+    from . import findings
+    fields = {}
+    for item in args.field:
+        if "=" not in item:
+            print(f"error: --field must be KEY=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        key, value = item.split("=", 1)
+        fields[key] = value
+    ev = findings.record_finding(
+        args.project, args.kind, title=args.title, body=args.body,
+        fields=fields, task_id=args.task_id, severity=args.severity)
+    print(f"recorded F-{args.project}-{ev.sequence} ({args.kind})")
+    return 0
+
+
+def cmd_finding_list(args) -> int:
+    """finding list [--project P] [--kind K]"""
+    from . import findings
+    from .config import load_registry
+    if args.project:
+        projects = [args.project]
+    else:
+        projects = sorted(load_registry().keys())
+    rows = []
+    for project in projects:
+        for f in findings.load_findings(project):
+            if args.kind and f.kind != args.kind:
+                continue
+            rows.append({
+                "id": f.finding_id, "project": f.project, "kind": f.kind,
+                "severity": f.severity, "push": "yes" if f.pushable else "no",
+                "title": f.title,
+            })
+    if rows:
+        print(_format_table(rows, ["id", "project", "kind", "severity", "push", "title"]))
+    else:
+        print("no findings")
+    return 0
+
+
 def cmd_capability_map_refresh(args) -> int:
     """capability-map refresh [--dry-run]
 
@@ -1353,6 +1396,24 @@ def main(argv: list[str] | None = None) -> int:
     cm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                     help="Compute the catalog without writing routes.toml")
 
+    # finding (FN-4: CLI verbs)
+    finding_parser = subparsers.add_parser("finding")
+    finding_subs = finding_parser.add_subparsers(dest="finding_cmd")
+
+    fr = finding_subs.add_parser("record")
+    fr.add_argument("--project", required=True)
+    fr.add_argument("--kind", required=True)
+    fr.add_argument("--title", required=True)
+    fr.add_argument("--body", default="")
+    fr.add_argument("--field", action="append", default=[],
+                    metavar="KEY=VALUE", help="typed field for a pushable kind (repeatable)")
+    fr.add_argument("--task-id", dest="task_id", default=None)
+    fr.add_argument("--severity", default="info")
+
+    fl = finding_subs.add_parser("list")
+    fl.add_argument("--project", default=None, help="default: all registered projects")
+    fl.add_argument("--kind", default=None, help="filter by kind")
+
     try:
         args = parser.parse_args(argv)
     except (SystemExit, argparse.ArgumentError) as e:
@@ -1418,6 +1479,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "capability-map":
             if args.capability_map_cmd == "refresh":
                 return cmd_capability_map_refresh(args)
+            else:
+                parser.print_help(sys.stderr)
+                return 2
+        elif args.cmd == "finding":
+            if args.finding_cmd == "record":
+                return cmd_finding_record(args)
+            elif args.finding_cmd == "list":
+                return cmd_finding_list(args)
             else:
                 parser.print_help(sys.stderr)
                 return 2
