@@ -90,6 +90,7 @@ class NotifyConfig:
         "DECISION_OPENED", "TASK_BLOCKED", "PROVIDER_STATE_CHANGED",
         "BUDGET_WARNING", "BUDGET_EXHAUSTED", "SPEC_ATTENTION",
         "NEEDS_OPERATOR", "WAVE_CLOSED", "ATTEMPT_STALLED",
+        "FINDING_RECORDED",
     ])
     digest_classes: list[str] = field(default_factory=lambda: [
         "MERGE_RECORDED", "TASK_TRANSITIONED",

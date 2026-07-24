@@ -164,6 +164,109 @@ def test_injection_boundary_needs_operator():
 
 
 # =========================================================================
+# FN-2: FINDING_RECORDED notification_for tests
+# =========================================================================
+
+def test_notification_for_pushable_finding_uses_template():
+    """FN-2: pushable finding pushes with template body, NOT free-text title/body (SPEC-13)."""
+    ev = Event(
+        schema_version=1,
+        sequence=100,
+        timestamp=utc_now(),
+        project="demo",
+        actor=Actor(ActorKind.OPERATOR, "findings"),
+        type=EventType.FINDING_RECORDED,
+        payload={
+            "kind": "cost_crossover",
+            "title": "my free text title that must NOT appear in push",
+            "body": "my free text body that must NOT appear in push",
+            "fields": {"cheap_model": "deepseek-flash", "ref_model": "gpt-pro",
+                        "metric": "swe", "ratio": 0.1},
+            "severity": "note",
+        },
+    )
+    note = notification_for(ev)
+    assert note is not None
+    assert note["title"] == "Finding: cost_crossover"
+    assert note["body"] == "deepseek-flash matches gpt-pro on swe at ~0.1x cost"
+    assert note["priority"] == 3
+    assert note["tags"] == ["finding"]
+    # SPEC-13 proof: free-text title/body must NOT appear in the notification
+    combined = note["title"] + note["body"] + note.get("click", "")
+    assert "must NOT appear in push" not in combined
+
+
+def test_notification_for_generic_finding_does_not_push():
+    """FN-2: generic finding (pushable=False) returns None (dashboard-only)."""
+    ev = Event(
+        schema_version=1,
+        sequence=101,
+        timestamp=utc_now(),
+        project="demo",
+        actor=Actor(ActorKind.OPERATOR, "findings"),
+        type=EventType.FINDING_RECORDED,
+        payload={
+            "kind": "generic",
+            "title": "some free text",
+            "body": "some details",
+            "fields": {},
+            "severity": "info",
+        },
+    )
+    note = notification_for(ev)
+    assert note is None
+
+
+def test_notification_for_unknown_finding_kind_does_not_push():
+    """FN-2: unknown finding kind returns None."""
+    ev = Event(
+        schema_version=1,
+        sequence=102,
+        timestamp=utc_now(),
+        project="demo",
+        actor=Actor(ActorKind.OPERATOR, "findings"),
+        type=EventType.FINDING_RECORDED,
+        payload={
+            "kind": "bogus",
+            "title": "bogus finding",
+            "body": "bogus details",
+            "fields": {},
+            "severity": "info",
+        },
+    )
+    note = notification_for(ev)
+    assert note is None
+
+
+def test_notification_for_pushable_finding_missing_field_returns_none():
+    """FN-2: pushable kind missing a required field -> None (template can't format)."""
+    ev = Event(
+        schema_version=1,
+        sequence=103,
+        timestamp=utc_now(),
+        project="demo",
+        actor=Actor(ActorKind.OPERATOR, "findings"),
+        type=EventType.FINDING_RECORDED,
+        payload={
+            "kind": "cost_crossover",
+            "title": "cost crossover",
+            "body": "some body",
+            "fields": {"cheap_model": "deepseek-flash", "ref_model": "gpt-pro",
+                        "metric": "swe"},  # missing "ratio"
+            "severity": "note",
+        },
+    )
+    note = notification_for(ev)
+    assert note is None
+
+
+def test_push_classes_default_contains_finding_recorded():
+    """FN-2: default push_classes includes FINDING_RECORDED."""
+    nc = NotifyConfig()
+    assert "FINDING_RECORDED" in nc.push_classes
+
+
+# =========================================================================
 # Oracle 3: send function — ntfy and webhook integration
 # =========================================================================
 
