@@ -610,3 +610,83 @@ class TestRefreshCatalog:
         assert errors == {}
         assert [record.model_id for record in catalog] == ["fresh-model"]
         assert not store_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# FN-5 -- cost-crossover detection
+
+def _cap_rec(model_id="m", scores=None, price_input=1.0, price_output=1.0,
+             benchmark=None) -> capability_map.CapabilityRecord:
+    """Build an in-memory CapabilityRecord for crossover tests."""
+    return capability_map.CapabilityRecord(
+        model_id=model_id, source="test",
+        scores=dict(scores or {"coding": 0.7}),
+        price_input=price_input, price_output=price_output,
+        context_length=128000,
+        bands={"intelligence": 0, "coding": 2, "agentic": 0},
+        may_review=False, may_carve=False, raw={},
+        benchmark=benchmark,
+    )
+
+
+class TestDetectCostCrossovers:
+    def test_detects_crossover(self):
+        """Two records, same benchmark, scores within epsilon, cheap at ~1/10th cost."""
+        catalog = [
+            _cap_rec(model_id="cheap", scores={"acc": 0.70},
+                     price_input=0.01, price_output=0.01, benchmark="swe"),
+            _cap_rec(model_id="ref", scores={"acc": 0.71},
+                     price_input=2.0, price_output=3.0, benchmark="swe"),
+        ]
+        result = capability_map.detect_cost_crossovers(catalog)
+        assert len(result) == 1
+        cc = result[0]
+        assert cc["cheap_model"] == "cheap"
+        assert cc["ref_model"] == "ref"
+        assert cc["metric"] == "swe"
+        # ratio = (0.01+0.01) / (2.0+3.0) = 0.02/5.0 = 0.004
+        assert cc["ratio"] == 0.004
+        assert cc["score_a"] == 0.70
+        assert cc["score_b"] == 0.71
+
+    def test_no_crossover_when_cheap_too_weak(self):
+        """Scores gap > epsilon → no crossover."""
+        catalog = [
+            _cap_rec(model_id="cheap", scores={"acc": 0.60},
+                     price_input=0.01, price_output=0.01, benchmark="swe"),
+            _cap_rec(model_id="ref", scores={"acc": 0.90},
+                     price_input=2.0, price_output=3.0, benchmark="swe"),
+        ]
+        result = capability_map.detect_cost_crossovers(
+            catalog, score_epsilon=0.1)
+        assert result == []
+
+    def test_no_crossover_when_not_cheap_enough(self):
+        """Near-equal scores but price ratio > cost_ratio_max → no crossover."""
+        catalog = [
+            _cap_rec(model_id="cheap", scores={"acc": 0.70},
+                     price_input=2.0, price_output=2.5, benchmark="swe"),
+            _cap_rec(model_id="ref", scores={"acc": 0.71},
+                     price_input=2.0, price_output=3.0, benchmark="swe"),
+        ]
+        result = capability_map.detect_cost_crossovers(catalog)
+        # ratio = 4.5 / 5.0 = 0.9 > 0.5
+        assert result == []
+
+    def test_skips_records_with_no_price_or_no_scores(self):
+        """Records missing scores or price (None/zero) are excluded."""
+        catalog = [
+            _cap_rec(model_id="a", scores={"acc": 0.90},
+                     price_input=0.0, price_output=0.0, benchmark="swe"),
+            _cap_rec(model_id="b", scores={},
+                     price_input=1.0, price_output=1.0, benchmark="swe"),
+            _cap_rec(model_id="c", scores={"acc": 0.50},
+                     price_input=None, price_output=None, benchmark="swe"),
+            # This one SHOULD be detected if it were the only valid record,
+            # but alone it has no peers → no crossover
+            _cap_rec(model_id="d", scores={"acc": 0.70},
+                     price_input=0.1, price_output=0.1, benchmark="other"),
+        ]
+        result = capability_map.detect_cost_crossovers(catalog)
+        # No group has at least 2 comparable records → empty result
+        assert result == []
