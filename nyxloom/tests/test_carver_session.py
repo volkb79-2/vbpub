@@ -247,6 +247,19 @@ class TestProjectSession:
         assert snap.last_turn_sequence == 1
         assert snap.successful_turns_since_compaction == 1
 
+    def test_second_resume_increments_turn_sequence(self):
+        """Exercises line 184: last_turn_sequence += 1 when it is not None
+        (the second resume increments from 1 to 2)."""
+        start = _event(EventType.CARVER_SESSION_STARTED, project="p1",
+                        payload={"generation": 1, "session_id": "sess-1"})
+        resume1 = _event(EventType.CARVER_SESSION_RESUMED, project="p1",
+                          payload={"generation": 1})
+        resume2 = _event(EventType.CARVER_SESSION_RESUMED, project="p1",
+                          payload={"generation": 1})
+        snap = project_session([start, resume1, resume2])
+        assert snap.last_turn_sequence == 2
+        assert snap.successful_turns_since_compaction == 2
+
     def test_context_consumed_advances_cursor(self):
         start = _event(EventType.CARVER_SESSION_STARTED, project="p1",
                         payload={"generation": 1, "session_id": "sess-1"})
