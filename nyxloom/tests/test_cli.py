@@ -1192,3 +1192,9 @@ def test_finding_list_no_project_enumerates_registry(sample_project, tmp_state, 
     out = capsys.readouterr().out
     assert "demo" in out
     assert "registry-title" in out
+
+
+def test_finding_no_subcommand_exits_2(capsys):
+    """Bare `finding` (no subcommand) prints help to stderr and returns 2."""
+    exit_code = cli.main(["finding"])
+    assert exit_code == 2
