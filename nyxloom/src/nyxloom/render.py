@@ -1763,9 +1763,10 @@ def _render_findings(www: Path, registry: dict[str, Path]) -> None:
     <div id="findings">
       {"".join(sections) if sections else "<p>No findings yet.</p>"}
     </div>
+    {_FINDINGS_JS}
     """
 
-    html_content = _html_head("Findings") + content + _html_foot() + _FINDINGS_JS
+    html_content = _html_head("Findings") + content + _html_foot()
     (www / "findings.html").write_text(html_content, encoding="utf-8")
 
 
