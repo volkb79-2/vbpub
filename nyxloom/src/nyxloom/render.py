@@ -303,6 +303,7 @@ NAV = """
   <a href="logs.html">Logs</a> |
   <a href="config.html">Config</a> |
   <a href="decisions.html">Decisions</a> |
+  <a href="findings.html">Findings</a> |
   <a href="intake.html">Intake</a>
 </nav>
 """
@@ -594,6 +595,9 @@ def render_all(registry: dict[str, Path]) -> Path:
 
     # Render decisions.html (P18 2026-07-16: decision-chat bridge)
     _render_decisions(www, registry)
+
+    # Render findings.html (FN-3 2026-07-30: findings dashboard)
+    _render_findings(www, registry)
 
     # Render intake.html (P30 2026-07-16: intake-chat bridge)
     _render_intake(www, registry)
@@ -1720,6 +1724,47 @@ def _render_decisions(www: Path, registry: dict[str, Path]) -> None:
 
     html_content = _html_head("Decisions") + content + _html_foot()
     (www / "decisions.html").write_text(html_content, encoding="utf-8")
+
+
+def _render_findings(www: Path, registry: dict[str, Path]) -> None:
+    """Render findings.html: every project's findings as free-text cards,
+    newest-first. Every dynamic string (title, body, kind, project,
+    created, severity, task_id, field keys/values) is html.escape'd."""
+    log.debug("page render", page="findings")
+    from . import findings as findings_mod
+
+    sections = []
+    for project in sorted(registry.keys()):
+        root = registry[project]
+        try:
+            config.ProjectConfig.load(root)
+        except Exception:
+            continue
+
+        project_findings = findings_mod.load_findings(project)
+        for f in project_findings:
+            task_link = ""
+            if f.task_id is not None:
+                task_link = (
+                    f' · <a href="task/{html.escape(f.project)}/{html.escape(f.task_id)}.html">'
+                    f'{html.escape(f.task_id)}</a>'
+                )
+            sections.append(f"""
+      <div class="finding-card severity-{html.escape(f.severity)}" data-kind="{html.escape(f.kind)}">
+        <h3>{html.escape(f.title)} <small>({html.escape(f.kind)} · {html.escape(f.project)})</small></h3>
+        <p class="finding-body">{html.escape(f.body)}</p>
+        <p class="finding-meta">{html.escape(f.created)}{task_link}</p>
+      </div>
+    """)
+
+    content = f"""
+    <div id="findings">
+      {"".join(sections) if sections else "<p>No findings yet.</p>"}
+    </div>
+    """
+
+    html_content = _html_head("Findings") + content + _html_foot()
+    (www / "findings.html").write_text(html_content, encoding="utf-8")
 
 
 _INTAKE_JS = """
