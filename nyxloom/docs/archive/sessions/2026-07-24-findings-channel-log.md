@@ -47,7 +47,33 @@ gates still serialize (concurrent test-runners OOM → SIGKILL-137).
 | `d44f5ade` | FN-2 findings push wiring (SPEC-13) | deepseek-flash/reasonix | 12/12 diff-cov, suite green | (pre-reviewer) |
 | `a839e3b9` | FN-3 findings dashboard page | deepseek-flash/reasonix | 20/20 diff-cov (after 1 coverage-resume + 1 minor-fix), suite green | CLEAN (three-dot); 1 minor→fixed |
 | `d5aa6054` | FN-4 findings CLI verbs | deepseek-flash/reasonix | 48/48 diff-cov (after 1 coverage-resume), suite green | CLEAN, no findings |
+| `32491bda` | FN-6 finding→intake interaction bridge | deepseek-flash/reasonix | 42/42 diff-cov (after HTML-placement fix + 2 error-branch coverage tests), suite green | **security surface verified CLEAN** (finding_id equality-only, server-minted intake_id, escaped onclick); 1 minor (HTML placement)→fixed |
+| `ba7dd5af` | FN-5 auto-emit cost_crossover findings | deepseek-flash/reasonix | 34/34 diff-cov (after 1 coverage-resume + a `# pragma: no cover` on a genuinely-unreachable guard), suite green | CLEAN, no findings |
 
+**✅ FULL EPIC COMPLETE + LIVE (main `ba7dd5af`).** Findings channel (option C) end-to-end:
+record (event-first) → SPEC-13-safe push (typed kinds) → dashboard cards → CLI → **promote
+→ intake → action** (FN-6, the operator's interactivity refinement) → **auto-emit
+cost_crossover** (FN-5, the token-spend tie-in). Detector live-smoke-tested on main:
+`detect_cost_crossovers` correctly flags deepseek-flash (70 @ price 3) ≈ gpt-pro (71 @
+price 30) on SWE at ratio 0.1. FN-6's `/api/finding/promote` is gate+review-verified but
+needs a daemon restart to exercise live (operator deploy op). A real
+`capability-map refresh --emit-findings <proj>` (non-dry-run) is likewise an operator deploy.
+
+### Gate-vs-reviewer scoreboard across the 6-package epic (the endgame evidence)
+- **Reviewer caught what the gate can't** (FN-6): invalid-HTML `<script>` placement — tests
+  pass because the script is *present*; only a reviewer flags it's outside `<body>`. Plus
+  it verified the entire security surface of the daemon endpoint.
+- **Gate caught what the reviewer missed** — THREE times: FN-3 coverage (defensive skip),
+  FN-4 coverage (no-subcommand branch), FN-6 coverage (2 error branches the reviewer
+  counted as "tested"), FN-5 coverage (empty-scores skip + an unreachable guard).
+- **Controller caught what neither would** (FN-3): the two-dot-diff false-blocker (reviewer
+  had no merge-history; fixed by three-dot + oversight).
+Conclusion for the oversight-free goal: the **deterministic gate is the correctness floor**;
+the reviewer adds a real, cheap ($0.002/pkg) design/security layer the gate can't; the
+controller's residual irreplaceable job is **spec authoring** (why deepseek one-shots these)
++ harness correctness — not per-package re-reading.
+
+### (superseded core-complete marker below — kept for history)
 **✅ ONE-WAY CORE COMPLETE + LIVE (main `d5aa6054`).** Live smoke test (real CLI, no
 monkeypatch, isolated NYXLOOM_STATE, in the test-runner): `nyxloom finding record
 --kind cost_crossover ...` → `recorded F-demo-1`; `nyxloom finding list` → the row with
