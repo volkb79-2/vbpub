@@ -576,3 +576,190 @@ class TestFetchJson:
                 "https://example.test/data", headers={"x-api-key": "secret"}, timeout=3) == {"items": []}
         assert captured["request"].get_header("X-api-key") == "secret"
         assert captured["timeout"] == 3
+
+
+def _scale_html(rows, chunk_id="11"):
+    """Build a Next.js RSC HTML fixture exactly as the server serialises it."""
+    import json
+    chunk = f"{chunk_id}:" + json.dumps(rows)
+    return f'<html><body><script>self.__next_f.push([1,{json.dumps(chunk)}])</script></body></html>'
+
+
+class TestScaleSealSource:
+    """Scale SEAL leaderboard source — online HTTP replaced by _fetch_text patches."""
+
+    def _cfg(self, **overrides):
+        cfg = {"kind": "scale-seal", "pages": [
+            {"url": "https://labs.scale.com/leaderboard/mcp_atlas",
+             "axis": "agentic", "benchmark": "scale-mcp-atlas", "version": None},
+        ]}
+        cfg.update(overrides)
+        return cfg
+
+    def _side_effect(self, html_by_url):
+        """Return a _fetch_text side_effect that returns the mapped HTML per URL."""
+
+        def fetch(url, *, headers=None, timeout=None):
+            return html_by_url[url]
+        return fetch
+
+    def test_happy_path_agentic_page(self):
+        rows = [
+            {"model": "claude-opus-4-8 (max)", "version": "", "rank": 1, "score": 82.2,
+             "confidenceInterval_upper": 1.95, "company": "anthropic", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "gpt-5.6 (sol)", "version": "", "rank": 2, "score": 80.1,
+             "confidenceInterval_upper": 1.90, "company": "openai", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "Muse Spark 1.1", "version": "", "rank": 3, "score": 75.0,
+             "confidenceInterval_upper": 1.80, "company": "muse", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "gemini-3.5-flash (high)", "version": "", "rank": 4, "score": 70.3,
+             "confidenceInterval_upper": 1.70, "company": "google", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "gpt-5.5 (xhigh)", "version": "", "rank": 5, "score": 68.0,
+             "confidenceInterval_upper": 1.60, "company": "openai", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "Inkling (xHigh)", "version": "", "rank": 6, "score": 65.0,
+             "confidenceInterval_upper": 1.50, "company": "inkling", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "Deprecated Model", "version": "", "rank": 7, "score": 50.0,
+             "confidenceInterval_upper": 1.00, "company": "old", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": True, "maxScore": 92.75},
+            {"model": "", "version": "", "rank": 8, "score": 40.0,
+             "confidenceInterval_upper": 1.00, "company": "nowhere", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+            {"model": "No Score Model", "version": "", "rank": 9,
+             "confidenceInterval_upper": 1.00, "company": "null", "isNew": False,
+             "createdAt": "2025-01-01T00:00:00Z", "deprecated": False, "maxScore": 92.75},
+        ]
+        html = _scale_html(rows)
+        url = "https://labs.scale.com/leaderboard/mcp_atlas"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})) as fetch:
+            records = benchmark_sources.ScaleSealSource("scale", self._cfg()).fetch()
+
+        fetch.assert_called_once_with(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"})
+
+        # claude-opus-4-8 (max) → effort=="max"
+        claude = next(r for r in records if "claude-opus-4-8" in r.model_id)
+        assert claude.model_id == "claude-opus-4-8"
+        assert claude.effort == "max"
+        assert claude.scores == {"agentic": 82.2}
+        assert claude.benchmark == "scale-mcp-atlas"
+        assert claude.version is None
+        assert claude.raw["company"] == "anthropic"
+
+        # gpt-5.6 (sol) → non-effort paren kept, effort is None
+        sol = next(r for r in records if "gpt-5.6" in r.model_id)
+        assert sol.model_id == "gpt-5.6 (sol)"
+        assert sol.effort is None
+
+        # Muse Spark 1.1 → no parens
+        muse = next(r for r in records if "Muse Spark" in r.model_id)
+        assert muse.model_id == "Muse Spark 1.1"
+        assert muse.effort is None
+
+        # gemini-3.5-flash (high) → effort=="high"
+        gemini = next(r for r in records if "gemini-3.5-flash" in r.model_id)
+        assert gemini.model_id == "gemini-3.5-flash"
+        assert gemini.effort == "high"
+
+        # Inkling (xHigh) → effort=="xhigh" (case normalised)
+        inkling = next(r for r in records if "Inkling" in r.model_id)
+        assert inkling.model_id == "Inkling"
+        assert inkling.effort == "xhigh"
+
+        # No records for deprecated, empty-name, or no-score rows
+        assert all("Deprecated" not in r.model_id for r in records)
+        assert all(r.model_id != "" for r in records)
+        assert all("No Score" not in r.model_id for r in records)
+
+        assert len(records) == 6
+
+    def test_axis_and_multi_page(self):
+        rows_agentic = [
+            {"model": "model-a", "version": "", "rank": 1, "score": 90.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+        ]
+        rows_coding = [
+            {"model": "model-b", "version": "", "rank": 1, "score": 85.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+        ]
+        html_a = _scale_html(rows_agentic)
+        html_c = _scale_html(rows_coding)
+        url_a = "https://labs.scale.com/leaderboard/mcp_atlas"
+        url_c = "https://labs.scale.com/leaderboard/swe_bench_pro"
+        cfg = self._cfg(pages=[
+            {"url": url_a, "axis": "agentic", "benchmark": "scale-mcp-atlas", "version": None},
+            {"url": url_c, "axis": "coding", "benchmark": "scale-swe-bench-pro", "version": "v2"},
+        ], min_rows=1)
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url_a: html_a, url_c: html_c})):
+            records = benchmark_sources.ScaleSealSource("scale", cfg).fetch()
+
+        assert len(records) == 2
+        rec_a = next(r for r in records if r.model_id == "model-a")
+        assert rec_a.scores == {"agentic": 90.0}
+        assert rec_a.benchmark == "scale-mcp-atlas"
+        assert rec_a.version is None
+        rec_b = next(r for r in records if r.model_id == "model-b")
+        assert rec_b.scores == {"coding": 85.0}
+        assert rec_b.benchmark == "scale-swe-bench-pro"
+        assert rec_b.version == "v2"
+
+    def test_min_rows_fail_loud(self):
+        rows = [
+            {"model": "only-one", "version": "", "rank": 1, "score": 50.0,
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+        ]
+        html = _scale_html(rows)
+        url = "https://labs.scale.com/leaderboard/some_page"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})):
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="min_rows"):
+                benchmark_sources.ScaleSealSource("scale", self._cfg(
+                    pages=[{"url": url, "axis": "coding", "benchmark": "b"}],
+                    min_rows=5)).fetch()
+
+    def test_structure_drift_fail_loud(self):
+        # HTML with no push chunk containing model/score/rank
+        html = "<html><body><script>self.__next_f.push([1,\"1:{}\"])</script></body></html>"
+        url = "https://labs.scale.com/leaderboard/some_page"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})):
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="min_rows"):
+                benchmark_sources.ScaleSealSource("scale", self._cfg(
+                    pages=[{"url": url, "axis": "coding", "benchmark": "b"}],
+                    min_rows=1)).fetch()
+
+    def test_missing_or_empty_pages_raises(self):
+        with pytest.raises(benchmark_sources.BenchmarkSourceError, match="pages"):
+            benchmark_sources.ScaleSealSource("scale", {"kind": "scale-seal"}).fetch()
+        with pytest.raises(benchmark_sources.BenchmarkSourceError, match="pages"):
+            benchmark_sources.ScaleSealSource("scale", {"kind": "scale-seal", "pages": []}).fetch()
+
+    def test_registry_and_factory(self):
+        source = benchmark_sources.source_from_config("scale", {
+            "kind": "scale-seal",
+            "pages": [{"url": "u", "axis": "coding", "benchmark": "b", "version": None}],
+        })
+        assert isinstance(source, benchmark_sources.ScaleSealSource)
+
+    def test_score_coercion_from_string(self):
+        rows = [
+            {"model": "m", "version": "", "rank": 1, "score": "73.5",
+             "company": "co", "isNew": False, "createdAt": "", "deprecated": False,
+             "maxScore": 100},
+        ]
+        html = _scale_html(rows)
+        url = "https://labs.scale.com/leaderboard/some_page"
+        with patch("nyxloom.benchmark_sources._fetch_text",
+                   side_effect=self._side_effect({url: html})):
+            records = benchmark_sources.ScaleSealSource("scale", self._cfg(
+                pages=[{"url": url, "axis": "coding", "benchmark": "b"}], min_rows=1)).fetch()
+        assert len(records) == 1
+        assert records[0].scores == {"coding": 73.5}
