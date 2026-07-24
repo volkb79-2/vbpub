@@ -1154,6 +1154,27 @@ def cmd_free_models_refresh(args) -> int:
     return 0
 
 
+def cmd_capability_map_refresh(args) -> int:
+    """capability-map refresh [--dry-run]
+
+    Fetch every enabled benchmark source, assemble the capability catalog
+    (+ operator-surfaced unrated models), and write it to routes.toml's
+    capability-map managed block. --dry-run computes + prints without writing."""
+    from . import capability_map, paths
+
+    cfg = capability_map.CapabilityMapConfig.load()
+    catalog, errors = capability_map.refresh_catalog(cfg)
+    dry = getattr(args, "dry_run", False)
+    if not dry:
+        capability_map.write_capability_catalog(paths.routes_path(), catalog)
+    print(f"assembled {len(catalog)} capability record(s)")
+    for name, err in sorted(errors.items()):
+        print(f"  source {name} error: {err}")
+    print(f"dry-run: {paths.routes_path()} not written" if dry
+          else f"wrote {paths.routes_path()}")
+    return 0
+
+
 def cmd_version(args) -> int:
     """version"""
     from . import __version__
@@ -1320,6 +1341,14 @@ def main(argv: list[str] | None = None) -> int:
     fm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                     help="Compute the plan without writing routes.toml")
 
+    # capability-map (B20: capability catalog refresh)
+    capability_map_parser = subparsers.add_parser("capability-map")
+    capmap_subs = capability_map_parser.add_subparsers(dest="capability_map_cmd")
+
+    cm_refresh_parser = capmap_subs.add_parser("refresh")
+    cm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                                    help="Compute the catalog without writing routes.toml")
+
     try:
         args = parser.parse_args(argv)
     except (SystemExit, argparse.ArgumentError) as e:
@@ -1379,6 +1408,12 @@ def main(argv: list[str] | None = None) -> int:
                 return cmd_free_models_list(args)
             elif args.free_models_cmd == "refresh":
                 return cmd_free_models_refresh(args)
+            else:
+                parser.print_help(sys.stderr)
+                return 2
+        elif args.cmd == "capability-map":
+            if args.capability_map_cmd == "refresh":
+                return cmd_capability_map_refresh(args)
             else:
                 parser.print_help(sys.stderr)
                 return 2

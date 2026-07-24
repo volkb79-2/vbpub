@@ -979,3 +979,99 @@ def test_bootstrap_logging_invalid_env_level_falls_back_to_info(
 
     assert exit_code == 0
     assert capsys.readouterr().out.strip() != ""
+
+
+def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, monkeypatch):
+    """capability-map refresh writes the catalog and prints summary."""
+    from nyxloom.capability_map import CapabilityRecord
+
+    # Spy on write_capability_catalog
+    call_log = []
+
+    def mock_write(path, catalog):
+        call_log.append((str(path), list(catalog)))
+        return None
+
+    monkeypatch.setattr(
+        "nyxloom.capability_map.write_capability_catalog", mock_write)
+
+    # Mock refresh_catalog to return one record + one source error
+    mock_record = CapabilityRecord(
+        model_id="test-model", source="scale-seal",
+        scores={"coding": 85.0}, price_input=None, price_output=None,
+        context_length=None, bands={"intelligence": 0, "coding": 3, "agentic": 0},
+        may_review=False, may_carve=False, raw={},
+    )
+
+    def mock_refresh(cfg=None, sources=None):
+        return ([mock_record], {"src": "boom"})
+
+    monkeypatch.setattr(
+        "nyxloom.capability_map.refresh_catalog", mock_refresh)
+
+    from nyxloom import paths
+    routes_path_str = str(paths.routes_path())
+
+    exit_code = cli.main(["capability-map", "refresh"])
+
+    assert exit_code == 0
+    assert len(call_log) == 1
+    assert call_log[0][0] == routes_path_str
+    assert len(call_log[0][1]) == 1
+    assert call_log[0][1][0].model_id == "test-model"
+
+    out = capsys.readouterr().out
+    assert "assembled 1" in out
+    assert "src" in out
+    assert "boom" in out
+    assert "wrote" in out
+    assert routes_path_str in out
+
+
+def test_capability_map_no_subcommand_prints_help(capsys):
+    """Bare `capability-map` (no subcommand) prints help to stderr and returns 2."""
+    exit_code = cli.main(["capability-map"])
+    assert exit_code == 2
+
+
+def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monkeypatch):
+    """capability-map refresh --dry-run prints without writing."""
+    from nyxloom.capability_map import CapabilityRecord
+
+    call_log = []
+
+    def mock_write(path, catalog):
+        call_log.append((str(path), list(catalog)))
+        return None
+
+    monkeypatch.setattr(
+        "nyxloom.capability_map.write_capability_catalog", mock_write)
+
+    mock_record = CapabilityRecord(
+        model_id="test-model", source="scale-seal",
+        scores={"coding": 85.0}, price_input=None, price_output=None,
+        context_length=None, bands={"intelligence": 0, "coding": 3, "agentic": 0},
+        may_review=False, may_carve=False, raw={},
+    )
+
+    def mock_refresh(cfg=None, sources=None):
+        return ([mock_record], {"src": "boom"})
+
+    monkeypatch.setattr(
+        "nyxloom.capability_map.refresh_catalog", mock_refresh)
+
+    from nyxloom import paths
+    routes_path_str = str(paths.routes_path())
+
+    exit_code = cli.main(["capability-map", "refresh", "--dry-run"])
+
+    assert exit_code == 0
+    # write should NOT be called
+    assert len(call_log) == 0
+
+    out = capsys.readouterr().out
+    assert "assembled 1" in out
+    assert "src" in out
+    assert "boom" in out
+    assert "not written" in out
+    assert routes_path_str in out
