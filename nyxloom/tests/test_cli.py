@@ -982,43 +982,49 @@ def test_bootstrap_logging_invalid_env_level_falls_back_to_info(
 
 
 def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, monkeypatch):
-    """capability-map refresh writes the catalog and prints summary."""
-    from nyxloom.capability_map import CapabilityRecord
+    """A real refresh persists both the accumulated store and catalog."""
+    from nyxloom import benchmark_store, capability_map, paths
+    from nyxloom.benchmark_sources import BenchmarkRecord
 
-    # Spy on write_capability_catalog
-    call_log = []
-
-    def mock_write(path, catalog):
-        call_log.append((str(path), list(catalog)))
-        return None
-
-    monkeypatch.setattr(
-        "nyxloom.capability_map.write_capability_catalog", mock_write)
-
-    # Mock refresh_catalog to return one record + one source error
-    mock_record = CapabilityRecord(
+    record = BenchmarkRecord(
         model_id="test-model", source="scale-seal",
-        scores={"coding": 85.0}, price_input=None, price_output=None,
-        context_length=None, bands={"intelligence": 0, "coding": 3, "agentic": 0},
-        may_review=False, may_carve=False, raw={},
+        scores={"coding": 0.85}, price_input=None, price_output=None,
+        context_length=None, raw={},
+    )
+    monkeypatch.setattr(
+        "nyxloom.capability_map.benchmark_sources.fetch_all",
+        lambda sources: ([record], {"src": "boom"}),
     )
 
-    def mock_refresh(cfg=None, sources=None):
-        return ([mock_record], {"src": "boom"})
+    catalog_calls = []
+    real_catalog_writer = capability_map.write_capability_catalog
 
-    monkeypatch.setattr(
-        "nyxloom.capability_map.refresh_catalog", mock_refresh)
+    def spy_catalog_writer(path, catalog):
+        catalog_calls.append((path, list(catalog)))
+        return real_catalog_writer(path, catalog)
 
-    from nyxloom import paths
+    store_calls = []
+    real_store_writer = benchmark_store.write_store
+
+    def spy_store_writer(path, rows):
+        store_calls.append((path, list(rows)))
+        return real_store_writer(path, rows)
+
+    monkeypatch.setattr(capability_map, "write_capability_catalog", spy_catalog_writer)
+    monkeypatch.setattr(benchmark_store, "write_store", spy_store_writer)
+
     routes_path_str = str(paths.routes_path())
+    store_path = paths.routes_path().parent / "benchmark-store.toml"
 
     exit_code = cli.main(["capability-map", "refresh"])
 
     assert exit_code == 0
-    assert len(call_log) == 1
-    assert call_log[0][0] == routes_path_str
-    assert len(call_log[0][1]) == 1
-    assert call_log[0][1][0].model_id == "test-model"
+    assert len(catalog_calls) == 1
+    assert str(catalog_calls[0][0]) == routes_path_str
+    assert [record.model_id for record in catalog_calls[0][1]] == ["test-model"]
+    assert len(store_calls) == 1
+    assert store_calls[0][0] == store_path
+    assert store_path.exists()
 
     out = capsys.readouterr().out
     assert "assembled 1" in out
@@ -1026,6 +1032,7 @@ def test_capability_map_refresh_write_path(sample_project, tmp_state, capsys, mo
     assert "boom" in out
     assert "wrote" in out
     assert routes_path_str in out
+    assert str(store_path) in out
 
 
 def test_capability_map_no_subcommand_prints_help(capsys):
@@ -1036,38 +1043,39 @@ def test_capability_map_no_subcommand_prints_help(capsys):
 
 def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monkeypatch):
     """capability-map refresh --dry-run prints without writing."""
-    from nyxloom.capability_map import CapabilityRecord
+    from nyxloom import benchmark_store, paths
+    from nyxloom.benchmark_sources import BenchmarkRecord
 
-    call_log = []
-
-    def mock_write(path, catalog):
-        call_log.append((str(path), list(catalog)))
-        return None
-
-    monkeypatch.setattr(
-        "nyxloom.capability_map.write_capability_catalog", mock_write)
-
-    mock_record = CapabilityRecord(
+    record = BenchmarkRecord(
         model_id="test-model", source="scale-seal",
-        scores={"coding": 85.0}, price_input=None, price_output=None,
-        context_length=None, bands={"intelligence": 0, "coding": 3, "agentic": 0},
-        may_review=False, may_carve=False, raw={},
+        scores={"coding": 0.85}, price_input=None, price_output=None,
+        context_length=None, raw={},
+    )
+    monkeypatch.setattr(
+        "nyxloom.capability_map.benchmark_sources.fetch_all",
+        lambda sources: ([record], {"src": "boom"}),
     )
 
-    def mock_refresh(cfg=None, sources=None):
-        return ([mock_record], {"src": "boom"})
+    catalog_calls = []
 
-    monkeypatch.setattr(
-        "nyxloom.capability_map.refresh_catalog", mock_refresh)
+    def mock_write(path, catalog):
+        catalog_calls.append((str(path), list(catalog)))
 
-    from nyxloom import paths
+    monkeypatch.setattr("nyxloom.capability_map.write_capability_catalog", mock_write)
+
+    def fail_store_write(path, rows):
+        pytest.fail("dry-run must not write the benchmark store")
+
+    monkeypatch.setattr(benchmark_store, "write_store", fail_store_write)
+
     routes_path_str = str(paths.routes_path())
+    store_path = paths.routes_path().parent / "benchmark-store.toml"
 
     exit_code = cli.main(["capability-map", "refresh", "--dry-run"])
 
     assert exit_code == 0
-    # write should NOT be called
-    assert len(call_log) == 0
+    assert len(catalog_calls) == 0
+    assert not store_path.exists()
 
     out = capsys.readouterr().out
     assert "assembled 1" in out

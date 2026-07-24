@@ -378,15 +378,26 @@ def write_capability_catalog(path: Path, records: list[CapabilityRecord]) -> Non
 # convenience entry point (B19 dashboard / B20 scheduled-job call this)
 
 def refresh_catalog(cfg: CapabilityMapConfig | None = None,
-                    sources: Any = None) -> tuple[list[CapabilityRecord], dict[str, str]]:
+                    sources: Any = None, *, store_path: Path | None = None,
+                    now: str | None = None
+                    ) -> tuple[list[CapabilityRecord], dict[str, str]]:
     """Fetch every enabled benchmark source and assemble the capability
     catalog in one call. Returns `(catalog, source_errors)` -- a source
     that failed to fetch never aborts the others (see
-    `benchmark_sources.fetch_all`). Does NOT write anything; call
-    `write_capability_catalog` with the result when a persisted refresh is
-    wanted."""
+    `benchmark_sources.fetch_all`). When both `store_path` and `now` are
+    supplied, the fetched records are merged into and written to the
+    accumulate-store before assembly; otherwise no store is written. The
+    catalog itself is not persisted here."""
     resolved_cfg = cfg or CapabilityMapConfig.load()
     records, errors = benchmark_sources.fetch_all(sources)
-    catalog = assemble_catalog(records, resolved_cfg)
+    if store_path is not None and now is not None:
+        from . import benchmark_store
+        existing = benchmark_store.load_store(store_path)
+        merged = benchmark_store.merge_dataset(existing, records, now=now)
+        benchmark_store.write_store(store_path, merged)
+        source_records = merged
+    else:
+        source_records = records
+    catalog = assemble_catalog(source_records, resolved_cfg)
     catalog = surface_unrated(catalog, resolved_cfg)
     return catalog, errors

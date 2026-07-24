@@ -1161,17 +1161,21 @@ def cmd_capability_map_refresh(args) -> int:
     (+ operator-surfaced unrated models), and write it to routes.toml's
     capability-map managed block. --dry-run computes + prints without writing."""
     from . import capability_map, paths
+    from .types import utc_now
 
     cfg = capability_map.CapabilityMapConfig.load()
-    catalog, errors = capability_map.refresh_catalog(cfg)
     dry = getattr(args, "dry_run", False)
+    store_path = None if dry else paths.routes_path().parent / "benchmark-store.toml"
+    now = None if dry else utc_now().isoformat()
+    catalog, errors = capability_map.refresh_catalog(
+        cfg, store_path=store_path, now=now)
     if not dry:
         capability_map.write_capability_catalog(paths.routes_path(), catalog)
     print(f"assembled {len(catalog)} capability record(s)")
     for name, err in sorted(errors.items()):
         print(f"  source {name} error: {err}")
     print(f"dry-run: {paths.routes_path()} not written" if dry
-          else f"wrote {paths.routes_path()}")
+          else f"wrote {paths.routes_path()} and {store_path}")
     return 0
 
 
