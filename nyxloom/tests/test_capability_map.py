@@ -145,6 +145,84 @@ class TestHardFilters:
 
 
 # ---------------------------------------------------------------------------
+# D-B7 -- configured unrated-model surfacing and operator overrides
+
+class TestUnratedSurfacing:
+    def test_surfaces_configured_unbenchmarked_model(self):
+        cfg = capability_map.CapabilityMapConfig(surface_models=["m-new"])
+        catalog = capability_map.assemble_catalog(
+            [_rec(model_id="m-rated")], cfg)
+        surfaced = capability_map.surface_unrated(catalog, cfg)
+
+        assert [record.model_id for record in surfaced] == ["m-rated", "m-new"]
+        new = surfaced[-1]
+        assert new.unrated is True
+        assert new.scores == {}
+        assert new.bands == {axis: 0 for axis in capability_map.AXES}
+        assert new.source == "unrated"
+
+    def test_does_not_duplicate_already_rated_model(self):
+        cfg = capability_map.CapabilityMapConfig(surface_models=["m-rated"])
+        catalog = capability_map.assemble_catalog([_rec(model_id="m-rated")], cfg)
+
+        surfaced = capability_map.surface_unrated(catalog, cfg)
+
+        assert len(surfaced) == len(catalog)
+        assert surfaced[0].model_id == "m-rated"
+        assert surfaced[0].unrated is False
+
+    def test_manual_bands_override_all_axes(self):
+        cfg = capability_map.CapabilityMapConfig(
+            surface_models=["m"], manual_bands={"m": 2})
+
+        [record] = capability_map.surface_unrated([], cfg)
+
+        assert record.bands == {axis: 2 for axis in capability_map.AXES}
+        assert record.unrated is True
+
+    def test_compares_to_copies_rated_bands(self):
+        cfg = capability_map.CapabilityMapConfig(
+            surface_models=["m"], compares_to={"m": "luna"})
+        [luna] = capability_map.assemble_catalog([
+            _rec(model_id="luna", scores={
+                "intelligence": 0.5, "coding": 0.5, "agentic": 0.1})], cfg)
+
+        [record] = capability_map.surface_unrated([luna], cfg)[1:]
+
+        assert record.bands == luna.bands
+        assert record.unrated is True
+
+    def test_compares_to_missing_model_leaves_zero_bands(self):
+        cfg = capability_map.CapabilityMapConfig(
+            surface_models=["m"], compares_to={"m": "ghost"})
+
+        [record] = capability_map.surface_unrated([], cfg)
+
+        assert record.bands == {axis: 0 for axis in capability_map.AXES}
+
+    def test_manual_bands_take_precedence_over_compares_to(self):
+        cfg = capability_map.CapabilityMapConfig(
+            surface_models=["m"], manual_bands={"m": 2},
+            compares_to={"m": "luna"})
+        [luna] = capability_map.assemble_catalog([
+            _rec(model_id="luna", scores={
+                "intelligence": 0.9, "coding": 0.9, "agentic": 0.9})], cfg)
+
+        [record] = capability_map.surface_unrated([luna], cfg)[1:]
+
+        assert record.bands == {axis: 2 for axis in capability_map.AXES}
+
+    def test_role_grants_apply_to_unrated_model(self):
+        cfg = capability_map.CapabilityMapConfig(
+            surface_models=["m"], review_grants=["m"], carve_grants=["m"])
+
+        [record] = capability_map.surface_unrated([], cfg)
+
+        assert record.may_review is True
+        assert record.may_carve is True
+
+
+# ---------------------------------------------------------------------------
 # O4 -- writer idempotence
 
 class TestWriterIdempotence:
@@ -294,6 +372,25 @@ class TestRoundTrip:
         capability_map.write_capability_catalog(p, [record])
         assert p.read_bytes() == first
 
+    def test_rated_and_unrated_records_round_trip_and_remain_idempotent(self, tmp_path):
+        p = tmp_path / "routes.toml"
+        [rated] = capability_map.assemble_catalog(
+            [_rec(model_id="rated")], capability_map.CapabilityMapConfig.default())
+        [unrated] = capability_map.surface_unrated(
+            [], capability_map.CapabilityMapConfig(surface_models=["unrated"]))
+
+        capability_map.write_capability_catalog(p, [rated, unrated])
+        first = p.read_bytes()
+        loaded = capability_map.load_capability_catalog(p)
+        assert loaded == [rated, unrated]
+        assert loaded[0].unrated is False
+        assert loaded[1].unrated is True
+        assert "unrated =" not in capability_map._render_record_block(rated)
+        assert "unrated = true" in capability_map._render_record_block(unrated)
+
+        capability_map.write_capability_catalog(p, [rated, unrated])
+        assert p.read_bytes() == first
+
 
 # ---------------------------------------------------------------------------
 # O7 -- empty catalog
@@ -358,6 +455,9 @@ class TestCapabilityMapConfig:
         assert cfg1.carve_grants == []
         assert cfg1.min_context is None
         assert cfg1.required_flags == []
+        assert cfg1.surface_models == []
+        assert cfg1.manual_bands == {}
+        assert cfg1.compares_to == {}
         # independent copies -- mutating one never bleeds into another or
         # into the module-level DEFAULT_CUTOFFS constant
         assert cfg1.cutoffs is not DEFAULT_CUTOFFS
@@ -388,6 +488,9 @@ class TestCapabilityMapConfig:
             'carve_grants = ["b"]\n',
             "min_context = 50000\n",
             'required_flags = ["vision"]\n\n',
+            'surface_models = ["new"]\n',
+            'manual_bands = {"new" = 2}\n',
+            'compares_to = {"other" = "luna"}\n\n',
             "[capability_map.cutoffs]\n",
             "coding = [0.2, 0.5]\n",
         ]), encoding="utf-8")
@@ -399,6 +502,9 @@ class TestCapabilityMapConfig:
         assert cfg.carve_grants == ["b"]
         assert cfg.min_context == 50000
         assert cfg.required_flags == ["vision"]
+        assert cfg.surface_models == ["new"]
+        assert cfg.manual_bands == {"new": 2}
+        assert cfg.compares_to == {"other": "luna"}
         assert cfg.cutoffs["coding"] == [0.2, 0.5]
         # axis not overridden keeps the operator-tunable default
         assert cfg.cutoffs["intelligence"] == DEFAULT_CUTOFFS["intelligence"]
@@ -416,7 +522,8 @@ class TestCapabilityMapConfig:
 class TestRefreshCatalog:
     def test_refresh_catalog_composes_fetch_all_and_assemble(self):
         cfg = capability_map.CapabilityMapConfig(role_gating="auto",
-                                                 review_min_band=1, carve_min_band=1)
+                                                 review_min_band=1, carve_min_band=1,
+                                                 surface_models=["fetched-model", "unrated-model"])
         canned = [_rec(model_id="fetched-model", scores={"agentic": 0.9})]
         sentinel_sources = object()
         with patch("nyxloom.capability_map.benchmark_sources.fetch_all",
@@ -424,9 +531,10 @@ class TestRefreshCatalog:
             catalog, errors = capability_map.refresh_catalog(cfg=cfg, sources=sentinel_sources)
         fetch.assert_called_once_with(sentinel_sources)
         assert errors == {"broken-source": "boom"}
-        [cat] = catalog
-        assert cat.model_id == "fetched-model"
-        assert cat.may_review is True
+        assert [cat.model_id for cat in catalog] == ["fetched-model", "unrated-model"]
+        assert catalog[0].may_review is True
+        assert catalog[0].unrated is False
+        assert catalog[1].unrated is True
 
     def test_refresh_catalog_defaults_cfg_via_load(self, tmp_state):
         # tmp_state (conftest.py) isolates NYXLOOM_STATE -- routes.toml is

@@ -96,6 +96,7 @@ class CapabilityRecord:
     benchmark: str | None = None
     version: str | None = None
     effort: str | None = None
+    unrated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,9 @@ class CapabilityMapConfig:
     carve_grants: list[str] = field(default_factory=list)
     min_context: int | None = None
     required_flags: list[str] = field(default_factory=list)
+    surface_models: list[str] = field(default_factory=list)
+    manual_bands: dict[str, int] = field(default_factory=dict)
+    compares_to: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def default(cls) -> "CapabilityMapConfig":
@@ -134,6 +138,11 @@ class CapabilityMapConfig:
             carve_grants=list(data.get("carve_grants", [])),
             min_context=(int(min_context) if min_context is not None else None),
             required_flags=list(data.get("required_flags", [])),
+            surface_models=list(data.get("surface_models", [])),
+            manual_bands={str(k): int(v) for k, v in
+                          dict(data.get("manual_bands", {})).items()},
+            compares_to={str(k): str(v) for k, v in
+                         dict(data.get("compares_to", {})).items()},
         )
 
     @classmethod
@@ -179,6 +188,7 @@ def load_capability_catalog(path: Path | None = None) -> list[CapabilityRecord]:
             benchmark=row.get("benchmark"),
             version=row.get("version"),
             effort=row.get("effort"),
+            unrated=row.get("unrated", False),
         )
         for row in rows
     ]
@@ -236,6 +246,43 @@ def assemble_catalog(records: list[BenchmarkRecord],
     return out
 
 
+def surface_unrated(catalog: list[CapabilityRecord],
+                    cfg: CapabilityMapConfig) -> list[CapabilityRecord]:
+    """Append configured models that have no benchmark-derived catalog row."""
+    out = list(catalog)
+    present = {record.model_id for record in catalog}
+    for model_id in cfg.surface_models:
+        if model_id in present:
+            continue
+        bands = {axis: 0 for axis in AXES}
+        if model_id in cfg.manual_bands:
+            bands = {axis: cfg.manual_bands[model_id] for axis in AXES}
+        elif model_id in cfg.compares_to:
+            compared_id = cfg.compares_to[model_id]
+            compared = next((record for record in catalog
+                             if record.model_id == compared_id), None)
+            if compared is not None:
+                bands = dict(compared.bands)
+            else:
+                log.warning("unrated model compares_to target missing",
+                            model_id=model_id, compares_to=compared_id)
+        out.append(CapabilityRecord(
+            model_id=model_id,
+            source="unrated",
+            scores={},
+            price_input=None,
+            price_output=None,
+            context_length=None,
+            bands=bands,
+            may_review=model_id in cfg.review_grants,
+            may_carve=model_id in cfg.carve_grants,
+            raw={},
+            unrated=True,
+        ))
+        present.add(model_id)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # routes.toml writer (managed block) -- mirrors free_models.write_routes_toml
 # with this module's OWN distinct markers; never touches any other table.
@@ -267,6 +314,8 @@ def _render_record_block(rec: CapabilityRecord) -> str:
     lines = ["[[capability_catalog.records]]\n"]
     lines.append(f"model_id = {_toml_str(rec.model_id)}\n")
     lines.append(f"source = {_toml_str(rec.source)}\n")
+    if rec.unrated:
+        lines.append("unrated = true\n")
     if rec.benchmark is not None:
         lines.append(f"benchmark = {_toml_str(rec.benchmark)}\n")
     if rec.version is not None:
@@ -339,4 +388,5 @@ def refresh_catalog(cfg: CapabilityMapConfig | None = None,
     resolved_cfg = cfg or CapabilityMapConfig.load()
     records, errors = benchmark_sources.fetch_all(sources)
     catalog = assemble_catalog(records, resolved_cfg)
+    catalog = surface_unrated(catalog, resolved_cfg)
     return catalog, errors
