@@ -255,7 +255,7 @@ def _tick(d: daemon.Daemon, project: str) -> None:
 
 def _worktree_for(cfg: ProjectConfig, task_id: str) -> Path:
     """Mirrors daemon.py's DispatchImplementer/_ensure_worktree convention
-    (cfg.root / cfg.worktree_root / f'feat/{task_id}') -- a FRONTIER_REVIEW
+    (cfg.root / cfg.worktree_root / f'feat/{task_id}') -- a REVIEW_INDEPENDENT
     dispatch's own cwd is cfg.root (not this path, see daemon.py's
     LaunchReview execute branch), so a review step must target this
     directory explicitly to land its commit on the task's OWN feat/
@@ -636,7 +636,7 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     resume_template = ["fake", "--role", "implementer", "--task", TASK_ID, "{prompt}"]
     custom_routes = config_mod.Routes(
         revision="test-behavioral-resume",
-        tiers={"flash-high": ["fake-impl"], "frontier-review": ["fake-review"]},
+        tiers={"flash-high": ["fake-impl"], "review-independent": ["fake-review"]},
         routes={
             "fake-impl": config_mod.RouteDef(
                 route_id="fake-impl", cli="fake", model="fake-model",
@@ -746,7 +746,7 @@ def test_scope_amendment_helpers_degrade_gracefully_on_storage_error(
     assert d._scope_amendment_files("demo", TASK_ID) == []
 
 
-def test_scope_amendment_files_reach_frontier_review_dispatch(
+def test_scope_amendment_files_reach_review_independent_dispatch(
     behavioral_project, tmp_state, fake_cli
 ):
     """O6 wiring (daemon-level, complements the O6 adapter-unit test in
@@ -775,7 +775,7 @@ def test_scope_amendment_files_reach_frontier_review_dispatch(
     ptoml = cfg.root / ".nyxloom" / "project.toml"
     ptoml.write_text(ptoml.read_text().replace(
         "[project]\n",
-        '[project]\npipeline = ["carve", "implement", "frontier_review", '
+        '[project]\npipeline = ["carve", "implement", "review_independent", '
         '"triage", "auto_merge", "post_merge_gate"]\n', 1))
 
     d = daemon.Daemon({"demo": cfg.root})
@@ -806,8 +806,8 @@ def test_scope_amendment_files_reach_frontier_review_dispatch(
         f"assertion to mean anything about LaunchReview's amendment "
         f"aggregation; got {tsf.state}"
     )
-    review_attempts = [a for a in tsf.attempts if a.role is Role.FRONTIER_REVIEW]
-    assert review_attempts, "expected a real FRONTIER_REVIEW dispatch to have run"
+    review_attempts = [a for a in tsf.attempts if a.role is Role.REVIEW_INDEPENDENT]
+    assert review_attempts, "expected a real REVIEW_INDEPENDENT dispatch to have run"
 
     approved = [e for e in storage.iter_events("demo")
                 if e.type is EventType.SCOPE_AMENDMENT_APPROVED and e.task_id == TASK_ID]
@@ -972,7 +972,7 @@ def test_bounded_rejection_notifications_do_not_storm(two_task_project, tmp_stat
 # not-yet-fixed gap in reconcile.py). FIXED 2026-07-17 (stale-wave_id
 # strand package): reconcile.py's "Check for LaunchReview for already-open
 # waves" has_review_in_flight check previously scanned ALL of
-# tsf.attempts for ANY FRONTIER_REVIEW attempt in state EXITED, with no
+# tsf.attempts for ANY REVIEW_INDEPENDENT attempt in state EXITED, with no
 # scoping to "is this attempt still current" -- so once a task's FIRST
 # review attempt exited (approved or rejected), it stayed in
 # tsf.attempts forever and has_review_in_flight was permanently True.
@@ -1022,7 +1022,7 @@ def test_second_review_cycle_never_relaunches_stale_wave_id(behavioral_project, 
     attempt_ids = {e.attempt_id for e in review_recorded}
     assert len(attempt_ids) >= 2, (
         "the two REVIEW_RECORDED events must belong to two distinct "
-        "FRONTIER_REVIEW attempts -- a second, genuinely fresh review"
+        "REVIEW_INDEPENDENT attempts -- a second, genuinely fresh review"
     )
     results = [e.payload.get("result") for e in review_recorded]
     assert "rejected" in results and "approved" in results, (

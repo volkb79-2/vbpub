@@ -115,7 +115,7 @@ usage_source = "output-format-json"
 [routes.claude-opus-high]
 inherit = "claude-sonnet5-high"
 model = "opus"
-role_default = "frontier-review"
+role_default = "review-independent"
 
 # Haiku 4.5 — cheap/fast tier for mechanical implementation. Explicit route
 # (not `inherit`) so the resume template carries `--model haiku`, not the

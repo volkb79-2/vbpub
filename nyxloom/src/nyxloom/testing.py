@@ -74,7 +74,7 @@ class FakeStep:
 
     # Directory the git commit (if any) is made in. None -> the fake CLI's
     # own CWD (correct for an IMPLEMENTER dispatch: the wrapper's cwd IS the
-    # task's own feat/<task_id> worktree). A FRONTIER_REVIEW dispatch's cwd
+    # task's own feat/<task_id> worktree). A REVIEW_INDEPENDENT dispatch's cwd
     # is cfg.root (NOT the task worktree -- see daemon.py's LaunchReview
     # execute branch), so a review step that must commit onto feat/<task_id>
     # needs this set explicitly to str(cfg.root / cfg.worktree_root /

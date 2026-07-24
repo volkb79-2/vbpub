@@ -58,7 +58,7 @@ def test_carve_stage_declares_rescope_superseded_edge():
 
 # --- B6/P74 packet-assembly context policy --------------------------------
 
-def test_context_flags_declared_are_known_and_frontier_reviewer_reuses():
+def test_context_flags_declared_are_known_and_review_independent_reuses():
     """B6 2026-07-20 (P74): the packet-assembly context policy is stages-as-data.
     Pin the two declarations B6 relies on AND the registry-consistency invariant
     (no stage may declare a flag outside the frozen KNOWN_CONTEXT_FLAGS menu -- a
@@ -72,7 +72,7 @@ def test_context_flags_declared_are_known_and_frontier_reviewer_reuses():
     for name, st in STAGE_REGISTRY.items():
         assert st.context <= KNOWN_CONTEXT_FLAGS, f"{name} declares unknown flag(s): {st.context}"
     # the two load-bearing declarations
-    assert stage_context("frontier_review") == frozenset({"session-reuse", "spine-digest"})
+    assert stage_context("review_independent") == frozenset({"session-reuse", "spine-digest"})
     assert stage_context("carve") == frozenset({"spine-digest"})
     # the discriminating negatives: reuse is reviewer-specific, not global
     assert "session-reuse" not in stage_context("implement")
@@ -92,8 +92,8 @@ def test_context_does_not_break_pipeline_closure():
 def test_compose_default_and_preset_and_list():
     assert compose(None) == list(DEFAULT_PIPELINE)
     assert compose("full") == list(PRESETS["full"])
-    assert compose(["implement", "frontier_review", "auto_merge"]) == [
-        "implement", "frontier_review", "auto_merge"]
+    assert compose(["implement", "review_independent", "auto_merge"]) == [
+        "implement", "review_independent", "auto_merge"]
 
 
 def test_compose_rejects_unknown_preset():
@@ -126,7 +126,7 @@ def test_rejects_unknown_stage_kind():
 def test_rejects_duplicate_ownership():
     """Two stages owning the same state is a composition error (check 1)."""
     with pytest.raises(ValueError, match="owned by both"):
-        validate_pipeline(["implement", "implement", "frontier_review", "auto_merge"])
+        validate_pipeline(["implement", "implement", "review_independent", "auto_merge"])
 
 
 def test_rejects_illegal_exit_edge(monkeypatch):
@@ -145,20 +145,20 @@ def test_rejects_illegal_exit_edge(monkeypatch):
 
 
 def test_rejects_dead_end_routing():
-    """frontier_review routes a rejection to REVIEW_REJECTED; a pipeline with no
+    """review_independent routes a rejection to REVIEW_REJECTED; a pipeline with no
     triage stage to own that state is a dead-end and must be rejected (check 3).
     (B4a made the carve-less-but-triaged case VALID -- triage now escalates an
     exhausted reject to NEEDS_DECISION -- so the genuine remaining dead-end is a
     rejection with nothing owning REVIEW_REJECTED.)"""
     with pytest.raises(ValueError, match="dead-end"):
-        validate_pipeline(["implement", "frontier_review", "auto_merge"])
+        validate_pipeline(["implement", "review_independent", "auto_merge"])
 
 
 def test_dead_end_check_passes_once_triage_is_added():
     """Control for the test above: add the owning stage (triage) and the same
     pipeline closes -- proving the rejection was about the missing owner of
     REVIEW_REJECTED, not noise. This is the carve-less `lean` shape."""
-    validate_pipeline(["implement", "frontier_review", "triage", "auto_merge"])
+    validate_pipeline(["implement", "review_independent", "triage", "auto_merge"])
 
 
 def test_rejects_no_terminal_path():
@@ -220,15 +220,15 @@ def test_stage_override_wins_over_policy():
 
 def test_serial_resolves_to_one():
     """"serial" (the default for review/carve/etc.) resolves to 1."""
-    assert STAGE_REGISTRY["frontier_review"].concurrency == "serial"
-    assert effective_concurrency("frontier_review", {}, 9) == 1
+    assert STAGE_REGISTRY["review_independent"].concurrency == "serial"
+    assert effective_concurrency("review_independent", {}, 9) == 1
     assert effective_concurrency("implement", {"implement": {"concurrency": "serial"}}, 9) == 1
 
 
 def test_validate_stage_overrides_accepts_legal():
     validate_stage_overrides({})
     validate_stage_overrides({"implement": {"concurrency": 4}})
-    validate_stage_overrides({"frontier_review": {"concurrency": "serial"}})
+    validate_stage_overrides({"review_independent": {"concurrency": "serial"}})
 
 
 def test_validate_stage_overrides_rejects_unknown_stage():
@@ -271,12 +271,12 @@ def test_rejects_self_review_not_immediately_after_implement():
     rejected. Uses a triage-bearing pipeline so it is otherwise closed, so ONLY
     rule 5 can be the cause (the paired control below confirms it)."""
     with pytest.raises(ValueError, match="immediately follow"):
-        validate_pipeline(["implement", "frontier_review", "triage", "self_review", "auto_merge"])
+        validate_pipeline(["implement", "review_independent", "triage", "self_review", "auto_merge"])
 
 
 def test_rejects_self_review_before_implement():
     with pytest.raises(ValueError, match="immediately follow"):
-        validate_pipeline(["self_review", "implement", "frontier_review", "triage", "auto_merge"])
+        validate_pipeline(["self_review", "implement", "review_independent", "triage", "auto_merge"])
 
 
 def test_rejects_self_review_without_implement():
@@ -284,7 +284,7 @@ def test_rejects_self_review_without_implement():
     no session to borrow without an implement stage -- a precise message, not a
     downstream QUEUED-dead-end complaint."""
     with pytest.raises(ValueError, match="requires the implement"):
-        validate_pipeline(["self_review", "frontier_review", "triage", "auto_merge"])
+        validate_pipeline(["self_review", "review_independent", "triage", "auto_merge"])
 
 
 def test_adjacency_rejection_is_placement_specific_not_stage_set():
@@ -292,10 +292,10 @@ def test_adjacency_rejection_is_placement_specific_not_stage_set():
     reordered so self_review sits right after implement, validates cleanly. So
     the rejection is caused by rule 5 (placement), not by the stages present --
     neutering rule 5 would let the misplaced form pass."""
-    misplaced = ["implement", "frontier_review", "triage", "self_review", "auto_merge"]
+    misplaced = ["implement", "review_independent", "triage", "self_review", "auto_merge"]
     with pytest.raises(ValueError, match="immediately follow"):
         validate_pipeline(misplaced)
-    adjacent = ["implement", "self_review", "frontier_review", "triage", "auto_merge"]
+    adjacent = ["implement", "self_review", "review_independent", "triage", "auto_merge"]
     validate_pipeline(adjacent)  # closes cleanly -- only placement differed
 
 
@@ -304,7 +304,7 @@ def test_legacy_pipeline_without_self_review_still_validates():
     and it still closes -- proving self_review is a composable stage, not a
     hardcoded requirement. The composition port of B5's parity claim (a
     no-self_review pipeline plans implement-done exactly as pre-B5)."""
-    validate_pipeline(["carve", "implement", "frontier_review", "triage",
+    validate_pipeline(["carve", "implement", "review_independent", "triage",
                        "auto_merge", "post_merge_gate"])
 
 

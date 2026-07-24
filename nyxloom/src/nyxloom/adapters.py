@@ -44,7 +44,7 @@ INTERFACE CONTRACT (frozen):
   `carve_authority` kwarg is 'files' the commit instruction is DROPPED
   entirely (that authority writes new handoff files WITHOUT committing --
   see daemon.py's module docstring above `_CARVE_AUTHORITIES`); 'branch'/
-  'main'/unset keep a carve-worded commit instruction. FRONTIER_REVIEW gets
+  'main'/unset keep a carve-worded commit instruction. REVIEW_INDEPENDENT gets
   its own prompt that never claims a branch to commit to and never says
   "git commit" -- fixes the live bug where a reviewer dispatched with
   branch=cfg.default_branch got told to commit to main.)
@@ -211,7 +211,7 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     THIS task already had approved (the daemon counts these from
     SCOPE_AMENDMENT_APPROVED events) -- an IMPLEMENTER re-dispatch embeds them
     as "you MAY also edit" so the widened allowlist actually reaches the
-    agent's next attempt. A FRONTIER_REVIEW dispatch instead tells the
+    agent's next attempt. A REVIEW_INDEPENDENT dispatch instead tells the
     reviewer which files were approved, so it does not reject the (now
     legitimate) out-of-scope edit as a scope violation. Defaults None (no
     amendments yet) -> byte-identical to the pre-B21 prompt for both roles.
@@ -246,7 +246,7 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                 "You MUST `git add` and `git commit` your new handoff "
                 "file(s) on this branch before finishing."
             )
-    elif role is Role.FRONTIER_REVIEW:
+    elif role is Role.REVIEW_INDEPENDENT:
         # P59 2026-07-20 (M6a, Fable-xhigh critique -- prompt/packet
         # consistency). The daemon derives the merge verdict EXCLUSIVELY from
         # the reviewer's COMMITTED <task>-REVIEW.md (_parse_review_verdict via
@@ -306,7 +306,7 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # B21 2026-07-23 (D-R16 §3): the scope-amendment note (if any) is
         # appended LATER, after argv_max is known -- this prompt is already
         # close to argv_max with real paths (see
-        # test_frontier_review_prompt_stays_under_argv_max_with_real_paths),
+        # test_review_independent_prompt_stays_under_argv_max_with_real_paths),
         # so it MUST be bounded the same way prior_verdict's embed below is,
         # not appended unconditionally here.
     else:
@@ -362,12 +362,12 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     # content (the docs are mounted into the agent's environment, so inlining
     # them would burn argv on every dispatch). Appended ONLY if it fits: the
     # frontier-review prompt already runs close to argv_max with real paths
-    # (test_frontier_review_prompt_stays_under_argv_max_with_real_paths), and a
+    # (test_review_independent_prompt_stays_under_argv_max_with_real_paths), and a
     # doc pointer must never be the thing that strands a dispatch.
     # Budgeted against argv_max MINUS the 200-char headroom the codebase already
     # reserves for longer real-world paths: a convenience pointer must not eat the
     # margin that keeps argv-tight roles dispatchable. In practice this lands on
-    # IMPLEMENTER/CARVER (room to spare) and is skipped for FRONTIER_REVIEW (already
+    # IMPLEMENTER/CARVER (room to spare) and is skipped for REVIEW_INDEPENDENT (already
     # near the cap) -- acceptable, because the docs are mounted in the agent's
     # environment regardless; the pointer only saves it a lookup.
     manifest = ("\nDoctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; "
@@ -404,7 +404,7 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     # skip entirely (never truncate mid-list) if too little room remains,
     # same "degrade, never strand the dispatch" philosophy as prior_verdict's
     # embed above. Discovered live (not just theoretical): an EARLIER
-    # unconditional version of this same idea on the FRONTIER_REVIEW side
+    # unconditional version of this same idea on the REVIEW_INDEPENDENT side
     # (below) overflowed argv_max for realistic packet paths and permanently
     # stranded a review attempt at CREATED (build_dispatch raised
     # AdapterError, and the daemon never retries a review whose Attempt
@@ -430,9 +430,9 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     # wave's task(s), so the (now-legitimate) out-of-scope file(s) are not
     # mistaken for a scope violation and rejected on that basis alone.
     # Bounded for the SAME reason as the IMPLEMENTER note above (this is the
-    # branch where the overflow was actually observed): the FRONTIER_REVIEW
+    # branch where the overflow was actually observed): the REVIEW_INDEPENDENT
     # prompt is already close to argv_max with real packet paths.
-    if role is Role.FRONTIER_REVIEW and approved_amendments:
+    if role is Role.REVIEW_INDEPENDENT and approved_amendments:
         files_str = ", ".join(approved_amendments)
         note = (
             f"\nScope-amendment note: {files_str} were approved mid-flight "
@@ -558,7 +558,7 @@ def review_resume_prompt(*, packet_path: str, attempt_id: str,
     session's context, so it replays from prompt cache -- the cache-hit win).
     The warm session does NOT yet hold THIS wave's packet, so the prompt names
     it and repeats ONLY the load-bearing output contract, terse (this goes into
-    argv; build_dispatch's cold FRONTIER_REVIEW branch is close to argv_max, so
+    argv; build_dispatch's cold REVIEW_INDEPENDENT branch is close to argv_max, so
     the resume form stays lean and skips the full role recap the session already
     holds).
 

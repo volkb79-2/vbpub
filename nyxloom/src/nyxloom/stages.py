@@ -117,8 +117,8 @@ STAGE_REGISTRY: dict[str, Stage] = {
         exit_map=(("approved", TaskState.AWAITING_REVIEW),
                   ("rejected", TaskState.QUEUED)),
         owns=frozenset({TaskState.SELF_REVIEWING})),
-    "frontier_review": Stage(
-        name="frontier_review", role=Role.FRONTIER_REVIEW,
+    "review_independent": Stage(
+        name="review_independent", role=Role.REVIEW_INDEPENDENT,
         entry_state=TaskState.AWAITING_REVIEW, exit_from=TaskState.AWAITING_REVIEW,
         exit_map=(("approved", TaskState.MERGE_READY),
                   ("rejected", TaskState.REVIEW_REJECTED)),
@@ -170,7 +170,7 @@ STAGE_REGISTRY: dict[str, Stage] = {
 # WITHOUT self_review (proven byte-identical by test_*_legacy_pipeline_*). Opting
 # OUT is the documented exception; the good default is the rule.
 DEFAULT_PIPELINE: tuple = (
-    "carve", "implement", "self_review", "frontier_review", "triage", "auto_merge", "post_merge_gate",
+    "carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate",
 )
 
 # Ergonomic presets (docs/spec-flow-stages.md). B4a makes the carve-less presets
@@ -182,8 +182,8 @@ DEFAULT_PIPELINE: tuple = (
 # (low-ceremony projects).
 PRESETS: dict[str, tuple] = {
     "full": DEFAULT_PIPELINE,
-    "gated": ("implement", "self_review", "frontier_review", "triage", "auto_merge", "post_merge_gate"),
-    "lean": ("implement", "self_review", "frontier_review", "triage", "auto_merge"),
+    "gated": ("implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"),
+    "lean": ("implement", "self_review", "review_independent", "triage", "auto_merge"),
 }
 
 

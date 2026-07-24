@@ -227,7 +227,7 @@ INTERFACE CONTRACT (frozen). Semantics:
 13. GUARDED-AUTOMATIC MERGE (P48 2026-07-19): a MERGE_READY task ->
     AutoMergeTask(task_id) only when policy.merge_mode ==
     'guarded-automatic' AND not project_paused. Reaching MERGE_READY at all
-    already structurally means a FRONTIER_REVIEW attempt's verdict was
+    already structurally means a REVIEW_INDEPENDENT attempt's verdict was
     'approved' (the only writer of that transition, in daemon.py's review-
     consumption branch) -- so no separate verdict re-check belongs here.
     project_paused is deliberately consulted (unlike dispatch_eligible's
@@ -412,7 +412,7 @@ class LaunchReview(Action):
     # handle) via adapters.build_resume instead of a cold adapters.build_dispatch,
     # so the ~35-40k role-contract/orientation prefix replays from prompt cache.
     # None == a cold launch (no prior review session to resume, or the
-    # frontier_review stage's context does not include "session-reuse"). The
+    # review_independent stage's context does not include "session-reuse"). The
     # daemon still mints a FRESH attempt id and stamps it for A7 verdict-attempt
     # binding on the resumed session too -- reuse is a cache optimization, never a
     # relaxation of the binding that made it safe (see the executor).
@@ -476,7 +476,7 @@ class AutoMergeTask(Action):
     """Guarded-automatic merge trigger (module contract item 13, P48
     2026-07-19): the ONLY action ever planned for a MERGE_READY task when
     policy.merge_mode == 'guarded-automatic'. Reaching MERGE_READY already
-    structurally means a FRONTIER_REVIEW attempt returned verdict
+    structurally means a REVIEW_INDEPENDENT attempt returned verdict
     'approved' (daemon.py's review-consumption branch is the only writer of
     this transition) -- so this action carries nothing but task_id, same
     shape as RunPostMergeGate: which branch to merge, the actual git
@@ -900,7 +900,7 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
         and any(a.role is Role.CARVER for a in tsf.attempts)
         for tsf in inp.states.values()
     )
-    frontier_routes = inp.routes.for_role(Role.FRONTIER_REVIEW.value)
+    frontier_routes = inp.routes.for_role(Role.REVIEW_INDEPENDENT.value)
     frontier_route_available = any(
         inp.provider_ok.get(r.route_id, False) for r in frontier_routes
     )
@@ -1039,7 +1039,7 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
                          # correctly refused to relaunch.
                          or (attempt.state == AttemptState.EXITED
                              and tsf.state == TaskState.AWAITING_REVIEW
-                             and attempt.role == Role.FRONTIER_REVIEW)
+                             and attempt.role == Role.REVIEW_INDEPENDENT)
                          # P32 2026-07-16: a carver's EXITED attempt whose
                          # live pass was missed (daemon restart landing on
                          # the exit) left the synthetic carve task ACTIVE
@@ -1289,7 +1289,7 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
     #
     # 2026-07-17 fix (stale-wave_id strand, second review cycle never
     # relaunches): the check above previously scanned ALL of tsf.attempts
-    # for ANY FRONTIER_REVIEW attempt in these states, including terminal
+    # for ANY REVIEW_INDEPENDENT attempt in these states, including terminal
     # EXITED -- with no scoping to "is this attempt still current". Once a
     # task's first review attempt reaches EXITED (approved OR rejected),
     # it stayed in tsf.attempts forever, so has_review_in_flight was
@@ -1334,7 +1334,7 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             latest = tsf.attempts[-1] if tsf.attempts else None
             has_review_in_flight = (
                 latest is not None
-                and latest.role == Role.FRONTIER_REVIEW
+                and latest.role == Role.REVIEW_INDEPENDENT
                 and (
                     latest.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
                                       AttemptState.RUNNING, AttemptState.STALLED,
@@ -1346,23 +1346,23 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             if not has_review_in_flight:
                 needs_review_by_wave.setdefault(tsf.wave_id, []).append(task_id)
 
-    # B6/P74 (D-R10): reviewer session-reuse. If the frontier_review stage's
+    # B6/P74 (D-R10): reviewer session-reuse. If the review_independent stage's
     # context declares "session-reuse", every review launched THIS pass resumes
-    # the warmest prior review session -- the most-recent EXITED FRONTIER_REVIEW
+    # the warmest prior review session -- the most-recent EXITED REVIEW_INDEPENDENT
     # attempt that captured a session_handle (max by `started`). A cold first wave
     # (no such prior) leaves this None -> the executor cold-dispatches, exactly as
     # before. Resuming an old/cache-expired session is harmless (a cache MISS, the
     # pre-B6 cost), and A7 binding is preserved by the executor stamping a fresh
     # attempt id -- so the only precondition is "a resumable review session
-    # exists", nothing about which wave it reviewed. frontier_review is serial, so
+    # exists", nothing about which wave it reviewed. review_independent is serial, so
     # in practice at most one review is in flight and a second wave planned the
     # same pass simply shares the same warm handle (each still gets its own fresh
     # attempt id downstream).
     resume_session: str | None = None
-    if needs_review_by_wave and "session-reuse" in stage_context("frontier_review"):
+    if needs_review_by_wave and "session-reuse" in stage_context("review_independent"):
         prior_review_sessions = [
             a for tsf in inp.states.values() for a in tsf.attempts
-            if a.role == Role.FRONTIER_REVIEW
+            if a.role == Role.REVIEW_INDEPENDENT
             and a.state == AttemptState.EXITED
             and a.session_handle
         ]
