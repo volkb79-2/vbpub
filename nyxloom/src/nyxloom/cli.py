@@ -753,12 +753,28 @@ def cmd_merge(args) -> int:
             _changed = [ln.strip() for ln in _d.stdout.splitlines() if ln.strip()]
     except OSError:
         pass
+    from . import merge_digest
+    try:
+        _carver_digest = merge_digest.carver_digest_payload(
+            cfg, states, args.task, commit, source_kind="review",
+        )
+    except Exception:
+        log = __import__("logging").getLogger("cli")
+        log.warning("carver_digest build failed", exc_info=True)
+        _carver_digest = None
+    payload: dict[str, object] = {
+        "merge_commit": commit,
+        "progress_units": _changed,
+        "source_kind": "review",
+    }
+    if _carver_digest is not None:
+        payload["carver_digest"] = _carver_digest
     storage.append_and_apply(
         args.project,
         states,
         actor=actor,
         type=EventType.MERGE_RECORDED,
-        payload={"merge_commit": commit, "progress_units": _changed, "source_kind": "review"},
+        payload=payload,
         task_id=args.task,
     )
 

@@ -339,8 +339,8 @@ from typing import Any
 
 from . import (
     adapters, backlog_items, commands, config, decision_chat, decisions, frontmatter,
-    intake_chat, leases, lint, notify, paths, reconcile, render, stages, storage, watchdog,
-    wrapper,
+    intake_chat, leases, lint, merge_digest, notify, paths, reconcile, render, stages,
+    storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -2281,11 +2281,24 @@ class Daemon:
         # alongside (not instead of) the generic state-transition INFO
         # _transition() already emits above.
         log.info("merge", project=project, task=task_id, merge_commit=new_commit, branch=branch)
+        # F018 P2a — guarded carver_digest build (parity with cli.cmd_merge).
+        _carver_digest = None
+        try:
+            _carver_digest = merge_digest.carver_digest_payload(
+                cfg, states, task_id, new_commit, source_kind="review",
+            )
+        except Exception:
+            log.warning("carver_digest build failed", exc_info=True)
+        payload: dict[str, object] = {
+            "merge_commit": new_commit,
+            "progress_units": self._merge_progress_units(cfg, new_commit),
+            "source_kind": "review",
+        }
+        if _carver_digest is not None:
+            payload["carver_digest"] = _carver_digest
         events.append(self._append_ev(
             project, cfg, states, EventType.MERGE_RECORDED,
-            {"merge_commit": new_commit,
-             "progress_units": self._merge_progress_units(cfg, new_commit),
-             "source_kind": "review"},
+            payload,
             task_id=task_id))
 
         # Best-effort backlog auto-tick, same parity as cmd_merge (cli.py) --
