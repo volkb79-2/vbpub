@@ -1,11 +1,13 @@
 # P104-SELFREVIEW — Adversarial self-review
 
-- **No hollow tests**: Each test asserts exact status dict fields, exception
-  messages, tar member names, or function return values.
-- **No over-mocking**: Only os.environ patched for dir test; _zstd patched for
-  no-zstd test. All other tests use real function calls.
-- **No non-None-only, no weak ranges, no assertion-free bodies.**
-- **No pragma, no product edit, no sleep, no host proc.**
+## Quality checks
+
+- **No misleading tests**: test_copy_cgroup_files_read_failure removed.
+- **No file handle leaks**: TarFile wrapped in context manager.
+- **No fixed /tmp paths**: All use tmp_path or tempfile.mkdtemp.
+- **No 10,000 file creation**: Path.exists patched instead.
+- **Exact assertions**: Systemctl/docker status fields fully asserted.
+- **No false mutation claims**.
 - **git diff --check**: Clean.
 - **Parity**: Two gate runs identical.
-- **Both files 100%**: enrich.py and bundle.py — 0 missing, 0 missing branches.
+- **Both files 100%**: enrich.py and bundle.py — 0 missing, 0 branches.
