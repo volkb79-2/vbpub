@@ -22,14 +22,6 @@ work through nyxloom.
 
 ## 1. Gates
 
-**Run one gate at a time. Never concurrently.**
-A gate that spawns real processes (daemons, containers, browsers) competes for
-memory with any other gate running beside it. Two concurrent gate containers
-OOM-kill each other, and the victim reports `exit 137` (SIGKILL) — which *looks
-exactly like a test failure*. Hours get spent debugging a "flaky test" that was
-never failing. **Serialize gate runs; kill strays before starting one.** Parallel
-*implementation* is fine and encouraged; it is the gate step that must be serial.
-
 **A pipe masks the exit code.**
 `<gate-command> | tail -40` reports **`tail`'s** exit status, not the gate's — so a
 red gate reads as green. Always capture the real status:
