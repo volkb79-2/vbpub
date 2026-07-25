@@ -1740,6 +1740,41 @@ def test_review_independent_prompt_worst_case_review_focus_degrades_never_raises
     assert "REJECT_CLASS" in prompt                  # base reviewer content never sacrificed
 
 
+def test_review_independent_review_focus_skipped_when_argv_max_too_tight():
+    """B21-style regression guard, applied to review_focus: when even the
+    HEADER alone would not leave 40 chars of room, the whole block is
+    skipped -- never truncated down to something unreadable, never raising.
+    Mirrors test_review_independent_amendment_note_skipped_when_argv_max_
+    too_tight's route-tightening technique, but anchored to the MANIFEST-
+    FREE floor length (not a wide-route base_prompt, which would still
+    include the doctrine manifest and so understate the true headroom)."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    # Probe the manifest-free core prompt length: a deliberately tight
+    # argv_max forces the (itself argv-budgeted) doctrine manifest to be
+    # skipped, isolating the REVIEW_INDEPENDENT core content this test
+    # anchors its margin to.
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    assert "Doctrine:" not in floor_prompt  # sanity: manifest genuinely absent
+
+    # A route with room for the core prompt but NOT even the review_focus
+    # header (room = argv_max - len(prompt) - len(header) < 40 by construction).
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 25)
+    _b, tight_base = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        review_focus=["check the CAS revert"], **kw)
+
+    assert "Carve-authored focus" not in prompt   # skipped, not truncated
+    assert "check the CAS revert" not in prompt
+    assert len(prompt) <= tight_route.argv_max    # never raises AdapterError
+    assert prompt == tight_base                   # byte-identical to the no-focus dispatch
+
+
 def test_review_focus_only_embedded_for_review_independent_role():
     """The docstring's claim generalizes prior_verdict/approved_amendments'
     own pin: review_focus passed to a CARVER dispatch is not embedded (the
