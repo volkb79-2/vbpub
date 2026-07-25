@@ -1839,3 +1839,55 @@ def test_gate_verify_no_asserts_declared_prints_nothing_extra(
     out = capsys.readouterr().out
     assert "asserts:" not in out
     assert "MISMATCH" not in out
+
+
+def test_gate_verify_asserts_tests_pass_confirmed_when_not_broken(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """`tests-pass` declared alongside a non-BROKEN verdict (here LAUNDERS)
+    -> confirmed OK, never a mismatch (only BROKEN contradicts it)."""
+    from nyxloom import gate_runner
+    from nyxloom.config import GateDef
+
+    declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
+                            timeout_seconds=60, environment="local",
+                            asserts=["tests-pass"])
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1   # LAUNDERS (no genuine kill)
+    out = capsys.readouterr().out
+    assert "verdict: LAUNDERS" in out
+    assert "OK: 'tests-pass' confirmed (known-good HEAD passes)" in out
+    assert "MISMATCH" not in out
+
+
+def test_gate_verify_mismatch_forces_nonzero_even_when_trustworthy(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """The mismatch overlay's exit-code override is written generically
+    (`if exit_code == 0: exit_code = 1`), not hardcoded to only fire
+    alongside BROKEN/LAUNDERS (which are already non-zero) -- force it via
+    `_asserts_mismatch_report` directly, on top of a genuinely TRUSTWORTHY
+    verdict, and confirm: the TRUSTWORTHY line is NOT rewritten (a pure
+    overlay), but the exit code flips to non-zero."""
+    from nyxloom import gate_runner
+    from nyxloom.types import GateResult, utc_now
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=exit_code,
+                          started=utc_now(), ended=utc_now(), environment=gate.environment)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+    monkeypatch.setattr(
+        cli, "_asserts_mismatch_report",
+        lambda asserts, verdict: (["  MISMATCH: forced for this test"], True),
+    )
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: TRUSTWORTHY" in out   # the original verdict line is untouched
+    assert "MISMATCH: forced for this test" in out
+    assert "verdict: DECLARATION MISMATCH" in out
