@@ -176,6 +176,47 @@ surface it and route review depth accordingly. Full rationale + the layered mode
 verification workflow (offer to build a missing gate; carver re-verifies the gate
 still rejects a known-bad canary): `docs/plan-gate-adoption.md`.
 
+## Validation methodology — building gates and tests that actually catch bugs
+
+The gate contract says a gate must *discriminate*; these are the hard-won practices
+that make one that genuinely does (learned building nyxloom's own gate + `gate
+verify`). They apply to any consumer project's suite, not just nyxloom's.
+
+1. **A green gate is not a correct one.** A coverage floor proves every changed line
+   *ran*; it cannot prove the logic is *right* or that a test *asserts* the right
+   thing. Pair the deterministic gate (coverage/mutation) with an adversarial review
+   that attacks the logic. Worked example: `gate verify` v1 passed its own gate at
+   100% coverage while returning the *wrong verdict* (it probed the wrong directory)
+   — only the review caught it. Gate ⊕ reviewer ⊕ controller each catch a class the
+   others structurally can't (canonical `LESSONS.md` L2).
+2. **Never mock the component under test.** At least one test must exercise the REAL
+   thing end-to-end. When every test of a verb mocks the gate it drives, no test
+   proves the verb works — the bug ships green. Add a real integration test (real
+   command, real inputs, a decoy that would trip the bug if present).
+3. **A regression test must fail *before* the fix and pass *after*.** Prove the test
+   catches the bug: run it against the pre-fix code (must fail) and post-fix (must
+   pass). A test never seen to fail is not known to test anything.
+4. **A probe/canary must land where the gate actually looks.** If you inject a
+   known-bad change to check a gate rejects it, put it in code the gate *runs* (the
+   project's own tested subtree), never just anywhere reachable in the repo. Prefer a
+   robust minimal signal (an import-break: one added `raise` at a module's top →
+   every test importing it fails) over a fragile one (a covered-line mutation that
+   needs coverage knowledge and can reformat the whole file).
+5. **Parallel coverage must be parity-checked against serial.** Before trusting a
+   parallelized coverage gate, confirm per-file executed-line PARITY (serial vs
+   parallel). The dangerous direction is serial-covered-but-parallel-missed (future
+   false-FAILs). Separate intrinsic flakiness (two *serial* runs already disagree)
+   from a real parallel gap (serial-stable but parallel-missed).
+6. **Coverage that only fires incidentally is hollow.** A line "covered" only because
+   an integration test happened to fork a child that ran it has no deterministic test
+   behind it. When a parallel runner stops crediting it, the gate is *exposing a
+   hollow test*, not miscounting — fix it with a deterministic in-process test, not by
+   recapturing the incidental coverage (`LESSONS.md` PL3).
+7. **Keep the run and the verdict separate; fail closed.** Read a gate's pass/fail in
+   a step SEPARATE from running it — a wrapper's trailing `echo` or a pipe can mask
+   the real exit code (`LESSONS.md` L4). A gate that cannot fail is worse than none;
+   prove it rejects a known-bad canary (`nyxloom gate verify`).
+
 ## `exec-nyxloom init <project_folder>`
 
 Scaffolds a trove into a target project from nyxloom's bundled templates.
