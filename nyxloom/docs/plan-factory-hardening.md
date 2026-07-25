@@ -27,7 +27,12 @@ drifted stale unguarded → removed all three plus the guard test; `routes.examp
 kept with a `schemas/README.md` documenting the reference-only purpose; the three live
 doc-links repointed to `src/nyxloom/schemas/`. See `nyxloom-trove/LESSONS.md` PL1.
 
-## D — `review_focus` on handoffs + tier review depth by band · SMALL-MEDIUM
+## D — `review_focus` on handoffs + tier review depth by band · SMALL-MEDIUM · part 1 ✅ DONE (merge `8b69ef47`); part 2 (band-tiered depth) pending
+**Part 1 done (`review_focus`).** Optional `review_focus: [str]` handoff frontmatter →
+bounded-truncate injection into the REVIEW_INDEPENDENT prompt (measure argv_max headroom
+237 chars, truncate to fit, never strand; byte-identical when absent). REVIEW_INDEPENDENT-only.
+Gate 10/10 diff-cov. Deferred to part 2: select review depth/route by the carver's complexity
+band (additive/leaf → cheap review; frontier/frozen-core → strongest) — folds with GA2 `asserts=`.
 **What.** Add an optional `review_focus: [..]` list to the handoff frontmatter
 (carver-authored "adversarially check these"), injected into the
 `REVIEW_INDEPENDENT` prompt (`adapters.py`). Select review depth/route by the
