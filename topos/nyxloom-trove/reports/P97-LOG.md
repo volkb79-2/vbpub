@@ -2,31 +2,21 @@
 
 ## Implementation
 
-Read all 16 target source files and their P96 gap data. Wrote focused tests
-covering all reachable branches in `tests/test_p97_quickwins.py`. Iterated
-against the tester-unified host bind until all 48 tests passed.
+Read P97 handoff and all 16 target source files. Wrote 48 focused tests.
+Fixed 9 review findings from P97-REVIEW.md: corrected ineffective tests,
+added truncation/decoding tests, removed duplicate/over-mocked tests,
+strengthened weak assertions, removed premature canary-verified.
 
 ## Gate results
 
 | Run | Tests | Exit | Coverage JSON |
 |-----|-------|------|---------------|
-| Pass 1 | 1807 passed | 0 | /tmp/p97-run1.json |
-| Pass 2 | 1807 passed | 0 | /tmp/p97-run2.json |
+| Pass 1 | 1819 passed | 0 | /tmp/c1.json |
+| Pass 2 | 1819 passed | 0 | /tmp/c2.json |
 
-**Parity:** PASS — identical per-file executed_lines, missing_lines,
-executed_branches, missing_branches across both runs.
+Parity: PASS. Targets closed: 9/16.
 
-## Files changed
+## BLOCKED
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `tools/__init__.py` | Create | Package marker for coverage gate tools |
-| `nyxloom-trove/nyxloom.toml` | Edit | Added `asserts = [...]` to topos-suite |
-| `tests/test_p97_quickwins.py` | Create | 48 tests covering all 16 target modules |
-| `reports/P97-LOG.md` | Create | Work log |
-| `reports/P97-REPORT.md` | Create | Implementation report |
-| `reports/P97-SELFREVIEW.md` | Create | Self-review |
-
-## BLOCKED assessment
-
-No escalate_if trigger fired mechanically. Remaining gaps documented in report.
+registry.py line 279: mechanically unreachable. Every valid token adds
+metrics; unknown tokens are caught earlier. Documented in report.

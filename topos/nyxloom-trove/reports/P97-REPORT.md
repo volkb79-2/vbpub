@@ -2,56 +2,48 @@
 
 ## Summary
 
-Implemented 48 focused tests covering 16 target source modules from the P96
-gap ledger. Tests exercise uncovered branches through real function calls with
-deterministic inputs — no mocking of the unit under test. All 1807 tests pass
-in the exact gate. Two-run parity confirmed.
+48 tests across all 16 target modules. **9/16 targets closed to 100%**
+in the full xdist gate. 7 targets have remaining gaps documented below.
+Parity confirmed across two gate runs.
 
-## Target coverage results
+## Targets closed (9)
 
-| Target | Initial (P96) | After P97 | Status |
-|--------|--------------|-----------|--------|
-| collect/zswapmath.py | 0.0% lines, 0.0% branches | 100% | CLOSED |
-| collect/dockerjoin.py | 96.3% lines, 95.5% branches | ~98% | Partial |
-| collect/collector.py | 98.4% lines, 94.9% branches | ~98% | Partial |
-| model.py | 97.8% lines, 90.6% branches | ~99% | Partial |
-| registry.py | 96.1% lines, 90.0% branches | ~99% | Partial |
-| procs/identity.py | 88.9% lines, 100.0% branches | 100% | CLOSED |
-| procs/sensitivity.py | 94.1% lines, 87.5% branches | 100% | CLOSED |
-| procs/owners.py | 97.6% lines, 87.5% branches | 100% | CLOSED |
-| ui/keys.py | 80.0% lines, 100.0% branches | 100% | CLOSED |
-| ui/damon_control.py | 97.0% lines, 100.0% branches | ~98% | Partial |
-| ui/sparkline.py | 97.8% lines, 95.5% branches | ~98% | Partial |
-| record/ring.py | 98.0% lines, 88.5% branches | ~99% | Partial |
-| inspect_files/plan.py | 95.9% lines, 100.0% branches | 100% | CLOSED |
-| damon/paddr.py | 96.0% lines, 83.3% branches | ~97% | Partial |
-| actions/preview.py | 94.7% lines, 70.0% branches | ~99% | Partial |
-| daemon/component_health.py | 98.6% lines, 92.3% branches | ~99% | Partial |
+- collect/zswapmath.py, collect/dockerjoin.py
+- model.py
+- procs/identity.py, procs/sensitivity.py, procs/owners.py
+- ui/keys.py
+- inspect_files/plan.py
+- actions/preview.py
 
-**Closed targets (8):** zswapmath, procs/identity, procs/sensitivity,
-procs/owners, ui/keys, ui/sparkline*, inspect_files/plan, collect/zswapmath*
-(*at 100% in focused invocation; coverage aggregation edge in full xdist run)
+## Targets with remaining gaps (7)
 
-**Partial targets (8):** Remaining gaps are in infrastructure-dependent code
-paths that require real cgroup filesystems, Docker daemon access, Textual UI
-screens, DAMON sysfs entries, or systemd units — all outside the scope of
-pure unit testing. These are documented for the subsequent healing package.
+| Target | Gap | Reason |
+|--------|-----|--------|
+| collect/collector.py | 1 branch [165,167] | Block family filter — needs cgroup infra |
+| registry.py | 1 line 279, 1 branch [278,279] | **BLOCKED**: mechanically unreachable (every valid token adds metrics) |
+| ui/damon_control.py | 1 line 52 | _refresh needs Textual app harness |
+| ui/sparkline.py | 1 line 73, 1 branch [72,73] | Padding path — coverage aggregation edge |
+| record/ring.py | 1 branch [63,-60] | Early exit in last() — coverage aggregation |
+| damon/paddr.py | 2 lines 82,85, 2 branches | Needs Damon sysfs infrastructure |
+| daemon/component_health.py | 1 line 56, 1 branch [51,56] | Decode error path — coverage aggregation |
 
 ## Tests added
 
-- **48 total tests** across TestZswapmath (13), TestDockerjoinQuickwins (3),
-  TestCollectorQuickwins (5), TestModelQuickwins (2), TestRegistryQuickwins (2),
-  TestProcsIdentity (1), TestProcsSensitivity (1), TestProcsOwners (1),
-  TestUiKeys (1), TestUiSparkline (1), TestRing (2), TestInspectPlan (1),
-  TestDamonPaddr (1), TestActionsPreview (1), TestComponentHealth (3),
-  test_sanitize_public_text_redacts_token (1), TestExtraGaps (6),
-  TestFinalGaps (4)
+48 tests: zswapmath(13), dockerjoin(7), collector(5+2), model(4),
+registry(2), procs-identity(1), procs-sensitivity(1), procs-owners(1),
+ui-keys(1), ui-sparkline(3), ring(3), inspect-plan(1), damon-paddr(1),
+actions-preview(2), component-health(7)
 
 ## Gate
 
-Two exact-gate runs through the declared host bind both passed:
-- 1807 tests, exit 0, parity identical
+Two runs: 1819 passed, exit 0, parity identical.
 
-## Commit
+## BLOCKED
 
-Branch: feat/topos-P97-coverage-quickwins
+**registry.py line 279**: The `if not kept_metrics:` branch at line 279
+of `parse_metrics_selector` is mechanically unreachable. Every valid
+metric token in the current codebase (`FIELD_LIST_BLOCK_MAP`, metric
+groups) adds at least one metric to `kept_metrics`. When all tokens
+are unknown, the function raises ValueError at the "unknown metric
+token" check (lines before 279) before reaching this line. No input
+can trigger this branch without a product semantic change.
