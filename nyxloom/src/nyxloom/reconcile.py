@@ -295,6 +295,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from .carver_session import (
+    CarverFeed, CarverSessionSnapshot, CarverStatus, HumanIntake,
+    ValidatedCarveProposal,
+)
 from .config import ProjectConfig, RouteDef, Routes
 from .stages import effective_concurrency, stage_context
 from .types import (
@@ -462,6 +466,67 @@ class CarveDispatch(Action):
 
 
 @dataclass
+class StartCarverSession(Action):
+    """F018 P2b-A1 (plan-long-running-carver.md §4.2, §5.1): cold-bootstrap
+    (or new-generation) launch of the persistent strategic carver session.
+    Planned only when `ReconcileInput.carver_session.status` is ABSENT,
+    COLD, or ROTATING (module contract carver-ladder slot 2) -- mirrors
+    CarveDispatch's `project`-is-self-describing convention. `mode` and
+    `source_ids` carry the SAME packet-shaping vocabulary CarveDispatch's
+    `kind`/`item_id` already do (headroom/targeted-intake/merge-feed, an id
+    tuple instead of a single item_id) -- daemon execution (A2) decides the
+    actual bootstrap packet; this module stays pure."""
+    project: str | None = None
+    mode: str = "headroom"
+    source_ids: tuple[str, ...] = ()
+
+
+@dataclass
+class ResumeCarverSession(Action):
+    """F018 P2b-A1 (plan-long-running-carver.md §4.2, §5.2): a warm-session
+    turn -- merge-digest ingestion (`mode="merge-feed"`), targeted human
+    intake (`mode="targeted-intake"`), or bounded DEGRADED recovery
+    (`mode="recover"`). `generation` pins the turn to the session
+    generation the planner observed (mirrors the persistent-session-is-
+    never-an-evidence-identity rule -- the daemon mints a fresh attempt/
+    turn id at execution regardless)."""
+    project: str | None = None
+    mode: str = "headroom"
+    source_ids: tuple[str, ...] = ()
+    generation: int = 0
+
+
+@dataclass
+class CompactCarverSession(Action):
+    """F018 P2b-A1 (plan-long-running-carver.md §4.2, §6.2): the ONLY
+    action ever planned when the PURE `_compaction_due()` predicate fires
+    for a WARM session. `trigger` is one of "size"|"turns"|"turns-fallback"
+    (DRIFT and OPERATOR triggers are out of scope for this package -- they
+    need impure inputs the daemon has not wired yet). Carries nothing but
+    the generation + trigger enum; the actual compaction driver call is the
+    daemon's job (§6.1's CompactionDriver -- P3's territory), matching
+    RunPostMergeGate/AutoMergeTask's "carries the trigger only" convention."""
+    project: str | None = None
+    generation: int = 0
+    trigger: str = ""
+
+
+@dataclass
+class AdmitCarveProposal(Action):
+    """F018 P2b-A1 (plan-long-running-carver.md §4.2, §4.3): admit a
+    `ValidatedCarveProposal` that already passed schema/hash/lint/revision
+    checks (§4.1) -- the daemon re-checks hashes at the effect boundary
+    (§4.2 item 1) and only then creates normal tasks / re-scope-supersedes
+    the origin, mirroring CarveDispatch's re-scope atomicity (B7). Highest
+    priority in the carver-turn ladder: finishing/admitting already-
+    produced work outranks starting any new turn. `artifact_ids` is the
+    deterministically-sorted set from the chosen proposal."""
+    project: str | None = None
+    proposal_id: str = ""
+    artifact_ids: tuple[str, ...] = ()
+
+
+@dataclass
 class RunPostMergeGate(Action):
     """Post-merge validation trigger (module contract item 11, 2026-07-17):
     the ONLY action ever planned for a VALIDATING task. Carries nothing but
@@ -508,6 +573,11 @@ class AutoMergeTask(Action):
 TRACE_KINDS = frozenset({
     "dispatch", "dispatch-skip", "carve", "carve-skip", "merge",
     "guard-exclude", "state-transition",
+    # F018 P2b-A1: short enum/id breadcrumbs for the new-vocabulary carver-
+    # session ladder (admit/start/recover/merge-feed/targeted-intake/
+    # compact:<trigger>/wait:<status>) -- same "no prose" rule as every
+    # other kind above (plan §4.2).
+    "carver",
 })
 
 
@@ -647,6 +717,29 @@ class ReconcileInput:
     # None deliberately means "fire" rather than "never fired": turning the
     # knob on is itself the request for a first pass.
     days_since_test_health_carve: float | None = None
+    # F018 P2b-A1 (plan-long-running-carver.md §4.2): the persistent
+    # strategic carver's durable session projection (carver_session.
+    # project_session), or None. MASTER GATE -- None means "the long-
+    # running carver feature is off for this project"; plan_project emits
+    # ZERO new-vocabulary carver actions and falls through to the exact
+    # pre-existing CarveDispatch paths, byte-identical to every pre-P2b
+    # test that omits this field. The daemon builds this from disk (A2);
+    # reconcile stays pure.
+    carver_session: CarverSessionSnapshot | None = None
+    # F018 P2b-A1 (plan §3.2): bounded, cursor-derived merge digests the
+    # carver has not yet acknowledged. Empty tuple (the default) means "no
+    # pending feed" -- omitted by every pre-P2b test, so it never changes
+    # their plan.
+    pending_carver_feeds: tuple[CarverFeed, ...] = ()
+    # F018 P2b-A1 (plan §5, §2.5): queued human intake entries (idea/plan/
+    # question/feedback) awaiting a targeted carver turn. Same "empty ==
+    # off" convention as pending_carver_feeds.
+    pending_human_intakes: tuple[HumanIntake, ...] = ()
+    # F018 P2b-A1 (plan §4.1-§4.3): proposals that already passed schema/
+    # hash/lint/revision validation and are ready for deterministic
+    # admission (AdmitCarveProposal, the ladder's highest-priority slot).
+    # Same "empty == off" convention.
+    validated_carve_proposals: tuple[ValidatedCarveProposal, ...] = ()
 
 
 # B4b (critique I4): a handoff stamps the main sha it was carved against as
@@ -674,6 +767,65 @@ def _premise_drifted(input_revision: str | None, head_revision: str | None) -> b
     if not a or not b or a == _REV_PLACEHOLDER or all(c == "0" for c in a):
         return False
     return not (a.startswith(b) or b.startswith(a))
+
+
+# F018 P2b-A1 (plan-long-running-carver.md §6.2): pure compaction-trigger
+# defaults, mirroring DEFAULT_ATTEMPT_MAX_WALL_SECONDS's getattr-fallback
+# convention above. `config.CarveStageConfig` (shipped inert in P1, see
+# `[stage.carve]`) already carries exactly these three knobs
+# (`compact_context_ratio`, `compact_after_turns`, `compact_hard_after_
+# turns`) plus the DEGRADED bounded-recovery budget (`max_resume_
+# failures`) with the SAME §6.2-recommended defaults, so `_compaction_due`
+# below reads `inp.cfg.carve.*` directly (always present -- a dataclass
+# field with a default_factory, never missing); these module constants are
+# a defensive getattr fallback only, never a second source of truth to
+# drift from config.py's. DRIFT and OPERATOR triggers are out of scope for
+# this package -- both need impure inputs (a spine-revision diff, an
+# audited operator request) that only the daemon (A2+) can supply.
+DEFAULT_CARVER_COMPACTION_TURN_THRESHOLD = 24
+DEFAULT_CARVER_COMPACTION_SIZE_RATIO = 0.70
+DEFAULT_CARVER_COMPACTION_HARD_FALLBACK_TURNS = 32
+
+
+def _compaction_due(snapshot: CarverSessionSnapshot, cfg: ProjectConfig) -> str | None:
+    """Pure §6.2 compaction-trigger predicate for a WARM carver session.
+    Reads ONLY the durable snapshot + policy -- no clock, no I/O. Returns
+    the trigger name ("size"|"turns"|"turns-fallback") or None.
+
+    Ratio-known regime (`measured_context_ratio is not None` -- §6.2 "use
+    usage only when the route's usage_source is verified"): the SIZE
+    threshold (>= 70% of context window) is the primary signal, checked
+    first; the ordinary 24-turn threshold is a secondary safety net for
+    when size looks fine but the turn count is climbing regardless.
+
+    Ratio-untrusted regime (`measured_context_ratio is None` -- §6.2 "if
+    the harness exposes no trustworthy context occupancy, rely on the turn
+    threshold"): the size check cannot run at all, so the more
+    conservative 32-turn HARD FALLBACK is the sole applicable check. It
+    deliberately does NOT reuse the 24-turn threshold here -- an
+    unconditional 24-turn check would fire first in every ratio-None case
+    (24 < 32), making the dedicated 32-turn hard-fallback trigger name
+    unreachable dead code; scoping the ordinary 24-turn threshold to the
+    ratio-known branch is what keeps both threshold constants -- and both
+    trigger names -- independently observable, matching this package's
+    oracle ("hard-fallback (32 with ratio None)" as its own scenario,
+    distinct from "turn-threshold (24)")."""
+    turns = snapshot.successful_turns_since_compaction
+    ratio = snapshot.measured_context_ratio
+    size_ratio = getattr(cfg.carve, "compact_context_ratio", DEFAULT_CARVER_COMPACTION_SIZE_RATIO)
+    turn_threshold = getattr(cfg.carve, "compact_after_turns", DEFAULT_CARVER_COMPACTION_TURN_THRESHOLD)
+    hard_fallback_turns = getattr(
+        cfg.carve, "compact_hard_after_turns", DEFAULT_CARVER_COMPACTION_HARD_FALLBACK_TURNS)
+
+    if ratio is not None:
+        if ratio >= size_ratio:
+            return "size"
+        if turns >= turn_threshold:
+            return "turns"
+        return None
+    if turns >= hard_fallback_turns:
+        return "turns-fallback"
+    return None
 
 
 def plan_project(inp: ReconcileInput) -> PlanResult:
@@ -916,6 +1068,111 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
     # the sole carve authority, so at most one CarveDispatch is ever planned
     # in a pass no matter which of the two triggers wants one.
     carve_dispatch_planned = False
+    # F018 P2b-A1: `carve_actions` moved up from its old position (just
+    # before item 15, module contract item 9's comment block) so slot 6
+    # below (queued human intake -- planned AFTER item 12 but BEFORE item
+    # 15/9) can share the same list; still appended to ONLY by item 12 (via
+    # lifecycle_by_id, unaffected), item 15, and item 9, exactly as before
+    # this package.
+    carve_actions: list[Action] = []
+    # F018 P2b-A1 (plan §4.2, §3.3): the new-vocabulary carver-session
+    # actions this pass may plan (Admit/Start/Resume/Compact). Always empty
+    # when inp.carver_session is None or the pipeline has no carve stage --
+    # the MASTER GATE (byte-identical-when-off invariant: a pass with no
+    # carver_session falls through to the exact pre-P2b CarveDispatch paths
+    # below, unchanged).
+    carver_actions: list[Action] = []
+    # F018 P2b-A1: pipeline-carve-stage gate, reusing the EXACT predicate
+    # the REVIEW_REJECTED triage branch (module contract item 10, above)
+    # already uses for "does this project's pipeline include a carve
+    # stage" -- never a second, independently-drifting copy. gated/lean
+    # (no carve stage) must never plan carver-session work even if a
+    # carver_session were somehow present.
+    carver_pipeline_gate = "carve" in inp.cfg.pipeline
+
+    # === Carver-session ladder, slots 1-4 (plan §3.3 priority 1-4): finish/
+    # admit an already-produced proposal; bootstrap/recover the session;
+    # ingest pending merge digests; perform due compaction. Evaluated
+    # BEFORE item 12's READY_TO_CARVE re-scope -- plan §3.3: "never before
+    # a pending merge feed that may invalidate its premise." Shares
+    # carve_in_flight/frontier_route_available/budget_allows/
+    # project_paused with items 9 & 12 above (same hoisted guards, never a
+    # second copy) and the SAME carve_dispatch_planned mutex: a new-
+    # vocabulary carver action and an old CarveDispatch are mutually
+    # exclusive in one pass -- whichever this ladder or item 12/15/9
+    # selects first wins.
+    if (inp.carver_session is not None and carver_pipeline_gate
+            and not inp.project_paused and not carve_in_flight
+            and frontier_route_available and budget_allows):
+        snap = inp.carver_session
+        status = snap.status
+
+        if status in (CarverStatus.STARTING, CarverStatus.COMPACTING):
+            # §2.4: "planner emits no second carver turn" (STARTING) / "all
+            # intake/feed/carve work waits" (COMPACTING) -- a turn is
+            # already effectively in flight for this generation, so this
+            # pass's single carver slot is considered consumed: neither a
+            # new-vocabulary action NOR the legacy CarveDispatch triggers
+            # (item 12/15/9 below) fire this pass.
+            carve_dispatch_planned = True
+            trace.note("carver", None, f"wait:{status.value.lower()}")
+        elif inp.validated_carve_proposals:
+            # Slot 1 (highest priority): finish/admit an already-produced
+            # proposal. Deterministically sorted so a pass with several
+            # validated proposals always picks the same one.
+            chosen = sorted(inp.validated_carve_proposals, key=lambda p: p.proposal_id)[0]
+            carver_actions.append(AdmitCarveProposal(
+                project=inp.cfg.project_id,
+                proposal_id=chosen.proposal_id,
+                artifact_ids=tuple(sorted(chosen.artifact_ids)),
+            ))
+            carve_dispatch_planned = True
+            trace.note("carver", None, "admit")
+        elif status in (CarverStatus.ABSENT, CarverStatus.COLD, CarverStatus.ROTATING):
+            # Slot 2: cold bootstrap / new-generation launch.
+            carver_actions.append(StartCarverSession(project=inp.cfg.project_id))
+            carve_dispatch_planned = True
+            trace.note("carver", None, "start")
+        elif status is CarverStatus.DEGRADED:
+            # Slot 2 (companion, §2.4 "bounded recovery"): a resume, only
+            # while the recovery budget is not exhausted. Reuses
+            # CarveStageConfig.max_resume_failures (the same §2.2 knob P1
+            # already shipped for this exact concept), never a second,
+            # parallel budget field.
+            if snap.resume_failures < inp.cfg.carve.max_resume_failures:
+                carver_actions.append(ResumeCarverSession(
+                    project=inp.cfg.project_id, mode="recover",
+                    generation=snap.generation,
+                ))
+                carve_dispatch_planned = True
+                trace.note("carver", None, "recover")
+            # else: recovery budget exhausted -- leave DEGRADED for the
+            # daemon/operator (A2+ territory); this package plans no
+            # action and does not consume the mutex, so item 12/15/9 may
+            # still run this pass.
+        elif status is CarverStatus.WARM:
+            if inp.pending_carver_feeds:
+                # Slot 3: ingest pending merge digests.
+                ids = tuple(sorted(f.digest_id for f in inp.pending_carver_feeds))
+                carver_actions.append(ResumeCarverSession(
+                    project=inp.cfg.project_id, mode="merge-feed",
+                    source_ids=ids, generation=snap.generation,
+                ))
+                carve_dispatch_planned = True
+                trace.note("carver", None, "merge-feed")
+            else:
+                trigger = _compaction_due(snap, inp.cfg)
+                if trigger is not None:
+                    # Slot 4: due compaction.
+                    carver_actions.append(CompactCarverSession(
+                        project=inp.cfg.project_id, generation=snap.generation,
+                        trigger=trigger,
+                    ))
+                    carve_dispatch_planned = True
+                    trace.note("carver", None, f"compact:{trigger}")
+            # WARM with no pending feed and no compaction due plans nothing
+            # here -- item 12's READY_TO_CARVE re-scope (slot 5) gets its
+            # chance next, exactly as before this package.
 
     # 12. READY_TO_CARVE handler (P45 2026-07-19): see module contract item
     # 12 docstring above for the full rationale. Sorted task-id order for
@@ -936,7 +1193,14 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
     # module that never did. Added to the shared guard (not two
     # independently-drifting copies), same convention as carve_in_flight/
     # frontier_route_available/budget_allows above.
-    if not inp.project_paused and not carve_in_flight and frontier_route_available and budget_allows:
+    #
+    # F018 P2b-A1: `not carve_dispatch_planned` added to this guard --
+    # slots 1-4 above may already have used this pass's single carver slot
+    # (an admission, bootstrap, recovery, feed, or compaction outranks a
+    # re-scope in plan §3.3's priority order), so this legacy trigger must
+    # now also respect the shared mutex it previously always set first.
+    if (not carve_dispatch_planned and not inp.project_paused and not carve_in_flight
+            and frontier_route_available and budget_allows):
         ready_to_carve_ids = sorted(
             task_id for task_id, tsf in inp.states.items()
             if tsf.state == TaskState.READY_TO_CARVE
@@ -961,6 +1225,27 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             )
             carve_dispatch_planned = True
             trace.note("carve", chosen_id, "ready-to-carve")
+
+    # === Carver-session ladder, slot 6 (plan §3.3 priority 6): queued
+    # human intake -- evaluated AFTER item 12's re-scope but BEFORE item 15
+    # (test-health) and item 9 (headroom refill), matching plan §3.3's
+    # explicit order exactly. Same hoisted guards + shared mutex as slots
+    # 1-4 above; `not carve_dispatch_planned` is REQUIRED here (unlike
+    # slots 1-4, which run first and only ever set the flag) because item
+    # 12 immediately above may have just used this pass's single slot.
+    if (inp.carver_session is not None and carver_pipeline_gate
+            and not carve_dispatch_planned
+            and not inp.project_paused and not carve_in_flight
+            and frontier_route_available and budget_allows
+            and inp.carver_session.status is CarverStatus.WARM
+            and inp.pending_human_intakes):
+        ids = tuple(sorted(i.intake_id for i in inp.pending_human_intakes))
+        carver_actions.append(ResumeCarverSession(
+            project=inp.cfg.project_id, mode="targeted-intake",
+            source_ids=ids, generation=inp.carver_session.generation,
+        ))
+        carve_dispatch_planned = True
+        trace.note("carver", None, "targeted-intake")
 
     # 3. Dispatch eligible QUEUED tasks (with capacity limit)
     # Count current active tasks
@@ -1461,12 +1746,14 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
     # === Carve dispatch (P16 2026-07-15, module contract item 9) ===
     # carve_in_flight / frontier_route_available computed once, above
     # (shared with item 12's READY_TO_CARVE handler); carve_dispatch_planned
-    # is True if that handler already used this pass's single carve slot --
+    # is True if that handler (or F018 P2b-A1's carver-session ladder,
+    # slots 1-4/6 above) already used this pass's single carve slot --
     # P45 2026-07-19: at most one CarveDispatch is ever planned in a pass,
     # shared across both triggers (the single strategic carver is the sole
     # carve authority). P52 2026-07-19: not inp.project_paused added here
     # too -- see item 12's guard above for the live incident this closes.
-    carve_actions: list[Action] = []
+    # (`carve_actions` itself is declared once, earlier, above item 12 --
+    # F018 P2b-A1 -- so slot 6 can append to the same list.)
 
     # === Test-health carve (D-065, module contract item 15, B63 2026-07-20) ===
     # Evaluated BEFORE item 9's headroom refill DELIBERATELY: item 9's condition
@@ -1537,6 +1824,12 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
     actions.extend(self_review_actions)
     actions.extend(spec_actions)
     actions.extend(carve_actions)
+    # F018 P2b-A1: new-vocabulary carver-session actions (mutually exclusive
+    # with carve_actions by construction -- the shared carve_dispatch_planned
+    # mutex guarantees at most one of the two lists is ever non-empty).
+    # Always empty when carver_session is None (MASTER GATE), so this line
+    # is a byte-identical no-op for every pre-P2b plan.
+    actions.extend(carver_actions)
 
     # P62 2026-07-20 (A10, M10): whole-plan consistency guard (defense in depth
     # alongside the source fix in the INTERRUPTED branch). A single pass must
