@@ -556,6 +556,18 @@ _CARVE_OUTCOMES = frozenset({
 # marker, NOT a new TaskState -- the origin task lands in the existing SUPERSEDED.
 _RESCOPE_OUTCOME = "RESCOPED"
 
+# F018 P3c (plan §2.1): the two carver TURN MODES that carry handoff-
+# authoring WRITE AUTHORITY -- every other mode (bootstrap/merge-feed/
+# targeted-intake/recover/compact) is read-only and never produces a
+# CarverTurnResult envelope or a CARVER_PROPOSAL_RECORDED event. Only
+# "carve" is reachable today (the normalize branch in
+# _execute_carve_via_session_resume); "repair-proposal" has no emitting
+# ResumeCarverSession mode wired in reconcile.py yet (see
+# _carve_proposal_repair_escalations' own docstring) -- included here so
+# _consume_carver_session_exit's write-authority check needs no future
+# edit when that mode is wired.
+_CARVE_WRITE_AUTHORITY_MODES = frozenset({"carve", "repair-proposal"})
+
 
 @dataclass
 class CarveSummary:
@@ -2941,7 +2953,50 @@ class Daemon:
         so it would otherwise fall through to the work-source default. The
         packet explicitly authorizes carving NOTHING when the suite is healthy:
         a periodic trigger that must always produce output would manufacture
-        busywork, which is worse than not running at all."""
+        busywork, which is worse than not running at all.
+
+        F018 P3c: the SOURCE-CONTEXT body (everything above the REQUIRED
+        OUTPUT CONTRACT tail) now lives in _carve_packet_body_lines, reused
+        verbatim by _build_carver_carve_prompt for a project-persistent
+        session's carve-mode resume turn -- pure extraction, this method's
+        OWN output is unchanged (same lines, same order, same tail)."""
+        lines = self._carve_packet_body_lines(cfg, project, seq, states,
+                                               own_task_id=own_task_id, item_id=item_id,
+                                               rescope=rescope, kind=kind)
+        report_rel = f"{cfg.reports_dir}/CARVE-{seq}.md"
+        lines.extend([
+            "## REQUIRED OUTPUT CONTRACT",
+            f"Write `{report_rel}` containing EXACTLY one JSON object (no",
+            "markdown code fences) with these fields:",
+            '  "carved": [{"id": "<new-task-id>", "why": "<one line>", '
+            '"source_kind": "review|backlog|roadmap|product-goal"}, ...]',
+            '  "review_reflection": "<what the recent reviews/merges revealed '
+            'about quality/gaps>"',
+            '  "headroom_estimate": <int -- how many more carve-able packages '
+            "exist before ROADMAP_EXHAUSTED/SPEC_GAP>",
+            '  "headroom_rationale": "<one paragraph: how you read the '
+            'roadmap/backlog runway>"',
+            '  "outcome": one of ' + ", ".join(sorted(_CARVE_OUTCOMES)),
+            "Also print this exact JSON as your final output line.",
+        ])
+        return "\n".join(lines) + "\n"
+
+    def _carve_packet_body_lines(self, cfg: ProjectConfig, project: str, seq: int,
+                                  states: dict[str, TaskStateFile],
+                                  own_task_id: str | None = None,
+                                  item_id: str | None = None,
+                                  rescope: dict | None = None,
+                                  kind: str = "headroom") -> list[str]:
+        """F018 P3c: the carve packet's SOURCE-CONTEXT body, extracted
+        verbatim from _build_carve_packet (same params, same content, same
+        order) so a project-persistent session's carve-mode resume turn
+        (_build_carver_carve_prompt) can carry the IDENTICAL mode-specific
+        source context (headroom / re-scope / targeted-intake / test-health)
+        the legacy fresh-dispatch path already builds, without a second,
+        independently-drifting copy of this prose. Returns a mutable lines
+        list (never joined) so each caller appends its own REQUIRED OUTPUT
+        CONTRACT tail. See _build_carve_packet's own docstring for the full
+        per-mode rationale."""
         lines = [
             f"# Carve packet {seq}",
             "",
@@ -3108,22 +3163,76 @@ class Daemon:
                 "revealed -- keep it terse and current, not append-only sprawl.",
                 "",
             ])
-        report_rel = f"{cfg.reports_dir}/CARVE-{seq}.md"
+        return lines
+
+    def _build_carver_carve_prompt(self, cfg: ProjectConfig, project: str, task_id: str,
+                                    seq: int, states: dict[str, TaskStateFile],
+                                    generation: int, sub_mode: str,
+                                    item_id: str | None = None,
+                                    rescope: dict | None = None,
+                                    kind: str = "headroom",
+                                    base_revision: str | None = None) -> str:
+        """F018 P3c (plan-long-running-carver.md §4.1, §4.2 alias): the
+        WRITE-AUTHORITY carve-mode resume prompt for a project-persistent
+        carver session -- fed directly to adapters.build_resume (a flat
+        prompt string, unlike build_dispatch's packet-file indirection; see
+        adapters.self_review_prompt for the precedent of a long structured
+        resume prompt).
+
+        Reuses the EXACT SAME mode-specific source context
+        _build_carve_packet's legacy dispatch path builds
+        (_carve_packet_body_lines: headroom / re-scope (`rescope`) /
+        targeted-intake (`item_id`) / test-health (`kind`)), then replaces
+        the legacy CARVE-<seq>.md contract with the plan §4.1
+        CarverTurnResult envelope contract. `proposal_id`/`turn_id` are
+        DICTATED here, never left for the carver to invent -- P3b's
+        _validate_carve_proposal_payload rejects any proposal_id whose
+        generation/turn segment does not match, so a self-chosen id would
+        just be silently discarded; handing the carver the exact literal
+        string it must echo back is the simplest thing that reliably
+        satisfies that check. The envelope is written ALONGSIDE any newly
+        authored handoff file(s) (or an empty `artifacts`/`carved: []`-style
+        turn, mirroring the legacy contract's own 'carve nothing is a valid
+        outcome' allowance), never INSTEAD of them."""
+        lines = self._carve_packet_body_lines(cfg, project, seq, states, own_task_id=task_id,
+                                               item_id=item_id, rescope=rescope, kind=kind)
+        proposal_id = f"{cfg.project_id}:carve:{generation}:{task_id}"
+        envelope_rel = f"{cfg.reports_dir}/CARVER-PROPOSAL-{seq}.json"
         lines.extend([
-            "## REQUIRED OUTPUT CONTRACT",
-            f"Write `{report_rel}` containing EXACTLY one JSON object (no",
-            "markdown code fences) with these fields:",
-            '  "carved": [{"id": "<new-task-id>", "why": "<one line>", '
-            '"source_kind": "review|backlog|roadmap|product-goal"}, ...]',
-            '  "review_reflection": "<what the recent reviews/merges revealed '
-            'about quality/gaps>"',
+            "## REQUIRED OUTPUT CONTRACT (persistent-session carve turn)",
+            "This is a WRITE-AUTHORITY turn of your standing strategic-carver "
+            "session. Author the handoff file(s) as instructed above (or none, "
+            "if nothing is carve-worthy this turn), then ALSO write "
+            f"`{envelope_rel}` containing EXACTLY one JSON object (no markdown "
+            "code fences) with these fields:",
+            '  "kind": "carve-proposal"',
+            '  "schema_version": 1',
+            f'  "proposal_id": "{proposal_id}" -- copy this EXACT string, do '
+            'not invent your own',
+            f'  "turn_id": "{task_id}" -- copy this EXACT string',
+            '  "source": {"mode": "' + sub_mode + '", "refs": [<backlog/roadmap/'
+            'review refs you drew from>], "base_revision": '
+            f'"{base_revision or ""}", "merge_digest_cursor": 0}}',
+            '  "artifacts": [{"kind": "handoff", "path": "<repo-relative path '
+            'you just authored>", "sha256": "<its sha256>", "source_ref": '
+            '"<ref this artifact answers, or null>"}, ...] -- empty list if '
+            "you carved nothing this turn",
+            '  "dispositions": [{"source_ref": "<ref>", "result": '
+            '"handoff|decision|backlog|redundant|drop", "artifact_ref": '
+            '"<path or null>", "reason_code": "<short enum>"}, ...]',
+            '  "outcome": one of ' + ", ".join(sorted(_CARVE_OUTCOMES)),
             '  "headroom_estimate": <int -- how many more carve-able packages '
             "exist before ROADMAP_EXHAUSTED/SPEC_GAP>",
-            '  "headroom_rationale": "<one paragraph: how you read the '
-            'roadmap/backlog runway>"',
-            '  "outcome": one of ' + ", ".join(sorted(_CARVE_OUTCOMES)),
             "Also print this exact JSON as your final output line.",
         ])
+        if rescope is not None:
+            lines.append(
+                "If you re-carve the rejected task above, its disposition "
+                f'MUST read "source_ref": "{rescope.get("origin_task_id")}", '
+                '"result": "handoff", "artifact_ref": "<the new handoff\'s '
+                'path>" -- that is what tells the daemon to retire the '
+                "rejected task in favor of your replacement."
+            )
         return "\n".join(lines) + "\n"
 
     def _execute_carve_dispatch(self, project: str, cfg: ProjectConfig,
@@ -3144,6 +3253,26 @@ class Daemon:
         ok, _reason = self._dispatch_admissible(project, cfg, states, "carve")
         if not ok:
             return events  # refused at the effect boundary; no synthetic task minted
+
+        # F018 P3c (plan-long-running-carver.md §4.2 alias, §2.1): NORMALIZE
+        # -- when this project's persistent carver session is WARM, run THIS
+        # carve as a write-authority `carve`-mode SESSION RESUME instead of
+        # minting a fresh throwaway carve. Normalization happens HERE, at the
+        # EXECUTOR, never inside reconcile.py's pure planner -- module
+        # contract items 9/12/15 keep emitting the SAME CarveDispatch,
+        # unchanged, regardless of cfg.carve.session (that planner ladder
+        # does not itself gate on session status; it only ever cares that
+        # this pass's single carve_dispatch_planned slot is free). The
+        # EXECUTOR is the sole place this package changes: `_carver_session`
+        # is its own MASTER GATE (returns None unless cfg.carve.session ==
+        # "project-persistent"), and this branch additionally requires
+        # status WARM with a captured session_id -- a session that is COLD/
+        # STARTING/DEGRADED/ROTATING/COMPACTING (or absent/off) falls
+        # straight through to every line below, unchanged, running the
+        # EXACT pre-P3c fresh-carve path.
+        snap = self._carver_session(project, cfg)
+        if snap is not None and snap.status is CarverStatus.WARM and snap.session_id:
+            return self._execute_carve_via_session_resume(project, cfg, states, action, snap)
 
         # Defense in depth: reconcile.py's own trigger already requires a
         # healthy 'frontier-review' route before ever emitting CarveDispatch
@@ -3622,19 +3751,24 @@ class Daemon:
 
     @staticmethod
     def _carver_turn_marker(states: dict[str, TaskStateFile], task_id: str
-                            ) -> tuple[str, str, int]:
-        """Recover a carver-session turn's (kind, mode, generation) at exit-
-        consumption time, when only the task is in hand. Mirrors _carve_
-        kind's identical convention: the marker rides tsf.notes (replayed
-        statefile state, so it survives a daemon restart between launch and
-        exit) rather than a second event-log scan. Defaults are the safe
-        "nothing recognized" fallback; every task this package creates
-        stamps all three tokens itself, so the fallback only matters for a
-        malformed/foreign task_id."""
+                            ) -> tuple[str, str, int, tuple[str, ...]]:
+        """Recover a carver-session turn's (kind, mode, generation,
+        source_ids) at exit-consumption time, when only the task is in
+        hand. Mirrors _carve_kind's identical convention: the marker rides
+        tsf.notes (replayed statefile state, so it survives a daemon
+        restart between launch and exit) rather than a second event-log
+        scan. Defaults are the safe "nothing recognized" fallback; every
+        task this package creates stamps all four tokens itself (F018 P3c:
+        source_ids added, comma-joined under a 'sources=' token -- see
+        _execute_resume_carver_session/_execute_carve_via_session_resume's
+        own notes construction), so the fallback only matters for a
+        malformed/foreign task_id or a pre-P3c note with no sources= token
+        at all (source_ids=() -- indistinguishable from, and handled the
+        same as, an explicitly recorded empty set)."""
         tsf = states.get(task_id)
-        kind, mode, generation = "start", "headroom", 0
+        kind, mode, generation, source_ids = "start", "headroom", 0, ()
         if tsf is None or not tsf.notes:
-            return kind, mode, generation
+            return kind, mode, generation, source_ids
         for token in tsf.notes.split():
             if token.startswith("kind="):
                 kind = token[len("kind="):]
@@ -3645,7 +3779,10 @@ class Daemon:
                     generation = int(token[len("generation="):])
                 except ValueError:
                     generation = 0
-        return kind, mode, generation
+            elif token.startswith("sources="):
+                raw = token[len("sources="):]
+                source_ids = () if raw == "(none)" else tuple(raw.split(","))
+        return kind, mode, generation, source_ids
 
     def _execute_start_carver_session(self, project: str, cfg: ProjectConfig,
                                       states: dict[str, TaskStateFile],
@@ -3810,8 +3947,20 @@ class Daemon:
             carve_cwd = cfg.root
             dispatch_branch = cfg.default_branch
 
+        # F018 P3c fold-in (plan §2.2 gap): 'sources=' persists action.
+        # source_ids on the turn's own statefile notes (mirroring the
+        # kind=/mode=/generation= convention _carver_turn_marker already
+        # parses) so _consume_carver_session_exit can fold them into
+        # CARVER_SESSION_RESUMED's payload at exit time -- notes is the
+        # established mechanism for surviving a daemon restart between
+        # launch and exit-consumption (see _carve_kind's identical
+        # rationale). Comma-joined: every source id this codebase mints
+        # (digest_id "merge:<project>:<n>", intake_id, task_id) is a single
+        # whitespace-free token, so a comma-joined value round-trips exactly
+        # via str.split(",") with no escaping needed.
+        sources_token = ",".join(action.source_ids) if action.source_ids else "(none)"
         notes = (f"carver-session seq={seq} kind=resume mode={action.mode} "
-                f"generation={snap.generation}")
+                f"generation={snap.generation} sources={sources_token}")
         tsf = TaskStateFile(
             schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
             state=TaskState.ACTIVE, since=utc_now(), handoff_path=None, notes=notes,
@@ -3849,10 +3998,191 @@ class Daemon:
                                        attempt_id=attempt_id))
         return events
 
+    def _execute_carve_via_session_resume(self, project: str, cfg: ProjectConfig,
+                                          states: dict[str, TaskStateFile],
+                                          action: "reconcile.CarveDispatch",
+                                          snap: carver_session.CarverSessionSnapshot
+                                          ) -> list[Event]:
+        """F018 P3c (plan §4.2 alias, §2.1): the normalize branch's BODY --
+        launches a write-authority `carve`-mode SESSION RESUME turn in place
+        of _execute_carve_dispatch's own fresh-throwaway-carve tail. Mirrors
+        _execute_resume_carver_session's launch shape (pinned route from the
+        durable snapshot, fresh attempt/turn id every call, strategic-carver
+        lease) but marks the turn kind=resume mode=carve -- a WRITE-
+        AUTHORITY mode (see _CARVE_WRITE_AUTHORITY_MODES), distinct from
+        merge-feed/targeted-intake/recover -- and builds the SAME mode-
+        specific carve source context _execute_carve_dispatch's legacy path
+        builds (headroom / re-scope via action.task_id / test-health via
+        action.kind / targeted intake via action.item_id), instructing the
+        carver to author a CarverTurnResult envelope (§4.1) instead of
+        merely acknowledging.
+
+        The caller (_execute_carve_dispatch) already ran the SAME admission
+        recheck (_dispatch_admissible) this method would otherwise repeat;
+        the route-resolution/no-route handling below mirrors _execute_
+        resume_carver_session's own (the session's PINNED route, never
+        re-selected via for_role). B7's re-scope supersede (only after
+        launch commits) is preserved verbatim from the legacy path."""
+        events: list[Event] = []
+
+        route_id = snap.route.get("route_id") if isinstance(snap.route, dict) else None
+        routes_obj = config.Routes.load()
+        route_def = routes_obj.routes.get(route_id) if route_id else None
+        if route_def is None:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carver-no-route"}, task_id=None))
+            return events
+
+        seq = self._next_carve_seq(project)
+        task_id = f"carver-session-{project}-{seq}"
+
+        # Same mutually-exclusive precedence _execute_carve_dispatch's
+        # legacy path already documents (rescope, then item_id, then
+        # test-health, then the untargeted default) -- sub_mode is the
+        # plan §4.1 source.mode vocabulary the carve prompt/envelope uses.
+        is_rescope = action.task_id is not None and action.item_id is None
+        origin_task_id = action.task_id if is_rescope else None
+        kind = getattr(action, "kind", "headroom")
+        if is_rescope:
+            sub_mode = "rescope"
+        elif action.item_id is not None:
+            sub_mode = "targeted-intake"
+        elif kind == "test-health":
+            sub_mode = "test-health"
+        else:
+            sub_mode = "headroom"
+
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+        if authority == "branch":
+            branch = f"carver-session/{project}-{seq}"
+            carve_cwd = cfg.root / cfg.worktree_root / branch
+            self._ensure_worktree(cfg.root, branch, carve_cwd, cfg.default_branch)
+            dispatch_branch = branch
+        else:
+            carve_cwd = cfg.root
+            dispatch_branch = cfg.default_branch
+
+        source_ids: tuple[str, ...]
+        if origin_task_id is not None:
+            source_ids = (origin_task_id,)
+        elif action.item_id is not None:
+            source_ids = (action.item_id,)
+        else:
+            source_ids = ()
+        sources_token = ",".join(source_ids) if source_ids else "(none)"
+        notes = (f"carver-session seq={seq} kind=resume mode=carve "
+                f"generation={snap.generation} sources={sources_token}")
+        if origin_task_id is not None:
+            notes += f" rescope-of={origin_task_id}"
+        if action.item_id is not None:
+            notes += f" item={action.item_id}"
+        tsf = TaskStateFile(
+            schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+            state=TaskState.ACTIVE, since=utc_now(), handoff_path=None, notes=notes,
+        )
+        events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
+                                       {"statefile": tsf.to_dict()}, task_id=task_id))
+
+        attempt_id = new_id("att")
+        attempt_dir = paths.attempt_dir(project, attempt_id)
+        route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
+                           variant=route_def.variant, effort=route_def.effort,
+                           routes_rev=routes_obj.revision)
+        attempt = Attempt(attempt_id=attempt_id, role=Role.CARVER, state=AttemptState.CREATED,
+                          route=route_snap, started=utc_now(), worktree=str(carve_cwd),
+                          branch=dispatch_branch if authority == "branch" else None)
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+
+        rescope_ctx = (self._rescope_context(cfg, states, origin_task_id)
+                       if origin_task_id is not None else None)
+        prompt = self._build_carver_carve_prompt(
+            cfg, project, task_id, seq, states, generation=snap.generation, sub_mode=sub_mode,
+            item_id=action.item_id, rescope=rescope_ctx, kind=kind,
+            base_revision=self._head_revision(cfg))
+        argv = adapters.build_resume(route_def, session=snap.session_id,
+                                     worktree=str(carve_cwd), prompt=prompt)
+        spec = wrapper.WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
+            cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
+            route_def=asdict(route_def),
+            leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
+        )
+        pid = wrapper.launch_detached(spec)
+        attempt.state = AttemptState.PREFLIGHTING
+        attempt.pid = pid
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+
+        # B7 2026-07-20 (P75) re-scope supersede, preserved verbatim from
+        # _execute_carve_dispatch's legacy path: only after launch commits,
+        # and only when the origin is still present in states.
+        if origin_task_id is not None and origin_task_id in states:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_SUPERSEDED,
+                {"from": states[origin_task_id].state.value,
+                 "outcome": _RESCOPE_OUTCOME,
+                 "carve_task_id": task_id,
+                 "notes": f"rescoped -- re-scope carve {task_id} launched (seq={seq})"},
+                task_id=origin_task_id))
+        return events
+
+    def _carver_proposal_report_path(self, cfg: ProjectConfig, attempt: Attempt,
+                                     seq: int) -> Path:
+        """F018 P3c: resolve a write-authority carve turn's CarverTurnResult
+        envelope's expected on-disk path. Mirrors _consume_carve_exit's own
+        branch-vs-cfg.root worktree-prefix resolution (P51/P58) for the
+        IDENTICAL reason: a branch-authority carve worktree is a git
+        worktree of the WHOLE physical repo, so cfg.root's own repo-relative
+        prefix (empty for a repo-root project, non-empty for a nested one
+        such as nyxloom under vbpub) must be inserted between the worktree
+        and cfg.reports_dir. Kept as a separate, small helper (not a shared
+        refactor of _consume_carve_exit's own inline logic) -- see this
+        package's module contract on minimizing risk to the frozen legacy
+        path; the two are structurally identical but serve different
+        filenames/callers."""
+        worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
+        filename = f"CARVER-PROPOSAL-{seq}.json"
+        if attempt.worktree and worktree.resolve() != cfg.root.resolve():
+            prefix = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", "--show-prefix"],
+                capture_output=True, text=True).stdout.strip()
+            return worktree / prefix / cfg.reports_dir / filename
+        return worktree / cfg.reports_dir / filename
+
+    def _parse_carver_turn_result(self, cfg: ProjectConfig, attempt: Attempt,
+                                  task_id: str) -> carver_session.CarverTurnResult | None:
+        """F018 P3c: STRUCTURAL-only parse of a write-authority turn's
+        CarverTurnResult envelope (plan §4.1) -- existence, valid JSON, and
+        an exact match of CarverTurnResult's own dataclass shape (via
+        _Serde.from_dict, which rejects unknown keys and requires every
+        field with no default). CONTENT validity (artifact hash/lint/
+        revision/scope) is P3b's _validate_carve_proposal_payload's job at
+        plan-input time, not this executor's -- this gate only distinguishes
+        'the carver wrote something we can record as a proposal' from
+        'nothing usable landed', so a genuinely malformed/absent output
+        degrades the session rather than ever recording a half-proposal.
+        Mirrors _consume_carve_exit's own CarveSummary.from_dict parse
+        (same exception tuple); never raises."""
+        m = re.match(r"^carver-session-.*-(\d+)$", task_id)
+        seq = int(m.group(1)) if m else 0
+        report_path = self._carver_proposal_report_path(cfg, attempt, seq)
+        if not report_path.exists():
+            return None
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            return carver_session.CarverTurnResult.from_dict(data)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return None
+
     def _consume_carver_session_exit(self, project: str, cfg: ProjectConfig,
                                      states: dict[str, TaskStateFile],
                                      task_id: str, attempt_id: str) -> list[Event]:
-        """F018 P3a: the role==CARVER branch of EmitAttemptExit for a
+        """F018 P3a/P3c: the role==CARVER branch of EmitAttemptExit for a
         carver-session Start/Resume turn (see _execute's dispatch, which
         distinguishes this from a legacy CarveDispatch attempt by task_id
         prefix). plan §5.1 items 5-7 / §5.2: decide STARTED/RESUMED vs
@@ -3865,22 +4195,48 @@ class Daemon:
         it correctly from the durable event log, so this never duplicates
         (and risks drifting from) that arithmetic. Either way, the synthetic
         turn task retires to SUPERSEDED -- freeing carve_in_flight for the
-        next pass -- mirroring _consume_carve_exit's own shape."""
+        next pass -- mirroring _consume_carve_exit's own shape.
+
+        F018 P3c extension: for a WRITE-AUTHORITY turn (mode in
+        _CARVE_WRITE_AUTHORITY_MODES -- today only "carve", produced by
+        _execute_carve_via_session_resume's normalize branch), `ok` ALSO
+        requires a structurally-valid CarverTurnResult envelope
+        (_parse_carver_turn_result) -- a missing/malformed envelope on an
+        otherwise-successful turn folds into the SAME DEGRADED path as a
+        capture/turn failure (plan §4.1: 'invalid output ... does not
+        create a task', never a half-proposal), so RESUMED and
+        PROPOSAL_RECORDED are both skipped together, atomically. Read-only
+        modes (merge-feed/targeted-intake/recover) never attempt this parse
+        and so are byte-identical to P3a. CARVER_SESSION_RESUMED's payload
+        also gains `mode`/`turn_id`/`source_ids` here (plan §2.2 fold-in --
+        P3a shipped only {generation, route})."""
         events: list[Event] = []
         tsf = states[task_id]
         attempt = tsf.attempt_by_id(attempt_id)
-        kind, mode, generation = self._carver_turn_marker(states, task_id)
+        kind, mode, generation, source_ids = self._carver_turn_marker(states, task_id)
 
         session_handle = attempt.session_handle if attempt is not None else None
         receipt_ok = (attempt is not None and attempt.receipt is not None
                      and attempt.receipt.result is ReceiptResult.DONE)
         ok = receipt_ok and bool(session_handle)
 
+        turn_result: carver_session.CarverTurnResult | None = None
+        write_authority_turn = ok and kind == "resume" and mode in _CARVE_WRITE_AUTHORITY_MODES
+        if write_authority_turn:
+            turn_result = self._parse_carver_turn_result(cfg, attempt, task_id)
+            if turn_result is None:
+                ok = False  # malformed/missing envelope -> degraded, never a half-proposal
+
         if not ok:
+            if not session_handle:
+                reason = "capture-failed"
+            elif not receipt_ok:
+                reason = "turn-failed"
+            else:
+                reason = "proposal-invalid"
             events.append(self._append_ev(
                 project, cfg, states, EventType.CARVER_SESSION_DEGRADED,
-                {"reason": "capture-failed" if not session_handle else "turn-failed",
-                 "kind": kind, "mode": mode},
+                {"reason": reason, "kind": kind, "mode": mode},
                 task_id=task_id, attempt_id=attempt_id))
         elif kind == "start":
             events.append(self._append_ev(
@@ -3891,8 +4247,19 @@ class Daemon:
         else:
             events.append(self._append_ev(
                 project, cfg, states, EventType.CARVER_SESSION_RESUMED,
-                {"generation": generation, "route": attempt.route.to_dict()},
+                {"generation": generation, "route": attempt.route.to_dict(),
+                 "mode": mode, "turn_id": task_id, "source_ids": list(source_ids)},
                 task_id=task_id, attempt_id=attempt_id))
+            if turn_result is not None:
+                # F018 P3c (plan §2.2/§4.1): the audit-only, admission-
+                # untouched record of what this write-authority turn
+                # authored. Payload is the envelope's OWN fields verbatim --
+                # the exact shape P3b's _validate_carve_proposal_payload
+                # already consumes (proposal_id/turn_id/source/artifacts/
+                # outcome), so no separate/drifting payload builder exists.
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.CARVER_PROPOSAL_RECORDED,
+                    turn_result.to_dict(), task_id=task_id, attempt_id=attempt_id))
 
         events.append(self._append_ev(
             project, cfg, states, EventType.TASK_SUPERSEDED,

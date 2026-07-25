@@ -1,12 +1,21 @@
-"""F018 P3a — persistent carver session executor (Start + Resume) tests.
+"""F018 P3a/P3c — persistent carver session executor tests.
 
-Covers docs/plan-long-running-carver.md §12 Package 3's Start/Resume half:
-daemon._execute_start_carver_session / _execute_resume_carver_session (the
-LAUNCH-time half, mirroring _execute_carve_dispatch's own shape) and
+Covers docs/plan-long-running-carver.md §12 Package 3's Start/Resume half
+(P3a): daemon._execute_start_carver_session / _execute_resume_carver_session
+(the LAUNCH-time half, mirroring _execute_carve_dispatch's own shape) and
 daemon._consume_carver_session_exit (the EXIT-CONSUMPTION half, mirroring
 _consume_carve_exit's own shape but deciding CARVER_SESSION_STARTED/RESUMED
 vs CARVER_SESSION_DEGRADED from the turn's real outcome, never from process
 exit alone).
+
+Also covers Package 3's PRODUCING half (P3c, appended below the P3a
+sections): the _execute_carve_dispatch NORMALIZE branch
+(_execute_carve_via_session_resume) that turns a legacy CarveDispatch into a
+write-authority carve-mode session RESUME when the persistent session is
+WARM, and _consume_carver_session_exit's extension that parses the turn's
+CarverTurnResult envelope and emits CARVER_PROPOSAL_RECORDED (or degrades on
+a missing/malformed one) -- closing the loop P3b (validation/admission)
+already consumes.
 
 Test technique (mirrors tests/test_carver.py + tests/test_daemon.py's own
 established convention for this exact codebase, NOT a real subprocess):
@@ -19,11 +28,16 @@ receipt and persisting via storage.save_state -- the SAME technique
 test_behavioral.py's test_transient_throttle_resumes_same_attempt_end_to_end
 uses for session_handle ("the fake CLI has no real session-capture wiring
 ... so session_handle is seeded directly"), and test_carver.py's
-_seed_carve_task/_write_receipt use for a CARVER attempt's outcome.
+_seed_carve_task/_write_receipt use for a CARVER attempt's outcome. P3c's
+own fake carve TURN (writing a handoff + a CarverTurnResult envelope) is
+simulated the same way: the test writes the files directly rather than
+running a real CLI, mirroring how test_carver_proposal_admission.py
+synthesizes CARVER_PROPOSAL_RECORDED for P3b's own tests.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -219,6 +233,47 @@ def _write_receipt(project: str, attempt_id: str, result: ReceiptResult = Receip
 
 def _snapshot(project: str) -> carver_session.CarverSessionSnapshot:
     return carver_session.project_session(storage.iter_events(project))
+
+
+_HANDOFF_TEMPLATE = """---
+schema_version: 1
+id: {id}
+project: demo
+title: Sample bounded package
+tier: flash-high
+input_revision: "{input_revision}"
+source: {{kind: roadmap, ref: docs/DECISIONS-INBOX.md}}
+scope:
+  touch: ["src/demo/thing.py", "tests/test_thing.py"]
+oracles:
+  - id: O1
+    observable: "pytest tests/test_thing.py::test_bound passes"
+    negative: "a value over the limit raises BoundError (test_bound_violation)"
+    gate: pytest-q
+gates: [pytest-q]
+escalate_if: ["a named contract cannot be met as specified"]
+---
+
+# Sample bounded package
+
+Worktree: none (carve_authority=files). Branch: feat/{id}. Context to read first: docs/DECISIONS-INBOX.md.
+Out of scope: everything else; do not touch forbidden files.
+
+Contract body. If a named contract cannot be met as specified, STOP, write
+`BLOCKED: <reason>` to the LOG, commit, exit.
+"""
+
+
+def _write_handoff(root: Path, id_: str, *, input_revision: str = "abc1234") -> tuple[str, str]:
+    """Write a real handoff file under root/handoff/, mirroring
+    test_carver_proposal_admission.py's own identical local helper (never
+    imported across test files, per this suite's convention). Returns
+    (relpath, sha256)."""
+    text = _HANDOFF_TEMPLATE.format(id=id_, input_revision=input_revision)
+    p = root / "handoff" / f"{id_}.md"
+    p.write_text(text)
+    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    return f"handoff/{id_}.md", sha
 
 
 # ==========================================================================
@@ -546,8 +601,7 @@ def test_consume_resume_success_emits_resumed_and_reuses_sticky_session_id(
     # The resumed turn's OWN capture may or may not re-affirm a session id --
     # this fixture's fake route has no real capture wiring either way, so a
     # fresh, different id is deliberately seeded to prove RESUMED's payload
-    # never overwrites the sticky projected session_id (§4.2 payload only
-    # {generation, route} by contract).
+    # never overwrites the sticky projected session_id.
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1-turn-2",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
@@ -556,8 +610,14 @@ def test_consume_resume_success_emits_resumed_and_reuses_sticky_session_id(
 
     resumed = [e for e in events if e.type is EventType.CARVER_SESSION_RESUMED]
     assert len(resumed) == 1
-    assert set(resumed[0].payload.keys()) == {"generation", "route"}
+    # F018 P3c (plan §2.2 fold-in): RESUMED now also carries mode/turn_id/
+    # source_ids, not just {generation, route}.
+    assert set(resumed[0].payload.keys()) == {
+        "generation", "route", "mode", "turn_id", "source_ids"}
     assert resumed[0].payload["generation"] == 1
+    assert resumed[0].payload["mode"] == "merge-feed"
+    assert resumed[0].payload["turn_id"] == task_id
+    assert resumed[0].payload["source_ids"] == ["d1"]
 
     snap = _snapshot("demo")
     assert snap.status is CarverStatus.WARM
@@ -895,19 +955,28 @@ def test_bootstrap_packet_annotates_terminal_handoff_and_blocker_tasks(
 def test_carver_turn_marker_defaults_and_malformed_generation(tmp_state, carver_project):
     d = daemon.Daemon({"demo": carver_project.root})
 
-    assert d._carver_turn_marker({}, "does-not-exist") == ("start", "headroom", 0)
+    assert d._carver_turn_marker({}, "does-not-exist") == ("start", "headroom", 0, ())
 
     tsf_no_notes = TaskStateFile(
         schema_version=1, task_id="t1", project="demo",
         state=TaskState.ACTIVE, since=utc_now(), notes=None)
-    assert d._carver_turn_marker({"t1": tsf_no_notes}, "t1") == ("start", "headroom", 0)
+    assert d._carver_turn_marker({"t1": tsf_no_notes}, "t1") == ("start", "headroom", 0, ())
 
     tsf_malformed = TaskStateFile(
         schema_version=1, task_id="t2", project="demo",
         state=TaskState.ACTIVE, since=utc_now(),
         notes="carver-session seq=1 kind=resume mode=recover generation=NaN")
-    kind, mode, generation = d._carver_turn_marker({"t2": tsf_malformed}, "t2")
-    assert (kind, mode, generation) == ("resume", "recover", 0)
+    kind, mode, generation, source_ids = d._carver_turn_marker({"t2": tsf_malformed}, "t2")
+    assert (kind, mode, generation, source_ids) == ("resume", "recover", 0, ())
+
+    # F018 P3c: a real 'sources=' token round-trips via comma-split.
+    tsf_sourced = TaskStateFile(
+        schema_version=1, task_id="t3", project="demo",
+        state=TaskState.ACTIVE, since=utc_now(),
+        notes="carver-session seq=2 kind=resume mode=merge-feed generation=1 "
+              "sources=merge:demo:1,merge:demo:2")
+    marker = d._carver_turn_marker({"t3": tsf_sourced}, "t3")
+    assert marker == ("resume", "merge-feed", 1, ("merge:demo:1", "merge:demo:2"))
 
 
 # ==========================================================================
@@ -931,3 +1000,433 @@ def test_feature_off_run_pass_never_touches_new_branches(tmp_state, sample_proje
     assert not any(e.type.name.startswith("CARVER_SESSION_") for e in events)
     assert not any(e.type is EventType.TICK_ERROR for e in events)
     assert carver_session.project_session(events).status is CarverStatus.ABSENT
+
+
+# ==========================================================================
+# F018 P3c -- the NORMALIZE branch: _execute_carve_dispatch, when the
+# persistent session is WARM, launches a write-authority carve-mode SESSION
+# RESUME (_execute_carve_via_session_resume) instead of a fresh throwaway
+# carve. Mirrors the _execute_resume_carver_session section's own test
+# shape/fixtures above.
+# ==========================================================================
+
+def _carve_envelope(task_id: str, *, generation: int = 1, mode: str = "headroom",
+                     artifacts: list | None = None, dispositions: list | None = None,
+                     base_revision: str = "abc1234", outcome: str = "CANDIDATES_READY",
+                     headroom_estimate: int = 0) -> dict:
+    """A well-formed CarverTurnResult envelope dict (plan §4.1) -- the exact
+    shape _parse_carver_turn_result/_validate_carve_proposal_payload both
+    consume. Mirrors test_carver_proposal_admission.py's own
+    _proposal_payload helper (never imported across test files)."""
+    return {
+        "kind": "carve-proposal", "schema_version": 1,
+        "proposal_id": f"demo:carve:{generation}:{task_id}", "turn_id": task_id,
+        "source": {"mode": mode, "refs": [], "base_revision": base_revision,
+                   "merge_digest_cursor": 0},
+        "artifacts": artifacts or [], "dispositions": dispositions or [],
+        "outcome": outcome, "headroom_estimate": headroom_estimate,
+    }
+
+
+def _write_envelope(report_dir: Path, seq: str, envelope: dict) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / f"CARVER-PROPOSAL-{seq}.json").write_text(
+        json.dumps(envelope), encoding="utf-8")
+
+
+def test_carve_dispatch_normalizes_to_session_resume_when_warm(
+        tmp_state, carver_project, patch_launch):
+    """Headline routing oracle: with a WARM persistent session, a headroom
+    CarveDispatch is normalized to a carve-mode session RESUME (task_id
+    prefix carver-session-, argv is --resume S1 ...) instead of minting the
+    legacy fresh-carve task_id prefix carve-."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    types = [e.type for e in events]
+    assert types == [EventType.TASK_CREATED, EventType.ATTEMPT_CREATED,
+                      EventType.ATTEMPT_PREFLIGHTED]
+    task_id = events[0].task_id
+    assert task_id.startswith("carver-session-demo-")
+    tsf = states[task_id]
+    assert "kind=resume" in tsf.notes
+    assert "mode=carve" in tsf.notes
+    assert "sources=(none)" in tsf.notes
+
+    assert len(patch_launch) == 1
+    argv = patch_launch[0].argv
+    assert argv == ["fake", "--resume", "S1", argv[-1]]
+    # the carve-mode prompt carries the SAME source-context vocabulary the
+    # legacy dispatch packet uses, plus the NEW envelope contract.
+    assert "Carve sources" in argv[-1]
+    assert "carve-proposal" in argv[-1]
+    assert f"demo:carve:1:{task_id}" in argv[-1]
+
+
+def test_carve_dispatch_normalize_rescope_supersedes_origin_after_launch(
+        tmp_state, carver_project, patch_launch):
+    """A re-scope CarveDispatch (action.task_id set) normalizes the SAME
+    way, carries the rejected task's context, and B7's re-scope supersede
+    (only after launch commits) is preserved."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    states["demo-origin"] = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="demo-origin", project="demo",
+        state=TaskState.READY_TO_CARVE, since=utc_now())
+    storage.save_state(states["demo-origin"])
+    states = storage.list_states("demo")
+
+    action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    created = next(e for e in events if e.type is EventType.TASK_CREATED)
+    task_id = created.task_id
+    assert task_id.startswith("carver-session-demo-")
+    tsf = states[task_id]
+    assert "mode=carve" in tsf.notes
+    assert "rescope-of=demo-origin" in tsf.notes
+    assert "sources=demo-origin" in tsf.notes
+
+    superseded = [e for e in events if e.type is EventType.TASK_SUPERSEDED
+                  and e.task_id == "demo-origin"]
+    assert len(superseded) == 1
+    assert superseded[0].payload["outcome"] == "RESCOPED"
+    assert superseded[0].payload["carve_task_id"] == task_id
+
+    argv = patch_launch[0].argv
+    assert "RE-SCOPING" in argv[-1]
+    assert "demo-origin" in argv[-1]
+    assert '"result": "handoff"' in argv[-1]  # the disposition instruction for a re-carve
+
+
+def test_carve_dispatch_normalize_targeted_intake_sub_mode(
+        tmp_state, carver_project, patch_launch):
+    """A targeted carve (action.item_id set) normalizes with sub_mode
+    'targeted-intake' and carries the item id through notes/source_ids."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", item_id="B27")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    task_id = events[0].task_id
+    tsf = states[task_id]
+    assert "mode=carve" in tsf.notes
+    assert "item=B27" in tsf.notes
+    assert "sources=B27" in tsf.notes
+    assert "B27" in patch_launch[0].argv[-1]
+
+
+def test_carve_dispatch_normalize_test_health_sub_mode(
+        tmp_state, carver_project, patch_launch):
+    """A test-health CarveDispatch (action.kind='test-health') normalizes
+    with the SAME test-suite-focused source section the legacy packet
+    builder uses."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="test-health")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    assert "TEST-HEALTH" in patch_launch[0].argv[-1]
+
+
+def test_carve_dispatch_falls_back_to_fresh_carve_when_no_session_yet(
+        tmp_state, carver_project, patch_launch):
+    """Feature ON but NO session exists yet (ABSENT) -- CarveDispatch must
+    NOT normalize; it takes the legacy fresh-carve path (task_id prefix
+    carve-, not carver-session-)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    task_id = next(e.task_id for e in events if e.type is EventType.TASK_CREATED)
+    assert task_id.startswith("carve-demo-")
+    assert not task_id.startswith("carver-session-")
+
+
+def test_carve_dispatch_falls_back_when_session_degraded(
+        tmp_state, carver_project, patch_launch):
+    """A DEGRADED (not WARM) session also falls back to the legacy path --
+    normalize requires status WARM specifically."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_DEGRADED,
+        payload={"reason": "turn-failed"},
+    )
+    assert _snapshot("demo").status is CarverStatus.DEGRADED
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    task_id = next(e.task_id for e in events if e.type is EventType.TASK_CREATED)
+    assert task_id.startswith("carve-demo-")
+
+
+def test_carve_dispatch_byte_identical_when_feature_off(
+        tmp_state, sample_project, patch_launch):
+    """cfg.carve.session == 'fresh' (default, sample_project has no
+    [stage.carve] override): _carver_session's MASTER GATE returns None, so
+    the normalize branch is never entered -- the fresh-carve path (legacy
+    CARVE-<seq>.md REQUIRED OUTPUT CONTRACT) runs exactly as it did before
+    P3c, and no CARVER_PROPOSAL_RECORDED is ever produced."""
+    cfg = sample_project
+    assert cfg.carve.session == "fresh"
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    task_id = next(e.task_id for e in events if e.type is EventType.TASK_CREATED)
+    assert task_id.startswith("carve-demo-")
+    assert not task_id.startswith("carver-session-")
+    packet_path = (paths.attempt_dir("demo", states[task_id].attempts[0].attempt_id)
+                   / "packet" / "packet.md")
+    text = packet_path.read_text(encoding="utf-8")
+    assert "REQUIRED OUTPUT CONTRACT" in text
+    assert "CARVE-" in text and ".md" in text  # legacy contract, not the P3c envelope
+    assert "carve-proposal" not in text
+
+
+def test_normalize_branch_unresolvable_pinned_route_needs_operator(
+        tmp_state, carver_project, patch_launch):
+    """Mirrors _execute_resume_carver_session's own equivalent oracle: the
+    normalize branch resolves the session's PINNED route, never re-selects
+    via for_role -- a routes.toml drift since bootstrap needs-operators
+    cleanly instead of silently launching under a stale route."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+    paths.routes_path().write_text("revision = \"v2\"\n")
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    assert len(events) == 1
+    assert events[0].type is EventType.NEEDS_OPERATOR
+    assert events[0].payload == {"reason": "carver-no-route"}
+    assert patch_launch == []
+
+
+def test_branch_authority_normalize_reads_envelope_at_worktree_report_path(
+        tmp_state, carver_project_branch_authority, patch_launch):
+    """Under branch authority, the envelope's expected path is resolved via
+    the SAME worktree-prefix logic _consume_carve_exit uses for
+    CARVE-<seq>.md (P51/P58) -- proves the normalize/consume path
+    integrates with real git worktrees, not just carve_authority='files'."""
+    cfg = carver_project_branch_authority
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    worktree = Path(states[task_id].attempts[0].worktree)
+    assert worktree.resolve() != cfg.root.resolve()
+
+    seq = task_id.rsplit("-", 1)[-1]
+    # carver_project_branch_authority is a REPO-ROOT project (worktree_root
+    # = '.worktrees'), so `git rev-parse --show-prefix` from cfg.root is ""
+    # -- the report lives at <worktree>/<reports_dir>, no extra segment.
+    _write_envelope(worktree / cfg.reports_dir, seq, _carve_envelope(task_id))
+
+    attempt_id = states[task_id].attempts[0].attempt_id
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+
+
+# ==========================================================================
+# F018 P3c -- _consume_carver_session_exit's extension: parse the
+# CarverTurnResult envelope a write-authority turn wrote and emit
+# CARVER_PROPOSAL_RECORDED (or degrade on a missing/malformed one).
+# ==========================================================================
+
+def test_write_authority_turn_missing_envelope_degrades_no_proposal(
+        tmp_state, carver_project, patch_launch):
+    """A DONE turn with a captured session but NO envelope file at all --
+    'nothing usable landed' -- degrades the session; never a half-proposal."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
+    assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+    degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
+    assert len(degraded) == 1
+    assert degraded[0].payload["reason"] == "proposal-invalid"
+    assert degraded[0].payload["mode"] == "carve"
+    assert _snapshot("demo").status is CarverStatus.DEGRADED
+
+
+def test_write_authority_turn_malformed_envelope_degrades_no_proposal(
+        tmp_state, carver_project, patch_launch):
+    """A present-but-structurally-invalid envelope (missing required
+    CarverTurnResult fields) is treated the SAME as a missing one --
+    CarverTurnResult.from_dict rejects it, never a half-proposal."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    seq = task_id.rsplit("-", 1)[-1]
+    # Missing required fields (artifacts/dispositions/outcome/source/...) --
+    # CarverTurnResult.from_dict raises TypeError (missing positional args).
+    _write_envelope(cfg.root / cfg.reports_dir, seq,
+                     {"kind": "carve-proposal", "schema_version": 1})
+
+    attempt_id = states[task_id].attempts[0].attempt_id
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
+    assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+    assert any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
+    assert _snapshot("demo").status is CarverStatus.DEGRADED
+
+
+def test_read_only_resume_turn_never_records_proposal_even_if_envelope_present(
+        tmp_state, carver_project, patch_launch):
+    """Defense in depth: a read-only mode (merge-feed) must NEVER attempt
+    to parse/record a proposal, even if an envelope-shaped file happens to
+    sit at the exact path a write-authority turn would use."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    resume_events = d._execute_resume_carver_session(
+        "demo", cfg, states,
+        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+                                      source_ids=("d1",), generation=1))
+    task_id = resume_events[0].task_id
+    seq = task_id.rsplit("-", 1)[-1]
+    _write_envelope(cfg.root / cfg.reports_dir, seq,
+                     _carve_envelope(task_id, mode="merge-feed"))
+
+    attempt_id = states[task_id].attempts[0].attempt_id
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
+    assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+
+
+# ==========================================================================
+# F018 P3c headline oracle -- THE FULL LOOP, end to end: normalize -> the
+# fake carve turn authors a handoff + CarverTurnResult envelope -> consume
+# parses it and records CARVER_PROPOSAL_RECORDED -> a SECOND, UNSTUBBED
+# run_pass (real reconcile.plan_project) validates it (P3b's
+# _validated_carve_proposals) and admits it (AdmitCarveProposal) ->
+# TASK_CREATED + CARVER_PROPOSAL_ADMITTED. Mirrors
+# test_carver_proposal_admission.py's own test_ad1_real_run_pass_admits_
+# and_supersedes_origin, but the RECORDING half is now produced by THIS
+# package instead of being hand-synthesized.
+# ==========================================================================
+
+def test_full_loop_normalize_record_validate_admit_end_to_end(
+        tmp_state, carver_project, patch_launch):
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    assert task_id.startswith("carver-session-demo-")
+    attempt_id = states[task_id].attempts[0].attempt_id
+
+    # Simulate the carve turn: author a real handoff + its CarverTurnResult
+    # envelope, exactly as the REQUIRED OUTPUT CONTRACT the resume prompt
+    # dictates instructs a real carver to do.
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    seq = task_id.rsplit("-", 1)[-1]
+    envelope = _carve_envelope(
+        task_id, artifacts=[{"kind": "handoff", "path": relpath, "sha256": sha,
+                             "source_ref": None}],
+        headroom_estimate=3)
+    _write_envelope(cfg.root / cfg.reports_dir, seq, envelope)
+
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+    consume_events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    resumed = [e for e in consume_events if e.type is EventType.CARVER_SESSION_RESUMED]
+    assert len(resumed) == 1
+    recorded = [e for e in consume_events if e.type is EventType.CARVER_PROPOSAL_RECORDED]
+    assert len(recorded) == 1
+    assert recorded[0].payload["proposal_id"] == envelope["proposal_id"]
+    assert storage.load_state("demo", task_id).state is TaskState.SUPERSEDED
+
+    # Second pass: REAL reconcile.plan_project (no _scripted stub) validates
+    # and admits the recorded proposal.
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    assert not any(e.type is EventType.TICK_ERROR for e in events)
+    admitted = [e for e in events if e.type is EventType.CARVER_PROPOSAL_ADMITTED]
+    assert len(admitted) == 1
+    assert admitted[0].payload["proposal_id"] == envelope["proposal_id"]
+    created = [e for e in events if e.type is EventType.TASK_CREATED
+               and e.task_id == "demo-P901"]
+    assert len(created) == 1
+    assert storage.load_state("demo", "demo-P901").state is TaskState.CARVED
