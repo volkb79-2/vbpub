@@ -340,6 +340,55 @@ def test_pre_merge_gate_fails_not_published_review_rejected(
     assert "automerge-demo-P92" not in wt_list
 
 
+def test_pre_merge_gate_failure_captures_output_tail(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """F019 P1a: a FAILING pre-merge gate persists a bounded tail of its
+    stdout+stderr in GATE_FINISHED's output_tail, so the failure is diagnosable
+    from the event log (the reviewer-diagnosis routing reads this) rather than
+    just an exit code. A passing gate would leave it empty (populated only on a
+    non-zero exit)."""
+    loud_gate = config.GateDef(
+        gate_id="loud-fail",
+        argv=["sh", "-c",
+              "echo pytest-stdout-marker; echo COVERAGE-FAIL-marker 1>&2; exit 3"],
+        phase="implementation", timeout_seconds=30, environment="local")
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, gates={"loud-fail": loud_gate},
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+
+    _make_branch_with_file(cfg.root, "feat/demo-P94", "loud.txt", "x\n")
+    _seed_merge_ready(cfg.root, "demo", "demo-P94", "feat/demo-P94")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    gate_ev = [e for e in events
+               if e.type is EventType.GATE_FINISHED and e.task_id == "demo-P94"
+               and e.payload.get("gate_result", {}).get("phase") == "pre-merge"][0]
+    gr = gate_ev.payload["gate_result"]
+    assert gr["exit_code"] == 3
+    assert "pytest-stdout-marker" in gr["output_tail"]
+    assert "COVERAGE-FAIL-marker" in gr["output_tail"]
+
+
+def test_gate_output_tail_helper_handles_types_and_bounds():
+    """F019 P1a unit: _gate_output_tail tolerates str|bytes|None (and any other
+    type via str()), combines stdout+stderr, and tails to the limit -- the
+    actionable summary (FAILED lines, the diff-coverage verdict) is at the END."""
+    f = daemon.Daemon._gate_output_tail
+    assert f(None, None) == ""                       # both absent
+    assert f("out", "err") == "out\nerr"             # both present -> joined
+    assert f("only-out", None) == "only-out"         # stdout only
+    assert f(None, "only-err") == "only-err"         # stderr only
+    assert f(b"byte-out", None) == "byte-out"        # bytes decoded
+    assert f(123, None) == "123"                     # defensive str() fallback
+    long = "A" * 100 + "TAIL"                        # tail-bounding keeps the END
+    assert f(long, None, limit=8) == long[-8:]
+    assert f(long, None, limit=8).endswith("TAIL")
+
+
 def test_pre_merge_gate_skipped_when_policy_disabled(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """D-CORRECT-1: policy.pre_merge_gate=False -> behaves exactly as today

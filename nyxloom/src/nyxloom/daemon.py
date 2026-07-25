@@ -2330,6 +2330,27 @@ class Daemon:
         gate = sorted(cfg.gates.values(), key=lambda g: g.gate_id)[0]
         return " ".join(gate.argv)
 
+    @staticmethod
+    def _gate_output_tail(stdout: object, stderr: object, limit: int = 4096) -> str:
+        """F019 P1a: a bounded text tail of a gate subprocess's stdout+stderr, for
+        the GATE_FINISHED payload on a FAILURE (so the reviewer-diagnosis routing
+        and any re-queue have the real error, not just an exit code). Tail, not
+        head: the actionable summary -- pytest FAILED lines, the diff-coverage
+        verdict -- is at the END of the output. Tolerates str|bytes|None
+        (subprocess.run yields str under text=True; a TimeoutExpired may carry
+        bytes or None), so it is safe on the timeout branch too."""
+        def _s(v: object) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            if isinstance(v, (bytes, bytearray)):
+                return bytes(v).decode("utf-8", "replace")
+            return str(v)
+        out, err = _s(stdout), _s(stderr)
+        combined = f"{out}\n{err}" if (out and err) else (out or err)
+        return combined[-limit:]
+
     # -- post-merge validation (nyxloom-post-merge-validation, 2026-07-17) --
     #
     # reconcile.py's module contract item 11 plans MERGED->VALIDATING (pure
@@ -2460,12 +2481,16 @@ class Daemon:
         gate_cwd = str(scratch) if scratch is not None else str(cfg.root)
         worktree_value = str(scratch) if scratch is not None else self._post_merge_worktree_value(cfg)
         argv = [tok.replace("{worktree}", worktree_value) for tok in gate.argv]
+        out_tail = ""
         try:
             proc = subprocess.run(argv, cwd=gate_cwd, capture_output=True,
                                    text=True, timeout=gate.timeout_seconds)
             exit_code = proc.returncode
-        except subprocess.TimeoutExpired:
+            if exit_code != 0:
+                out_tail = self._gate_output_tail(proc.stdout, proc.stderr)
+        except subprocess.TimeoutExpired as _te:
             exit_code = 124  # conventional shell timeout exit code
+            out_tail = self._gate_output_tail(_te.stdout, _te.stderr)
         except OSError:
             exit_code = 127  # command-not-found / exec failure
         finally:
@@ -2477,7 +2502,7 @@ class Daemon:
         gate_result = GateResult(
             gate_id=gate.gate_id, phase="post-merge", commit=commit,
             exit_code=exit_code, started=started, ended=ended,
-            environment=gate.environment,
+            environment=gate.environment, output_tail=out_tail,
         )
         events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
                                        {"gate_result": gate_result.to_dict()}, task_id=task_id))
@@ -2680,17 +2705,22 @@ class Daemon:
                 merge_commit_sha = new_commit
                 argv = [tok.replace("{worktree}", str(scratch)) for tok in gate.argv]
                 started = utc_now()
+                out_tail = ""
                 try:
                     proc = subprocess.run(argv, cwd=str(scratch), capture_output=True,
                                           text=True, timeout=gate.timeout_seconds)
                     exit_code = proc.returncode
-                except subprocess.TimeoutExpired:
+                    if exit_code != 0:
+                        out_tail = self._gate_output_tail(proc.stdout, proc.stderr)
+                except subprocess.TimeoutExpired as _te:
                     exit_code = 124
+                    out_tail = self._gate_output_tail(_te.stdout, _te.stderr)
                 except OSError:
                     exit_code = 127
                 gate_result = GateResult(gate_id=gate.gate_id, phase="pre-merge",
                     commit=merge_commit_sha, exit_code=exit_code, started=started,
-                    ended=utc_now(), environment=gate.environment)
+                    ended=utc_now(), environment=gate.environment,
+                    output_tail=out_tail)
                 events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
                     {"gate_result": gate_result.to_dict()}, task_id=task_id))
                 if exit_code != 0:
@@ -2713,17 +2743,22 @@ class Daemon:
             if mgate is not None:
                 margv = [tok.replace("{worktree}", str(scratch)) for tok in mgate.argv]
                 mstarted = utc_now()
+                mout_tail = ""
                 try:
                     mproc = subprocess.run(margv, cwd=str(scratch), capture_output=True,
                                            text=True, timeout=mgate.timeout_seconds)
                     mexit = mproc.returncode
-                except subprocess.TimeoutExpired:
+                    if mexit != 0:
+                        mout_tail = self._gate_output_tail(mproc.stdout, mproc.stderr)
+                except subprocess.TimeoutExpired as _te:
                     mexit = 124
+                    mout_tail = self._gate_output_tail(_te.stdout, _te.stderr)
                 except OSError:
                     mexit = 127
                 mresult = GateResult(gate_id=mgate.gate_id, phase="mutation",
                     commit=new_commit, exit_code=mexit, started=mstarted,
-                    ended=utc_now(), environment=mgate.environment)
+                    ended=utc_now(), environment=mgate.environment,
+                    output_tail=mout_tail)
                 events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
                     {"gate_result": mresult.to_dict()}, task_id=task_id))
                 if mexit != 0:
