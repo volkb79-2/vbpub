@@ -67,6 +67,15 @@ argv = ["bash", "-c", "docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/v
 # json schema coverage_gate already reads. Parallelism lives HERE (the gate), not in
 # pyproject addopts, so mutation_gate's per-mutant single-file runs stay serial.
 # Requires tester-unified rebuilt with the pytest-xdist+pytest-cov test extra.
+# Worker count `-n auto` (= os.cpu_count() = 8 here) is the measured optimum, NOT
+# a lower cap. Single-gate wall-clock on this 8-core host (single-sample, noisy):
+#   serial 4m56s | -n2 3m19s | -n4 3m18s | -n6 3m03s | -n auto/8 2m28s.
+# The ~5 fork/subprocess-heavy suites (test_daemon/wrapper/behavioral/integration/
+# properties) need >=6 workers to run SIDE BY SIDE; -n2..4 plateau ~3m18 (they can't
+# overlap), so lowering workers is a pure ~50s/gate regression with no benefit.
+# Gates are still SERIALIZED across packages (host = 15 GiB RAM, already ~30 GiB into
+# swap; concurrent 8-worker gates OOM-kill = exit 137). Raising concurrency is a
+# host-provisioning question (RAM / per-gate docker --memory), not a worker-count one.
 phase = "implementation"
 timeout_seconds = 1800
 environment = "tester-unified"
