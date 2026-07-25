@@ -89,7 +89,8 @@ Spec: `docs/plan-long-running-carver.md` §12 Package 3 (970–1010) + §5 (476�
 P3 leaves compaction DISABLED; a compaction-due session uses the rotation fallback, no `/compact`).
 **Frozen-core-adjacent** (daemon launch/effect boundary + adapters). Executes the A1 actions the
 daemon currently can't run. Decomposition (serial; A2-reviewer reused):
-- **P3a — carver session executor (Start + Resume) + behavioral fake** *(dispatched)*: in
+- **P3a — carver session executor (Start + Resume) + behavioral fake** *(✅ MERGED `fbe97a3f`,
+  190/190 gate, Opus APPROVE-WITH-NITS — exit-consumer architecture, byte-identical off)*: in
   `daemon._execute` (:3515, isinstance-chain at :4289) add `StartCarverSession`/`ResumeCarverSession`
   branches. Start = mirror `_execute_carve_dispatch` (:2824): admissibility recheck → synthetic
   carver attempt → bootstrap packet (§2.5) → wrapper-launch with `{project}.strategic-carver` lease
@@ -121,8 +122,31 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
 - **P3d — rotation + bounded resume recovery + DEGRADED policy (concern-3) + compaction→rotation
   fallback (§6.1/§5.4)**: typed rotation conditions, cold recovery from durable truth, and the
   concern-3 decision (DEGRADED-exhausted sets the mutex / escalates, not silent legacy fall-through).
-After P3 → the carver is functional → enable `cfg.carve.session="project-persistent"` on a pilot,
-then dogfood.
+### ⛔ PRE-ENABLEMENT CHECKLIST (from the P3a Opus review — feature-on runaways, all INERT feature-off)
+`cfg.carve.session="project-persistent"` MUST NOT be set on any project until ALL clear. P3a ships
+these latent (default `session="fresh"` keeps them dormant); each later package closes one:
+1. **Ack cursor (concern-2, the headline):** P3a never emits `CARVER_CONTEXT_CONSUMED`, so
+   `last_consumed_event_sequence` never advances → merge-feed re-fires every pass forever (a
+   budget-burning model-turn runaway, and `successful_turns_since_compaction` inflates too). Owner:
+   **P4** (its work-item 1 = at-least-once digest batching + acknowledgement cursor; needs the
+   structured §3.2 ack P3a doesn't request).
+2. **Unhandled `CompactCarverSession`/`AdmitCarveProposal` (AF1):** A1 (merged) can emit both
+   feature-on; P3a's `_execute` `else` raises → per-pass `TICK_ERROR` storm (isolated, not a crash).
+   Closed as P3b wires Admit + P4 wires Compact; until then an enablement guard (#5) covers it.
+3. **Bootstrap/resume ack-content validation (concern-3, §5.1 item-6):** P3a records WARM on
+   `DONE + captured session_handle` but never parses the `BOOTSTRAP-ACK` line — a DONE-but-didn't-
+   bootstrap turn is falsely WARM. Owner: **P3b** (validate the ack before recording WARM/RESUMED).
+4. **`NEEDS_OPERATOR` storm on unresolvable pinned route (concern-5):** resume re-planned every pass
+   → emits `NEEDS_OPERATOR` every pass, no debounce. Owner: **P3d** (debounce / halted state).
+5. **Enablement guard (AF3):** add config/startup validation that REJECTS (or loudly WARNs on)
+   `session="project-persistent"` until 1–4 land. This single guard neutralizes premature foot-gunning
+   of the half-built feature. Owner: **P3d / the enablement step** (build once the prerequisites are known).
+Minor cleanups (non-enablement): de-hollow the lease-lost test (uses `_scripted` stub, not the real
+planner); `_recent_merge_digest_ids` uses a raw `["digest_id"]` index vs A2's `.get` (KeyError on a
+malformed digest, feature-on only) — fold into P3b/P3d.
+
+After P3 (all 4 sub-packages) + the checklist clears → enable `cfg.carve.session="project-persistent"`
+on a pilot, then dogfood.
 
 `reconcile.py` is FROZEN-CORE: A1 gets a SOLO gate + a full adversarial review; A2 gets a SOLO
 gate + medium review. A1→A2 serial (A2 depends on A1's fields). After A2 lands → **DOGFOOD
