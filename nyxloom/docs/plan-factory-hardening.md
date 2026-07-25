@@ -80,7 +80,7 @@ mirror D-CORRECT-1's structure exactly; the revert must itself be CAS-safe.
 diff-cov + full suite; deepseek-pro-max review APPROVE / no findings (CAS-safety, None-
 safety, gate-before-record, test behavioral-ness all verified).
 
-## G — Parallelize the gate (pytest-xdist) + mutation across mutants · MEDIUM
+## G — Parallelize the gate (pytest-xdist) + mutation across mutants · MEDIUM · ✅ DONE (xdist half; mutation → H)
 **What.** Add `pytest-xdist` and run the gate suite with `-n auto`, composed with
 `coverage` (pytest-cov + xdist data-merge) and with any serial-state tests marked
 `-p no:xdist`/serial. Parallelize the changed-lines mutation gate across mutants
@@ -93,6 +93,21 @@ within-gate one).
 **Scope.** `pyproject.toml` (dep + addopts), conftest markers for order-dependent
 tests, `mutation_gate.py` (mutant fan-out). Verify coverage numbers are identical
 under xdist before trusting.
+**Done (merge `be0f0a58`).** Gate runs `pytest -n auto` under `pytest-cov` (NOT
+`coverage run -m pytest` — that traces only the parent, measuring none of xdist's
+execnet workers → false-FAIL every package; pytest-cov hooks workers natively). 2.0x
+speedup (4m56s→2m28s). Parallelism lives in the gate command (`nyxloom.toml`), NOT
+`addopts`, so `mutation_gate`'s per-mutant runs stay serial — and **no serial markers
+were needed** (the conftest's per-test `NYXLOOM_STATE` isolation holds under
+`-n auto`). Coverage-parity verified (serial `coverage run` vs xdist `pytest-cov`,
+per-file executed-line superset); that surfaced 6 `render.py` liveness lines covered
+only incidentally by real-`os.fork()` integration tests (fork-child coverage
+`coverage run` keeps but xdist-`pytest-cov` drops) — closed **structurally** with
+deterministic in-process unit tests, not by recapturing incidental fork coverage.
+`tester-unified` rebuilt with the `pytest-xdist`+`pytest-cov` extra. Mutation fan-out
+deferred to **H** (`mutation_gate`'s in-place file write isn't parallel-safe — needs
+per-mutant worktree isolation — and only H's whole-module audit consumes it). Lesson:
+`nyxloom-trove/LESSONS.md` PL3.
 
 ## C — System→system lessons channel (the promotion plumbing) · EPIC
 **What.** A `LESSON_DISCOVERED` typed record (reuse findings-channel plumbing): a
@@ -123,7 +138,7 @@ report artifact, backlog items per surviving mutant. Design + budget first.
 1. **A** (schema de-dup) — ✅ DONE. Flagship structural fix; paid down the dual-schema debt (single source = `src/nyxloom/schemas/`).
 2. **F** (auto-revert + gate cmd_merge) — ✅ DONE (merge `564cadf4`). Frozen-core safety; closed the L4 operator escape hatch.
 3. **D** (review_focus + band-tiered review) — mechanizes reviewer targeting, saves cost.
-4. **G** (xdist + mutation fan-out) — wall-clock win, enables H.
+4. **G** (xdist) — ✅ DONE (merge `be0f0a58`). 2.0x gate speedup; mutation fan-out → H.
 5. **C** (lessons channel) — the learning loop; design doc → build.
 6. **H** (frozen-core mutation audit) — after G; design + budget → build.
 

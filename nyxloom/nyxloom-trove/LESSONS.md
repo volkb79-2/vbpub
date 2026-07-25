@@ -66,5 +66,36 @@ declared per-project rigor contract (`asserts=[...]`) that feeds review-depth
 selection, optionally probe-verified by an adversarial meta-gate (must reject a
 canary). See `docs/plan-factory-hardening.md` §D.
 
+## PL3 — A parallel gate's coverage that drops fork-child lines is exposing hollow tests, not miscounting
+`scope: product` · `upstream: proposed`
+
+Factory-hardening G moved the gate to `pytest -n auto` and switched coverage from
+`coverage run -m pytest` to `pytest-cov` (the only way to measure xdist's execnet
+workers — `coverage run` traces only the parent, so under `-n auto` it measures
+~nothing and `coverage_gate` would false-FAIL every package). A pre-ship
+coverage-parity check (serial `coverage run` vs xdist `pytest-cov`, per-file
+executed-line superset) flagged 6 `render.py` liveness lines as serial-covered but
+xdist-missed. Mechanism: `coverage run` follows the tracer into a test's real
+`os.fork()` child and writes the child's data to the shared file; `pytest-cov` under
+xdist combines only per-WORKER data and drops the worker's forked grandchild's
+coverage.
+
+**The reframe:** those lines had NO deterministic test — they were "covered" only
+because an integration test happened to fork a child that ran them. That is exactly
+the hollow coverage the floor exists to reject, so xdist-`pytest-cov` is MORE honest,
+not broken. The structural fix (canonical **L1**) is to write the missing
+deterministic in-process unit tests, NOT to reconfigure coverage to recapture the
+incidental fork coverage.
+
+**Operational rules for adopting a parallel coverage gate anywhere:**
+- ALWAYS verify per-file executed-line parity (serial vs parallel) before trusting a
+  parallelized coverage gate. The danger direction is serial-covered-but-parallel-
+  missed (future false-FAILs); parallel-covers-more is harmless.
+- Separate intrinsic suite nondeterminism from a real parallel gap by running the
+  SERIAL gate TWICE: lines that flake serial-vs-serial (timing/poll races) are not
+  the parallel runner's fault; only serial-STABLE-but-parallel-missed lines are.
+- Put parallelism in the GATE COMMAND, not global `addopts`, so single-file tool runs
+  (e.g. `mutation_gate`'s per-mutant runs) don't pay xdist startup overhead.
+
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
