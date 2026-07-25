@@ -460,6 +460,42 @@ from the actual destination in exact-revision source. This repeats P100's
 warning in a subtler form: `nl -ba` citation is necessary but not sufficient
 when the reviewer interprets the edge incorrectly.
 
+### P106 validation: fresh context does not replace worktree and runner enforcement
+
+P106 rotated to a fresh Flash session after the P105 health crossover. The
+first turn printed the correct worktree and commit, then read project source
+and tests from the shared main checkout anyway. The file-writer sandbox would
+have confined direct edits, but stale reads can still produce a wrong patch, so
+the controller interrupted before implementation. A corrected resume used the
+right project paths but ignored the injected runner recipe: it created a
+112 MiB host virtualenv, copied 33 MiB of the worktree into `/tmp`, and probed
+several incorrect Docker mounts instead of using the declared host-source bind.
+The controller interrupted again, verified the two exact temporary roots, and
+deleted them.
+
+Fresh context therefore does not cure relocation or runner drift. Nyxloom
+should enforce:
+
+1. a project read root as well as a write root, with explicit exceptions only
+   for canonical doctrine;
+2. a resolved runner command that the task can invoke but not re-derive; and
+3. a side-effect inventory on aborted turns so disposable environments, copied
+   trees, containers, and images are removed or reported.
+
+After both Flash routes crossed mechanical tripwires, the controller implemented
+the six-test deployment tranche. It reached empty whole-file gaps on the first
+full run and matched on the second; the persistent Pro reviewer independently
+approved it and interpreted all five arcs correctly after the P105 direction
+warning. Route choice should follow observed task performance, not loyalty to
+the originally planned model/session topology.
+
+P106's test file is long—470 lines for six cases—because three cases compare
+complete 20-field reports containing multiple complete checks. That volume is
+not automatically coverage painting. Review should consider assertion density,
+distinct causal paths, and completeness rather than raw test lines. Helper
+factories can reduce repetition later, but they must not hide the expected
+postcondition or reconstruct it with the function under test.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -535,6 +571,15 @@ prerequisite package, not an edit-refresh mechanism.
 - Derive branch-pair descriptions mechanically from exact-revision source and
   destination lines; reject reviewer prose that assigns the opposite predicate
   truth value to a correctly measured arc.
+- Enforce a task's project read root, not only its write root; permit shared
+  canonical doctrine explicitly while denying stale sibling/main project trees.
+- Provide the resolved test-runner invocation as an executable capability so
+  agents cannot replace it with host virtualenvs, copied worktrees, or guessed
+  Docker mounts.
+- Inventory and clean exact disposable side effects after interrupted turns,
+  including temporary environments, copied trees, containers, and images.
+- Evaluate large exact-test diffs by causal-path uniqueness and assertion
+  density, not line count alone; reject helpers that hide expected structures.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
