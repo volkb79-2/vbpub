@@ -181,3 +181,83 @@ handoff step 9. Three dead imports (F3, F4), one duplicate test (F5), and
 one weak assertion (F6) are quality findings that should be addressed.
 
 Concrete mechanical repairs provided for all seven findings.
+
+
+---
+
+# Repair re-review — 2026-07-25 (commit 7fb19b47)
+
+**Re-reviewer:** Reasonix (same persistent adversarial session)
+**Range:** 4100b740..7fb19b47
+**Verdict:** **CHANGES_REQUIRED** (F2 and F7 remain partially open)
+
+## Independent gate verification
+
+Single full xdist gate run: **2002 passed, exit 0** in 66s.
+
+```
+Literal checker: PASS — All 22 lines + 20 arcs CLOSED
+Test functions: 18, collected cases: 18, total: 2002 (= 1984 + 18)
+Focused tests: 18 passed in 1.47s
+git diff --check: clean
+Default sort order verified: sort.order == "desc" (correct)
+```
+
+## F1–F7 closure status
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| **F1** (arc 148->156 mislabeled) | **FIXED** | Report now `[148,156]`, docstring updated |
+| **F2** (line 174 "passes") | **PARTIAL** | Row 173 now says `Query built, sort.metric='ram'` but row 174 still says just `Query built` |
+| **F3** (IncompatibleQueryError unused) | **FIXED** | Removed from imports |
+| **F4** (Caps top-level unused) | **FIXED** | Moved to `from topos.query.engine import Caps` |
+| **F5** (duplicate sort test) | **FIXED** | `test_from_dict_sort_extra_fields` removed |
+| **F6** (weak sort assertion) | **FIXED** | Now asserts `sort.metric == "ram"` and `sort.order == "desc"` |
+| **F7** (literal sets vs counts) | **PARTIAL** | REPORT has literal before/after sets; LOG still only counts/symbolic ∅ |
+
+### F2 detail — line 174 expected still "Query built"
+
+**File:** P102-REPORT.md row 174
+
+The report row for arc `[173,174]` (sort as dict entry) still says `Query built`
+in the Expected column. The test `test_from_dict_sort_as_dict` covers both arcs
+`[171,173]` and `[173,174]` simultaneously with assertions `q.sort is not None`
+and `q.sort.metric == "ram"`. Row 173 now correctly shows the observable; row
+174 should match or cross-reference it.
+
+**Repair:** Change row 174 Expected from `Query built` to
+`Query built, sort.metric='ram'` (same observable as row 173, since the same
+test covers both arcs).
+
+### F7 detail — LOG still omits literal sets
+
+**File:** P102-LOG.md:7-13
+
+The log says "22 lines + 20 branch pairs all present in baseline gate JSON"
+and "Both runs: residual = ∅." The handoff step 9 requires "literal
+before/after sets" in the LOG. The REPORT now satisfies this; the LOG should
+at minimum reproduce the set declarations or reference the REPORT.
+
+**Repair:** Add the literal 22-line and 20-pair sets to the LOG (can be a
+one-line reference to REPORT's before/after tables, e.g. "See REPORT for
+literal sets" or inline them).
+
+## Other checks — all passed
+
+- **F3**: `IncompatibleQueryError` removed from imports ✓
+- **F4**: `Caps` removed from top-level, used only via `from topos.query.engine` ✓
+- **F5**: Duplicate `test_from_dict_sort_extra_fields` removed ✓
+- **F6**: Sort-str test now asserts `sort.metric == "ram"` and `sort.order == "desc"` ✓
+- **Imports consolidated**: `_validate`, `Caps`, `_parse_metric_token` now imported once at module level instead of locally per-test ✓
+- **No whole-engine claim**: Remaining gaps (17 lines, 19 branches, line 392+) correctly deferred to P103 ✓
+- **No mutation/fail-before overclaims** ✓
+- **No pragma, product edit, sleep, host-proc** ✓
+- **2002 total, 18 functions = 18 cases**: mechanically verified ✓
+
+## Verdict
+
+**CHANGES_REQUIRED.** Five of seven findings (F1, F3, F4, F5, F6) are fully
+closed. F2 (line 174 expected still says "Query built") and F7 (LOG lacks
+literal sets) are partially addressed — each needs one additional line of
+correction. The gate is sound — 22/22 lines and 20/20 arcs mechanically
+verified with parity.
