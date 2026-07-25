@@ -35,7 +35,7 @@ Added:
 
 ## 3. Handoff frontmatter
 
-Schema: [`handoff-frontmatter.schema.json`](../schemas/handoff-frontmatter.schema.json).
+Schema: [`handoff-frontmatter.schema.json`](../src/nyxloom/schemas/handoff-frontmatter.schema.json).
 Requirements beyond schema validity:
 
 - `id` unique per project; `input_revision` = commit at carve time.

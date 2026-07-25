@@ -8,7 +8,7 @@ candidate once the frozen core is done). Cost theme: spend correctness where the
 blast radius is largest, cheapen it everywhere else — drive the switch off the
 carver's complexity band.
 
-## A — De-duplicate the schemas (structural, retires a band-aid) · SMALL
+## A — De-duplicate the schemas (structural, retires a band-aid) · SMALL · ✅ DONE
 **What.** Make `src/nyxloom/schemas/` the single source of truth (it is what
 pyproject packages). Classify each top-level `schemas/*` file: a true duplicate of
 the packaged copy → remove it (or generate/symlink at build); a genuine
@@ -20,6 +20,12 @@ band-aid. **Investigate first** (`event`/`handoff-frontmatter`/`statefile`/`rout
 each differ in status) — do not blanket-delete.
 **Scope.** `schemas/` (top-level), `tests/test_schema_sync.py`, maybe a build/gen
 step. Additive-safe; leaf. **Do this first — it's the flagship structural fix.**
+**Done.** Classification confirmed the three top-level `*.schema.json` copies
+(`event`/`handoff-frontmatter`/`statefile`) had **no readers** (every loader uses
+`importlib.resources.files("nyxloom.schemas")`) and `handoff-frontmatter` had already
+drifted stale unguarded → removed all three plus the guard test; `routes.example.toml`
+kept with a `schemas/README.md` documenting the reference-only purpose; the three live
+doc-links repointed to `src/nyxloom/schemas/`. See `nyxloom-trove/LESSONS.md` PL1.
 
 ## D — `review_focus` on handoffs + tier review depth by band · SMALL-MEDIUM
 **What.** Add an optional `review_focus: [..]` list to the handoff frontmatter
@@ -30,7 +36,7 @@ the strongest review.
 **Why.** The package-specific reviewer hints that caught real bugs this session
 came from *controller judgment*, not the factory. Move that judgment into the carve
 so it is mechanical. Also *saves* cost (cheap review for leaf work).
-**Scope.** `schemas/handoff-frontmatter.schema.json`, `adapters.py` (review prompt),
+**Scope.** `src/nyxloom/schemas/handoff-frontmatter.schema.json`, `adapters.py` (review prompt),
 routing selection, lint (accept the new field), tests. Frozen-core-adjacent
 (adapters/routing) — carve carefully.
 
@@ -88,7 +94,7 @@ report artifact, backlog items per surviving mutant. Design + budget first.
 ---
 
 ## Sequencing
-1. **A** (schema de-dup) — flagship structural fix, unblocks nothing but pays down debt now.
+1. **A** (schema de-dup) — ✅ DONE. Flagship structural fix; paid down the dual-schema debt (single source = `src/nyxloom/schemas/`).
 2. **F** (auto-revert + gate cmd_merge) — safety, frozen-core, do carefully.
 3. **D** (review_focus + band-tiered review) — mechanizes reviewer targeting, saves cost.
 4. **G** (xdist + mutation fan-out) — wall-clock win, enables H.

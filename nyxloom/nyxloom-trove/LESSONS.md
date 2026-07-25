@@ -13,19 +13,24 @@
 ---
 
 ## PL1 — Dual statefile schema is structural debt; de-duplicate it
-`scope: product` · `upstream: proposed`
+`scope: product` · `upstream: integrated (ref: reference/LESSONS.md L1)` · **RESOLVED (factory-hardening A)**
 
-The statefile JSON schema exists as two hand-maintained copies
+The statefile JSON schema existed as two hand-maintained copies
 (`schemas/statefile.schema.json` + the packaged `src/nyxloom/schemas/statefile.schema.json`);
-only the packaged copy is referenced (pyproject `nyxloom = ["schemas/*.json"]`)
-and it diverged twice (D-CORRECT-2, F017). Per canonical **L1** the current
-byte-identity guard test is a band-aid — the structural fix is one source of
-truth. The top-level `schemas/` dir also holds `event.schema.json`,
-`handoff-frontmatter.schema.json`, `routes.example.toml`; each must be classified
-(true duplicate of `src/nyxloom/schemas/` → remove/generate; genuine example/
-reference → keep + document why) before deleting anything. Tracked as item **A**
-in `docs/plan-factory-hardening.md`. This is `scope: product` because the
-one-source-of-truth-for-shipped-schemas principle helps every consumer.
+only the packaged copy was referenced (pyproject `nyxloom = ["schemas/*.json"]`)
+and it diverged twice (D-CORRECT-2, F017). Per canonical **L1** the byte-identity
+guard test was a band-aid — the structural fix is one source of truth.
+
+**Resolution (factory-hardening A).** Classification confirmed the top-level
+`schemas/*.json` copies (`event`, `handoff-frontmatter`, `statefile`) had **no
+readers** — every loader uses `importlib.resources.files("nyxloom.schemas")` (the
+packaged dir) and `handoff-frontmatter` had already drifted stale *unguarded*. All
+three top-level copies and the guard test (`tests/test_schema_sync.py`) were
+removed; `src/nyxloom/schemas/` is the single source of truth; `routes.example.toml`
+(a genuine example, no packaged twin) stays under `schemas/` with a README
+documenting the dir's reference-only purpose. The general principle
+(one-source-of-truth for shipped schemas) is already integrated upstream as
+canonical **L1**, which uses this very incident as its worked example.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
