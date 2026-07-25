@@ -273,11 +273,12 @@ Spec: `docs/plan-gate-adoption.md`.
 - **GA2b** — coverage-canary: verify a *declared* `changed-line-coverage` assert (inject a
   never-called line, expect a coverage-floor gate to FAIL). Makes GA2's forward-defensive
   exit-override live. Advise a floor in the guide but never mandate it. SMALL; extends
-  `gate_canary.py` + `cmd_gate_verify`. ✅ **DONE (merge TBD, 2026-07-25):** `inject_uncovered_line`
+  `gate_canary.py` + `cmd_gate_verify`. ✅ **DONE (merge `a8ac7b3b`, 2026-07-25):** `inject_uncovered_line`
   + `verify_gate_enforces_coverage` (shared `_verify_gate_kills_canary` engine, `verify-coverage-canary`
   phase) + `cmd_gate_verify` `coverage-floor:` line gated on the assert being declared; discriminating
   integration test (coverage gate KILLS / tests-only gate LAUNDERS the same canary); `mutation` now the
-  sole probe-less assert; advisory-not-mandate note in `reference/STANDARD.md`. SOLO-gated.
+  sole probe-less assert; advisory-not-mandate note in `reference/STANDARD.md`. SOLO gate GREEN
+  (pytest 0, diff-coverage 42/42 = 100%); post-merge re-verify on main GREEN.
 - **GA4** — carver periodic gate re-verify: cadence knob (`gate_verify_interval_days`) + a
   reconcile item running `gate verify` per project + escalate on LAUNDERS/BROKEN. SMALL;
   touches `reconcile.py` (frozen-core — careful).
