@@ -195,7 +195,7 @@ writes/validates spine revision N *before* compacting and the carver re-reads it
   The four `*_AGENT_TIER` tier constants (decision/intake/assessment/questionnaire) are a SEPARATE
   tier migration and were intentionally left `"frontier-review"` + guard-tested — a naive rename of
   those would pass tests yet silently break routing against the live config. pro-max review caught a
-  missed top-level `schemas/statefile.schema.json` duplicate.
+  missed top-level `schemas/statefile.schema.json` duplicate (that duplicated dir was later de-duplicated in factory-hardening A — the copies had no readers; `src/nyxloom/schemas/` is now the single source).
 - **D-CORRECT-3** — `triage_class` via a long-running cheap model (typed, safe).
   ⏳ **folds into F018** (same long-running-cheap-agent-emits-typed-judgment pattern as the carver).
 - **D-CORRECT-4** — changed-lines mutation gate (behavior proof).

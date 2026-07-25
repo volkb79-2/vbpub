@@ -123,7 +123,7 @@ at) as the worked example.
     `component:` frontmatter field is preferred over parsing the slug
     (added by nyxloom-P42; until then the slug convention is the only signal).
 - **Frontmatter mandatory + schema-validated** against
-  `schemas/handoff-frontmatter.schema.json`. `nyxloom lint` rejects a handoff
+  `src/nyxloom/schemas/handoff-frontmatter.schema.json`. `nyxloom lint` rejects a handoff
   with missing/invalid frontmatter — that lint IS the managed-folder guard.
 - **Reports pair with handoffs** and are verified against real git state, never
   trusted at face value.

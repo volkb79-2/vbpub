@@ -27,7 +27,7 @@ AGENTS.md                       # hard rules + canonical pointers (tool files ar
 
 The frontmatter is the machine-readable evolution of the v2 §7 blockquote
 header (`Tier / Stack / Depends-on / …`) — same fields, parseable syntax,
-schema-validated ([../schemas/handoff-frontmatter.schema.json](../schemas/handoff-frontmatter.schema.json)).
+schema-validated ([../src/nyxloom/schemas/handoff-frontmatter.schema.json](../src/nyxloom/schemas/handoff-frontmatter.schema.json)).
 There are **no JSON sidecar handoffs**. `nyxloom lint` gates the carve
 commit; a handoff that fails lint cannot enter the queue.
 
