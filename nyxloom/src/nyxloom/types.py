@@ -313,6 +313,15 @@ class EventType(enum.Enum):
     CARVER_COMPACTION_FINISHED = "CARVER_COMPACTION_FINISHED"
     CARVER_SESSION_ROTATED = "CARVER_SESSION_ROTATED"
     CARVER_SESSION_DEGRADED = "CARVER_SESSION_DEGRADED"
+    # GA4 2026-07-25 (docs plan-gate-adoption.md, module contract item 16):
+    # audit-only completion marker for a periodic `nyxloom gate verify`
+    # re-run -- no TaskStateFile projection (same no-op shape as the CARVER_*
+    # members above; see KNOWN_IGNORED_EVENT_TYPES in test_invariants.py).
+    # Its timestamp is the durable cadence anchor daemon._days_since_gate_
+    # verify scans the log for; its payload also carries the rendered
+    # verdict (TRUSTWORTHY/LAUNDERS/BROKEN/INCONCLUSIVE/NO_GATE) and which
+    # gate_id was probed.
+    GATE_VERIFY_RECORDED = "GATE_VERIFY_RECORDED"
 
 
 class ActorKind(enum.Enum):

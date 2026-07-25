@@ -327,6 +327,7 @@ import hashlib
 import http.server
 import json
 import os
+import queue
 import re
 import signal
 import subprocess
@@ -340,8 +341,8 @@ from typing import Any
 
 from . import (
     adapters, backlog_items, carver_session, commands, config, decision_chat, decisions,
-    frontmatter, gate_runner, intake_chat, leases, lint, merge_digest, notify, paths,
-    reconcile, render, stages, storage, watchdog, wrapper,
+    frontmatter, gate_canary, gate_runner, intake_chat, leases, lint, merge_digest, notify,
+    paths, reconcile, render, stages, storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -650,6 +651,17 @@ class Daemon:
         # F018 P3d: set of project_ids that already got their enablement-guard
         # WARN in this daemon instance (emit once per daemon lifetime).
         self._carver_enablement_warned: set[str] = set()
+        # GA4 2026-07-25 (module contract item 16): background-thread state for
+        # the gate-verify cadence. A full verify runs the project's gate
+        # against several disposable canary commits (minutes), so it MUST NOT
+        # run inline in a reconcile tick -- see _execute_verify_gate /
+        # _run_gate_verify_bg. project -> its live (or last) verify thread;
+        # `.is_alive()` is what makes _execute_verify_gate idempotent. The
+        # queue is the ONLY channel the background thread may write to --
+        # every event append happens on the main thread, in
+        # _drain_gate_verify_results, never here.
+        self._gate_verify_running: dict[str, threading.Thread] = {}
+        self._gate_verify_results: queue.Queue = queue.Queue()
 
     # -- lifecycle ------------------------------------------------------
 
@@ -841,6 +853,13 @@ class Daemon:
                             pass
                     except Exception:
                         pass
+            # GA4 2026-07-25 (module contract item 16): drain any completed
+            # background gate-verify results ONCE PER PASS -- the sole place
+            # a GATE_VERIFY_RECORDED (or its escalation) is ever appended (see
+            # _drain_gate_verify_results for why this is safe to call
+            # unconditionally every pass, even for a project whose cadence is
+            # off: the queue is empty for it and this is a cheap no-op).
+            appended.extend(self._drain_gate_verify_results(project, cfg, states))
             # P05a (§5): "per-pass counts ... -> DEBUG" -- one summary line
             # per reconcile pass (the reconcile-trace breadcrumbs above
             # already cover the per-decision "guard evals" half of this
@@ -1040,6 +1059,7 @@ class Daemon:
             gate_diagnosis_pending=gate_diagnosis_pending,
             gate_diagnosis_attempts=gate_diagnosis_attempts,
             days_since_test_health_carve=self._days_since_test_health_carve(project),
+            days_since_gate_verify=self._days_since_gate_verify(project),
             carver_session=carver_session_snap,
             pending_carver_feeds=pending_carver_feeds,
             # no source events yet -- human-intake package (#17) will populate this
@@ -1785,6 +1805,39 @@ class Daemon:
         except Exception:
             return 0.0
 
+    def _days_since_gate_verify(self, project: str) -> float | None:
+        """GA4 2026-07-25 (module contract item 16): age in days of the most
+        recent GATE_VERIFY_RECORDED, feeding
+        ReconcileInput.days_since_gate_verify so the cadence is durable across
+        daemon restarts -- MIRRORS _days_since_test_health_carve above
+        exactly, including its fail-safe direction and the "scan the whole
+        log, not a recent window" rationale (a window that scrolled past the
+        last verify would report None = never = FIRE on every pass of a busy
+        project). Unlike the test-health marker (a structured key on a
+        TASK_CREATED payload), GATE_VERIFY_RECORDED is its own dedicated
+        project-wide event (task_id=None) -- so this scans for the event TYPE
+        itself, using the event's own timestamp.
+
+        Fail-safe on an unreadable log is 0.0 ("just verified"), NOT None:
+        this value gates spawning a real gate-verify subprocess, so an I/O
+        error must never be the thing that authorizes spend.
+        """
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return 0.0
+        latest = None
+        for ev in events:
+            if ev.type is EventType.GATE_VERIFY_RECORDED:
+                if latest is None or ev.timestamp > latest:
+                    latest = ev.timestamp
+        if latest is None:
+            return None
+        try:
+            return max(0.0, (utc_now() - latest).total_seconds() / 86400.0)
+        except Exception:
+            return 0.0
+
     @staticmethod
     def _carve_kind(states: dict[str, TaskStateFile], task_id: str | None) -> str:
         """D-065 (B63): recover a synthetic carve task's kind at OUTCOME time,
@@ -1863,6 +1916,129 @@ class Daemon:
             if ev.type is EventType.NEEDS_OPERATOR and ev.payload.get("reason") == reason:
                 return True
         return False
+
+    # -- GA4: gate-verify cadence (module contract item 16) ----------------
+    #
+    # A full verify runs the project's declared gate against several
+    # disposable canary commits (real subprocess gate runs -- minutes), so it
+    # MUST NOT run inline in a reconcile tick. The execution model is a
+    # background thread + result queue, with a hard rule: the background
+    # thread (_run_gate_verify_bg) NEVER appends an event or mutates daemon
+    # state directly -- it only `.put()`s a small result dict. All state
+    # mutation (event append, running-thread bookkeeping, escalation) happens
+    # on the MAIN thread, in _drain_gate_verify_results, called once per pass.
+    # On daemon restart mid-verify the in-memory thread is simply lost; the
+    # cadence re-fires on the next pass and re-runs -- idempotent, no durable
+    # half-state to reconcile.
+
+    def _execute_verify_gate(self, project: str, cfg: ProjectConfig) -> list[Event]:
+        """VerifyGate action handler. IDEMPOTENT: a live background thread for
+        this project means a verify is already in flight, so this starts NO
+        second thread -- which is exactly why the planner may harmlessly
+        replan the same VerifyGate every pass until the drain step's
+        GATE_VERIFY_RECORDED resets the cadence (module contract item 16).
+        Appends no event itself (the probe takes minutes; see
+        _run_gate_verify_bg / _drain_gate_verify_results for the actual
+        event-append seam, main-thread only)."""
+        running = self._gate_verify_running.get(project)
+        if running is not None and running.is_alive():
+            return []
+        t = threading.Thread(target=self._run_gate_verify_bg, args=(project, cfg), daemon=True)
+        self._gate_verify_running[project] = t
+        t.start()
+        return []
+
+    def _run_gate_verify_bg(self, project: str, cfg: ProjectConfig) -> None:
+        """The actual gate-verify probe -- runs on the background thread
+        started by _execute_verify_gate. Selects the project's verification
+        gate (gate_runner.select_verification_gate, the same selection GA1's
+        `nyxloom gate verify` CLI verb uses), confirms it PASSES known-good
+        HEAD, then tries gate_canary.verify_gate_rejects_canary against a
+        known-bad canary -- mirroring cli.cmd_gate_verify's own verdict
+        derivation exactly (BROKEN if good HEAD fails; else TRUSTWORTHY if a
+        canary was killed, LAUNDERS if every canary survived, INCONCLUSIVE if
+        no canary rendered a real verdict).
+
+        MUST NOT touch the event log or any daemon state directly -- every
+        mutation from a non-main thread would race the main-thread reconcile
+        loop. Guarded end-to-end: any exception anywhere in the probe (a git
+        failure, a CanaryError, an unexpected raise from the gate subprocess
+        plumbing) degrades to an INCONCLUSIVE result rather than letting the
+        thread die silently, which would otherwise look -- from the daemon's
+        perspective -- exactly like a verify that simply never finishes."""
+        verdict = "INCONCLUSIVE"
+        gate_id: str | None = None
+        try:
+            gate = gate_runner.select_verification_gate(cfg)
+            if gate is None:
+                verdict = "NO_GATE"
+            else:
+                gate_id = gate.gate_id
+                head = subprocess.run(
+                    ["git", "-C", str(cfg.root), "rev-parse", "HEAD"],
+                    capture_output=True, text=True,
+                )
+                commit = head.stdout.strip() if head.returncode == 0 else ""
+                if not commit:
+                    verdict = "INCONCLUSIVE"
+                else:
+                    good = gate_runner.run_gate_at_commit(cfg, gate, commit, phase="verify-good")
+                    if good.exit_code != 0:
+                        verdict = "BROKEN"
+                    else:
+                        canary_result = gate_canary.verify_gate_rejects_canary(cfg, gate, commit)
+                        if canary_result.killed:
+                            verdict = "TRUSTWORTHY"
+                        elif canary_result.inconclusive:
+                            verdict = "INCONCLUSIVE"
+                        else:
+                            verdict = "LAUNDERS"
+        except Exception:
+            verdict = "INCONCLUSIVE"
+        self._gate_verify_results.put({"project": project, "verdict": verdict, "gate_id": gate_id})
+
+    def _drain_gate_verify_results(self, project: str, cfg: ProjectConfig,
+                                    states: dict[str, TaskStateFile]) -> list[Event]:
+        """Called ONCE PER PASS from run_pass, main thread only -- the sole
+        consumer of `self._gate_verify_results` and the sole place a GA4
+        event is ever appended. The queue is shared across every registered
+        project (one Daemon, one queue), so this drains the WHOLE queue and
+        re-queues any result that does not belong to `project` -- harmless,
+        since run_pass loops over every registered project each tick, so
+        that project's own call picks its result back up.
+
+        For each result belonging to `project`: append GATE_VERIFY_RECORDED
+        (updates the cadence age _days_since_gate_verify reads next pass),
+        clear the running-thread entry (a fresh VerifyGate may now start a
+        new thread), and -- on LAUNDERS or BROKEN -- raise NEEDS_OPERATOR
+        (reason `gate-verify-<verdict>`), debounced through the existing
+        _needs_operator_recently_emitted so a persistent bad verdict escalates
+        once per episode, not every pass forever."""
+        events: list[Event] = []
+        pending: list[dict] = []
+        while True:
+            try:
+                pending.append(self._gate_verify_results.get_nowait())
+            except queue.Empty:
+                break
+        for result in pending:
+            if result.get("project") != project:
+                self._gate_verify_results.put(result)
+                continue
+            verdict = result.get("verdict")
+            gate_id = result.get("gate_id")
+            events.append(self._append_ev(
+                project, cfg, states, EventType.GATE_VERIFY_RECORDED,
+                {"project": project, "verdict": verdict, "gate_id": gate_id, "at": iso(utc_now())},
+                task_id=None))
+            self._gate_verify_running.pop(project, None)
+            if verdict in ("LAUNDERS", "BROKEN"):
+                reason = f"gate-verify-{verdict.lower()}"
+                if not self._needs_operator_recently_emitted(project, reason):
+                    events.append(self._append_ev(
+                        project, cfg, states, EventType.NEEDS_OPERATOR,
+                        {"reason": reason, "gate_id": gate_id}, task_id=None))
+        return events
 
     def _carver_session(self, project: str, cfg: ProjectConfig
                         ) -> carver_session.CarverSessionSnapshot | None:
@@ -6259,6 +6435,9 @@ class Daemon:
 
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.VerifyGate):
+            events.extend(self._execute_verify_gate(project, cfg))
 
         elif isinstance(action, reconcile.AdmitCarveProposal):
             events.extend(self._execute_admit_carve_proposal(project, cfg, states, action))

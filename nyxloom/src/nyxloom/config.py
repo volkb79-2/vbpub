@@ -159,6 +159,15 @@ class Policy:
     # about). nyxloom's own nyxloom.toml sets 14 -- dogfooding, and the reason
     # this is not a dead stub (P43's guard).
     test_health_interval_days: int = 0
+    # GA4 2026-07-25 (module contract item 16, mirrors test_health_interval_days
+    # above): cadence in DAYS for the periodic re-verification that this
+    # project's declared gate still REJECTS a known-bad canary (GA1's `nyxloom
+    # gate verify` probe, re-run on a schedule instead of only ever run by
+    # hand). 0 disables it (the default: a gate can quietly stop
+    # discriminating -- a lint exclusion widens, a test gets skipped -- with
+    # nothing else in the daemon noticing, but a project must opt in before
+    # nyxloom starts spending a background subprocess probe on it unasked).
+    gate_verify_interval_days: int = 0
     # D-CORRECT-1 2026-07-17: deterministic pre-merge gate on the merged tree
     # in the scratch worktree, BEFORE the ref is published. True by default
     # (safety), settable per-project.

@@ -642,6 +642,11 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.CARVER_COMPACTION_FINISHED,
     EventType.CARVER_SESSION_ROTATED,
     EventType.CARVER_SESSION_DEGRADED,
+    # GA4 2026-07-25 (module contract item 16): the gate-verify cadence's
+    # audit-only completion marker -- no TaskStateFile projection (same
+    # no-op shape as the CARVER_* family above). See gate_canary.py /
+    # daemon._drain_gate_verify_results.
+    EventType.GATE_VERIFY_RECORDED,
 })
 
 

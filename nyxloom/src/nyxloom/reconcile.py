@@ -286,6 +286,26 @@ INTERFACE CONTRACT (frozen). Semantics:
     silently never fire. Item 12 (READY_TO_CARVE re-carve) still precedes
     BOTH, because finishing already-started work outranks starting new
     work of either kind.
+16. GATE VERIFY CADENCE (GA4 2026-07-25, mirrors item 15's shape): a
+    seldom-run maintenance probe that re-runs GA1's `nyxloom gate verify`
+    canary check to confirm the project's declared gate STILL rejects a
+    known-bad commit -- a gate can quietly stop discriminating (a lint
+    exclusion widens, a test gets skipped) with nothing else in this
+    module noticing. Fires when policy.gate_verify_interval_days > 0
+    (opt-in; 0 disables, the safety default) AND
+    inp.days_since_gate_verify is None (never run) or >= that interval ->
+    VerifyGate(project=...). UNLIKE item 15 this is deliberately OUTSIDE
+    the single-carve-authority mutex: a gate verify runs a subprocess
+    against a few disposable canary commits, needs no LLM frontier route
+    and no carve slot, so it never sets carve_dispatch_planned and never
+    consults carve_in_flight / frontier_route_available / budget_allows --
+    it only respects project_paused (a paused project starts no new
+    process of any kind, same invariant item 14 closed for carving). The
+    daemon executes it on a background thread (a full verify runs several
+    real gate invocations, minutes) and is idempotent while one is already
+    in flight for the project, so this planner may harmlessly re-plan the
+    same VerifyGate every pass until the daemon's drain step appends
+    GATE_VERIFY_RECORDED and resets the cadence.
 """
 
 from __future__ import annotations
@@ -484,6 +504,24 @@ class CarveDispatch(Action):
 
 
 @dataclass
+class VerifyGate(Action):
+    """GA4 2026-07-25 (module contract item 16, D-065 cadence mirror): the
+    periodic gate re-verification trigger -- re-run GA1's `nyxloom gate
+    verify` canary probe to confirm the project's declared gate still
+    rejects a known-bad commit. Deliberately NOT a CarveDispatch sibling:
+    it never contends for the single-carve-authority slot
+    (carve_dispatch_planned), needs no LLM frontier route, and needs no
+    carve budget -- it is a subprocess probe, not an agent turn. `project`
+    names the project this verify targets, mirroring CarveDispatch's own
+    `project`-is-self-describing convention (the daemon already knows the
+    project too, via run_pass's per-project loop, but carrying it here
+    keeps the action self-describing for tests/logs). task_id (inherited
+    from Action) is unused -- always a project-wide action, never
+    task-scoped."""
+    project: str | None = None
+
+
+@dataclass
 class StartCarverSession(Action):
     """F018 P2b-A1 (plan-long-running-carver.md §4.2, §5.1): cold-bootstrap
     (or new-generation) launch of the persistent strategic carver session.
@@ -596,6 +634,9 @@ TRACE_KINDS = frozenset({
     # compact:<trigger>/wait:<status>) -- same "no prose" rule as every
     # other kind above (plan §4.2).
     "carver",
+    # GA4 2026-07-25 (module contract item 16): the gate-verify cadence
+    # trigger's own breadcrumb ("fire"/"paused") -- same "no prose" rule.
+    "gate-verify",
 })
 
 
@@ -759,6 +800,16 @@ class ReconcileInput:
     # None deliberately means "fire" rather than "never fired": turning the
     # knob on is itself the request for a first pass.
     days_since_test_health_carve: float | None = None
+    # GA4 2026-07-25 (module contract item 16): age in DAYS of the most recent
+    # GATE_VERIFY_RECORDED (the daemon's periodic re-run of GA1's `nyxloom gate
+    # verify` canary probe), or None when this project has never had one. Same
+    # "None means fire" convention as days_since_test_health_carve above --
+    # turning the knob on is itself the request for a first pass -- and the
+    # daemon derives it the same way (a full log scan, not a recent-window
+    # dedup flag, so the cadence survives a daemon restart; see
+    # daemon._days_since_gate_verify). This module stays pure: it never reads
+    # a clock or an event log itself.
+    days_since_gate_verify: float | None = None
     # F018 P2b-A1 (plan-long-running-carver.md §4.2): the persistent
     # strategic carver's durable session projection (carver_session.
     # project_session), or None. MASTER GATE -- None means "the long-
@@ -1934,6 +1985,30 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             carve_dispatch_planned = True
             trace.note("carve", None, "headroom")
 
+    # === Gate verify cadence (GA4 2026-07-25, module contract item 16) ===
+    # Mirrors item 15's cadence SHAPE (interval > 0, not paused,
+    # days_since_* None-or->=interval fires) but deliberately OUTSIDE the
+    # single-carve-authority mutex above: a gate verify runs a subprocess
+    # against a few disposable canary commits, needs no LLM frontier route
+    # and no carve slot, so it never reads/sets carve_dispatch_planned and
+    # never consults carve_in_flight / frontier_route_available /
+    # budget_allows -- only project_paused gates it (a paused project starts
+    # no new process of any kind, the same invariant item 14 closed for
+    # carving). The daemon's executor is idempotent while a verify is
+    # already running for this project (see daemon._execute_verify_gate), so
+    # replanning the identical VerifyGate every pass until the drain step
+    # appends GATE_VERIFY_RECORDED is harmless, not a runaway.
+    gate_verify_actions: list[Action] = []
+    gate_verify_interval = inp.cfg.policy.gate_verify_interval_days
+    if gate_verify_interval > 0:
+        if inp.project_paused:
+            trace.note("gate-verify", None, "paused")
+        else:
+            gv_age = inp.days_since_gate_verify
+            if gv_age is None or gv_age >= gate_verify_interval:
+                gate_verify_actions.append(VerifyGate(project=inp.cfg.project_id))
+                trace.note("gate-verify", None, "fire")
+
     # === Combine results in order ===
     actions = []
     for task_id in sorted(lifecycle_by_id.keys()):
@@ -1949,6 +2024,10 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
     # Always empty when carver_session is None (MASTER GATE), so this line
     # is a byte-identical no-op for every pre-P2b plan.
     actions.extend(carver_actions)
+    # GA4 2026-07-25: the gate-verify cadence action, always empty when
+    # policy.gate_verify_interval_days == 0 (the default) -- byte-identical
+    # to every pre-GA4 plan whenever the feature is off.
+    actions.extend(gate_verify_actions)
 
     # P62 2026-07-20 (A10, M10): whole-plan consistency guard (defense in depth
     # alongside the source fix in the INTERRUPTED branch). A single pass must
