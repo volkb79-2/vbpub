@@ -101,7 +101,11 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
   fake carver for E2E. Oracles: bootstrap captures S1→WARM; capture-fail→DEGRADED never WARM; resume
   reuses S1 fresh turn-id; daemon restart resumes S1; lease contention→one winner, loser
   `lease-lost-race`, no new generation/cursor advance; adapter lacking session-capability→ineligible.
-- **P3b — proposal validation + admission**: validate `CARVER_PROPOSAL_RECORDED` (envelope schema,
+- **P3b — proposal validation + admission** *(✅ MERGED `121848d3`, 184/184 gate, Opus review found
+  + fixed a BLOCKING bug: AD1 re-scope supersession never fired because the ordinary new-handoff scan
+  pre-created the task, tripping the structural cursor → fixed by making a real `CARVER_PROPOSAL_ADMITTED`
+  event the exclusion cursor; proven by an unstubbed run_pass regression test. AD2 path-normalization
+  fixed. concern-1 gen-filter live. AD3 repair-over-count = deferred nit.)*: validate `CARVER_PROPOSAL_RECORDED` (envelope schema,
   path/hash, frontmatter, lint, `input_revision==base_revision`, oracle-satisfiability) →
   `ValidatedCarveProposal` in the daemon input-builder, **current-generation-filtered (concern-1)**;
   execute `AdmitCarveProposal` (effect-boundary hash recheck → `CARVER_PROPOSAL_ADMITTED` → create
@@ -114,11 +118,20 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
   `cfg.carve.session=="fresh"`, but **P3b MUST emit `CARVER_CONTEXT_CONSUMED` (advancing the cursor)
   on a successful feed/intake turn** before the feature is ever enabled. Owner = whoever advances the
   consumption cursor (natural fit: the proposal/consumption pipeline here).
-- **P3c — planner migration (`reconcile.py`): route `every carver turn` through the session when
-  WARM** (Package 3 work-item 2): headroom/re-scope/test-health emit `ResumeCarverSession(mode=…)`
-  instead of `CarveDispatch` when feature-on + WARM (completes the §4.2 alias — without this the
-  persistent session never AUTHORS). Frozen-core; full review. *(Scope note: implied by "every
-  carver turn"; not in Package 3's explicit item list — confirm vs §2.1 before building.)*
+- **P3c — the PRODUCING side (makes the carver AUTHOR): §2.1-CONFIRMED.** §2.1 is explicit: `carve`
+  is a TURN MODE of the one session that "author[s] handoff candidates for headroom, re-scope,
+  targeted intake, or test health," same session + lease. Two coupled halves (land together — a
+  carve turn that authors-but-isn't-recorded, or a recorder with no carve turn, is useless):
+  (a) **planner (`reconcile.py`, frozen-core):** when feature-on + WARM, headroom/re-scope/test-health
+  emit `ResumeCarverSession(mode="carve")` instead of `CarveDispatch` (completes §4.2's alias).
+  (b) **proposal recording (`daemon.py`):** define the carve-turn OUTPUT CONTRACT (a `CarverTurnResult`
+  §4.1 envelope the carver writes, analogous to today's `CARVE-<seq>.md` REQUIRED OUTPUT parsed by
+  `_consume_carve_exit`), and make the carver-session exit consumer parse it → emit
+  `CARVER_PROPOSAL_RECORDED{proposal_id, generation, source_ids, artifact paths/hashes, dispositions}`
+  (§2.2) — the exact event P3b already validates+admits. Fake must produce a `CarverTurnResult`.
+  Full review. **Note (§2.2 gap from P3a):** `CARVER_SESSION_RESUMED` should carry `{generation,
+  turn-id/mode, source_ids, route}` — P3a emits only `{generation, route}`; fold the mode/source_ids
+  in here or in P3d.
 - **P3d — rotation + bounded resume recovery + DEGRADED policy (concern-3) + compaction→rotation
   fallback (§6.1/§5.4)**: typed rotation conditions, cold recovery from durable truth, and the
   concern-3 decision (DEGRADED-exhausted sets the mutex / escalates, not silent legacy fall-through).
