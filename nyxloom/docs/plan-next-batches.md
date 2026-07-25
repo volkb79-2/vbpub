@@ -119,20 +119,19 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
   on a successful feed/intake turn** before the feature is ever enabled. Owner = whoever advances the
   consumption cursor (natural fit: the proposal/consumption pipeline here).
 - **P3c — the PRODUCING side (makes the carver AUTHOR): §2.1-CONFIRMED, DAEMON.PY-ONLY.**
-  > **STATUS 2026-07-25 — ON BRANCH, RED, needs one more fix.** Branch
-  > `feat/f018-p3c-producing-side` (commits `5274623a` + `c79f2beb` + `042d7cfa`; NOT merged).
-  > Reviewed APPROVE-WITH-fixes: payload-keys match P3b EXACTLY + full-loop E2E genuinely unstubbed
-  > (both confirmed good). **AD1 fix IN + verified** (launch-time re-scope supersede DELETED from
-  > `_execute_carve_via_session_resume`; supersession now owned by P3b admission — see L6; 3 regression
-  > tests incl. failed-re-scope-leaves-origin-READY_TO_CARVE). **AD2 fix IN** (empty-`artifacts` turn →
-  > no `CARVER_PROPOSAL_RECORDED`, stays WARM; daemon.py:4263). **OPEN (the RED test):**
-  > `test_branch_authority_normalize_reads_envelope_at_worktree_report_path` fails `worktree != cfg.root`
-  > — the normalize path runs the carve-mode resume at `cfg.root` (reusing `_execute_resume_carver_session`'s
-  > read-only cwd), but §2.3 says a `carve`/write turn runs in a WORKTREE. **Design question to resolve
-  > fresh:** does the carve-mode resume mint a branch worktree (like the legacy carve) — and if so, how
-  > does the worktree-authored handoff reach P3b validation, which reads `cfg.root`'s `handoff_globs`? —
-  > OR is that test's expectation wrong and carve authoring correctly happens at `cfg.root`? Resolve,
-  > fix, re-gate (§2.3 worktree-vs-validation-path is the crux), then merge. AD3/AD4 still → P3d/P4. §2.1:
+  > **STATUS 2026-07-25 — MERGED (b3480e94).** Branch `feat/f018-p3c-producing-side` merged
+  > `--no-ff` into main (onto a topos-advanced main; disjoint files, base-guard + ancestry verified);
+  > worktree+branch cleaned up. Gate GREEN (full suite + diff-coverage 110/110 changed lines = 100%).
+  > Adversarial review CLEAN: byte-identical-off holds; the legacy `_build_carve_packet` output is
+  > AST-verified byte-identical after the `_carve_packet_body_lines` extraction (133 identical string
+  > constants); AD1 (no launch-time supersede — supersession waits for P3b admission, L6) + AD2
+  > (empty-`artifacts` → RESUMED-only, no proposal) both IN.
+  > **The pre-compaction "worktree != cfg.root" hypothesis was WRONG (L8):** that assert always
+  > PASSED — the real RED was a STALE TEST (the branch-authority oracle wrote an empty-artifacts
+  > envelope via `_carve_envelope(task_id)` and asserted `CARVER_PROPOSAL_RECORDED`, which AD2 now
+  > correctly suppresses). Fixed by supplying a non-empty artifacts list (commit `26e9314e`); this
+  > proved BOTH the AD2 semantics AND the §2.3 branch-authority worktree-prefix path resolution
+  > (the worktree IS minted; `_carver_proposal_report_path` finds the envelope). AD3/AD4 → P3d/P4. §2.1:
   `carve` is a TURN MODE of the one session that "author[s] handoff candidates for headroom,
   re-scope, targeted intake, or test health." **Key simplification (do NOT touch reconcile.py):**
   §4.2's "`CarveDispatch` as migration alias" is normalized at the EXECUTOR, not the planner — the
@@ -173,6 +172,15 @@ these latent (default `session="fresh"` keeps them dormant); each later package 
 5. **Enablement guard (AF3):** add config/startup validation that REJECTS (or loudly WARNs on)
    `session="project-persistent"` until 1–4 land. This single guard neutralizes premature foot-gunning
    of the half-built feature. Owner: **P3d / the enablement step** (build once the prerequisites are known).
+6. **Cold-session re-scope launch-supersede (found in P3c review, 2026-07-25):** the EXECUTOR only
+   normalizes a `CarveDispatch` into the proposal protocol when the session is WARM. Feature-on but
+   session COLD/DEGRADED, a re-scope `CarveDispatch` falls through to the LEGACY `_execute_carve_dispatch`
+   tail, which STILL supersedes the origin at launch (pre-F018 B7 behavior). So a cold-session re-scope
+   that produces nothing re-opens the exact §4.2 data-loss window the proposal protocol closes for the
+   warm path. Not a P3c regression (legacy semantics, unchanged), and inert feature-off, but a feature-on
+   inconsistency. Owner: **P3d** — either gate the legacy launch-supersede behind `session != "project-
+   persistent"`, or have a cold re-scope defer/escalate rather than fresh-carve-and-supersede.
+
 Minor cleanups (non-enablement): de-hollow the lease-lost test (uses `_scripted` stub, not the real
 planner); `_recent_merge_digest_ids` uses a raw `["digest_id"]` index vs A2's `.get` (KeyError on a
 malformed digest, feature-on only) — fold into P3b/P3d.
