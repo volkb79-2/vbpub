@@ -23,7 +23,7 @@ Implemented the parallel branch-coverage gate for topos and measured the honest 
 - **Evidence:** `pyproject.toml` has `pytest-cov>=5.0` and `pytest-xdist>=3.6` in `[dev]`. Test `test_pytest_cov_and_xdist_are_importable` passes. Container test: `docker run --rm tester-unified:local /opt/tester-venv/bin/python -c "import pytest_cov; import xdist; print('OK')"` → OK.
 
 ### O2: Project-owned, unit-tested evaluator
-- **Evidence:** `topos/tools/coverage_gate.py` with `--source topos/src/topos`. 26 unit tests verify: positive/negative coverage, malformed JSON, git failure, non-Python files, path normalization, rename/deletion, pragma (non-executable line), source-prefix boundary, empty diff, and CLI wiring pass/fail/error-io.
+- **Evidence:** `topos/tools/coverage_gate.py` with `--source topos/src/topos`. The initial 26 tests plus self-review negatives verify: positive/negative coverage, malformed JSON records, real-git I/O, git failure, non-Python files, path normalization, rename/deletion, pragma (non-executable line), source-prefix boundaries, empty diff, and CLI wiring pass/fail/error-io.
 - **Negative checked:** An uncovered changed line exits non-zero. Missing/invalid coverage JSON exits 2. Git failure exits 2.
 
 ### O3: Implementation gate runs via fail-closed shell composition
@@ -33,7 +33,7 @@ Implemented the parallel branch-coverage gate for topos and measured the honest 
 ### O4: Parity — identical serial and parallel coverage
 - **Evidence:** 4 runs (2 serial, 2 parallel with `-n auto`) in one container. All 1760 tests passed, all exits 0. Coverage JSON files: all 1,272,814 bytes. Python comparison: **identical per-file `executed_lines`, `missing_lines`, `executed_branches`, `missing_branches` across all 4 runs.**
 - **Negative checked:** No serial-covered/parallel-missed line found. No aggregate-only comparison used.
-- **Note on xdist failure:** An earlier parallel run (pre-container, without `-c topos/pyproject.toml`) triggered `test_default_recording_profile_is_linear_time` — a wall-clock timing test that was inherently load-sensitive under `-n auto`. The test has been replaced with a deterministic operation-counting oracle (see P96-SELFREVIEW.md). The authoritative single-container parity run with the correct config and repaired test had zero failures.
+- **Note on xdist failure:** An earlier full containerized parallel run with `-c topos/pyproject.toml` triggered `test_default_recording_profile_is_linear_time` — a wall-clock timing test that was inherently load-sensitive under `-n auto`. The test has been replaced with a deterministic operation-counting oracle (see P96-SELFREVIEW.md). The authoritative single-container parity run with the repaired test had zero failures.
 
 ### O5: Report records exact statement and branch coverage
 - **Evidence:** See `P96-COVERAGE-GAPS.md` for per-file totals, uncovered lines/branches. No rounding to 100%. No files excluded from measurement.
@@ -71,6 +71,16 @@ test_main_unmeasured_file_tag_is_shown PASSED
 test_main_io_error_returns_2 PASSED
 test_arg_parser_defaults PASSED
 ```
+
+## Controller verification after self-review cleanup
+
+- Bound-worktree focused run: `43 passed in 1.56s`.
+- Exact declared `topos-suite` argv, using the Docker-host bind and exported
+  `PYTHONPATH=topos/src:topos`: `1758 passed in 68.76s`.
+- pytest-cov produced branch-aware JSON and the project-owned evaluator returned
+  `diff-coverage OK: 0/0 changed executable lines covered (100.0% ≥ 100.0% floor)`.
+- The import-origin regression ran in that exact bound-worktree gate, proving
+  product imports resolve from the branch rather than the image-baked `/src`.
 
 ## BLOCKED triggers
 

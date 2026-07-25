@@ -101,6 +101,10 @@ def _validate_cov_record(path: str, record: dict) -> None:
     a green verdict. Coverage.py guarantees this shape, so a deviation means
     the JSON was tampered with, misread, or produced by a non-standard tool.
     """
+    if not isinstance(record, dict):
+        raise CoverageGateError(
+            f"coverage record for {path} is {type(record).__name__}, expected object"
+        )
     for key in ("executed_lines", "missing_lines"):
         val = record.get(key)
         if val is None:

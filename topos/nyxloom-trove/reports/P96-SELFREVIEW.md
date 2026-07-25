@@ -25,13 +25,13 @@
 **Status: FIXED**
 - **Original defect:** The ledger had approximate counts for a subset of files and no exact missing branch pairs.
 - **Fix:** Generated complete JSON-derived table for all 93 source files with exact `missing_lines` and `missing_branch_pairs`. Ledger is now exact, complete, and tagged with the 4-run parity confirmation.
-- Parity measured via 4 serial+parallel runs in one container, files `docker cp`'d out, compared with Python, then `.p96-parity/` directory gitignored.
+- Parity measured via 4 serial+parallel runs in one container, files `docker cp`'d out, and compared with Python. The four temporary JSON files and named container were then explicitly removed; no ignore rule is retained.
 
 ### Finding 4: Timing test mischaracterized / false-red risk
 **Status: FIXED**
 - **Original defect:** `test_default_recording_profile_is_linear_time` used `time.perf_counter()` wall-clock timing that failed intermittently under `-n auto` xdist due to CPU contention. The report mischaracterized the failure.
 - **Fix:** Replaced the wall-clock oracle with a deterministic operation-count oracle using `monkeypatch` to count `_finite_gauge_value` calls (same proven pattern as `test_finite_gauge_reads_are_linear`). The test now verifies that frame_count × entity_count gauge reads occur, proving linear O(N) complexity regardless of CPU load.
-- The earlier failure: test ran in a full containerized parallel run (1760 tests, -n auto, under CPU contention) and the wall-clock assertion `long_elapsed <= short_elapsed * 2.5 + 0.05` failed because `long_elapsed` was disproportionately high. The `-c topos/pyproject.toml` flag was present; failure was purely load-related, not a bug in the product source.
+- The earlier failure: test ran in a full containerized parallel run (1744 tests, `-n auto`, under CPU contention) and the wall-clock assertion `long_elapsed <= short_elapsed * 2.5 + 0.05` failed because `long_elapsed` was disproportionately high. The `-c topos/pyproject.toml` flag was present; failure was purely load-related, not a bug in the product source.
 
 ### Additional adversarial fixes
 
@@ -54,7 +54,7 @@
 - Tests added: `test_rel_to_source_rejects_false_prefix_match`, `test_rel_to_source_searches_for_next_prefix_match`, `test_evaluate_ignores_changes_under_false_friend_prefix`.
 
 #### 5d. Stale comments corrected
-- `nyxloom.toml`: "1717 passed" → "1744 passed"
+- `nyxloom.toml`: removed the stale hard-coded test count; current counts live in the evidence reports
 - `nyxloom.toml`: py-compile and topos-suite comments updated to reflect current implementation
 
 #### 5e. Overclaims corrected in reports
@@ -64,15 +64,18 @@
 ### BLOCKED triggers
 No escalation triggers fired. All repairs were within scope (test files, tools scripts, config, reports — no product source edits under `topos/src/**`).
 
-## Final test results (cockpit, 38+7 = 45 tests)
+## Final focused test results
 ```
-test_coverage_gate.py: 38 passed (26 original + 12 new)
+test_coverage_gate.py: 36 passed
 test_gate_environment.py: 7 passed (3 original + 4 new)
 ```
-All tests pass in cockpit (modulo expected conftest missing-extras gate). Full suite (45 new + 1715 existing = 1760) passes in tester-unified with exit 0 across all 4 parity runs.
+The four-run self-review parity suite passed before the final controller cleanup removed three redundant copied-fragment tests and added one malformed-record-shape negative. The post-cleanup focused-test and exact-gate counts below supersede the earlier count.
 
 ## Gate command verification
-The declared `topos-suite` argv was exercised inside tester-unified: `1760 passed`, exit 0, coverage JSON generated. Parity: 4 runs identical.
+Self-review parity: four repaired-suite runs were identical. After controller
+cleanup, the exact declared host-bind `topos-suite` argv passed 1,758 tests in
+68.76s, produced branch-aware coverage JSON, and the changed-line evaluator
+returned exit 0 at its 100% floor.
 
 ## Commit
 This self-review and all repairs committed on top of f90b9c34.

@@ -5,4 +5,3 @@
 # regenerable). To keep FULL traceability, delete the line below (or force-add
 # specific runs: `git add -f agent-logs/<att-id>`).
 agent-logs/
-.p96-parity/

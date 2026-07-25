@@ -132,6 +132,11 @@ def test_validate_cov_record_rejects_non_int():
         cg._validate_cov_record("x.py", {"executed_lines": [1, "two"], "missing_lines": []})
 
 
+def test_validate_cov_record_rejects_non_object():
+    with pytest.raises(cg.CoverageGateError, match="list"):
+        cg._validate_cov_record("x.py", [])
+
+
 # --------------------------------------------------------------------------- #
 # evaluate_with_malformed_coverage — coverage JSON record validation
 # --------------------------------------------------------------------------- #
@@ -232,75 +237,6 @@ def test_evaluate_ignores_changes_under_false_friend_prefix():
     assert v.passed
     assert v.uncovered == {}
     assert v.changed_executable == 0
-
-
-# --------------------------------------------------------------------------- #
-# py-compile shell pattern — behavioral regression tests
-# --------------------------------------------------------------------------- #
-
-def test_pycompile_shell_syntax_error_exits_nonzero():
-    """The py-compile gate's shell pattern must exit nonzero when a changed
-    .py file has a syntax error. This test validates the behavioral contract
-    of the gate, not the exact argv string."""
-    import subprocess
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        # Create a .py with syntax error
-        bad = Path(tmp) / "bad_syntax.py"
-        bad.write_text("def foo(:\n")  # SyntaxError: unmatched paren
-        good = Path(tmp) / "good.py"
-        good.write_text("x = 1\n")
-
-        # Simulate the gate pattern: files=$(git diff ...) equivalent but with
-        # explicit file list; the critical piece is py_compile calling.
-        cmd = ["bash", "-c",
-               "set -euo pipefail && "
-               'files=$(printf "%s\\n" "$@") && '
-               'printf "%s\\n" "$files" | tr "\\n" "\\0" | xargs -0 python3 -m py_compile',
-               "--", str(bad), str(good)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        assert proc.returncode != 0, (
-            f"py_compile should fail on syntax error, got exit {proc.returncode}: "
-            f"stderr={proc.stderr}"
-        )
-
-
-def test_pycompile_shell_no_files_exits_zero():
-    """The py-compile gate pattern with no changed .py files exits zero."""
-    import subprocess
-    # No files: the git diff returns empty, the gate prints message and exits 0
-    cmd = ["bash", "-c",
-           "set -euo pipefail && "
-           'files="" && '
-           'if [ -z "$files" ]; then echo "no files"; '
-           'else printf "%s\\n" "$files" | tr "\\n" "\\0" | xargs -0 python3 -m py_compile; fi']
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    assert proc.returncode == 0, f"no files should exit 0: stderr={proc.stderr}"
-    assert "no files" in proc.stdout
-
-
-def test_pycompile_shell_filename_with_spaces_is_safe():
-    """The NUL-delimited xargs -0 pattern handles filenames with spaces."""
-    import subprocess
-    import tempfile
-    import os
-
-    with tempfile.TemporaryDirectory() as tmp:
-        # Create a .py file with a space in the name
-        spaced = os.path.join(tmp, "my file.py")
-        with open(spaced, "w") as f:
-            f.write("x = 1\n")
-
-        cmd = ["bash", "-c",
-               "set -euo pipefail && "
-               'files=$(printf "%s\\n" "$@") && '
-               'printf "%s\\n" "$files" | tr "\\n" "\\0" | xargs -0 python3 -m py_compile',
-               "--", spaced]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        assert proc.returncode == 0, f"filename with spaces: stderr={proc.stderr}"
-
-
 
 
 # --------------------------------------------------------------------------- #
