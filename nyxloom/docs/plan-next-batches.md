@@ -153,6 +153,11 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
 - **P3d — rotation + bounded resume recovery + DEGRADED policy (concern-3) + compaction→rotation
   fallback (§6.1/§5.4)**: typed rotation conditions, cold recovery from durable truth, and the
   concern-3 decision (DEGRADED-exhausted sets the mutex / escalates, not silent legacy fall-through).
+  > **STATUS 2026-07-25 — MERGED (5b7fd935).** daemon.py-only executor package (the A1 planner + the
+  > carver_session projector already had every ladder branch + status fold), built by deepseek
+  > (reasonix), controller-gated (96/96 changed lines, 100%) + adversarially reviewed. Closes
+  > checklist items 3/4/5/6 (5=partial WARN, hard-REJECT deferred until P4). AD3 + concern-2 ack
+  > cursor deferred to P4 (need reconcile.py). Byte-identical-off.
 ### ⛔ PRE-ENABLEMENT CHECKLIST (from the P3a Opus review — feature-on runaways, all INERT feature-off)
 `cfg.carve.session="project-persistent"` MUST NOT be set on any project until ALL clear. P3a ships
 these latent (default `session="fresh"` keeps them dormant); each later package closes one:
@@ -164,29 +169,36 @@ these latent (default `session="fresh"` keeps them dormant); each later package 
 2. **Unhandled `CompactCarverSession`/`AdmitCarveProposal` (AF1):** A1 (merged) can emit both
    feature-on; P3a's `_execute` `else` raises → per-pass `TICK_ERROR` storm (isolated, not a crash).
    Closed as P3b wires Admit + P4 wires Compact; until then an enablement guard (#5) covers it.
-3. **Bootstrap/resume ack-content validation (concern-3, §5.1 item-6):** P3a records WARM on
-   `DONE + captured session_handle` but never parses the `BOOTSTRAP-ACK` line — a DONE-but-didn't-
-   bootstrap turn is falsely WARM. Owner: **P3b** (validate the ack before recording WARM/RESUMED).
-4. **`NEEDS_OPERATOR` storm on unresolvable pinned route (concern-5):** resume re-planned every pass
-   → emits `NEEDS_OPERATOR` every pass, no debounce. Owner: **P3d** (debounce / halted state).
-5. **Enablement guard (AF3):** add config/startup validation that REJECTS (or loudly WARNs on)
-   `session="project-persistent"` until 1–4 land. This single guard neutralizes premature foot-gunning
-   of the half-built feature. Owner: **P3d / the enablement step** (build once the prerequisites are known).
-6. **Cold-session re-scope launch-supersede (found in P3c review, 2026-07-25):** the EXECUTOR only
-   normalizes a `CarveDispatch` into the proposal protocol when the session is WARM. Feature-on but
-   session COLD/DEGRADED, a re-scope `CarveDispatch` falls through to the LEGACY `_execute_carve_dispatch`
-   tail, which STILL supersedes the origin at launch (pre-F018 B7 behavior). So a cold-session re-scope
-   that produces nothing re-opens the exact §4.2 data-loss window the proposal protocol closes for the
-   warm path. Not a P3c regression (legacy semantics, unchanged), and inert feature-off, but a feature-on
-   inconsistency. Owner: **P3d** — either gate the legacy launch-supersede behind `session != "project-
-   persistent"`, or have a cold re-scope defer/escalate rather than fresh-carve-and-supersede.
+3. ✅ **Bootstrap/resume ack-content validation (concern-3, §5.1 item-6) — CLOSED by P3d (5b7fd935).**
+   `_consume_carver_session_exit` now requires a valid `BOOTSTRAP-ACK.json` (echoing the spine
+   revisions) for a start/recover turn; a DONE-but-didn't-bootstrap turn folds to
+   `DEGRADED{bootstrap-ack-invalid}`, never falsely WARM.
+4. ✅ **`NEEDS_OPERATOR` route-storm (concern-5) — CLOSED by P3d (5b7fd935).** `_needs_operator_recently_
+   emitted` debounces `carver-no-route`/`carver-compaction-no-driver` to once per unresolved episode
+   (cleared by `CARVER_SESSION_ROTATED`/`STARTED`).
+5. ✅ **Enablement guard (AF3) — PARTIAL by P3d (5b7fd935).** Startup WARN (`carver.enablement.premature`,
+   once/daemon) now fires for any `project-persistent` project, listing the still-open items. It is a
+   WARN not a REJECT because item 1 (ack cursor) is still P4 — promote to a hard REJECT in the
+   enablement step once P4 lands and the checklist is fully clear.
+6. ✅ **Cold/degraded re-scope launch-supersede — CLOSED by P3d (5b7fd935).** `_execute_carve_dispatch`
+   now catches a feature-on non-WARM session after the WARM-normalize check: a DEGRADED-recovery-
+   exhausted session ROTATES (no legacy fresh-carve-and-supersede), closing the §4.2 data-loss window
+   off the warm path; any other unexpected non-WARM status escalates instead of falling through.
+
+**Still OPEN → P4:** item 1 (ack cursor `CARVER_CONTEXT_CONSUMED`) and item 2's Compact-half. Also two
+feature-dark REFINEMENTS found in P3d review (both self-healing, not blockers): (a) the ack validation
+compares consume-time `_spine_revisions(cfg)` to the launch-time echo, so a spine commit racing a
+bootstrap yields one false `DEGRADED` that self-heals via the next recover turn — align with §6.2's
+"2+ docs" drift semantics in P4; (b) `_needs_operator_recently_emitted` scans the full event log per
+no-route error path (rare, feature-dark) — window it if it ever matters.
 
 Minor cleanups (non-enablement): de-hollow the lease-lost test (uses `_scripted` stub, not the real
 planner); `_recent_merge_digest_ids` uses a raw `["digest_id"]` index vs A2's `.get` (KeyError on a
-malformed digest, feature-on only) — fold into P3b/P3d.
+malformed digest, feature-on only) — fold into P4.
 
-After P3 (all 4 sub-packages) + the checklist clears → enable `cfg.carve.session="project-persistent"`
-on a pilot, then dogfood.
+After P4 (ack cursor + real compaction/rotation-fallback wiring) + the checklist FULLY clears (item 1)
+→ promote the enablement WARN to a REJECT, enable `cfg.carve.session="project-persistent"` on a pilot,
+then dogfood.
 
 `reconcile.py` is FROZEN-CORE: A1 gets a SOLO gate + a full adversarial review; A2 gets a SOLO
 gate + medium review. A1→A2 serial (A2 depends on A1's fields). After A2 lands → **DOGFOOD

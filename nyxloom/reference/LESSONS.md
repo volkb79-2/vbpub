@@ -217,3 +217,31 @@ storm).
 gap a review defers becomes a numbered item that must clear before the flag is set anywhere. Add
 an enablement guard that rejects/warns on turning the feature on until the checklist is clear, so
 the partially-built feature cannot be enabled by mistake.
+
+## L10 — A cheap model builds a subtle package when the scope is one layer, the precedents are named, and the frozen core is forbidden
+
+**Rule.** Routing a package to the cheapest capable model is not a property of the model alone — it
+is a property of how the package is *scoped and authored*. A subtle, frozen-core-*adjacent* package
+is viable for a cheap implementer (deepseek-flash via reasonix, ~cents total) precisely when the
+handoff (a) bounds the work to ONE layer (e.g. executor-only), (b) names the exact in-codebase
+precedents each item mirrors (file:line), and (c) forbids the frozen core outright so "I think I
+need to edit reconcile.py" becomes a mechanical BLOCKED, not a silent overreach. The controller's
+independent re-gate + adversarial review remain the safety net regardless of who implements.
+
+**Evidence (F018 P3d, 2026-07-25).** P3d (carver rotation, compaction→rotation fallback, ack
+validation, route-storm debounce, enablement guard) *looked* like frozen-core work. But scouting
+`reconcile.py` (the A1 ladder) and `carver_session.py` (the projector) BEFORE authoring revealed the
+planner already plans the whole rotation/recovery/compaction ladder and the projector already folds
+every status event — so the package was **daemon.py-only**, just emitting already-folded events at the
+right executor moments. Authored that way (one layer, P3a/b/c patterns named, frozen core forbidden),
+deepseek produced it in one shot: gate-green at 96/96 changed lines (100%), FORBID-clean, and the
+adversarial review found only two feature-dark, self-healing refinements. The scope-scout is what
+turned an "expensive Sonnet/Opus" package into a "cheap deepseek" one.
+
+**How to apply.** Before choosing an implementer model, SCOUT the frozen core the package appears to
+touch: is the planner/projector/state-machine already complete, leaving only executor wiring? If yes,
+author it as a single-layer handoff with named precedents + an explicit frozen-core forbid, and route
+it cheap. If the package genuinely needs planner/state changes, keep it on a stronger model (or split
+the executor slice out to go cheap and reserve the stronger model for the frozen-core slice). Either
+way the independent re-gate (L7) and review (L2) are non-negotiable — cheap implementation is only
+safe because verification is model-independent.
