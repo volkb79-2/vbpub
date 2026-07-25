@@ -15,7 +15,7 @@ Parity confirmed across two runs.
 
 ## Tests added
 
-33 tests (pytest collection: 1972 total - 1939 existing = 33 new).
+40 tests (pytest collection: 1972 total - 1932 P99 baseline = 40 new).
 
 ## Gate
 

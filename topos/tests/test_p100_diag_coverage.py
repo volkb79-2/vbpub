@@ -111,7 +111,9 @@ class TestDiagInit:
 
     def test_annotate_host_network_loss_no_root(self):
         frame = Frame(1, 100.0, 5.0, {}, {})
-        _annotate_host_network_loss(frame)
+        result = _annotate_host_network_loss(frame)
+        assert result is None
+        assert frame.entities == {}
 
     def test_annotate_host_network_loss_no_host_meta(self):
         ef = _eframe()

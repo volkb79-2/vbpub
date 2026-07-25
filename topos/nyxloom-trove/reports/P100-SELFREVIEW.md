@@ -11,10 +11,20 @@
 - **Parity**: Two gate runs identical.
 - **All 3 targets at exact 100%**: empty missing_lines and missing_branches.
 
-## Fail-before evidence
+## Negative evidence
 
-Each test was verified to fail when its targeted branch is removed.
-Key examples:
-- `test_confidence_host_network_confidence` fails without `elif metric.src == "host"` branch
-- `test_score_entity_default_band_none` fails without the `if default_band is None:` path
-- `test_score_raw_sum_exceeds_100_scales_to_exact` fails without scaling logic
+No universal per-test mutation campaign was run, so this report does not claim
+one. The repair loop supplied direct negative evidence for its three critical
+cases:
+
+- the prior exact-confidence test left rules.py line 207 uncovered; the new
+  host-network-confidence input closes that exact arc and asserts its value;
+- the two prior hollow default-band tests left score.py lines 136–137
+  uncovered; the replacement closes that exact branch and asserts every
+  resulting contribution field;
+- the prior scaling tests asserted only a range; the consolidated test asserts
+  the exact score and both exact contributions.
+
+The independent reviewer also inspected every retained assertion for behavioral
+relevance. Full mutation testing remains a separate future package rather than
+an unsupported claim in this receipt.
