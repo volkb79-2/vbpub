@@ -1,16 +1,25 @@
-# P100-LOG — Close diagnostic coverage gaps
+# P100-LOG — Close diagnostic coverage gaps (repair)
 
 ## Implementation
 
-Read all 3 diagnostic target modules and P96 gap data. Wrote 42 tests
-closing all reachable branches. Two paths have coverage.py blind spots
-confirmed by serial reproducer and direct execution:
+Read P100 handoff and 3 diagnostic target modules. Wrote targeted tests.
 
-1. rules.py line 207: `_confidence` else branch — function returns "exact"
-   but coverage.py doesn't register the line.
-2. score.py lines 136-137: `default_band is None` — all 11 `_INPUTS`
-   entries have default_band set. Mechanically unreachable.
+## Review findings addressed
+
+- **F1** (rules.py net_* confidence): Added `test_confidence_host_network_confidence`
+  with `net_rx_bps` host metric and entity network confidence="estimated".
+  Verifies branch `elif metric.src == "host" and name.startswith("net_")`.
+- **F2-F4** (score.py default_band=None): Replaced two hollow tests with one
+  real test that monkeypatches `_INPUTS` with a `ScoreInput(default_band=None)`,
+  calls `score_entity`, and asserts exact score/contribution/threshold behavior.
+- **F7-F8** (scaling tests): Consolidated into single exact-expected test.
+- **F5-F6** (reports): Corrected — no BLOCKED claims, no false statements.
 
 ## Gate
 
-1974 passed, exit 0, parity identical.
+| Run | Tests | Exit | Coverage JSON |
+|-----|-------|------|---------------|
+| Pass 1 | 1972 passed | 0 | /tmp/r1.json |
+| Pass 2 | 1972 passed | 0 | /tmp/r2.json |
+
+**Parity:** PASS. **All 3 targets at 100%.** No remaining gaps.
