@@ -275,7 +275,5 @@ def parse_metrics_selector(selector: str) -> tuple[frozenset[str], frozenset[str
 
     if unknown:
         raise ValueError(f"unknown metric token(s): {', '.join(sorted(unknown))}")
-    if not kept_metrics:
-        raise ValueError("empty selector")
 
     return frozenset(kept_metrics), frozenset(kept_blocks)
