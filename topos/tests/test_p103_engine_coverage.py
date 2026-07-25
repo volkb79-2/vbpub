@@ -6,13 +6,16 @@ achieving whole-file 100%. Uses real FrameSource/Query behavior.
 
 from __future__ import annotations
 
+import json
+
 from topos.model import Entity, EntityFrame, Frame, MetricValue
 from topos.query import Query, MetricRef, SortSpec, Caps
 from topos.query.engine import (
     _in_slice, _cell_stat, _summary_cells, _project,
-    _run_current, run_query, _enforce_byte_cap, format_result,
+    run_query, _enforce_byte_cap, format_result,
     subtree_aggregate,
 )
+from topos.query.semantics import ValueSemantic
 from topos.query.source import DaemonHistoryFrameSource
 
 
@@ -32,34 +35,43 @@ def _frame(ts: float, entities: dict[str, EntityFrame] | None = None, host: dict
     return Frame(ts=ts, interval_s=1, host=host or {}, entities=entities or {}, schema_version=1)
 
 
-def _daemon(frames: list[Frame], *, gap: bool = False) -> DaemonHistoryFrameSource:
-    return DaemonHistoryFrameSource(tuple((i, f) for i, f in enumerate(frames)), gap=gap)
+def _daemon(frames: list[Frame]) -> DaemonHistoryFrameSource:
+    return DaemonHistoryFrameSource(tuple((i, f) for i, f in enumerate(frames)))
 
 
-# line 397-398: _in_slice return False when parent chain exhausts
+# line 397-398: _in_slice parent chain exhausts + cycle detection
 def test_in_slice_not_found():
     parents = {"c": "b", "b": "a", "a": None}
     assert _in_slice("c", "root", parents) is False
 
+def test_in_slice_cycle_safe():
+    """Cycle-safe: traverse a→b→a hits seen and returns False (F4)."""
+    parents = {"a": "b", "b": "a"}
+    assert _in_slice("a", "missing", parents) is False
 
-# line 477: format_result pretty=True produces indented JSON
+
+# line 477: format_result pretty
 def test_format_result_pretty():
     src = _daemon([_frame(0, {"e": _ef("e", {"ram": _g(1.0)})})])
     q = Query(shape="summary", metrics=(MetricRef(name="ram"),))
     r = run_query(src, q)
     result = format_result(r, pretty=True)
-    assert "\n" in result
+    expected = json.dumps(r.to_jsonable(), sort_keys=True, indent=2)
+    assert result == expected
 
 
-# line 581: _summary_cells with visibility=available
+# line 581: _summary_cells available visibility
 def test_summary_cells_available_visibility():
-    ef = _ef("e", {"ram": _g(1.0)})
+    ef = _ef("e", {"ram": _g(1.0), "other": MetricValue(1.0, "bpf")})
     frames = [_frame(0, {"e": ef}), _frame(1, {"e": ef})]
-    from topos.query.semantics import ValueSemantic
     from topos.query.engine import _ResolvedMetric
     rm = _ResolvedMetric(name="ram", semantic=ValueSemantic.GAUGE)
-    cells, _ = _summary_cells(frames, ["e"], [rm], "available")
-    assert "ram" in cells["e"]
+    cells, resets = _summary_cells(frames, ["e"], [rm], "available")
+    cell = cells["e"]["ram"]
+    assert cell["semantic"] == "gauge"
+    assert cell["count"] == 2
+    assert cell["min"] == 1.0
+    assert cell["max"] == 1.0
 
 
 # line 597: _cell_stat None
@@ -67,7 +79,7 @@ def test_cell_stat_none():
     assert _cell_stat(None, "value") is None
 
 
-# lines 660-662: project hierarchy no sort
+# lines 660-662: project hierarchy no sort — exact key/depth/path/metrics
 def test_project_hierarchy_no_sort():
     parents = {"a": None, "b": "a", "c": "a"}
     cells = {"a": {}, "b": {}, "c": {}}
@@ -76,14 +88,25 @@ def test_project_hierarchy_no_sort():
         ["a", "b", "c"], parents, cells, sort=None, own_values={},
     )
     assert len(rows) == 3
+    # Unsorted: alphabetically by key
+    assert rows[0]["key"] == "a"
+    assert rows[0]["depth"] == 0
+    assert "path" in rows[0]
+    assert "metrics" in rows[0]
+    # 'b' and 'c' are children of 'a'
+    b_row = next(r for r in rows if r["key"] == "b")
+    assert b_row["depth"] == 1
+    assert b_row["path"] == ["a"]
 
 
 # line 754: enforce_byte_cap with prior truncation
 def test_enforce_byte_cap_prior_truncation():
     rows = [{"key": "e", "metrics": {"ram": {"x": "y" * 2000}}}]
-    final = _enforce_byte_cap({"k": "v"}, rows, Caps(10, 100, 500, "truncate"),
-                               truncation={"truncated": True, "reason": "max_rows"})
-    assert final[1].get("also") == "max_rows"
+    meta = {"k": "v"}
+    result, trunc = _enforce_byte_cap(meta, rows, Caps(10, 100, 500, "truncate"),
+                                        truncation={"truncated": True, "reason": "max_rows"})
+    assert trunc["truncated"] is True
+    assert trunc.get("also") == "max_rows"
 
 
 # line 784: _run_current empty frames
@@ -94,25 +117,27 @@ def test_run_current_empty():
     assert r.rows == []
 
 
-# line 855: run_raw entity absent -> continue
+# line 855: entity absent from some frames -> continue
 def test_run_raw_no_entity():
-    """entity absent from some frames -> continue (line 855)."""
     ef1 = _ef("key1", {"ram": _g(1.0)})
-    # frame1 has key1, frame2 has no entities -> key1 entity is None in frame2
     src = _daemon([_frame(0, {"key1": ef1}), _frame(1, {})])
     q = Query.from_dict({
         "shape": "raw", "metrics": ["ram"],
         "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    assert len(r.rows) >= 1
+    assert len(r.rows) == 1
+    assert r.rows[0]["key"] == "key1"
+    assert len(r.rows[0]["points"]) == 1  # only frame 0 has key1
 
 
 # line 858: metric absent -> continue
 def test_run_raw_no_metric():
     src = _daemon([_frame(0, {"e": _ef("e", {"other": _g(1.0)})})])
-    q = Query(shape="raw", metrics=(MetricRef(name="ram"),),
-              caps=Caps(100, 1000, 10000, "truncate"))
+    q = Query.from_dict({
+        "shape": "raw", "metrics": ["ram"],
+        "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
+    })
     r = run_query(src, q)
     assert len(r.rows) == 0
 
@@ -121,8 +146,10 @@ def test_run_raw_no_metric():
 def test_run_raw_hidden_visibility():
     mv = MetricValue(1.0, "unavail_kernel")
     src = _daemon([_frame(0, {"e": _ef("e", {"ram": mv})})])
-    q = Query(shape="raw", metrics=(MetricRef(name="ram"),), visibility="available",
-              caps=Caps(100, 1000, 10000, "truncate"))
+    q = Query.from_dict({
+        "shape": "raw", "metrics": ["ram"], "visibility": "available",
+        "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
+    })
     r = run_query(src, q)
     assert len(r.rows) == 0
 
@@ -131,36 +158,42 @@ def test_run_raw_hidden_visibility():
 def test_run_raw_point_cap():
     frames = [_frame(i, {"e": _ef("e", {"ram": _g(float(i))})}) for i in range(20)]
     src = _daemon(frames)
-    q = Query(shape="raw", metrics=(MetricRef(name="ram"),),
-              caps=Caps(100, 3, 10000, "truncate"))
+    q = Query.from_dict({
+        "shape": "raw", "metrics": ["ram"],
+        "caps": {"max_rows": 100, "max_points": 3, "max_bytes": 10000, "on_exceed": "truncate"},
+    })
     r = run_query(src, q)
-    assert r.meta["truncation"]["truncated"] is True
+    t = r.meta["truncation"]
+    assert t["truncated"] is True
+    assert t["reason"] == "max_points"
+    assert len(r.rows) == 1
+    assert len(r.rows[0]["points"]) == 3
 
 
 # line 866: raw counter included
 def test_run_raw_raw_field():
     src = _daemon([_frame(0, {"e": _ef("e", {"ram": _rr(500)})})])
-    q = Query(shape="raw", metrics=(MetricRef(name="ram"),),
-              caps=Caps(100, 1000, 10000, "truncate"))
+    q = Query.from_dict({
+        "shape": "raw", "metrics": ["ram"],
+        "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
+    })
     r = run_query(src, q)
     assert len(r.rows) == 1
-    for p in r.rows[0]["points"]:
-        if p.get("raw") is not None:
-            break
-    else:
-        assert False, "no raw field found"
+    assert any(p.get("raw") is not None for p in r.rows[0]["points"])
 
 
-# line 869-847: no points -> no row
+# line 869-847: no points -> no row (covered by test_run_raw_no_metric)
+# kept for coverage completeness but exact assertion
 def test_run_raw_no_points():
-    # All metrics are None/unavail -> no valid points
     mv = MetricValue(None, "unavail_kernel")
     src = _daemon([_frame(0, {"e": _ef("e", {"ram": mv})})])
-    q = Query(shape="raw", metrics=(MetricRef(name="ram"),),
-              caps=Caps(100, 1000, 10000, "truncate"))
+    q = Query.from_dict({
+        "shape": "raw", "metrics": ["ram"],
+        "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
+    })
     r = run_query(src, q)
-    # Points may exist with None values; they are included but have no value
-    assert isinstance(r.meta.get("truncation"), dict)
+    assert len(r.rows) == 1  # entity exists, metric exists, but value is None -> point with None value
+    assert len(r.rows[0]["points"]) == 1
 
 
 # line 882: both truncated and row_capped
@@ -168,23 +201,28 @@ def test_run_raw_both_caps():
     frames = [_frame(i, {"e1": _ef("e1", {"ram": _g(float(i))}),
                          "e2": _ef("e2", {"ram": _g(float(i))})}) for i in range(20)]
     src = _daemon(frames)
-    q = Query(shape="raw", metrics=(MetricRef(name="ram"),),
-              caps=Caps(1, 3, 10000, "truncate"))
+    q = Query.from_dict({
+        "shape": "raw", "metrics": ["ram"],
+        "caps": {"max_rows": 1, "max_points": 3, "max_bytes": 10000, "on_exceed": "truncate"},
+    })
     r = run_query(src, q)
-    meta = r.meta["truncation"]
-    assert meta.get("also") == "max_rows"
+    t = r.meta["truncation"]
+    assert t["truncated"] is True
+    assert t["reason"] == "max_points"
+    assert t.get("also") == "max_rows"
+    assert len(r.rows) == 1
+    assert len(r.rows[0]["points"]) == 3
 
 
 # arc 429-427: subtree_aggregate child None
 def test_subtree_aggregate_child_none():
-    """subtree_aggregate skips child with None value (arc [429,427])."""
     result = subtree_aggregate("root", "net_rx_bps",
                                 {"root": 100.0, "child": None},
                                 {"root": ["child"]})
-    assert result == 100.0  # child value None, not added to total
+    assert result == 100.0
 
 
-# arc 675-684: project hierarchy with sort
+# arc 675-684: project hierarchy with sort — exact descending order
 def test_project_hierarchy_with_sort():
     parents = {"a": None, "b": "a", "c": "a"}
     cells = {"a": {"ram": {"value": 10.0}}, "b": {"ram": {"value": 5.0}}, "c": {"ram": {"value": 15.0}}}
@@ -195,3 +233,7 @@ def test_project_hierarchy_with_sort():
         ["a", "b", "c"], parents, cells, sort, own_values,
     )
     assert len(rows) == 3
+    # Descending: c(15) and b(5) as children of a, sorted desc -> c then b
+    assert rows[0]["key"] == "a"
+    assert rows[1]["key"] == "c"
+    assert rows[2]["key"] == "b"

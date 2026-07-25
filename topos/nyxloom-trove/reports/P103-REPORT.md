@@ -3,35 +3,44 @@
 ## Summary
 
 Whole query/engine.py at exact 100% statements and branches.
-16 tests closing all 17 residual lines and 19 branch pairs.
+17 tests (16 + 1 new cycle test), 2019 total (2002 + 17).
 
 ## Target coverage
 
-| Scope | Before | After | Status |
-|-------|--------|-------|--------|
-| P103 residual (17 lines, 19 branches) | ALL missing | 0/0 | **CLOSED** |
-| Whole engine.py | 17 lines, 19 branches | 0/0 | **100%** |
+| Scope | Before | After |
+|-------|--------|-------|
+| P103 residual (17 lines, 19 pairs) | 17 lines, 19 pairs | 0/0 |
+| Whole engine.py | 17+ lines, 19+ branches | **100%** |
 
-## Before/after literal residual sets
+## Literal residual — run 1
 
-### 17 lines: {397,398,477,581,597,660,661,662,754,784,855,858,860,862,863,866,882}
-### 19 pairs: {(392,398),(395,397),(429,427),(476,477),(580,581),(596,597),(659,660),(661,662),(661,665),(675,684),(753,754),(783,784),(854,855),(857,858),(859,860),(861,862),(865,866),(869,847),(881,882)}
+run 1 missing target lines: []
+run 1 missing target pairs: []
+run 1 whole-file lines: 0, branches: 0
 
-| Baseline | Run 1 | Run 2 |
-|----------|-------|-------|
-| 17/19 | ∅/∅ | ∅/∅ |
+## Literal residual — run 2
 
-## Test functions
+run 2 missing target lines: []
+run 2 missing target pairs: []
+run 2 whole-file lines: 0, branches: 0
 
-16 test functions (baseline 2002 + 16 = 2018 total). All call real
-run_query, _validate, _project, _enforce_byte_cap, or other engine functions
-with real FrameSource inputs. No assertion-free bodies, no non-None-only checks.
+## Before residual sets
+
+17 lines: {397,398,477,581,597,660,661,662,754,784,855,858,860,862,863,866,882}
+19 pairs: {(392,398),(395,397),(429,427),(476,477),(580,581),(596,597),(659,660),
+(661,662),(661,665),(675,684),(753,754),(783,784),(854,855),(857,858),(859,860),
+(861,862),(865,866),(869,847),(881,882)}
+
+## Tests
+
+17 test functions. 2019 total (2002 baseline + 17). All call real engine functions.
+No assertion-free bodies, no non-None-only checks.
 
 ## Gate
 
 | Run | Tests | Exit | Engine parity |
 |-----|-------|------|---------------|
-| Pass 1 | 2018 | 0 | |
-| Pass 2 | 2018 | 0 | PASS |
+| Pass 1 | 2019 | 0 | |
+| Pass 2 | 2019 | 0 | PASS |
 
 No product source edits, no pragmas.
