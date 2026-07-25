@@ -274,3 +274,57 @@ uncovered-line list, never by assuming the pragma landed where you meant. (3) An
 green / done" is never the merge signal (L7): re-run the gate yourself and read the `diff-coverage
 OK/FAIL` line (L4). A self-reported green that a truncated log can't corroborate is a RED until your
 own gate says otherwise.
+
+## L12 — Session reuse is an optimization; the router must own health-based rotation
+
+**Rule.** A persistent agent session is valuable only while its retained context
+improves the next bounded package. Do not ask either the implementer or an
+independent reviewer to decide this from narrative. The orchestration layer
+must collect session-health telemetry, apply explicit rotation tripwires, and
+produce a factual fresh-session handoff when it rotates.
+
+**Evidence (Topos global coverage healing, P97–P112, 2026-07-25).** A persistent
+DeepSeek Flash implementation session was initially highly cache-efficient and
+retained useful fixture/domain context. It later compacted a very large
+transcript, repeatedly rewrote its prefix at substantial uncached cost, and
+then exhibited stronger quality signals: repeated fixture/edit-context failures,
+stale-worktree reads, an invented host virtualenv/runner rather than the declared
+tester, and weakened exact assertions. A fresh Flash session removed neither
+worktree nor runner drift by itself. The independent DeepSeek Pro reviewer was
+excellent at finding incomplete coverage and weak tests, but it could not see
+the implementer's cache cost or complete interaction history and itself made
+line/arc interpretation errors. The controller caught the combination because
+it owned the runner, immutable evidence, and task transcript metadata.
+
+**How to apply.** Add a per-attempt session-health record and let the
+dispatcher—not a model—transition it through `HEALTHY`, `DEGRADED`, and
+`ROTATE_REQUIRED`. Record at least:
+
+- cumulative and per-turn cached/uncached input, compaction/prefix-rewrite
+  events, and estimated restart cost;
+- consecutive failed attempts against the same mechanical oracle and whether the
+  literal residual set actually shrank;
+- runner/worktree contract violations, stale-path reads, and disposable side
+  effects created outside the declared tester;
+- repeated edits to the same test file, test weakening, empty/assertion-free
+  bodies, or other hollow-test scanner findings;
+- review disagreements whose exact-commit measurement disproves agent prose.
+
+Rotate immediately on a safety violation (wrong worktree/runner, test
+weakening, or unapproved side effect). Rotate after two attempts that miss the
+same oracle without material residual reduction, or when the one-time
+compaction/rewrite cost exceeds the measured cost of a concise fresh handoff.
+The independent reviewer may emit a `SESSION_HEALTH` finding when it observes
+surface symptoms, but it is a corroborator, not the owner: it cannot reliably
+observe cache economics or every implementer interaction, and its own review
+needs controller verification (L2, L7).
+
+Provider-supported compaction or trimming is useful only as a controlled
+package-boundary optimization. Preserve the exact base/HEAD, current literal
+residual, accepted/deferred scope, runner command, oracle results, and clearly
+labeled hypotheses; discard repetitive tool output and superseded prose. Never
+trim merely by age inside an active causal package: old constraints may still
+explain a current failure, and compaction can turn a tentative diagnosis into a
+false fact. A resumed or compacted session must run the relocation preflight and
+reproduce any claimed failure before editing (L8). If those checks fail, start a
+fresh session from the generated handoff rather than compacting again.

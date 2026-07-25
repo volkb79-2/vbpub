@@ -786,7 +786,7 @@ prerequisite package, not an edit-refresh mechanism.
      upstream proposal; project-scoped ones stay here. -->
 
 ## PL5 — Topos-derived operating playbook for agent-driven coverage healing
-`scope: product` · `upstream: proposed` · **LIVING (update after each consumer project)**
+`scope: product` · `upstream: integrated (ref: reference/LESSONS.md L12)` · **LIVING (update after each consumer project)**
 
 PL4 is the detailed evidence trail. This entry is the short operating contract
 for nyxloom runs that inherit the same goal: repair historic test debt until the
