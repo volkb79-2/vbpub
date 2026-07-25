@@ -61,7 +61,8 @@ class _Audit:
     def record(self, **kwargs: object) -> None:
         self.calls.append(kwargs)
         if self.fail_on == len(self.calls):
-            assert self.error is not None
+            if self.error is None:
+                raise AssertionError("failing audit fixture requires an error")
             raise self.error
 
 
@@ -114,6 +115,41 @@ def _pressure_reader(
 ) -> dict[str, dict[str, float]]:
     assert (target, filename) == ("/cg/worker.scope", "memory.pressure")
     return {"some": {"avg10": 0.0}, "full": {"avg10": 0.0}}
+
+
+def _expected_audit_calls(
+    config: SqueezeConfig,
+    *,
+    stop_reason: str,
+    squeeze_point: int,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "kind": "squeeze",
+            "target": config.target,
+            "argv": (
+                "--target",
+                config.target,
+                "--admin" if config.admin else "",
+                "--confirm",
+                config.confirm,
+            ),
+            "admin": config.admin,
+        },
+        {
+            "kind": "squeeze-end",
+            "target": config.target,
+            "argv": (
+                "stop_reason",
+                stop_reason,
+                "squeeze_point",
+                str(squeeze_point),
+                "restored_to",
+                config.relax_to,
+            ),
+            "admin": config.admin,
+        },
+    ]
 
 
 def test_parse_size_rejects_missing_suffix_number_exactly() -> None:
@@ -283,7 +319,11 @@ def test_multistep_run_applies_every_measured_high_before_sampling(
     ]
     assert sleeps == [0.0, 0.0]
     assert [step.refaults_s for step in result.steps] == [None, None]
-    assert len(audit.calls) == 2
+    assert audit.calls == _expected_audit_calls(
+        config,
+        stop_reason="floor",
+        squeeze_point=1,
+    )
 
 
 def test_explicit_start_below_floor_has_complete_no_step_result(
@@ -312,33 +352,11 @@ def test_explicit_start_below_floor_has_complete_no_step_result(
         ("/cg/worker.scope", "memory.high", "0"),
         ("/cg/worker.scope", "memory.high", "max"),
     ]
-    assert audit.calls == [
-        {
-            "kind": "squeeze",
-            "target": "/cg/worker.scope",
-            "argv": (
-                "--target",
-                "/cg/worker.scope",
-                "--admin",
-                "--confirm",
-                "SQUEEZE",
-            ),
-            "admin": True,
-        },
-        {
-            "kind": "squeeze-end",
-            "target": "/cg/worker.scope",
-            "argv": (
-                "stop_reason",
-                "floor",
-                "squeeze_point",
-                "0",
-                "restored_to",
-                "max",
-            ),
-            "admin": True,
-        },
-    ]
+    assert audit.calls == _expected_audit_calls(
+        config,
+        stop_reason="floor",
+        squeeze_point=0,
+    )
 
 
 def test_log_open_failure_has_complete_error_result(
@@ -442,7 +460,41 @@ def test_step_write_failure_is_nonfatal_and_summary_still_writes(
         ("/cg/worker.scope", "memory.high", "max"),
     ]
     assert file.closed is True
-    assert any('"type":"summary"' in value for value in file.writes)
+    records = [
+        squeeze.json.loads(line)
+        for line in "".join(file.writes).splitlines()
+    ]
+    assert records == [
+        {
+            "type": "header",
+            "schema_version": 1,
+            "ts": 50.0,
+            "target": "/cg/worker.scope",
+            "step_bytes": 1,
+            "delay_s": 0.0,
+            "floor_bytes": 1,
+            "start_bytes": 1,
+            "relax_to": "max",
+            "psi_some_limit": 10.0,
+            "psi_full_limit": 5.0,
+            "rf_limit": 200,
+            "force": False,
+            "memory_current_bytes": 10,
+            "memory_min_bytes": 0,
+        },
+        {
+            "type": "summary",
+            "ts": 50.0,
+            "stop_reason": "floor",
+            "stop_high": 1,
+            "squeeze_point": 1,
+            "current_at_stop": 10,
+            "anon_at_stop": 5,
+            "zswapped_at_stop": 1,
+            "z_pool_at_stop": 2,
+            "relaxed_to": "max",
+        },
+    ]
 
 
 def test_summary_write_failure_is_nonfatal(
@@ -586,7 +638,11 @@ def test_audit_start_ordinary_failure_is_nonfatal(tmp_path: Path) -> None:
     assert result == SqueezeResult(
         "error", 0, 0, config, (), "max", "cannot read memory.current"
     )
-    assert len(audit.calls) == 1
+    assert audit.calls == _expected_audit_calls(
+        config,
+        stop_reason="error",
+        squeeze_point=0,
+    )[:1]
 
 
 def test_audit_start_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None:
@@ -598,7 +654,11 @@ def test_audit_start_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None
             cgroup_int_reader=_int_reader,
             auditor=audit,  # type: ignore[arg-type]
         )
-    assert len(audit.calls) == 1
+    assert audit.calls == _expected_audit_calls(
+        _config(tmp_path),
+        stop_reason="error",
+        squeeze_point=0,
+    )[:1]
 
 
 def test_audit_end_ordinary_failure_is_nonfatal(tmp_path: Path) -> None:
@@ -618,7 +678,11 @@ def test_audit_end_ordinary_failure_is_nonfatal(tmp_path: Path) -> None:
     assert result == SqueezeResult(
         "floor", 0, 0, config, (), "max", ""
     )
-    assert len(audit.calls) == 2
+    assert audit.calls == _expected_audit_calls(
+        config,
+        stop_reason="floor",
+        squeeze_point=0,
+    )
 
 
 def test_audit_end_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None:
@@ -637,7 +701,12 @@ def test_audit_end_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None:
             clock=lambda: 50.0,
             auditor=audit,  # type: ignore[arg-type]
         )
-    assert len(audit.calls) == 2
+    config = _config(tmp_path, start=0, floor=1)
+    assert audit.calls == _expected_audit_calls(
+        config,
+        stop_reason="floor",
+        squeeze_point=0,
+    )
     assert writes == [
         ("/cg/worker.scope", "memory.high", "0"),
         ("/cg/worker.scope", "memory.high", "max"),
