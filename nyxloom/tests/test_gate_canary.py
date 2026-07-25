@@ -548,3 +548,201 @@ def test_verify_gate_rejects_canary_real_subtree_integration(tmp_path):
     assert "aaa-sibling" not in target
     assert result.killed is True
     assert result.inconclusive is False
+
+
+# --------------------------------------------------------------------------- #
+# GA2b: inject_uncovered_line -- a valid, test-neutral, never-called function
+# whose body lines no test covers (the coverage-canary mechanism).
+# --------------------------------------------------------------------------- #
+
+def test_inject_uncovered_line_appends_valid_never_called_function(tmp_path):
+    import ast
+
+    target = tmp_path / "core.py"
+    original = "from __future__ import annotations\n\ndef add(a, b):\n    return a + b\n"
+    target.write_text(original)
+
+    description = gate_canary.inject_uncovered_line(target)
+
+    mutated = target.read_text()
+    # the original content is preserved verbatim as a prefix (pure append)
+    assert mutated.startswith(original)
+    # the result is valid Python declaring a NEW module-level function
+    tree = ast.parse(mutated)
+    funcs = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    assert funcs == ["add", gate_canary._UNCOVERED_CANARY_FUNC]
+    # the canary function is never CALLED anywhere (only defined)
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == gate_canary._UNCOVERED_CANARY_FUNC]
+    assert calls == []
+    assert "2 uncovered lines" in description
+
+
+def test_inject_uncovered_line_adds_trailing_newline_when_missing(tmp_path):
+    """A source file with NO trailing newline still yields valid Python
+    (the append doesn't glue onto the last line)."""
+    import ast
+
+    target = tmp_path / "notrail.py"
+    target.write_text("x = 1")   # deliberately no trailing newline
+
+    gate_canary.inject_uncovered_line(target)
+
+    mutated = target.read_text()
+    ast.parse(mutated)   # raises if the append glued onto `x = 1`
+    assert mutated.startswith("x = 1\n")
+    assert gate_canary._UNCOVERED_CANARY_FUNC in mutated
+
+
+def test_inject_uncovered_line_is_additive_only(tmp_path):
+    """The injection is a pure append -- zero removed lines in the diff, the
+    original body untouched (mirrors the import-break minimal-diff guard)."""
+    root = tmp_path / "repo"
+    original = "def add(a, b):\n    return a + b\n"
+    head = _init_repo(root, {"core.py": original})
+
+    gate_canary.inject_uncovered_line(root / "core.py")
+
+    diff = _run(root, "diff", "--unified=0", "--", "core.py").stdout
+    removed = [ln for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+    assert removed == []
+    added = [ln for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++")]
+    # the appended block adds the def + its two uncovered body lines
+    assert any("def " + gate_canary._UNCOVERED_CANARY_FUNC in ln for ln in added)
+    assert any("return doubled" in ln for ln in added)
+    assert "def add(a, b):" in (root / "core.py").read_text()
+
+
+def test_build_canary_commit_uncovered_line_mechanism(tmp_path):
+    """build_canary_commit routes the injector + mechanism through: an
+    uncovered-line canary tags MECHANISM_UNCOVERED_LINE and actually appends
+    the never-called function to the committed file."""
+    root = tmp_path / "repo"
+    head = _init_repo(root, {"thing.py": "def add(a, b):\n    return a + b\n"})
+    cfg = _FakeCfg(root)
+
+    outcome = gate_canary.build_canary_commit(
+        cfg, head, "thing.py",
+        inject=gate_canary.inject_uncovered_line,
+        mechanism=gate_canary.MECHANISM_UNCOVERED_LINE)
+
+    assert outcome.mechanism == gate_canary.MECHANISM_UNCOVERED_LINE
+    assert outcome.commit != head
+    # the committed blob carries the canary function; the live checkout does not
+    committed = _run(root, "show", f"{outcome.commit}:thing.py").stdout
+    assert gate_canary._UNCOVERED_CANARY_FUNC in committed
+    assert gate_canary._UNCOVERED_CANARY_FUNC not in (root / "thing.py").read_text()
+
+
+# --------------------------------------------------------------------------- #
+# verify_gate_enforces_coverage -- the same multi-attempt rollup as GA1's
+# verifier, with run_gate_at_commit monkeypatched for deterministic exit
+# codes (the REAL coverage-floor behaviour is the integration test below).
+# --------------------------------------------------------------------------- #
+
+def _fake_run_returning(exit_code):
+    def fake_run(cfg_, gate_, commit, phase="post-merge"):
+        from nyxloom.types import GateResult, utc_now
+        return GateResult(gate_id=gate_.gate_id, phase=phase, commit=commit,
+                          exit_code=exit_code, started=utc_now(), ended=utc_now(),
+                          environment=gate_.environment)
+    return fake_run
+
+
+def test_verify_gate_enforces_coverage_killed_when_floor_rejects(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    head = _init_repo(root, {"a.py": "x = 1\n" * 10, "b.py": "x = 1\n"})
+    cfg = _FakeCfg(root)
+    gate = _gate(["true"])
+
+    phases = []
+
+    def fake_run(cfg_, gate_, commit, phase="post-merge"):
+        phases.append(phase)
+        from nyxloom.types import GateResult, utc_now
+        return GateResult(gate_id=gate_.gate_id, phase=phase, commit=commit, exit_code=1,
+                          started=utc_now(), ended=utc_now(), environment=gate_.environment)
+
+    monkeypatch.setattr(gate_canary.gate_runner, "run_gate_at_commit", fake_run)
+
+    result = gate_canary.verify_gate_enforces_coverage(cfg, gate, head, max_attempts=4)
+
+    assert result.killed is True
+    assert result.inconclusive is False
+    assert len(result.attempts) == 1                       # stops at first kill
+    assert phases == ["verify-coverage-canary"]            # distinct phase from GA1
+
+
+def test_verify_gate_enforces_coverage_launders_when_all_survive(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    head = _init_repo(root, {"a.py": "x = 1\n" * 10, "b.py": "x = 1\n"})
+    cfg = _FakeCfg(root)
+    gate = _gate(["true"])
+
+    monkeypatch.setattr(gate_canary.gate_runner, "run_gate_at_commit", _fake_run_returning(0))
+
+    result = gate_canary.verify_gate_enforces_coverage(cfg, gate, head, max_attempts=4)
+
+    assert result.killed is False
+    assert result.inconclusive is False
+    assert len(result.attempts) == 2                       # both candidates tried, both survived
+
+
+def test_verify_gate_enforces_coverage_inconclusive_on_timeout(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    head = _init_repo(root, {"a.py": "x = 1\n"})
+    cfg = _FakeCfg(root)
+    gate = _gate(["true"])
+
+    monkeypatch.setattr(gate_canary.gate_runner, "run_gate_at_commit", _fake_run_returning(124))
+
+    result = gate_canary.verify_gate_enforces_coverage(cfg, gate, head, max_attempts=1)
+
+    assert result.killed is False
+    assert result.inconclusive is True
+
+
+# --------------------------------------------------------------------------- #
+# REAL end-to-end integration -- the DISCRIMINATING proof (no mocking of
+# run_gate_at_commit): the SAME uncovered-line canary is KILLED by a gate
+# that enforces a changed-line-coverage floor, but LAUNDERED (survives) by a
+# tests-only gate. This is what makes the coverage-canary distinct from the
+# import-break canary: it isolates the coverage axis specifically.
+# --------------------------------------------------------------------------- #
+
+def test_verify_gate_enforces_coverage_real_discriminates_floor_from_tests_only(tmp_path):
+    repo, head = _build_subtree_fixture(tmp_path)
+    cfg = _FakeCfg(repo / "myproj")
+
+    from nyxloom import gate_runner
+
+    # A gate that enforces a 100% coverage floor over the project's package.
+    # The --cov path MUST use {worktree} (not the original repo checkout):
+    # run_gate_at_commit runs in a scratch worktree, and the test imports the
+    # package from there, so coverage must measure THAT copy.
+    cov_gate = _gate(
+        [sys.executable, "-m", "pytest", "-q",
+         "--cov={worktree}/myproj/src/myproj",
+         "--cov-report=", "--cov-fail-under=100",
+         "{worktree}/myproj/tests"],
+        timeout=120)
+    # A tests-only gate (no coverage floor at all) over the same tests.
+    tests_only_gate = _gate(
+        [sys.executable, "-m", "pytest", "-q", "{worktree}/myproj/tests"], timeout=120)
+
+    # Sanity: BOTH gates pass known-good HEAD (100% covered, tests green).
+    assert gate_runner.run_gate_at_commit(cfg, cov_gate, head, phase="verify-good").exit_code == 0
+    assert gate_runner.run_gate_at_commit(cfg, tests_only_gate, head, phase="verify-good").exit_code == 0
+
+    # The coverage-enforcing gate REJECTS the uncovered-line canary...
+    killed = gate_canary.verify_gate_enforces_coverage(cfg, cov_gate, head, max_attempts=4)
+    assert killed.killed is True
+    assert killed.inconclusive is False
+    assert killed.attempts[0].target_path.startswith("myproj/")
+
+    # ...while the tests-only gate LAUNDERS the very same canary (it breaks no
+    # test) -- proving the canary isolates the coverage axis, not test-pass.
+    laundered = gate_canary.verify_gate_enforces_coverage(cfg, tests_only_gate, head, max_attempts=4)
+    assert laundered.killed is False
+    assert laundered.inconclusive is False

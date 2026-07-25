@@ -1765,25 +1765,25 @@ def test_gate_verify_asserts_mismatch_broken(canary_project, tmp_state, capsys, 
     assert "verdict: DECLARATION MISMATCH" in out
 
 
-def test_gate_verify_asserts_unverified_coverage_and_mutation(
+def test_gate_verify_asserts_unverified_mutation(
         canary_project, tmp_state, capsys, monkeypatch):
-    """changed-line-coverage/mutation are not independently observable by
-    the canary probe -- always surfaced as declared-but-unverified, never a
-    MISMATCH, regardless of the underlying verdict."""
+    """`mutation` has no probe -- always surfaced as declared-but-unverified,
+    never a MISMATCH, regardless of the underlying verdict. (GA2b gives
+    `changed-line-coverage` its own probe; `mutation` is now the sole
+    probe-less assert.)"""
     from nyxloom import gate_runner
     from nyxloom.config import GateDef
 
     declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
                             timeout_seconds=60, environment="local",
-                            asserts=["changed-line-coverage", "mutation"])
+                            asserts=["mutation"])
     monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
     monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
 
     exit_code = cli.main(["gate", "verify", "demo"])
 
-    assert exit_code == 1   # LAUNDERS (no genuine kill) -- unaffected by these two asserts
+    assert exit_code == 1   # LAUNDERS (no genuine kill) -- unaffected by `mutation`
     out = capsys.readouterr().out
-    assert "declared, not independently verified here: 'changed-line-coverage'" in out
     assert "declared, not independently verified here: 'mutation'" in out
     assert "MISMATCH" not in out
     assert "verdict: DECLARATION MISMATCH" not in out
@@ -1881,7 +1881,7 @@ def test_gate_verify_mismatch_forces_nonzero_even_when_trustworthy(
     monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
     monkeypatch.setattr(
         cli, "_asserts_mismatch_report",
-        lambda asserts, verdict: (["  MISMATCH: forced for this test"], True),
+        lambda asserts, verdict, coverage_verdict=None: (["  MISMATCH: forced for this test"], True),
     )
 
     exit_code = cli.main(["gate", "verify", "demo"])
@@ -1891,3 +1891,135 @@ def test_gate_verify_mismatch_forces_nonzero_even_when_trustworthy(
     assert "verdict: TRUSTWORTHY" in out   # the original verdict line is untouched
     assert "MISMATCH: forced for this test" in out
     assert "verdict: DECLARATION MISMATCH" in out
+
+
+# --------------------------------------------------------------------------- #
+# GA2b: `changed-line-coverage` gets its OWN probe (verify_gate_enforces_
+# coverage), reported as a `coverage-floor:` line. run_gate_at_commit is
+# canned per PHASE so the import-break canary (verify-canary) and the
+# uncovered-line canary (verify-coverage-canary) get independent verdicts,
+# while both canary COMMITS are still built for real.
+# --------------------------------------------------------------------------- #
+
+def _coverage_gate(**over):
+    from nyxloom.config import GateDef
+    kw = dict(gate_id="pytest-q", argv=["true"], phase="implementation",
+              timeout_seconds=60, environment="local", asserts=["changed-line-coverage"])
+    kw.update(over)
+    return GateDef(**kw)
+
+
+def _fake_run_by_phase(coverage_exit):
+    """good HEAD passes; the import-break canary is killed (TRUSTWORTHY main
+    verdict); the coverage canary returns `coverage_exit`."""
+    from nyxloom.types import GateResult, utc_now
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        if phase == "verify-good":
+            code = 0
+        elif phase == "verify-coverage-canary":
+            code = coverage_exit
+        else:  # verify-canary (import-break): killed -> TRUSTWORTHY
+            code = 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=code,
+                          started=utc_now(), ended=utc_now(), environment=gate.environment)
+    return fake_run
+
+
+def test_gate_verify_coverage_assert_enforced(canary_project, tmp_state, capsys, monkeypatch):
+    """changed-line-coverage declared AND the coverage canary is rejected ->
+    coverage-floor PASS, assert confirmed OK, no mismatch, exit 0."""
+    from nyxloom import gate_runner
+
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: _coverage_gate())
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_run_by_phase(coverage_exit=1))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "verdict: TRUSTWORTHY" in out
+    assert "coverage-floor: PASS" in out
+    assert "OK: 'changed-line-coverage' confirmed" in out
+    assert "MISMATCH" not in out
+
+
+def test_gate_verify_coverage_assert_launders_is_mismatch(canary_project, tmp_state, capsys, monkeypatch):
+    """changed-line-coverage declared but the coverage canary SURVIVES ->
+    coverage-floor FAIL -> DECLARATION MISMATCH, and the otherwise-zero
+    (TRUSTWORTHY) exit is forced non-zero."""
+    from nyxloom import gate_runner
+
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: _coverage_gate())
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_run_by_phase(coverage_exit=0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: TRUSTWORTHY" in out   # main verdict line untouched (pure overlay)
+    assert "coverage-floor: FAIL" in out
+    assert "MISMATCH: 'changed-line-coverage' declared, but an uncovered-line canary passed" in out
+    assert "verdict: DECLARATION MISMATCH" in out
+
+
+def test_gate_verify_coverage_assert_inconclusive(canary_project, tmp_state, capsys, monkeypatch):
+    """The coverage canary never renders a verdict (timeout) -> coverage-floor
+    INCONCLUSIVE -> UNVERIFIED, never a MISMATCH; exit stays TRUSTWORTHY (0)."""
+    from nyxloom import gate_runner
+
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: _coverage_gate())
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_run_by_phase(coverage_exit=124))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "coverage-floor: INCONCLUSIVE" in out
+    assert "UNVERIFIED: 'changed-line-coverage' declared" in out
+    assert "MISMATCH" not in out
+
+
+def test_gate_verify_coverage_assert_skipped_on_canary_error(canary_project, tmp_state, capsys, monkeypatch):
+    """If a coverage canary cannot be built (CanaryError), the probe is
+    SKIPPED and treated as INCONCLUSIVE (UNVERIFIED) -- never a false
+    MISMATCH."""
+    from nyxloom import gate_canary, gate_runner
+
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: _coverage_gate())
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_run_by_phase(coverage_exit=1))
+
+    def _boom(*a, **k):
+        raise gate_canary.CanaryError("no eligible coverage target")
+    monkeypatch.setattr(gate_canary, "verify_gate_enforces_coverage", _boom)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "coverage-floor: SKIPPED" in out
+    assert "UNVERIFIED: 'changed-line-coverage' declared" in out
+    assert "MISMATCH" not in out
+
+
+def test_gate_verify_coverage_assert_not_probed_when_broken(canary_project, tmp_state, capsys, monkeypatch):
+    """A gate that fails known-good HEAD is BROKEN and short-circuits BEFORE
+    the coverage probe -- changed-line-coverage degrades to
+    declared-but-unverified, and verify_gate_enforces_coverage is never
+    called (no wasted gate run on a broken gate)."""
+    from nyxloom import gate_canary, gate_runner
+
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: _coverage_gate())
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(1))   # good HEAD fails
+
+    def _must_not_run(*a, **k):
+        raise AssertionError("coverage probe must NOT run when the gate is BROKEN")
+    monkeypatch.setattr(gate_canary, "verify_gate_enforces_coverage", _must_not_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: BROKEN" in out
+    assert "coverage-floor:" not in out
+    assert "declared, not independently verified here: 'changed-line-coverage'" in out

@@ -54,13 +54,21 @@ from __future__ import annotations
 
 import ast
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import gate_runner
 from .config import GateDef, ProjectConfig
 
+# The two canary MECHANISMS. Import-break (GA1) proves a gate rejects
+# BROKEN code at all; uncovered-line (GA2b) proves a gate specifically
+# enforces a CHANGED-LINE-COVERAGE floor -- a valid, lint-clean,
+# test-neutral change whose ONLY failure axis is coverage, so a gate that
+# runs tests but skips the coverage floor sails right past it while a gate
+# that enforces the floor rejects it. See inject_uncovered_line.
 MECHANISM_IMPORT_BREAK = "import-break"
+MECHANISM_UNCOVERED_LINE = "uncovered-line"
 
 # Up to this many distinct source files are tried before giving up (largest/
 # src-package files first -- see _candidate_source_files).
@@ -68,6 +76,22 @@ _MAX_CANARY_ATTEMPTS = 4
 
 _ASSERT_STMT = 'raise AssertionError("nyxloom-gate-canary")\n'
 _CANARY_COMMIT_MESSAGE = "nyxloom gate-verify canary (disposable, never merged)"
+
+# The uncovered-line canary (MECHANISM_UNCOVERED_LINE): a never-called
+# module-level function appended to a source file. Its `def` line runs at
+# import (covered), but the body statements are executed by NO test, so
+# they are uncovered CHANGED lines -- a changed-line-coverage floor rejects
+# the commit while a tests-only gate passes it. Deliberately valid + typed +
+# side-effect-free so a non-zero gate exit implicates the coverage floor and
+# not a syntax/test/lint failure (the one caveat: a gate that also runs a
+# dead-code linter could reject it for THAT reason -- documented in
+# `verify_gate_enforces_coverage`).
+_UNCOVERED_CANARY_FUNC = "_nyxloom_coverage_canary_unreached"
+_UNCOVERED_CANARY_SNIPPET = (
+    f"\n\ndef {_UNCOVERED_CANARY_FUNC}(value: int) -> int:\n"
+    "    doubled = value * 2  # nyxloom-coverage-canary: executed by no test\n"
+    "    return doubled\n"
+)
 
 # gate_runner.run_gate_at_commit's own conventional sentinels for "the gate
 # subprocess itself never rendered a verdict" (timeout / exec failure) --
@@ -206,6 +230,23 @@ def inject_import_break(path: Path) -> str:
     return f"inserted `{_ASSERT_STMT.strip()}` at line {idx + 1}"
 
 
+def inject_uncovered_line(path: Path) -> str:
+    """Append a never-called module-level function
+    (`_nyxloom_coverage_canary_unreached`) to `path` -- MINIMAL, additive,
+    never a reformat. Its body statements are valid, typed, side-effect-free
+    and executed by NO test, so they are uncovered CHANGED lines: a gate
+    enforcing a changed-line-coverage floor rejects the commit, a tests-only
+    gate accepts it. A leading blank-line gap (and a guaranteed trailing
+    newline on the original) keeps the appended block a clean addition to
+    the file's existing content. Returns a human-readable description."""
+    original = path.read_text(encoding="utf-8")
+    if original and not original.endswith("\n"):
+        original += "\n"
+    path.write_text(original + _UNCOVERED_CANARY_SNIPPET, encoding="utf-8")
+    return (f"appended never-called `def {_UNCOVERED_CANARY_FUNC}` "
+            "(2 uncovered lines) at end of file")
+
+
 def discover_canary_candidates(
         cfg: ProjectConfig, commit: str, limit: int = _MAX_CANARY_ATTEMPTS) -> list[str]:
     """Up to `limit` candidate target files (repo-top-level-relative, POSIX
@@ -244,10 +285,14 @@ def discover_canary_candidates(
                        capture_output=True, text=True)
 
 
-def build_canary_commit(cfg: ProjectConfig, commit: str, target_relpath: str) -> CanaryOutcome:
-    """Build ONE canary commit = `commit` + an import-break injected into
+def build_canary_commit(
+        cfg: ProjectConfig, commit: str, target_relpath: str, *,
+        inject: Callable[[Path], str] = inject_import_break,
+        mechanism: str = MECHANISM_IMPORT_BREAK) -> CanaryOutcome:
+    """Build ONE canary commit = `commit` + a known-bad change injected into
     `target_relpath` (repo-top-level-relative, as returned by
-    `discover_canary_candidates`). Uses a disposable scratch worktree solely
+    `discover_canary_candidates`) by `inject` (default: `inject_import_break`;
+    GA2b passes `inject_uncovered_line`). Uses a disposable scratch worktree solely
     to author the commit; it is ALWAYS removed before returning (`finally`)
     -- the returned commit SHA lives on in the repo's object graph after the
     worktree is gone (a git commit is content-addressed/immutable once
@@ -270,7 +315,7 @@ def build_canary_commit(cfg: ProjectConfig, commit: str, target_relpath: str) ->
         )
     try:
         target = scratch / target_relpath
-        description = inject_import_break(target)
+        description = inject(target)
         subprocess.run(["git", "-C", str(scratch), "add", "-A"],
                        capture_output=True, text=True)
         commit_res = subprocess.run(
@@ -290,28 +335,28 @@ def build_canary_commit(cfg: ProjectConfig, commit: str, target_relpath: str) ->
     finally:
         subprocess.run(["git", "-C", str(repo_root), "worktree", "remove", "--force", str(scratch)],
                        capture_output=True, text=True)
-    return CanaryOutcome(commit=canary_commit, mechanism=MECHANISM_IMPORT_BREAK,
+    return CanaryOutcome(commit=canary_commit, mechanism=mechanism,
                          target_path=target_relpath, description=description)
 
 
-def verify_gate_rejects_canary(
-        cfg: ProjectConfig, gate: GateDef, commit: str,
-        max_attempts: int = _MAX_CANARY_ATTEMPTS) -> CanaryVerifyResult:
-    """Try up to `max_attempts` distinct canaries against `gate`, stopping
-    at the first genuine kill (`CanaryAttempt.killed`) -- TRUSTWORTHY only
-    needs ONE proof the gate can reject broken code. If every attempt
-    SURVIVES (exit 0), `killed=False, inconclusive=False` (LAUNDERS). If no
-    attempt survives cleanly AND no attempt is a genuine kill either (every
-    non-zero exit was itself a timeout/exec-failure sentinel --
-    `_INCONCLUSIVE_EXIT_CODES`), `killed=False, inconclusive=True`: the gate
-    never actually rendered a verdict on the broken code, so nothing here
-    proves either TRUSTWORTHY or LAUNDERS.
-    """
+def _verify_gate_kills_canary(
+        cfg: ProjectConfig, gate: GateDef, commit: str, *,
+        inject: Callable[[Path], str], mechanism: str, phase: str,
+        max_attempts: int) -> CanaryVerifyResult:
+    """Shared engine for both canary verifiers: try up to `max_attempts`
+    distinct canaries (built with `inject`) against `gate`, stopping at the
+    first genuine kill (`CanaryAttempt.killed`) -- ONE proof the gate rejects
+    this class of bad commit suffices. If every attempt SURVIVES (exit 0),
+    `killed=False, inconclusive=False`. If no attempt survives cleanly AND no
+    attempt is a genuine kill either (every non-zero exit was itself a
+    timeout/exec-failure sentinel -- `_INCONCLUSIVE_EXIT_CODES`),
+    `killed=False, inconclusive=True`: the gate never actually rendered a
+    verdict on the bad code, so nothing here proves anything either way."""
     targets = discover_canary_candidates(cfg, commit, max_attempts)
     attempts: list[CanaryAttempt] = []
     for target in targets:
-        outcome = build_canary_commit(cfg, commit, target)
-        result = gate_runner.run_gate_at_commit(cfg, gate, outcome.commit, phase="verify-canary")
+        outcome = build_canary_commit(cfg, commit, target, inject=inject, mechanism=mechanism)
+        result = gate_runner.run_gate_at_commit(cfg, gate, outcome.commit, phase=phase)
         attempt = CanaryAttempt(target_path=outcome.target_path, commit=outcome.commit,
                                 exit_code=result.exit_code, description=outcome.description)
         attempts.append(attempt)
@@ -319,3 +364,39 @@ def verify_gate_rejects_canary(
             return CanaryVerifyResult(killed=True, inconclusive=False, attempts=attempts)
     any_inconclusive = any(a.inconclusive for a in attempts)
     return CanaryVerifyResult(killed=False, inconclusive=any_inconclusive, attempts=attempts)
+
+
+def verify_gate_rejects_canary(
+        cfg: ProjectConfig, gate: GateDef, commit: str,
+        max_attempts: int = _MAX_CANARY_ATTEMPTS) -> CanaryVerifyResult:
+    """GA1: prove `gate` REJECTS broken code -- try up to `max_attempts`
+    import-break canaries (any test that imports the mutated module dies),
+    stopping at the first genuine kill. Rollup semantics in
+    `_verify_gate_kills_canary`."""
+    return _verify_gate_kills_canary(
+        cfg, gate, commit, inject=inject_import_break,
+        mechanism=MECHANISM_IMPORT_BREAK, phase="verify-canary",
+        max_attempts=max_attempts)
+
+
+def verify_gate_enforces_coverage(
+        cfg: ProjectConfig, gate: GateDef, commit: str,
+        max_attempts: int = _MAX_CANARY_ATTEMPTS) -> CanaryVerifyResult:
+    """GA2b: prove `gate` enforces a CHANGED-LINE-COVERAGE floor -- try up to
+    `max_attempts` uncovered-line canaries (`inject_uncovered_line`: a valid,
+    test-neutral, never-called function whose body lines no test covers) and
+    report whether the gate rejects one. A `killed` verdict means the gate
+    failed a commit whose ONLY defect is an uncovered changed line, which a
+    tests-only gate would accept -- strong evidence the declared
+    `changed-line-coverage` assert is real. Same rollup as GA1.
+
+    Caveat (documented, not defended-against here): a gate that ALSO runs a
+    dead-code/unused-symbol linter could reject the canary for THAT reason
+    rather than coverage, over-crediting the assert. The canary is otherwise
+    valid precisely to keep coverage the only *expected* failure axis; a
+    project pairing a strict dead-code linter with no coverage floor is the
+    pathological case where this probe can read a false positive."""
+    return _verify_gate_kills_canary(
+        cfg, gate, commit, inject=inject_uncovered_line,
+        mechanism=MECHANISM_UNCOVERED_LINE, phase="verify-coverage-canary",
+        max_attempts=max_attempts)

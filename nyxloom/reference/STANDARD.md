@@ -170,11 +170,20 @@ tools do not.
 
 **Gate rigor is a first-class, per-project fact.** A weak gate shifts the
 correctness burden onto the reviewer, so a project SHOULD declare what its gate
-actually asserts (planned `asserts=[...]` key on `[gates.*]`) — nyxloom can then
-surface it and route review depth accordingly. Full rationale + the layered model
-(gate ⊕ reviewer ⊕ controller): `nyxloom-trove/LESSONS.md` PL2. The onboarding/
-verification workflow (offer to build a missing gate; carver re-verifies the gate
-still rejects a known-bad canary): `docs/plan-gate-adoption.md`.
+actually asserts (the `asserts=[tests-pass|changed-line-coverage|mutation|
+canary-verified]` key on `[gates.*]`) — nyxloom surfaces it and routes review depth
+accordingly. `nyxloom gate verify` doesn't just trust the declaration: it PROVES the
+verifiable ones with disposable canaries — `canary-verified` via an import-break
+(the gate must reject broken code) and `changed-line-coverage` via an uncovered-line
+canary (a valid, test-neutral, never-executed line the gate must reject *because* of
+the floor, which a tests-only gate would launder). A declaration its own gate
+contradicts is a DECLARATION MISMATCH. Declaring a **coverage floor is offered, not
+mandated** — advisable wherever the ecosystem supports it (Python via the shipped
+`coverage_gate.py`; `cargo llvm-cov`/`nyc` elsewhere), but a project that runs tests
+without one is still a valid consumer; it simply leans harder on the reviewer. Full
+rationale + the layered model (gate ⊕ reviewer ⊕ controller): `nyxloom-trove/
+LESSONS.md` PL2. The onboarding/verification workflow (offer to build a missing gate;
+carver re-verifies the gate still rejects a known-bad canary): `docs/plan-gate-adoption.md`.
 
 ## Validation methodology — building gates and tests that actually catch bugs
 

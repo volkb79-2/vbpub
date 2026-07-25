@@ -824,25 +824,32 @@ def cmd_merge(args) -> int:
     return 0
 
 
-def _asserts_mismatch_report(asserts: list[str], verdict: str) -> tuple[list[str], bool]:
+def _asserts_mismatch_report(asserts: list[str], verdict: str,
+                             coverage_verdict: str | None = None) -> tuple[list[str], bool]:
     """GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"):
     cross-check a gate's declared `asserts` against `gate verify`'s OWN
     observed verdict (one of BROKEN/LAUNDERS/INCONCLUSIVE/TRUSTWORTHY).
 
     Returns `(report_lines, mismatch)`. `report_lines` is `[]` when
     `asserts` is empty -- GA1-compatible: an undeclared gate gets zero extra
-    output (O3). Two rules can flag `mismatch=True`:
+    output (O3). Rules that can flag `mismatch=True`:
       * `canary-verified` declared but verdict is LAUNDERS -- every canary
         attempt survived, so the gate was never shown to reject anything.
       * `tests-pass` OR `canary-verified` declared but verdict is BROKEN --
         the gate rejects known-good HEAD, so it never even ran a genuine
         test pass, let alone reached the canary step.
-    `changed-line-coverage`/`mutation` are not independently observable by
-    this probe (it has no coverage/mutation data of its own) -- always
-    surfaced as declared-but-unverified, never a mismatch. This is
-    deliberately an OVERLAY: it never changes the verdict line itself, only
-    adds `asserts:`/`MISMATCH:` lines and (via the caller) can push a
-    would-have-been-zero exit code to non-zero.
+      * `changed-line-coverage` declared but `coverage_verdict` is LAUNDERS
+        (GA2b) -- an uncovered-line canary passed the gate, so the declared
+        coverage floor is not actually enforced.
+    `changed-line-coverage` is cross-checked via a SEPARATE coverage-canary
+    probe whose result the caller passes in as `coverage_verdict`
+    (ENFORCED/LAUNDERS/INCONCLUSIVE); when the caller ran no such probe
+    (`None` -- e.g. the BROKEN early-return, where good HEAD never passed),
+    it degrades to declared-but-unverified. `mutation` has no probe at all
+    and is always declared-but-unverified. This is deliberately an OVERLAY:
+    it never changes the verdict line itself, only adds `asserts:`/`MISMATCH:`
+    lines and (via the caller) can push a would-have-been-zero exit code to
+    non-zero.
     """
     if not asserts:
         return [], False
@@ -868,7 +875,19 @@ def _asserts_mismatch_report(asserts: list[str], verdict: str) -> tuple[list[str
             else:  # INCONCLUSIVE
                 lines.append(f"  UNVERIFIED: '{a}' declared, but the canary probe was "
                               "INCONCLUSIVE -- cannot confirm")
-        else:  # changed-line-coverage, mutation -- not observable by this probe
+        elif a == "changed-line-coverage":
+            if coverage_verdict == "ENFORCED":
+                lines.append(f"  OK: '{a}' confirmed (an uncovered-line canary was rejected)")
+            elif coverage_verdict == "LAUNDERS":
+                lines.append(f"  MISMATCH: '{a}' declared, but an uncovered-line canary "
+                              "passed the gate (coverage floor not enforced)")
+                mismatch = True
+            elif coverage_verdict == "INCONCLUSIVE":
+                lines.append(f"  UNVERIFIED: '{a}' declared, but the coverage-canary probe "
+                              "was INCONCLUSIVE -- cannot confirm")
+            else:  # None -- no coverage probe was run (e.g. gate BROKEN on good HEAD)
+                lines.append(f"  declared, not independently verified here: '{a}'")
+        else:  # mutation -- no probe for this assert
             lines.append(f"  declared, not independently verified here: '{a}'")
     return lines, mismatch
 
@@ -904,6 +923,16 @@ def cmd_gate_verify(args) -> int:
     but a would-have-been-zero (TRUSTWORTHY) exit code is forced non-zero,
     since a false rigor claim means the gate cannot be fully trusted even
     though the canary probe itself passed.
+
+    PACKAGE GA2b (coverage floor "proven, not just declared"): when the gate
+    declares `changed-line-coverage`, a SECOND canary probe
+    (gate_canary.verify_gate_enforces_coverage) builds an uncovered-line
+    canary -- a valid, test-neutral, never-executed line -- and confirms the
+    gate rejects it. Printed as a `coverage-floor: PASS/FAIL/INCONCLUSIVE`
+    line; a FAIL (the gate launders an uncovered line) is a DECLARATION
+    MISMATCH exactly like a laundered `canary-verified`. Only runs when the
+    assert is declared (no extra gate run otherwise) and only past the
+    BROKEN early-return (good HEAD already passed).
     """
     import subprocess
 
@@ -968,7 +997,28 @@ def cmd_gate_verify(args) -> int:
               f"known-bad canary tried ({len(canary_result.attempts)} attempt(s)); it cannot "
               "be trusted to reject broken code")
 
-    report_lines, mismatch = _asserts_mismatch_report(gate.asserts, verdict)
+    # GA2b: when the gate DECLARES a changed-line-coverage floor, prove it
+    # with a separate uncovered-line canary (a valid, test-neutral, never-run
+    # line -- only a real coverage floor rejects it). Gated on the assert
+    # being declared so a gate that makes no such claim pays no extra gate
+    # run. Reached only past the BROKEN early-return above, so good HEAD has
+    # already passed.
+    coverage_verdict = None
+    if "changed-line-coverage" in gate.asserts:
+        try:
+            cov = gate_canary.verify_gate_enforces_coverage(cfg, gate, commit)
+        except gate_canary.CanaryError as e:
+            coverage_verdict = "INCONCLUSIVE"
+            print(f"coverage-floor: SKIPPED (cannot build a coverage canary: {e})")
+        else:
+            coverage_verdict = ("ENFORCED" if cov.killed
+                                else "INCONCLUSIVE" if cov.inconclusive else "LAUNDERS")
+            cov_desc = "; ".join(f"{a.target_path} (exit {a.exit_code})" for a in cov.attempts)
+            status = {"ENFORCED": "PASS", "LAUNDERS": "FAIL",
+                      "INCONCLUSIVE": "INCONCLUSIVE"}[coverage_verdict]
+            print(f"coverage-floor: {status} ({len(cov.attempts)} attempt(s): {cov_desc})")
+
+    report_lines, mismatch = _asserts_mismatch_report(gate.asserts, verdict, coverage_verdict)
     for line in report_lines:
         print(line)
     if mismatch:
