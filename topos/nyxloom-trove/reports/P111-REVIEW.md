@@ -28,7 +28,7 @@ identical. O1/O4 satisfied. 25 collected cases, 2,110 + 25 = 2,135. ✓
 
 ## Source edit audit (4 changed executable lines)
 
-### BaseException→Exception repair (lines 140, 293)
+### BaseException→Exception repair (current lines 140, 297)
 Two `except BaseException:` narrowed to `except Exception:`. Ordinary
 failures remain fail-closed; `KeyboardInterrupt`/`SystemExit` propagate.
 
@@ -36,54 +36,60 @@ failures remain fail-closed; `KeyboardInterrupt`/`SystemExit` propagate.
   resolution_failure_returns_none` proves `RuntimeError` → `None`.
   `test_default_reader_does_not_swallow_keyboard_interrupt` proves
   `KeyboardInterrupt` propagates with exactly one `load(None)` call.
-- **Preview reader** (line 293): `test_preview_unreadable_usage_has_
+- **Preview reader** (current line 297; baseline line 293):
+  `test_preview_unreadable_usage_has_
   exact_fail_closed_error` proves `RuntimeError` → fail-closed
   `ValueError` with complete message. `test_preview_does_not_swallow_
   keyboard_interrupt` proves `KeyboardInterrupt` propagates with
   exactly one reader call. ✓
 
-### Bool numeric rejection (lines 179, 182)
+### Bool numeric rejection (current lines 179, 181–185)
 - **Memory** (line 179): `type(memory) is not int` — `True` is rejected
   because `type(True) is bool`, not `int`. `test_update_argv_rejects_
   invalid_typed_memory` parametrized with `True`. ✓
-- **CPU** (line 182): `isinstance(cpus, bool)` — explicit bool rejection
+- **CPU** (expression starts at line 181; bool clause is line 182):
+  `isinstance(cpus, bool)` — explicit bool rejection
   before `isinstance(cpus, (int, float))`. `test_update_argv_rejects_
   invalid_typed_cpus` parametrized with `True`. ✓
 
-## Literal line verification (nl -ba)
+The changed-line evaluator classifies the multiline CPU condition as executable
+at line 181, not each continuation line. Its exact `4/4` denominator is current
+lines 140, 179, 181, and 297.
 
-All 28 lines verified against source at HEAD:
+## Literal line verification (baseline → current `nl -ba`)
 
-| Line | Source |
-|------|--------|
-| 58 | `raise ValueError(f"cpus must be a finite number: {value!r}")` |
-| 63 | `raise ValueError(` |
-| 94 | `raise ValueError("memory must be a non-empty string")` |
-| 103 | `raise ValueError(f"memory value {parsed} exceeds maximum {upper}")` |
-| 130 | `key = target` |
-| 131 | `if "/" not in target:` |
-| 132 | `try:` |
-| 133 | `from topos.collect.collector import Collector` |
-| 134 | `from topos.collect.dockerjoin import resolve_container_key` |
-| 135 | `from topos.config import load` |
-| 137 | `frame = Collector(config=load(None)).collect_once()` |
-| 138 | `entities = {k: ef.entity for k, ef in frame.entities.items()}` |
-| 139 | `key = resolve_container_key(target, entities)` |
-| 140 | `except Exception:` (was BaseException) |
-| 141 | `return None` |
-| 142–146 | Cgroup read + OSError/ValueError handling |
-| 174 | `raise ValueError("target must be a non-empty string")` |
-| 178 | `raise ValueError("at least one of --memory or --cpus is required")` |
-| 180 | `raise ValueError("memory must be a positive integer")` |
-| 182 | `isinstance(cpus, bool)` (new bool rejection) |
-| 293 | `current_usage: int \| None = None` |
-| 294 | `if parsed_memory is not None:` |
-| 298 | `current_usage = None` |
-| 339 | `parts.append(f"Memory: {plan.memory} bytes")` |
+All 28 baseline lines were mapped to source at HEAD:
+
+| Baseline | Current | Source |
+|------|------|--------|
+| 58 | 58 | `raise ValueError(f"cpus must be a finite number: {value!r}")` |
+| 63 | 63 | `raise ValueError(` |
+| 94 | 94 | `raise ValueError("memory must be a non-empty string")` |
+| 103 | 103 | `raise ValueError(f"memory value {parsed} exceeds maximum {upper}")` |
+| 130 | 130 | `key = target` |
+| 131 | 131 | `if "/" not in target:` |
+| 132 | 132 | `try:` |
+| 133 | 133 | `from topos.collect.collector import Collector` |
+| 134 | 134 | `from topos.collect.dockerjoin import resolve_container_key` |
+| 135 | 135 | `from topos.config import load` |
+| 137 | 137 | `frame = Collector(config=load(None)).collect_once()` |
+| 138 | 138 | `entities = {k: ef.entity for k, ef in frame.entities.items()}` |
+| 139 | 139 | `key = resolve_container_key(target, entities)` |
+| 140 | 140 | `except Exception:` (was `BaseException`) |
+| 141 | 141 | `return None` |
+| 142–146 | 142–146 | Cgroup read + OSError/ValueError handling |
+| 174 | 174 | `raise ValueError("target must be a non-empty string")` |
+| 178 | 178 | `raise ValueError("at least one of --memory or --cpus is required")` |
+| 180 | 180 | `raise ValueError("memory must be a positive integer")` |
+| 182 | 186 | `raise ValueError("cpus must be a positive number")` |
+| 293 | 297 | `except Exception:` (was `BaseException`) |
+| 294 | 298 | `current_usage = None` |
+| 298 | 302 | fail-closed `raise ValueError(` for unreadable usage |
+| 339 | 343 | `parts.append(f"CPUs: {plan.cpus}")` |
 
 All 14 branch pairs covered.
 
-## Test quality audit (16 functions, 25 collected cases)
+## Test quality audit (16 functions, 6 parametrized, 25 collected cases)
 
 | Test | Cases | Assertion |
 |------|:-----:|-----------|
