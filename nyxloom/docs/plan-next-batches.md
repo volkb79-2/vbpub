@@ -106,6 +106,13 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
   execute `AdmitCarveProposal` (effect-boundary hash recheck → `CARVER_PROPOSAL_ADMITTED` → create
   tasks from parsed Frontmatter → re-scope supersession ONLY on admission; bounded repair →
   NEEDS_OPERATOR after N). Consider carrying `generation` on `AdmitCarveProposal`.
+  **P3a-DEFERRED (HARD requirement — infinite-feed guard):** P3a's Resume executor never emits
+  `CARVER_CONTEXT_CONSUMED`, so `snapshot.last_consumed_event_sequence` never advances — a
+  successful merge-feed/intake resume does NOT shrink `pending_carver_feeds`, so the planner would
+  re-emit the SAME feed every pass (infinite re-feed **once the feature is enabled**). Inert while
+  `cfg.carve.session=="fresh"`, but **P3b MUST emit `CARVER_CONTEXT_CONSUMED` (advancing the cursor)
+  on a successful feed/intake turn** before the feature is ever enabled. Owner = whoever advances the
+  consumption cursor (natural fit: the proposal/consumption pipeline here).
 - **P3c — planner migration (`reconcile.py`): route `every carver turn` through the session when
   WARM** (Package 3 work-item 2): headroom/re-scope/test-health emit `ResumeCarverSession(mode=…)`
   instead of `CarveDispatch` when feature-on + WARM (completes the §4.2 alias — without this the
