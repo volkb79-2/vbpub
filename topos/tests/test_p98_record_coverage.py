@@ -253,7 +253,7 @@ class TestHeadlessDriverGaps:
 
     def test_run_headless_record_wrapper(self):
         """run_headless_record convenience wrapper (lines 334, 345).
-        
+
         Uses a collector with enough time values and a fast monotonic clock
         to produce at least one frame before the stream runs out.
         """
@@ -705,11 +705,11 @@ class TestFinalGaps:
         path.unlink(missing_ok=True)
 
 class TestStubbornGaps:
-    """Final targeted tests for the last two infrastructure-dependent gaps."""
+    """Final targeted tests for the last two external-boundary gaps."""
 
     def test_headless_install_signal_handlers_second_signal(self):
         """install_signal_handlers line 65: second signal calls os._exit.
-        
+
         os._exit is an external effect that terminates the process.
         Mocking it is acceptable per the 'mock external effects' rule.
         """
