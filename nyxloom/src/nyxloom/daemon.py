@@ -323,6 +323,7 @@ running -- exactly the bug P37 exists to prevent recurring here.
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
 import os
@@ -347,9 +348,9 @@ from .config import GateDef, ProjectConfig
 from . import log as log_module
 from .log import bind, get_logger
 from .types import (
-    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
-    EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState,
-    TaskStateFile, TERMINAL_ATTEMPT_STATES, iso, new_id, utc_now,
+    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus,
+    Event, EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState,
+    TaskStateFile, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES, iso, new_id, utc_now,
 )
 
 log = get_logger("daemon")  # P01: first real user of nyxloom.log (proof it works end-to-end)
@@ -3134,6 +3135,467 @@ class Daemon:
             task_id=task_id))
         return events
 
+    # -- persistent carver session executor (F018 P3a) --------------------
+    #
+    # plan-long-running-carver.md §5.1 (Start) / §5.2 (Resume) / §5.3
+    # (Lease). Executes the TWO carver-session actions the pure planner
+    # (reconcile.py, A1/A2, unchanged here) emits once cfg.carve.session ==
+    # "project-persistent": StartCarverSession (cold bootstrap) and
+    # ResumeCarverSession (a warm turn: merge-feed / targeted-intake /
+    # recover). Mirrors _execute_carve_dispatch's own launch shape (synthetic
+    # task+attempt+worktree under the SAME strategic-carver lease,
+    # task_id="carve-<project>-<seq>") but with a DISTINCT task_id prefix
+    # ("carver-session-<project>-<seq>") so:
+    #   (a) _consume_carve_exit's legacy CARVE-<seq>.md report parsing is
+    #       never accidentally applied to a bootstrap/resume turn (see
+    #       _execute's EmitAttemptExit dispatch, which branches on this
+    #       prefix), and
+    #   (b) reconcile.py's existing, UNCHANGED carve_in_flight guard (any
+    #       non-terminal task hosting a Role.CARVER attempt) and its
+    #       existing FAILED-attempt lease-lost-race handling (Transition to
+    #       SUPERSEDED, module contract item mirrored above _consume_
+    #       carve_exit) apply to these tasks for free, with zero reconcile.py
+    #       changes -- both keys are ROLE-based (Role.CARVER), not prefix-
+    #       based, and every carver-session task uses role=Role.CARVER too.
+    #
+    # Session STARTED/RESUMED/DEGRADED is never decided at LAUNCH time --
+    # session capture is the wrapper's own async, post-launch job (wrapper.py
+    # step 5, unchanged/unread here beyond its documented contract), so
+    # _execute_start_carver_session/_execute_resume_carver_session only ever
+    # emit the LAUNCH-time events (TASK_CREATED/ATTEMPT_CREATED/ATTEMPT_
+    # PREFLIGHTED), exactly like CarveDispatch. The actual outcome is decided
+    # at EXIT-CONSUMPTION time by _consume_carver_session_exit, from the
+    # turn's real captured session_handle + receipt result -- "never record
+    # warm based only on process exit" (plan §5.1) applied symmetrically to
+    # both Start and Resume.
+
+    def _carve_in_flight(self, states: dict[str, TaskStateFile]) -> bool:
+        """The SAME predicate reconcile.py's planner already computes at
+        PLAN time (shared by module contract items 9/12 and the carver-
+        session ladder) -- recomputed fresh here at EXECUTION time, closing
+        the identical plan/execute gap _dispatch_admissible already closes
+        for pause/budget (P55/R5). Belt-and-braces: the planner's own
+        carve_dispatch_planned mutex already keeps at most one carve/carver
+        action per pass in the ordinary case; this refuses cleanly (no side
+        effect) on the rare race instead of double-launching."""
+        return any(
+            tsf.state not in TERMINAL_TASK_STATES
+            and any(a.role is Role.CARVER for a in tsf.attempts)
+            for tsf in states.values()
+        )
+
+    def _spine_revisions(self, cfg: ProjectConfig) -> dict[str, str]:
+        """F018 P3a (plan §2.2/§2.5): sha256 of each CONFIGURED spine doc's
+        current on-disk content, keyed by spine level -- CARVER_SESSION_
+        STARTED's spine_revisions payload. A level with no configured path,
+        or whose file does not exist on disk, is simply omitted (never a
+        fabricated hash). Deliberately a SEPARATE small implementation from
+        merge_digest.py's own spine hashing (module-private, and hashes a
+        specific PAST commit via `git show` for a merge digest) -- bootstrap
+        has no single commit to hash against; it hashes the CURRENT working
+        tree, the same "spine ground truth" merge_digest.py's spine_delta
+        computes from, just at a different point in time."""
+        out: dict[str, str] = {}
+        for level, rel in (
+            ("north_star", cfg.north_star),
+            ("product_definition", cfg.product_definition),
+            ("roadmap", cfg.roadmap),
+            ("backlog", cfg.backlog),
+        ):
+            if not rel:
+                continue
+            p = cfg.root / rel
+            try:
+                content = p.read_bytes()
+            except OSError:
+                continue
+            out[level] = hashlib.sha256(content).hexdigest()
+        return out
+
+    def _recent_merge_digest_ids(self, project: str, limit: int) -> list[str]:
+        """F018 P3a (plan §2.5 item 4): the most recent `limit` merge-digest
+        ids, newest first -- named by POINTER only in the bootstrap packet
+        (never the full digest body). Mirrors _pending_carver_feeds' own
+        MERGE_RECORDED scan (A2), minus the consumed-cursor filter (a cold
+        bootstrap has no session yet to have consumed anything)."""
+        if limit <= 0:
+            return []
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+        ids = [
+            ev.payload["carver_digest"]["digest_id"]
+            for ev in events
+            if ev.type is EventType.MERGE_RECORDED and ev.payload.get("carver_digest")
+        ]
+        return ids[-limit:][::-1]
+
+    def _build_carver_bootstrap_packet(self, cfg: ProjectConfig, project: str,
+                                       seq: int, states: dict[str, TaskStateFile]) -> str:
+        """F018 P3a (plan §2.5): the COLD BOOTSTRAP packet -- durable truth
+        by POINTER, never a repository crawl (§2.5: "Bootstrap does not
+        recursively inspect the repository"). Mirrors _build_carve_packet's
+        economy (point at sources, embed only what is cheap/structured).
+        This is a READ-ONLY turn (§2.1: bootstrap/feed/intake/compaction
+        turns never author files) -- the only output asked for is a short
+        acknowledgement, never a carve-proposal (proposal authoring/
+        admission is P3b, out of scope here)."""
+        lines = [
+            f"# Strategic carver bootstrap {seq}",
+            "",
+            "## Your role: CARVER (session bootstrap, READ-ONLY)",
+            "",
+            f"You are establishing the persistent strategic-carver session for "
+            f"project '{project}'. This is a COLD BOOTSTRAP turn: read the "
+            "durable truth named below and establish your working context. Do "
+            "NOT author, edit, or commit any handoff/code files this turn -- "
+            "carving happens on a later, separate turn once this session is "
+            "warm.",
+            "",
+            "## Durable truth (read by pointer, not inlined)",
+        ]
+        for level, rel in (
+            ("north_star", cfg.north_star),
+            ("product_definition", cfg.product_definition),
+            ("roadmap", cfg.roadmap),
+            ("backlog", cfg.backlog),
+        ):
+            lines.append(f"- {level}: {rel}" if rel else f"- {level}: not configured")
+        lines.append(f"- decisions inbox: {cfg.decisions_inbox}")
+        lines.append("- handoff-authoring doctrine: reference/AUTHORING.md")
+        lines.append("")
+        lines.append("## Current non-terminal tasks")
+        task_lines = []
+        for task_id in sorted(states.keys()):
+            tsf = states[task_id]
+            if tsf.state in TERMINAL_TASK_STATES:
+                continue
+            note = f"- {task_id}: {tsf.state.value}"
+            if tsf.handoff_path:
+                note += f" (handoff: {tsf.handoff_path})"
+            if tsf.blocker is not None:
+                note += f" [blocked: {tsf.blocker.type.value}]"
+            task_lines.append(note)
+        lines.extend(task_lines if task_lines else ["- (none)"])
+        lines.append("")
+        lines.append(f"## Recent merge digests (most recent {cfg.carve.retain_merge_digests})")
+        digest_ids = self._recent_merge_digest_ids(project, cfg.carve.retain_merge_digests)
+        lines.extend([f"- {d}" for d in digest_ids] if digest_ids else ["- (none yet)"])
+        lines.append("")
+        lines.append("## REQUIRED OUTPUT")
+        lines.append(
+            "Print exactly one line `BOOTSTRAP-ACK: ok` once you have read the "
+            "sources above; no other output is required this turn."
+        )
+        return "\n".join(lines) + "\n"
+
+    def _build_carver_resume_prompt(self, project: str, task_id: str, mode: str,
+                                    source_ids: tuple[str, ...]) -> str:
+        """F018 P3a (plan §3.2/§5.2/§8.2 packet-shaping vocabulary): the
+        MODE-SPECIFIC resume prompt fed directly to adapters.build_resume
+        (unchanged) -- build_resume takes a flat prompt string, unlike
+        build_dispatch's handoff_path indirection, so there is no separate
+        packet file for a resume turn. Names source ids by POINTER only --
+        the full digest/intake bodies live in the durable event log (the
+        session's own bootstrap + prior turns already cover it); never
+        re-embedded here. Capped to a handful of ids as defense in depth --
+        reconcile's planner already batches within a configured prompt-size
+        bound per plan §3.2, this is a second, cheap backstop."""
+        ids_note = ", ".join(source_ids[:20]) if source_ids else "(none)"
+        if mode == "merge-feed":
+            task_note = f"Incorporate the pending merge digest(s): {ids_note}."
+        elif mode == "targeted-intake":
+            task_note = f"Incorporate the pending human intake turn(s): {ids_note}."
+        else:  # "recover" (§5.4 bounded DEGRADED recovery)
+            task_note = "Recover this session after a prior resume failure."
+        return (
+            f"Resume the strategic-carver session for project '{project}' "
+            f"(mode={mode}, turn={task_id}). This is a READ-ONLY turn -- do "
+            f"NOT author, edit, or commit any handoff/code files. {task_note} "
+            "Print a one-line acknowledgement when done."
+        )
+
+    @staticmethod
+    def _carver_turn_marker(states: dict[str, TaskStateFile], task_id: str
+                            ) -> tuple[str, str, int]:
+        """Recover a carver-session turn's (kind, mode, generation) at exit-
+        consumption time, when only the task is in hand. Mirrors _carve_
+        kind's identical convention: the marker rides tsf.notes (replayed
+        statefile state, so it survives a daemon restart between launch and
+        exit) rather than a second event-log scan. Defaults are the safe
+        "nothing recognized" fallback; every task this package creates
+        stamps all three tokens itself, so the fallback only matters for a
+        malformed/foreign task_id."""
+        tsf = states.get(task_id)
+        kind, mode, generation = "start", "headroom", 0
+        if tsf is None or not tsf.notes:
+            return kind, mode, generation
+        for token in tsf.notes.split():
+            if token.startswith("kind="):
+                kind = token[len("kind="):]
+            elif token.startswith("mode="):
+                mode = token[len("mode="):]
+            elif token.startswith("generation="):
+                try:
+                    generation = int(token[len("generation="):])
+                except ValueError:
+                    generation = 0
+        return kind, mode, generation
+
+    def _execute_start_carver_session(self, project: str, cfg: ProjectConfig,
+                                      states: dict[str, TaskStateFile],
+                                      action: "reconcile.StartCarverSession") -> list[Event]:
+        """plan §5.1 items 1-4 (items 5-7 happen at exit-consumption, see
+        _consume_carver_session_exit). Mirrors _execute_carve_dispatch's own
+        structure (admission recheck, route resolution, synthetic task/
+        attempt/worktree, wrapper dispatch under the strategic-carver
+        lease) -- see that method's comments for the shared shape; this
+        docstring only calls out what differs."""
+        events: list[Event] = []
+
+        # (a) recheck admissibility (pause/budget -- same "carve" kind
+        # _execute_carve_dispatch already uses) + absence of a live carver
+        # turn (execution-time recheck of the planner's own carve_in_flight
+        # gate -- P55/R5 belt-and-braces). Refuse cleanly, no side effect.
+        ok, _reason = self._dispatch_admissible(project, cfg, states, "carve")
+        if not ok:
+            return events
+        if self._carve_in_flight(states):
+            return events
+
+        snap = self._carver_session(project, cfg)
+        if snap is None or snap.status not in (
+                CarverStatus.ABSENT, CarverStatus.COLD, CarverStatus.ROTATING):
+            # Stale plan (session state moved on since this pass was
+            # planned, e.g. another action already consumed this pass's
+            # single carver slot) -- refuse cleanly.
+            return events
+
+        # (b) resolve the carver route -- reuse EXACTLY what
+        # _execute_carve_dispatch uses for the carve role (defense-in-depth:
+        # reconcile.py's own trigger already required a healthy
+        # 'review-independent' route before ever emitting StartCarverSession).
+        routes_obj = config.Routes.load()
+        review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
+        if not review_routes:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carver-no-route"}, task_id=None))
+            return events
+        route_def = review_routes[0]
+
+        # (c) mint a synthetic carver attempt + worktree (branch authority,
+        # like the current carve) -- SAME _next_carve_seq counter as legacy
+        # carve (a shared monotonic id space is harmless: the DISTINCT
+        # "carver-session-" task_id/branch prefix below is what prevents any
+        # path/branch collision with a legacy carve-<project>-<seq>).
+        seq = self._next_carve_seq(project)
+        task_id = f"carver-session-{project}-{seq}"
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+        if authority == "branch":
+            branch = f"carver-session/{project}-{seq}"
+            carve_cwd = cfg.root / cfg.worktree_root / branch
+            self._ensure_worktree(cfg.root, branch, carve_cwd, cfg.default_branch)
+            dispatch_branch = branch
+        else:
+            carve_cwd = cfg.root
+            dispatch_branch = cfg.default_branch
+
+        # ABSENT/COLD start generation 1 (or the next one, if a prior
+        # generation existed without ever rotating); ROTATING has already
+        # been advanced to its target generation by CARVER_SESSION_ROTATED
+        # (P3d territory, not emitted by this package) -- bootstrap INTO
+        # that already-computed generation rather than incrementing again.
+        generation = (snap.generation if snap.status is CarverStatus.ROTATING
+                     else snap.generation + 1)
+
+        notes = f"carver-session seq={seq} kind=start mode={action.mode} generation={generation}"
+        tsf = TaskStateFile(
+            schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+            state=TaskState.ACTIVE, since=utc_now(), handoff_path=None, notes=notes,
+        )
+        events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
+                                       {"statefile": tsf.to_dict()}, task_id=task_id))
+
+        attempt_id = new_id("att")
+        attempt_dir = paths.attempt_dir(project, attempt_id)
+        packet_dir = attempt_dir / "packet"
+        packet_dir.mkdir(parents=True, exist_ok=True)
+        packet_text = self._build_carver_bootstrap_packet(cfg, project, seq, states)
+        (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
+
+        route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
+                           variant=route_def.variant, effort=route_def.effort,
+                           routes_rev=routes_obj.revision)
+        attempt = Attempt(attempt_id=attempt_id, role=Role.CARVER, state=AttemptState.CREATED,
+                          route=route_snap, started=utc_now(), worktree=str(carve_cwd),
+                          branch=dispatch_branch if authority == "branch" else None)
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+
+        # (d)+(e) build the bootstrap packet, launch through the wrapper
+        # with the strategic-carver lease. (f)/(g) -- capture the session
+        # id and decide STARTED-vs-DEGRADED -- happen later, at exit-
+        # consumption time (see the class docstring above this section).
+        gate_hint = self._gate_hint(cfg)
+        receipt_path = str(attempt_dir / "receipt.json")
+        argv, _prompt = adapters.build_dispatch(
+            route_def, handoff_path=str(packet_dir / "packet.md"), worktree=str(carve_cwd),
+            branch=dispatch_branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
+            role=Role.CARVER, carve_authority=authority,
+        )
+        spec = wrapper.WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
+            cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
+        )
+        pid = wrapper.launch_detached(spec)
+        attempt.state = AttemptState.PREFLIGHTING
+        attempt.pid = pid
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+        return events
+
+    def _execute_resume_carver_session(self, project: str, cfg: ProjectConfig,
+                                       states: dict[str, TaskStateFile],
+                                       action: "reconcile.ResumeCarverSession") -> list[Event]:
+        """plan §5.2: a warm-session turn (merge-feed / targeted-intake /
+        recover). Mints a FRESH nyxloom attempt/turn id every call -- the
+        persistent provider session is a cache/context optimization, never
+        reused as an evidence identity (§5.2). The route is PINNED for the
+        generation: resolved from the durable session snapshot's own route
+        record, never re-selected via for_role (a routes.toml change is
+        picked up on the NEXT rotation, not mid-generation)."""
+        events: list[Event] = []
+
+        ok, _reason = self._dispatch_admissible(project, cfg, states, "carve")
+        if not ok:
+            return events
+        if self._carve_in_flight(states):
+            return events
+
+        snap = self._carver_session(project, cfg)
+        required_status = CarverStatus.DEGRADED if action.mode == "recover" else CarverStatus.WARM
+        if snap is None or snap.status is not required_status or not snap.session_id:
+            # Stale plan (status/session moved on since planning) -- refuse
+            # cleanly, same rationale as the Start recheck above.
+            return events
+
+        route_id = snap.route.get("route_id") if isinstance(snap.route, dict) else None
+        routes_obj = config.Routes.load()
+        route_def = routes_obj.routes.get(route_id) if route_id else None
+        if route_def is None:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carver-no-route"}, task_id=None))
+            return events
+
+        seq = self._next_carve_seq(project)
+        task_id = f"carver-session-{project}-{seq}"
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+        if authority == "branch":
+            branch = f"carver-session/{project}-{seq}"
+            carve_cwd = cfg.root / cfg.worktree_root / branch
+            self._ensure_worktree(cfg.root, branch, carve_cwd, cfg.default_branch)
+            dispatch_branch = branch
+        else:
+            carve_cwd = cfg.root
+            dispatch_branch = cfg.default_branch
+
+        notes = (f"carver-session seq={seq} kind=resume mode={action.mode} "
+                f"generation={snap.generation}")
+        tsf = TaskStateFile(
+            schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+            state=TaskState.ACTIVE, since=utc_now(), handoff_path=None, notes=notes,
+        )
+        events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
+                                       {"statefile": tsf.to_dict()}, task_id=task_id))
+
+        attempt_id = new_id("att")
+        attempt_dir = paths.attempt_dir(project, attempt_id)
+        route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
+                           variant=route_def.variant, effort=route_def.effort,
+                           routes_rev=routes_obj.revision)
+        attempt = Attempt(attempt_id=attempt_id, role=Role.CARVER, state=AttemptState.CREATED,
+                          route=route_snap, started=utc_now(), worktree=str(carve_cwd),
+                          branch=dispatch_branch if authority == "branch" else None)
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+
+        prompt = self._build_carver_resume_prompt(project, task_id, action.mode, action.source_ids)
+        argv = adapters.build_resume(route_def, session=snap.session_id,
+                                     worktree=str(carve_cwd), prompt=prompt)
+        spec = wrapper.WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
+            cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
+            route_def=asdict(route_def),
+            leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
+        )
+        pid = wrapper.launch_detached(spec)
+        attempt.state = AttemptState.PREFLIGHTING
+        attempt.pid = pid
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+        return events
+
+    def _consume_carver_session_exit(self, project: str, cfg: ProjectConfig,
+                                     states: dict[str, TaskStateFile],
+                                     task_id: str, attempt_id: str) -> list[Event]:
+        """F018 P3a: the role==CARVER branch of EmitAttemptExit for a
+        carver-session Start/Resume turn (see _execute's dispatch, which
+        distinguishes this from a legacy CarveDispatch attempt by task_id
+        prefix). plan §5.1 items 5-7 / §5.2: decide STARTED/RESUMED vs
+        DEGRADED from the turn's ACTUAL outcome -- a non-empty captured
+        session_handle AND a DONE receipt -- never from process exit alone.
+        A capture/turn failure records CARVER_SESSION_DEGRADED (never
+        STARTED/RESUMED); resume_failures itself is NOT computed here --
+        the projector's own CARVER_SESSION_DEGRADED fold
+        (`p.get("retry_count", snap.resume_failures + 1)`) already derives
+        it correctly from the durable event log, so this never duplicates
+        (and risks drifting from) that arithmetic. Either way, the synthetic
+        turn task retires to SUPERSEDED -- freeing carve_in_flight for the
+        next pass -- mirroring _consume_carve_exit's own shape."""
+        events: list[Event] = []
+        tsf = states[task_id]
+        attempt = tsf.attempt_by_id(attempt_id)
+        kind, mode, generation = self._carver_turn_marker(states, task_id)
+
+        session_handle = attempt.session_handle if attempt is not None else None
+        receipt_ok = (attempt is not None and attempt.receipt is not None
+                     and attempt.receipt.result is ReceiptResult.DONE)
+        ok = receipt_ok and bool(session_handle)
+
+        if not ok:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.CARVER_SESSION_DEGRADED,
+                {"reason": "capture-failed" if not session_handle else "turn-failed",
+                 "kind": kind, "mode": mode},
+                task_id=task_id, attempt_id=attempt_id))
+        elif kind == "start":
+            events.append(self._append_ev(
+                project, cfg, states, EventType.CARVER_SESSION_STARTED,
+                {"generation": generation, "session_id": session_handle,
+                 "route": attempt.route.to_dict(), "spine_revisions": self._spine_revisions(cfg)},
+                task_id=task_id, attempt_id=attempt_id))
+        else:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.CARVER_SESSION_RESUMED,
+                {"generation": generation, "route": attempt.route.to_dict()},
+                task_id=task_id, attempt_id=attempt_id))
+
+        events.append(self._append_ev(
+            project, cfg, states, EventType.TASK_SUPERSEDED,
+            {"from": states[task_id].state.value, "notes": "carver-session-consumed"},
+            task_id=task_id))
+        return events
+
     def _crosscheck_head_commit(self, cfg: ProjectConfig, task_id: str, receipt: Receipt) -> None:
         """P21 2026-07-16: never let a lying null head_commit read as "no
         work done" (live P93 lesson: a receipt claimed head_commit=null
@@ -3817,6 +4279,22 @@ class Daemon:
             result = receipt.result
 
             if attempt.role == Role.CARVER:
+                # F018 P3a: a "carver-session-" task_id is a Start/Resume
+                # persistent-session turn (this package), NOT a legacy
+                # CarveDispatch attempt -- route it to the session-specific
+                # consumer instead of _consume_carve_exit's CARVE-<seq>.md
+                # REQUIRED OUTPUT CONTRACT parsing, which does not apply to
+                # a bootstrap/resume turn. Feature-off byte-identical: this
+                # prefix is only ever minted by _execute_start_carver_session/
+                # _execute_resume_carver_session, themselves only ever
+                # reached when the planner emits Start/ResumeCarverSession
+                # (cfg.carve.session == "project-persistent"), so every
+                # pre-P3a CARVER attempt (task_id "carve-<project>-<seq>")
+                # falls through to _consume_carve_exit exactly as before.
+                if task_id.startswith("carver-session-"):
+                    events.extend(self._consume_carver_session_exit(
+                        project, cfg, states, task_id, action.attempt_id))
+                    return events
                 # P16 2026-07-15: consume the carver's REQUIRED OUTPUT
                 # CONTRACT (a CarveSummary file, not the wrapper's own
                 # process-level Receipt above) -- see _consume_carve_exit
@@ -4288,6 +4766,12 @@ class Daemon:
 
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.StartCarverSession):
+            events.extend(self._execute_start_carver_session(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.ResumeCarverSession):
+            events.extend(self._execute_resume_carver_session(project, cfg, states, action))
 
         elif isinstance(action, reconcile.RunPostMergeGate):
             events.extend(self._run_post_merge_gate(project, cfg, states, action))
