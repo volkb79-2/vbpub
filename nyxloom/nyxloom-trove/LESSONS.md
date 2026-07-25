@@ -627,6 +627,40 @@ the multiline CPU predicate at its first executable expression line. A receipt
 needs an explicit baseline→current coordinate map derived from the diff and
 coverage record; `nl -ba` at HEAD alone cannot interpret a frozen residual.
 
+### P112 validation: bind measurements to the effect they claim to measure
+
+P112's uncovered loop revealed a functional defect, not merely untested error
+handling. The squeeze code decremented its Python `high` variable and recorded
+later steps under that value, but never wrote the new value to cgroup
+`memory.high`. Only the initial high was applied. The repair writes every next
+in-floor value before its sample. The causal oracle pins applied writes
+`2 → 1 → max`, step records at 2 and 1, two sample delays, and one restore.
+Two immutable gates passed 2,156 cases with the whole 700-line module exact.
+
+Any measurement, benchmark, or control-loop test must bind the reported
+control value to the external effect that actually established it. Asserting
+only record fields can validate a mislabeled measurement. The oracle should
+prove effect order: apply control → wait → sample → record, plus restoration.
+
+The generic error handler also closed the JSONL file before its `finally` block
+wrote the summary. That hidden path would replace the intended typed error with
+a closed-file exception. Removing the premature close let `finally` own
+summary/close and the restore guard own cgroup restoration. Error tests should
+assert cleanup ownership and ordering, especially when `return` occurs inside
+`try`/`except` with a `finally`.
+
+Before the full gate, the controller's own scanner found count-only audit
+assertions and an `any(...)` summary check. They were replaced with complete
+audit dictionaries and parsed header/summary records, then the focused suite
+reran. Quality scanning belongs before the costly full gate and applies equally
+to controller-, implementer-, and reviewer-authored tests.
+
+Pro again approved correct behavior while misreporting shifted line identities:
+the new predicate was current lines 445–446, not 444–445, and baseline line 467
+was deleted while current line 466 remained the intentional interrupted-step
+`pass`. The repeated manual failure strengthens the case for generated
+baseline→current receipt maps rather than model-authored coordinates.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -741,6 +775,12 @@ prerequisite package, not an edit-refresh mechanism.
   not independent call counters that cannot prove data flowed end to end.
 - Generate explicit baseline→current line maps after source edits and reconcile
   coverage.py's executable-line classification for multiline expressions.
+- For control/measurement loops, prove apply → wait → sample → record order and
+  restoration; recorded labels alone cannot establish what was measured.
+- Give one layer ownership of each cleanup action and test return/exception/
+  finally ordering with complete durable outputs and restored external state.
+- Run hollow/partial-assertion scans before full gates on every author route,
+  including controller-written repairs.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
