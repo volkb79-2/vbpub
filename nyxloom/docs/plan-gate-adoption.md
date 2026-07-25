@@ -77,7 +77,13 @@ the gate now FAILS. Reports `pass-on-good`, `fail-on-bad`, and the derived verdi
 inject/restore in a scratch worktree, mirroring `gate_runner`'s isolation), tests.
 Leaf-ish; reuses `gate_runner` + `mutation_gate` primitives.
 
-### GA2 — `asserts=[...]` gate-rigor declaration + review-depth routing · MEDIUM (folds with factory-hardening D)
+### GA2 — `asserts=[...]` gate-rigor declaration + review-depth routing · MEDIUM · declaration+cross-check ✅ DONE (merge `7529f807`); review-depth routing → D part 2
+**Done (declaration + gate-verify cross-check).** `asserts=[tests-pass|changed-line-coverage|
+mutation|canary-verified]` on `[gates.*]` (schema enum + `GateDef.asserts`). `nyxloom gate verify`
+cross-checks it against its own verdict (canary-verified + LAUNDERS → MISMATCH; + TRUSTWORTHY →
+OK confirmed; INCONCLUSIVE → UNVERIFIED; coverage/mutation → declared-not-verified). Additive
+overlay, gate 42/42. **Still pending:** feeding `asserts` (+ complexity band) into review-depth
+selection — that's D part 2 (the routing half), deferred with it.
 **What.** Add an optional `asserts: [tests-pass, changed-line-coverage, mutation,
 canary-verified]` list to `[gates.*]` in the config schema; surface it on the
 dashboard; feed it into review-depth selection (a weak-gate project → deeper/stronger
