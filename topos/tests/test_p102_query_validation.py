@@ -48,8 +48,7 @@ class TestQueryFromDict:
     def test_from_dict_sort_as_dict(self):
         """line 173: sort as dict builds Query with sort.metric=='ram'."""
         q = Query.from_dict({"shape": "summary", "metrics": ["ram"], "sort": {"metric": "ram", "order": "asc"}})
-        assert q.sort is not None
-        assert q.sort.metric == "ram"
+        assert q.sort == SortSpec(metric="ram", stat=None, order="asc")
 
     def test_from_dict_sort_extra_field(self):
         """line 176: sort dict with unknown field raises UnknownFieldError."""
@@ -123,6 +122,4 @@ class TestMixedBranches:
     def test_from_dict_sort_str_branch(self):
         """line 172: sort as str builds SortSpec with metric='ram'."""
         q = Query.from_dict({"shape": "summary", "metrics": ["ram"], "sort": "ram"})
-        assert q.sort is not None
-        assert q.sort.metric == "ram"
-        assert q.sort.order == "desc"
+        assert q.sort == SortSpec(metric="ram", stat=None, order="desc")

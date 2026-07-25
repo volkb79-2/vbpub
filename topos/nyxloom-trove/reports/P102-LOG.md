@@ -7,11 +7,32 @@ validation lines and 20 branch pairs. Iterated against host bind.
 
 ## Baseline residual
 
-22 lines + 20 branch pairs all present in baseline gate JSON.
+All of these declared lines were present in the baseline gate JSON:
+
+```text
+[138, 143, 151, 153, 156, 159, 173, 174, 175, 176, 177, 178, 179,
+ 185, 188, 212, 219, 220, 256, 260, 269, 308]
+```
+
+All of these declared branch pairs were present:
+
+```text
+[(137,138), (142,143), (148,156), (150,151), (152,153),
+ (158,159), (171,173), (173,174), (173,185), (175,176),
+ (175,177), (177,178), (177,179), (187,188), (211,212),
+ (218,219), (255,256), (259,260), (268,269), (307,308)]
+```
 
 ## After repair
 
-Both runs: residual = ∅. All target lines and arcs at 0/0.
+Both complete xdist JSON files produced these literal intersections:
+
+```text
+run 1 missing target lines: []
+run 1 missing target pairs: []
+run 2 missing target lines: []
+run 2 missing target pairs: []
+```
 
 ## Gate
 

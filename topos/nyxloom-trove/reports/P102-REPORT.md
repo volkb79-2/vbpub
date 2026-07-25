@@ -30,8 +30,8 @@ xdist runs. 18 tests. 2002 total (1984 baseline + 18). Parity confirmed.
 | 153 | [152,153] | from_dict | metric no name | InvalidQueryError("requires a 'name'") |
 | 156 | [148,156] | from_dict | metric int spec | InvalidQueryError("invalid metric spec") |
 | 159 | [158,159] | from_dict | selector not dict | InvalidQueryError("must be a mapping") |
-| 173 | [171,173] | from_dict | sort as dict | Query built, sort.metric='ram' |
-| 174 | [173,174] | from_dict | sort as dict | Query built |
+| 173 | [171,173] | from_dict | sort as dict | SortSpec(metric='ram', stat=None, order='asc') |
+| 174 | [173,174] | from_dict | sort as dict | SortSpec(metric='ram', stat=None, order='asc') |
 | 175-177 | [175,176],[175,177] | from_dict | sort extra field | UnknownFieldError |
 | 178-179 | [177,178],[177,179] | from_dict | sort no metric | InvalidQueryError("requires a 'metric'") |
 | 185 | [173,185] | from_dict | sort invalid type | InvalidQueryError("invalid sort spec") |
@@ -45,8 +45,9 @@ xdist runs. 18 tests. 2002 total (1984 baseline + 18). Parity confirmed.
 
 ## Tests
 
-18 test functions (19 removed 1 duplicate). All call real from_dict, _validate,
-or _parse_metric_token. No assertion-free tests, no non-None-only checks.
+18 test functions and 18 collected cases (19 minus 1 duplicate). All call
+real from_dict, _validate, or _parse_metric_token. No assertion-free tests,
+no non-None-only checks.
 
 ## Gate
 
