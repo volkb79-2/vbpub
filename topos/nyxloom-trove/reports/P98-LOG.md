@@ -2,7 +2,7 @@
 
 ## Implementation
 
-Read all 4 record target source files and gap data. Wrote 47 focused tests
+Read all 4 record target source files and gap data. Wrote 44 focused tests
 covering every missing line and branch. Iterated against host bind until all
 4 targets reached exact 100% statements and branches.
 
@@ -20,7 +20,7 @@ covering every missing line and branch. Iterated against host bind until all
 
 | File | Action | Purpose |
 |------|--------|---------|
-| `tests/test_p98_record_coverage.py` | Create | 47 tests for all record gaps |
+| `tests/test_p98_record_coverage.py` | Create | 44 tests for all record gaps |
 | `reports/P98-LOG.md` | Create | Work log |
 | `reports/P98-REPORT.md` | Create | Implementation report |
 | `reports/P98-SELFREVIEW.md` | Create | Self-review |

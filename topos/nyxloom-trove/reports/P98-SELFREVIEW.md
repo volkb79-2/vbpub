@@ -16,6 +16,17 @@
 - **All 4 targets at exact 100%**: headless.py, reader.py, replay.py, writer.py
   each have empty missing_lines and missing_branches in the full xdist JSON.
 
+## Independent-review repairs
+
+- Removed the redundant assertion-free flush-threshold test.
+- Removed the test that only proved `threading.Event.set()`; the real
+  second-signal handler remains tested through the `os._exit` boundary.
+- Strengthened early-flush verification to assert the reset counter and
+  durable frame record.
+- Strengthened zstd verification from a positive byte count to exact
+  decompressed bytes.
+- Corrected the focused-test inventory to 44.
+
 ## Fail-before evidence
 
 Each test was verified to fail when the targeted branch is removed or

@@ -16,20 +16,25 @@ xdist gate. Parity confirmed across two runs.
 
 ## Tests added
 
-47 tests across:
+44 tests across:
 - **TestHeadlessDriverGaps** (11): second signal, abort mid-iteration, error
   paths, finalize failures, convenience wrapper
 - **TestRecordReaderGaps** (9): truncated JSON, invalid JSON, bad schema,
   unexpected types, zstd errors, empty lines
 - **TestReplayGaps** (6): empty frames, negative speed, delay, summary,
   seek_timestamp edges
-- **TestWriterGaps** (6): missing file, no zstd, bad schema, early flush,
+- **TestWriterGaps** (5): missing file, no zstd, bad schema, early flush,
   flush threshold both sides
 - **TestHeadlessRemaining** (2): KeyboardInterrupt, close after abort
 - **TestReaderRemaining** (2): corrupt zstd, no zstd for compressed
 - **TestFinalGaps** (7): abort/finalize/flush paths, zstd multichunk,
   writer no-flush
 - **TestStubbornGaps** (2): install_signal_handlers mocked, zstd reuse
+
+After independent review, the duplicate flush-threshold test and a test that
+only asserted `Event.set()` were removed. The remaining flush tests assert
+exact counter/file behavior, and the zstd multi-chunk test asserts the exact
+decompressed bytes.
 
 ## Gate
 

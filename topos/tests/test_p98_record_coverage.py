@@ -474,8 +474,10 @@ class TestWriterGaps:
         path = Path("/tmp") / "test_flush_early.jsonl"
         writer = RecordWriter(path, started_at=100.0)
         writer.close()
-        # After close, _text is None; flush should be a no-op
+        before = path.read_bytes()
         writer.flush(force=True)
+        assert writer._text is None
+        assert path.read_bytes() == before
         path.unlink(missing_ok=True)
 
     def test_write_frame_triggers_flush(self):
@@ -485,6 +487,8 @@ class TestWriterGaps:
         base = _fixture_frame()
         frame = Frame(ts=base.ts, interval_s=base.interval_s, host=base.host, entities=base.entities, schema_version=1)
         writer.write_frame(frame)
+        assert writer._frames_since_flush == 0
+        assert json.loads(path.read_text().splitlines()[-1])["type"] == "frame"
         writer.close()
         path.unlink(missing_ok=True)
 
@@ -570,16 +574,6 @@ class TestFinalGaps:
             driver.run()
         path.unlink(missing_ok=True)
 
-    def test_headless_install_signal_handlers_logic(self):
-        """install_signal_handlers line 65: test the logic via make_second_signal_handler."""
-        se = threading.Event()
-        install_signal_handlers(se)
-        se.set()
-        # After setting, the next signal should trigger _exit.
-        # We can't test os._exit directly, but the handler shares logic
-        # with make_second_signal_handler which IS tested.
-        assert se.is_set()
-
     def test_reader_zstd_multi_chunk(self):
         """_ZstdStreamReader reuses decompressor across chunks (branch [66,68])."""
         path = Path("/tmp") / "test_multi.zst"
@@ -591,20 +585,9 @@ class TestFinalGaps:
         from topos.record.reader import _ZstdStreamReader
         with path.open("rb") as fh:
             reader = _ZstdStreamReader(fh, path)
-            result = reader.readinto(bytearray(1024))
-        assert result > 0
-        path.unlink(missing_ok=True)
-
-    def test_writer_flush_threshold(self):
-        """write_frame triggers flush at threshold (branch [100,-94])."""
-        base = _fixture_frame()
-        path = Path("/tmp") / "test_finthresh.jsonl"
-        # Construct writer with custom config that has lowest flush
-        from topos.record.writer import RecordWriter
-        writer = RecordWriter(path, flush_every_frames=1)
-        frame = Frame(ts=base.ts, interval_s=base.interval_s, host=base.host, entities=base.entities, schema_version=1)
-        writer.write_frame(frame)
-        writer.close()
+            buffer = bytearray(1024)
+            result = reader.readinto(buffer)
+        assert bytes(buffer[:result]) == data
         path.unlink(missing_ok=True)
 
     def test_headless_finalize_close_error_after_flush_abort(self):
