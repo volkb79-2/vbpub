@@ -373,3 +373,121 @@ guards (F11), or trivially testable edge cases (F12, F13). The sparkline
 truncation test is hollow (F14). Repair oracles for F10-F13 are concrete
 and mechanical (≤5 lines each). After closing, expected: **12/16 targets
 at 100%**, with 4 deferred as genuine infrastructure gaps.
+
+
+---
+
+# Final controller-repair review — 2026-07-25 (commit 71d857ec)
+
+**Re-reviewer:** Reasonix (same persistent adversarial session)
+**Re-review range:** c09547b9..71d857ec
+**Verdict:** **APPROVED**
+
+## Changes since prior re-review
+
+The controller repair closed every remaining gap identified in F10–F17:
+
+| Source | Change | Review oracle |
+|--------|--------|---------------|
+| `registry.py` | Removed dead lines 278-279 (`if not kept_metrics:`) | F11 — the redundant early guards at 256-260 already cover every empty-token case; removing the unreachable fallback is behavior-preserving |
+| `sparkline.py` | Removed dead lines 72-73 (`len(result) > width` guard), `elif`→`if` | F10 — the sampling algorithm guarantees `len(result) ≤ width` for all inputs; truncation branch was structurally unreachable |
+| `test_p97_quickwins.py` | +15 tests: ring saturation, sparkline exact-value, damon_control cancel, paddr refusal, UTF-8 zero-limit | F12, F13, F14, F15, F16 |
+| `test_damon_passive.py` | +1 test: structured damon block preservation under `--metrics damon` | F17 |
+| `nyxloom.toml` | `canary-verified` restored to asserts | O5 — controller evidence recorded in P97-REPORT |
+
+## Independent gate verification (two runs)
+
+Run 1: **1825 passed, exit 0** in 52s. Run 2: **1825 passed, exit 0** in 66s.
+Both produced identical per-target results:
+
+```
+CLOSED  collect/zswapmath.py       stmts= 13/ 13  br=  6/  6
+CLOSED  collect/dockerjoin.py      stmts=107/107  br= 44/ 44
+CLOSED  collect/collector.py       stmts=245/245  br= 98/ 98
+CLOSED  model.py                   stmts=136/136  br= 32/ 32
+CLOSED  registry.py                stmts= 49/ 49  br= 18/ 18
+CLOSED  procs/identity.py          stmts= 18/ 18  br=  0/  0
+CLOSED  procs/sensitivity.py       stmts= 17/ 17  br=  8/  8
+CLOSED  procs/owners.py            stmts= 41/ 41  br=  8/  8
+CLOSED  ui/keys.py                 stmts=  5/  5  br=  0/  0
+CLOSED  ui/damon_control.py        stmts= 33/ 33  br=  0/  0
+CLOSED  ui/sparkline.py            stmts= 44/ 44  br= 20/ 20
+CLOSED  record/ring.py             stmts= 98/ 98  br= 26/ 26
+CLOSED  inspect_files/plan.py      stmts= 49/ 49  br=  8/  8
+CLOSED  damon/paddr.py             stmts= 50/ 50  br= 12/ 12
+CLOSED  actions/preview.py         stmts= 38/ 38  br= 10/ 10
+CLOSED  daemon/component_health.py stmts=146/146  br= 26/ 26
+```
+
+**ALL 16 TARGETS — empty `missing_lines` AND empty `missing_branches`.**
+O1 mechanically satisfied. O4 parity confirmed (two runs identical).
+
+## Oracle verification
+
+### O1 — every target exact 100%
+**PASS.** Verified independently with two full xdist gate runs. Mechanical
+JSON assertion: `missing_lines == []` and `missing_branches == []` for all
+16 targets. No rounding, no focused invocation, no line-only coverage.
+
+### O2 — behavioral tests, no hollow assertions
+**PASS.** Spot-checked every new test added in the controller repair:
+
+- `test_render_sparkline_downsamples_to_width`: asserts exact string `r == "_=#"` (not just length)
+- `test_append_saturates_count_at_capacity`: asserts `s.count == 3` and `s.last(3) == [2.0, 3.0, 4.0]`
+- `test_truncate_utf8_zero_limit`: asserts exact return `""`
+- `test_cancel_dismisses_without_result`: asserts `dismiss.assert_called_once_with(None)` — exact mock verification
+- `test_start_planned_rejects_wrong_confirmation`: asserts `DamonControlError` with `match=APPROVAL_TEXT`
+- `test_start_planned_refuses_existing_owner_marker`: asserts `OwnershipError` with exact message match
+- `test_fieldlist_damon_preserves_structured_damon_block`: asserts `game.damon is not None`, `game.network is None`, `game.governance is None`, and exact `entity_key` match
+
+All tests drive real behavior through both sides of the target branch. No
+function-under-test is mocked (Textual dismiss is mocked at the screen
+boundary, paddr uses `require_root=False` to bypass the root check, damon
+fixture uses real cgroupfs/DAMON tree). No bare `except: pass`, no
+assertion-free coverage farming.
+
+### O3 — fail-before evidence
+**PASS.** The P96 coverage ledger documented every gap; the two prior
+`CHANGES_REQUIRED` reviews (F1–F9, then F10–F17) proved specific tests
+were ineffective or absent. Each replaced/added test addresses a
+concrete uncovered branch from the ledger.
+
+### O4 — two-run parity
+**PASS.** Two clean exact-gate runs: 1825 passed both times. All 16
+targets have identical `missing_lines=[]` and `missing_branches=[]`.
+
+### O5 — tools package + trustworthy assertions
+**PASS.** `tools/__init__.py` created (P96 follow-up). `canary-verified`
+restored to `asserts` with controller evidence recorded in P97-REPORT:
+at main `025fb843`, `nyxloom gate verify topos` returned `TRUSTWORTHY`
+(known-good exit 0, planted `cli.py` import-break exit 1).
+
+### O6 (implied) — gate selection unchanged
+**PASS.** `py-compile` remains `phase="review"`, `topos-suite` remains
+`phase="implementation"`. Gate argv unchanged from P96.
+
+## Source-edit audit
+
+| File | Lines changed | Justification | Behavior preserved? |
+|------|:---:|---|---|
+| `registry.py` | -2 (removed 278-279) | Dead fallback — early guards at 256-260 catch all empty-token cases first | ✓ Regression tested: `""`, `","`, `" , "`, `"ram,"` all raise `ValueError("empty selector")`; `"ram"` returns `frozenset({'ram'})` |
+| `sparkline.py` | -2, `elif`→`if` (lines 72-73) | Truncation branch structurally unreachable — `len(result) ≤ width` for all inputs by algorithm construction | ✓ Regression tested: all outputs have correct `len == width` for empty, single, normal, many→few, and few cases |
+
+No `# pragma: no cover` added. No omissions, no exclusions, no
+dependency changes, no evaluator changes. All edits within handoff
+`scope.touch`.
+
+## Prior findings — all closed
+
+| F1 | CLOSED (16/16) | F2 | CLOSED | F3 | CLOSED | F4 | CLOSED (dead code removed) | F5 | CLOSED | F6 | CLOSED | F7 | CLOSED | F8 | CLOSED | F9 | CLOSED |
+| F10 | CLOSED (dead code removed) | F11 | CLOSED (dead code removed) | F12 | CLOSED | F13 | CLOSED | F14 | CLOSED (remediated by F10) | F15 | CLOSED | F16 | CLOSED | F17 | CLOSED |
+
+No outstanding findings.
+
+## Verdict
+
+**APPROVED.** All 16 targets at exact 100% statements and 100% branches in
+the full xdist gate. Two-run parity confirmed. Source edits are
+behavior-preserving and justified. All 17 prior findings are closed.
+The handoff's six oracles (O1–O5 plus implicit gate-selection O6) are
+independently verified against live gate evidence.
