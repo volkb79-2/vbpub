@@ -235,6 +235,18 @@ def _snapshot(project: str) -> carver_session.CarverSessionSnapshot:
     return carver_session.project_session(storage.iter_events(project))
 
 
+def _write_bootstrap_ack(d: daemon.Daemon, cfg: ProjectConfig,
+                          attempt: Attempt) -> None:
+    """Write a valid BOOTSTRAP-ACK.json for the given attempt's start/recover
+    turn, satisfying P3d ACK validation (kind=start or kind=resume+mode=recover
+    require it). The ack echoes the current spine revisions."""
+    ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
+    ack_path.parent.mkdir(parents=True, exist_ok=True)
+    spine = d._spine_revisions(cfg)
+    ack_path.write_text(json.dumps(
+        {"kind": "bootstrap-ack", "spine_revisions": spine}), encoding="utf-8")
+
+
 _HANDOFF_TEMPLATE = """---
 schema_version: 1
 id: {id}
@@ -392,12 +404,19 @@ def test_start_carver_session_refuses_when_paused(tmp_state, carver_project, pat
 def _bootstrap_to_warm(d: daemon.Daemon, cfg: ProjectConfig, patch_launch,
                       session_id: str = "S1") -> str:
     """Drive one full Start->consume cycle to a WARM S1 session. Returns
-    the bootstrap turn's task_id."""
+    the bootstrap turn's task_id. Writes the required BOOTSTRAP-ACK.json
+    to simulate the carver's acknowledgement."""
     states: dict = {}
     events = d._execute_start_carver_session(
         "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
+
+    # Write the BOOTSTRAP-ACK.json the carver would produce (P3d ACK
+    # validation requires it for kind=start turns).
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    _write_bootstrap_ack(d, cfg, attempt)
+
     _mark_turn_outcome("demo", task_id, attempt_id,
                        session_handle=session_id, result=ReceiptResult.DONE)
     states = storage.list_states("demo")
@@ -512,6 +531,10 @@ def test_consume_start_success_emits_started_and_supersedes_turn_task(
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
+
+    # Write BOOTSTRAP-ACK.json (P3d ACK validation requires it for start).
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    _write_bootstrap_ack(d, cfg, attempt)
 
     events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
 
@@ -671,6 +694,10 @@ def test_e2e_bootstrap_reaches_warm_via_run_pass(
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     _write_receipt("demo", attempt_id)
+    # Write BOOTSTRAP-ACK.json (P3d ACK validation requires it for start).
+    states = storage.list_states("demo")
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    _write_bootstrap_ack(d, cfg, attempt)
 
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
     d.run_pass("demo")
@@ -808,6 +835,9 @@ def test_start_and_resume_under_branch_authority_mint_real_worktrees(
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
+    # Write BOOTSTRAP-ACK.json (P3d ACK validation requires it for start).
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    _write_bootstrap_ack(d, cfg, attempt)
     d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
     patch_launch.clear()
 
@@ -1242,8 +1272,9 @@ def test_carve_dispatch_normalize_test_health_sub_mode(
 def test_carve_dispatch_falls_back_to_fresh_carve_when_no_session_yet(
         tmp_state, carver_project, patch_launch):
     """Feature ON but NO session exists yet (ABSENT) -- CarveDispatch must
-    NOT normalize; it takes the legacy fresh-carve path (task_id prefix
-    carve-, not carver-session-)."""
+    NOT normalize; with P3d the executor refuses cleanly (no side effect)
+    rather than falling through to legacy fresh-carve while feature-on and
+    not-WARM. The planner should emit StartCarverSession instead."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
@@ -1251,15 +1282,17 @@ def test_carve_dispatch_falls_back_to_fresh_carve_when_no_session_yet(
 
     events = d._execute_carve_dispatch("demo", cfg, states, action)
 
-    task_id = next(e.task_id for e in events if e.type is EventType.TASK_CREATED)
-    assert task_id.startswith("carve-demo-")
-    assert not task_id.startswith("carver-session-")
+    # Feature-on with ABSENT session: no legacy carve, no TASK_CREATED.
+    assert not any(e.type is EventType.TASK_CREATED for e in events)
+    assert patch_launch == []
 
 
-def test_carve_dispatch_falls_back_when_session_degraded(
+def test_carve_dispatch_rotates_when_session_degraded_exhausted(
         tmp_state, carver_project, patch_launch):
-    """A DEGRADED (not WARM) session also falls back to the legacy path --
-    normalize requires status WARM specifically."""
+    """A DEGRADED (not WARM) session with exhausted recovery rotates instead
+    of falling through to the legacy fresh-carve path. O3: emits
+    CARVER_SESSION_ROTATED{reason:"degraded-recovery-exhausted"}, creates NO
+    carve task."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
@@ -1275,8 +1308,12 @@ def test_carve_dispatch_falls_back_when_session_degraded(
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
     events = d._execute_carve_dispatch("demo", cfg, states, action)
 
-    task_id = next(e.task_id for e in events if e.type is EventType.TASK_CREATED)
-    assert task_id.startswith("carve-demo-")
+    # Rotates, no legacy carve task minted.
+    rotated = [e for e in events if e.type is EventType.CARVER_SESSION_ROTATED]
+    assert len(rotated) == 1
+    assert rotated[0].payload["reason"] == "degraded-recovery-exhausted"
+    assert not any(e.type is EventType.TASK_CREATED for e in events)
+    assert _snapshot("demo").status is CarverStatus.ROTATING
 
 
 def test_carve_dispatch_byte_identical_when_feature_off(
@@ -1587,3 +1624,410 @@ def test_full_loop_normalize_record_validate_admit_end_to_end(
                and e.task_id == "demo-P901"]
     assert len(created) == 1
     assert storage.load_state("demo", "demo-P901").state is TaskState.CARVED
+
+
+# ==========================================================================
+# F018 P3d oracle tests (O1-O7)
+# ==========================================================================
+
+# --- O1: AF1 rotate-fallback ---
+
+def test_o1_compact_rotate_fallback_emits_rotated_no_launch(
+        tmp_state, carver_project, patch_launch):
+    """O1 positive: with WARM session at generation N and CompactCarverSession
+    action, _execute_compact_carver_session returns exactly one
+    CARVER_SESSION_ROTATED with new_generation == N+1 and no wrapper launch."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+    snap = _snapshot("demo")
+    gen_before = snap.generation
+
+    states = storage.list_states("demo")
+    action = reconcile.CompactCarverSession(
+        project="demo", generation=gen_before, trigger="turns")
+    events = d._execute_compact_carver_session("demo", cfg, states, action)
+
+    rotated = [e for e in events if e.type is EventType.CARVER_SESSION_ROTATED]
+    assert len(rotated) == 1
+    assert rotated[0].payload["new_generation"] == gen_before + 1
+    assert rotated[0].payload["reason"] == "compaction-rotate-fallback"
+    assert rotated[0].payload["trigger"] == "turns"
+    assert rotated[0].payload["from_generation"] == gen_before
+    assert patch_launch == []
+    assert _snapshot("demo").status is CarverStatus.ROTATING
+
+
+def test_o1_compact_unsupported_strategy_emits_needs_operator_no_rotate(
+        tmp_state, carver_project, patch_launch):
+    """O1 negative: with compaction_strategy set to an unsupported driver
+    name, it emits NEEDS_OPERATOR{carver-compaction-no-driver} and does NOT
+    rotate."""
+    cfg = dc_replace(carver_project)
+    cfg.carve.compaction_strategy = "some-driver"  # unsupported
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+    gen_before = _snapshot("demo").generation
+
+    states = storage.list_states("demo")
+    action = reconcile.CompactCarverSession(
+        project="demo", generation=gen_before, trigger="turns")
+    events = d._execute_compact_carver_session("demo", cfg, states, action)
+
+    assert not any(e.type is EventType.CARVER_SESSION_ROTATED for e in events)
+    needs_op = [e for e in events if e.type is EventType.NEEDS_OPERATOR]
+    assert len(needs_op) == 1
+    assert needs_op[0].payload["reason"] == "carver-compaction-no-driver"
+    assert _snapshot("demo").status is CarverStatus.WARM  # not rotated
+
+
+# --- O2: routing regression ---
+
+def test_o2_compact_carver_session_no_longer_raises_value_error(
+        tmp_state, carver_project, patch_launch):
+    """O2: _execute dispatch of CompactCarverSession no longer raises
+    ValueError (would surface as TICK_ERROR)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    # Drive through run_pass with a CompactCarverSession action.
+    from unittest.mock import patch as mock_patch
+    with mock_patch.object(d, "_execute_compact_carver_session",
+                           return_value=[]):
+        # If the _execute dispatch doesn't have a CompactCarverSession
+        # branch, this would raise ValueError.
+        action = reconcile.CompactCarverSession(
+            project="demo", generation=1, trigger="turns")
+        events = d._execute("demo", cfg, {}, action)
+        # No ValueError means the branch exists.
+        assert events == []
+
+
+# --- O3: concern-3 fall-through closed ---
+
+def test_o3_degraded_exhausted_rotates_no_carve_task(
+        tmp_state, carver_project, patch_launch):
+    """O3 positive: DEGRADED with exhausted recovery, CarveDispatch
+    (headroom) → CARVER_SESSION_ROTATED, no carve task, no TASK_SUPERSEDED."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+    # Push the session to DEGRADED (simulating exhausted recovery).
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_DEGRADED,
+        payload={"reason": "turn-failed"},
+    )
+    assert _snapshot("demo").status is CarverStatus.DEGRADED
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    rotated = [e for e in events if e.type is EventType.CARVER_SESSION_ROTATED]
+    assert len(rotated) == 1
+    assert rotated[0].payload["reason"] == "degraded-recovery-exhausted"
+    assert not any(e.type is EventType.TASK_CREATED for e in events)
+    assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
+    assert _snapshot("demo").status is CarverStatus.ROTATING
+
+
+def test_o3_rescope_stays_ready_to_carve_on_degraded_rotation(
+        tmp_state, carver_project, patch_launch):
+    """O3: a re-scope CarveDispatch with task_id= on a DEGRADED session
+    rotates WITHOUT superseding the origin (stays READY_TO_CARVE)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_DEGRADED,
+        payload={"reason": "turn-failed"},
+    )
+
+    states = _seed_ready_to_carve_origin("demo")
+    action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    assert any(e.type is EventType.CARVER_SESSION_ROTATED for e in events)
+    assert not any(e.type is EventType.TASK_CREATED for e in events)
+    assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
+    # Origin stays READY_TO_CARVE.
+    assert storage.load_state("demo", "demo-origin").state is TaskState.READY_TO_CARVE
+
+
+def test_o3_feature_off_fresh_carve_unchanged(
+        tmp_state, sample_project, patch_launch):
+    """O3 negative: session=='fresh' (feature off), CarveDispatch runs
+    legacy fresh carve path (byte-identical)."""
+    from conftest import SAMPLE_ROUTES_TOML
+    cfg = sample_project
+    assert cfg.carve.session == "fresh"
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    # Legacy path: a TASK_CREATED with carve- prefix is minted.
+    task_ids = [e.task_id for e in events if e.type is EventType.TASK_CREATED]
+    assert any(tid.startswith("carve-demo-") for tid in task_ids)
+
+
+# --- O4: ack validation ---
+
+def test_o4_start_no_ack_degrades(
+        tmp_state, carver_project, patch_launch):
+    """O4 negative: a START turn that is DONE + captured session but writes
+    NO BOOTSTRAP-ACK.json → CARVER_SESSION_DEGRADED{bootstrap-ack-invalid},
+    never STARTED/WARM."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    launch_events = d._execute_start_carver_session(
+        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    task_id = launch_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+    # Do NOT write the ACK file.
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert not any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
+    degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
+    assert len(degraded) == 1
+    assert degraded[0].payload["reason"] == "bootstrap-ack-invalid"
+    assert _snapshot("demo").status is CarverStatus.DEGRADED
+
+
+def test_o4_start_valid_ack_reaches_warm(
+        tmp_state, carver_project, patch_launch):
+    """O4 positive: a START turn with a valid, spine-matching ACK →
+    CARVER_SESSION_STARTED, WARM."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    launch_events = d._execute_start_carver_session(
+        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    task_id = launch_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    _write_bootstrap_ack(d, cfg, attempt)
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
+    assert _snapshot("demo").status is CarverStatus.WARM
+
+
+def test_o4_recover_no_ack_degrades(
+        tmp_state, carver_project, patch_launch):
+    """O4: a recover-mode resume without valid ACK → DEGRADED with
+    bootstrap-ack-invalid reason."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    # Push to DEGRADED.
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_DEGRADED,
+        payload={"reason": "turn-failed"},
+    )
+
+    # Launch a recover-mode resume.
+    states = storage.list_states("demo")
+    resume_events = d._execute_resume_carver_session(
+        "demo", cfg, states,
+        reconcile.ResumeCarverSession(project="demo", mode="recover", generation=1))
+    task_id = resume_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+
+    # Remove any BOOTSTRAP-ACK.json left by _bootstrap_to_warm.
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
+    if ack_path.exists():
+        ack_path.unlink()
+
+    # Consume WITHOUT ACK → should degrade.
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
+    degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
+    assert len(degraded) >= 1
+    assert degraded[-1].payload["reason"] == "bootstrap-ack-invalid"
+
+
+def test_o4_merge_feed_unaffected_by_ack(
+        tmp_state, carver_project, patch_launch):
+    """O4 negative: a merge-feed turn (read-only, non-recover) requires NO
+    ack and is byte-identical to P3a."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    resume_events = d._execute_resume_carver_session(
+        "demo", cfg, states,
+        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+                                      source_ids=("d1",), generation=1))
+    task_id = resume_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert not any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
+    assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
+    assert _snapshot("demo").status is CarverStatus.WARM
+
+
+# --- O5: debounce ---
+
+def test_o5_carver_no_route_debounced(
+        tmp_state, carver_project, patch_launch):
+    """O5: two consecutive passes with an unresolvable pinned route emit
+    NEEDS_OPERATOR{carver-no-route} on the FIRST pass only."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    # Make routes empty so the pinned route is unresolvable.
+    paths.routes_path().write_text("revision = \"v2\"\n")
+
+    states = storage.list_states("demo")
+    action = reconcile.ResumeCarverSession(
+        project="demo", mode="merge-feed", source_ids=("d1",), generation=1)
+
+    # First pass: emits NEEDS_OPERATOR.
+    events1 = d._execute_resume_carver_session("demo", cfg, states, action)
+    needs1 = [e for e in events1 if e.type is EventType.NEEDS_OPERATOR]
+    assert len(needs1) == 1
+    assert needs1[0].payload["reason"] == "carver-no-route"
+    # Persist the events so the debounce scanner sees them.
+    for ev in events1:
+        storage.append_and_apply("demo", states, actor=ev.actor, type=ev.type,
+                                  payload=ev.payload, task_id=ev.task_id)
+
+    # Second pass (same episode, no rotation/started in between): suppressed.
+    events2 = d._execute_resume_carver_session("demo", cfg, states, action)
+    needs2 = [e for e in events2 if e.type is EventType.NEEDS_OPERATOR]
+    assert needs2 == []
+
+
+def test_o5_debounce_re_armed_by_rotation(
+        tmp_state, carver_project, patch_launch):
+    """O5: a ROTATED between two unresolvable passes re-arms the debounce;
+    a later unresolved pass may escalate again."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    paths.routes_path().write_text("revision = \"v2\"\n")
+
+    states = storage.list_states("demo")
+    action = reconcile.ResumeCarverSession(
+        project="demo", mode="merge-feed", source_ids=("d1",), generation=1)
+
+    # First pass emits.
+    events1 = d._execute_resume_carver_session("demo", cfg, states, action)
+    assert any(e.type is EventType.NEEDS_OPERATOR for e in events1)
+    # Persist events.
+    for ev in events1:
+        storage.append_and_apply("demo", states, actor=ev.actor, type=ev.type,
+                                  payload=ev.payload, task_id=ev.task_id)
+
+    # Emit a ROTATED event (simulating a new generation).
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_ROTATED,
+        payload={"new_generation": 2, "reason": "test"},
+    )
+
+    # After rotation, the debounce helper should be re-armed: the same
+    # reason emitted again returns True for a fresh NEEDS_OPERATOR.
+    assert not d._needs_operator_recently_emitted("demo", "carver-no-route")
+    # Emit a fresh NEEDS_OPERATOR (post-rotation, re-armed).
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.NEEDS_OPERATOR,
+        payload={"reason": "carver-no-route"},
+    )
+    assert d._needs_operator_recently_emitted("demo", "carver-no-route")
+
+
+# --- O6: enablement WARN ---
+
+def test_o6_enablement_warn_emitted_once(tmp_state, carver_project, monkeypatch):
+    """O6: loading a project with session=='project-persistent' logs
+    exactly one carver.enablement.premature WARN."""
+    cfg = carver_project
+    assert cfg.carve.session == "project-persistent"
+    warnings_emitted: list[str] = []
+    monkeypatch.setattr(
+        "nyxloom.daemon.log.warning",
+        lambda event, **kw: warnings_emitted.append(event))
+    d = daemon.Daemon({"demo": cfg.root})
+    d._carver_session("demo", cfg)
+    d._carver_session("demo", cfg)
+
+    assert len(warnings_emitted) == 1  # once per daemon instance
+
+
+def test_o6_fresh_project_no_warn(tmp_state, sample_project, monkeypatch):
+    """O6: a session=='fresh' project logs no enablement WARN."""
+    cfg = sample_project
+    assert cfg.carve.session == "fresh"
+    warnings_emitted: list[str] = []
+    monkeypatch.setattr(
+        "nyxloom.daemon.log.warning",
+        lambda event, **kw: warnings_emitted.append(event))
+    d = daemon.Daemon({"demo": cfg.root})
+    d._carver_session("demo", cfg)
+
+    assert warnings_emitted == []
+
+
+# --- O7: byte-identical-off ---
+# Already verified by the full suite passing with session=="fresh" defaults.
+# This test explicitly asserts the legacy carve path is unchanged.
+
+def test_o7_byte_identical_fresh_carve_dispatch(tmp_state, sample_project, patch_launch):
+    """O7: with cfg.carve.session=='fresh', _execute_carve_dispatch runs
+    the exact pre-P3c fresh-carve path (task_id carve- prefix, not
+    carver-session-)."""
+    from conftest import SAMPLE_ROUTES_TOML
+    cfg = sample_project
+    assert cfg.carve.session == "fresh"
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    events = d._execute_carve_dispatch("demo", cfg, states, action)
+
+    task_ids = [e.task_id for e in events if e.type is EventType.TASK_CREATED]
+    assert len(task_ids) == 1
+    assert task_ids[0].startswith("carve-demo-")
+    assert not task_ids[0].startswith("carver-session-")

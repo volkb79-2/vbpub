@@ -190,6 +190,7 @@ class CarveStageConfig:
     retain_merge_digests: int = 10
     max_resume_failures: int = 2
     max_proposal_repairs: int = 2
+    compaction_strategy: str = "rotate"         # "rotate" | "<driver-name>"
 
 
 @dataclass
