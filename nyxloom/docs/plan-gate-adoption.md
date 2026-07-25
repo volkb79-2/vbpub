@@ -81,9 +81,23 @@ Leaf-ish; reuses `gate_runner` + `mutation_gate` primitives.
 **Done (declaration + gate-verify cross-check).** `asserts=[tests-pass|changed-line-coverage|
 mutation|canary-verified]` on `[gates.*]` (schema enum + `GateDef.asserts`). `nyxloom gate verify`
 cross-checks it against its own verdict (canary-verified + LAUNDERS → MISMATCH; + TRUSTWORTHY →
-OK confirmed; INCONCLUSIVE → UNVERIFIED; coverage/mutation → declared-not-verified). Additive
+OK confirmed; INCONCLUSIVE → UNVERIFIED; mutation → declared-not-verified). Additive
 overlay, gate 42/42. **Still pending:** feeding `asserts` (+ complexity band) into review-depth
 selection — that's D part 2 (the routing half), deferred with it.
+
+**GA2b — coverage-canary (`changed-line-coverage` proven, not just declared) · ✅ DONE.**
+GA2 left `changed-line-coverage` as declared-but-unverified (the canary probe has no
+coverage data of its own). GA2b gives it a dedicated probe: `gate_canary.inject_uncovered_line`
+appends a valid, test-neutral, never-called function (a `def` covered at import + two body
+lines executed by NO test), and `verify_gate_enforces_coverage` (the same multi-attempt engine
+as GA1, `_verify_gate_kills_canary`, with a distinct injector + `verify-coverage-canary` phase)
+confirms the gate rejects it. Only a gate that enforces a changed-line-coverage floor kills such
+a canary; a tests-only gate launders it — the discriminating integration test proves exactly
+that (coverage gate KILLS, tests-only gate SURVIVES the *same* canary). `cmd_gate_verify` runs
+the probe **only when the assert is declared** (no extra gate run otherwise) and only past the
+BROKEN early-return, printing `coverage-floor: PASS/FAIL/INCONCLUSIVE`; a FAIL is a DECLARATION
+MISMATCH exactly like a laundered `canary-verified`. `mutation` is now the sole probe-less
+assert. Advisory (never mandate) coverage-floor note added to `reference/STANDARD.md`.
 **What.** Add an optional `asserts: [tests-pass, changed-line-coverage, mutation,
 canary-verified]` list to `[gates.*]` in the config schema; surface it on the
 dashboard; feed it into review-depth selection (a weak-gate project → deeper/stronger
