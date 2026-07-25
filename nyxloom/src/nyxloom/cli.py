@@ -824,6 +824,55 @@ def cmd_merge(args) -> int:
     return 0
 
 
+def _asserts_mismatch_report(asserts: list[str], verdict: str) -> tuple[list[str], bool]:
+    """GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"):
+    cross-check a gate's declared `asserts` against `gate verify`'s OWN
+    observed verdict (one of BROKEN/LAUNDERS/INCONCLUSIVE/TRUSTWORTHY).
+
+    Returns `(report_lines, mismatch)`. `report_lines` is `[]` when
+    `asserts` is empty -- GA1-compatible: an undeclared gate gets zero extra
+    output (O3). Two rules can flag `mismatch=True`:
+      * `canary-verified` declared but verdict is LAUNDERS -- every canary
+        attempt survived, so the gate was never shown to reject anything.
+      * `tests-pass` OR `canary-verified` declared but verdict is BROKEN --
+        the gate rejects known-good HEAD, so it never even ran a genuine
+        test pass, let alone reached the canary step.
+    `changed-line-coverage`/`mutation` are not independently observable by
+    this probe (it has no coverage/mutation data of its own) -- always
+    surfaced as declared-but-unverified, never a mismatch. This is
+    deliberately an OVERLAY: it never changes the verdict line itself, only
+    adds `asserts:`/`MISMATCH:` lines and (via the caller) can push a
+    would-have-been-zero exit code to non-zero.
+    """
+    if not asserts:
+        return [], False
+    lines = [f"asserts: {', '.join(asserts)}"]
+    mismatch = False
+    for a in asserts:
+        if a == "tests-pass":
+            if verdict == "BROKEN":
+                lines.append(f"  MISMATCH: '{a}' declared, but the gate rejects known-good HEAD")
+                mismatch = True
+            else:
+                lines.append(f"  OK: '{a}' confirmed (known-good HEAD passes)")
+        elif a == "canary-verified":
+            if verdict == "LAUNDERS":
+                lines.append(f"  MISMATCH: '{a}' declared, but every canary attempt survived")
+                mismatch = True
+            elif verdict == "BROKEN":
+                lines.append(f"  MISMATCH: '{a}' declared, but the gate never reached the "
+                              "canary step (rejects known-good HEAD)")
+                mismatch = True
+            elif verdict == "TRUSTWORTHY":
+                lines.append(f"  OK: '{a}' confirmed (a known-bad canary was rejected)")
+            else:  # INCONCLUSIVE
+                lines.append(f"  UNVERIFIED: '{a}' declared, but the canary probe was "
+                              "INCONCLUSIVE -- cannot confirm")
+        else:  # changed-line-coverage, mutation -- not observable by this probe
+            lines.append(f"  declared, not independently verified here: '{a}'")
+    return lines, mismatch
+
+
 def cmd_gate_verify(args) -> int:
     """gate verify <project>
 
@@ -845,6 +894,16 @@ def cmd_gate_verify(args) -> int:
       INCONCLUSIVE -- no attempt was killed, but at least one never
                       rendered a real verdict (timeout/exec-failure). exit 3
       TRUSTWORTHY  -- passes good HEAD AND kills >=1 canary.        exit 0
+
+    PACKAGE GA2 (checklist item 7 "rigor declared"): when the selected gate
+    declares `asserts=[...]`, the verdict above is followed by an `asserts:`
+    line plus a per-claim OK/MISMATCH/UNVERIFIED breakdown
+    (`_asserts_mismatch_report`). A gate with NO `asserts` prints nothing
+    extra at all (byte-compatible with GA1). A genuine MISMATCH is a
+    strictly additive overlay: the verdict line above is never rewritten,
+    but a would-have-been-zero (TRUSTWORTHY) exit code is forced non-zero,
+    since a false rigor claim means the gate cannot be fully trusted even
+    though the canary probe itself passed.
     """
     import subprocess
 
@@ -873,6 +932,12 @@ def cmd_gate_verify(args) -> int:
               f"known-good HEAD {commit[:12]})")
         print(f"verdict: BROKEN -- {args.project}'s gate {gate.gate_id} rejects even "
               "known-good HEAD; fix the gate/HEAD before trusting merges through it")
+        report_lines, mismatch = _asserts_mismatch_report(gate.asserts, "BROKEN")
+        for line in report_lines:
+            print(line)
+        if mismatch:
+            print(f"verdict: DECLARATION MISMATCH -- {args.project}'s gate {gate.gate_id} "
+                  "asserts do not match its observed behavior")
         return 1
 
     try:
@@ -889,20 +954,29 @@ def cmd_gate_verify(args) -> int:
           f"({len(canary_result.attempts)} attempt(s): {attempts_desc})")
 
     if canary_result.killed:
+        verdict, exit_code = "TRUSTWORTHY", 0
         print(f"verdict: TRUSTWORTHY -- {args.project}'s gate {gate.gate_id} rejects a "
               "known-bad canary")
-        return 0
-
-    if canary_result.inconclusive:
+    elif canary_result.inconclusive:
+        verdict, exit_code = "INCONCLUSIVE", 3
         print(f"verdict: INCONCLUSIVE -- {args.project}'s gate {gate.gate_id} never rendered "
               "a real verdict on any canary attempt (timeout/exec-failure); cannot confirm "
               "TRUSTWORTHY or LAUNDERS -- investigate the gate command itself")
-        return 3
+    else:
+        verdict, exit_code = "LAUNDERS", 1
+        print(f"verdict: LAUNDERS -- {args.project}'s gate {gate.gate_id} PASSES every "
+              f"known-bad canary tried ({len(canary_result.attempts)} attempt(s)); it cannot "
+              "be trusted to reject broken code")
 
-    print(f"verdict: LAUNDERS -- {args.project}'s gate {gate.gate_id} PASSES every known-bad "
-          f"canary tried ({len(canary_result.attempts)} attempt(s)); it cannot be trusted to "
-          "reject broken code")
-    return 1
+    report_lines, mismatch = _asserts_mismatch_report(gate.asserts, verdict)
+    for line in report_lines:
+        print(line)
+    if mismatch:
+        print(f"verdict: DECLARATION MISMATCH -- {args.project}'s gate {gate.gate_id} "
+              "asserts do not match its observed behavior")
+        if exit_code == 0:
+            exit_code = 1
+    return exit_code
 
 
 def cmd_pause(args) -> int:
