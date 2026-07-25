@@ -445,7 +445,7 @@ Focused P100 tests: 40 passed in 1.17s. `git diff --check`: clean.
 
 | Finding | Status |
 |---------|--------|
-| F1 (rules.py line 207 coverage.py limitation) | ACCEPTED with behavioral proof |
+| F1 (rules.py line 207 host-network branch) | FIXED — the original tool-limitation diagnosis was false; the repaired input closes the arc |
 | F2 (score.py default_band testable) | FIXED — `test_score_entity_default_band_none` |
 | F3–F4 (hollow score tests) | REMOVED |
 | F5–F6 (self-review contradictions) | FIXED |
