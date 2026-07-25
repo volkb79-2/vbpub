@@ -39,6 +39,26 @@ so it is mechanical. Also *saves* cost (cheap review for leaf work).
 **Scope.** `src/nyxloom/schemas/handoff-frontmatter.schema.json`, `adapters.py` (review prompt),
 routing selection, lint (accept the new field), tests. Frozen-core-adjacent
 (adapters/routing) — carve carefully.
+**Gate-rigor as a second review-depth input (folded in 2026-07-25).** Review depth
+should key off *two* signals, not one: the carver's complexity band AND how much
+correctness the project's own gate already guarantees. Today nyxloom trusts a
+project's declared gate blindly — dstdns even ships a `[gates.gate-probe]` whose
+`argv` is `true`, and a project could declare `argv=["true"]` and watch every merge
+sail through, orchestration perfectly hardened (F) but verdict meaningless. Add an
+optional declared **rigor contract** to `[gates.*]` in the trove config — e.g.
+`asserts = ["tests-pass", "changed-line-coverage", "mutation"]` — that nyxloom
+records + surfaces and that D's routing reads: a weak-gate project makes the
+reviewer layer carry more (deeper/stronger review); a strong-gate project earns a
+cheaper review. This makes the three-layer model (gate ⊕ reviewer ⊕ controller,
+canonical **L2**) *configurable per project* instead of hardcoded — the same axis D
+already mechanizes. Optional adversarial extension: a **meta-gate** that requires the
+declared gate to *reject* a known-bad canary commit before nyxloom trusts it (turning
+`gate-probe`'s "does it run" into "does it actually fail"). See `nyxloom-trove/LESSONS.md` PL2.
+**argv_max caveat (from scoping).** The `REVIEW_INDEPENDENT` prompt is already at
+argv_max — inject `review_focus` (and any rigor-derived hint) with the SAME
+bounded-embed pattern as the existing `prior_verdict`/scope-amendment appends
+(guarded by `test_review_independent_prompt_stays_under_argv_max_with_real_paths`);
+tier/band changes have a ~19-test blast radius (frontier-review fixtures).
 
 ## F — Auto-revert on post-merge-gate failure + gate the manual merge path · SMALL-MEDIUM · ✅ DONE
 **What.** (1) When post-merge validation fails on the *published* tree, auto-revert

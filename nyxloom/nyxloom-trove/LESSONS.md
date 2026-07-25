@@ -32,5 +32,39 @@ documenting the dir's reference-only purpose. The general principle
 (one-source-of-truth for shipped schemas) is already integrated upstream as
 canonical **L1**, which uses this very incident as its worked example.
 
+## PL2 — The gate's value is a *composition*; nyxloom requires an interface, offers a toolkit, mandates no infra
+`scope: product` · `upstream: proposed`
+
+Factory-hardening A/F validated that "the gate catches real bugs" — but the value
+is not any single component (not docker, not `tester-unified`). It is a **stack**,
+and only one layer is infra:
+
+1. **INFRA** — a runtime-faithful *isolated* environment, never the dev cockpit
+   (project-owned, expressed entirely inside the gate's `argv`).
+2. **TOOLKIT** — a changed-line completeness floor (`coverage_gate.py`) and mutation
+   (`mutation_gate.py`): nyxloom-shipped but **opt-in** and ecosystem-specific.
+3. **CONTENT** — the project's own invariant/behavioral tests. (F's two real catches
+   were a config-schema invariant test + the coverage floor — neither is infra.)
+4. **DISCIPLINE** — GATE→VERDICT→MERGE read as *separate* steps (canonical **L4**)
+   + SOLO serialization across gates.
+
+**The generalization for "all kinds of projects."** nyxloom must **REQUIRE only the
+interface**: a `[gates.*]` command that runs isolated at a commit and exits non-zero
+on failure with nothing masking it (the `{worktree}` placeholder is the sole
+integration seam; `gate_runner.py` + the daemon revert path is the universal
+orchestration, hardened by F). It should **OFFER the toolkit** as an opt-in menu
+(`coverage_gate`/`mutation_gate` for Python; the *interface* generalizes to
+`cargo llvm-cov`/`nyc`). It must **NOT mandate specific infra** (docker, pytest,
+`tester-unified`) — that breaks config-driven onboarding and locks the daemon to one
+ecosystem. Proof it already generalizes: dstdns (docker `test-runner`, **no** coverage
+floor) and nyxloom (docker `tester-unified`, **with** floor) run under one daemon
+today with wholly unrelated gate commands.
+
+**Open gap (→ folds into factory-hardening D).** nyxloom trusts but cannot *verify* a
+project's gate quality — `argv=["true"]` would merge everything. Close it with a
+declared per-project rigor contract (`asserts=[...]`) that feeds review-depth
+selection, optionally probe-verified by an adversarial meta-gate (must reject a
+canary). See `docs/plan-factory-hardening.md` §D.
+
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
