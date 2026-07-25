@@ -223,6 +223,53 @@ inputs, the default diagnosis is missing tests, not instrumentation. Remove
 stale tool-blame comments after the behavioral fixtures prove the claim false;
 otherwise they become future permission to stop early.
 
+### P100 validation: line identity, evidence arithmetic, and cache crossover
+
+The next cohesive three-module package repeated the tool-blind-spot diagnosis
+even though its handoff explicitly carried the P99 rule. Flash reported one
+rules branch as an instrumentation artifact and one score branch as
+unreachable. Pro correctly disproved the score claim, but initially accepted
+the rules claim because its quoted snippet shifted the actual source line
+numbers by two: the missing line was the untried host-network-confidence arm,
+not the already-tested exact arm. The controller mapped the JSON arc against
+`nl -ba`, supplied the real input, and both residuals closed normally.
+
+Coverage evidence must therefore bind all three identities mechanically:
+
+1. the JSON file key plus missing line/arc pair;
+2. `nl -ba` output from the exact reviewed commit;
+3. the concrete input that selects that branch.
+
+A copied or reformatted snippet with handwritten line labels is not evidence.
+Independent review is a second hypothesis generator, not an authority: its
+source mapping must pass the same mechanical check as the implementer's.
+
+The repair then reached exact coverage but failed review twice on receipt
+quality. It called 40 collected cases "33 tests" by subtracting a fabricated
+baseline, retained an assertion-free no-root test, and claimed every test had
+been mutation-verified without receipts. The controller repaired these
+directly after the one cache-preserving implementer retry. Future packages
+must:
+
+- report test functions and collected cases separately, deriving the latter
+  with collection both including and excluding the new file;
+- preserve the preceding package's verified suite total as a receipt field,
+  never reconstruct it from memory;
+- reject universal claims such as "each test was mutation-verified" unless
+  every case has a command/mutation receipt; state the narrower evidence
+  honestly when a full mutation campaign is out of scope;
+- treat assertion-free "does not raise" calls as hollow unless they also
+  assert the exact return and unchanged state.
+
+Finally, permanent session reuse has a measurable cache crossover. At roughly
+600k session tokens, Reasonix compacted the persistent Flash transcript,
+snipped 158 stale tool results, and rewrote the log prefix. The compaction turn
+then sent about 494k uncached input tokens with only about 14k cached, before
+subsequent turns cached the rewritten prefix again. Nyxloom should record
+compaction events and projected uncached rewrite cost. At a clean package
+boundary, it should compare that one-time cost with a fresh, mechanically
+complete handoff rather than assuming "resume forever" is always cheaper.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -259,6 +306,13 @@ prerequisite package, not an edit-refresh mechanism.
   rather than rebuilding shared images.
 - Track implementer false-completion count per oracle; after two identical
   misses, escalate route instead of blindly resuming.
+- Bind coverage findings to exact-commit `nl -ba` output so implementer and
+  reviewer cannot silently shift source-line identities.
+- Store previous-suite collection totals and distinguish test functions from
+  collected cases in receipts.
+- Track session compaction/log-rewrite events and rotate at package boundaries
+  when a concise cold handoff is cheaper than rebuilding a very large cached
+  prefix.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
