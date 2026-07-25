@@ -1359,7 +1359,16 @@ def test_branch_authority_normalize_reads_envelope_at_worktree_report_path(
     # carver_project_branch_authority is a REPO-ROOT project (worktree_root
     # = '.worktrees'), so `git rev-parse --show-prefix` from cfg.root is ""
     # -- the report lives at <worktree>/<reports_dir>, no extra segment.
-    _write_envelope(worktree / cfg.reports_dir, seq, _carve_envelope(task_id))
+    # AD2 (2026-07-25): this oracle asserts CARVER_PROPOSAL_RECORDED, so the
+    # envelope must carry a NON-empty artifacts list -- an empty-artifacts
+    # envelope is a legitimate "carved nothing" no-op that records RESUMED but
+    # no proposal (see test_ad2_carved_nothing_turn_records_resumed_not_proposal_
+    # stays_warm). The consume-time parse is STRUCTURAL-only (no artifact
+    # hash/file check -- that is P3b admission's job), so a synthetic artifact
+    # dict suffices to prove the worktree-prefix path resolution found+recorded it.
+    _write_envelope(worktree / cfg.reports_dir, seq, _carve_envelope(
+        task_id, artifacts=[{"kind": "handoff", "path": "handoff/demo-P901.md",
+                             "sha256": "0" * 64, "source_ref": None}]))
 
     attempt_id = states[task_id].attempts[0].attempt_id
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
