@@ -153,3 +153,113 @@ behavior. F5 requires strengthening 8 of 16 tests with exact structural or
 ordering assertions. F3 and F6 are minor cleanup.
 
 Concrete repair oracles provided for all six findings.
+
+
+---
+
+# Repair re-review — 2026-07-25 (commit 1e347e72)
+
+**Re-reviewer:** Reasonix (same persistent adversarial session)
+**Range:** 08030c3a..1e347e72
+**Verdict:** **APPROVED** (F1–F6 closed; residual quality notes below)
+
+## Independent gate verification
+
+Full xdist gate: **2019 passed, exit 0** in 69s. Focused tests: 17 passed in 1.50s.
+
+```
+Literal: lines=[]  arcs=[]
+Whole:   lines=[]  branches=[]
+PASS: whole-file 100%
+```
+Test counts: 17 functions = 17 collected cases, 2019 total (2002 + 17).
+`git diff --check`: clean.
+
+## F1–F6 closure verification
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| **F1** (LOG missing) | **FIXED** | P103-LOG.md created with 30 lines: baseline, repairs, gate table, literal residual check |
+| **F2** (∅ symbols) | **FIXED** | REPORT now prints explicit `run 1 missing target lines: []` etc. for both runs |
+| **F3** (_run_current unused) | **FIXED** | Removed from imports |
+| **F4** (cycle-safe untested) | **FIXED** | `test_in_slice_cycle_safe` tests `a→b→a` cycle with `_in_slice("a", "missing", parents)` |
+| **F5** (8 weak assertions) | **FIXED** | All 8 strengthened (see detail below) |
+| **F6** (for/else/assert False) | **FIXED** | Replaced with `any(p.get("raw") is not None ...)` |
+
+### F5 strengthening detail
+
+| Test | Before | After |
+|------|--------|-------|
+| `format_result_pretty` | `"\n" in result` | `result == json.dumps(r.to_jsonable(), indent=2)` — exact pretty JSON |
+| `summary_cells_available` | `"ram" in cells["e"]` | `semantic=="gauge"`, `count==2`, `min==1.0`, `max==1.0` |
+| `project_hierarchy_no_sort` | `len(rows) == 3` | + `key=="a"`, `depth==0`, `path`/`metrics` presence, child `depth==1`/`path==["a"]` |
+| `project_hierarchy_with_sort` | `len(rows) == 3` | + descending key order: `["a", "c", "b"]` |
+| `run_raw_no_entity` | `len(r.rows) >= 1` | `len==1`, `key=="key1"`, `len(points)==1` |
+| `run_raw_point_cap` | `truncated is True` | + `reason=="max_points"`, `len(rows)==1`, `len(points)==3` |
+| `run_raw_no_points` | `isinstance(truncation, dict)` | `len(rows)==1`, `len(points)==1` |
+| `run_raw_both_caps` | `also=="max_rows"` | + `truncated is True`, `reason=="max_points"`, `len(rows)==1`, `len(points)==3` |
+
+## Residual quality notes (non-blocking)
+
+The following are controller observations that do not block approval (gate is
+correct, F1–F6 are closed), but should be addressed in a follow-up cleanup:
+
+### R1 — REPORT "before" table says "17+ lines, 19+ branches"
+**File:** P103-REPORT.md:13
+
+The before residual was exactly 17 lines and 19 branch pairs (documented
+in the handoff and the "Before residual sets" section of the same report).
+The "17+/19+" notation implies there were additional gaps beyond the
+literal set, which is inaccurate — P102 closed all validation gaps, leaving
+exactly the 17/19 P103 residual.
+
+**Repair:** Change to "17 lines, 19 branches" (exact counts).
+
+### R2 — LOG says "plus other gaps"
+**File:** P103-LOG.md:4-5
+
+"engine.py: 17 lines + 19 branch pairs residual (P103 set), plus other
+gaps." The "plus other gaps" is inaccurate — P102 closed the validation
+tranche completely, leaving exactly the 17/19 residual. There were no
+other gaps in engine.py at P103 baseline.
+
+**Repair:** Remove "plus other gaps."
+
+### R3 — `test_run_raw_no_points` is misnamed
+**File:** topos/tests/test_p103_engine_coverage.py:155-163
+
+The name implies no points are produced, but the test proves a point EXISTS
+(`len(points) == 1`). The comment correctly explains: "entity exists,
+metric exists, but value is None -> point with None value." The name
+should match.
+
+**Repair:** Rename to `test_run_raw_none_value_point` or similar.
+
+### R4 — `test_enforce_byte_cap_prior_truncation` asserts only 2 of 5 fields
+**File:** topos/tests/test_p103_engine_coverage.py:82-88
+
+The actual truncation dict contains 5 keys: `truncated`, `policy`, `reason`,
+`dropped_rows`, `also`. The test asserts only `truncated` and `also`.
+Missing `policy`, `reason` (which is `"max_bytes"` in this path), and
+`dropped_rows`.
+
+**Repair:** Add `assert trunc["reason"] == "max_bytes"` and
+`assert trunc["dropped_rows"] == 1`.
+
+### R5 — `test_summary_cells_available_visibility` asserts 4 of 8 cell fields
+**File:** topos/tests/test_p103_engine_coverage.py:69-76
+
+The cell dict contains 8 keys: `count`, `max`, `mean`, `min`, `p50`, `p95`,
+`sample_count`, `semantic`. The test asserts only `semantic`, `count`,
+`min`, `max`. Missing `mean`, `p50`, `p95`, `sample_count`.
+
+**Repair:** Add assertions for the remaining fields or document why they
+are intentionally omitted.
+
+## Verdict
+
+**APPROVED.** All six original findings (F1–F6) are closed. Whole-file
+engine.py at exact 100% with parity across two runs. 17 tests with
+strengthened exact assertions. Five residual quality notes (R1–R5) are
+non-blocking documentation and assertion-completeness improvements that
+should be addressed in a follow-up cleanup.
