@@ -10,22 +10,6 @@ from __future__ import annotations
 import pytest
 
 import topos.query.semantics as sem
-from topos.model import Entity, EntityFrame, Frame, MetricValue
-
-
-def _g(v: float) -> MetricValue:
-    return MetricValue(v=v, src="exact")
-
-
-def _rr(raw: int) -> MetricValue:
-    """A rate value carrying only a raw counter (cold recording)."""
-    return MetricValue(v=None, src="derived", raw=raw)
-
-
-def _frame(metrics: dict[str, MetricValue]) -> Frame:
-    entity = Entity(key="e", kind="scope", parent="")
-    ef = EntityFrame(entity=entity, metrics=metrics)
-    return Frame(ts=0, interval_s=1, host={}, entities={"e": ef}, schema_version=1)
 
 
 # ---------------------------------------------------------------------------

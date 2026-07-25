@@ -33,8 +33,8 @@ query/semantics.py at exact 100% statements and branches. 12 tests closing
 | 254 | [253,254] | _counter_total | point.raw=None | continue |
 | 269 | [268,269] | _integral_of_series | len(pairs)<2 | (0.0, 0.0) |
 | 274 | [273,274] | _integral_of_series | dt=0 | continue |
-| 329 | [328,329] | summarize state_duration | state=None | continue |
-| 333 | [332,333] | summarize state_duration | dt<=0 | continue |
-| 337 | [336,337] | summarize state_duration | >64 states | IncompatibleQueryError |
+| 329 | [328,329] | _summarize_state_duration | state=None | continue |
+| 333 | [332,333] | _summarize_state_duration | dt<=0 | continue |
+| 337 | [336,337] | _summarize_state_duration | >64 states | IncompatibleQueryError |
 | 349 | [348,349] | _state_key | bool True/False | "true"/"false" |
 | 351 | [350,351] | _state_key | float 3.14159265 | "3.141593" |
