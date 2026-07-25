@@ -1,13 +1,25 @@
-# P104-SELFREVIEW — Adversarial self-review
+# P104 self-review — final controller repair
 
-## Quality checks
+## Adversarial checks
 
-- **No misleading tests**: test_copy_cgroup_files_read_failure removed.
-- **No file handle leaks**: TarFile wrapped in context manager.
-- **No fixed /tmp paths**: All use tmp_path or tempfile.mkdtemp.
-- **No 10,000 file creation**: Path.exists patched instead.
-- **Exact assertions**: Systemctl/docker status fields fully asserted.
-- **No false mutation claims**.
-- **git diff --check**: Clean.
-- **Parity**: Two gate runs identical.
-- **Both files 100%**: enrich.py and bundle.py — 0 missing, 0 branches.
+- All 22 test bodies contain an exact behavioral assertion or an exact
+  exception assertion; there are no `pass` or assertion-free bodies.
+- Enrichment tests compare complete returned tuples and status dictionaries.
+- Filesystem tests use per-case `tmp_path`; the `/virtual` value is never
+  accessed because `Path.exists` is patched for the exhaustion boundary.
+- No test mocks the function under test. Patches are limited to environment,
+  home-directory, optional-dependency, and filesystem-existence seams.
+- The cgroup error case proves both the successful primary copy and the exact
+  retained directory that causes and survives the swallowed ancestor write
+  error.
+- Tar handles are closed, tar membership is exact, and traversal rejection
+  retains the production safety behavior.
+- There are no weak non-`None`, range-only, membership-only, call-only, sleep,
+  random, host-state, coverage pragma, omission, or mutation claims.
+- Two complete xdist receipt runs have identical complete target records and
+  empty whole-file missing sets.
+
+## Scope
+
+Only the P104 handoff, P104 reports, and P104 test file changed. Product source,
+gate tooling, dependencies, and coverage configuration are unchanged.
