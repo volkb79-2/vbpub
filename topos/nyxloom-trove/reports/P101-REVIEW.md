@@ -160,3 +160,40 @@ inaccuracy) should also be addressed.
 
 Concrete repairs provided for all four findings. The code and gate are
 sound; the evidence package needs completion.
+
+
+---
+
+# Final sign-off — 2026-07-25 (commit 854aba70)
+
+**Reviewer:** Reasonix (same persistent adversarial session)
+**Range:** 5e5642cd..854aba70
+**Verdict:** **APPROVED**
+
+## Gate verification
+
+Single full xdist gate run: **1984 passed, exit 0** in 64s.
+
+```
+PASS: semantics.py empty missing_lines and missing_branches
+```
+
+Focused P101 tests: 12 passed in 1.27s. `git diff --check`: clean.
+
+## F1–F4 closure verification
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| **F1** (P101-LOG.md missing) | **FIXED** | LOG created with 31 lines: aborted-engine history, mechanical baseline, gate evidence, truthful "no mutation campaign" statement |
+| **F2** (universal fail-before without receipts) | **FIXED** | Self-review now: "No mutation campaign was run, so this receipt makes no mutation or universal fail-before claim" |
+| **F3** (unused helpers/imports) | **FIXED** | 16 lines removed: `_g`, `_rr`, `_frame` helpers and `Entity`, `EntityFrame`, `Frame`, `MetricValue` imports all deleted; docstring cleaned |
+| **F4** (function name inaccuracy) | **FIXED** | Report rows 329/333/337 now say `_summarize_state_duration` |
+
+## Evidence summary
+
+- **1/1 exact 100%**: `query/semantics.py` — 180/180 stmts, 74/74 branches
+- **1984 total, 1972 baseline, 12 new**: mechanically verified via `collect-only`
+- **12 `nl -ba` line mappings**: all verified against source at this commit
+- **12 tests**: all with exact behavioral assertions, no hollow/weak/duplicate
+- **No mutation overclaim**: self-review truthfully admits no campaign was run
+- **LOG complete**: documents aborted draft, baseline, gate evidence, discipline
