@@ -998,6 +998,12 @@ class Daemon:
         # it).
         validated_carve_proposals = self._validated_carve_proposals(
             project, cfg, carver_session_snap)
+        # F018 AD3: structurally-invalid proposals for the current generation
+        # the warm session should REPAIR (re-emit correctly) before ingesting
+        # new feeds. Gated to `1 <= invalid < max_proposal_repairs` so it
+        # composes with P3b's ceiling escalation (never double-fires).
+        pending_carve_repairs = self._pending_carve_repairs(
+            project, cfg, carver_session_snap)
 
         return reconcile.ReconcileInput(
             now=utc_now(),
@@ -1039,6 +1045,7 @@ class Daemon:
             # no source events yet -- human-intake package (#17) will populate this
             pending_human_intakes=(),
             validated_carve_proposals=validated_carve_proposals,
+            pending_carve_repairs=pending_carve_repairs,
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -2244,6 +2251,68 @@ class Daemon:
             and ev.payload.get("reason") == "carver-proposal-invalid"
             and ev.payload.get("generation") == generation
             for ev in recent
+        )
+
+    def _pending_carve_repairs(self, project: str, cfg: ProjectConfig,
+                               snap: carver_session.CarverSessionSnapshot | None,
+                               ) -> tuple[carver_session.CarveRepairRequest, ...]:
+        """F018 AD3 (docs/handoff/f018-ad3-carve-repair-proposal.md): the
+        structurally-invalid carve proposals for the CURRENT generation that
+        the warm session should re-emit correctly BEFORE ingesting any new
+        merge feed (reconcile's WARM ladder plans a
+        ResumeCarverSession(mode="repair-proposal") from this).
+
+        Reuses _carve_proposal_repair_escalations' EXACT per-artifact counting
+        -- iterate CARVER_PROPOSAL_RECORDED, keep this-generation events
+        (_parse_proposal_id), count those _validate_carve_proposal_payload
+        rejects -- so the two are computed from the identical raw signal (the
+        append-only event log; no new counter/EventType). It differs only in
+        the RETURN: the invalid proposal_ids (for the repair packet) instead of
+        a bare count.
+
+        COMPOSES with P3b's escalation, never double-fires. Returns () unless
+        `1 <= invalid < cfg.carve.max_proposal_repairs`. At/above the ceiling
+        the repair signal is EMPTY and _carve_proposal_repair_escalations' own
+        `invalid >= max_proposal_repairs` NEEDS_OPERATOR escalation fires
+        instead -- one shared `<` vs `>=` boundary makes them mutually
+        exclusive by construction. `snap is None` (feature off) -> ()
+        byte-identical to every pre-AD3 pass, matching
+        _validated_carve_proposals' own convention.
+
+        Determinism: proposal_ids are counted per-EVENT (matching P3b's
+        boundary exactly -- NEVER dedup for the ceiling check, or the boundary
+        would diverge from P3b and the two could double-fire) and the returned
+        requests are sorted by proposal_id. The repair turn the planner emits
+        from this carries NO source_ids, so the P4a merge-feed shared cursor is
+        untouched; and when a later VALID proposal exists for the same
+        generation it is admitted via the ladder's higher-priority slot-1
+        AdmitCarveProposal, so this signal only ever drives a turn when there is
+        nothing admittable -- the ladder ordering, not this builder, guarantees
+        that."""
+        if snap is None:
+            return ()
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+        invalid_ids: list[str] = []
+        for ev in events:
+            if ev.type is not EventType.CARVER_PROPOSAL_RECORDED:
+                continue
+            payload = ev.payload or {}
+            proposal_id = payload.get("proposal_id")
+            parsed = self._parse_proposal_id(cfg, proposal_id)
+            if parsed is None or parsed[0] != snap.generation:
+                continue
+            if self._validate_carve_proposal_payload(cfg, snap, payload) is None:
+                invalid_ids.append(proposal_id)
+        invalid = len(invalid_ids)
+        if invalid == 0 or invalid >= cfg.carve.max_proposal_repairs:
+            return ()
+        return tuple(
+            carver_session.CarveRepairRequest(
+                proposal_id=pid, generation=snap.generation)
+            for pid in sorted(invalid_ids)
         )
 
     # -- runaway watchdog (P44 2026-07-16) ------------------------------
@@ -4019,7 +4088,8 @@ class Daemon:
         return "\n".join(lines) + "\n"
 
     def _build_carver_resume_prompt(self, project: str, task_id: str, mode: str,
-                                    source_ids: tuple[str, ...]) -> str:
+                                    source_ids: tuple[str, ...],
+                                    repair_ids: tuple[str, ...] = ()) -> str:
         """F018 P3a (plan §3.2/§5.2/§8.2 packet-shaping vocabulary): the
         MODE-SPECIFIC resume prompt fed directly to adapters.build_resume
         (unchanged) -- build_resume takes a flat prompt string, unlike
@@ -4029,7 +4099,35 @@ class Daemon:
         session's own bootstrap + prior turns already cover it); never
         re-embedded here. Capped to a handful of ids as defense in depth --
         reconcile's planner already batches within a configured prompt-size
-        bound per plan §3.2, this is a second, cheap backstop."""
+        bound per plan §3.2, this is a second, cheap backstop.
+
+        F018 AD3: `mode == "repair-proposal"` is a WRITE-AUTHORITY turn (it
+        re-authors the proposal artifacts), so it does NOT share the read-only
+        framing the other resume modes carry -- it returns its own packet
+        early. `repair_ids` are the invalid proposal ids the daemon re-derived
+        for THIS turn (via _pending_carve_repairs), named as pointers; the
+        packet states the re-validation CHECKLIST rather than a precise
+        per-field reason (which _validate_carve_proposal_payload does not
+        report -- see the DTO's own no-`validation_error` rationale)."""
+        if mode == "repair-proposal":
+            ids_note = ", ".join(repair_ids[:20]) if repair_ids else "(none)"
+            return (
+                f"Resume the strategic-carver session for project '{project}' "
+                f"(mode=repair-proposal, turn={task_id}). This is a WRITE-"
+                f"AUTHORITY turn. Your carve proposal(s) {ids_note} FAILED "
+                "structural validation and were NOT admitted. Re-emit a "
+                "corrected CARVER_PROPOSAL_RECORDED envelope that satisfies "
+                "EVERY item of this re-validation checklist -- for each "
+                "artifact: (1) its `sha256` matches the file content exactly; "
+                "(2) its frontmatter parses; (3) its `input_revision` equals "
+                "the source `base_revision`; (4) `nyxloom lint` is clean; "
+                "(5) every oracle path is within the handoff's `scope.touch` "
+                "(the L13 rule) -- plus, for the envelope itself, a well-formed "
+                "`proposal_id`/`turn_id` for the CURRENT generation. Do NOT "
+                "merge and do NOT ingest new merge feeds this turn. Emit only "
+                "the corrected proposal envelope, then print a one-line "
+                "acknowledgement when done."
+            )
         ids_note = ", ".join(source_ids[:20]) if source_ids else "(none)"
         if mode == "merge-feed":
             task_note = f"Incorporate the pending merge digest(s): {ids_note}."
@@ -4283,7 +4381,17 @@ class Daemon:
                                        {"attempt": attempt.to_dict()}, task_id=task_id,
                                        attempt_id=attempt_id))
 
-        prompt = self._build_carver_resume_prompt(project, task_id, action.mode, action.source_ids)
+        # F018 AD3: a repair-proposal turn names the invalid proposal ids in
+        # its packet. Re-derive them fresh from the log here (the daemon side
+        # has cfg+snap; the reconcile action deliberately carries no per-
+        # proposal targeting, keeping the planner pure). Empty for every other
+        # mode -> byte-identical packet.
+        repair_ids: tuple[str, ...] = ()
+        if action.mode == "repair-proposal":
+            repair_ids = tuple(
+                r.proposal_id for r in self._pending_carve_repairs(project, cfg, snap))
+        prompt = self._build_carver_resume_prompt(
+            project, task_id, action.mode, action.source_ids, repair_ids)
         argv = adapters.build_resume(route_def, session=snap.session_id,
                                      worktree=str(carve_cwd), prompt=prompt)
         spec = wrapper.WrapperSpec(

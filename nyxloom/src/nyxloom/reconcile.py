@@ -296,8 +296,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .carver_session import (
-    CarverFeed, CarverSessionSnapshot, CarverStatus, HumanIntake,
-    ValidatedCarveProposal,
+    CarveRepairRequest, CarverFeed, CarverSessionSnapshot, CarverStatus,
+    HumanIntake, ValidatedCarveProposal,
 )
 from .config import ProjectConfig, RouteDef, Routes
 from .stages import effective_concurrency, stage_context
@@ -782,6 +782,15 @@ class ReconcileInput:
     # admission (AdmitCarveProposal, the ladder's highest-priority slot).
     # Same "empty == off" convention.
     validated_carve_proposals: tuple[ValidatedCarveProposal, ...] = ()
+    # F018 AD3 (docs/handoff/f018-ad3-carve-repair-proposal.md): structurally-
+    # invalid carve proposals for the current generation that the warm session
+    # should re-emit correctly BEFORE ingesting new feeds. The daemon computes
+    # this (reusing P3b's exact counting) and gates it to
+    # `1 <= invalid < max_proposal_repairs` so it COMPOSES with P3b's
+    # ceiling escalation (never double-fires). Same "empty == off / nothing to
+    # repair" convention as its neighbours -- every pre-AD3 test plans byte-
+    # identically. The planner only reads it (stays pure).
+    pending_carve_repairs: tuple[CarveRepairRequest, ...] = ()
 
 
 # B4b (critique I4): a handoff stamps the main sha it was carved against as
@@ -1215,7 +1224,27 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             # action and does not consume the mutex, so item 12/15/9 may
             # still run this pass.
         elif status is CarverStatus.WARM:
-            if inp.pending_carver_feeds:
+            if inp.pending_carve_repairs:
+                # Slot (F018 AD3): repair a structurally-invalid proposal BEFORE
+                # ingesting any new merge feed -- a broken premise is fixed
+                # first (plan §3.3's "never before a pending merge feed that may
+                # invalidate its premise" applies doubly to a proposal already
+                # known invalid). NO source_ids -> this is NOT a feed -> the P4a
+                # merge-feed shared cursor (last_consumed_event_sequence) is
+                # untouched. The daemon re-derives the invalid proposal ids for
+                # the packet (keeps this action minimal and the planner pure).
+                # Composes with P3b's escalation: the daemon only populates
+                # pending_carve_repairs while `1 <= invalid < max_proposal_
+                # repairs`, so at/above the ceiling this slot is empty and P3b's
+                # NEEDS_OPERATOR escalation fires instead (mutually exclusive by
+                # a single `<` vs `>=` boundary).
+                carver_actions.append(ResumeCarverSession(
+                    project=inp.cfg.project_id, mode="repair-proposal",
+                    generation=snap.generation,
+                ))
+                carve_dispatch_planned = True
+                trace.note("carver", None, "repair-proposal")
+            elif inp.pending_carver_feeds:
                 # Slot 3: ingest pending merge digests. Plan §3.2: "preserving
                 # event order" -- sort by event_sequence (arrival order), NOT
                 # digest_id (a "merge:{project}:{commit_sha}" string whose sort

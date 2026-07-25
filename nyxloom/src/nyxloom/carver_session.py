@@ -142,6 +142,23 @@ class HumanIntake(_Serde):
     _FIELD_TYPES = {}
 
 
+@dataclass
+class CarveRepairRequest(_Serde):
+    """F018 AD3 (docs/handoff/f018-ad3-carve-repair-proposal.md): a
+    structurally-invalid CARVER_PROPOSAL_RECORDED the warm session is asked to
+    re-emit correctly, *before* ingesting any new merge feed. Pure planner-view
+    DTO -- ids only, NO precise `validation_error` string
+    (`_validate_carve_proposal_payload` returns None across ~15 dimensions
+    without reporting which; the repair PACKET names the re-validation checklist
+    instead -- a precise-reason variant is a deferred P2). Adding this dataclass
+    does NOT touch the frozen projector's fold: no new EventType, no new
+    projection branch."""
+    proposal_id: str        # the invalid CARVER_PROPOSAL_RECORDED's id
+    generation: int         # pin to the current generation (defensive)
+
+    _FIELD_TYPES = {}
+
+
 # ---------------------------------------------------------------------------
 # Pure projector
 # ---------------------------------------------------------------------------
