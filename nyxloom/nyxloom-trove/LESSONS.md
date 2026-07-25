@@ -195,6 +195,34 @@ collection, `git diff --check` must be run by the controller/reviewer, and even
 an `APPROVED` review's "non-blocking" findings should be repaired when the
 product goal is max-standard test quality.
 
+### P99 validation: tool-blind-spot claims need a reproducer, not plausibility
+
+A three-module process-sampling package retained the cohesive hard `3/3`
+checker, yet Flash returned with only two modules closed. It attributed the
+remaining sampler line and branch gaps to a CPython/coverage.py
+"fast-function" tracing limitation. Pro reran the same target serially and
+under xdist and found identical gaps in both modes. Source-level analysis then
+mapped every gap to a missing behavioral input: an uncalled frame-source
+method, an empty omitted-reasons collection, a warm-up case with no newly
+observed PID, and eight false branches requiring degraded or partial process
+counters. Flash repaired those exact inputs on its first review-driven retry;
+two independent full xdist runs then produced empty missing sets for all three
+modules.
+
+Treat a coverage-tool defect as an engineering claim with a high evidence bar.
+Before accepting one, require:
+
+1. a minimal serial reproducer that executes the alleged line while coverage
+   still omits it;
+2. parity evidence comparing the exact serial and xdist missing sets;
+3. a source-branch matrix listing the concrete input needed for each uncovered
+   arc and the attempted fixture.
+
+If serial and xdist expose the same gaps and the branch matrix has untried
+inputs, the default diagnosis is missing tests, not instrumentation. Remove
+stale tool-blame comments after the behavioral fixtures prove the claim false;
+otherwise they become future permission to stop early.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
