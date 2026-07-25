@@ -476,12 +476,16 @@ def test_build_dispatch_review_independent_unbound_when_no_attempt_id():
 
 
 def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
-    """O2 (grep-provable): all three daemon.py build_dispatch call sites
-    (CARVER ~L1725, IMPLEMENTER ~L2026, REVIEW_INDEPENDENT ~L2362) pass their
-    own role= explicitly -- guards against the exact silent-mismatch this
-    package exists to close (a call site importing Role but never actually
-    passing role= to build_dispatch, silently keeping the wrong-role
-    default)."""
+    """O2 (grep-provable): all four daemon.py build_dispatch call sites
+    (legacy CarveDispatch's CARVER, IMPLEMENTER, REVIEW_INDEPENDENT, and
+    F018 P3a's StartCarverSession CARVER bootstrap) pass their own role=
+    explicitly -- guards against the exact silent-mismatch this package
+    exists to close (a call site importing Role but never actually passing
+    role= to build_dispatch, silently keeping the wrong-role default).
+    F018 P3a (2026-07-25) added the 4th call site (_execute_start_carver_
+    session's cold bootstrap launch, role=Role.CARVER like the legacy carve
+    dispatch it mirrors) -- bumped from 3 to 4, roles_seen stays the same
+    3-element set (no new role, just a second CARVER call site)."""
     import re
 
     daemon_src = (Path(__file__).parent.parent / "src" / "nyxloom" / "daemon.py").read_text()
@@ -490,7 +494,7 @@ def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
         daemon_src,
         flags=re.DOTALL,
     )
-    assert len(calls) == 3, f"expected exactly 3 build_dispatch call sites, found {len(calls)}"
+    assert len(calls) == 4, f"expected exactly 4 build_dispatch call sites, found {len(calls)}"
     roles_seen = set()
     for call in calls:
         m = re.search(r"role\s*=\s*Role\.(\w+)", call)
