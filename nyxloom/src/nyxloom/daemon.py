@@ -948,6 +948,8 @@ class Daemon:
         merged_branches = self._merged_branches(cfg, states)
         head_revision = self._head_revision(cfg)
         triage_class = self._triage_classes(project, states)
+        gate_diagnosis_pending, gate_diagnosis_attempts = self._gate_diagnosis_state(
+            project, cfg, states)
         leases_free = self._leases_free(cfg)
         provider_ok = self._provider_ok(routes)
         log_quiet_seconds, pid_alive, receipts = self._attempt_scan(project, states)
@@ -1029,6 +1031,8 @@ class Daemon:
             blocked_underspecified_already_open=blocked_underspecified_already_open,
             head_revision=head_revision,
             triage_class=triage_class,
+            gate_diagnosis_pending=gate_diagnosis_pending,
+            gate_diagnosis_attempts=gate_diagnosis_attempts,
             days_since_test_health_carve=self._days_since_test_health_carve(project),
             carver_session=carver_session_snap,
             pending_carver_feeds=pending_carver_feeds,
@@ -1129,9 +1133,130 @@ class Daemon:
             if (tsf is not None and tsf.state is TaskState.REVIEW_REJECTED
                     and payload.get("result") == "rejected"):
                 cls = payload.get("reject_class")
-                if cls in ("fixable", "architectural", "product"):
+                # F019 P1b: `transient` (a flaky gate, per D-F019-2) joins the
+                # vocabulary so a gate-diagnosis verdict of "transient" is
+                # faithfully surfaced. It carries no dedicated route: not
+                # product/architectural, it falls through reconcile's triage table
+                # to the same plain retry `fixable`/unclassified already take.
+                if cls in ("fixable", "architectural", "product", "transient"):
                     out[task_id] = cls
         return out
+
+    def _gate_diagnosis_state(
+        self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile]
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """F019 P1b (plan-f019-failure-diagnosis.md §P1): compute the two
+        gate-diagnosis inputs the pure planner consumes -- (pending_task_ids,
+        unconsumed_diagnosis_attempt_ids). reconcile stays pure; this is the
+        daemon reading the event log on its behalf, exactly like _triage_classes.
+
+        A task is diagnosis-PENDING when it is CURRENTLY in REVIEW_REJECTED, its
+        latest rejection cause is a pre-merge/mutation gate failure (NOT a
+        reviewer rejection -- a reviewer verdict supersedes the gate as the
+        current cause), its consecutive gate-fail streak has reached
+        policy.gate_diagnosis_after_failures, and no diagnosis attempt is already
+        in flight for it. The streak is counted since the last PASSING gate -- the
+        approving reviews between merge attempts do NOT reset it, so a
+        fix-review-approve-remerge-refail cycle correctly counts as two
+        consecutive gate failures (what makes a threshold > 1 reachable).
+
+        The unconsumed set is every EXITED REVIEW_INDEPENDENT attempt on such a
+        task that carries NO REVIEW_RECORDED binding -- the fresh diagnosis leg.
+        The approving review that always precedes a merge-gate failure carries its
+        own {approved} binding, so it is never mistaken for an unconsumed
+        diagnosis; that invariant is what lets the receipt-exit scan add a
+        REVIEW_REJECTED+REVIEW_INDEPENDENT clause without re-consuming a normal
+        review (O5)."""
+        threshold = getattr(cfg.policy, "gate_diagnosis_after_failures", 1)
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return frozenset(), frozenset()
+        streak: dict[str, int] = {}
+        cause_is_gate: dict[str, bool] = {}
+        recorded_attempts: set[str] = set()
+        for ev in events:
+            if ev.type is EventType.REVIEW_RECORDED and ev.task_id:
+                # A reviewer verdict is the CURRENT rejection cause only when it
+                # is itself a rejection (approved -> MERGE_READY, never a
+                # rejection). Either result binds its attempt (idempotency: a
+                # bound attempt is a consumed one, so never an in-flight
+                # diagnosis).
+                if (ev.payload or {}).get("result") != "approved":
+                    cause_is_gate[ev.task_id] = False
+                if ev.attempt_id:
+                    recorded_attempts.add(ev.attempt_id)
+            elif ev.type is EventType.GATE_FINISHED and ev.task_id:
+                gr = (ev.payload or {}).get("gate_result") or {}
+                # Only the pre-merge/mutation gates route a task to
+                # REVIEW_REJECTED; a post-merge gate fails on already-published
+                # code (-> BLOCKED / auto-revert), never a re-work signal.
+                if gr.get("phase") in ("pre-merge", "mutation"):
+                    if gr.get("exit_code", 0) != 0:
+                        streak[ev.task_id] = streak.get(ev.task_id, 0) + 1
+                        cause_is_gate[ev.task_id] = True
+                    else:
+                        streak[ev.task_id] = 0
+        pending: set[str] = set()
+        diag_attempts: set[str] = set()
+        for task_id, tsf in states.items():
+            if tsf.state is not TaskState.REVIEW_REJECTED:
+                continue
+            if not cause_is_gate.get(task_id, False):
+                continue
+            if streak.get(task_id, 0) < threshold:
+                continue
+            unconsumed = [
+                a for a in tsf.attempts
+                if a.role is Role.REVIEW_INDEPENDENT
+                and a.attempt_id not in recorded_attempts
+            ]
+            if unconsumed:
+                # A diagnosis is already in flight -> do NOT re-dispatch. Surface
+                # only its EXITED leg (if any) so the receipt-exit scan consumes it
+                # even when the wrapper pre-emitted ATTEMPT_EXITED.
+                for a in unconsumed:
+                    if a.state is AttemptState.EXITED:
+                        diag_attempts.add(a.attempt_id)
+            else:
+                pending.add(task_id)
+        return frozenset(pending), frozenset(diag_attempts)
+
+    def _attempt_has_review_recorded(self, project: str, attempt_id: str) -> bool:
+        """F019 P1b: True when a REVIEW_RECORDED event is already bound to this
+        attempt id -- i.e. this review/diagnosis leg was already consumed. Makes
+        the gate-diagnosis consumption idempotent, and (with the task's
+        REVIEW_REJECTED state) distinguishes a fresh, unconsumed diagnosis leg
+        (no binding) from an already-consumed normal review whose members also
+        sit in REVIEW_REJECTED -- so the consumption never re-records a normal
+        review's verdict (O5)."""
+        try:
+            for ev in storage.iter_events(project):
+                if (ev.type is EventType.REVIEW_RECORDED
+                        and ev.attempt_id == attempt_id):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _latest_gate_failure(self, project: str, task_id: str) -> tuple[str, str]:
+        """F019 P1b: (output_tail, phase) of the task's most recent FAILED
+        pre-merge/mutation gate -- the evidence the gate-diagnosis reviewer reads
+        (P1a persisted it into GateResult.output_tail). ("", "") when none is
+        found (degrades gracefully: the reviewer still classifies from the diff +
+        handoff)."""
+        out_tail, phase = "", ""
+        try:
+            for ev in storage.iter_events(project):
+                if (ev.type is EventType.GATE_FINISHED and ev.task_id == task_id):
+                    gr = (ev.payload or {}).get("gate_result") or {}
+                    if (gr.get("phase") in ("pre-merge", "mutation")
+                            and gr.get("exit_code", 0) != 0):
+                        out_tail = gr.get("output_tail", "") or ""
+                        phase = gr.get("phase", "") or ""
+        except Exception:
+            return "", ""
+        return out_tail, phase
 
     def _leases_free(self, cfg: ProjectConfig) -> dict[str, bool]:
         out: dict[str, bool] = {}
@@ -4960,18 +5085,22 @@ class Daemon:
 
     def _parse_reject_class(self, cfg: ProjectConfig, task_id: str) -> str | None:
         """B4b (D-060 triage Tier-2; D-066): extract the reviewer's self-stamped
-        `REJECT_CLASS: <fixable|architectural|product>` line from the committed
-        review report (adapters.build_dispatch's REVIEW_INDEPENDENT prompt requires
-        it on a REJECTED verdict). Returns the class lowercased, or None when the
-        line is absent or its value is unrecognised -> the task stays unclassified
-        and reconcile falls back to the mechanical attempt-budget path. Only
-        meaningful on a rejection; the REVIEW_INDEPENDENT consumption site calls it
-        only when the verdict is not 'approved'."""
+        `REJECT_CLASS: <fixable|architectural|product|transient>` line from the
+        committed review report (adapters.build_dispatch's REVIEW_INDEPENDENT
+        prompt requires it on a REJECTED verdict). Returns the class lowercased, or
+        None when the line is absent or its value is unrecognised -> the task stays
+        unclassified and reconcile falls back to the mechanical attempt-budget
+        path. Only meaningful on a rejection; the REVIEW_INDEPENDENT consumption
+        site calls it only when the verdict is not 'approved'.
+
+        F019 P1b: `transient` (D-F019-2) is a valid class the gate-diagnosis
+        reviewer emits for a flaky gate; it routes to the same plain retry as
+        `fixable`, never a re-scope/escalation."""
         text = self._review_report_text(cfg, task_id)
         if not text:
             return None
         m = re.search(
-            r"^\s*REJECT_CLASS:\s*(fixable|architectural|product)\b",
+            r"^\s*REJECT_CLASS:\s*(fixable|architectural|product|transient)\b",
             text, re.IGNORECASE | re.MULTILINE,
         )
         return m.group(1).lower() if m else None
@@ -5405,6 +5534,42 @@ class Daemon:
                 return events
 
             if attempt.role == Role.REVIEW_INDEPENDENT:
+                # F019 P1b: a REVIEW_INDEPENDENT leg whose task is STILL in
+                # REVIEW_REJECTED and that carries no REVIEW_RECORDED binding is a
+                # GATE-DIAGNOSIS dispatch (a normal wave review targets
+                # AWAITING_REVIEW; the review that produced THIS rejection already
+                # carries its own binding). Consume it CLASSIFY-ONLY: stamp the
+                # reviewer's reject_class into a REVIEW_RECORDED{result: rejected}
+                # in the SAME shape a review rejection uses, so the existing triage
+                # table (_triage_classes -> reconcile) routes it. Crucially, DO NOT
+                # transition -- the task stays REVIEW_REJECTED throughout, so an
+                # un-re-gated diff can never reach the merge path (invariant #2).
+                # The state+no-binding guard is what keeps an already-consumed
+                # normal review (also REVIEW_REJECTED, but bound) out of here (O5).
+                diag_tsf = states.get(task_id)
+                if (diag_tsf is not None
+                        and diag_tsf.state is TaskState.REVIEW_REJECTED
+                        and not self._attempt_has_review_recorded(project, action.attempt_id)):
+                    if result is ReceiptResult.DONE:
+                        reject_class = self._parse_reject_class(cfg, task_id)
+                        diag_payload = {"result": "rejected"}
+                        if reject_class:
+                            diag_payload["reject_class"] = reject_class
+                        events.append(self._append_ev(
+                            project, cfg, states, EventType.REVIEW_RECORDED,
+                            diag_payload, task_id=task_id,
+                            attempt_id=action.attempt_id, wave_id=attempt.wave_id))
+                    else:
+                        # An infra failure of the diagnosis LEG (LIMIT/ERROR/
+                        # BLOCKED) is not a classification. Record "incomplete" so
+                        # it binds the attempt (no re-consumption) and carries no
+                        # class -> the task falls back to the mechanical retry
+                        # path; a later gate-fail re-triggers diagnosis.
+                        events.append(self._append_ev(
+                            project, cfg, states, EventType.REVIEW_RECORDED,
+                            {"result": "incomplete"}, task_id=task_id,
+                            attempt_id=action.attempt_id, wave_id=attempt.wave_id))
+                    return events
                 # 2026-07-15: consume the REVIEW receipt (was unmapped —
                 # live deadlock). merge_mode=manual: MERGE_READY is declared,
                 # never auto-merged (SPEC §7).
@@ -5619,6 +5784,124 @@ class Daemon:
             wave_id = new_id("wave")
             events.append(self._append_ev(project, cfg, states, EventType.WAVE_OPENED,
                                            {"task_ids": list(action.task_ids)}, wave_id=wave_id))
+
+        elif isinstance(action, reconcile.LaunchGateDiagnosis):
+            # F019 P1b: dispatch the warm independent reviewer in GATE-DIAGNOSIS
+            # mode for ONE gate-failed task. Classify-only (the gate already
+            # decided "fail"); the task STAYS in REVIEW_REJECTED. Mirrors the
+            # LaunchReview dispatch machinery (admission, route, D-R10/B6 warm
+            # session reuse, wrapper spawn) but with a single-task classify-only
+            # packet and wave_id=None -- the marker the receipt-exit consumption
+            # uses (with the no-binding guard) to tell a diagnosis leg from a wave
+            # review.
+            ok, _reason = self._dispatch_admissible(project, cfg, states, "review")
+            if not ok:
+                return events  # admission refused; task stays REVIEW_REJECTED, retried next pass
+            task_id = action.task_id
+            tsf_d = states[task_id]
+            attempt_id = new_id("att")
+            attempt_dir = paths.attempt_dir(project, attempt_id)
+            packet_dir = attempt_dir / "packet"
+            packet_dir.mkdir(parents=True, exist_ok=True)
+            branch = f"feat/{task_id}"
+            diff_res = subprocess.run(
+                ["git", "-C", str(cfg.root), "diff", f"{cfg.default_branch}...{branch}"],
+                capture_output=True, text=True,
+            )
+            (packet_dir / f"{task_id}.diff").write_text(diff_res.stdout, encoding="utf-8")
+            out_tail, phase = self._latest_gate_failure(project, task_id)
+            packet_lines = [
+                "# Gate-failure diagnosis packet",
+                "",
+                "## Your role: INDEPENDENT REVIEWER — GATE-FAILURE DIAGNOSIS (classify only)",
+                "",
+                f"The deterministic {phase or 'merge'} gate for `{task_id}` FAILED. The",
+                "gate ALREADY decided \"fail\" — you are NOT re-deciding pass/fail, NOT",
+                "approving, and NOT merging or editing the implementation. Read the gate",
+                "output, the diff, and the handoff, then CLASSIFY the failure so the",
+                "pipeline routes it to the right place.",
+                "",
+                f"Write `{cfg.reports_dir}/{task_id}-REVIEW.md` containing EXACTLY one line:",
+                "  `REJECT_CLASS: <fixable|architectural|product|transient>`",
+                "  - fixable       — a bounded code/test defect a targeted re-implementation fixes",
+                "  - architectural — design/scope is wrong; a same-base retry cannot fix it (re-scope)",
+                "  - product       — a product/direction decision is required (escalate to a human)",
+                "  - transient     — a flaky/infra gate failure unrelated to the diff (plain retry)",
+                f"Commit the report to `{branch}`. Do NOT merge, approve, or edit the code.",
+                "",
+                f"### Gate output tail ({phase or 'gate'})",
+                "```",
+                out_tail or "(no captured gate output)",
+                "```",
+                "",
+                f"### Diff ({cfg.default_branch}...{branch}) — full text in {task_id}.diff here",
+                "### Handoff",
+                f"- {tsf_d.handoff_path or '(no handoff path on record)'}",
+            ]
+            (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
+
+            routes_obj = config.Routes.load()
+            review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
+            route_def = review_routes[0]
+            route_snap = Route(route_id=route_def.route_id, cli=route_def.cli,
+                                model=route_def.model, variant=route_def.variant,
+                                effort=route_def.effort, routes_rev=routes_obj.revision)
+            # D-R10/B6 warm-session reuse -- the same "warmest prior EXITED review
+            # session" rule reconcile applies to waves, computed here at execution
+            # time (the self_review executor sets the daemon-reads-the-handle
+            # precedent). None -> cold dispatch (no prior session, or the stage did
+            # not opt into session-reuse).
+            resume_session = None
+            if "session-reuse" in stages.stage_context("review_independent"):
+                prior_sessions = [
+                    a for tsf_ in states.values() for a in tsf_.attempts
+                    if a.role is Role.REVIEW_INDEPENDENT
+                    and a.state is AttemptState.EXITED and a.session_handle
+                ]
+                if prior_sessions:
+                    resume_session = max(
+                        prior_sessions, key=lambda a: a.started).session_handle
+            log.info("gate-diagnosis-launch", project=project, task=task_id,
+                     route=route_def.route_id, phase=phase, resumed=bool(resume_session))
+            attempt = Attempt(attempt_id=attempt_id, role=Role.REVIEW_INDEPENDENT,
+                               state=AttemptState.CREATED, route=route_snap,
+                               started=utc_now(), wave_id=None)
+            created_payload = {"attempt": attempt.to_dict()}
+            if resume_session:
+                created_payload["resumed_from"] = resume_session
+            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                           created_payload, task_id=task_id,
+                                           attempt_id=attempt_id))
+            gate_hint = self._gate_hint(cfg)
+            receipt_path = str(attempt_dir / "receipt.json")
+            packet_md = str(packet_dir / "packet.md")
+            if resume_session:
+                resume_prompt = adapters.review_resume_prompt(
+                    packet_path=packet_md, attempt_id=attempt_id,
+                    gate_hint=gate_hint, spine_pointer=None)
+                argv = adapters.build_resume(
+                    route_def, session=resume_session, worktree=str(cfg.root),
+                    prompt=resume_prompt)
+            else:
+                argv, _prompt = adapters.build_dispatch(
+                    route_def, handoff_path=packet_md, worktree=str(cfg.root),
+                    branch=cfg.default_branch, task_id=task_id, gate_hint=gate_hint,
+                    receipt_path=receipt_path, role=Role.REVIEW_INDEPENDENT,
+                    attempt_id=attempt_id, approved_amendments=[],
+                )
+            fm_d = self._frontmatter_for(cfg, tsf_d)
+            spec = wrapper.WrapperSpec(
+                project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
+                cwd=str(cfg.root), log_path=str(attempt_dir / "attempt.log"),
+                receipt_path=receipt_path, attempt_dir=str(attempt_dir),
+                route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_d),
+            )
+            pid = wrapper.launch_detached(spec)
+            attempt.state = AttemptState.PREFLIGHTING
+            attempt.pid = pid
+            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                           {"attempt": attempt.to_dict()}, task_id=task_id,
+                                           attempt_id=attempt_id))
 
         elif isinstance(action, reconcile.LaunchReview):
             ok, _reason = self._dispatch_admissible(project, cfg, states, "review")

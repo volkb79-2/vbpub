@@ -86,7 +86,8 @@
         "test_health_interval_days": {"type": "integer", "minimum": 0},
         "pre_merge_gate": {"type": "boolean"},
         "mutation_gate": {"type": "boolean"},
-        "auto_revert_failed_merge": {"type": "boolean"}
+        "auto_revert_failed_merge": {"type": "boolean"},
+        "gate_diagnosis_after_failures": {"type": "integer", "minimum": 1}
       }
     },
     "notify": {
