@@ -261,3 +261,57 @@ closed. F2 (line 174 expected still says "Query built") and F7 (LOG lacks
 literal sets) are partially addressed — each needs one additional line of
 correction. The gate is sound — 22/22 lines and 20/20 arcs mechanically
 verified with parity.
+
+
+---
+
+# Final sign-off — 2026-07-25 (commit 855b5a38)
+
+**Reviewer:** Reasonix (same persistent adversarial session)
+**Range:** cea9f55c..855b5a38
+**Verdict:** **APPROVED**
+
+## Gate verification
+
+Full xdist gate: **2002 passed, exit 0** in 65s.
+
+```
+Literal checker: PASS — 22/22 lines + 20/20 arcs CLOSED
+```
+Focused tests: 18 passed in 1.15s. `git diff --check`: clean.
+
+## F2 and F7 — now fully closed
+
+### F2 (line 174 exact observable)
+Report rows 173 and 174 now both show the full `SortSpec`:
+`SortSpec(metric='ram', stat=None, order='asc')`. The sort-as-dict test uses
+full structural equality: `assert q.sort == SortSpec(metric="ram", stat=None,
+order="asc")`. The sort-as-str test similarly uses full SortSpec equality with
+the default `order='desc'`. No `is not None` or partial-field checks remain. ✓
+
+### F7 (LOG literal sets)
+LOG now prints:
+- The literal 22-line set and 20-pair set as declared in the handoff
+- All four run intersections explicitly (run 1 lines: `[]`, run 1 pairs:
+  `[]`, run 2 lines: `[]`, run 2 pairs: `[]`)
+No symbolic counts or ∅ shorthand. ✓
+
+## All seven findings — closed
+
+| F# | Resolution |
+|----|-----------|
+| F1 | Arc `[148,156]` in report, docstring updated |
+| F2 | Full `SortSpec(metric='ram', stat=None, order='asc')` for both rows 173-174 |
+| F3 | `IncompatibleQueryError` removed from imports |
+| F4 | `Caps` imported from `topos.query.engine` only |
+| F5 | Duplicate `test_from_dict_sort_extra_fields` removed |
+| F6 | Sort tests use full `assert q.sort == SortSpec(...)` structural equality |
+| F7 | LOG prints literal before sets and all four empty run intersections |
+
+## Evidence summary
+
+- **18 test functions = 18 collected cases**, 2002 total (= 1984 + 18)
+- **22/22 lines + 20/20 arcs** mechanically verified with literal set intersection
+- **Full SortSpec equality** on both sort-as-dict and sort-as-str tests
+- **No whole-engine claim**: 17 remaining lines + 19 branches correctly deferred to P103
+- **No pragma, product edit, host-proc, sleep, global leak, mutation overclaim**
