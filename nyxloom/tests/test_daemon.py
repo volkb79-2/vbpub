@@ -28,11 +28,11 @@ import pytest
 from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
-    adapters, cli, daemon, decision_chat, decisions, doctor, lint, log, notify, paths,
-    reconcile, render, storage, wrapper,
+    adapters, carver_session, cli, daemon, decision_chat, decisions, doctor, lint, log,
+    notify, paths, reconcile, render, storage, wrapper,
 )
 from nyxloom.types import (
-    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, EventType,
+    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
     Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
 )
 
@@ -5364,3 +5364,248 @@ def test_mutation_gate_oserror(
                  and e.payload.get("gate_result", {}).get("phase") == "mutation"]
     assert len(mg_events) == 1
     assert mg_events[0].payload["gate_result"]["exit_code"] == 127
+
+
+# --------------------------------------------------------------------------
+# F018 P2b-A2: daemon carver-snapshot input builder. `_carver_session` and
+# `_pending_carver_feeds` derive two of the four new ReconcileInput carver
+# fields (A1's pure planner already consumes them) from the durable event
+# log; `pending_human_intakes`/`validated_carve_proposals` stay empty
+# (deferred to #17 and P3 respectively). cfg.carve.session is the MASTER
+# GATE ("fresh" = off, the default; "project-persistent" = on).
+
+def _carver_digest_payload(n: int, task_id: str | None = None) -> dict:
+    """A minimal synthetic carver_digest payload (MergeDigest.to_dict()
+    shape) -- only the fields _pending_carver_feeds actually reads."""
+    return {
+        "digest_id": f"merge:demo:c{n}",
+        "task_id": task_id or f"t{n}",
+        "merge_commit": f"commit{n}",
+        "diffstat": {"files_changed": n, "insertions": 0, "deletions": 0},
+    }
+
+
+def test_carver_snapshot_feature_off_is_inert_and_build_input_byte_identical(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Load-bearing negative (byte-identical-when-off). cfg.carve.session
+    defaults to "fresh". Seed a CARVER_SESSION_STARTED event AND a
+    MERGE_RECORDED carrying a carver_digest -- their mere PRESENCE in the
+    log must not activate anything. _carver_session returns None and
+    _pending_carver_feeds returns () regardless of what events exist. A
+    real run_pass wires both into the ReconcileInput the planner receives:
+    carver_session=None and all three new tuple fields empty -- exactly
+    ReconcileInput's own defaults, which is what makes
+    reconcile.plan_project's `if inp.carver_session is not None` gate a
+    no-op so the planner runs its pre-P2b path unchanged."""
+    cfg = sample_project
+    project = "demo"
+    assert cfg.carve.session == "fresh"
+
+    storage.append_event(
+        project, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.CARVER_SESSION_STARTED,
+        payload={"generation": 1, "session_id": "sess-1"})
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit1", "source_kind": "review",
+                 "carver_digest": _carver_digest_payload(1)},
+        task_id="t1",
+    )
+
+    d = daemon.Daemon({project: cfg.root})
+    assert d._carver_session(project, cfg) is None
+    assert d._pending_carver_feeds(project, cfg, None) == ()
+
+    captured = _scripted(monkeypatch, [[]])
+    d.run_pass(project)
+    assert captured, "plan_project was never called -- no ReconcileInput built"
+    inp = captured[0]
+    assert inp.carver_session is None
+    assert inp.pending_carver_feeds == ()
+    assert inp.pending_human_intakes == ()
+    assert inp.validated_carve_proposals == ()
+
+
+def test_carver_session_feature_on_projects_snapshot_from_event_log(
+        tmp_state, sample_project):
+    """cfg.carve.session == "project-persistent" turns the MASTER GATE on:
+    _carver_session must return the SAME snapshot carver_session's own pure
+    project_session() projector would build from the project's event log --
+    status/generation/cursor all match."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+
+    storage.append_event(
+        project, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.CARVER_SESSION_STARTED,
+        payload={"generation": 3, "session_id": "sess-9"})
+    storage.append_event(
+        project, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.CARVER_CONTEXT_CONSUMED,
+        payload={"highest_event_sequence": 2})
+
+    expected = carver_session.project_session(list(storage.iter_events(project)))
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+
+    assert snap is not None
+    assert snap.to_dict() == expected.to_dict()
+    assert snap.status is CarverStatus.WARM
+    assert snap.generation == 3
+    assert snap.last_consumed_event_sequence == 2
+
+
+def test_pending_carver_feeds_orders_and_excludes_consumed_and_missing_digest(
+        tmp_state, sample_project):
+    """FEED DERIVATION. Timeline: a MERGE_RECORDED at sequence 1 (already
+    consumed once the cursor lands on it), a CARVER_CONTEXT_CONSUMED setting
+    the cursor to sequence 1, then two pending MERGE_RECORDED digests (one
+    with NO carver_digest payload in between -- must be skipped), all past
+    the cursor. Only the past-cursor digests become CarverFeeds, in
+    event_sequence ascending order."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+
+    storage.append_and_apply(  # seq 1: already-consumed merge
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit1", "source_kind": "review",
+                 "carver_digest": _carver_digest_payload(1)},
+        task_id="t1",
+    )
+    storage.append_event(  # seq 2: cursor lands ON seq 1 (at-cursor excluded)
+        project, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.CARVER_CONTEXT_CONSUMED,
+        payload={"highest_event_sequence": 1})
+    storage.append_and_apply(  # seq 3: no carver_digest -- must be skipped
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit-nodigest", "source_kind": "review"},
+        task_id="t-nodigest",
+    )
+    storage.append_and_apply(  # seq 4: pending
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit4", "source_kind": "review",
+                 "carver_digest": _carver_digest_payload(4)},
+        task_id="t4",
+    )
+    storage.append_and_apply(  # seq 5: pending
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit5", "source_kind": "review",
+                 "carver_digest": _carver_digest_payload(5)},
+        task_id="t5",
+    )
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+    assert snap.last_consumed_event_sequence == 1
+
+    feeds = d._pending_carver_feeds(project, cfg, snap)
+
+    assert [f.event_sequence for f in feeds] == [4, 5]
+    assert [f.digest_id for f in feeds] == ["merge:demo:c4", "merge:demo:c5"]
+    assert feeds[0].task_id == "t4"
+    assert feeds[0].merge_commit == "commit4"
+    assert feeds[0].files_changed == 4
+    assert feeds[1].files_changed == 5
+
+
+def test_pending_carver_feeds_caps_at_retain_merge_digests(
+        tmp_state, sample_project):
+    """FEED DERIVATION cap. cfg.carve.retain_merge_digests bounds the tuple
+    to the MOST RECENT N (by event_sequence), still ascending."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+    cfg.carve.retain_merge_digests = 2
+
+    for n in range(1, 5):  # 4 pending merges, no consumed cursor
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.MERGE_RECORDED,
+            payload={"merge_commit": f"commit{n}", "source_kind": "review",
+                     "carver_digest": _carver_digest_payload(n)},
+            task_id=f"t{n}",
+        )
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+    feeds = d._pending_carver_feeds(project, cfg, snap)
+
+    assert len(feeds) == 2
+    assert [f.event_sequence for f in feeds] == sorted(f.event_sequence for f in feeds)
+    assert [f.digest_id for f in feeds] == ["merge:demo:c3", "merge:demo:c4"]
+
+
+def test_carver_session_fails_safe_to_base_snapshot_on_unreadable_log(
+        tmp_state, sample_project, monkeypatch):
+    """Fail-safe convention (mirrors _history's own try/except-to-[] over
+    storage.iter_events): an unreadable event log must not raise out of
+    _carver_session -- it falls back to an empty event list, which the pure
+    projector turns into the base (ABSENT, generation 0, cursor 0)
+    snapshot."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+
+    def _boom(*_a, **_kw):
+        raise OSError("simulated unreadable event log")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+
+    assert snap is not None
+    assert snap.status is CarverStatus.ABSENT
+    assert snap.generation == 0
+    assert snap.last_consumed_event_sequence == 0
+
+
+def test_pending_carver_feeds_fails_safe_to_empty_tuple_on_unreadable_log(
+        tmp_state, sample_project, monkeypatch):
+    """Same fail-safe convention on the feed-scanning side: an unreadable
+    event log must not raise out of _pending_carver_feeds -- it degrades to
+    no pending feeds rather than propagating."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+    snap = carver_session.CarverSessionSnapshot(
+        project=project, generation=1, status=CarverStatus.WARM)
+
+    def _boom(*_a, **_kw):
+        raise OSError("simulated unreadable event log")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+
+    d = daemon.Daemon({project: cfg.root})
+    assert d._pending_carver_feeds(project, cfg, snap) == ()
+
+
+def test_pending_carver_feeds_retain_zero_means_none_retained(
+        tmp_state, sample_project):
+    """cfg.carve.retain_merge_digests <= 0 is an explicit 'keep none' branch
+    -- guards against Python's `list[-0:]` slicing returning the WHOLE list
+    (since `-0 == 0`), which would silently defeat a 0 cap."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+    cfg.carve.retain_merge_digests = 0
+
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit1", "source_kind": "review",
+                 "carver_digest": _carver_digest_payload(1)},
+        task_id="t1",
+    )
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+    assert d._pending_carver_feeds(project, cfg, snap) == ()
