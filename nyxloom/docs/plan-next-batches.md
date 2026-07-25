@@ -13,6 +13,12 @@ daemon on and let the factory self-build the rest. Batches B–E are dogfood can
 (or continue controller-driven if preferred).
 
 ## BATCH A — F018 P2b: deterministic carver-session planner (THE DOGFOOD UNLOCK) · HIGH frozen-core
+> **STATUS 2026-07-25:** A1 (reconcile.py planner) **MERGED** to main @ `7654549f` (gate-green
+> 85/85, Opus-reviewed, post-merge suite green). A2 (daemon.py input-builder) **dispatched**
+> (branch `feat/f018-p2b-a2-input-builder` from main). Feature gate confirmed =
+> `cfg.carve.session == "project-persistent"` (default `"fresh"` = off). After A2 merges → P2b
+> complete → DOGFOOD TRANSITION.
+
 Spec: `docs/plan-long-running-carver.md` §4.1–4.3 (346–475, contract+determinism) +
 §3.3 (329–345, one-turn priority) + §2.4 (165–187, session states) + §6.2 (571–591,
 compaction triggers) + §12 Package 2 (927–969, the buildable unit + oracles).
