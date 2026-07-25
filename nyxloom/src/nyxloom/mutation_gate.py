@@ -20,13 +20,18 @@ from __future__ import annotations
 import argparse
 import ast
 import copy
+import itertools
 import os
 import shlex
 import subprocess
 import sys
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from types import SimpleNamespace
 
-from nyxloom import coverage_gate
+from nyxloom import coverage_gate, gate_runner
 
 # --------------------------------------------------------------------------- #
 # Comparison operator swaps (each maps to its "boundary neighbour" or negation)
@@ -224,23 +229,46 @@ def evaluate(
 
     `run_is_killed(path, mutant) -> bool`: injected test runner. Must return
     True when the mutant is KILLED (tests fail with it applied), False when it
-    SURVIVED (tests still pass). The real implementation writes the mutant to
-    disk, runs tests, and restores; a test stub can return a canned value.
+    SURVIVED (tests still pass). The real implementation isolates the mutant
+    in a scratch git worktree (or falls back to in-place on a dirty tree —
+    see `_run_is_killed`), runs tests, and restores; a test stub can return a
+    canned value. `run_is_killed` MUST be safe to call concurrently from
+    multiple threads — mutants are fanned out over a thread pool below.
+
+    Mutant jobs are fanned out over a `ThreadPoolExecutor` (mutants are
+    independent: each gets its own isolated worktree/subprocess), but
+    aggregation of `total`/`killed`/`survivors` happens single-threaded AFTER
+    the pool has joined all work, and `survivors` is sorted before return —
+    so the resulting MutationResult is identical regardless of which mutant's
+    test subprocess happens to finish first. Parallelizing this loop changes
+    wall-clock time only, never the verdict.
 
     Returns a MutationResult with aggregate statistics.
     """
-    total = 0
     killed = 0
     survivors: list[tuple[str, int, str]] = []
 
+    # Build the full job list up front (deterministic submission order), then
+    # fan it out. `total` is the job count; `killed`/`survivors` are computed
+    # below from the position-aligned results, never from arrival order.
+    jobs: list[tuple[str, Mutant]] = []
     for path, (source, changed_lines) in sorted(targets.items()):
         mutants = generate_mutants(source, changed_lines)
         for mutant in mutants:
-            total += 1
-            if run_is_killed(path, mutant):
-                killed += 1
-            else:
-                survivors.append((path, mutant.lineno, mutant.description))
+            jobs.append((path, mutant))
+
+    total = len(jobs)
+    max_workers = max(1, (os.cpu_count() or 2) - 2)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # `.map` preserves input order in its output regardless of which
+        # future completes first, and blocks (joins) until all are done.
+        results = list(pool.map(lambda job: run_is_killed(job[0], job[1]), jobs))
+
+    for (path, mutant), is_killed in zip(jobs, results):
+        if is_killed:
+            killed += 1
+        else:
+            survivors.append((path, mutant.lineno, mutant.description))
 
     survivors.sort(key=lambda x: (x[0], x[1], x[2]))
     return MutationResult(total=total, killed=killed, survivors=survivors)
@@ -250,42 +278,179 @@ def evaluate(
 # IO SHELL — git / file I/O / subprocess
 # --------------------------------------------------------------------------- #
 
+_SCRATCH_COUNTER = itertools.count()  # process-unique, thread-safe (C-level next())
+
+
+def _fanout_safe(repo: str) -> bool:
+    """True only when `repo` sits inside a CLEAN git working tree — the one
+    case where per-mutant isolation via a scratch `git worktree add --detach
+    HEAD` is safe.
+
+    A scratch worktree checked out at HEAD reflects committed content only.
+    If `repo`'s working tree carries uncommitted edits, isolating at HEAD
+    would silently test a DIFFERENT source than what's actually on disk — a
+    mutation gate that tests the wrong source is a LAUNDERING gate (false
+    "all killed"), so a dirty tree must use the in-place fallback instead.
+
+    `repo` not being a git work tree at all (e.g. a bare tmp_path in unit
+    tests) also returns False — there is no HEAD to isolate against, so the
+    in-place path is the only option.
+    """
+    inside = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True,
+    )
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return False
+    status = subprocess.run(
+        ["git", "-C", repo, "status", "--porcelain"],
+        capture_output=True, text=True,
+    )
+    return status.returncode == 0 and status.stdout.strip() == ""
+
+
 def _run_is_killed(
     repo: str,
     path: str,
     mutant: Mutant,
     test_argv: list[str],
 ) -> bool:
-    """Write the mutant source to disk, run the test command, restore original.
+    """Write the mutant source, run the test command, restore original.
 
     Returns True (killed) if the test subprocess exits with a non-zero code
     (tests failed → the mutant was detected). Returns False (survived) if the
-    exit code is zero. Always restores the original file content, even on
-    exception or KeyboardInterrupt.
+    exit code is zero.
+
+    Dispatches to one of two IO strategies, chosen by `_fanout_safe`:
+
+    - CLEAN git tree → `_run_is_killed_isolated`: each call gets its own
+      scratch `git worktree` at HEAD, so concurrent calls (this is the
+      callable `evaluate` fans out over a thread pool) never share a mutable
+      path. The live checkout is never touched.
+    - DIRTY tree, or `repo` isn't a git work tree at all →
+      `_run_is_killed_in_place` (today's original, serial-only behavior,
+      byte-identical): mutating a scratch worktree-at-HEAD would silently
+      drop the uncommitted edits, so isolation is unsafe there and this
+      function falls back to writing directly into `repo`. This is the ONLY
+      path exercised by callers that pass a non-git `repo` (e.g. existing
+      unit tests using a bare `tmp_path`), so their behavior is unchanged.
     """
-    full_path = os.path.join(repo, path)
+    if _fanout_safe(repo):
+        return _run_is_killed_isolated(repo, path, mutant, test_argv)
+    return _run_is_killed_in_place(repo, path, mutant, test_argv)
 
-    # Stash original bytes
-    with open(full_path, "rb") as fh:
-        original = fh.read()
 
+_IN_PLACE_LOCK = threading.Lock()
+
+
+def _run_is_killed_in_place(
+    repo: str,
+    path: str,
+    mutant: Mutant,
+    test_argv: list[str],
+) -> bool:
+    """Write the mutant source directly into `repo` (the live/shared tree),
+    run the test command there, restore the original. Always restores, even
+    on exception or KeyboardInterrupt.
+
+    Serialized process-wide via `_IN_PLACE_LOCK`: two concurrent calls
+    against a SHARED path would otherwise clobber each other's write to
+    `full_path` (write A, write B, restore A -> B's write is lost; or worse,
+    interleaved partial writes). `evaluate`'s fan-out always dispatches every
+    mutant through a thread pool regardless of which IO strategy
+    `_run_is_killed` picks, so this fallback -- used whenever `repo` is a
+    dirty git tree or not a git repo at all (see `_run_is_killed`) -- must
+    serialize itself rather than assume single-threaded callers. The lock
+    reduces this path to the ORIGINAL one-mutant-at-a-time behavior (byte-
+    identical read/write/restore sequence per call), just interleaved with
+    other threads' waits instead of a for-loop.
+    """
+    with _IN_PLACE_LOCK:
+        full_path = os.path.join(repo, path)
+
+        # Stash original bytes
+        with open(full_path, "rb") as fh:
+            original = fh.read()
+
+        try:
+            # Write mutant
+            with open(full_path, "w", encoding="utf-8") as fh:
+                fh.write(mutant.mutated_source)
+
+            # Run tests
+            proc = subprocess.run(
+                test_argv,
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+            return proc.returncode != 0
+        finally:
+            # Always restore original, even on failure / KeyboardInterrupt
+            with open(full_path, "wb") as fh:
+                fh.write(original)
+
+
+def _run_is_killed_isolated(
+    repo: str,
+    path: str,
+    mutant: Mutant,
+    test_argv: list[str],
+) -> bool:
+    """Concurrency-safe runner: checks the mutant into a per-call scratch
+    `git worktree` at HEAD, runs the test command there, and always tears the
+    scratch worktree down — safe to call from many threads at once because
+    each call gets its own scratch directory and never touches the live
+    checkout.
+
+    `repo` may be a SUBDIRECTORY of the actual git top-level (nyxloom
+    self-hosts as a subdir of the vbpub monorepo — see
+    `gate_runner._repo_root`'s docstring): the scratch worktree is created at
+    the top-level, and `path`/`test_argv`'s cwd are resolved against the same
+    relative offset `repo` has from that top-level, so callers that pass
+    paths relative to `repo` (as `main` does) keep working unchanged whether
+    `repo` IS the top-level or a subdir of it.
+    """
+    repo_root = gate_runner._repo_root(SimpleNamespace(root=repo))
+    offset = os.path.relpath(os.path.abspath(repo), os.path.abspath(repo_root))
+
+    # Unique per call: lineno (readability) + a process-unique counter + a
+    # uuid4 suffix (collision-proof across processes too) — NOT just a commit
+    # hash, which is shared by every mutant in the same gate run and would
+    # collide the instant two mutants ran concurrently.
+    uniq = f"mut-{mutant.lineno}-{next(_SCRATCH_COUNTER)}-{uuid.uuid4().hex[:8]}"
+    scratch = os.path.join(repo_root, ".worktrees", uniq)
+
+    add = subprocess.run(
+        ["git", "-C", repo_root, "worktree", "add", "--detach", scratch, "HEAD"],
+        capture_output=True, text=True,
+    )
+    if add.returncode != 0:
+        # Could not create the isolated scratch tree for some reason (e.g. a
+        # racing cleanup); fall back to in-place rather than silently
+        # skipping the mutant.
+        return _run_is_killed_in_place(repo, path, mutant, test_argv)
+
+    scratch_repo = scratch if offset == "." else os.path.join(scratch, offset)
     try:
-        # Write mutant
+        full_path = os.path.join(scratch_repo, path)
         with open(full_path, "w", encoding="utf-8") as fh:
             fh.write(mutant.mutated_source)
 
-        # Run tests
         proc = subprocess.run(
             test_argv,
-            cwd=repo,
+            cwd=scratch_repo,
             capture_output=True,
             text=True,
         )
         return proc.returncode != 0
     finally:
-        # Always restore original, even on failure / KeyboardInterrupt
-        with open(full_path, "wb") as fh:
-            fh.write(original)
+        # Always remove the scratch worktree, even on exception/timeout —
+        # mirrors gate_runner.run_gate_at_commit's own finally-block discipline.
+        subprocess.run(
+            ["git", "-C", repo_root, "worktree", "remove", "--force", scratch],
+            capture_output=True, text=True,
+        )
 
 
 def _resolve_added_lines(
