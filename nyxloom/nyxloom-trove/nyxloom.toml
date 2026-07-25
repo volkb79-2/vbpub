@@ -53,11 +53,20 @@ evolution    = "docs/EVOLUTION.md"
 #     container, same python (3.14) the nyxloomd runtime uses. {worktree} = the
 #     attempt checkout; the nyxloom package is at {worktree}/nyxloom.
 [gates.tester-unified]
-argv = ["bash", "-c", "docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m coverage run --source=src/nyxloom -m pytest tests -q && PYTHONPATH=src /opt/tester-venv/bin/python -m coverage json -o /tmp/nyxloom-cov.json && PYTHONPATH=src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --base main --coverage-json /tmp/nyxloom-cov.json --source src/nyxloom'"]
-# D-064-L2: the gate now runs pytest under coverage, then fails if any changed
+argv = ["bash", "-c", "docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:/tmp/nyxloom-cov.json && PYTHONPATH=src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --base main --coverage-json /tmp/nyxloom-cov.json --source src/nyxloom'"]
+# D-064-L2: the gate runs pytest under coverage, then fails if any changed
 # executable source line (vs merge-base with main, or the merged delta post-merge)
 # is uncovered -- the deterministic test-completeness floor. `# pragma: no cover`
 # is the escape hatch for a genuinely-unreachable line. See src/nyxloom/coverage_gate.py.
+# factory-hardening G (2026-07-25): pytest runs under `-n auto` (pytest-xdist) for
+# wall-clock, and coverage is collected via `pytest-cov` (--cov), NOT `coverage run
+# -m pytest`. WHY: `coverage run` traces only the parent process, so it measures
+# ~nothing of xdist's execnet WORKER subprocesses -> coverage_gate would then see
+# every changed line as uncovered and false-FAIL every package. pytest-cov hooks
+# each worker natively and merges their data in-process, emitting the SAME coverage
+# json schema coverage_gate already reads. Parallelism lives HERE (the gate), not in
+# pyproject addopts, so mutation_gate's per-mutant single-file runs stay serial.
+# Requires tester-unified rebuilt with the pytest-xdist+pytest-cov test extra.
 phase = "implementation"
 timeout_seconds = 1800
 environment = "tester-unified"
