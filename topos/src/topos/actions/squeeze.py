@@ -314,7 +314,7 @@ def run_squeeze(
             ),
             admin=config.admin,
         )
-    except BaseException:
+    except Exception:
         pass  # Audit failure is non-fatal for the measurement session
 
     # -- Read current memory.current and memory.min
@@ -442,6 +442,8 @@ def run_squeeze(
 
                 # Step down
                 high -= step_bytes
+                if high >= floor_bytes:
+                    writer(target, "memory.high", str(high))
 
             else:
                 # Loop ended because high < floor; the last attempt would be
@@ -462,9 +464,8 @@ def run_squeeze(
             if steps:
                 # Keep the last good squeeze point
                 pass
-        except BaseException as exc:
+        except Exception as exc:
             stop_reason = "error"
-            log_fh.close()
             return _result_error(
                 config,
                 str(exc),
@@ -507,7 +508,7 @@ def run_squeeze(
             ),
             admin=config.admin,
         )
-    except BaseException:
+    except Exception:
         pass
 
     return SqueezeResult(
@@ -741,7 +742,7 @@ def run_squeeze_gated(
         )
     try:
         is_root = root_check() if root_check is not None else os.geteuid() == 0
-    except BaseException:
+    except Exception:
         is_root = False
     if is_root is not True:
         return _result_error(config, "root privileges are required")
