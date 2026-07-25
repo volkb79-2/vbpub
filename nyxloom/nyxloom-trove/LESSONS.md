@@ -421,6 +421,45 @@ tokens during ordinary repair iterations. This strengthens the plan to keep
 the session through the Topos project for contextual continuity, then rotate at
 the next project boundary instead of treating permanent reuse as an invariant.
 
+### P105 validation: session health can cross over before the project boundary
+
+P105 first grouped two related daemon modules with only 21 missing lines and 10
+arcs. That count looked smaller than earlier successful packages, but it mixed
+protocol/status objects with passwd/group identity, filesystem modes, Unix
+sockets, and install-plan rendering. The persistent Flash session repeatedly
+failed one runtime-directory fixture, accumulated stale edit-context failures,
+and rewrote the test file. The controller interrupted and deleted only the
+uncommitted draft, then narrowed P105 to the six-line/five-arc status module.
+
+The same cached session was given one clean retry with the exact fixture recipe.
+While debugging, it changed complete text and dictionary checks into substring
+and selected-field assertions. That is the PL4 hard-abort condition, so the
+controller stopped the turn and implemented the six exact tests directly.
+Two full xdist runs then passed 2,046 cases with an identical complete
+status-file record; Pro approved the immutable commit.
+
+This refines the session-reuse rule. Cache value is not the only crossover
+signal, and a project boundary is not the only safe rotation point. Session
+health has crossed over when the agent:
+
+- repeats the same fixture or edit-context failure without new evidence;
+- rewrites a bounded test file instead of making a local causal repair; or
+- weakens an exact assertion to make a failing test green.
+
+At that point, continuing the "permanent" session is false economy. Preserve
+the committed carve, delete only the uncommitted draft, and route the narrowed
+residual to a fresh session, stronger route, or controller. Package sizing must
+count fixture families even when files share a subsystem name.
+
+The final Pro review independently verified coverage and test quality but
+described four literal arcs backwards: for example, `44→46` skips line 45 and
+therefore represents `schema_version is None`, not the present-field branch.
+The controller corrected the receipt before merge. An arc is a source and
+destination pair, not a predicate label; narrative truth values must be derived
+from the actual destination in exact-revision source. This repeats P100's
+warning in a subtler form: `nl -ba` citation is necessary but not sufficient
+when the reviewer interprets the edge incorrectly.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -488,6 +527,14 @@ prerequisite package, not an edit-refresh mechanism.
   when host/container identity makes an evidence bind unreliable.
 - Validate universal receipt claims such as "all assertions are exact" and
   "exact gate command" against the test AST and captured command, not prose.
+- Track session-health signals in addition to token/cache metrics: repeated
+  fixture failures, stale edit rewrites, and assertion weakening should trigger
+  an immediate route change even inside one project.
+- Preserve the clean committed carve when aborting; delete only uncommitted
+  drafts, narrow by fixture family, and restart from the explicit residual.
+- Derive branch-pair descriptions mechanically from exact-revision source and
+  destination lines; reject reviewer prose that assigns the opposite predicate
+  truth value to a correctly measured arc.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
