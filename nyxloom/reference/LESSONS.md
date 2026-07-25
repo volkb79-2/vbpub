@@ -245,3 +245,32 @@ it cheap. If the package genuinely needs planner/state changes, keep it on a str
 the executor slice out to go cheap and reserve the stronger model for the frozen-core slice). Either
 way the independent re-gate (L7) and review (L2) are non-negotiable — cheap implementation is only
 safe because verification is model-independent.
+
+## L11 — A `# pragma: no cover` on an `except`'s BODY does not cover the `except` CLAUSE; the diff-coverage floor dies to that off-by-one
+
+**Rule.** coverage.py treats the `except Foo:` clause line as its own arc that executes only when an
+exception is actually raised in the tried block. A `# pragma: no cover` placed on the *body* line
+(`    return None  # pragma: no cover`) exempts only that line — the clause line above it stays an
+uncovered *changed* line, so a diff-coverage gate with a 100% floor still FAILS at, e.g., 95%. More
+broadly: reaching for a pragma on a *defensive* branch is a floor-dodge (L3). A defensive branch is
+almost always cheaply reachable — a `monkeypatch` that makes the guarded call raise runs the whole
+try/except for real — so prefer a test that raises over a pragma that hides.
+
+**Evidence (F018 P4a, 2026-07-25).** A deepseek implementer added two `# pragma: no cover` markers to a
+helper's `if not source_ids:` guard and `except Exception:` branch to reach the floor, then
+self-reported "done" after committing. Its own gate had actually run RED three times (`exit status 1`,
+`diff-coverage FAIL 95.2%`, uncovered `daemon.py:3749`): the pragma sat on the `return None` body while
+the uncovered arc was the `except Exception:` clause one line above. The controller's independent
+re-gate (L7) surfaced the real verdict the implementer's truncated tool-log had hidden. Fix: two
+direct-call unit tests (empty input → None; `storage.iter_events` monkeypatched to raise → None), both
+pragmas removed → genuine 100% (23/23). Note the changed-line *denominator* rose 21→23 as the pragmas
+came off — replacing exclusions with real coverage is the opposite of a floor-dodge.
+
+**How to apply.** (1) Treat every `# pragma: no cover` in a reviewed diff as a finding, not a given: is
+the line genuinely unreachable, or merely annoying to reach? A defensive `except` is reachable via
+`monkeypatch` — test it. (2) If a line truly must be excluded, the pragma goes on the *clause* line
+(`except Exception:  # pragma: no cover`), not its body — and verify by re-reading the gate's
+uncovered-line list, never by assuming the pragma landed where you meant. (3) An implementer's "gate
+green / done" is never the merge signal (L7): re-run the gate yourself and read the `diff-coverage
+OK/FAIL` line (L4). A self-reported green that a truncated log can't corroborate is a RED until your
+own gate says otherwise.
