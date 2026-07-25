@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, storage
+from nyxloom import daemon, frontmatter, lint, paths, reconcile, storage
 from nyxloom.config import ProjectConfig, register_project
 from nyxloom.types import (
     Actor, ActorKind, EventType, TaskState, TaskStateFile, utc_now,
@@ -216,8 +216,8 @@ def _proposal_payload(*, project: str = "demo", generation: int = 1, turn_id: st
     }
 
 
-def _record(project: str, payload: dict) -> None:
-    storage.append_and_apply(
+def _record(project: str, payload: dict):
+    return storage.append_and_apply(
         project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
         type=EventType.CARVER_PROPOSAL_RECORDED, payload=payload,
     )
@@ -672,3 +672,360 @@ def test_feature_off_run_pass_never_admits_proposals(tmp_state, sample_project):
         and e.payload.get("kind") == "carver-proposal-admitted"
         for e in events
     )
+
+
+# ==========================================================================
+# Diff-coverage closers: every remaining structural branch in the new
+# validation/admission pipeline (storage-read fail-safes, malformed-
+# structure edges, and the admission-side idempotency/disposition edges
+# not already exercised above).
+# ==========================================================================
+
+def test_validated_proposals_storage_error_degrades_to_empty(
+        tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    _bootstrap_warm()
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)  # captured BEFORE the monkeypatch below
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_event_sequence_at_or_before_cursor_excluded(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    ev = _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert len(d._validated_carve_proposals("demo", cfg, snap, {})) == 1  # sanity
+
+    snap.last_consumed_event_sequence = ev.sequence
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+@pytest.mark.parametrize("proposal_id", [
+    "other-project:carve:1:att-1",   # wrong project prefix
+    "demo:notcarve:1:att-1",         # wrong literal (not "carve")
+    "demo:carve:1:",                 # empty turn-id segment
+    "demo:carve:notanumber:att-1",   # non-numeric generation
+])
+def test_malformed_proposal_id_structure_not_validated(
+        tmp_state, carver_project, proposal_id):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(artifacts=[_artifact(relpath, sha)])
+    payload["proposal_id"] = proposal_id
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+@pytest.mark.parametrize("bad_path", [None, 123, ""])
+def test_artifact_path_not_a_string_not_validated(tmp_state, carver_project, bad_path):
+    cfg = carver_project
+    _bootstrap_warm()
+    payload = _proposal_payload(artifacts=[
+        {"kind": "handoff", "path": bad_path, "sha256": "0" * 64, "source_ref": None}])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_artifact_path_null_byte_resolution_error_not_validated(tmp_state, carver_project):
+    """resolve()/relative_to() raising (a syntactically-odd but non-'..'/
+    non-absolute path) is caught, not propagated."""
+    cfg = carver_project
+    _bootstrap_warm()
+    payload = _proposal_payload(artifacts=[
+        {"kind": "handoff", "path": "handoff/\x00bad.md", "sha256": "0" * 64,
+         "source_ref": None}])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_discover_handoffs_error_not_validated(tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(artifacts=[_artifact(relpath, sha)])
+    _record("demo", payload)
+
+    def _boom(cfg):
+        raise RuntimeError("simulated glob failure")
+
+    monkeypatch.setattr(frontmatter, "discover_handoffs", _boom)
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_read_bytes_oserror_not_validated(tmp_state, carver_project, monkeypatch):
+    """A path that resolves and 'discovers' clean but no longer exists on
+    disk at read time (e.g. removed between recording and validation)."""
+    cfg = carver_project
+    _bootstrap_warm()
+    ghost_relpath = "handoff/ghost.md"
+    ghost_path = cfg.root / ghost_relpath
+    monkeypatch.setattr(frontmatter, "discover_handoffs", lambda cfg: [ghost_path])
+    payload = _proposal_payload(artifacts=[_artifact(ghost_relpath, "0" * 64)])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_source_not_a_dict_not_validated(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(artifacts=[_artifact(relpath, sha)])
+    payload["source"] = "not-a-dict"
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_artifact_entry_not_a_dict_not_validated(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    payload = _proposal_payload(artifacts=["not-a-dict"])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+@pytest.mark.parametrize("bad_hash", [None, 123, ""])
+def test_artifact_hash_not_a_string_not_validated(tmp_state, carver_project, bad_hash):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, _sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(artifacts=[
+        {"kind": "handoff", "path": relpath, "sha256": bad_hash, "source_ref": None}])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_frontmatter_parse_error_not_validated(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath = "handoff/demo-P901.md"
+    p = cfg.root / relpath
+    p.write_text("not frontmatter at all\n")
+    sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    payload = _proposal_payload(artifacts=[_artifact(relpath, sha)])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_lint_file_error_not_validated(tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(artifacts=[_artifact(relpath, sha)])
+    _record("demo", payload)
+
+    def _boom(path, cfg):
+        raise RuntimeError("simulated lint failure")
+
+    monkeypatch.setattr(lint, "lint_file", _boom)
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+
+
+def test_carve_proposal_recorded_payload_storage_error_returns_none(
+        tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._carve_proposal_recorded_payload("demo", "demo:carve:1:att-1") is None
+
+
+def test_carve_proposal_recorded_payload_not_found_returns_none(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._carve_proposal_recorded_payload("demo", "demo:carve:1:does-not-exist") is None
+
+
+def test_repair_escalations_storage_error_degrades_to_no_events(
+        tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    _bootstrap_warm()
+    d = daemon.Daemon({"demo": cfg.root})
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._carve_proposal_repair_escalations("demo", cfg, {}) == []
+
+
+def test_repair_escalated_storage_error_returns_false(tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._carve_proposal_repair_escalated("demo", 1) is False
+
+
+def test_repair_count_ignores_other_generation_records(tmp_state, carver_project):
+    cfg = carver_project
+    assert cfg.carve.max_proposal_repairs == 2
+    _bootstrap_warm(generation=1)
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    # A well-formed but WRONG-generation record -- must be ignored, not
+    # counted toward generation 1's repair budget.
+    _record("demo", _proposal_payload(generation=2, turn_id="att-9",
+                                       artifacts=[_artifact(relpath, "0" * 64)]))
+    _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, "0" * 64)]))
+    _record("demo", _proposal_payload(turn_id="att-2", artifacts=[_artifact(relpath, "1" * 64)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    events = d._carve_proposal_repair_escalations("demo", cfg, {})
+    escalations = [e for e in events if e.type is EventType.NEEDS_OPERATOR]
+    assert len(escalations) == 1
+    assert escalations[0].payload["invalid_count"] == 2  # the gen-2 record excluded
+
+
+def test_execute_admit_feature_off_returns_no_events(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id="demo:carve:1:att-1", artifact_ids=("x",))
+    events = d._execute_admit_carve_proposal("demo", cfg, {}, action)
+    assert events == []
+
+
+def test_partial_admission_creates_only_missing_task(tmp_state, carver_project):
+    """Self-healing partial admission (e.g. a prior pass crashed mid-loop):
+    an artifact_id already present in `states` is skipped, the remaining
+    one is created."""
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath1, sha1 = _write_handoff(cfg.root, "demo-P901")
+    relpath2, sha2 = _write_handoff(cfg.root, "demo-P902")
+    payload = _proposal_payload(artifacts=[_artifact(relpath1, sha1), _artifact(relpath2, sha2)])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = {
+        "demo-P901": TaskStateFile(schema_version=1, task_id="demo-P901", project="demo",
+                                    state=TaskState.CARVED, since=utc_now(),
+                                    handoff_path=relpath1),
+    }
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=payload["proposal_id"],
+        artifact_ids=("demo-P901", "demo-P902"))
+    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+
+    created_ids = {e.task_id for e in events if e.type is EventType.TASK_CREATED}
+    assert created_ids == {"demo-P902"}
+    assert set(states) == {"demo-P901", "demo-P902"}
+
+
+def test_disposition_missing_or_unknown_origin_ref_skipped(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(
+        artifacts=[_artifact(relpath, sha)],
+        dispositions=[
+            {"source_ref": None, "result": "handoff", "artifact_ref": relpath},
+            {"source_ref": "unknown-task", "result": "handoff", "artifact_ref": relpath},
+        ],
+        mode="rescope",
+    )
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
+    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+
+    assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
+
+
+def test_disposition_origin_not_ready_to_carve_skipped(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(
+        artifacts=[_artifact(relpath, sha)],
+        dispositions=[{"source_ref": "demo-origin", "result": "handoff", "artifact_ref": relpath}],
+        mode="rescope",
+    )
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = {
+        "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
+                                      state=TaskState.ACTIVE, since=utc_now()),
+    }
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
+    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+
+    assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
+    assert states["demo-origin"].state is TaskState.ACTIVE
+
+
+def test_disposition_artifact_ref_mismatch_skipped(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(
+        artifacts=[_artifact(relpath, sha)],
+        dispositions=[{"source_ref": "demo-origin", "result": "handoff",
+                       "artifact_ref": "handoff/some-other-file.md"}],
+        mode="rescope",
+    )
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = {
+        "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
+                                      state=TaskState.READY_TO_CARVE, since=utc_now()),
+    }
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
+    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+
+    assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
+    assert states["demo-origin"].state is TaskState.READY_TO_CARVE
