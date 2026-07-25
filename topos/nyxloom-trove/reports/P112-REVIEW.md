@@ -28,7 +28,7 @@ identical. O1/O5 satisfied. 21 collected cases, 2,135 + 21 = 2,156. ✓
 
 ## Source edit audit (6 changed executable lines)
 
-### Step-write fix (lines 444-445 — 2 new lines)
+### Step-write fix (current lines 445–446 — 2 new lines)
 Previously, `high -= step_bytes` updated the Python variable but did not
 write the new value to cgroup `memory.high`. Now writes before sampling:
 ```python
@@ -40,7 +40,7 @@ Proved by `test_multistep_run_applies_every_measured_high_before_sampling`:
 writes `["2", "1", "max"]` with steps recorded at high=2 and high=1.
 Restoration writes `max` once. ✓
 
-### Premature-close removal (line 466 removed)
+### Premature-close removal (baseline line 467 deleted)
 The generic error handler called `log_fh.close()` before `finally` wrote
 the summary, turning the intended error result into a closed-file failure.
 The close was removed; `finally` handles close + summary once.
@@ -60,13 +60,17 @@ counterparts. The in-loop `KeyboardInterrupt` contract (which returns
 `stop_reason="interrupted"` rather than propagating) is preserved and
 tested both before-first-step and after-step-exists. ✓
 
+The exact six-line changed-line denominator is current lines 317, 445, 446,
+467, 511, and 745. The deleted baseline line 467 is covered by the separate
+deletion oracle above and is not part of that denominator.
+
 ## Literal line/arc coverage
 
 All 41 baseline lines and 11 baseline pairs closed. The LOG documents a
-complete baseline→current line-shift map accounting for 2 inserted
+complete baseline→current line-shift map accounting for two inserted
 step-write lines and 1 removed premature-close line. All shifted pairs
 verified against current source. Retained lines verified at HEAD:
-444, 445, 317, 467, 511, 745 as shown above.
+317, 445, 446, 467, 511, and 745 as shown above.
 
 ## Test quality audit (21 functions, 21 cases)
 
@@ -97,8 +101,10 @@ verified against current source. Retained lines verified at HEAD:
 All 21 cases use complete dataclasses, dicts, call structures, parsed JSONL
 records, rendered output, or exact exception text/type. Zero substring,
 membership, non-None, range, len-only, or assertion-free bodies. Zero
-duplicates. Zero `pass` (line 320 in source is `pass` in the `if steps:`
-block, exercised by the explicit-start-below-floor test).
+duplicates and zero `pass` statements in the P112 test file. Source line 466 is the
+intentional `if steps: pass` branch, exercised by
+`test_keyboard_interrupt_after_step_preserves_complete_step`; the no-step
+counterpart is exercised separately.
 
 Only cgroup, filesystem, signal, exit, audit, clock, and root seams are
 injected; no target function (`run_squeeze`, `run_squeeze_gated`,
