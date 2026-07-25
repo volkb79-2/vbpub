@@ -832,17 +832,19 @@ def cmd_gate_verify(args) -> int:
     declared verification gate blindly (`reference/STANDARD.md` §"What
     nyxloom requires of a project"); this verb proves it instead of assuming
     it: selects the gate (gate_runner.select_verification_gate), runs it at
-    the project's current HEAD (must PASS), then hands a known-bad canary
-    commit (gate_canary.build_canary_commit) to the SAME
-    gate_runner.run_gate_at_commit (must FAIL). Both runs reuse
-    gate_runner's ONE isolation primitive -- this verb adds no new
-    subprocess/worktree plumbing beyond building the canary commit itself.
+    the project's current HEAD (must PASS), then tries up to several
+    known-bad canary commits against the SAME gate
+    (gate_canary.verify_gate_rejects_canary; see that module for the
+    multi-attempt/subtree-scoping design). Every gate run reuses
+    gate_runner's ONE isolation primitive.
 
     Verdicts (printed as `verdict: <NAME> -- ...`):
-      NO_GATE     -- project declares no gate at all.          exit 1
-      BROKEN      -- the gate rejects even known-good HEAD.    exit 1
-      LAUNDERS    -- the gate PASSES the known-bad canary too. exit 1
-      TRUSTWORTHY -- passes good HEAD AND rejects the canary.  exit 0
+      NO_GATE      -- project declares no gate at all.             exit 1
+      BROKEN       -- the gate rejects even known-good HEAD.       exit 1
+      LAUNDERS     -- every canary attempt PASSES.                 exit 1
+      INCONCLUSIVE -- no attempt was killed, but at least one never
+                      rendered a real verdict (timeout/exec-failure). exit 3
+      TRUSTWORTHY  -- passes good HEAD AND kills >=1 canary.        exit 0
     """
     import subprocess
 
@@ -874,26 +876,32 @@ def cmd_gate_verify(args) -> int:
         return 1
 
     try:
-        canary = gate_canary.build_canary_commit(cfg, commit)
+        canary_result = gate_canary.verify_gate_rejects_canary(cfg, gate, commit)
     except gate_canary.CanaryError as e:
         print(f"error: cannot build a canary for {args.project}: {e}", file=sys.stderr)
         return 1
 
-    bad = gate_runner.run_gate_at_commit(cfg, gate, canary.commit, phase="verify-canary")
-    fail_on_canary = bad.exit_code != 0
-
+    attempts_desc = "; ".join(
+        f"{a.target_path} (exit {a.exit_code})" for a in canary_result.attempts
+    )
     print(f"pass-on-good: PASS (gate {gate.gate_id} exit {good.exit_code} at {commit[:12]})")
-    print(f"fail-on-bad: {'PASS' if fail_on_canary else 'FAIL'} (gate {gate.gate_id} exit "
-          f"{bad.exit_code} at canary {canary.commit[:12]}, mechanism={canary.mechanism}, "
-          f"target={canary.target_path})")
+    print(f"fail-on-bad: {'PASS' if canary_result.killed else 'FAIL'} "
+          f"({len(canary_result.attempts)} attempt(s): {attempts_desc})")
 
-    if fail_on_canary:
+    if canary_result.killed:
         print(f"verdict: TRUSTWORTHY -- {args.project}'s gate {gate.gate_id} rejects a "
               "known-bad canary")
         return 0
 
-    print(f"verdict: LAUNDERS -- {args.project}'s gate {gate.gate_id} PASSES a known-bad "
-          f"canary ({canary.description}); it cannot be trusted to reject broken code")
+    if canary_result.inconclusive:
+        print(f"verdict: INCONCLUSIVE -- {args.project}'s gate {gate.gate_id} never rendered "
+              "a real verdict on any canary attempt (timeout/exec-failure); cannot confirm "
+              "TRUSTWORTHY or LAUNDERS -- investigate the gate command itself")
+        return 3
+
+    print(f"verdict: LAUNDERS -- {args.project}'s gate {gate.gate_id} PASSES every known-bad "
+          f"canary tried ({len(canary_result.attempts)} attempt(s)); it cannot be trusted to "
+          "reject broken code")
     return 1
 
 
