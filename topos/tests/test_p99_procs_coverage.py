@@ -649,3 +649,137 @@ class TestSamplerFinalGaps:
 # Rate computation branches [287]-[309] are exercised by
 # test_compute_rates_all_rates but coverage.py may not track
 # them due to CPython optimization of fast-executing functions.
+
+class TestSamplerFrameSource:
+    """Test ProcessSampler.frame_source() directly (G1/F2/F5)."""
+
+    def test_frame_source_returns_with_history_and_evicted(self):
+        sampler = ProcessSampler()
+        from topos.model import Frame
+        f = Frame(ts=0, interval_s=1, host={}, entities={}, schema_version=1)
+        sampler._history = [(0, f)]
+        sampler._evicted = True
+        source = sampler.frame_source()
+        assert source.evicted is True
+        frames = list(source.iter_source_frames())
+        assert len(frames) == 1
+
+
+class TestSamplerRealOmissions:
+    """Produce actual selection omissions (G2/F3)."""
+
+    def test_omitted_reasons_non_empty(self):
+        """omitted_reasons dict has entries when PIDs exceed combined cap."""
+        tmp = Path("/tmp") / "test_ore"
+        if tmp.exists(): import shutil; shutil.rmtree(tmp)
+        tmp.mkdir(parents=True, exist_ok=True)
+        # Create PIDs with DIFFERENT utime so rates differ
+        for i in range(1, 11):
+            p = tmp / str(i)
+            p.mkdir()
+            utime = i * 100  # Vary utime for rate differentiation
+            (p / "stat").write_text(f"{i} (p{i}) S 0 0 0 0 0 0 0 0 0 {utime} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+            (p / "io").write_text(f"read_bytes: {i*100}\nwrite_bytes: {i*50}\n")
+            (p / "status").write_text("Uid: 0\n")
+            (p / "cmdline").write_bytes(b"test")
+            (p / "cgroup").write_text("0::/\n")
+        (tmp / "stat").write_text("btime 0\ncpu 1\ncpu0 1\n")
+        from topos.config import ProcessConfig
+        cfg = ProcessConfig(top_cpu=2, top_io=2, pinned_cap=1, hard_cap=1)
+        sampler = ProcessSampler(proc_root=tmp, config=cfg)
+        sampler.sample()
+        tick = sampler.sample()
+        assert tick.coverage.omitted_count > 0, (
+            f"expected >0 omitted, got {tick.coverage.omitted_count}"
+        )
+        assert len(tick.coverage.omitted_reasons) > 0
+        import shutil; shutil.rmtree(tmp)
+
+
+class TestSamplerWarmUpFalseBranch:
+    """Cover warm-up FALSE branch [231,215] (G3)."""
+
+    def test_warm_up_new_pid_not_in_prev(self):
+        """A new PID on second tick is in retained but NOT in _prev -> FALSE branch."""
+        tmp = Path("/tmp") / "test_wup"
+        if tmp.exists(): import shutil; shutil.rmtree(tmp)
+        tmp.mkdir(parents=True, exist_ok=True)
+        # PID 1 exists on both ticks, PID 2 appears only on tick 2
+        for p in ("1",):
+            d = tmp / p; d.mkdir()
+            (d / "stat").write_text("1 (t) R 0 0 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+            (d / "io").write_text("read_bytes: 100\nwrite_bytes: 50\ncancelled_write_bytes: 5\n")
+            (d / "status").write_text("Uid: 0\nVmRSS: 5000 kB\nThreads: 2\n")
+            (d / "cmdline").write_bytes(b"/bin/test")
+            (d / "cgroup").write_text("0::/\n")
+        (tmp / "stat").write_text("btime 0\ncpu 1\ncpu0 1\n")
+        sampler = ProcessSampler(proc_root=tmp)
+        sampler.sample()  # tick 1: PID 1 -> _prev has PID 1
+        # Add PID 2 for tick 2
+        p2 = tmp / "2"; p2.mkdir()
+        (p2 / "stat").write_text("2 (new) R 0 0 0 0 0 0 0 0 0 50 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+        (p2 / "io").write_text("read_bytes: 50\nwrite_bytes: 25\n")
+        (p2 / "status").write_text("Uid: 0\n")
+        (p2 / "cmdline").write_bytes(b"/bin/new")
+        (p2 / "cgroup").write_text("0::/\n")
+        # Mark PID 2 as pinned so it's retained even without rate data
+        sampler.set_pinned(frozenset({2}))
+        tick = sampler.sample()
+        # PID 2 is retained (pinned) but NOT in _prev (new) -> FALSE branch
+        # warm_up_coverage = warm / retained < 1.0
+        assert tick.coverage.warm_up_coverage < 1.0
+        import shutil; shutil.rmtree(tmp)
+
+
+class TestSamplerComputeRatesFalseBranches:
+    """Cover _compute_rates FALSE branches with degraded baselines (G4/F6)."""
+
+    def test_compute_rates_degraded_baseline(self):
+        """Baseline with None fields -> all deltas None -> FALSE branches taken."""
+        sampler = ProcessSampler()
+        key = ProcessKey(pid=1, start_ticks=100, boot_id="b")
+        # 'cur' has None for ALL rate fields (degraded procfs read)
+        cur = _Baseline(key=key, ppid=0, comm="t", state="S",
+                        utime=None, stime=None,  # cpu_ticks -> None
+                        minflt=None, majflt=None, blkio_ticks=None,
+                        read_bytes=None, write_bytes=None, cancelled_write_bytes=None,
+                        stat_src="unavail_kernel", io_src="unavail_kernel")
+        # 'prev' has all values
+        sampler._prev = {key: _Baseline(key=key, ppid=0, comm="t", state="S",
+                                         utime=10, stime=5,
+                                         minflt=1, majflt=0, blkio_ticks=1,
+                                         read_bytes=100, write_bytes=50, cancelled_write_bytes=5,
+                                         stat_src="exact", io_src="exact")}
+        rates = sampler._compute_rates({key: cur}, 1.0)
+        r = rates[key]
+        # Every delta is None -> every rate is None -> all FALSE branches taken
+        assert r.cpu_pct is None
+        assert r.read_bps is None
+        assert r.write_bps is None
+        assert r.io_combined_bps is None
+        assert r.cancelled_w_bps is None
+        assert r.minflt_per_s is None
+        assert r.majflt_per_s is None
+        assert r.blkio_per_s is None
+
+    def test_compute_rates_partial_degradation(self):
+        """Baseline with SOME None fields -> specific FALSE branches."""
+        sampler = ProcessSampler()
+        key = ProcessKey(pid=1, start_ticks=100, boot_id="b")
+        # cur has utime present but stime=None -> _delta(utime+stime) = None
+        cur = _Baseline(key=key, ppid=0, comm="t", state="S",
+                        utime=20, stime=None,  # cpu_ticks -> None
+                        minflt=5, majflt=2, blkio_ticks=3,
+                        read_bytes=200, write_bytes=100, cancelled_write_bytes=10,
+                        stat_src="exact", io_src="exact")
+        sampler._prev = {key: _Baseline(key=key, ppid=0, comm="t", state="S",
+                                         utime=10, stime=5,
+                                         minflt=1, majflt=0, blkio_ticks=1,
+                                         read_bytes=100, write_bytes=50, cancelled_write_bytes=5,
+                                         stat_src="exact", io_src="exact")}
+        rates = sampler._compute_rates({key: cur}, 1.0)
+        r = rates[key]
+        assert r.cpu_pct is None  # stime=None -> cpu_ticks=None
+        # Other deltas should still be computed
+        assert r.read_bps == 100.0
+        assert r.write_bps == 50.0

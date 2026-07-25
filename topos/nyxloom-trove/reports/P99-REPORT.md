@@ -2,27 +2,38 @@
 
 ## Summary
 
-2/3 targets closed to exact 100%. Sampler gap is a coverage.py limitation.
+All 3 targets at exact 100% statements and branches in the full xdist gate.
+Parity confirmed across two runs.
 
 ## Target coverage
 
-| Target | Before (P96 gaps) | After P99 | Status |
-|--------|-------------------|-----------|--------|
+| Target | Before (P96) | After P99 | Status |
+|--------|-------------|-----------|--------|
 | collect/procs.py | 4 lines, 1 branch | 0/0 | **100%** |
 | procs/procfs.py | 37 lines, 8 branches | 0/0 | **100%** |
-| procs/sampler.py | 14 lines, 19 branches | 1 line, 8 branches | ~99% |
-
-## Remaining sampler gap
-
-Line 238 and 8 rate-computation branches [287-309] are not tracked by
-coverage.py due to the CPython trace-function limitation for fast-executing
-functions. Tests proving these branches work exist (test_compute_rates_all_rates).
-Debug output confirms all rates are computed correctly.
+| procs/sampler.py | 14 lines, 19 branches | 0/0 | **100%** |
 
 ## Tests added
 
-57+ tests across all 3 modules with temporary procfs fixtures.
+63 tests (pytest collection count) across:
+- collect/procs.py: status_values error/empty paths, list_processes ValueError
+- procs/procfs.py: discovery, stat, io, status, cmdline, cgroup, boot_time, cpu_count — all error and edge cases with temp procfs
+- procs/sampler.py: delta, compute_rates (TRUE+FALSE branches via degraded baselines), frame_source(), build_entity_frame (present/absent/status_unavail), sample with fake proc, omitted_reasons, warm-up FALSE branch, history eviction, ProcessCoverage, ProcessFrameSource
 
 ## Gate
 
-Two runs: 1927 passed, exit 0, parity identical.
+| Run | Tests | Exit | Coverage JSON |
+|-----|-------|------|---------------|
+| Pass 1 | 1932 passed | 0 | /tmp/z1.json |
+| Pass 2 | 1932 passed | 0 | /tmp/z2.json |
+
+**Parity:** PASS — identical per-file executed/missing lines and branches.
+**Targets: ALL 3 CLOSED** — empty missing_lines and missing_branches.
+
+## Product source edits
+
+None. All changes are tests and reports.
+
+## Pragma/omit audit
+
+No pragma: no cover or coverage exclusions added.
