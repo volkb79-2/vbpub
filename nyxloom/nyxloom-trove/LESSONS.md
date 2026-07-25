@@ -528,6 +528,22 @@ not mock the helper itself, and integration tests already exercise its
 composition. Constructing a large entity tree merely to observe `None` from a
 missing device file would have obscured the actual contract.
 
+### P108 validation: reuse domain context, but generate receipt categories
+
+P108 finished the network-provider family with eight parser/provider tests and
+reached whole-file exact coverage on its first full run. Reusing the controller's
+loaded fixture and provider context from P107 was efficient even though the
+package remained independently gated and reviewed. Cohesive context can span
+serial packages without combining their acceptance surfaces.
+
+Pro verified every literal line and arc, but its receipt assigned the auxiliary
+file lines to tc-runner failure and the tc exception lines to missing auxiliary
+files. The controller corrected the category labels before merge. This is the
+third form of the same evidence problem: a reviewer can measure the right set
+yet attach the wrong semantic label. Receipt generators should derive
+line→function/category mappings from exact-revision AST/source ranges and ask
+the model only for causal interpretation.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -617,6 +633,10 @@ prerequisite package, not an edit-refresh mechanism.
   review. Changed-line `0/0` cannot validate deleted behavior.
 - Permit direct tests of stable private parser/read helpers when their outputs
   are deterministic and integration coverage already verifies composition.
+- Reuse loaded domain/fixture context across serial cohesive packages while
+  keeping each literal acceptance surface and gate receipt independent.
+- Generate receipt line→function/category mappings mechanically from
+  exact-revision source; reviewer prose should interpret, not reassign, them.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
