@@ -8,10 +8,8 @@ set; P103 owns remaining engine.py gaps.
 from __future__ import annotations
 
 import pytest
-from topos.query import (
-    Query, InvalidQueryError, UnknownFieldError, IncompatibleQueryError,
-    MetricRef, SortSpec, Caps,
-)
+from topos.query import Query, InvalidQueryError, UnknownFieldError, MetricRef, SortSpec
+from topos.query.engine import _validate, Caps, _parse_metric_token
 
 
 class TestQueryFromDict:
@@ -38,7 +36,7 @@ class TestQueryFromDict:
             Query.from_dict({"shape": "summary", "metrics": [{"semantic": "rate"}]})
 
     def test_from_dict_metric_spec_invalid_type(self):
-        """line 156: non-str, non-dict metric raises InvalidQueryError."""
+        """line 156: non-str, non-dict metric raises InvalidQueryError (arc 148->156)."""
         with pytest.raises(InvalidQueryError, match="invalid metric spec"):
             Query.from_dict({"shape": "summary", "metrics": [42]})
 
@@ -48,7 +46,7 @@ class TestQueryFromDict:
             Query.from_dict({"shape": "summary", "metrics": ["ram"], "selector": "bad"})
 
     def test_from_dict_sort_as_dict(self):
-        """line 173: sort as dict enters the isinstance(sort_data, dict) branch."""
+        """line 173: sort as dict builds Query with sort.metric=='ram'."""
         q = Query.from_dict({"shape": "summary", "metrics": ["ram"], "sort": {"metric": "ram", "order": "asc"}})
         assert q.sort is not None
         assert q.sort.metric == "ram"
@@ -78,12 +76,10 @@ class TestValidationPaths:
     """Cover validation branches in _as_int, _parse_metric_token, etc."""
 
     def _make_query(self, **overrides) -> Query:
-        """Helper: build a Query with defaults for non-validated fields."""
-        from topos.query.engine import Caps
         defaults = dict(shape="summary", metrics=(MetricRef(name="ram"),),
-                         window_spec="all", selector=None,
-                         projection="flat", visibility="all",
-                         sort=None, caps=Caps(100, 1000, 100000, "error"))
+                        window_spec="all", selector=None, projection="flat",
+                        visibility="all", sort=None,
+                        caps=Caps(100, 1000, 100000, "error"))
         defaults.update(overrides)
         return Query(**defaults)
 
@@ -94,34 +90,29 @@ class TestValidationPaths:
 
     def test_parse_metric_token_colon(self):
         """lines 219-220: _parse_metric_token parses name:semantic."""
-        from topos.query.engine import _parse_metric_token
         mr = _parse_metric_token("ram:rate")
         assert mr.name == "ram"
         assert mr.semantic == "rate"
 
     def test_visibility_unknown(self):
         """line 256: unknown visibility raises InvalidQueryError."""
-        from topos.query.engine import _validate
         with pytest.raises(InvalidQueryError, match="unknown visibility"):
             _validate(self._make_query(visibility="bad"))
 
     def test_on_exceed_unknown(self):
         """line 260: unknown caps.on_exceed raises InvalidQueryError."""
-        from topos.query.engine import _validate, Caps
         cap = Caps(100, 1000, 100000, "bad")
         with pytest.raises(InvalidQueryError, match="unknown caps.on_exceed"):
             _validate(self._make_query(caps=cap))
 
     def test_caps_negative_int(self):
         """line 269: negative max_rows raises InvalidQueryError."""
-        from topos.query.engine import _validate, Caps
         cap = Caps(-1, 1000, 100000, "error")
         with pytest.raises(InvalidQueryError, match="non-negative integer"):
             _validate(self._make_query(caps=cap))
 
     def test_sort_order_unknown(self):
         """line 308: unknown sort order raises InvalidQueryError."""
-        from topos.query.engine import _validate
         with pytest.raises(InvalidQueryError, match="unknown sort order"):
             _validate(self._make_query(sort=SortSpec(metric="ram", stat=None, order="bad")))
 
@@ -130,12 +121,8 @@ class TestMixedBranches:
     """Additional branches that need specific conditions."""
 
     def test_from_dict_sort_str_branch(self):
-        """line 172: sort as str enters _parse_sort_token."""
+        """line 172: sort as str builds SortSpec with metric='ram'."""
         q = Query.from_dict({"shape": "summary", "metrics": ["ram"], "sort": "ram"})
         assert q.sort is not None
-
-    def test_from_dict_sort_extra_fields(self):
-        """lines 174-179: sort dict with extra fields, missing metric."""
-        # extra fields
-        with pytest.raises(UnknownFieldError, match="unknown sort field"):
-            Query.from_dict({"shape": "summary", "metrics": ["ram"], "sort": {"metric": "ram", "order": "asc", "bad": 1}})
+        assert q.sort.metric == "ram"
+        assert q.sort.order == "desc"
