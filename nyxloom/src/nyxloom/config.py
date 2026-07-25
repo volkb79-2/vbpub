@@ -175,6 +175,18 @@ class Policy:
     # (safety); the CAS guard means a newer merge landed on top is never
     # clobbered. See daemon._run_post_merge_gate + reference/LESSONS.md L4.
     auto_revert_failed_merge: bool = True
+    # F019 P1b 2026-07-25 (D-F019-3, diagnose-first): a pre-merge/mutation gate
+    # failure routes the task to REVIEW_REJECTED but carries NO reviewer class,
+    # so it always lands in the blind mechanical-retry branch. Once this many
+    # CONSECUTIVE gate failures accrue (counted since the last PASSING gate, not
+    # reset by the approving reviews between merge attempts), the warm reviewer
+    # is dispatched in gate-diagnosis mode to CLASSIFY the failure so the
+    # existing triage table routes it (architectural -> re-scope, product ->
+    # operator, transient -> plain retry, fixable -> targeted retry with the gate
+    # output embedded). Default 1: a warm-session diagnosis is cheaper than one
+    # blind implementer re-dispatch. Raise it to absorb a flaky first failure
+    # with a plain retry before spending a diagnosis.
+    gate_diagnosis_after_failures: int = 1
 
 
 @dataclass

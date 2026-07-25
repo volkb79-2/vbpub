@@ -424,6 +424,24 @@ class LaunchReview(Action):
 
 
 @dataclass
+class LaunchGateDiagnosis(Action):
+    """F019 P1b 2026-07-25 (plan-f019-failure-diagnosis.md §P1): dispatch the
+    warm independent reviewer in GATE-DIAGNOSIS mode against a single task that
+    a pre-merge/mutation gate failed. Unlike LaunchReview (a wave over
+    AWAITING_REVIEW tasks), this targets ONE task that STAYS in REVIEW_REJECTED
+    throughout -- the reviewer only CLASSIFIES the gate failure into
+    {fixable|architectural|product|transient} (the gate already decided "fail");
+    it never approves/merges. The daemon executor builds the classify-only
+    packet (gate output tail + failed diff + handoff) and reuses the warm review
+    session (D-R10/B6) itself -- mirroring how the self_review executor reads the
+    source session handle -- so this action carries only the task id. The emitted
+    REVIEW_RECORDED{reject_class} is then consumed by the SAME triage table a
+    review rejection already uses (reconcile stays the pure router; the reviewer
+    is a classifier, never a controller)."""
+    pass
+
+
+@dataclass
 class SpecAttention(Action):
     reason: str | None = None       # 'ratchet'|'carve-outcome'|'rejections'|'blocked-underspecified'|
                                      # 'headroom-low'|'roadmap-exhausted' (P16 2026-07-15, daemon-emitted)
@@ -707,6 +725,30 @@ class ReconcileInput:
     # stamped) and falls back to the mechanical attempt-budget path -- graceful
     # degradation, byte-identical to the pre-B4b routing.
     triage_class: dict[str, str] = field(default_factory=dict)
+    # F019 P1b 2026-07-25 (plan-f019-failure-diagnosis.md §P1): the two
+    # daemon-computed inputs that drive gate-failure diagnosis routing. reconcile
+    # stays pure -- it reads these precomputed sets rather than the event log,
+    # exactly like triage_class. Both default empty, so a project with no
+    # gate-caused rejections plans byte-identically to the pre-F019 router.
+    #
+    # gate_diagnosis_pending: task ids CURRENTLY in REVIEW_REJECTED whose latest
+    # rejection cause is a pre-merge/mutation gate failure (not a reviewer), that
+    # carry no reviewer class yet, whose consecutive gate-fail streak has reached
+    # policy.gate_diagnosis_after_failures, AND that have no diagnosis attempt
+    # already in flight. plan_project dispatches the warm reviewer in
+    # gate-diagnosis mode for these and SUPPRESSES the blind mechanical retry
+    # until the class arrives.
+    gate_diagnosis_pending: frozenset[str] = frozenset()
+    # gate_diagnosis_attempts: attempt ids of EXITED, not-yet-consumed
+    # gate-diagnosis reviewer legs (a REVIEW_INDEPENDENT attempt on a task still
+    # in REVIEW_REJECTED with no REVIEW_RECORDED bound to it). The receipt-exit
+    # scan mints an EmitAttemptExit for these so the diagnosis verdict is
+    # consumed even when the wrapper pre-emitted ATTEMPT_EXITED -- the same gap
+    # the AWAITING_REVIEW+REVIEW_INDEPENDENT EXITED scan clause already closes for
+    # normal reviews. Gating on this precomputed set (rather than state+role
+    # alone) is what keeps an already-consumed normal review -- which also sits
+    # in REVIEW_REJECTED but carries a binding -- out of the diagnosis path (O5).
+    gate_diagnosis_attempts: frozenset[str] = frozenset()
     # D-065 (B63 2026-07-20): age in DAYS of the most recent test-health carve
     # (module contract item 15), or None when the project has never had one.
     # The daemon derives it by scanning its own event log for the marker
@@ -912,6 +954,28 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
         # at once with zero new dispatch machinery. Self-limiting the same
         # way the attempts-remaining branch above is.
         if tsf.state == TaskState.REVIEW_REJECTED:
+            # F019 P1b 2026-07-25 (gate-failure diagnosis routing): a pre-merge/
+            # mutation gate failure ALSO lands a task here (daemon.py "... gate
+            # failed; not published"), but carries no reviewer class, so without
+            # this it always falls into the blind mechanical-retry branch below.
+            # When the daemon flags this task gate-diagnosis-pending (gate-caused,
+            # unclassified, streak >= policy.gate_diagnosis_after_failures, none
+            # in flight), dispatch the warm reviewer in gate-diagnosis mode to
+            # CLASSIFY the failure and SUPPRESS the blind retry this pass (the
+            # `continue`) -- once the reviewer's REVIEW_RECORDED{reject_class}
+            # lands, the task re-enters this branch UNflagged and the triage table
+            # below routes it exactly as a review rejection already is. Skipped
+            # under drain-agents (no new agent process of any kind, mirroring the
+            # wave-review pause rule); the task parks REVIEW_REJECTED for a later
+            # run/drain-handoffs pass. The task NEVER leaves REVIEW_REJECTED during
+            # diagnosis -- un-gated code can never reach the merge path.
+            if fm_id in inp.gate_diagnosis_pending:
+                if inp.pause_mode != "drain-agents":
+                    task_actions.append(LaunchGateDiagnosis(task_id=fm_id))
+                    trace.note("gate-diagnosis", fm_id, "dispatch")
+                else:
+                    trace.note("gate-diagnosis", fm_id, "skip:drain-agents")
+                continue
             # B4b 2026-07-20 (D-060 triage stage; critique CRITIQUE.md:207 two
             # tiers + the {infra, stale-premise, fixable, architectural, product}
             # matrix). The infra class ("incomplete" leg failure) is already split
@@ -1338,6 +1402,19 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
                          or (attempt.state == AttemptState.EXITED
                              and tsf.state == TaskState.AWAITING_REVIEW
                              and attempt.role == Role.REVIEW_INDEPENDENT)
+                         # F019 P1b 2026-07-25: a GATE-DIAGNOSIS reviewer leg is a
+                         # REVIEW_INDEPENDENT attempt on a task STILL in
+                         # REVIEW_REJECTED (not AWAITING_REVIEW). If the wrapper
+                         # pre-emitted its EXITED, none of the clauses above match
+                         # and the diagnosis verdict would strand -- the exact gap
+                         # the AWAITING_REVIEW clause above closes for normal
+                         # reviews. Gate on the daemon-precomputed unconsumed set
+                         # (a REVIEW_INDEPENDENT attempt with no REVIEW_RECORDED
+                         # bound) so an already-consumed normal review -- which
+                         # also lands in REVIEW_REJECTED but carries a binding --
+                         # is NOT re-consumed here (O5).
+                         or (attempt.state == AttemptState.EXITED
+                             and attempt.attempt_id in inp.gate_diagnosis_attempts)
                          # P32 2026-07-16: a carver's EXITED attempt whose
                          # live pass was missed (daemon restart landing on
                          # the exit) left the synthetic carve task ACTIVE

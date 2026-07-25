@@ -12,9 +12,9 @@ from dataclasses import replace
 
 from nyxloom.reconcile import (
     Action, AutoMergeTask, CarveDispatch, CreateTask, DispatchImplementer,
-    EmitAttemptExit, InterruptAttempt, LaunchReview, LaunchSelfReview,
-    MarkInterrupted, MarkStalled, OpenWave, PlanResult, ProviderPause,
-    ReconcileInput, ReconcileTrace, ResumeAttempt, RunPostMergeGate,
+    EmitAttemptExit, InterruptAttempt, LaunchGateDiagnosis, LaunchReview,
+    LaunchSelfReview, MarkInterrupted, MarkStalled, OpenWave, PlanResult,
+    ProviderPause, ReconcileInput, ReconcileTrace, ResumeAttempt, RunPostMergeGate,
     SpecAttention, StallCheck, TraceNote, Transition,
     attempts_used, dispatch_eligible, plan_project,
 )
@@ -4185,3 +4185,94 @@ def test_plan_result_is_a_list_backcompat():
     assert len(result) == 1
     assert isinstance(result[0], CarveDispatch)
     assert result == [result[0]]  # list-subclass equality against a plain list
+
+
+# ============================================================================
+# F019 P1b: gate-failure diagnosis routing (reviewer classifies, planner routes)
+# ============================================================================
+
+def _gd_inp(task_id="demo-P01", attempts=None, gate_diagnosis_pending=frozenset(),
+            gate_diagnosis_attempts=frozenset(), triage_class=None, pause_mode="run",
+            receipts=None):
+    """A minimal ReconcileInput for ONE task in REVIEW_REJECTED, parameterised
+    on the two F019 P1b gate-diagnosis inputs."""
+    fm = make_frontmatter(id=task_id)
+    tsf = make_tsf(task_id=task_id, state=TaskState.REVIEW_REJECTED, attempts=attempts or [])
+    kw = dict(
+        now=utc(2026, 7, 15), cfg=make_config(), routes=make_routes(),
+        states={task_id: tsf}, frontmatters={task_id: (fm, "h.md")}, lint_clean={},
+        project_paused=(pause_mode != "run"), decisions_open=set(), merged_branches=set(),
+        leases_free={}, provider_ok={}, log_quiet_seconds={}, pid_alive={},
+        receipts=receipts or {},
+        gate_diagnosis_pending=gate_diagnosis_pending,
+        gate_diagnosis_attempts=gate_diagnosis_attempts,
+    )
+    if triage_class is not None:
+        kw["triage_class"] = triage_class
+    if pause_mode != "run":
+        kw["pause_mode"] = pause_mode
+    return ReconcileInput(**kw)
+
+
+def test_gate_diagnosis_pending_dispatches_and_suppresses_blind_retry():
+    """O2: a gate-diagnosis-pending REVIEW_REJECTED task plans exactly one
+    LaunchGateDiagnosis and NO mechanical-retry Transition -- the blind retry is
+    suppressed until the reviewer's class arrives."""
+    inp = _gd_inp(gate_diagnosis_pending=frozenset({"demo-P01"}))
+    actions = plan_project(inp)
+    diags = [a for a in actions if isinstance(a, LaunchGateDiagnosis)]
+    assert len(diags) == 1
+    assert diags[0].task_id == "demo-P01"
+    # O2: NOT also the mechanical fixable/none re-queue (or any triage transition).
+    assert [a for a in actions if isinstance(a, Transition)] == []
+
+
+def test_gate_diagnosis_pending_drain_agents_parks():
+    """Under drain-agents no NEW agent process of any kind launches -- a
+    gate-diagnosis-pending task parks (no LaunchGateDiagnosis) AND still does not
+    fall through to the blind retry."""
+    inp = _gd_inp(gate_diagnosis_pending=frozenset({"demo-P01"}), pause_mode="drain-agents")
+    actions = plan_project(inp)
+    assert [a for a in actions if isinstance(a, LaunchGateDiagnosis)] == []
+    assert [a for a in actions if isinstance(a, Transition)] == []
+
+
+def test_gate_diagnosis_not_pending_routes_through_existing_triage():
+    """O5 (planner half): a REVIEW_REJECTED task NOT flagged for diagnosis routes
+    through the UNCHANGED triage table -- an architectural class still escalates
+    (never a LaunchGateDiagnosis), proving the trigger only fires when flagged."""
+    inp = _gd_inp(triage_class={"demo-P01": "architectural"})
+    actions = plan_project(inp)
+    assert [a for a in actions if isinstance(a, LaunchGateDiagnosis)] == []
+    # architectural with a carve stage (make_config's default pipeline) re-scopes
+    # via the carver -- the existing B4b route, unchanged by the diagnosis wrap.
+    transitions = [a for a in actions if isinstance(a, Transition)]
+    assert len(transitions) == 1
+    assert transitions[0].to is TaskState.READY_TO_CARVE
+
+
+def test_gate_diagnosis_attempts_scan_emits_exit():
+    """The receipt-exit scan mints an EmitAttemptExit for an EXITED diagnosis leg
+    (a REVIEW_INDEPENDENT attempt on a REVIEW_REJECTED task) whose id the daemon
+    flagged unconsumed -- so a wrapper-pre-EXITED diagnosis verdict is consumed."""
+    att = make_attempt(attempt_id="att-diag", state=AttemptState.EXITED,
+                       role=Role.REVIEW_INDEPENDENT,
+                       receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    inp = _gd_inp(attempts=[att], gate_diagnosis_attempts=frozenset({"att-diag"}),
+                  receipts={"att-diag": {"result": "done"}})
+    exits = [a for a in plan_project(inp)
+             if isinstance(a, EmitAttemptExit) and a.attempt_id == "att-diag"]
+    assert len(exits) == 1
+
+
+def test_gate_diagnosis_attempts_scan_negative_when_unflagged():
+    """O5 (scan half): an EXITED REVIEW_INDEPENDENT attempt on a REVIEW_REJECTED
+    task NOT in gate_diagnosis_attempts (e.g. an already-consumed normal review)
+    mints NO EmitAttemptExit -- the gating set is what keeps a bound review out."""
+    att = make_attempt(attempt_id="att-rev", state=AttemptState.EXITED,
+                       role=Role.REVIEW_INDEPENDENT,
+                       receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    inp = _gd_inp(attempts=[att], gate_diagnosis_attempts=frozenset(),
+                  receipts={"att-rev": {"result": "done"}})
+    assert [a for a in plan_project(inp)
+            if isinstance(a, EmitAttemptExit) and a.attempt_id == "att-rev"] == []

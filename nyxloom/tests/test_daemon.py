@@ -33,7 +33,7 @@ from nyxloom import (
 )
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
-    Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
+    GateResult, Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
 )
 
 
@@ -6034,3 +6034,370 @@ def test_carver_ack_helper_storage_error_returns_none(
     monkeypatch.setattr(storage, "iter_events", _boom)
     assert d._highest_consumed_feed_sequence("demo", ("merge:demo:c1",)) is None
 
+
+
+# ============================================================================
+# F019 P1b: gate-failure diagnosis routing (daemon side)
+# ============================================================================
+
+def _seed_review_rejected(project, task_id, attempts=None, handoff_path="handoff/h.md"):
+    """Seed a task directly in REVIEW_REJECTED with optional attempts."""
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+        state=TaskState.REVIEW_REJECTED, since=utc_now(), handoff_path=handoff_path,
+        attempts=list(attempts or []),
+    )
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    return storage.load_state(project, task_id)
+
+
+def _emit_gate_finished(project, task_id, exit_code, phase="pre-merge", output_tail="", commit="c0ffee"):
+    gr = GateResult(gate_id="g1", phase=phase, commit=commit, exit_code=exit_code,
+                    started=utc_now(), ended=utc_now(), output_tail=output_tail)
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.GATE_FINISHED, payload={"gate_result": gr.to_dict()}, task_id=task_id,
+    )
+
+
+def _emit_review_recorded(project, task_id, result, attempt_id=None, reject_class=None):
+    payload = {"result": result}
+    if reject_class is not None:
+        payload["reject_class"] = reject_class
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.REVIEW_RECORDED, payload=payload, task_id=task_id, attempt_id=attempt_id,
+    )
+
+
+def _diag_attempt(attempt_id, state=AttemptState.EXITED, session_handle=None):
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    return Attempt(attempt_id=attempt_id, role=Role.REVIEW_INDEPENDENT, state=state,
+                   route=route, started=utc_now(), session_handle=session_handle)
+
+
+def _boom_iter_events(*_a, **_k):
+    raise RuntimeError("store down")
+
+
+# --- _gate_diagnosis_state ------------------------------------------------
+
+def test_gate_diagnosis_state_pending_on_single_gate_fail(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-gd", attempts=[])
+    _emit_gate_finished("demo", "t-gd", exit_code=1, output_tail="BOOM")
+    pending, attempts = d._gate_diagnosis_state("demo", cfg, storage.list_states("demo"))
+    assert pending == frozenset({"t-gd"})
+    assert attempts == frozenset()
+
+
+def test_gate_diagnosis_state_threshold_two_absorbs_first_and_survives_review(
+        tmp_state, sample_project):
+    """O4: with gate_diagnosis_after_failures=2 a single gate-fail does NOT
+    trigger; an approving review between merge attempts does NOT reset the gate
+    streak, so the 2nd consecutive gate-fail does trigger. Also proves the config
+    knob is read from the project toml."""
+    from nyxloom.config import ProjectConfig
+    cfg = sample_project
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    ptoml.write_text(
+        ptoml.read_text(encoding="utf-8").replace(
+            "[policy]\n", "[policy]\ngate_diagnosis_after_failures = 2\n", 1),
+        encoding="utf-8")
+    cfg2 = ProjectConfig.load(cfg.root)
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-gd2", attempts=[])
+    _emit_gate_finished("demo", "t-gd2", exit_code=1)  # streak = 1
+    pending, _ = d._gate_diagnosis_state("demo", cfg2, storage.list_states("demo"))
+    assert pending == frozenset()  # one flaky fail absorbed by a plain retry
+    _emit_review_recorded("demo", "t-gd2", "approved", attempt_id="att-approve")  # re-review OK
+    _emit_gate_finished("demo", "t-gd2", exit_code=1)  # streak = 2 (review did NOT reset it)
+    pending2, _ = d._gate_diagnosis_state("demo", cfg2, storage.list_states("demo"))
+    assert pending2 == frozenset({"t-gd2"})
+
+
+def test_gate_diagnosis_state_reviewer_rejection_is_not_gate_caused(tmp_state, sample_project):
+    """O5: a reviewer rejection AFTER a gate-fail becomes the current cause, so
+    the task routes via the normal triage table, NOT gate-diagnosis."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-gd-rev", attempts=[])
+    _emit_gate_finished("demo", "t-gd-rev", exit_code=1)
+    _emit_review_recorded("demo", "t-gd-rev", "rejected", attempt_id="att-rev", reject_class="fixable")
+    pending, _ = d._gate_diagnosis_state("demo", cfg, storage.list_states("demo"))
+    assert pending == frozenset()
+
+
+def test_gate_diagnosis_state_in_flight_exited_diagnosis_is_surfaced(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    diag = _diag_attempt("att-diag-x", state=AttemptState.EXITED)  # no binding -> unconsumed
+    _seed_review_rejected("demo", "t-gd-if", attempts=[diag])
+    _emit_gate_finished("demo", "t-gd-if", exit_code=1)
+    pending, attempts = d._gate_diagnosis_state("demo", cfg, storage.list_states("demo"))
+    assert pending == frozenset()                    # a diagnosis is already in flight
+    assert attempts == frozenset({"att-diag-x"})     # its EXITED leg is surfaced for consumption
+
+
+def test_gate_diagnosis_state_running_diagnosis_not_resurfaced(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    diag = _diag_attempt("att-diag-run", state=AttemptState.RUNNING)
+    _seed_review_rejected("demo", "t-gd-run", attempts=[diag])
+    _emit_gate_finished("demo", "t-gd-run", exit_code=1)
+    pending, attempts = d._gate_diagnosis_state("demo", cfg, storage.list_states("demo"))
+    assert pending == frozenset()   # still in flight -> not re-dispatched
+    assert attempts == frozenset()  # RUNNING leg is caught by the INTERRUPTIBLE scan, not resurfaced
+
+
+def test_gate_diagnosis_state_post_merge_gate_ignored(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-gd-pm", attempts=[])
+    _emit_gate_finished("demo", "t-gd-pm", exit_code=1, phase="post-merge")
+    pending, _ = d._gate_diagnosis_state("demo", cfg, storage.list_states("demo"))
+    assert pending == frozenset()  # post-merge failure is not a re-work signal
+
+
+def test_gate_diagnosis_state_passing_gate_resets_streak(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-gd-pass", attempts=[])
+    _emit_gate_finished("demo", "t-gd-pass", exit_code=1)  # streak = 1
+    _emit_gate_finished("demo", "t-gd-pass", exit_code=0)  # a PASSING gate resets the streak
+    pending, _ = d._gate_diagnosis_state("demo", cfg, storage.list_states("demo"))
+    assert pending == frozenset()
+
+
+def test_gate_diagnosis_state_handles_iter_events_failure(tmp_state, sample_project, monkeypatch):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-gd-err", attempts=[])
+    states = storage.list_states("demo")
+    monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
+    assert d._gate_diagnosis_state("demo", cfg, states) == (frozenset(), frozenset())
+
+
+# --- _execute (LaunchGateDiagnosis) ---------------------------------------
+
+def test_execute_gate_diagnosis_cold_dispatch(tmp_state, sample_project, patch_siblings, monkeypatch):
+    """O1 (dispatch half): a scripted LaunchGateDiagnosis for a gate-failed task
+    spawns ONE classify-only reviewer via the COLD path (no prior session), with
+    a packet carrying the gate output tail + the REJECT_CLASS contract, and
+    records the attempt with wave_id None."""
+    cfg = sample_project
+    paths.routes_path().write_text(SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
+    task_id = "t-gd-cold"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _seed_review_rejected("demo", task_id, attempts=[])
+    _emit_gate_finished("demo", task_id, exit_code=1, output_tail="E   assert 1 == 2  FAILED")
+    _scripted(monkeypatch, [[reconcile.LaunchGateDiagnosis(task_id=task_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    assert len(patch_siblings["launch_detached"]) == 1
+    assert len(patch_siblings["build_dispatch"]) == 1  # COLD path
+    assert patch_siblings["build_resume"] == []
+    spec = patch_siblings["launch_detached"][0]
+    packet = (Path(spec.attempt_dir) / "packet" / "packet.md").read_text(encoding="utf-8")
+    assert "GATE-FAILURE DIAGNOSIS" in packet
+    assert "REJECT_CLASS: <fixable|architectural|product|transient>" in packet
+    assert "assert 1 == 2" in packet  # the persisted gate output tail (P1a)
+    tsf = storage.load_state("demo", task_id)
+    diag = tsf.attempts[-1]
+    assert diag.role is Role.REVIEW_INDEPENDENT
+    assert diag.wave_id is None
+    assert tsf.state is TaskState.REVIEW_REJECTED  # dispatch does not transition
+    types = [e.type for e in storage.iter_events("demo")]
+    assert EventType.ATTEMPT_CREATED in types
+    assert EventType.ATTEMPT_PREFLIGHTED in types
+
+
+def test_execute_gate_diagnosis_warm_resume(tmp_state, sample_project, patch_siblings, monkeypatch):
+    """D-R10/B6: with a prior EXITED review session available, the diagnosis
+    WARM-resumes it (build_resume, never a cold build_dispatch) and marks the
+    ATTEMPT_CREATED with resumed_from."""
+    cfg = sample_project
+    paths.routes_path().write_text(SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
+    task_id = "t-gd-warm"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    prior = _diag_attempt("att-prior-rev", state=AttemptState.EXITED, session_handle="sess-warm-42")
+    _seed_review_rejected("demo", task_id, attempts=[prior])
+    _emit_gate_finished("demo", task_id, exit_code=1, output_tail="boom")
+    _scripted(monkeypatch, [[reconcile.LaunchGateDiagnosis(task_id=task_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    assert len(patch_siblings["launch_detached"]) == 1
+    assert patch_siblings["build_resume"][-1]["session"] == "sess-warm-42"  # WARM
+    assert patch_siblings["build_dispatch"] == []
+    created = next(e for e in storage.iter_events("demo") if e.type is EventType.ATTEMPT_CREATED)
+    assert created.payload.get("resumed_from") == "sess-warm-42"
+
+
+def test_execute_gate_diagnosis_admission_refused(tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Execute-time admission refusal (e.g. mid-pass drain-agents / spent budget)
+    -> nothing spawned; the task stays REVIEW_REJECTED for a later pass."""
+    cfg = sample_project
+    paths.routes_path().write_text(SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
+    task_id = "t-gd-refused"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _seed_review_rejected("demo", task_id, attempts=[])
+    monkeypatch.setattr(daemon.Daemon, "_dispatch_admissible",
+                        lambda self, *a, **k: (False, "test-refused"))
+    _scripted(monkeypatch, [[reconcile.LaunchGateDiagnosis(task_id=task_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+    assert patch_siblings["launch_detached"] == []
+
+
+# --- diagnosis consumption ------------------------------------------------
+
+def test_gate_diagnosis_consumption_records_class_and_stays_rejected(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """O1 (consume half): a DONE diagnosis leg records REVIEW_RECORDED{rejected,
+    reject_class} in the review-rejection shape and does NOT transition the task
+    (invariant #2: it stays REVIEW_REJECTED)."""
+    cfg = sample_project
+    task_id, attempt_id = "t-gd-con", "att-gd-con"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(cfg.root, task_id, cfg.reports_dir,
+                          "# Diagnosis\n\nModule boundary is wrong.\n\nREJECT_CLASS: architectural\n")
+    _seed_review_rejected("demo", task_id, attempts=[_diag_attempt(attempt_id)])
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
+    assert recorded.payload["reject_class"] == "architectural"
+    assert recorded.attempt_id == attempt_id
+    assert storage.load_state("demo", task_id).state is TaskState.REVIEW_REJECTED
+
+
+def test_gate_diagnosis_consumption_transient_class(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """O3: a diagnosis classifying `transient` records reject_class=transient
+    (which routes to the plain retry path, not a re-scope/escalation)."""
+    cfg = sample_project
+    task_id, attempt_id = "t-gd-tr", "att-gd-tr"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(cfg.root, task_id, cfg.reports_dir,
+                          "# Diagnosis\n\nFlaky network in the gate.\n\nREJECT_CLASS: transient\n")
+    _seed_review_rejected("demo", task_id, attempts=[_diag_attempt(attempt_id)])
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["reject_class"] == "transient"
+
+
+def test_gate_diagnosis_consumption_nondone_records_incomplete(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """A non-DONE diagnosis leg (infra failure) records `incomplete` (no class),
+    binding the attempt so it is not re-consumed; the task stays REVIEW_REJECTED
+    and falls back to the mechanical retry path."""
+    cfg = sample_project
+    task_id, attempt_id = "t-gd-inc", "att-gd-inc"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _seed_review_rejected("demo", task_id, attempts=[_diag_attempt(attempt_id)])
+    _write_receipt("demo", attempt_id, ReceiptResult.LIMIT, exit_code=1)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "incomplete"
+    assert "reject_class" not in recorded.payload
+    assert storage.load_state("demo", task_id).state is TaskState.REVIEW_REJECTED
+
+
+def test_gate_diagnosis_consumption_skips_already_bound_review(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """O5: a REVIEW_INDEPENDENT attempt on a REVIEW_REJECTED task that ALREADY
+    carries a REVIEW_RECORDED binding (an already-consumed normal review) is NOT
+    re-recorded by the diagnosis path -- it falls through to the (empty) wave
+    members no-op."""
+    cfg = sample_project
+    task_id, attempt_id = "t-gd-bound", "att-gd-bound"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _seed_review_rejected("demo", task_id, attempts=[_diag_attempt(attempt_id)])
+    _emit_review_recorded("demo", task_id, "rejected", attempt_id=attempt_id, reject_class="fixable")
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+    recorded = [e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED]
+    assert len(recorded) == 1  # only the pre-existing binding; diagnosis path skipped
+
+
+# --- helpers: _latest_gate_failure / transient class / _attempt_has_review_recorded
+
+def test_latest_gate_failure_returns_latest_tail_and_phase(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-lgf", attempts=[])
+    _emit_gate_finished("demo", "t-lgf", exit_code=0, phase="pre-merge", output_tail="ignored-pass")
+    _emit_gate_finished("demo", "t-lgf", exit_code=1, phase="mutation", output_tail="SURVIVED mutant")
+    assert d._latest_gate_failure("demo", "t-lgf") == ("SURVIVED mutant", "mutation")
+
+
+def test_latest_gate_failure_none_when_no_failure(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-lgf2", attempts=[])
+    assert d._latest_gate_failure("demo", "t-lgf2") == ("", "")
+
+
+def test_latest_gate_failure_handles_iter_events_failure(tmp_state, sample_project, monkeypatch):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
+    assert d._latest_gate_failure("demo", "whatever") == ("", "")
+
+
+def test_triage_classes_surfaces_transient(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-tc-tr", attempts=[])
+    _emit_review_recorded("demo", "t-tc-tr", "rejected", attempt_id="att-x", reject_class="transient")
+    tc = d._triage_classes("demo", storage.list_states("demo"))
+    assert tc.get("t-tc-tr") == "transient"
+
+
+def test_parse_reject_class_transient(tmp_state, sample_project):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _make_feature_branch(cfg.root, "t-pc-tr", "a.py", "# a\n")
+    _commit_review_report(cfg.root, "t-pc-tr", cfg.reports_dir, "REJECT_CLASS: transient\n")
+    assert d._parse_reject_class(cfg, "t-pc-tr") == "transient"
+
+
+def test_attempt_has_review_recorded(tmp_state, sample_project, monkeypatch):
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-ahr", attempts=[])
+    _emit_review_recorded("demo", "t-ahr", "rejected", attempt_id="att-bound")
+    assert d._attempt_has_review_recorded("demo", "att-bound") is True
+    assert d._attempt_has_review_recorded("demo", "att-absent") is False
+    monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
+    assert d._attempt_has_review_recorded("demo", "att-bound") is False
+
+
+def test_gate_diagnosis_architectural_routes_to_carve_end_to_end(tmp_state, sample_project):
+    """O1 (full loop): once the diagnosis records `architectural`, the task is no
+    longer gate-diagnosis-pending and the very next reconcile pass routes it to
+    READY_TO_CARVE via the EXISTING triage table -- classifier output feeds the
+    pure router, no blind retry."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    # Reuse the sample project's real handoff id -- plan_project's lifecycle loop
+    # iterates discovered frontmatters, so the task must have a handoff on disk.
+    task_id, attempt_id = "demo-P01-sample", "att-gd-e2e"
+    _seed_review_rejected("demo", task_id, attempts=[_diag_attempt(attempt_id)])
+    _emit_gate_finished("demo", task_id, exit_code=1)
+    _emit_review_recorded("demo", task_id, "rejected", attempt_id=attempt_id, reject_class="architectural")
+    inp = d._build_input("demo", cfg, storage.list_states("demo"))
+    assert task_id not in inp.gate_diagnosis_pending  # class landed -> not re-diagnosed
+    actions = reconcile.plan_project(inp)
+    transitions = [a for a in actions
+                   if isinstance(a, reconcile.Transition) and a.task_id == task_id]
+    assert any(t.to is TaskState.READY_TO_CARVE for t in transitions)
