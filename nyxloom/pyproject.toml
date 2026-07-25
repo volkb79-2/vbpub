@@ -9,7 +9,7 @@ dependencies = ["PyYAML>=6", "jsonschema>=4", "structlog>=24,<27"]  # structlog:
 # tester-unified SoT: nyxloom's test closure lives HERE (not duplicated in
 # a hand-maintained requirements file). The vbpub test container installs this
 # extra, so a dep change here flows to the gate on the next image rebuild.
-test = ["pytest>=8", "hypothesis>=6", "coverage[toml]>=7"]  # coverage: D-064-L2 diff-coverage gate
+test = ["pytest>=8", "hypothesis>=6", "coverage[toml]>=7", "pytest-xdist>=3", "pytest-cov>=5"]  # coverage: D-064-L2 diff-coverage gate; pytest-xdist+pytest-cov: factory-hardening G (parallel gate with xdist-safe coverage — see nyxloom-trove/nyxloom.toml [gates.tester-unified])
 
 [project.scripts]
 nyxloom = "nyxloom.cli:main"

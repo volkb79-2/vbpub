@@ -1154,6 +1154,45 @@ def test_index_html_pid_alive_overrides_non_running_attempt_state(sample_project
     assert "● running (att-stalled-003)" in content
 
 
+def test_pid_alive_returns_false_on_process_lookup_error(monkeypatch):
+    """factory-hardening G: deterministic IN-PROCESS cover of `_pid_alive`'s
+    ProcessLookupError arm (render.py:466-467).
+
+    Before G, this branch was reached ONLY incidentally, by the real-`os.fork()`
+    daemon-scan integration tests: `coverage run` follows the tracer into the
+    forked child and records the line, but `pytest-cov` under xdist combines only
+    per-worker data and drops the forked grandchild's coverage -> the parallel gate
+    would false-flag this line uncovered on any change that touches it. A mocked
+    `os.kill` makes the branch runner-independent (covered under serial AND xdist)."""
+    def _no_such_pid(pid, sig):
+        raise ProcessLookupError
+    monkeypatch.setattr(render.os, "kill", _no_such_pid)
+    assert render._pid_alive(999999) is False
+
+
+def test_attempt_is_live_via_wrapper_pid_file(sample_project, tmp_state):
+    """factory-hardening G: deterministic IN-PROCESS cover of `_attempt_is_live`'s
+    belt-and-braces wrapper.pid branch (render.py:492-497), for the same xdist
+    fork-coverage reason as test_pid_alive_returns_false_on_process_lookup_error.
+
+    The attempt's own pid is 0 (short-circuits `_pid_alive` at the guard, so the
+    recorded-pid check fails), no receipt has landed, and a `wrapper.pid` file
+    holds THIS live process' pid -- so liveness is established purely via the
+    wrapper.pid path and the function returns True. The attempt state is STALLED
+    (not RUNNING/PREFLIGHTING), so a True result can ONLY come from that branch."""
+    now = datetime.now(timezone.utc)
+    att = Attempt(
+        attempt_id="att-wrapperpid-001", role=Role.IMPLEMENTER,
+        state=AttemptState.STALLED,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
+        started=now, pid=0,
+    )
+    attempt_dir = paths.attempt_dir("demo", att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / "wrapper.pid").write_text(str(os.getpid()), encoding="utf-8")
+    assert render._attempt_is_live("demo", att) is True
+
+
 def test_task_page_has_drilldown_link(seed_data, sample_project):
     """Oracle 3: the task page links every attempt to the read-only
     drilldown endpoint (not only the currently-live ones -- 'recent
