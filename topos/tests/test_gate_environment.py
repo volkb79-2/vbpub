@@ -49,3 +49,11 @@ def test_gate_knows_about_every_optional_extra() -> None:
         f"extras declared in pyproject.toml but not gated in conftest: "
         f"{sorted(declared - gated)}; gated but not declared: {sorted(gated - declared)}"
     )
+
+
+def test_pytest_cov_and_xdist_are_importable() -> None:
+    """P96: pytest-cov (pytest_cov) and pytest-xdist (xdist) are project-owned
+    gate tools the tester-unified gate environment supplies. This test guards
+    against accidental removal or a gate-image rebuild that drops them."""
+    import pytest_cov  # noqa: F401
+    import xdist  # noqa: F401

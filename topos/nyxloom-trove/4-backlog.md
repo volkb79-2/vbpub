@@ -261,7 +261,7 @@ items:
     component: research
     context_estimate: medium
   - id: B-046
-    title: "Adopt a meaningful, verified gate: separate runtime-faithful test env (not the cockpit) + coverage floor + xdist parallelism, and prove the gate rejects a known-bad canary (nyxloom reference/STANDARD.md gate contract + docs/plan-gate-adoption.md checklist)"
+    title: "[Carved -> P96] Adopt a meaningful, verified gate: separate runtime-faithful test env (not the cockpit) + coverage floor + xdist parallelism, and prove the gate rejects a known-bad canary (nyxloom reference/STANDARD.md gate contract + docs/plan-gate-adoption.md checklist)"
     type: feature
     component: test-infra
     context_estimate: medium
