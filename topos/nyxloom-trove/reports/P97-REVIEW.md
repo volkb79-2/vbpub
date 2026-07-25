@@ -229,3 +229,147 @@ The F1–F7 blockers have concrete, mechanical repair oracles documented
 above. The same persistent session can resume after the implementer
 closes the gaps or files a BLOCKED for the infrastructure-dependent
 targets.
+
+
+---
+
+# Repair re-review — 2026-07-25 (commit f978acbb)
+
+**Re-reviewer:** Reasonix (same persistent adversarial session)
+**Re-review range:** 6290f277..f978acbb
+**Verdict:** **CHANGES_REQUIRED**
+
+## Changes since prior review
+
+The implementer addressed all 9 findings from the original review (F1–F9).
+The report is now accurate (9/16 closed, 7 gap), `canary-verified` was
+removed from asserts, ineffective tests were fixed, duplicates removed, and
+assertions strengthened. The diff adds 2 dockerjoin tests, fixes model.py
+to test `metric_from_jsonable` with non-list input, adds sparkline
+truncation test, ring `storage_bytes` exact-value assert, and a
+component_health multi-byte split test.
+
+## Independent gate verification
+
+Ran the exact declared `topos-suite` gate at f978acbb: **1819 passed,
+exit 0** in 73s. Extracted per-target branch-aware coverage JSON:
+
+```
+CLOSED  collect/zswapmath.py       stmts= 13/ 13 (100.0%)  br=  6/  6 (100.0%)
+CLOSED  collect/dockerjoin.py      stmts=107/107 (100.0%)  br= 44/ 44 (100.0%)
+GAP     collect/collector.py       stmts=245/245 (100.0%)  br= 97/ 98 ( 99.0%)  miss_br=[[165,167]]
+CLOSED  model.py                   stmts=136/136 (100.0%)  br= 32/ 32 (100.0%)
+GAP     registry.py                stmts= 50/ 51 ( 98.0%)  br= 19/ 20 ( 95.0%)  miss_lines=[279] miss_br=[[278,279]]
+CLOSED  procs/identity.py          stmts= 18/ 18 (100.0%)  br=  0/  0 (100.0%)
+CLOSED  procs/sensitivity.py       stmts= 17/ 17 (100.0%)  br=  8/  8 (100.0%)
+CLOSED  procs/owners.py            stmts= 41/ 41 (100.0%)  br=  8/  8 (100.0%)
+CLOSED  ui/keys.py                 stmts=  5/  5 (100.0%)  br=  0/  0 (100.0%)
+GAP     ui/damon_control.py        stmts= 32/ 33 ( 97.0%)  br=  0/  0 (100.0%)  miss_lines=[52]
+GAP     ui/sparkline.py            stmts= 45/ 46 ( 97.8%)  br= 21/ 22 ( 95.5%)  miss_lines=[73] miss_br=[[72,73]]
+GAP     record/ring.py             stmts= 98/ 98 (100.0%)  br= 25/ 26 ( 96.2%)  miss_br=[[63,-60]]
+CLOSED  inspect_files/plan.py      stmts= 49/ 49 (100.0%)  br=  8/  8 (100.0%)
+GAP     damon/paddr.py             stmts= 48/ 50 ( 96.0%)  br= 10/ 12 ( 83.3%)  miss_lines=[82,85] miss_br=[[81,82],[84,85]]
+CLOSED  actions/preview.py         stmts= 38/ 38 (100.0%)  br= 10/ 10 (100.0%)
+GAP     daemon/component_health.py stmts=145/146 ( 99.3%)  br= 25/ 26 ( 96.2%)  miss_lines=[56] miss_br=[[51,56]]
+```
+
+9 closed, 7 gap — report is accurate. (F2 fixed.)
+
+## New findings
+
+### F10 — sparkline.py line 73 is PROVABLY DEAD CODE (BLOCKER)
+**File:** topos/src/topos/ui/sparkline.py:72-73
+
+The report labels this gap as "Padding path — coverage aggregation edge."
+This is **false**. Independent testing proves line 73 is unreachable under
+ALL inputs, even serial (no-xdist) coverage:
+
+- The `render_sparkline` algorithm downsamples to exactly `width` chars
+  when `n > width` (`for i in range(width)` at lines ~44-51).
+- When `n <= width`, it produces exactly `n` chars, and `n <= width`.
+- Therefore `len(result)` is ALWAYS `<= width` for every possible input.
+- The branch `len(result) > width` at line 72 can NEVER be taken.
+
+The truncation test `test_render_sparkline_truncation` was written to cover
+this branch but the branch is structurally unreachable — the test passes
+because the function behaves correctly, but it exercises the
+`len(result) == width` path (no-op), not the truncation path. This is a
+hollow test per O2 negative.
+
+The escalate_if trigger fires: "a targeted branch is mechanically
+unreachable under Python 3.14." The implementer did NOT invoke BLOCKED.
+
+**Repair oracle:** Remove the dead code (lines 72-73) since the truncation
+guard is provably unnecessary. The `elif len(result) < width` padding
+branch at line 74 suffices.
+
+### F11 — registry.py line 279 BLOCKED rationale is incomplete (BLOCKER)
+**File:** topos/src/topos/registry.py:256-260, 278-279
+
+The BLOCKED claim says "Every valid token adds metrics." The real mechanism
+making line 279 unreachable is the **redundant early guard** at lines
+259-260: `if not all(tokens): raise ValueError("empty selector")`. This
+guard catches every empty-token case, pre-empting the identical check at
+line 278-279. The guard and line 279 are functionally redundant.
+
+Cleanest product-code correction (no pragma needed): **remove the
+redundant guard** at lines 259-260, and filter empty tokens instead:
+
+```python
+tokens = [t for t in tokens if t]          # filter empty tokens
+if not tokens:                              # guard for all-empty
+    raise ValueError("empty selector")
+```
+
+After this change, `parse_metrics_selector(",")` produces `tokens=[]`,
+the `for` loop is skipped, `kept_metrics` is empty, and line 279 raises
+`ValueError("empty selector")` — **covered**. The existing test
+`test_parse_metrics_selector_rejects_empty_after_strip` covers it.
+Behavior-preserving: same error for all four cases ("", ",", " , ", "ram,").
+
+### F12 — component_health.py line 56 is trivially testable (HIGH)
+**File:** topos/src/topos/daemon/component_health.py:56
+
+Line 56 `return suffix[:limit]` is the decode-fallback when `kept` is
+empty. Reachable with any input where `limit <= len(suffix)` i.e.
+`limit <= 3`. Not an aggregation artifact — just not tested.
+
+**Repair oracle:** `assert _truncate_utf8("abc", limit=0) == ""`
+
+### F13 — ring.py branch [63,-60] is the count-capped path in append() (HIGH)
+**File:** topos/src/topos/record/ring.py:63
+
+The missing branch is `if self.count < len(self.samples):` with the
+**False** path — when the ring buffer is full and count stops incrementing.
+The report labels this "Early exit in last()" but it's in `append()`.
+Reachable by filling the ring buffer to capacity.
+
+**Repair oracle:** Append 5 values to a capacity-3 buffer, assert `count == 3`.
+
+### F14 — sparkline truncation test is hollow (HIGH)
+**File:** topos/tests/test_p97_quickwins.py:259-264
+
+Designed to cover line 73, but line 73 is unreachable (F10). The assertion
+`len(r) == 3` passes because the algorithm produces exactly `width` chars,
+not because truncation occurred. Remediated by F10.
+
+### F15 — damon/paddr.py (genuine infra) / F16 — damon_control.py (genuine infra) / F17 — collector.py (block-family filter)
+**Acceptable as documented gaps.** Recommend D-NNN decisions for deferral.
+
+## Prior findings status
+
+| F1 | IMPROVED (9/16 honest) | F2 | FIXED | F3 | FIXED | F4 | NOT FIXED (F10) | F5 | UNCHANGED | F6 | FIXED | F7 | FIXED | F8 | FIXED | F9 | IMPROVED |
+
+## Canary fact
+
+Controller confirms `gate verify topos` at main 025fb843 returned
+`TRUSTWORTHY`. `canary-verified` correctly removed from asserts. ✓
+
+## Verdict
+
+**CHANGES_REQUIRED.** Three gaps mischaracterized as "infrastructure" or
+"aggregation edge" are actually dead code (F10), structurally redundant
+guards (F11), or trivially testable edge cases (F12, F13). The sparkline
+truncation test is hollow (F14). Repair oracles for F10-F13 are concrete
+and mechanical (≤5 lines each). After closing, expected: **12/16 targets
+at 100%**, with 4 deferred as genuine infrastructure gaps.
