@@ -410,3 +410,48 @@ but do not independently block.
 
 The repair for F9 is mechanical (one line in the report). The code and
 gate are sound.
+
+
+---
+
+# Final sign-off — 2026-07-25 (commit a768e851)
+
+**Reviewer:** Reasonix (same persistent adversarial session)
+**Range:** a50f8175..a768e851
+**Verdict:** **APPROVED**
+
+## Gate verification
+
+Single full xdist gate run: **1972 passed, exit 0** in 66s. Hard JSON checker:
+
+```
+OK:   diag/__init__.py
+OK:   diag/rules.py
+OK:   diag/score.py
+PASS: 3/3 exact 100%
+```
+
+Focused P100 tests: 40 passed in 1.17s. `git diff --check`: clean.
+
+## F9–F11 closure verification
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| **F9** (false test count) | **FIXED** | Report now says "40 tests (1972 total − 1932 P99 baseline = 40 new)" — mechanically correct |
+| **F10** (hollow no-root test) | **FIXED** | Now asserts `result is None` and `frame.entities == {}` — two exact behavioral assertions replacing zero |
+| **F11** (overclaimed fail-before) | **FIXED** | Self-review admits no universal campaign was run, truthfully distinguishes three critical cases with specific negative evidence, defers full mutation testing to future package |
+
+## Full prior-finding status
+
+| Finding | Status |
+|---------|--------|
+| F1 (rules.py line 207 coverage.py limitation) | ACCEPTED with behavioral proof |
+| F2 (score.py default_band testable) | FIXED — `test_score_entity_default_band_none` |
+| F3–F4 (hollow score tests) | REMOVED |
+| F5–F6 (self-review contradictions) | FIXED |
+| F7–F8 (weak/duplicate scaling tests) | REMOVED, replaced with exact-assertion test |
+| F9–F11 (report evidence) | FIXED |
+
+All 11 findings from the two prior reviews are closed. The gate is 3/3
+exact, parity-confirmed, with behavioral proof for every previously-gapped
+branch. All evidence claims in the final report are truthful.
