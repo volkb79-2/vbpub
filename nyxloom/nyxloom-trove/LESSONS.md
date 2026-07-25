@@ -496,6 +496,38 @@ distinct causal paths, and completeness rather than raw test lines. Helper
 factories can reduce repetition later, but they must not hide the expected
 postcondition or reconstruct it with the function under test.
 
+### P107 validation: deletion-only coverage repairs need an invariant oracle
+
+P107 closed two adjacent network providers on the first controller run. Ten
+tests exercised exact rejection, parser, helper, and status behavior. Two
+remaining netns aggregation guards could not be reached because earlier passes
+establish stronger invariants:
+
+- every entity receives a base observation or resolved candidate before
+  aggregation, so every declared child observation exists; and
+- every shared candidate namespace is marked non-contributing before parent
+  aggregation, so all contributing child namespace sets are disjoint.
+
+The controller removed the redundant guards and recorded both proofs. Pro
+independently traced the producer/consumer loops, confirmed the invariants, and
+approved. Two controller xdist runs passed 2,062 cases with identical empty
+records for both provider files.
+
+The declared changed-line evaluator reported `0/0` because the source patch
+deleted executable guards and added only comments. That is correct for a
+changed-*line* floor, but it demonstrates the interface limit: deletion-only
+behavior cannot be validated by requiring newly added executable lines to run.
+Such a package needs a deletion oracle—an exact invariant proof, regression
+tests for neighboring reachable behavior, whole-file coverage, and independent
+source review. A green `0/0` changed-line result is not evidence that removing
+the branch was safe.
+
+P107 also used direct private-helper tests for stable parser/read boundaries.
+That is acceptable when the helper has a deterministic output, the test does
+not mock the helper itself, and integration tests already exercise its
+composition. Constructing a large entity tree merely to observe `None` from a
+missing device file would have obscured the actual contract.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -580,6 +612,11 @@ prerequisite package, not an edit-refresh mechanism.
   including temporary environments, copied trees, containers, and images.
 - Evaluate large exact-test diffs by causal-path uniqueness and assertion
   density, not line count alone; reject helpers that hide expected structures.
+- Add a deletion oracle for removal-only source packages: invariant proof,
+  neighboring regression behavior, whole-file coverage, and independent source
+  review. Changed-line `0/0` cannot validate deleted behavior.
+- Permit direct tests of stable private parser/read helpers when their outputs
+  are deterministic and integration coverage already verifies composition.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
