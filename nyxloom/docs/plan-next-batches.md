@@ -195,9 +195,36 @@ by P3d `5b7fd935`; 5 by `a962e731`). F018 is **enablement-ready** — `cfg.carve
 is now safe to set, and doing so is the **operator's decision** (see ENABLEMENT CHECKPOINT below).
 
 **OPTIONAL, non-blocking follow-ups** (all feature-dark; none gate enablement):
-- **P4b / AD3** — structural-invalid carve envelope → a bounded repair-proposal turn (rather than a
-  bare `DEGRADED`). Needs `reconcile.py` (frozen-core) → SOLO gate + full adversarial review; consider
-  Sonnet not deepseek (L10 — the frozen-core slice).
+- **P4b / AD3 — structural-invalid carve envelope → bounded repair-proposal turn** (design scouted
+  2026-07-25, ready to author; frozen-core → Sonnet not deepseek per L10; SOLO gate + full adversarial
+  review). **Half already built by P3b:** the `"repair-proposal"` write-authority mode string exists
+  (`daemon.py:569` `_CARVE_WRITE_AUTHORITY_MODES`) and the *escalation ceiling* exists
+  (`_carve_proposal_repair_escalations` daemon.py:2060 — at `invalid >= cfg.carve.max_proposal_repairs`
+  it emits `NEEDS_OPERATOR{carver-proposal-invalid}`, debounced per generation). **Missing = the repair
+  TURN itself** (P3b line 2071 explicitly deferred it: "no repair ResumeCarverSession mode exists in
+  reconcile.py's ladder yet"). AD3 adds it:
+  1. **reconcile.py ladder** (`plan_project`, the `elif status is WARM:` branch ~1153): BEFORE the
+     merge-feed check, if there is an un-admitted invalid proposal for the current generation below the
+     repair ceiling, plan `ResumeCarverSession(mode="repair-proposal", generation=snap.generation, …)`.
+     A broken proposal is repaired before ingesting new feeds; it does NOT touch
+     `last_consumed_event_sequence` (not a feed), so the P4a shared-cursor invariant is unaffected. Slot
+     order becomes: admit(1) > repair(new) > merge-feed(3) > compaction(4).
+  2. **ReconcileInput** (~627, add a field beside `validated_carve_proposals`/`pending_carver_feeds` —
+     e.g. `pending_carve_repairs: tuple[…]=()`). **OPEN DESIGN (resolve in authoring): where does the
+     repair-request type live?** `CarverFeed`/`ValidatedCarveProposal` live in the *frozen* projector
+     `carver_session.py`; a `CarveRepairRequest{proposal_id, validation_error}` either joins them there
+     (a pure dataclass, no fold change — arguably OK) or lives in reconcile.py. Pick the one that keeps
+     the frozen-core forbid honest (see memory: "handoff scope.touch can be wrong" / "don't forbid the
+     needed file").
+  3. **daemon.py `_build_input`** (~1033): compute the field, reusing the P3b invalid-counting logic
+     (`_validate_carve_proposal_payload` + generation filter from `_carve_proposal_repair_escalations`).
+  4. **daemon.py `_execute`** (~5831, beside the existing resume/admit/compact dispatch): build the
+     repair packet naming the validation failure(s) and resume the session in `"repair-proposal"` mode.
+  5. **Oracles:** repair turn fires below ceiling (feeding the error back); NO repair at/above ceiling
+     (the P3b escalation still fires — the two must compose, not double-fire); byte-identical off;
+     shared-cursor unchanged. **Why deferred (not rushed):** enablement-ready without it, and a
+     substantial reconcile.py change past the milestone warrants a carefully-authored spec + operator
+     awareness rather than an unattended tail-end merge.
 - Two P3d-review REFINEMENTS (both self-healing): (a) ack validation compares consume-time
   `_spine_revisions(cfg)` to the launch-time echo, so a spine commit racing a bootstrap yields one
   false `DEGRADED` that self-heals next recover turn — align with §6.2's "2+ docs" drift semantics;
