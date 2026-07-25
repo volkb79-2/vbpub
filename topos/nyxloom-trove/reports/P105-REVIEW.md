@@ -41,11 +41,15 @@ All 6 lines and 5 branch pairs verified against source:
 
 | Arc | Meaning |
 |-----|---------|
-| 44->46 | schema_version is not None -> check frame_ts |
-| 46->48 | frame_ts is not None -> check entity_count |
-| 48->50 | entity_count is not None -> return dict |
-| 74->76 | preflight is not None -> include in JSON |
+| 44->46 | schema_version is None -> omit it and check frame_ts |
+| 46->48 | frame_ts is None -> omit it and check entity_count |
+| 48->50 | entity_count is None -> omit it and return the dict |
+| 74->76 | preflight is None -> omit it from JSON |
 | 85->90 | preflight is None -> "(preflight not run)" |
+
+The controller corrected the first four direction labels after review. The
+reviewer's coverage verdict and tests were unchanged; the original labels
+described the opposite edges from the literal pairs.
 
 ## Test quality (all 6 exact structural equality)
 
