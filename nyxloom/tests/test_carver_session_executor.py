@@ -955,6 +955,35 @@ def test_recent_merge_digest_ids_zero_limit_and_storage_error_degrade_to_empty(
     assert d._recent_merge_digest_ids("demo", 5) == []
 
 
+def test_recent_merge_digest_ids_skips_malformed_digest_without_id(
+        tmp_state, carver_project):
+    """A MERGE_RECORDED whose carver_digest is present but LACKS a digest_id
+    (malformed) is SKIPPED, not a KeyError -- matching A2's
+    _pending_carver_feeds and P4a's _highest_consumed_feed_sequence, both of
+    which read digest_id via .get. Before the fix the raw ["digest_id"] index
+    raised KeyError on such a digest, feature-on (cold bootstrap packet)."""
+    cfg = carver_project
+    project = "demo"
+    storage.append_and_apply(  # well-formed digest
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "c1", "source_kind": "review",
+                 "carver_digest": {"digest_id": "merge:demo:1"}})
+    storage.append_and_apply(  # malformed: carver_digest present but no digest_id
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "c2", "source_kind": "review",
+                 "carver_digest": {"note": "no id here"}})
+    storage.append_and_apply(  # no carver_digest at all (pre-P2a / non-carve merge)
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "c3", "source_kind": "review"})
+    d = daemon.Daemon({project: cfg.root})
+    # No KeyError; the malformed digest and the no-digest merge are both skipped,
+    # leaving only the well-formed digest_id.
+    assert d._recent_merge_digest_ids(project, 5) == ["merge:demo:1"]
+
+
 def test_bootstrap_packet_annotates_terminal_handoff_and_blocker_tasks(
         tmp_state, carver_project):
     cfg = carver_project

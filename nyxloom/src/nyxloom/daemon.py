@@ -3729,11 +3729,21 @@ class Daemon:
             events = list(storage.iter_events(project))
         except Exception:
             events = []
-        ids = [
-            ev.payload["carver_digest"]["digest_id"]
-            for ev in events
-            if ev.type is EventType.MERGE_RECORDED and ev.payload.get("carver_digest")
-        ]
+        # A malformed carver_digest (present but missing digest_id) is skipped
+        # rather than raising KeyError -- matching A2's `_pending_carver_feeds`
+        # (digest.get("digest_id", "")) and P4a's _highest_consumed_feed_sequence
+        # (digest.get("digest_id")); this is the only merge-digest scan that used
+        # a raw index. Feature-on-only path (cold bootstrap packet).
+        ids: list[str] = []
+        for ev in events:
+            if ev.type is not EventType.MERGE_RECORDED:
+                continue
+            digest = ev.payload.get("carver_digest")
+            if not digest:
+                continue
+            did = digest.get("digest_id")
+            if did is not None:
+                ids.append(did)
         return ids[-limit:][::-1]
 
     def _highest_consumed_feed_sequence(self, project: str,
