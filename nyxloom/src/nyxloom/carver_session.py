@@ -214,7 +214,15 @@ def project_session(events: Iterable[Event]) -> CarverSessionSnapshot:
 
         elif t is EventType.CARVER_PROPOSAL_RECORDED:
             snap.last_proposal_id = p.get("proposal_id", snap.last_proposal_id)
-            snap.last_turn_sequence = p.get("turn_id", snap.last_turn_sequence)
+            # last_turn_sequence is an int RESUME-turn COUNTER (incremented ONLY
+            # by CARVER_SESSION_RESUMED above; reset to None on DEGRADED). Do NOT
+            # assign the envelope's string `turn_id` here: a following
+            # CARVER_SESSION_RESUMED would then fold `str += 1` and raise
+            # TypeError out of project_session -- a persistent per-tick crash
+            # (`_carver_session` wraps only the iter_events read, not the fold)
+            # the moment any proposal-then-resume ordering exists in the log,
+            # which is exactly what F018 AD3's repair turn produces. The
+            # proposal's identity is already captured by last_proposal_id above.
 
         elif t is EventType.CARVER_COMPACTION_REQUESTED:
             snap.status = CarverStatus.COMPACTING
