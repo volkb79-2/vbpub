@@ -8,6 +8,8 @@ behavior. Negatives prove the pass/fail branches discriminate correctly.
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -82,10 +84,223 @@ def test_parse_added_lines_strips_b_prefix_only():
 # _rel_to_source — path normalization
 # --------------------------------------------------------------------------- #
 
-def test_rel_to_source_finds_prefix_and_passes_through_when_absent():
-    assert cg._rel_to_source("topos/src/topos/x.py", "topos/src/topos") == "topos/src/topos/x.py"
-    assert cg._rel_to_source("/abs/topos/src/topos/x.py", "topos/src/topos") == "topos/src/topos/x.py"
-    assert cg._rel_to_source("tests/test_x.py", "topos/src/topos") == "tests/test_x.py"
+def test_rel_to_source_rejects_false_prefix_match():
+    """topos/src/topos must NOT match topos/src/topos_evil.
+    
+    The prefix boundary check ensures a changed file under a similarly-named
+    sibling directory is not falsely accepted as a source file.
+    """
+    # False friend: prefix matches as substring but not directory boundary
+    assert cg._rel_to_source("topos/src/topos_evil/mod.py", "topos/src/topos") == "topos/src/topos_evil/mod.py"
+    # Legitimate match still works
+    assert cg._rel_to_source("topos/src/topos/mod.py", "topos/src/topos") == "topos/src/topos/mod.py"
+    # Nested subpackage
+    assert cg._rel_to_source("topos/src/topos/actions/catalog.py", "topos/src/topos") == "topos/src/topos/actions/catalog.py"
+    # Exact match
+    assert cg._rel_to_source("topos/src/topos", "topos/src/topos") == "topos/src/topos"
+
+
+def test_rel_to_source_searches_for_next_prefix_match():
+    """When the first occurrence has no boundary but a later one does, use it."""
+    # Path contains the prefix string earlier as a false substring
+    n = cg._rel_to_source("topos/src/topos_evil/topos/src/topos/x.py", "topos/src/topos")
+    assert n == "topos/src/topos/x.py"
+
+
+# --------------------------------------------------------------------------- #
+# _validate_cov_record — coverage JSON shape validation
+# --------------------------------------------------------------------------- #
+
+def test_validate_cov_record_accepts_valid():
+    cg._validate_cov_record("x.py", {"executed_lines": [1, 2], "missing_lines": []})
+    cg._validate_cov_record("x.py", {"executed_lines": [], "missing_lines": [3]})
+    cg._validate_cov_record("x.py", {"executed_lines": [1], "missing_lines": [2, 3]})
+
+
+def test_validate_cov_record_rejects_missing_key():
+    with pytest.raises(cg.CoverageGateError, match="missing"):
+        cg._validate_cov_record("x.py", {"executed_lines": [1]})
+
+
+def test_validate_cov_record_rejects_non_list():
+    with pytest.raises(cg.CoverageGateError, match="str"):
+        cg._validate_cov_record("x.py", {"executed_lines": [1], "missing_lines": "bad"})
+
+
+def test_validate_cov_record_rejects_non_int():
+    with pytest.raises(cg.CoverageGateError, match="str"):
+        cg._validate_cov_record("x.py", {"executed_lines": [1, "two"], "missing_lines": []})
+
+
+# --------------------------------------------------------------------------- #
+# evaluate_with_malformed_coverage — coverage JSON record validation
+# --------------------------------------------------------------------------- #
+
+def test_evaluate_malformed_missing_lines_is_error():
+    """A coverage record with missing_lines=None or wrong type raises
+    CoverageGateError — the malformed data must not silently yield green."""
+    added = {"topos/src/topos/foo.py": {1}}
+    # missing_lines is None
+    with pytest.raises(cg.CoverageGateError, match="missing_lines"):
+        cg.evaluate(added, {"topos/src/topos/foo.py": {"executed_lines": [1], "missing_lines": None}})
+    # missing_lines is a string
+    with pytest.raises(cg.CoverageGateError, match="missing_lines"):
+        cg.evaluate(added, {"topos/src/topos/foo.py": {"executed_lines": [1], "missing_lines": "oops"}})
+    # executed_lines missing entirely
+    with pytest.raises(cg.CoverageGateError, match="executed_lines"):
+        cg.evaluate(added, {"topos/src/topos/foo.py": {"missing_lines": []}})
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end with real temporary git repo
+# --------------------------------------------------------------------------- #
+
+def test_coverage_gate_e2e_with_real_git_repo(tmp_path: Path):
+    """Run coverage_gate.py in a temporary git repo with good and bad coverage
+    JSON, proving the I/O boundary (git diff + coverage loading) works end-to-end
+    without mocking."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git = lambda *a: subprocess.run(["git"] + list(a), cwd=repo, capture_output=True, text=True, check=True)
+
+    _git("init", "--initial-branch", "main")
+    _git("config", "user.email", "test@test")
+    _git("config", "user.name", "Test")
+
+    # Create a source file
+    src = repo / "topos/src/topos"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text("def foo(): return 42\n")
+    _git("add", ".")
+    _git("commit", "-m", "initial")
+
+    # Feature branch: modify the source file
+    _git("checkout", "-b", "feature")
+    (src / "__init__.py").write_text("def foo(): return 43\ndef bar(): return 99\n")
+    _git("add", ".")
+    _git("commit", "-m", "add bar")
+
+    # Good coverage: both lines covered
+    cov_dir = tmp_path / "cov"
+    cov_dir.mkdir()
+    good_cov = cov_dir / "good.json"
+    good_cov.write_text(json.dumps({
+        "files": {
+            "topos/src/topos/__init__.py": {
+                "executed_lines": [1, 2],
+                "missing_lines": [],
+            }
+        }
+    }))
+
+    rc = cg.main(["--repo", str(repo), "--base", "main", "--source", "topos/src/topos",
+                   "--coverage-json", str(good_cov)])
+    assert rc == 0, "good coverage should pass"
+
+    # Bad coverage: line 2 missing
+    bad_cov = cov_dir / "bad.json"
+    bad_cov.write_text(json.dumps({
+        "files": {
+            "topos/src/topos/__init__.py": {
+                "executed_lines": [1],
+                "missing_lines": [2],
+            }
+        }
+    }))
+
+    rc = cg.main(["--repo", str(repo), "--base", "main", "--source", "topos/src/topos",
+                   "--coverage-json", str(bad_cov)])
+    assert rc == 1, "missing line should fail"
+
+    # Coverage JSON with no 'files' key raises error
+    bad_shape = cov_dir / "bad_shape.json"
+    bad_shape.write_text(json.dumps({"not_files": {}}))
+    rc = cg.main(["--repo", str(repo), "--base", "main", "--source", "topos/src/topos",
+                   "--coverage-json", str(bad_shape)])
+    assert rc == 2, "missing 'files' key should exit 2"
+
+
+# --------------------------------------------------------------------------- #
+# evaluate with false-prefix source — adversarial prefix matching
+# --------------------------------------------------------------------------- #
+
+def test_evaluate_ignores_changes_under_false_friend_prefix():
+    """A changed file under topos/src/topos_evil must NOT be treated as a
+    source file even though topos/src/topos is a prefix substring."""
+    added = {"topos/src/topos_evil/tamper.py": {1, 2}}
+    v = cg.evaluate(added, {}, source_prefix="topos/src/topos")
+    assert v.passed
+    assert v.uncovered == {}
+    assert v.changed_executable == 0
+
+
+# --------------------------------------------------------------------------- #
+# py-compile shell pattern — behavioral regression tests
+# --------------------------------------------------------------------------- #
+
+def test_pycompile_shell_syntax_error_exits_nonzero():
+    """The py-compile gate's shell pattern must exit nonzero when a changed
+    .py file has a syntax error. This test validates the behavioral contract
+    of the gate, not the exact argv string."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Create a .py with syntax error
+        bad = Path(tmp) / "bad_syntax.py"
+        bad.write_text("def foo(:\n")  # SyntaxError: unmatched paren
+        good = Path(tmp) / "good.py"
+        good.write_text("x = 1\n")
+
+        # Simulate the gate pattern: files=$(git diff ...) equivalent but with
+        # explicit file list; the critical piece is py_compile calling.
+        cmd = ["bash", "-c",
+               "set -euo pipefail && "
+               'files=$(printf "%s\\n" "$@") && '
+               'printf "%s\\n" "$files" | tr "\\n" "\\0" | xargs -0 python3 -m py_compile',
+               "--", str(bad), str(good)]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        assert proc.returncode != 0, (
+            f"py_compile should fail on syntax error, got exit {proc.returncode}: "
+            f"stderr={proc.stderr}"
+        )
+
+
+def test_pycompile_shell_no_files_exits_zero():
+    """The py-compile gate pattern with no changed .py files exits zero."""
+    import subprocess
+    # No files: the git diff returns empty, the gate prints message and exits 0
+    cmd = ["bash", "-c",
+           "set -euo pipefail && "
+           'files="" && '
+           'if [ -z "$files" ]; then echo "no files"; '
+           'else printf "%s\\n" "$files" | tr "\\n" "\\0" | xargs -0 python3 -m py_compile; fi']
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, f"no files should exit 0: stderr={proc.stderr}"
+    assert "no files" in proc.stdout
+
+
+def test_pycompile_shell_filename_with_spaces_is_safe():
+    """The NUL-delimited xargs -0 pattern handles filenames with spaces."""
+    import subprocess
+    import tempfile
+    import os
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Create a .py file with a space in the name
+        spaced = os.path.join(tmp, "my file.py")
+        with open(spaced, "w") as f:
+            f.write("x = 1\n")
+
+        cmd = ["bash", "-c",
+               "set -euo pipefail && "
+               'files=$(printf "%s\\n" "$@") && '
+               'printf "%s\\n" "$files" | tr "\\n" "\\0" | xargs -0 python3 -m py_compile',
+               "--", spaced]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        assert proc.returncode == 0, f"filename with spaces: stderr={proc.stderr}"
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -292,3 +507,15 @@ def test_arg_parser_defaults():
     args = cg._build_arg_parser().parse_args(["--coverage-json", "c.json"])
     assert (args.base, args.source, args.fail_under, args.repo) == (
         "main", "topos/src/topos", 100.0, ".")
+
+
+def test_main_malformed_coverage_returns_2(monkeypatch, tmp_path, capsys):
+    """A coverage record with a missing 'missing_lines' key during evaluate
+    must produce exit 2 (CoverageGateError), not a silent green or exit 1."""
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_git_added_lines", lambda repo, base, source: {"topos/src/topos/x.py": {5}})
+    # Coverage record missing 'missing_lines' key
+    cov = _write_cov(tmp_path, {"topos/src/topos/x.py": {"executed_lines": [5]}})
+    rc = cg.main(["--coverage-json", cov])
+    assert rc == 2, f"expected exit 2 for malformed record, got {rc}"
+    assert "diff-coverage ERROR" in capsys.readouterr().err

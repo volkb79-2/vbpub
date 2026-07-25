@@ -273,3 +273,4 @@ core
 **/logs/
 nyxloom/ntfy/.secrets/
 nyxloom/nyxloomd/secrets.env
+.p96-parity/

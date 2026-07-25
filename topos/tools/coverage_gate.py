@@ -69,10 +69,55 @@ def parse_added_lines(diff_text: str) -> dict[str, set[int]]:
 
 
 def _rel_to_source(path: str, source_prefix: str) -> str:
-    """Normalize a path to the canonical `<source_prefix>/...` tail."""
+    """Normalize a path to the canonical `<source_prefix>/...` tail.
+
+    The prefix is matched as a directory boundary: after the common prefix is
+    found, the next character must be '/' or end-of-string, so that a prefix
+    ``topos/src/topos`` does NOT match ``topos/src/topos_evil/mod.py`` (the
+    ``_`` would follow instead of ``/`` or EOS).
+    """
     n = os.path.normpath(path).replace(os.sep, "/")
     i = n.find(source_prefix)
-    return n[i:] if i != -1 else n
+    if i == -1:
+        return n
+    tail = n[i + len(source_prefix):]
+    if tail and not tail.startswith("/"):
+        # Prefix match is a substring, not a directory boundary — retry
+        # from the next character to avoid ``topos/src/topos`` matching
+        # ``topos/src/topos_evil``.
+        j = n.find(source_prefix, i + 1)
+        if j != -1:
+            i, tail = j, n[j + len(source_prefix):]
+            if tail and not tail.startswith("/"):
+                return n
+    return n[i:] if tail == "" or tail.startswith("/") else n
+
+
+def _validate_cov_record(path: str, record: dict) -> None:
+    """Validate a coverage record's executed_lines and missing_lines.
+
+    Both must be lists of ints (possibly empty). Raises CoverageGateError
+    if the shape is wrong, preventing malformed data from silently yielding
+    a green verdict. Coverage.py guarantees this shape, so a deviation means
+    the JSON was tampered with, misread, or produced by a non-standard tool.
+    """
+    for key in ("executed_lines", "missing_lines"):
+        val = record.get(key)
+        if val is None:
+            raise CoverageGateError(
+                f"coverage record for {path} is missing {key!r}"
+            )
+        if not isinstance(val, list):
+            raise CoverageGateError(
+                f"coverage record for {path}: {key!r} is {type(val).__name__}, "
+                f"expected list"
+            )
+        for item in val:
+            if not isinstance(item, int):
+                raise CoverageGateError(
+                    f"coverage record for {path}: {key!r} contains "
+                    f"{type(item).__name__} ({item!r}), expected int"
+                )
 
 
 @dataclass
@@ -101,6 +146,11 @@ def evaluate(
     executable (in executed ∪ missing). Changes to files outside source_prefix
     (tests, docs, config) are ignored. Non-Python files under the source prefix
     are also ignored (coverage.py measures only .py modules).
+
+    Each coverage record is validated: missing_lines and executed_lines must
+    be lists of ints. A record with wrong types (e.g. strings, None) is
+    treated as a CoverageGateError to prevent silent green verdicts from
+    malformed data.
     """
     prefix = os.path.normpath(source_prefix).replace(os.sep, "/")
     cov_by_norm: dict[str, dict] = {
@@ -112,7 +162,7 @@ def evaluate(
     files_missing: list[str] = []
     for path, lines in added.items():
         npath = _rel_to_source(path, prefix)
-        if not npath.startswith(prefix):
+        if not (npath == prefix or npath.startswith(prefix + "/")):
             continue
         if not npath.endswith(".py"):
             continue
@@ -123,6 +173,10 @@ def evaluate(
                 total_changed_exec += len(lines)
                 files_missing.append(npath)
             continue
+        # Validate coverage record shape: executed_lines and missing_lines
+        # must be lists of ints. This prevents malformed data from silently
+        # yielding a green verdict.
+        _validate_cov_record(npath, cov)
         missing = set(cov.get("missing_lines", []))
         executed = set(cov.get("executed_lines", []))
         executable = missing | executed
@@ -213,7 +267,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
         return 2
 
-    v = evaluate(added, coverage_files, args.source, args.fail_under)
+    try:
+        v = evaluate(added, coverage_files, args.source, args.fail_under)
+    except CoverageGateError as exc:
+        print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
+        return 2
     if v.passed:
         print(
             f"diff-coverage OK: {v.covered}/{v.changed_executable} changed "

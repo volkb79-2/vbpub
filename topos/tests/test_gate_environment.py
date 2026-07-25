@@ -5,16 +5,21 @@ tests behind a module-level ``importorskip``, while the gate only knew about
 ``zstandard``. Any *new* optional extra would repeat that silently. These tests
 tie the three places that must agree — the declared extras, the ``[dev]`` extra
 that builds the gate env, and the conftest gate — so they cannot drift apart.
+
+P96 additions: py-compile gate argv behavioural tests parsed from nyxloom.toml,
+worktree import path validation, gate-tool importability.
 """
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
 from conftest import _REQUIRED_TEST_EXTRAS
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+TROVE_TOML = Path(__file__).resolve().parents[1] / "nyxloom-trove" / "nyxloom.toml"
 
 
 def _optional_dependencies() -> dict[str, list[str]]:
@@ -57,3 +62,143 @@ def test_pytest_cov_and_xdist_are_importable() -> None:
     against accidental removal or a gate-image rebuild that drops them."""
     import pytest_cov  # noqa: F401
     import xdist  # noqa: F401
+
+
+# --------------------------------------------------------------------------- #
+# P96 — py-compile gate argv tested against real temporary git repos
+# --------------------------------------------------------------------------- #
+
+def _pycompile_argv() -> list[str]:
+    """Parse the actual py-compile argv from nyxloom.toml."""
+    with TROVE_TOML.open("rb") as fh:
+        cfg = tomllib.load(fh)
+    raw = cfg["gates"]["py-compile"]["argv"]
+    assert isinstance(raw, list), f"py-compile argv is not a list: {type(raw)}"
+    return [str(s) for s in raw]
+
+
+def _run_pycompile_in_repo(repo: Path) -> subprocess.CompletedProcess:
+    """Execute the actual py-compile gate argv in *repo* (serves as {worktree})."""
+    argv = _pycompile_argv()
+    # argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff ..."]
+    shell_cmd = argv[2] if len(argv) >= 3 and argv[1] == "-c" else argv[1]
+    # Substitute {worktree} with the repo path
+    resolved = shell_cmd.replace("{worktree}", str(repo))
+    return subprocess.run(
+        ["bash", "-c", resolved],
+        capture_output=True, text=True,
+    )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git"] + list(args), cwd=repo, capture_output=True, check=True)
+
+
+def test_pycompile_syntax_error_exits_nonzero() -> None:
+    """The py-compile gate argv (parsed from nyxloom.toml) must exit nonzero
+    when a changed .py file has a syntax error."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _git(repo, "init", "--initial-branch", "main")
+        _git(repo, "config", "user.email", "t@t")
+        _git(repo, "config", "user.name", "T")
+        (repo / "good.py").write_text("x = 1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        _git(repo, "checkout", "-b", "feature")
+        # Add a file with syntax error
+        (repo / "bad.py").write_text("def foo(:\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "bad")
+
+        proc = _run_pycompile_in_repo(repo)
+        assert proc.returncode != 0, (
+            f"py-compile should fail on syntax error, got exit {proc.returncode}: "
+            f"stdout={proc.stdout}, stderr={proc.stderr}"
+        )
+
+
+def test_pycompile_no_changed_files_exits_zero() -> None:
+    """The py-compile gate argv exits zero when no .py files have changed."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _git(repo, "init", "--initial-branch", "main")
+        _git(repo, "config", "user.email", "t@t")
+        _git(repo, "config", "user.name", "T")
+        (repo / "good.py").write_text("x = 1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        _git(repo, "checkout", "-b", "feature")
+        # No .py files changed — only a .txt
+        (repo / "note.txt").write_text("hello\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "feature")
+
+        proc = _run_pycompile_in_repo(repo)
+        assert proc.returncode == 0, (
+            f"py-compile with no changed .py should exit 0, got {proc.returncode}: "
+            f"stdout={proc.stdout}, stderr={proc.stderr}"
+        )
+
+
+def test_pycompile_filename_with_spaces_succeeds() -> None:
+    """The NUL-delimited git diff -z | xargs -0 -r pattern handles filenames
+    containing spaces without shell-splitting."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        _git(repo, "init", "--initial-branch", "main")
+        _git(repo, "config", "user.email", "t@t")
+        _git(repo, "config", "user.name", "T")
+        (repo / "good.py").write_text("x = 1\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "init")
+        _git(repo, "checkout", "-b", "feature")
+        # Filename with spaces
+        (repo / "my file.py").write_text("y = 2\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "spaced")
+
+        proc = _run_pycompile_in_repo(repo)
+        assert proc.returncode == 0, (
+            f"py-compile with spaced filename should exit 0, got {proc.returncode}: "
+            f"stdout={proc.stdout}, stderr={proc.stderr}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# P96 — imported topos must resolve under the worktree, not image-baked /src
+# --------------------------------------------------------------------------- #
+
+def test_topos_imported_from_worktree() -> None:
+    """When PYTHONPATH=topos/src is set and CWD is the vbpub repo root, the
+    imported topos package must resolve under the CURRENT worktree, not from
+    an image-baked /src/topos path. The gate command must export PYTHONPATH
+    for this to hold under tester-unified.
+
+    This test runs in the cockpit (devcontainer) and uses the file's own
+    location to derive the expected source tree. In the gate container with
+    a bound worktree, the same check rejects stale baked imports.
+    """
+    import topos
+    f = topos.__file__
+    assert f is not None, "topos.__file__ must be set"
+
+    resolved = Path(f).resolve()
+    expected_parent = Path(__file__).resolve().parents[1] / "src" / "topos"
+
+    # The resolved path must be a child of the expected source tree
+    try:
+        resolved.relative_to(expected_parent)
+    except ValueError:
+        raise AssertionError(
+            f"topos was imported from {resolved}, which is not under "
+            f"the expected source tree {expected_parent}. "
+            f"This means PYTHONPATH=topos/src was NOT exported (or the test "
+            f"is running from an image-baked /src/topos location)."
+        )

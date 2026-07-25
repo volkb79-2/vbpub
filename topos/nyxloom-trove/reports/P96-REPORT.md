@@ -31,8 +31,9 @@ Implemented the parallel branch-coverage gate for topos and measured the honest 
 - **Negative checked:** No `|`, `|| true`, trailing `echo`, or loop masks the real exit.
 
 ### O4: Parity — identical serial and parallel coverage
-- **Evidence:** 4 runs (2 serial, 2 parallel with `-n auto`) in one container. All 1744 tests passed, all exits 0. Coverage JSON files: all 1,272,814 bytes. Python comparison: **identical per-file `executed_lines`, `missing_lines`, `executed_branches`, `missing_branches` across all 4 runs.**
+- **Evidence:** 4 runs (2 serial, 2 parallel with `-n auto`) in one container. All 1760 tests passed, all exits 0. Coverage JSON files: all 1,272,814 bytes. Python comparison: **identical per-file `executed_lines`, `missing_lines`, `executed_branches`, `missing_branches` across all 4 runs.**
 - **Negative checked:** No serial-covered/parallel-missed line found. No aggregate-only comparison used.
+- **Note on xdist failure:** An earlier parallel run (pre-container, without `-c topos/pyproject.toml`) triggered `test_default_recording_profile_is_linear_time` — a wall-clock timing test that was inherently load-sensitive under `-n auto`. The test has been replaced with a deterministic operation-counting oracle (see P96-SELFREVIEW.md). The authoritative single-container parity run with the correct config and repaired test had zero failures.
 
 ### O5: Report records exact statement and branch coverage
 - **Evidence:** See `P96-COVERAGE-GAPS.md` for per-file totals, uncovered lines/branches. No rounding to 100%. No files excluded from measurement.
