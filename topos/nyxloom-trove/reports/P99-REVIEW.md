@@ -213,3 +213,76 @@ sets. Concrete mechanical repair oracles are provided for all 10 remaining
 gaps (3 lines + 1 branch + 8 rate-computation FALSE branches). The
 implementer must either close all gaps or invoke a valid BLOCKED trigger
 with exact evidence.
+
+
+---
+
+# Repair re-review — 2026-07-25 (commit 27fb3d2e)
+
+**Re-reviewer:** Reasonix (same persistent adversarial session)
+**Re-review range:** 551a95a1..27fb3d2e
+**Verdict:** **APPROVED**
+
+## Independent gate verification (two runs)
+
+Run 1: **1932 passed, exit 0** in 81s. Run 2: **1932 passed, exit 0** in 67s.
+
+```
+CLOSED  collect/procs.py   stmts= 39/ 39  br=14/14  ml=[]  mb=[]
+CLOSED  procs/procfs.py    stmts=162/162  br=22/22  ml=[]  mb=[]
+CLOSED  procs/sampler.py   stmts=249/249  br=56/56  ml=[]  mb=[]
+```
+
+**ALL 3 TARGETS — empty missing_lines AND empty missing_branches.**
+O1 mechanically satisfied. O4 parity confirmed (two runs identical).
+
+## Prior findings — all closed
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| G1 (frame_source lines 147-149) | **CLOSED** | `TestSamplerFrameSource.test_frame_source_returns_with_history_and_evicted` — asserts `source.evicted is True` and `len(frames) == 1` |
+| G2 (line 238 omitted-reasons loop) | **CLOSED** | `TestSamplerRealOmissions.test_omitted_reasons_non_empty` — 10 PIDs, `hard_cap=1`, asserts `omitted_count > 0` and `len(omitted_reasons) > 0` |
+| G3 (branch [231,215] warm-up FALSE) | **CLOSED** | `TestSamplerWarmUpFalseBranch.test_warm_up_new_pid_not_in_prev` — PID 2 added on tick 2, pinned but not in `_prev`, asserts `warm_up_coverage < 1.0` |
+| G4 (8 _compute_rates FALSE branches) | **CLOSED** | `TestSamplerComputeRatesFalseBranches.test_compute_rates_degraded_baseline` — all cur fields None → all rates None; `test_compute_rates_partial_degradation` — mixed None/present fields |
+| F1 (test count imprecise) | **FIXED** | Report says 63, pytest collects 63 |
+| F2 (frame_source untested) | **CLOSED** | See G1 |
+| F3 (omitted-reasons untested) | **CLOSED** | See G2 |
+| F4 (_compute_rates FALSE untested) | **CLOSED** | See G4 |
+| F5 (class vs method confusion) | **CLOSED** | `frame_source()` method now tested separately from `ProcessFrameSource` class |
+| F6 (no partial-degradation tests) | **CLOSED** | `test_compute_rates_partial_degradation` tests mixed degraded/proper fields |
+
+## New test quality audit
+
+All 5 new tests have exact behavioral assertions:
+
+- `test_frame_source_returns_with_history_and_evicted`: asserts `source.evicted is True` (not just non-None), `len(frames) == 1` (exact count)
+- `test_omitted_reasons_non_empty`: asserts `omitted_count > 0` with diagnostic message, `len(omitted_reasons) > 0`
+- `test_warm_up_new_pid_not_in_prev`: asserts `warm_up_coverage < 1.0` — proves new PID affected the ratio
+- `test_compute_rates_degraded_baseline`: asserts all 8 rate fields are `None` — exhaustive check of every FALSE branch
+- `test_compute_rates_partial_degradation`: asserts `cpu_pct is None` (degraded) while `read_bps == 100.0` and `write_bps == 50.0` (present) — exact values for mixed case
+
+No hollow assertions. No live-proc reliance (all `/tmp/` paths). No monkeypatch or
+global state leaks. No duplicates. No sleeps or wall-clock timing.
+
+## Remaining minor issue
+
+### F7 — Stale false comment preserved (LOW)
+**File:** topos/tests/test_p99_procs_coverage.py:649-651
+
+The comment claiming "coverage.py may not track them due to CPython
+optimization of fast-executing functions" is still present above the
+new test classes. This claim was proven false by the prior review
+(serial coverage showed identical gaps — the gaps were test deficiencies,
+not tool limitations). The repair added tests that close the gaps,
+conclusively proving the comment wrong. The comment should be removed.
+
+**Non-blocking.** The comment is harmless but factually incorrect and
+potentially misleading to future readers.
+
+## Verdict
+
+**APPROVED.** All 3 targets at exact 100% statements and 100% branches in
+the full xdist gate. Two-run parity confirmed. All 11 prior findings
+(G1–G4, F1–F6 plus the false-blind-spot claim) are resolved. The 5 new
+tests have exact behavioral assertions with no hollow coverage farming.
+One stale comment noted as F7 (non-blocking).
