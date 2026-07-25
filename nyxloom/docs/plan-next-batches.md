@@ -118,20 +118,25 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
   `cfg.carve.session=="fresh"`, but **P3b MUST emit `CARVER_CONTEXT_CONSUMED` (advancing the cursor)
   on a successful feed/intake turn** before the feature is ever enabled. Owner = whoever advances the
   consumption cursor (natural fit: the proposal/consumption pipeline here).
-- **P3c — the PRODUCING side (makes the carver AUTHOR): §2.1-CONFIRMED.** §2.1 is explicit: `carve`
-  is a TURN MODE of the one session that "author[s] handoff candidates for headroom, re-scope,
-  targeted intake, or test health," same session + lease. Two coupled halves (land together — a
-  carve turn that authors-but-isn't-recorded, or a recorder with no carve turn, is useless):
-  (a) **planner (`reconcile.py`, frozen-core):** when feature-on + WARM, headroom/re-scope/test-health
-  emit `ResumeCarverSession(mode="carve")` instead of `CarveDispatch` (completes §4.2's alias).
-  (b) **proposal recording (`daemon.py`):** define the carve-turn OUTPUT CONTRACT (a `CarverTurnResult`
-  §4.1 envelope the carver writes, analogous to today's `CARVE-<seq>.md` REQUIRED OUTPUT parsed by
-  `_consume_carve_exit`), and make the carver-session exit consumer parse it → emit
+- **P3c — the PRODUCING side (makes the carver AUTHOR): §2.1-CONFIRMED, DAEMON.PY-ONLY.** §2.1:
+  `carve` is a TURN MODE of the one session that "author[s] handoff candidates for headroom,
+  re-scope, targeted intake, or test health." **Key simplification (do NOT touch reconcile.py):**
+  §4.2's "`CarveDispatch` as migration alias" is normalized at the EXECUTOR, not the planner — the
+  planner keeps emitting `CarveDispatch`; the executor decides fresh-vs-session. Two coupled halves,
+  both in `daemon.py`:
+  (a) **`_execute_carve_dispatch` normalize:** when `cfg.carve.session=="project-persistent"` AND a
+  WARM session exists, run the carve as a `carve`-mode SESSION RESUME (reuse `_execute_resume_carver_session`'s
+  path) instead of a fresh throwaway carve; else → today's fresh carve (byte-identical when
+  `session="fresh"` OR no WARM session). A1's ladder stays untouched (feed/intake still pre-empt via
+  the shared mutex).
+  (b) **proposal recording:** define the carve-turn OUTPUT CONTRACT (a `CarverTurnResult` §4.1 envelope
+  the carve turn writes — a handoff file under `handoff_globs` + a JSON envelope, analogous to today's
+  `CARVE-<seq>.md` REQUIRED OUTPUT parsed by `_consume_carve_exit`), and extend
+  `_consume_carver_session_exit` (P3a) so a `carve`/`repair-proposal` turn parses it → emits
   `CARVER_PROPOSAL_RECORDED{proposal_id, generation, source_ids, artifact paths/hashes, dispositions}`
-  (§2.2) — the exact event P3b already validates+admits. Fake must produce a `CarverTurnResult`.
-  Full review. **Note (§2.2 gap from P3a):** `CARVER_SESSION_RESUMED` should carry `{generation,
-  turn-id/mode, source_ids, route}` — P3a emits only `{generation, route}`; fold the mode/source_ids
-  in here or in P3d.
+  (§2.2) — the exact event P3b already validates+admits, closing the loop. Fake must write a
+  `CarverTurnResult`. Full review. **Fold-in (§2.2 gap from P3a):** `CARVER_SESSION_RESUMED` should
+  carry `{generation, turn-id/mode, source_ids, route}` — P3a emits only `{generation, route}`.
 - **P3d — rotation + bounded resume recovery + DEGRADED policy (concern-3) + compaction→rotation
   fallback (§6.1/§5.4)**: typed rotation conditions, cold recovery from durable truth, and the
   concern-3 decision (DEGRADED-exhausted sets the mutex / escalates, not silent legacy fall-through).
