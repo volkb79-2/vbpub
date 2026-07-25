@@ -599,6 +599,34 @@ and proved operator interrupt propagation. Absolute coverage work should treat
 questionable residual paths as product-review prompts, not automatically
 codify every existing branch.
 
+### P111 validation: coverage healing is also boundary-policy review
+
+P111 closed the Docker update module with 25 cases and two 2,135-case immutable
+receipts. The residual audit found the same overbroad `BaseException` policy at
+two independent reader boundaries. Both now catch `Exception`; ordinary
+resolution/read failures remain fail-closed and `KeyboardInterrupt` propagates.
+It also found that direct argv validation accepted `True` as either memory or
+CPU because `bool` subclasses `int`. Exact-type/explicit-bool checks now reject
+that input.
+
+These were not uncovered statements to preserve; they were boundary contracts
+to repair. Coverage-healing agents should inspect exception breadth, language
+type-subclass surprises, and fail-open/fail-closed behavior whenever they
+construct a residual oracle. Similar patterns in one module should trigger a
+bounded sibling scan inside the declared source scope.
+
+The causal resolution test proved the complete seam chain—configuration,
+collector construction, one collection, resolver input, resolved cgroup path,
+encoding, and parsed value—without accessing host cgroupfs. Exact boundary
+tests should assert the composed chain, not merely that each mock was called.
+
+Pro approved the package but mapped baseline lines 293/294/298/339 onto current
+source after a multiline condition shifted later lines by four. The controller
+corrected the mapping to 297/298/302/343 and noted that coverage.py classifies
+the multiline CPU predicate at its first executable expression line. A receipt
+needs an explicit baseline→current coordinate map derived from the diff and
+coverage record; `nl -ba` at HEAD alone cannot interpret a frozen residual.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -706,6 +734,13 @@ prerequisite package, not an edit-refresh mechanism.
   fabricate a full hash from a displayed prefix.
 - Let absolute-coverage residuals trigger product review: repair harmful
   exception/dead-code behavior instead of writing tests that preserve it.
+- Scan sibling boundaries in scope when a residual exposes an overbroad catch,
+  bool/numeric subtype trap, or fail-open policy; pin ordinary and operator
+  interruption behavior separately.
+- Assert complete composed seam chains (inputs, order, resolved path, output),
+  not independent call counters that cannot prove data flowed end to end.
+- Generate explicit baseline→current line maps after source edits and reconcile
+  coverage.py's executable-line classification for multiline expressions.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
