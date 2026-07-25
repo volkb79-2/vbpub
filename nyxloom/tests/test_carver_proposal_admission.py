@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -658,6 +659,134 @@ def test_repair_count_below_threshold_emits_nothing(tmp_state, carver_project):
 def test_repair_escalation_feature_off_is_noop(tmp_state, sample_project):
     d = daemon.Daemon({"demo": sample_project.root})
     assert d._carve_proposal_repair_escalations("demo", sample_project, {}) == []
+
+
+# ==========================================================================
+# F018 AD3 (docs/handoff/f018-ad3-carve-repair-proposal.md): the daemon-side
+# repair-signal builder _pending_carve_repairs -- reuses P3b's EXACT counting
+# but returns the invalid proposal ids for a repair turn, GATED to
+# `1 <= invalid < max_proposal_repairs` so it COMPOSES with the P3b escalation
+# above and never double-fires (O1, O2, O6).
+# ==========================================================================
+
+def test_ad3_pending_repairs_below_ceiling_and_p3b_does_not_escalate(
+        tmp_state, carver_project):
+    """O1 (daemon build_input) + the below-ceiling half of O2: ONE invalid
+    proposal, ceiling=2 -> _pending_carve_repairs yields exactly one
+    CarveRepairRequest (right proposal_id + generation) AND
+    _carve_proposal_repair_escalations emits NOTHING (invalid=1 < 2). Repair
+    fires, escalation does not -- the complement of the at-ceiling case."""
+    cfg = carver_project
+    assert cfg.carve.max_proposal_repairs == 2
+    _bootstrap_warm()
+    relpath, _sha = _write_handoff(cfg.root, "demo-P901")
+    _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, "0" * 64)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    repairs = d._pending_carve_repairs("demo", cfg, snap)
+    assert len(repairs) == 1
+    assert repairs[0].proposal_id == "demo:carve:1:att-1"
+    assert repairs[0].generation == 1
+    # Complement: P3b does NOT escalate below the ceiling.
+    assert d._carve_proposal_repair_escalations("demo", cfg, {}) == []
+
+
+def test_ad3_pending_repairs_empty_at_ceiling_where_p3b_escalates(
+        tmp_state, carver_project):
+    """O2 (compose, no double-fire): TWO invalid proposals, ceiling=2 ->
+    _pending_carve_repairs is EMPTY (no repair) AND
+    _carve_proposal_repair_escalations emits exactly one NEEDS_OPERATOR. Repair
+    and escalation are mutually exclusive by the single `<` vs `>=` boundary --
+    they never both fire for the same generation. Uses the SAME two-invalid-
+    proposal seeding as test_repair_count_exceeded_emits_needs_operator_once so
+    the boundary is provably shared."""
+    cfg = carver_project
+    assert cfg.carve.max_proposal_repairs == 2
+    _bootstrap_warm()
+    relpath, _sha = _write_handoff(cfg.root, "demo-P901")
+    _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, "0" * 64)]))
+    _record("demo", _proposal_payload(turn_id="att-2", artifacts=[_artifact(relpath, "1" * 64)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._pending_carve_repairs("demo", cfg, snap) == ()
+    escalations = [e for e in d._carve_proposal_repair_escalations("demo", cfg, {})
+                   if e.type is EventType.NEEDS_OPERATOR
+                   and e.payload.get("reason") == "carver-proposal-invalid"]
+    assert len(escalations) == 1
+
+
+def test_ad3_pending_repairs_feature_off_and_zero_invalid_are_empty(
+        tmp_state, carver_project):
+    """O6 (daemon off-path): feature off (snap None) -> (); and with the
+    persistent carver ON but only a VALID proposal recorded (zero invalid) ->
+    () as well (the invalid==0 gate). Both are byte-identical 'nothing to
+    repair'."""
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    # A fully-VALID proposal -> zero invalid.
+    _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, sha)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert d._pending_carve_repairs("demo", cfg, None) == ()   # feature off
+    assert d._pending_carve_repairs("demo", cfg, snap) == ()   # on, zero invalid
+
+
+def test_ad3_pending_repairs_sorted_by_proposal_id(tmp_state, carver_project):
+    """Determinism: below a raised ceiling, several invalid proposals are
+    returned deterministically sorted by proposal_id (a pass with multiple
+    invalids always yields the same order). Ceiling raised to 3 so invalid=2
+    stays below it; the two proposals are RECORDED in reverse proposal_id order
+    to prove the sort is real."""
+    cfg = replace(carver_project,
+                  carve=replace(carver_project.carve, max_proposal_repairs=3))
+    _bootstrap_warm()
+    relpath, _sha = _write_handoff(cfg.root, "demo-P901")
+    _record("demo", _proposal_payload(turn_id="att-2", artifacts=[_artifact(relpath, "1" * 64)]))
+    _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, "0" * 64)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    repairs = d._pending_carve_repairs("demo", cfg, snap)
+    assert [r.proposal_id for r in repairs] == ["demo:carve:1:att-1", "demo:carve:1:att-2"]
+
+
+def test_ad3_pending_repairs_excludes_wrong_generation(tmp_state, carver_project):
+    """Generation filter (mirrors test_concern1_stale_generation_excluded): an
+    invalid proposal recorded for a DIFFERENT generation than the session's
+    current one is skipped -- so a lone stale-generation invalid proposal
+    yields () (it does not count toward this generation's repair signal)."""
+    cfg = carver_project
+    _bootstrap_warm(generation=1)
+    relpath, _sha = _write_handoff(cfg.root, "demo-P901")
+    # Invalid (hash mismatch) AND for generation 2, not the current gen 1.
+    _record("demo", _proposal_payload(generation=2, turn_id="att-2",
+                                      artifacts=[_artifact(relpath, "0" * 64)]))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert snap.generation == 1
+    assert d._pending_carve_repairs("demo", cfg, snap) == ()
+
+
+def test_ad3_pending_repairs_storage_error_degrades_to_empty(
+        tmp_state, carver_project, monkeypatch):
+    """Storage-read failure fails safe to () -- the same conservative
+    direction _validated_carve_proposals takes (see
+    test_validated_proposals_storage_error_degrades_to_empty)."""
+    cfg = carver_project
+    _bootstrap_warm()
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)  # captured BEFORE the monkeypatch
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._pending_carve_repairs("demo", cfg, snap) == ()
 
 
 # ==========================================================================

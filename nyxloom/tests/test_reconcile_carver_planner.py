@@ -21,7 +21,8 @@ from pathlib import Path
 import pytest
 
 from nyxloom.carver_session import (
-    CarverFeed, CarverSessionSnapshot, HumanIntake, ValidatedCarveProposal,
+    CarveRepairRequest, CarverFeed, CarverSessionSnapshot, HumanIntake,
+    ValidatedCarveProposal,
 )
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import (
@@ -158,6 +159,12 @@ def _stray_new_fields() -> dict:
                 artifact_ids=["demo-P02"], artifact_paths=["handoff/demo-P02.md"],
                 artifact_hashes=["deadbeef"], outcome="CANDIDATES_READY",
             ),
+        ),
+        # F018 AD3: the MASTER GATE must key off carver_session alone, so a
+        # stray non-empty pending_carve_repairs paired with carver_session=None
+        # must ALSO leave the plan byte-identical (O6, off-path).
+        pending_carve_repairs=(
+            CarveRepairRequest(proposal_id="demo:carve:1:t1", generation=1),
         ),
     )
 
@@ -607,3 +614,117 @@ def test_trace_notes_carver_kind_for_bootstrap():
     notes = [n for n in result.trace.breadcrumbs if n.kind == "carver"]
     assert len(notes) == 1
     assert notes[0].detail == "start"
+
+
+# ============================================================================
+# F018 AD3 (docs/handoff/f018-ad3-carve-repair-proposal.md): the WARM-ladder
+# repair slot -- planner-side oracles (O1 planner, O3 admit>repair,
+# O4 repair>feed, ladder completeness repair>compaction, O6 off-path). The
+# daemon-side compose/no-double-fire (O2), shared-cursor (O5) and packet (O7)
+# oracles live in the executor/daemon test files (they need the event log +
+# the _pending_carve_repairs / _build_carver_resume_prompt daemon helpers).
+# ============================================================================
+
+def _repair(pid: str = "demo:carve:1:t1", generation: int = 1) -> CarveRepairRequest:
+    return CarveRepairRequest(proposal_id=pid, generation=generation)
+
+
+def test_ad3_warm_repair_plans_repair_proposal_resume_no_source_ids():
+    """O1 (planner): a WARM session with a pending repair, no valid proposal,
+    no feed -> exactly one ResumeCarverSession(mode='repair-proposal',
+    generation=g) carrying NO source_ids (invariant #2: not a feed, so the P4a
+    cursor is untouched), and NO merge-feed/compaction. It also SETS the
+    single-carver mutex, so the legacy headroom CarveDispatch this empty-queue
+    WARM setup would otherwise fire (see test_warm_feed_beats_headroom_carve's
+    baseline) is suppressed."""
+    snap = make_snapshot(status=CarverStatus.WARM)
+
+    # Same self-contained premise as test_warm_feed_beats_headroom_carve:
+    # WITHOUT the repair, this exact setup plans the legacy headroom carve, so
+    # "repair suppresses it" below proves a real override, not a no-op.
+    baseline = plan_project(ReconcileInput(**base_kwargs(carver_session=snap)))
+    assert len([a for a in baseline if isinstance(a, CarveDispatch)]) == 1
+
+    actions = plan_project(ReconcileInput(**base_kwargs(
+        carver_session=snap, pending_carve_repairs=(_repair(),))))
+    repairs = [a for a in actions
+               if isinstance(a, ResumeCarverSession) and a.mode == "repair-proposal"]
+    assert len(repairs) == 1
+    assert repairs[0].generation == snap.generation
+    assert repairs[0].source_ids == ()
+    # No other carver turn, and the legacy headroom carve is suppressed.
+    assert [a for a in actions
+            if isinstance(a, ResumeCarverSession) and a.mode == "merge-feed"] == []
+    assert [a for a in actions if isinstance(a, CompactCarverSession)] == []
+    assert [a for a in actions if isinstance(a, CarveDispatch)] == []
+    assert len(carver_turn_actions(actions)) == 1
+    # Trace breadcrumb records the slot with a short enum, no prose.
+    notes = [n for n in actions.trace.breadcrumbs if n.kind == "carver"]
+    assert [n.detail for n in notes] == ["repair-proposal"]
+
+
+def test_ad3_admission_beats_repair():
+    """O3: a valid proposal to admit out-prioritizes a repair (slot 1 >
+    repair) -> AdmitCarveProposal is planned, NO repair turn. Repair only
+    matters when there is nothing admittable."""
+    snap = make_snapshot(status=CarverStatus.WARM)
+    actions = plan_project(ReconcileInput(**base_kwargs(
+        carver_session=snap,
+        validated_carve_proposals=(_proposal(),),
+        pending_carve_repairs=(_repair(),),
+    )))
+    admits = [a for a in actions if isinstance(a, AdmitCarveProposal)]
+    repairs = [a for a in actions
+               if isinstance(a, ResumeCarverSession) and a.mode == "repair-proposal"]
+    assert len(admits) == 1
+    assert repairs == []
+
+
+def test_ad3_repair_beats_pending_feed():
+    """O4: repair fires BEFORE ingesting a new merge feed (a broken premise is
+    fixed first) -> the repair turn is planned, the merge-feed is NOT this
+    pass. The feed is still present in the input (untouched), so a later pass
+    ingests it once the proposal is repaired/admitted."""
+    snap = make_snapshot(status=CarverStatus.WARM)
+    feed = CarverFeed(digest_id="merge:demo:1", merge_commit="a" * 40,
+                      task_id="demo-P01", event_sequence=1, files_changed=1)
+    actions = plan_project(ReconcileInput(**base_kwargs(
+        carver_session=snap,
+        pending_carver_feeds=(feed,),
+        pending_carve_repairs=(_repair(),),
+    )))
+    repairs = [a for a in actions
+               if isinstance(a, ResumeCarverSession) and a.mode == "repair-proposal"]
+    feeds = [a for a in actions
+             if isinstance(a, ResumeCarverSession) and a.mode == "merge-feed"]
+    assert len(repairs) == 1
+    assert feeds == []
+
+
+def test_ad3_repair_beats_due_compaction():
+    """Ladder completeness (admit > repair > merge-feed > compaction): repair
+    outranks a due compaction, mirroring test_priority_feed_beats_due_
+    compaction one slot up."""
+    snap = make_snapshot(status=CarverStatus.WARM, successful_turns_since_compaction=0,
+                          measured_context_ratio=0.95)  # compaction due (size)
+    assert _compaction_due(snap, make_config()) == "size"
+    actions = plan_project(ReconcileInput(**base_kwargs(
+        carver_session=snap, pending_carve_repairs=(_repair(),))))
+    repairs = [a for a in actions
+               if isinstance(a, ResumeCarverSession) and a.mode == "repair-proposal"]
+    compacts = [a for a in actions if isinstance(a, CompactCarverSession)]
+    assert len(repairs) == 1
+    assert compacts == []
+
+
+def test_ad3_empty_pending_carve_repairs_plans_no_repair():
+    """O6 (on-path, empty signal): the persistent carver is ON (WARM) but
+    pending_carve_repairs is empty -> NO repair turn; the pass falls through to
+    the pre-AD3 behaviour byte-identically (here, the legacy headroom carve)."""
+    snap = make_snapshot(status=CarverStatus.WARM)
+    with_off = plan_project(ReconcileInput(**base_kwargs(carver_session=snap)))
+    with_empty = plan_project(ReconcileInput(**base_kwargs(
+        carver_session=snap, pending_carve_repairs=())))
+    assert list(with_empty) == list(with_off)
+    assert [a for a in with_empty
+            if isinstance(a, ResumeCarverSession) and a.mode == "repair-proposal"] == []

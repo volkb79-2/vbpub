@@ -453,6 +453,124 @@ def test_resume_carver_session_pins_route_and_reuses_session_id(
     assert "mode=merge-feed" in tsf.notes
 
 
+def test_ad3_repair_proposal_turn_packet_names_ids_and_checklist(
+        tmp_state, carver_project, patch_launch):
+    """O7 (F018 AD3): executing a ResumeCarverSession(mode='repair-proposal')
+    launches a WRITE-AUTHORITY resume of the warm session_id whose packet names
+    the invalid proposal id(s) (re-derived from the log by the daemon) and the
+    5-point re-validation checklist. Carries NO source_ids -> the turn notes
+    record sources=(none), so the P4a merge-feed cursor stays untouched (O5's
+    structural companion; the exit path's cursor-advance is merge-feed-only)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+
+    # Seed ONE structurally-invalid proposal for the current generation (hash
+    # mismatch), so _pending_carve_repairs re-derives its id for the packet.
+    relpath, _sha = _write_handoff(cfg.root, "demo-P901")
+    bad_artifact = {"kind": "handoff", "path": relpath, "sha256": "0" * 64, "source_ref": None}
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_PROPOSAL_RECORDED,
+        payload=_carve_envelope("att-x", generation=1, artifacts=[bad_artifact]))
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.ResumeCarverSession(
+        project="demo", mode="repair-proposal", generation=1)
+    events = d._execute_resume_carver_session("demo", cfg, states, action)
+
+    assert [e.type for e in events] == [
+        EventType.TASK_CREATED, EventType.ATTEMPT_CREATED, EventType.ATTEMPT_PREFLIGHTED]
+    assert len(patch_launch) == 1
+    argv = patch_launch[0].argv
+    # Write-authority RESUME of the warm session S1 (build_resume ran for real).
+    assert argv[:3] == ["fake", "--resume", "S1"]
+    packet = argv[-1]
+    # Names the invalid proposal id the daemon re-derived.
+    assert "demo:carve:1:att-x" in packet
+    # Names the 5-point re-validation checklist + write-authority framing.
+    assert "WRITE-AUTHORITY" in packet
+    for token in ("sha256", "frontmatter", "input_revision", "lint", "scope.touch"):
+        assert token in packet, f"checklist item {token!r} missing from repair packet"
+    assert "Do NOT merge" in packet
+
+    # repair-proposal is a recognized write-authority mode (exit path records
+    # the corrected CARVER_PROPOSAL_RECORDED), and the turn carries no sources.
+    assert "repair-proposal" in daemon._CARVE_WRITE_AUTHORITY_MODES
+    task_id = events[0].task_id
+    tsf = states[task_id]
+    assert "mode=repair-proposal" in tsf.notes
+    assert "sources=(none)" in tsf.notes
+
+
+def test_ad3_successful_repair_turn_records_proposal_and_leaves_cursor_untouched(
+        tmp_state, carver_project, patch_launch):
+    """O5 (F018 AD3): a SUCCESSFUL repair turn (it re-emits a valid corrected
+    proposal) records CARVER_PROPOSAL_RECORDED at exit but does NOT advance the
+    P4a merge-feed cursor -- the exit path's cursor advance is merge-feed-only,
+    so a repair turn (mode != 'merge-feed', no source_ids) reaches the success
+    branch yet emits NO CARVER_CONTEXT_CONSUMED. A non-zero cursor baseline (7)
+    is seeded first so 'unchanged' is a real assertion, not 0->0."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+
+    # Non-zero merge-feed cursor baseline (as if a prior merge-feed turn ran).
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_CONTEXT_CONSUMED,
+        payload={"highest_event_sequence": 7, "spine_revisions": {}})
+    assert _snapshot("demo").last_consumed_event_sequence == 7
+
+    # An invalid proposal makes the repair scenario legitimate (the daemon
+    # re-derives it for the packet); the turn then re-emits a VALID one.
+    relpath_bad, _bad = _write_handoff(cfg.root, "demo-P901")
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_PROPOSAL_RECORDED,
+        payload=_carve_envelope("att-bad", generation=1, artifacts=[
+            {"kind": "handoff", "path": relpath_bad, "sha256": "0" * 64, "source_ref": None}]))
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    launch = d._execute_resume_carver_session(
+        "demo", cfg, states,
+        reconcile.ResumeCarverSession(project="demo", mode="repair-proposal", generation=1))
+    task_id = launch[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+
+    # The turn writes a VALID corrected envelope for its own turn id.
+    relpath, sha = _write_handoff(cfg.root, "demo-P902")
+    envelope = _carve_envelope(task_id, artifacts=[
+        {"kind": "handoff", "path": relpath, "sha256": sha, "source_ref": None}])
+    seq = task_id.rsplit("-", 1)[-1]
+    _write_envelope(cfg.root / cfg.reports_dir, seq, envelope)
+
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+    consume = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    # Success branch reached: the corrected proposal is recorded ...
+    assert any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in consume)
+    # ... but the merge-feed cursor advance is SKIPPED for a repair turn (the
+    # exit's CARVER_CONTEXT_CONSUMED emission is `mode == 'merge-feed'`-only).
+    assert not any(e.type is EventType.CARVER_CONTEXT_CONSUMED for e in consume)
+    # The ONLY cursor-advance event in the whole log is the seed (seq 7); the
+    # repair turn added none, so last_consumed_event_sequence stays 7. Asserted
+    # on the raw log rather than via project_session on purpose -- re-folding
+    # this event stream trips a PRE-EXISTING projector defect UNRELATED to AD3
+    # (CARVER_PROPOSAL_RECORDED sets last_turn_sequence to a str turn_id, and a
+    # following CARVER_SESSION_RESUMED does `+= 1`); it is reachable pre-AD3 via
+    # any two write/resume turns and is out of this package's scope (the frozen
+    # projector fold is forbidden). See docs/handoff/f018-ad3-LOG.md.
+    consumed_events = [e for e in storage.iter_events("demo")
+                       if e.type is EventType.CARVER_CONTEXT_CONSUMED]
+    assert len(consumed_events) == 1
+    assert consumed_events[0].payload["highest_event_sequence"] == 7
+
+
 def test_resume_carver_session_recover_mode_requires_degraded_status(
         tmp_state, carver_project, patch_launch):
     cfg = carver_project
