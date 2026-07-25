@@ -1193,9 +1193,19 @@ def test_carve_dispatch_byte_identical_when_feature_off(
     [stage.carve] override): _carver_session's MASTER GATE returns None, so
     the normalize branch is never entered -- the fresh-carve path (legacy
     CARVE-<seq>.md REQUIRED OUTPUT CONTRACT) runs exactly as it did before
-    P3c, and no CARVER_PROPOSAL_RECORDED is ever produced."""
+    P3c, and no CARVER_PROPOSAL_RECORDED is ever produced.
+
+    sample_project's OWN routes.toml (conftest.SAMPLE_ROUTES_TOML) has no
+    role_default, so review_routes would be empty and the legacy path would
+    short-circuit on 'carve-no-route' before ever reaching TASK_CREATED --
+    mirrors test_daemon.py's OWN identical setup for every other
+    _execute_carve_dispatch test using sample_project (e.g.
+    test_execute_carve_dispatch_untargeted_supersedes_nothing)."""
+    from conftest import SAMPLE_ROUTES_TOML
     cfg = sample_project
     assert cfg.carve.session == "fresh"
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n")
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
