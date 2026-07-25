@@ -5958,3 +5958,30 @@ def test_carver_ack_O5_byte_identical_off(
     # on disk, the turn degrades to CARVER_SESSION_DEGRADED (not RESUMED).
     assert any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
 
+
+def test_carver_ack_helper_empty_source_ids_returns_none(
+        tmp_state, sample_project):
+    """P4a helper guard: with no source_ids there is nothing to acknowledge,
+    so _highest_consumed_feed_sequence short-circuits to None before any
+    storage scan. Directly exercised here (rather than pragma-excluded) so the
+    guard carries a real behavioural assertion."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._highest_consumed_feed_sequence("demo", ()) is None
+
+
+def test_carver_ack_helper_storage_error_returns_none(
+        tmp_state, sample_project, monkeypatch):
+    """P4a helper defensive path: a failure reading the event log must be
+    swallowed to None (a merge-feed ack that cannot compute a cursor simply
+    does not advance it — the feeds re-deliver next pass), never propagate out
+    of the exit consumer. Directly exercised (not pragma-excluded)."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("event log unreadable")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._highest_consumed_feed_sequence("demo", ("merge:demo:c1",)) is None
+
