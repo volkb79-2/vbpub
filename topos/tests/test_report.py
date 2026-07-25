@@ -659,22 +659,44 @@ class TestSteadyWindowDetectorPerformance:
             for index in range(frame_count)
         ]
 
-    def test_default_recording_profile_is_linear_time(self):
-        """Catch a quadratic regression without treating this as a microbenchmark."""
+    def test_default_recording_profile_is_linear_time(self, monkeypatch):
+        """Catch a quadratic regression via operation counts, not wall-clock timing.
+
+        The earlier ``test_finite_gauge_reads_are_linear`` verifies linearity at
+        120×7 frames. This test extends the same counting oracle to the production
+        frame count (2880×20 and 5760×20) to catch regressions that only manifest
+        at scale. Using operation counts instead of ``time.perf_counter`` makes
+        this deterministic under xdist contention.
+
+        The wall-clock version of this test (P96-era) failed intermittently under
+        ``-n auto`` because CPU contention made long_elapsed disproportionately
+        high — a false red unrelated to algorithmic regression.
+        """
         short_frames = self._performance_frames(2880)
         long_frames = self._performance_frames(5760)
+        entity_count = 20
+        real_finite_gauge_value = report_module._finite_gauge_value
+        gauge_reads = 0
 
-        start = time.perf_counter()
+        def counting_finite_gauge_value(frame, entity_key, gauge):
+            nonlocal gauge_reads
+            gauge_reads += 1
+            return real_finite_gauge_value(frame, entity_key, gauge)
+
+        monkeypatch.setattr(
+            report_module, "_finite_gauge_value", counting_finite_gauge_value,
+        )
         assert detect_steady_window(short_frames) == WindowRange(100.0, 14495.0)
-        short_elapsed = time.perf_counter() - start
+        short_reads = gauge_reads
 
-        start = time.perf_counter()
+        gauge_reads = 0
         assert detect_steady_window(long_frames) == WindowRange(100.0, 28895.0)
-        long_elapsed = time.perf_counter() - start
+        long_reads = gauge_reads
 
-        assert short_elapsed < 2.0
-        assert long_elapsed < 2.0
-        assert long_elapsed <= short_elapsed * 2.5 + 0.05
+        assert short_reads == 2880 * entity_count, f"short={short_reads}"
+        assert long_reads == 5760 * entity_count, f"long={long_reads}"
+        # Linear: 5760/2880 = 2.0; allow 10% slack for frame-boundary overhead
+        assert long_reads <= short_reads * 2.1 + 100
 
 
 class TestFindSliceAncestor:

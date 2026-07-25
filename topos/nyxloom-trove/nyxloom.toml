@@ -50,27 +50,30 @@ docs_dir          = "docs"
 # --- THE gate: tester-unified container (dstdns-style test-runner doctrine —
 # cockpit greens are never a ship signal), run from the vbpub REPO ROOT
 # because topos tests invoke CLI subprocesses with repo-root-relative paths.
-# This is the VALIDATED command (topos: 1717 passed in tester-unified) — kept
-# byte-identical to what was proven. Gate id kept as `topos-suite` (NOT
+# This is the validated tester-unified path; current counts are recorded in the
+# P96 evidence reports. Gate id kept as `topos-suite` (NOT
 # renamed to `tester-unified`) so the 11 outstanding handoffs' existing
 # `gates:`/`oracle.gate: topos-suite` frontmatter references stay valid
 # across this underlying-mechanism swap — same continuity principle dstdns
 # applied to its own `test-runner` gate id.
-# KNOWN LIMITATION: this argv has no {worktree} substitution — it always
-# tests the live vbpub checkout at the fixed host bind-mount path, not a
-# per-attempt worktree. Acceptable for the single-project-checkout topology
-# validated here; revisit if/when topos gains worktree-parallel dispatch.
+# P96: upgraded to the diff-coverage gate. Runs in tester-unified, pytest with
+# -n auto xdist + branch coverage, then the changed-line evaluator. Both shell
+# layers have set -euo pipefail for fail-closed composition. PYTHONPATH is
+# exported so subprocesses resolve the bound worktree, not the image-baked /src.
+# See tools/coverage_gate.py for the evaluator contract.
 [gates.topos-suite]
-argv = ["bash", "-c", "docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd {worktree} && PYTHONPATH=topos/src /opt/tester-venv/bin/python -m pytest topos/tests -q'"]
+argv = ["bash", "-c", "set -euo pipefail && docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree} && export PYTHONPATH=topos/src:topos && /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto --cov=topos/src/topos --cov-branch --cov-report=json:/tmp/topos-coverage.json && /opt/tester-venv/bin/python topos/tools/coverage_gate.py --repo . --base main --coverage-json /tmp/topos-coverage.json --source topos/src/topos'"]
 phase = "implementation"
 timeout_seconds = 1800
 environment = "tester-unified"
 
-# Kept byte-identical from the old .nyxloom/project.toml — a fast local
-# syntax check, still referenced by the same outstanding handoffs' `gates:`.
+# P96: fail-closed (true NUL-delimited argv: git diff -z piped to xargs -0 -r
+# under set -o pipefail). Git failure, py_compile failure, and parse errors
+# all exit nonzero. No .py files changed exits zero (xargs -r skips the command
+# when input is empty). The gate layer that runs this is `review` only.
 [gates.py-compile]
-argv = ["bash", "-c", "cd {worktree} && python3 -m py_compile $(git diff --name-only main...HEAD -- '*.py' | tr '\\n' ' ')"]
-phase = "implementation"
+argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
+phase = "review"
 timeout_seconds = 120
 environment = "local"
 
