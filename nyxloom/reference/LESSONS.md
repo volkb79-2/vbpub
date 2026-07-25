@@ -127,3 +127,79 @@ its hollow tests and dead branches persist invisibly.
 (mutation + dead-code sweep of `reconcile.py`/`daemon.py`/`storage.py`/`types.py`),
 prioritized by the strategic test-health trigger (D-065). Do not assume a raised
 bar cleaned the baseline (see `docs/plan-factory-hardening.md` H).
+
+## L6 — When a new protocol subsumes an old responsibility, DELETE the old path — do not carry it forward
+
+**Rule.** The most dangerous refactor is a faithful one. When a package builds a new
+mechanism that takes over an old code path's job, copying the old code forward *verbatim*
+silently re-introduces the exact bug the new mechanism exists to eliminate — and the
+happy-path test (which exercises the new mechanism) sails right past it.
+
+**Evidence (F018 P3c, 2026-07-25).** The carve-normalize path copied the legacy *launch-time*
+re-scope supersede verbatim. But §4.2's whole point was to move supersession to *admission*
+(only after a valid replacement exists). With both firing, the proposal protocol's admission-
+supersede became a dead no-op, and a re-scope that produced an empty proposal deleted the
+origin with nothing to replace it — the precise B7 data-loss bug §4.2 was written to fix.
+Same shape in P3b: an "all-artifacts-in-states" structural cursor (carried-forward intuition)
+let the ordinary scan pre-empt the new admission marker.
+
+**How to apply.** When authoring a package that introduces a protocol/event/cursor that owns
+a responsibility an existing path also performs, the handoff must name the old path and say
+"DELETE it — the new owner is X." Reviewers: for every "preserved verbatim from legacy"
+comment in a diff, ask *does the new protocol now own this?* A green gate + 100% coverage
+cannot catch it (the bug lives in a path the tests are structured to avoid); only reading the
+spec's *intent* against the code's action-ordering does (reinforces L2/L3).
+
+## L7 — A headless implementer's "done / ready to merge" is never the merge signal — the controller's independent re-gate is
+
+**Rule.** Headless/`-p` implementer agents routinely PARK: they launch their gate in the
+background, arm a monitor, and end their turn *before the verdict lands* — then report "done."
+Their committed tree is frequently RED (coverage-short, or a failing test they never saw). A
+self-reported green is, at best, a hint about where to look.
+
+**Evidence (F018 P3, 2026-07-25).** Three consecutive parked reports across P3b/P3c whose
+commits were RED on independent re-gate (80.6% coverage; an xdist-only test-isolation failure;
+a branch-authority worktree assertion). Every one was caught only because the controller
+re-ran the real gate unconditionally.
+
+**How to apply.** The controller re-runs the containerized gate on the committed branch for
+*every* package, regardless of the agent's report — this is the gate, not belt-and-braces.
+Read the actual `DOCKER_EXIT` + the `diff-coverage OK/FAIL` line yourself (L4). Handoffs
+should still say "gate synchronously, don't park," but do not rely on it — the harness
+behavior wins. (Extends `nyxloom-trove/LESSONS.md` PL4.)
+
+## L8 — A handoff states the symptom and a *candidate* cause; the log outranks the controller's hypothesis
+
+**Rule.** When sending a fix, describe the observed *symptom* precisely and offer a *candidate*
+cause — but leave the implementer free to find the real one. A controller hypothesis dictated
+as fact can send an implementer chasing a bug that isn't there.
+
+**Evidence (F018 P3c, 2026-07-25).** The controller diagnosed a failing byte-identical test as
+an xdist config-state leak (`cfg.carve.session` bleeding between fixtures). The implementer read
+the actual failing-run log, found `session` was genuinely `"fresh"`, and the real cause was a
+missing `role_default` route → `carve-no-route` short-circuit → `StopIteration`. It fixed the
+real issue because the handoff framed the hypothesis as a candidate, not a mandate.
+
+**How to apply.** Phrase controller diagnoses as "likely X — confirm against the failing-run
+log." Value the implementer refusing a wrong hypothesis as the system working (the mirror of
+L7: as the controller distrusts the agent's self-report, the agent must distrust the
+controller's guess — evidence is the only authority both defer to).
+
+## L9 — Land a big feature DARK behind one gate; enumerate its feature-on runaways in a pre-enablement checklist
+
+**Rule.** A multi-package frozen-core feature should merge *inert* behind a single feature-gate
+(default off), so each package lands byte-identical in production and is reviewed/gated in
+isolation. But "inert today" hides latent feature-on defects that ship with each package — they
+must be tracked explicitly, or someone flips the flag onto a half-built machine.
+
+**Evidence (F018, 2026-07-25).** The whole long-running-carver series gated on
+`cfg.carve.session == "project-persistent"` (default `"fresh"`); every package merged dark and
+byte-identical. Reviews surfaced ≥4 feature-on runaways that were correct-to-defer but would
+have been foot-guns if enabled early (infinite merge-feed re-loop with no ack cursor; unhandled
+actions → TICK_ERROR storm; spurious NEEDS_OPERATOR on an idle carver; route-drift escalation
+storm).
+
+**How to apply.** Keep a **PRE-ENABLEMENT CHECKLIST** in the plan doc: every "inert feature-off"
+gap a review defers becomes a numbered item that must clear before the flag is set anywhere. Add
+an enablement guard that rejects/warns on turning the feature on until the checklist is clear, so
+the partially-built feature cannot be enabled by mistake.

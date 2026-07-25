@@ -118,7 +118,21 @@ daemon currently can't run. Decomposition (serial; A2-reviewer reused):
   `cfg.carve.session=="fresh"`, but **P3b MUST emit `CARVER_CONTEXT_CONSUMED` (advancing the cursor)
   on a successful feed/intake turn** before the feature is ever enabled. Owner = whoever advances the
   consumption cursor (natural fit: the proposal/consumption pipeline here).
-- **P3c — the PRODUCING side (makes the carver AUTHOR): §2.1-CONFIRMED, DAEMON.PY-ONLY.** §2.1:
+- **P3c — the PRODUCING side (makes the carver AUTHOR): §2.1-CONFIRMED, DAEMON.PY-ONLY.**
+  > **STATUS 2026-07-25 — ON BRANCH, RED, needs one more fix.** Branch
+  > `feat/f018-p3c-producing-side` (commits `5274623a` + `c79f2beb` + `042d7cfa`; NOT merged).
+  > Reviewed APPROVE-WITH-fixes: payload-keys match P3b EXACTLY + full-loop E2E genuinely unstubbed
+  > (both confirmed good). **AD1 fix IN + verified** (launch-time re-scope supersede DELETED from
+  > `_execute_carve_via_session_resume`; supersession now owned by P3b admission — see L6; 3 regression
+  > tests incl. failed-re-scope-leaves-origin-READY_TO_CARVE). **AD2 fix IN** (empty-`artifacts` turn →
+  > no `CARVER_PROPOSAL_RECORDED`, stays WARM; daemon.py:4263). **OPEN (the RED test):**
+  > `test_branch_authority_normalize_reads_envelope_at_worktree_report_path` fails `worktree != cfg.root`
+  > — the normalize path runs the carve-mode resume at `cfg.root` (reusing `_execute_resume_carver_session`'s
+  > read-only cwd), but §2.3 says a `carve`/write turn runs in a WORKTREE. **Design question to resolve
+  > fresh:** does the carve-mode resume mint a branch worktree (like the legacy carve) — and if so, how
+  > does the worktree-authored handoff reach P3b validation, which reads `cfg.root`'s `handoff_globs`? —
+  > OR is that test's expectation wrong and carve authoring correctly happens at `cfg.root`? Resolve,
+  > fix, re-gate (§2.3 worktree-vs-validation-path is the crux), then merge. AD3/AD4 still → P3d/P4. §2.1:
   `carve` is a TURN MODE of the one session that "author[s] handoff candidates for headroom,
   re-scope, targeted intake, or test health." **Key simplification (do NOT touch reconcile.py):**
   §4.2's "`CarveDispatch` as migration alias" is normalized at the EXECUTOR, not the planner — the
