@@ -242,19 +242,18 @@ is now safe to set, and doing so is the **operator's decision** (see ENABLEMENT 
   `_recent_merge_digest_ids` uses a raw `["digest_id"]` index vs A2's `.get` (KeyError on a malformed
   digest, feature-on only).
 
-### ⚠️ NEW PRE-ENABLEMENT BLOCKER (found during AD3, 2026-07-25) — projector `last_turn_sequence` TypeError
-`carver_session.project_session` sets `snap.last_turn_sequence` to the **string** `turn_id` on
-`CARVER_PROPOSAL_RECORDED` (`carver_session.py:216`), then `CARVER_SESSION_RESUMED` does
-`last_turn_sequence += 1` (`:200-201`) → `TypeError: str + int`. **Any** proposal-then-resume event
-ordering crashes the fold; `daemon._carver_session` wraps only `iter_events`, not the fold
-(`daemon.py:1904-1908`), so it becomes a **persistent per-tick TICK_ERROR** once such an ordering
-exists in a project's log. Pre-existing (reproduced with two plain merge-feed/carve turns, no repair
-involved) but the AD3 repair flow reliably produces the ordering, so it is a **hard blocker for
-`project-persistent` enablement**. Nothing regresses today (feature DARK). **Fix = its own small
-frozen-core package** (design call: hold `turn_id` as-is and drop the `+= 1`, or make
-`last_turn_sequence` a real int counter never overwritten by `turn_id`); oracle = `project_session`
-over `[STARTED, RESUMED, PROPOSAL_RECORDED, RESUMED]` returns without raising. Detail in
-`docs/handoff/f018-ad3-LOG.md`. **Clear this before flipping enablement below.**
+### ✅ PRE-ENABLEMENT BLOCKER CLEARED (found + fixed during AD3, 2026-07-25) — projector `last_turn_sequence` TypeError
+**FIXED, MERGED `9c195269`.** `carver_session.project_session` had set `snap.last_turn_sequence` to
+the **string** `turn_id` on `CARVER_PROPOSAL_RECORDED` (old `carver_session.py:217`); a following
+`CARVER_SESSION_RESUMED` then folded `last_turn_sequence += 1` (`:200-201`) → `TypeError: str + int`.
+Because `daemon._carver_session` wraps only `iter_events`, not the fold (`daemon.py:1904-1908`), it
+became a **persistent per-tick TICK_ERROR** the moment any proposal-then-resume ordering existed in a
+project's log — pre-existing (repro'd with two plain merge-feed/carve turns) but reliably produced by
+the AD3 repair flow. **Fix (structural):** drop the string assignment — `last_turn_sequence` is an int
+RESUME-turn counter whose sole authority is `CARVER_SESSION_RESUMED`, and the proposal identity is
+already captured by `last_proposal_id`. Regression oracle folds `[STARTED, RESUMED, PROPOSAL_RECORDED,
+RESUMED]` without raising and asserts the counter stays an int. SOLO gate GREEN. Nothing regressed
+today (feature was DARK throughout). Detail in `docs/handoff/f018-ad3-LOG.md`.
 
 ### ▶ ENABLEMENT CHECKPOINT (operator decision — do NOT auto-flip)
 With the checklist clear, dogfooding the persistent carver is a deliberate manual→autonomous
