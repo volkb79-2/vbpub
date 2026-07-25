@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -272,6 +274,95 @@ def test_evaluate_no_mutants():
 
 
 # --------------------------------------------------------------------------- #
+# evaluate — EQUIVALENCE ORACLE: parallel fan-out must match the old serial
+# algorithm byte-for-byte (D-mutation-fanout, load-bearing per the handoff)
+# --------------------------------------------------------------------------- #
+
+def _serial_reference_evaluate(targets, run_is_killed):
+    """The PRE-parallelization `evaluate` algorithm, verbatim (a strictly
+    serial for-loop over the same real generated mutants + the same injected
+    runner). Used only as a comparison oracle -- not exported by the module
+    under test."""
+    total = 0
+    killed = 0
+    survivors: list[tuple[str, int, str]] = []
+    for path, (source, changed_lines) in sorted(targets.items()):
+        mutants = mg.generate_mutants(source, changed_lines)
+        for mutant in mutants:
+            total += 1
+            if run_is_killed(path, mutant):
+                killed += 1
+            else:
+                survivors.append((path, mutant.lineno, mutant.description))
+    survivors.sort(key=lambda x: (x[0], x[1], x[2]))
+    return mg.MutationResult(total=total, killed=killed, survivors=survivors)
+
+
+def test_evaluate_parallel_matches_serial_reference():
+    """The parallelized (ThreadPoolExecutor-backed) `evaluate` yields an
+    IDENTICAL MutationResult (same total/killed, same sorted survivors) to a
+    hand-rolled SERIAL reference implementation of the pre-parallelization
+    algorithm -- same real generated mutants, same injected deterministic
+    runner. Proves fan-out changed no verdict."""
+    targets = {
+        "a.py": ("if x < 5 and y > 3:\n    z = True\n", {1, 2}),
+        "b.py": ("def f(n):\n    return n == 0 or n != 1\n", {2}),
+        "c.py": ("if p is None and q is not None:\n    pass\n", {1}),
+    }
+
+    def stub(path, mutant):
+        # Deterministic function of (path, lineno, description) ONLY -- the
+        # same inputs always produce the same verdict, so execution order
+        # (serial vs. concurrent) cannot change the outcome.
+        key = f"{path}:{mutant.lineno}:{mutant.description}"
+        return (hash(key) % 3) != 0  # arbitrary but stable kill/survive split
+
+    parallel_result = mg.evaluate(targets, stub)
+    serial_result = _serial_reference_evaluate(targets, stub)
+
+    assert parallel_result.total == serial_result.total
+    assert parallel_result.killed == serial_result.killed
+    assert parallel_result.survivors == serial_result.survivors
+    # Sanity: the fixture actually exercises multiple mutants and a mix of
+    # killed/survived outcomes -- otherwise this oracle would be hollow.
+    assert parallel_result.total > 3
+    assert 0 < len(parallel_result.survivors) < parallel_result.total
+
+
+def test_evaluate_shuffled_delayed_completion_order_is_still_deterministic():
+    """A stub runner whose mutants complete in a SHUFFLED/DELAYED order
+    (later-submitted jobs finish first) must still yield the same, correctly
+    sorted MutationResult -- aggregation in `evaluate` is keyed by job
+    position, not by arrival/completion order."""
+    source = "if a < 1 and b < 2 and c < 3:\n    pass\n"
+    targets = {"f.py": (source, {1})}
+    mutants = mg.generate_mutants(source, {1})
+    n = len(mutants)
+    assert n >= 3  # 3 compare-swaps + 1 boolop-swap, sanity
+
+    def stub(path, mutant):
+        # Sleep INVERSELY to submission order (mutants are generated/queued
+        # in a fixed deterministic order) so later jobs tend to finish
+        # before earlier ones -- deliberately out-of-order completion.
+        idx = mutants.index(mutant)
+        time.sleep((n - idx) * 0.02)
+        # Deterministic verdict: kill every compare-swap, let the boolop
+        # survive -- independent of timing.
+        return mutant.operator == "compare-swap"
+
+    result = mg.evaluate(targets, stub)
+    expected_survivors = sorted(
+        (path, m.lineno, m.description)
+        for path, (src, lines) in targets.items()
+        for m in mg.generate_mutants(src, lines)
+        if m.operator != "compare-swap"
+    )
+    assert result.survivors == expected_survivors
+    assert result.total == n
+    assert result.killed == n - len(expected_survivors)
+
+
+# --------------------------------------------------------------------------- #
 # _run_is_killed — file I/O + subprocess + restoration
 # --------------------------------------------------------------------------- #
 
@@ -400,6 +491,229 @@ def _make_small_repo(tmp_path):
         cwd=str(repo), capture_output=True,
     )
     return repo
+
+
+def _make_nested_repo(tmp_path):
+    """Like `_make_small_repo`, but the project root is a SUBDIRECTORY of the
+    git top-level -- mirrors nyxloom self-hosting inside the vbpub monorepo
+    (see `gate_runner._repo_root`'s docstring), exercising
+    `_run_is_killed_isolated`'s subdir-offset resolution."""
+    top = tmp_path / "monorepo"
+    top.mkdir()
+    project = top / "proj"
+    src_dir = project / "src" / "nyxloom"
+    src_dir.mkdir(parents=True)
+    (src_dir / "hello.py").write_text(
+        "def greet(name):\n    return 'Hello, ' + name + '!'\n"
+    )
+    test_dir = project / "tests"
+    test_dir.mkdir()
+    (test_dir / "test_hello.py").write_text(
+        "from src.nyxloom.hello import greet\n"
+        "def test_greet():\n"
+        "    assert greet('World') == 'Hello, World!'\n"
+    )
+    subprocess.run(["git", "init"], cwd=str(top), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(top), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(top), capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=str(top), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=str(top), capture_output=True)
+    return project  # the "repo" arg mutation_gate is invoked with
+
+
+def _worktree_listing(repo_root: str) -> str:
+    return subprocess.run(
+        ["git", "-C", repo_root, "worktree", "list"],
+        capture_output=True, text=True,
+    ).stdout
+
+
+def _repo_top_level(repo: str) -> str:
+    return subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+# --------------------------------------------------------------------------- #
+# _fanout_safe — clean/dirty/non-git detection
+# --------------------------------------------------------------------------- #
+
+def test_fanout_safe_false_for_non_git_dir(tmp_path):
+    """A bare directory with no git history is never fan-out-safe."""
+    assert mg._fanout_safe(str(tmp_path)) is False
+
+
+def test_fanout_safe_true_for_clean_repo(tmp_path):
+    """A freshly-committed repo with no pending edits is fan-out-safe."""
+    repo = _make_small_repo(tmp_path)
+    assert mg._fanout_safe(str(repo)) is True
+
+
+def test_fanout_safe_false_for_dirty_repo(tmp_path):
+    """An uncommitted edit anywhere in the tree makes it NOT fan-out-safe --
+    isolating at HEAD would silently drop that edit."""
+    repo = _make_small_repo(tmp_path)
+    (repo / "untracked.txt").write_text("dirty\n")
+    assert mg._fanout_safe(str(repo)) is False
+
+
+# --------------------------------------------------------------------------- #
+# _run_is_killed — ISOLATION oracle: real git worktree, clean tree
+# --------------------------------------------------------------------------- #
+
+def test_run_is_killed_isolated_leaves_live_checkout_untouched(tmp_path):
+    """On a clean git tree, the real `_run_is_killed` isolates the mutant
+    into a scratch `git worktree`: (a) the LIVE checkout's target file is
+    byte-unchanged, (b) the scratch worktree is removed afterward, and (c) a
+    grep-style test command proves the mutant WAS written into the scratch
+    and seen by the test run."""
+    repo = _make_small_repo(tmp_path)
+    live_file = repo / "src" / "nyxloom" / "hello.py"
+    original_text = live_file.read_text()
+    assert mg._fanout_safe(str(repo)) is True  # sanity: fixture is clean
+
+    mutant = mg.Mutant(
+        lineno=1, operator="marker", description="m",
+        mutated_source="ISOLATION_MARKER = 1\n",
+    )
+    result = mg._run_is_killed(
+        str(repo), "src/nyxloom/hello.py", mutant,
+        ["grep", "ISOLATION_MARKER", "src/nyxloom/hello.py"],
+    )
+    # grep found the marker INSIDE THE SCRATCH worktree -> exit 0 -> survived
+    assert result is False
+
+    # (a) live checkout untouched
+    assert live_file.read_text() == original_text
+
+    # (b) no leftover scratch worktree
+    assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
+
+
+def test_run_is_killed_isolated_kills_when_test_fails(tmp_path):
+    """The isolated runner reports KILLED (True) when the test command exits
+    non-zero, mirroring the in-place runner's contract."""
+    repo = _make_small_repo(tmp_path)
+    mutant = mg.Mutant(
+        lineno=1, operator="marker", description="m",
+        mutated_source="ISOLATION_MARKER = 1\n",
+    )
+    result = mg._run_is_killed(
+        str(repo), "src/nyxloom/hello.py", mutant,
+        ["grep", "NOT_PRESENT_ANYWHERE", "src/nyxloom/hello.py"],
+    )
+    # grep does NOT find the pattern -> exit 1 -> tests "failed" -> killed
+    assert result is True
+    assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
+
+
+def test_run_is_killed_isolated_resolves_subdir_offset(tmp_path):
+    """When `repo` is a SUBDIRECTORY of the git top-level (the nyxloom
+    self-hosting shape), the isolated runner still writes the mutant at, and
+    runs tests from, the RIGHT path inside the scratch worktree."""
+    project = _make_nested_repo(tmp_path)
+    live_file = project / "src" / "nyxloom" / "hello.py"
+    original_text = live_file.read_text()
+    assert mg._fanout_safe(str(project)) is True
+
+    mutant = mg.Mutant(
+        lineno=1, operator="marker", description="m",
+        mutated_source="ISOLATION_MARKER = 1\n",
+    )
+    result = mg._run_is_killed(
+        str(project), "src/nyxloom/hello.py", mutant,
+        ["grep", "ISOLATION_MARKER", "src/nyxloom/hello.py"],
+    )
+    assert result is False  # found in the scratch's subdir copy -> survived
+    assert live_file.read_text() == original_text  # live subdir untouched
+
+    # The scratch worktree is registered against the TOP-LEVEL repo, not the
+    # subdir passed in as `repo`.
+    top = str(project.parent)
+    assert "mut-" not in _worktree_listing(top)
+
+
+def test_run_is_killed_concurrent_calls_do_not_clobber(tmp_path):
+    """Several concurrent `_run_is_killed` calls against the SAME clean repo
+    each get their OWN scratch worktree: no cross-mutant clobbering, and
+    every scratch worktree is cleaned up once all calls complete -- the core
+    correctness property the mutation-fanout package exists to provide."""
+    repo = _make_small_repo(tmp_path)
+    live_file = repo / "src" / "nyxloom" / "hello.py"
+    original_text = live_file.read_text()
+
+    def worker(i):
+        mutant = mg.Mutant(
+            lineno=1, operator="marker", description=f"m{i}",
+            mutated_source=f"ISOLATION_MARKER_{i} = 1\n",
+        )
+        return mg._run_is_killed(
+            str(repo), "src/nyxloom/hello.py", mutant,
+            ["grep", f"ISOLATION_MARKER_{i}", "src/nyxloom/hello.py"],
+        )
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(worker, range(6)))
+
+    # Every concurrent call saw exactly ITS OWN marker (grep exit 0) -> all
+    # survived. If two calls had shared a path, at least one grep would have
+    # seen the WRONG (or no) marker and returned killed (True) instead.
+    assert results == [False] * 6
+    assert live_file.read_text() == original_text
+    assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
+
+
+# --------------------------------------------------------------------------- #
+# _run_is_killed — DIRTY-tree fallback (preserves today's in-place behavior)
+# --------------------------------------------------------------------------- #
+
+def test_run_is_killed_dirty_tree_uses_in_place_fallback(tmp_path):
+    """A dirty working tree (uncommitted edit elsewhere) must NOT isolate at
+    HEAD -- that would silently drop the uncommitted edit. It falls back to
+    the original in-place behavior: the LIVE file is mutated then restored."""
+    repo = _make_small_repo(tmp_path)
+    live_file = repo / "src" / "nyxloom" / "hello.py"
+    original_text = live_file.read_text()
+    (repo / "untracked.txt").write_text("dirty\n")
+    assert mg._fanout_safe(str(repo)) is False  # sanity: tree is dirty
+
+    mutant = mg.Mutant(
+        lineno=1, operator="marker", description="m",
+        mutated_source="ISOLATION_MARKER = 1\n",
+    )
+    result = mg._run_is_killed(
+        str(repo), "src/nyxloom/hello.py", mutant,
+        ["grep", "ISOLATION_MARKER", "src/nyxloom/hello.py"],
+    )
+    # grep found the marker written directly into the LIVE file -> survived
+    assert result is False
+    # ... and the live file is restored afterward, exactly like today.
+    assert live_file.read_text() == original_text
+    # No scratch worktree was ever created for the dirty-tree path.
+    assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
+
+
+# --------------------------------------------------------------------------- #
+# _run_is_killed_isolated — cleanup on subprocess failure
+# --------------------------------------------------------------------------- #
+
+def test_run_is_killed_isolated_cleans_up_scratch_on_subprocess_failure(tmp_path):
+    """If the isolated runner's test subprocess fails to start (OSError),
+    the scratch worktree it created is still removed via the finally block."""
+    repo = _make_small_repo(tmp_path)
+    assert mg._fanout_safe(str(repo)) is True
+
+    mutant = mg.Mutant(
+        lineno=1, operator="marker", description="m",
+        mutated_source="x = 1\n",
+    )
+    with pytest.raises(OSError):
+        mg._run_is_killed(
+            str(repo), "src/nyxloom/hello.py", mutant,
+            ["nonexistent_cmd_xyzzy"],
+        )
+    assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
 
 
 def test_main_pass_with_true_command(monkeypatch, tmp_path, capsys):
@@ -738,3 +1052,55 @@ def test_main_derived_test_multiple_modules_concatenates(
     out = capsys.readouterr().out
     assert rc == 0
     assert "mutation OK" in out
+
+
+# --------------------------------------------------------------------------- #
+# main — end-to-end PARALLEL execution (real generate_mutants + real
+# _run_is_killed_isolated + real ThreadPoolExecutor fan-out, no stubs)
+# --------------------------------------------------------------------------- #
+
+def test_main_parallel_fanout_kills_all_real_mutants(monkeypatch, tmp_path, capsys):
+    """A changed line that generates SEVERAL real mutants (3 compare-swaps +
+    1 boolop-swap) runs them all concurrently through the real isolated
+    runner; a thorough sibling test kills every one of them. Exercises the
+    full real pipeline end to end (no injected/stub runner) -- the isolation
+    + parallel fan-out working together, not just each piece individually."""
+    repo = _make_small_repo(tmp_path)
+    src_dir = repo / "src" / "nyxloom"
+    (src_dir / "multi.py").write_text(
+        "def check(a, b, c):\n"
+        "    return a < 1 and b > 2 and c == 3\n"
+    )
+    test_dir = repo / "tests"
+    (test_dir / "test_multi.py").write_text(
+        "from src.nyxloom.multi import check\n"
+        "def test_check():\n"
+        "    assert check(0, 3, 3) is True\n"
+        "    assert check(1, 3, 3) is False\n"   # kills Lt->LtE (a<1)
+        "    assert check(0, 2, 3) is False\n"   # kills Gt->GtE (b>2)
+        "    assert check(0, 3, 4) is False\n"   # kills Eq->NotEq (c==3)
+        "    assert check(0, 1, 5) is False\n"   # kills And->Or
+    )
+    # Commit the new files so the tree stays CLEAN -- this test exercises
+    # the ISOLATED (worktree fan-out) path specifically, not the dirty
+    # fallback (that path has its own dedicated tests above).
+    subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add multi.py"], cwd=str(repo), capture_output=True)
+    assert mg._fanout_safe(str(repo)) is True  # sanity: still clean
+
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo_arg, base: "HEAD")
+    monkeypatch.setattr(
+        cg, "_git_added_lines",
+        lambda repo_arg, base, source: {"src/nyxloom/multi.py": {2}},
+    )
+    rc = mg.main(["--repo", str(repo)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "mutation OK: 4/4 mutants killed" in out
+    # No leftover scratch worktrees after the whole run.
+    assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
+    # The live checkout's source is untouched by the isolated fan-out.
+    assert (src_dir / "multi.py").read_text() == (
+        "def check(a, b, c):\n"
+        "    return a < 1 and b > 2 and c == 3\n"
+    )
