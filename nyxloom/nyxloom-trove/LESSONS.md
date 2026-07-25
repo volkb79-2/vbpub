@@ -569,6 +569,36 @@ before merge. Receipt validation should mechanically reconcile each parameter
 row count with the collected total; aggregate arithmetic alone cannot prove
 the row-level inventory.
 
+### P110 validation: authoritative gates require an immutable commit
+
+P110 first ran the complete suite while its source repair and tests were still
+uncommitted. All 2,110 cases passed and both target records were empty, but the
+changed-line evaluator reported `0/0`: its contract compares the
+merge-base-to-HEAD commit range, so the dirty source line was correctly absent
+from the diff. The controller discarded the run, committed the implementation,
+and reran twice from an exact clean HEAD. Both authoritative receipts then
+reported `1/1`, passed 2,110 cases, and produced the same target hash.
+
+The hand-rolled controller flow had placed gate-before-commit to avoid recording
+untested work; that order is incompatible with a commit-defined gate. Nyxloom's
+real isolated-commit execution already has the right semantic unit. Any manual
+or fallback flow should instead make a provisional immutable implementation
+commit, run the gate at that exact object, and add receipt/review commits only
+afterward. A receipt must include exact HEAD plus clean-status preflight, and
+validation must reject changed-line claims from a dirty tree.
+
+The next preflight stopped before pytest because the controller had invented a
+full hash suffix from the short commit ID. It then used `git rev-parse HEAD` and
+the two real receipts passed. Object IDs are opaque evidence: resolve and copy
+them mechanically; never expand, abbreviate, or reconstruct them by hand.
+
+Coverage also exposed a bad product behavior rather than merely missing tests:
+the preview reader caught `BaseException`, swallowing `KeyboardInterrupt` and
+`SystemExit`. P110 narrowed the catch to `Exception`, proved ordinary fallback,
+and proved operator interrupt propagation. Absolute coverage work should treat
+questionable residual paths as product-review prompts, not automatically
+codify every existing branch.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -668,6 +698,14 @@ prerequisite package, not an edit-refresh mechanism.
   require the declared file records to exist before accepting their gaps.
 - Reconcile parameterized row counts mechanically with the total collected-case
   delta; do not infer row accuracy from correct aggregate arithmetic.
+- Require an exact clean implementation commit before authoritative gate
+  execution; dirty-tree runs cannot validate a merge-base-to-HEAD floor.
+- In manual fallback flows, commit provisionally, gate that immutable object,
+  then append receipts/review. Never use gate-before-commit as ship evidence.
+- Resolve commit IDs mechanically with the VCS and treat them as opaque; never
+  fabricate a full hash from a displayed prefix.
+- Let absolute-coverage residuals trigger product review: repair harmful
+  exception/dead-code behavior instead of writing tests that preserve it.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
