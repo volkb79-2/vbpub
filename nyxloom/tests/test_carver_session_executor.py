@@ -2031,3 +2031,77 @@ def test_o7_byte_identical_fresh_carve_dispatch(tmp_state, sample_project, patch
     assert len(task_ids) == 1
     assert task_ids[0].startswith("carve-demo-")
     assert not task_ids[0].startswith("carver-session-")
+
+
+# ==========================================================================
+# Coverage sweeps (P3d uncovered lines — reachable edge cases)
+# ==========================================================================
+
+def test_needs_operator_debounce_storage_error(tmp_state, carver_project, monkeypatch):
+    """Cover daemon.py:1719-1720: when storage.iter_events raises, debounce
+    returns False (allow emission)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    monkeypatch.setattr(storage, "iter_events",
+                        lambda project: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert not d._needs_operator_recently_emitted("demo", "carver-no-route")
+
+
+def test_compact_stale_plan_refuses_cleanly(tmp_state, carver_project):
+    """Cover daemon.py:4319: _execute_compact_carver_session with no WARM
+    session returns empty events (stale plan)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    action = reconcile.CompactCarverSession(
+        project="demo", generation=0, trigger="turns")
+    events = d._execute_compact_carver_session("demo", cfg, {}, action)
+    assert events == []
+
+
+def test_bootstrap_packet_with_spine_revisions(tmp_state, carver_project):
+    """Cover daemon.py:3789,3804-3805,3809: bootstrap packet includes spine
+    revisions when spine docs are configured."""
+    cfg = carver_project
+    (cfg.root / "docs" / "NORTH-STAR.md").write_text("north star content\n")
+    (cfg.root / "docs" / "ROADMAP.md").write_text("roadmap content\n")
+    cfg2 = dc_replace(cfg, north_star="docs/NORTH-STAR.md",
+                      roadmap="docs/ROADMAP.md")
+    d = daemon.Daemon({"demo": cfg.root})
+    text = d._build_carver_bootstrap_packet(cfg2, "demo", 1, {})
+    assert "north_star" in text
+    assert "roadmap" in text
+    assert "BOOTSTRAP-ACK.json" in text
+    # The spine revisions listing and JSON template should be present.
+    spine_revs = d._spine_revisions(cfg2)
+    for level, rev in spine_revs.items():
+        assert level in text
+        assert rev in text
+
+
+def test_bootstrap_ack_malformed_json(tmp_state, carver_project, patch_launch):
+    """Cover daemon.py:4405-4406: a malformed BOOTSTRAP-ACK.json (invalid
+    JSON) degrades the session."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    launch_events = d._execute_start_carver_session(
+        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    task_id = launch_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+
+    attempt = states[task_id].attempt_by_id(attempt_id)
+    ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
+    ack_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write invalid JSON.
+    ack_path.write_text("not valid json", encoding="utf-8")
+
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert not any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
+    degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
+    assert len(degraded) == 1
+    assert degraded[0].payload["reason"] == "bootstrap-ack-invalid"
