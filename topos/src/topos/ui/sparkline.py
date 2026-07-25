@@ -69,9 +69,7 @@ def render_sparkline(values: Sequence[float | int | None], *, width: int = 8) ->
             chars.append(_CHARS[char_idx])
 
     result = "".join(chars)
-    if len(result) > width:
-        result = result[:width]
-    elif len(result) < width:
+    if len(result) < width:
         result = result + _MISSING * (width - len(result))
 
     return result

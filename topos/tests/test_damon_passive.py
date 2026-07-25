@@ -42,7 +42,7 @@ def _host_stub() -> dict[str, MetricValue]:
     }
 
 
-def _collector(*, damon_root: Path, now: float) -> Collector:
+def _collector(*, damon_root: Path, now: float, metrics_mode: str = "full") -> Collector:
     return Collector(
         cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
         config=ToposConfig(interval=5.0, tiers={"prod": ["system.slice"]}),
@@ -52,7 +52,25 @@ def _collector(*, damon_root: Path, now: float) -> Collector:
         network_providers=(),
         proc_root=fixture_root() / "procfs" / "network",
         damon_root=damon_root,
+        metrics_mode=metrics_mode,
     )
+
+
+def test_fieldlist_damon_preserves_structured_damon_block(tmp_path: Path) -> None:
+    damon_root = tmp_path / "kdamonds"
+    shutil.copytree(fixture_root() / "damonfs" / "passive-vaddr" / "kdamonds", damon_root)
+    tried_regions = damon_root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions"
+    for path in tried_regions.rglob("*"):
+        if path.is_file():
+            os.utime(path, (90.0, 90.0))
+
+    frame = _collector(damon_root=damon_root, now=100.0, metrics_mode="damon").collect_once()
+    game = frame.entities[GAME_KEY]
+
+    assert game.damon is not None
+    assert game.damon["sessions"][0]["entity_key"] == GAME_KEY
+    assert game.network is None
+    assert game.governance is None
 def test_passive_vaddr_classification_and_attribution(tmp_path: Path) -> None:
     damon_root = tmp_path / "kdamonds"
     shutil.copytree(fixture_root() / "damonfs" / "passive-vaddr" / "kdamonds", damon_root)

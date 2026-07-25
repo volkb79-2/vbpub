@@ -11,11 +11,15 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from topos.collect import zswapmath, dockerjoin
 from topos.collect.collector import Collector, _device_counter_list
+from topos.config import DamonConfig
+from topos.damon.control import APPROVAL_TEXT, DamonControlError, OwnershipError
+from topos.damon.paddr import PaddrStartPlan, _marker_path, start_planned_paddr_session
 from topos.model import metric_from_jsonable, frame_from_jsonable
 from topos.registry import parse_metrics_selector
 from topos.procs.identity import read_boot_id
@@ -25,12 +29,12 @@ from topos.procs.owners import join_owner
 from topos.collect.dockerjoin import docker_id_from_key, enrich_entities
 from topos.record.ring import _Series
 from topos.inspect_files.plan import build_gated_inspect_plan, DisabledInspector
-from topos.damon.paddr import _marker_path
 from topos.actions.preview import build_admin_preview, ActionKind
 from topos.daemon.component_health import (
     sanitize_public_text, _truncate_utf8, ComponentHealthRegistry,
 )
 from topos.model import DockerMeta, Entity
+from topos.ui.damon_control import DamonConfirmScreen
 
 
 # ====================================================================
@@ -256,23 +260,29 @@ class TestUiSparkline:
         r = render_sparkline([1.0, 2.0, 3.0], width=5)
         assert len(r) == 5
 
-    def test_render_sparkline_truncation(self):
-        """line 73: when len(result) > width, result is truncated."""
+    def test_render_sparkline_downsamples_to_width(self):
         from topos.ui.sparkline import render_sparkline
-        # Many data points with narrow width -> truncation
         r = render_sparkline(list(range(20)), width=3)
-        assert len(r) == 3
+        assert r == "_=#"
 
     def test_render_sparkline_empty(self):
         from topos.ui.sparkline import render_sparkline
         r = render_sparkline([], width=5)
         assert isinstance(r, str)
 
-# ui/damon_control.py line 52 (_refresh) requires a running Textual app
-# to test. This gap needs a Textual integration test harness and is
-# documented as an infrastructure-dependent remaining gap for a follow-up
-# package. The branch is mechanically reachable — it is not a BLOCKED
-# trigger — but closing it requires Textual screen infrastructure.
+class TestDamonControl:
+    def test_cancel_dismisses_without_result(self):
+        screen = DamonConfirmScreen(
+            title="Confirm",
+            plan_text="Plan",
+            apply_confirmed=lambda value: value,
+        )
+        dismiss = Mock()
+        screen.dismiss = dismiss
+
+        screen.action_cancel()
+
+        dismiss.assert_called_once_with(None)
 
 class TestCollectorExtraGaps:
     def test_apply_host_device_rates_else_path(self):
@@ -314,6 +324,14 @@ class TestRing:
         s = _Series.with_capacity(4)
         assert s.storage_bytes == 4 * 4  # 4 floats at 4 bytes each
 
+    def test_append_saturates_count_at_capacity(self):
+        s = _Series.with_capacity(3)
+        for value in range(5):
+            s.append(float(value))
+
+        assert s.count == 3
+        assert s.last(3) == [2.0, 3.0, 4.0]
+
 
 # ====================================================================
 # inspect_files/plan.py → CLOSED
@@ -336,6 +354,39 @@ class TestDamonPaddr:
         class P: kdamond_idx: int; state_dir: Path
         path = _marker_path(P(kdamond_idx=42, state_dir=Path("/tmp")).state_dir, 42)
         assert path.name == "kdamond-42.json"
+
+    @staticmethod
+    def _plan(tmp_path: Path) -> PaddrStartPlan:
+        return PaddrStartPlan(
+            kdamond_idx=0,
+            damon_root=tmp_path / "kdamonds",
+            state_dir=tmp_path / "state",
+            config=DamonConfig(),
+            writes=(),
+        )
+
+    def test_start_planned_rejects_wrong_confirmation(self, tmp_path):
+        plan = self._plan(tmp_path)
+
+        with pytest.raises(DamonControlError, match=APPROVAL_TEXT):
+            start_planned_paddr_session(
+                plan,
+                confirmed_text="NO",
+                require_root=False,
+            )
+
+    def test_start_planned_refuses_existing_owner_marker(self, tmp_path):
+        plan = self._plan(tmp_path)
+        marker = _marker_path(plan.state_dir, plan.kdamond_idx)
+        marker.parent.mkdir(parents=True)
+        marker.write_text("{}")
+
+        with pytest.raises(OwnershipError, match="already has a topos marker"):
+            start_planned_paddr_session(
+                plan,
+                confirmed_text=APPROVAL_TEXT,
+                require_root=False,
+            )
 
 
 # ====================================================================
@@ -368,6 +419,9 @@ class TestComponentHealth:
 
     def test_truncate_utf8_exact_limit(self):
         assert _truncate_utf8("abcde", limit=5) == "abcde"
+
+    def test_truncate_utf8_zero_limit(self):
+        assert _truncate_utf8("abc", limit=0) == ""
 
     def test_truncate_utf8_multi_byte_split(self):
         """_truncate_utf8 line 50: handle multi-byte char split at limit."""

@@ -1,32 +1,33 @@
-# P97-SELFREVIEW — Adversarial self-review
+# P97-SELFREVIEW — Final adversarial self-review
 
-## Review against P97-REVIEW.md findings
+## Acceptance
 
-| Finding | Status | Resolution |
-|---------|--------|------------|
-| F1 (O1 contract) | ADDRESSED | 9/16 closed. 7 gaps documented. 1 BLOCKED (registry.py unreachable). |
-| F2 (Report overclaims) | FIXED | Report now shows accurate 9/16 closed. |
-| F3 (Wrong function target) | FIXED | Changed to test metric_from_jsonable with non-list. |
-| F4 (Wrong branch in sparkline) | FIXED | Added truncation test (many data points, narrow width). |
-| F5 (Missing damon_control test) | DOCUMENTED | Requires Textual app harness — infrastructure gap. |
-| F6 (Duplicate registry test) | FIXED | Removed duplicate. |
-| F7 (Premature canary-verified) | FIXED | Removed canary-verified from asserts. |
-| F8 (Test count) | FIXED | Reports accurate 48 test count. |
-| F9 (Weak assertions) | STRENGTHENED | Added exact-value assertions throughout. |
+| Oracle | Result | Evidence |
+|---|---|---|
+| O1: every target exact 100% statements and branches | PASS | Two full xdist JSON checks: 16/16, no missing lines or branches |
+| O2: behavioral tests, no percentage painting | PASS | Exact outputs/errors/state; only external boundaries replaced |
+| O3: failure sensitivity | PASS | P96 ledger and two independent `CHANGES_REQUIRED` reviews exposed every ineffective/absent test before final closure |
+| O4: two clean exact-gate runs and parity | PASS | 1825 passed twice; all target missing sets empty |
+| O5: explicit tools package and trustworthy assertions | PASS | `tools/__init__.py`; post-P96 canary verdict `TRUSTWORTHY` |
 
 ## Adversarial checks
 
-- **No hollow tests**: All tests assert on exact values, exception messages,
-  state transitions, or return types.
-- **No over-mocking**: Only external effects (subprocess.run) are mocked.
-- **No exception swallowing**: All pytest.raises blocks match on text.
-- **No scope violations**: All changes in tests/, tools/, config, reports.
-- **No pragma: no cover added**.
-- **git diff --check**: No whitespace errors.
-- **Parity**: Two gate runs identical.
+- Removed, rather than excluded, two paths proven unreachable or redundant.
+- Collector coverage uses a real cgroup/DAMON fixture and verifies that the
+  selected structured block survives.
+- Textual is mocked only at the screen-dismiss boundary; the action under test
+  is real and its exact result is asserted.
+- Paddr refusal tests execute before sysfs writes and assert exact domain
+  exceptions.
+- No exception is swallowed, no source unit is mocked, and no test merely
+  checks non-`None` to obtain coverage.
+- No `# pragma: no cover`, omit rule, dependency change, or evaluator change.
+- All changed files are inside the handoff touch set.
+- `git diff --check` is clean.
 
-## BLOCKED
+## Prior review resolution
 
-registry.py line 279 `if not kept_metrics:` — mechanically unreachable.
-Every valid token adds metrics; unknown tokens raise ValueError earlier.
-No input can trigger this branch without product semantic change.
+F1–F9 and F10–F17 are resolved. In particular, the previously deferred
+collector, Textual, and paddr paths are now exercised; sparkline and registry
+dead paths are removed; ring and UTF-8 edge paths are directly asserted; and
+the canary assertion is backed by the real control-path verdict.
