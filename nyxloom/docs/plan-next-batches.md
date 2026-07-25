@@ -296,6 +296,22 @@ prompt appends (same idiom as D-part-1's `review_focus`).
 - **Flake-hardening** — deterministic tests for the intrinsic flakes: `commands.py:269`
   poll race; the real-`os.fork()` daemon/wrapper tests (fragile under load/py3.14). Enables
   reliable concurrent gates. Test-health theme (D-065).
+  - **B25 — ✅ DONE (merge `33055a38`, 2026-07-25).** De-flaked the xfail'd
+    `test_transient_throttle_resumes_same_attempt_end_to_end` by driving the transient leg
+    through a synchronous in-process wrapper (`_sync_launch` mirrors `fake_launch_detached` +
+    `wrapper_main` inline, sequenced AFTER `run_pass` to respect the storage monotonic guard)
+    instead of a real `os.fork()`; xfail dropped, full behavioral contract kept. Also: bounded
+    receipt-poll for the two blind `time.sleep()`s in `test_launch_detached_script` (real fork
+    KEPT), and `threading.Event` sync for the `test_commands.py` listener tests. Authoritative
+    gate GREEN 3×. Test-only.
+  - **B26 (candidate, reported 2026-07-25 during B25 de-flake verification — NOT yet
+    independently confirmed):** two OTHER real-fork behavioral tests intermittently red under
+    `-n 4` parallel load, green 6/6 in isolation — `test_config_ui.py::test_policy_update_full_flow`
+    (a captured reconcile-pass-count race, `assert 2 == 1`) and
+    `test_behavioral.py::test_fake_approved_review_reaches_merge_ready` (state stuck QUEUED, not
+    MERGE_READY, after 20 ticks). Same real-fork-under-parallel-load class as B24/B25. If it
+    recurs, de-flake them the same way (in-process wrapper seam). Until then, a spurious full-suite
+    red in EITHER of these two is a known flake, not a regression — attribute before reacting.
 - **Mutation fan-out** — G's deferred half: parallelize `mutation_gate` per-mutant (needs
   per-mutant worktree isolation — `_run_is_killed` writes in-place). Leaf. Enables H.
 - **H** — frozen-core mutation audit (reconcile/daemon/storage/types, whole-module). Epic;
