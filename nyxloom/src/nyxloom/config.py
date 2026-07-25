@@ -157,6 +157,14 @@ class Policy:
     # in the scratch worktree, after the coverage gate, before publish. False
     # by default (expensive: re-runs tests per mutant).
     mutation_gate: bool = False
+    # F (factory-hardening) 2026-07-25: when a POST-merge gate fails on the
+    # already-published tree, auto-revert the default branch back to the merge
+    # commit's parent (CAS update-ref) instead of only transitioning BLOCKED --
+    # so a broken tree that slipped past (pre_merge_gate off, a --force manual
+    # merge, or a flaky pass) is healed, not just flagged. True by default
+    # (safety); the CAS guard means a newer merge landed on top is never
+    # clobbered. See daemon._run_post_merge_gate + reference/LESSONS.md L4.
+    auto_revert_failed_merge: bool = True
 
 
 @dataclass

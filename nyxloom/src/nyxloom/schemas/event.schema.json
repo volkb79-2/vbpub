@@ -56,6 +56,7 @@
         "EVIDENCE_RECORDED",
         "REVIEW_RECORDED",
         "MERGE_RECORDED",
+        "MERGE_REVERTED",
         "PROGRESS_RECORDED",
         "WAVE_OPENED",
         "WAVE_CLOSED",

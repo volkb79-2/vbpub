@@ -729,6 +729,24 @@ def cmd_merge(args) -> int:
             return 1
         commit = result.stdout.strip()
 
+    # F (factory-hardening): gate the commit BEFORE recording the merge, so a
+    # manual merge-record cannot enshrine a tree that fails the project's own
+    # gate. The daemon auto-merge path is already gated pre-publish by
+    # D-CORRECT-1; this closes the OPERATOR path (canonical reference/LESSONS.md
+    # L4). `--force` bypasses it (an explicit operator override); a project that
+    # declares no gate is recorded as before. Nothing has been written yet, so a
+    # gate failure simply returns 1 without touching state.
+    if not getattr(args, "force", False):
+        from . import gate_runner
+        _gate = gate_runner.select_verification_gate(cfg)
+        if _gate is not None:
+            _res = gate_runner.run_gate_at_commit(cfg, _gate, commit, phase="pre-merge")
+            if _res.exit_code != 0:
+                print(f"error: pre-merge gate {_gate.gate_id} failed "
+                      f"(exit {_res.exit_code}) for {commit[:12]}; merge NOT recorded. "
+                      f"Fix and re-run, or pass --force to override.", file=sys.stderr)
+                return 1
+
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
     storage.append_and_apply(
         args.project,
@@ -1355,6 +1373,8 @@ def main(argv: list[str] | None = None) -> int:
     merge_parser.add_argument("project", help="Project ID")
     merge_parser.add_argument("task", help="Task ID")
     merge_parser.add_argument("--commit", help="Merge commit SHA (optional; default: git rev-parse HEAD)")
+    merge_parser.add_argument("--force", action="store_true",
+                              help="Record the merge even if the pre-merge gate fails (operator override; F).")
 
     # pause
     pause_parser = subparsers.add_parser("pause")
