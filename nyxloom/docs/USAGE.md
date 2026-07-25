@@ -94,6 +94,13 @@ be onboarded this way.
 > lands, treat `--questionnaire` output strictly as a *draft to review with a
 > human*, and for content-rich projects use the migration path in §3.3.
 
+> **`--check-gate` (GA3 v1, docs/plan-gate-adoption.md §GA3):** an opt-in,
+> deterministic, AI-free follow-on -- reports whether the project declares a
+> usable `[gates.*]` and, if not, prints an offer naming the concrete next step
+> (declare one, then run `nyxloom gate verify`). It does not scaffold a gate
+> (Dockerfile/`[gates.*]`-authoring is a v2 follow-up); combine freely with
+> `--scan`/`--questionnaire` in the same call.
+
 ### 3.1 Greenfield (empty repo)
 
 ```bash
@@ -173,7 +180,7 @@ them as worked examples.
 | `digest <project> [--since]` | Notification digest. |
 | `events <project> [--since --type --tail --json]` | Dump the event store as JSONL. |
 | `init <project_folder>` | Scaffold a `nyxloom-trove/` from templates. |
-| `onboard <project_folder> [--maturity --docs --mode --scan --questionnaire]` | Guided onboarding (see §3). |
+| `onboard <project_folder> [--maturity --docs --mode --scan --questionnaire --check-gate]` | Guided onboarding (see §3). |
 | `free-models list \| refresh` | Discover currently-free models & refresh routes (see §5). |
 | `version` | Print the version. |
 

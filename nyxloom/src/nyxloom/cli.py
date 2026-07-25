@@ -1274,7 +1274,18 @@ def cmd_onboard(args) -> int:
     direction spine (north-star/product-definition/roadmap/backlog) via
     F4a's spine_writer, self-lints the result, and restores the prior spine
     content on any failure (see onboarding_questionnaire's module
-    docstring)."""
+    docstring).
+
+    PACKAGE GA3 v1 2026-07-25: `--check-gate` is a fourth, opt-in follow-on,
+    kept strictly AFTER `run_wizard` returns (the trove -- and therefore a
+    loadable `ProjectConfig` -- is guaranteed to exist by then). It is a
+    cheap, deterministic, AI-free config read (onboarding_gate.assess_gate),
+    NOT a real gate invocation: it only reports whether the project declares
+    a usable verification gate and prints the corresponding offer/
+    recommendation (docs/plan-gate-adoption.md §GA3). v1 deliberately does
+    not scaffold a gate (no Dockerfile/`[gates.*]`-writing/container build --
+    that is a v2 follow-up); omitting the flag leaves `onboard`'s output
+    byte-identical to before this package."""
     from . import onboarding
 
     project_folder = Path(args.project_folder)
@@ -1311,6 +1322,16 @@ def cmd_onboard(args) -> int:
     if result.wired_keys:
         print("wired nyxloom.toml keys: " + ", ".join(result.wired_keys))
     print(f"answers recorded: {result.answers_path}")
+
+    if getattr(args, "check_gate", False):
+        from . import onboarding_gate
+
+        offer = onboarding_gate.assess_gate(project_folder)
+        if offer.has_gate:
+            print(f"gate check: declared gate '{offer.gate_id}'")
+        else:
+            print("gate check: NO GATE declared")
+        print(f"  {offer.recommendation}")
 
     if getattr(args, "scan", False):
         from . import onboarding_scan
@@ -1662,6 +1683,11 @@ def main(argv: list[str] | None = None) -> int:
                                  help="PACKAGE F4b: dispatch the guided one-shot questionnaire agent "
                                       "to draft the direction spine from a STORED assessment (run "
                                       "--scan first, or pass both --scan --questionnaire together)")
+    onboard_parser.add_argument("--check-gate", action="store_true", dest="check_gate",
+                                 help="PACKAGE GA3 v1: after the non-AI wizard, check (no dispatch, "
+                                      "no subprocess) whether this project declares a usable "
+                                      "verification gate, and print an offer/recommendation if not "
+                                      "(docs/plan-gate-adoption.md §GA3)")
 
     # free-models (D-R12: pluggable free-model discovery + routes.toml refresh)
     free_models_parser = subparsers.add_parser("free-models")

@@ -107,13 +107,35 @@ D mechanizes** (band + gate-rigor → review depth) — build them together.
 render, routing/review-depth selection, `adapters.py` REVIEW_INDEPENDENT (argv_max-
 bounded injection — see §D caveat), tests. Frozen-core-adjacent (routing/adapters).
 
-### GA3 — onboarding offers to build a missing/untrustworthy gate · MEDIUM
-**What.** Extend the onboarding engine (F2/F3/F4) so that when a project is
-registered/assessed and has no gate — or `nyxloom gate verify` (GA1) returns
-`LAUNDERS`/`BROKEN` — onboarding **offers to scaffold a separate test env + a
-fail-closed `[gates.*]`** (from per-ecosystem templates: a `test-runner`-style
-Dockerfile + a pytest/coverage/xdist gate command for Python), rather than
-registering a project whose merges can't be verified.
+### GA3 — onboarding offers to build a missing/untrustworthy gate · MEDIUM · v1 ✅ DONE (detect + offer only)
+**v1 done (detect + offer, no scaffolding).** New `onboarding_gate.py`
+(`assess_gate(project_root) -> GateOffer{has_gate, gate_id, recommendation}`):
+a cheap, deterministic, AI-free config read (`gate_runner.select_verification_gate`
+returning `None` is the whole NO_GATE signal — no subprocess). Wired into
+`cmd_onboard` as a fourth, opt-in follow-on step behind `--check-gate` (mirrors
+`--scan`/`--questionnaire`'s shape), run strictly after `run_wizard` so the trove
+(and a loadable `ProjectConfig`) is guaranteed to exist. With no gate declared it
+prints an offer naming the concrete next step (declare a `[gates.*]` running the
+project's test suite + a coverage floor, then run `nyxloom gate verify <project>`)
+and points at `reference/STANDARD.md`'s gate contract; with a gate already
+declared it just names it and notes `nyxloom gate verify`/GA4's cadence, without
+running the gate inline (that's a real, possibly minutes-long invocation — left
+to the operator or GA4). Omitting `--check-gate` leaves `onboard`'s output byte-
+identical to before this package (oracle in tests/test_cli.py). Does NOT check
+`nyxloom gate verify`'s LAUNDERS/BROKEN verdicts (that would mean dispatching a
+real gate run inline at onboarding time) — v1 is presence-only.
+**v2 deferred (not built here).** Actually *scaffolding* a missing gate — a
+`test-runner`-style Dockerfile + a fail-closed pytest/coverage/xdist `argv` from
+per-ecosystem templates, writing the resulting `[gates.*]` TOML section, wiring
+a `LAUNDERS`/`BROKEN` `gate verify` verdict into the same offer path — is
+explicitly out of scope for v1 and left as a follow-up package.
+**What (original, v2's remaining scope).** Extend the onboarding engine (F2/F3/F4)
+so that when a project is registered/assessed and has no gate — or
+`nyxloom gate verify` (GA1) returns `LAUNDERS`/`BROKEN` — onboarding **offers to
+scaffold a separate test env + a fail-closed `[gates.*]`** (from per-ecosystem
+templates: a `test-runner`-style Dockerfile + a pytest/coverage/xdist gate
+command for Python), rather than registering a project whose merges can't be
+verified.
 **Scope.** Onboarding assessment step + gate-scaffold templates + wiring into the
 init/questionnaire flow. Depends on GA1 (the trust verdict) + GA2 (rigor vocab).
 
