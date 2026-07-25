@@ -40,7 +40,7 @@ so it is mechanical. Also *saves* cost (cheap review for leaf work).
 routing selection, lint (accept the new field), tests. Frozen-core-adjacent
 (adapters/routing) — carve carefully.
 
-## F — Auto-revert on post-merge-gate failure + gate the manual merge path · SMALL-MEDIUM
+## F — Auto-revert on post-merge-gate failure + gate the manual merge path · SMALL-MEDIUM · ✅ DONE
 **What.** (1) When post-merge validation fails on the *published* tree, auto-revert
 (CAS `update-ref` back to the pre-merge commit) instead of only transitioning
 BLOCKED; emit an audit event. (2) Make `cli.cmd_merge` run the gate before
@@ -53,6 +53,12 @@ merge, it does not *heal* it. Structural closure of the operator escape hatch
 **Scope.** `daemon.py` (post-merge validation → revert), `cli.py` (gate cmd_merge),
 tests. **Frozen-core** (the publish/validate path) — full stack + diverse review;
 mirror D-CORRECT-1's structure exactly; the revert must itself be CAS-safe.
+**Done (merge `564cadf4`).** `daemon._run_post_merge_gate` now CAS-reverts the branch to
+`{merge_commit}^1` + emits `MERGE_REVERTED` (opt-out `policy.auto_revert_failed_merge`);
+`cli.cmd_merge` gates the commit before recording (`--force` bypass); a new shared
+`gate_runner.py` single-sources gate selection + run-at-commit (L1). SOLO gate 60/60
+diff-cov + full suite; deepseek-pro-max review APPROVE / no findings (CAS-safety, None-
+safety, gate-before-record, test behavioral-ness all verified).
 
 ## G — Parallelize the gate (pytest-xdist) + mutation across mutants · MEDIUM
 **What.** Add `pytest-xdist` and run the gate suite with `-n auto`, composed with
@@ -95,7 +101,7 @@ report artifact, backlog items per surviving mutant. Design + budget first.
 
 ## Sequencing
 1. **A** (schema de-dup) — ✅ DONE. Flagship structural fix; paid down the dual-schema debt (single source = `src/nyxloom/schemas/`).
-2. **F** (auto-revert + gate cmd_merge) — safety, frozen-core, do carefully.
+2. **F** (auto-revert + gate cmd_merge) — ✅ DONE (merge `564cadf4`). Frozen-core safety; closed the L4 operator escape hatch.
 3. **D** (review_focus + band-tiered review) — mechanizes reviewer targeting, saves cost.
 4. **G** (xdist + mutation fan-out) — wall-clock win, enables H.
 5. **C** (lessons channel) — the learning loop; design doc → build.
