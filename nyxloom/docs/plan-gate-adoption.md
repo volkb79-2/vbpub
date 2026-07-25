@@ -57,7 +57,13 @@ stay true over time.
 
 ## Packages (automation — carve from this plan)
 
-### GA1 — `nyxloom gate verify <project>` CLI verb · SMALL-MEDIUM
+### GA1 — `nyxloom gate verify <project>` CLI verb · SMALL-MEDIUM · ✅ DONE (merge `49f7ca06`)
+**Done.** Verdicts TRUSTWORTHY(0)/LAUNDERS(1)/BROKEN(1)/NO_GATE(1)/INCONCLUSIVE(3). Canary =
+subtree-scoped import-break (minimal one-line `raise` insertion, no coverage/reformat
+dependence), multi-attempt (≤4 subtree files, any-killed → TRUSTWORTHY, LAUNDERS only if all
+survive). Reuses `gate_runner.run_gate_at_commit` + isolation; logic in new `gate_canary.py`.
+Review REJECTed v1 (canary scanned the WHOLE repo → false LAUNDERS on nyxloom's own gate);
+redesigned + re-review APPROVE. Gate 173/173 diff-cov green.
 **What.** A verb that (a) selects the project's verification gate
 (`gate_runner.select_verification_gate`), (b) runs it at HEAD and asserts PASS, and
 (c) applies a **known-bad canary** — a mechanical, reversible source mutation
