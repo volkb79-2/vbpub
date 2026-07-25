@@ -913,6 +913,60 @@ def test_onboard_rejects_invalid_mode_exits_2(tmp_path, capsys):
     assert "invalid choice" in err
 
 
+# ---------------------------------------------------------------------------
+# onboard --check-gate (PACKAGE GA3 v1 2026-07-25) -- detect + offer a
+# missing verification gate, opt-in, no scaffolding (v2 defers that).
+
+def test_onboard_without_check_gate_flag_prints_nothing_gate_related(tmp_path, capsys):
+    """Oracle: omitting --check-gate leaves onboard's output byte-identical
+    to before this package -- the step is strictly opt-in."""
+    project_folder = tmp_path / "greenfield"
+
+    exit_code = cli.main(["onboard", str(project_folder)])
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "gate check" not in out
+
+
+def test_onboard_check_gate_offers_a_gate_when_none_declared(tmp_path, capsys):
+    """A freshly-onboarded project has no `[gates.*]` yet (the wizard's own
+    template comments it out) -- `--check-gate` must print the offer."""
+    project_folder = tmp_path / "greenfield"
+
+    exit_code = cli.main(["onboard", str(project_folder), "--check-gate"])
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "gate check: NO GATE declared" in out
+    assert "nyxloom gate verify" in out
+
+
+def test_onboard_check_gate_reports_an_existing_gate(tmp_path, capsys):
+    """A project that already declares a `[gates.*]` (hand-edited between
+    `init` and `onboard --check-gate`) must be reported as has_gate, not
+    offered one."""
+    project_folder = tmp_path / "proj"
+    assert cli.main(["init", str(project_folder)]) == 0
+
+    nyxloom_toml = project_folder / "nyxloom-trove" / "nyxloom.toml"
+    nyxloom_toml.write_text(
+        nyxloom_toml.read_text() + (
+            "\n[gates.pytest-q]\n"
+            "argv = [\"true\"]\n"
+            "phase = \"implementation\"\n"
+            "timeout_seconds = 60\n"
+        )
+    )
+
+    exit_code = cli.main(["onboard", str(project_folder), "--check-gate"])
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "gate check: declared gate 'pytest-q'" in out
+    assert "NO GATE" not in out
+
+
 def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
     """Guidance: --debug flag re-raises exceptions."""
     from nyxloom import decisions
