@@ -185,6 +185,20 @@ log." Value the implementer refusing a wrong hypothesis as the system working (t
 L7: as the controller distrusts the agent's self-report, the agent must distrust the
 controller's guess — evidence is the only authority both defer to).
 
+**Compaction amplifies this (F018 P3c resume, 2026-07-25).** A hypothesis that passes through a
+context compaction is *more* dangerous, not less: the summary restates it stripped of its original
+"candidate" hedging, so the fresh context reads it as established fact with no memory of how
+tentative it was — and there may be no implementer in the loop to push back, because the wrong
+guess is now the controller's *own* prior claim. The P3c summary asserted the RED was a "worktree
+!= cfg.root" design bug; on resume the very first act was to run the failing test, whose log showed
+that assert PASSING and a different one (a stale empty-artifacts oracle) failing. Rule: on resuming
+any handoff/summary that names a specific failure cause, **reproduce the failure from the log before
+writing a single line of fix** — treat a summarized diagnosis exactly like an implementer's
+self-report (L7): a hint about where to look, never a verified fact. (Two sibling false-greens the
+same session reinforce the discipline: a "pure extraction" claim, trusted only after an AST walk
+proved 133 identical string constants; and a diagnostic script that silently returned 0/0 — caught
+because the output was read, not assumed green.)
+
 ## L9 — Land a big feature DARK behind one gate; enumerate its feature-on runaways in a pre-enablement checklist
 
 **Rule.** A multi-package frozen-core feature should merge *inert* behind a single feature-gate
