@@ -1080,6 +1080,47 @@ class TestConfigLintSchema:
         assert any(f.rule == "CFG1" and f.severity == "error" for f in findings)
         assert lint.has_blocking(findings)
 
+    def test_asserts_valid_list_lints_clean(self, tmp_path):
+        """GA2: a gate declaring a schema-valid `asserts` list lints clean."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        good = VALID_CONFIG_TOML.replace(
+            "timeout_seconds = 60\n",
+            'timeout_seconds = 60\nasserts = ["tests-pass", "canary-verified"]\n',
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(good)
+
+        assert lint.lint_config(cfg) == []
+
+    def test_asserts_unknown_value_is_blocking_cfg1(self, tmp_path):
+        """GA2: `asserts` is schema-enum-constrained -- an unknown value is
+        a CFG1 error, not silently accepted."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace(
+            "timeout_seconds = 60\n",
+            'timeout_seconds = 60\nasserts = ["bogus"]\n',
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        assert any(f.rule == "CFG1" and f.severity == "error" for f in findings)
+        assert lint.has_blocking(findings)
+
+    def test_asserts_non_list_is_blocking_cfg1(self, tmp_path):
+        """GA2: `asserts` must be a list -- a bare string is a CFG1 error."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace(
+            "timeout_seconds = 60\n",
+            'timeout_seconds = 60\nasserts = "tests-pass"\n',
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        assert any(f.rule == "CFG1" and f.severity == "error" for f in findings)
+        assert lint.has_blocking(findings)
+
 
 class TestConfigLintRefs:
     """O2: an unresolved [refs] path is flagged (CFG3), naming the ref;

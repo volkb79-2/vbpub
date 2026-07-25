@@ -1649,3 +1649,193 @@ def test_gate_verify_head_resolution_failure(tmp_state, tmp_path, capsys):
     assert exit_code == 1
     err = capsys.readouterr().err
     assert "git rev-parse HEAD failed" in err
+
+
+# --------------------------------------------------------------------------- #
+# GA2: `asserts=[...]` gate-rigor declaration, cross-checked by `gate verify`
+# --------------------------------------------------------------------------- #
+
+def test_every_gatedef_field_is_toml_settable_or_explicitly_infra_sourced():
+    """Mirrors test_test_health_carve.py's Policy-field invariant (B63): a
+    NEW GateDef field landing in the dataclass but not in
+    nyxloom-config.schema.json's gates.additionalProperties.properties
+    silently breaks CFG1 for every project that sets it in TOML. Every
+    GateDef field must be a schema key EXCEPT `gate_id`, which is the TOML
+    table key itself (`[gates.<gate_id>]`), never a nested property."""
+    import dataclasses
+    import json
+    from pathlib import Path
+
+    from nyxloom.config import GateDef
+
+    schema = json.loads(
+        (Path(cli.__file__).parent / "schemas" / "nyxloom-config.schema.json")
+        .read_text(encoding="utf-8"))
+    props = set(schema["properties"]["gates"]["additionalProperties"]["properties"])
+    fields = {f.name for f in dataclasses.fields(GateDef)}
+    non_toml_fields = {"gate_id"}
+    unclassified = fields - props - non_toml_fields
+    assert not unclassified, (
+        f"GateDef field(s) {sorted(unclassified)} are missing from "
+        "src/nyxloom/schemas/nyxloom-config.schema.json (gates.additionalProperties."
+        "properties) -- that object is additionalProperties:false, so a toml key "
+        "absent from it is a CFG1 error. Add the field there."
+    )
+
+
+def test_gatedef_asserts_defaults_to_empty_list():
+    """A gate declaring no `asserts` gets `[]`, not None -- so downstream
+    code (cli._asserts_mismatch_report) can always iterate it directly."""
+    from nyxloom.config import GateDef
+
+    gate = GateDef(gate_id="g", argv=["true"], phase="implementation", timeout_seconds=1)
+
+    assert gate.asserts == []
+
+
+def test_gate_verify_asserts_match_trustworthy(canary_project, tmp_state, capsys, monkeypatch):
+    """O1: asserts=['canary-verified'] + a TRUSTWORTHY verdict (canary
+    genuinely rejected) -> declaration matches, exit 0, asserts shown, no
+    MISMATCH anywhere in the output."""
+    from nyxloom import gate_runner
+    from nyxloom.config import GateDef
+    from nyxloom.types import GateResult, utc_now
+
+    declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
+                            timeout_seconds=60, environment="local",
+                            asserts=["canary-verified"])
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=exit_code,
+                          started=utc_now(), ended=utc_now(), environment=gate.environment)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "verdict: TRUSTWORTHY" in out
+    assert "asserts: canary-verified" in out
+    assert "OK: 'canary-verified' confirmed" in out
+    assert "MISMATCH" not in out
+
+
+def test_gate_verify_asserts_mismatch_launders(canary_project, tmp_state, capsys, monkeypatch):
+    """O2: asserts=['canary-verified'] but verdict LAUNDERS -> DECLARATION
+    MISMATCH surfaced explicitly (already non-zero via LAUNDERS)."""
+    from nyxloom import gate_runner
+    from nyxloom.config import GateDef
+
+    declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
+                            timeout_seconds=60, environment="local",
+                            asserts=["canary-verified"])
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: LAUNDERS" in out
+    assert "MISMATCH: 'canary-verified' declared, but every canary attempt survived" in out
+    assert "verdict: DECLARATION MISMATCH" in out
+
+
+def test_gate_verify_asserts_mismatch_broken(canary_project, tmp_state, capsys, monkeypatch):
+    """BROKEN + tests-pass/canary-verified declared -> both flagged
+    MISMATCH (the gate never even passed known-good HEAD)."""
+    from nyxloom import gate_runner
+    from nyxloom.config import GateDef
+
+    declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
+                            timeout_seconds=60, environment="local",
+                            asserts=["tests-pass", "canary-verified"])
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(1))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: BROKEN" in out
+    assert "MISMATCH: 'tests-pass' declared, but the gate rejects known-good HEAD" in out
+    assert "MISMATCH: 'canary-verified' declared, but the gate never reached the canary step" in out
+    assert "verdict: DECLARATION MISMATCH" in out
+
+
+def test_gate_verify_asserts_unverified_coverage_and_mutation(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """changed-line-coverage/mutation are not independently observable by
+    the canary probe -- always surfaced as declared-but-unverified, never a
+    MISMATCH, regardless of the underlying verdict."""
+    from nyxloom import gate_runner
+    from nyxloom.config import GateDef
+
+    declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
+                            timeout_seconds=60, environment="local",
+                            asserts=["changed-line-coverage", "mutation"])
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1   # LAUNDERS (no genuine kill) -- unaffected by these two asserts
+    out = capsys.readouterr().out
+    assert "declared, not independently verified here: 'changed-line-coverage'" in out
+    assert "declared, not independently verified here: 'mutation'" in out
+    assert "MISMATCH" not in out
+    assert "verdict: DECLARATION MISMATCH" not in out
+
+
+def test_gate_verify_asserts_unverified_on_inconclusive(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """canary-verified declared, but the canary probe itself is
+    INCONCLUSIVE (timeout) -- UNVERIFIED, not a MISMATCH (genuinely
+    unknown, not contradicted)."""
+    from nyxloom import gate_runner
+    from nyxloom.config import GateDef
+    from nyxloom.types import GateResult, utc_now
+
+    declared_gate = GateDef(gate_id="pytest-q", argv=["true"], phase="implementation",
+                            timeout_seconds=60, environment="local",
+                            asserts=["canary-verified"])
+    monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: declared_gate)
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 124
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=exit_code,
+                          started=utc_now(), ended=utc_now(), environment=gate.environment)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 3
+    out = capsys.readouterr().out
+    assert "verdict: INCONCLUSIVE" in out
+    assert "UNVERIFIED: 'canary-verified' declared" in out
+    assert "MISMATCH" not in out
+
+
+def test_gate_verify_no_asserts_declared_prints_nothing_extra(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """O3: a gate with NO `asserts` (the real gate parsed from
+    canary_project's own TOML, which sets none) behaves exactly as GA1 --
+    zero extra output, byte-compatible verdict lines, regardless of
+    verdict."""
+    from nyxloom import gate_runner
+    from nyxloom.types import GateResult, utc_now
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=exit_code,
+                          started=utc_now(), ended=utc_now(), environment=gate.environment)
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "asserts:" not in out
+    assert "MISMATCH" not in out

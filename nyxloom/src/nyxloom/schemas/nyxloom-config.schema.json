@@ -39,7 +39,13 @@
           "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
           "phase": {"enum": ["implementation", "review", "pre-merge", "post-merge", "mutation"]},
           "timeout_seconds": {"type": "integer", "minimum": 1},
-          "environment": {"type": "string", "minLength": 1}
+          "environment": {"type": "string", "minLength": 1},
+          "asserts": {
+            "type": "array",
+            "items": {
+              "enum": ["tests-pass", "changed-line-coverage", "mutation", "canary-verified"]
+            }
+          }
         }
       }
     },

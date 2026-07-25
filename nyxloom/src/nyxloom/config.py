@@ -58,6 +58,16 @@ class GateDef:
     phase: str                      # implementation|review|pre-merge|post-merge
     timeout_seconds: int
     environment: str = "local"      # fingerprint label, e.g. "test-runner"
+    # GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"): an
+    # optional, self-reported list of what this gate actually enforces --
+    # constrained by the schema enum to {tests-pass, changed-line-coverage,
+    # mutation, canary-verified}. Defaults to [] (undeclared -- the GA1
+    # behavior, unchanged). `nyxloom gate verify` cross-checks it against
+    # its own observed verdict (a declared rigor claim the probe can
+    # actively contradict is a DECLARATION MISMATCH, not just decoration --
+    # see cli.cmd_gate_verify), which is what keeps this field off the P43
+    # dead-stub list.
+    asserts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -246,7 +256,8 @@ class ProjectConfig:
         gates = {
             gid: GateDef(gate_id=gid, argv=list(g["argv"]), phase=g["phase"],
                          timeout_seconds=int(g["timeout_seconds"]),
-                         environment=g.get("environment", "local"))
+                         environment=g.get("environment", "local"),
+                         asserts=list(g.get("asserts", [])))
             for gid, g in data.get("gates", {}).items()
         }
         mutexes = {
