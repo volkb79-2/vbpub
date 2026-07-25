@@ -427,6 +427,12 @@ class Frontmatter(_Serde):
     budget: Budget | None = None
     carve_affinity: str | None = None
     component: str | None = None
+    # D1 factory-hardening (2026-07-25, plan-factory-hardening.md §D part 1):
+    # optional carve-authored "adversarially check these" hints for the
+    # independent reviewer. Plain list[str] (like escalate_if/advances) --
+    # no _FIELD_TYPES converter needed. Defaults to [] so every pre-D1
+    # handoff (which never sets this key) parses identically.
+    review_focus: list[str] = field(default_factory=list)
 
     _FIELD_TYPES = {
         "source": Source.from_dict,

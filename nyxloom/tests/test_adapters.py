@@ -1601,6 +1601,193 @@ def test_review_independent_amendment_note_skipped_when_argv_max_too_tight():
     assert prompt == tight_base
 
 
+# ============================================================================
+# D1 factory-hardening (2026-07-25, plan-factory-hardening.md §D part 1).
+# `review_focus` is the carve-authored "adversarially check these" hint list
+# (types.Frontmatter.review_focus), injected into the REVIEW_INDEPENDENT
+# prompt using the SAME bounded-append idiom as prior_verdict/approved_
+# amendments above. Oracle O1: the hints actually reach the prompt. Oracle
+# O2: an absent review_focus reproduces the EXACT pre-D1 prompt (snapshot
+# equality, not just "doesn't crash"). Oracle O3: a worst-case review_focus
+# never overflows argv_max (extends the existing guard test). Each pins a
+# NEGATIVE so the assertion cannot pass hollowly.
+# ============================================================================
+
+# Captured verbatim from build_dispatch BEFORE the D1 change (git blame:
+# pre-review_focus adapters.py), for the simple-paths REVIEW_INDEPENDENT
+# case below -- the O2 snapshot-equality proof.
+_PRE_D1_SIMPLE_REVIEW_PROMPT = (
+    "Handoff: h.md\n"
+    "Worktree: /wt\n"
+    "Gate: pytest -q\n"
+    "Receipt: r.json\n"
+    "You are REVIEWING this packet, not authoring code changes. Follow the "
+    "packet's REQUIRED OUTPUT CONTRACT: write your verdict as a `VERDICT: "
+    "APPROVED` or `VERDICT: REJECTED` line into the <task>-REVIEW.md the "
+    "packet names, then `git add` and `git commit` ONLY that review file "
+    "onto the task's own feat/ branch -- never main, and never a code "
+    "change. The daemon reads your verdict from that committed file, NOT "
+    "from the receipt.\n"
+    "If REJECTED, also add a line `REJECT_CLASS: <fixable|architectural|"
+    "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
+    "product=human decision). Omit it on APPROVED.\n"
+    "Doctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; then any "
+    "same-named `nyxloom-trove/` sibling for project overrides."
+)
+
+
+def test_review_independent_prompt_embeds_review_focus():
+    """O1: a REVIEW_INDEPENDENT dispatch with review_focus entries embeds
+    each entry verbatim into the prompt. NEGATIVE: the same review_focus
+    passed to an IMPLEMENTER dispatch is NOT embedded (only the reviewer
+    consults it -- mirrors prior_verdict/approved_amendments' own split)."""
+    focus = ["check the CAS revert for a stale head_commit", "check None-safety"]
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_focus=focus,
+    )
+    assert "check the CAS revert for a stale head_commit" in prompt
+    assert "check None-safety" in prompt
+    assert "Carve-authored focus" in prompt
+
+    _a2, impl_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, review_focus=focus,
+    )
+    assert "check the CAS revert for a stale head_commit" not in impl_prompt
+    assert "Carve-authored focus" not in impl_prompt
+
+
+def test_review_focus_absent_prompt_is_byte_identical_to_pre_d1():
+    """O2: a REVIEW_INDEPENDENT dispatch with NO review_focus (the default,
+    and every pre-D1 handoff) reproduces the prompt EXACTLY -- proving zero
+    regression for existing handoffs, not merely 'still works'. Checked both
+    via the literal snapshot and via explicit review_focus=None/[] parity."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    assert prompt == _PRE_D1_SIMPLE_REVIEW_PROMPT
+
+    _a2, prompt_explicit_none = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_focus=None,
+    )
+    _a3, prompt_explicit_empty = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_focus=[],
+    )
+    assert prompt_explicit_none == _PRE_D1_SIMPLE_REVIEW_PROMPT
+    assert prompt_explicit_empty == _PRE_D1_SIMPLE_REVIEW_PROMPT
+
+
+def test_review_independent_prompt_with_realistic_review_focus_stays_under_argv_max():
+    """O3 (extends test_review_independent_prompt_stays_under_argv_max_with_
+    real_paths): the SAME long-path/attempt-id scenario that guards the base
+    reviewer prompt, now ALSO carrying a realistic multi-hint review_focus,
+    must still stay within argv_max -- and the hints must actually survive
+    (not be silently dropped) for a realistic size."""
+    long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
+    focus = [
+        "check the CAS revert for a stale head_commit",
+        "check None-safety on the wrapper timeout path",
+        "verify the retry backoff never exceeds max_cost",
+    ]
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(),
+        handoff_path=f"nyxloom-trove/handoffs/{long_task}.md",
+        worktree=f"/workspaces/vbpub/.worktrees/flow-stages/nyxloom/.worktrees/feat/{long_task}",
+        branch=f"feat/{long_task}", task_id=long_task,
+        gate_hint="cd .. && MOCK_MODE=true pytest tests -q",
+        receipt_path="/state/attempts/att-0123456789abcdef/receipt.json",
+        role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
+        review_focus=focus,
+    )
+    assert len(prompt) <= 1500
+    assert "REJECT_CLASS" in prompt                 # base reviewer content survives
+    assert "check the CAS revert" in prompt          # realistic focus survives too
+
+
+def test_review_independent_prompt_worst_case_review_focus_degrades_never_raises():
+    """O3: an unrealistically large review_focus (far more hints than any
+    real carve would author) on the SAME tight long-path scenario is
+    TRUNCATED to fit, never raises AdapterError and never exceeds argv_max
+    -- 'degrade, never strand the dispatch', same philosophy as
+    prior_verdict's own truncation guard."""
+    long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
+    huge_focus = [
+        f"adversarially check hypothesis {i} about a subtle race condition "
+        "in the reconcile loop involving stale receipts and CAS retries"
+        for i in range(20)
+    ]
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(),
+        handoff_path=f"nyxloom-trove/handoffs/{long_task}.md",
+        worktree=f"/workspaces/vbpub/.worktrees/flow-stages/nyxloom/.worktrees/feat/{long_task}",
+        branch=f"feat/{long_task}", task_id=long_task,
+        gate_hint="cd .. && MOCK_MODE=true pytest tests -q",
+        receipt_path="/state/attempts/att-0123456789abcdef/receipt.json",
+        role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
+        review_focus=huge_focus,
+    )
+    assert len(prompt) <= 1500
+    assert "truncated to fit" in prompt
+    assert "REJECT_CLASS" in prompt                  # base reviewer content never sacrificed
+
+
+def test_review_independent_review_focus_skipped_when_argv_max_too_tight():
+    """B21-style regression guard, applied to review_focus: when even the
+    HEADER alone would not leave 40 chars of room, the whole block is
+    skipped -- never truncated down to something unreadable, never raising.
+    Mirrors test_review_independent_amendment_note_skipped_when_argv_max_
+    too_tight's route-tightening technique, but anchored to the MANIFEST-
+    FREE floor length (not a wide-route base_prompt, which would still
+    include the doctrine manifest and so understate the true headroom)."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    # Probe the manifest-free core prompt length: a deliberately tight
+    # argv_max forces the (itself argv-budgeted) doctrine manifest to be
+    # skipped, isolating the REVIEW_INDEPENDENT core content this test
+    # anchors its margin to.
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    assert "Doctrine:" not in floor_prompt  # sanity: manifest genuinely absent
+
+    # A route with room for the core prompt but NOT even the review_focus
+    # header (room = argv_max - len(prompt) - len(header) < 40 by construction).
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 25)
+    _b, tight_base = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        review_focus=["check the CAS revert"], **kw)
+
+    assert "Carve-authored focus" not in prompt   # skipped, not truncated
+    assert "check the CAS revert" not in prompt
+    assert len(prompt) <= tight_route.argv_max    # never raises AdapterError
+    assert prompt == tight_base                   # byte-identical to the no-focus dispatch
+
+
+def test_review_focus_only_embedded_for_review_independent_role():
+    """The docstring's claim generalizes prior_verdict/approved_amendments'
+    own pin: review_focus passed to a CARVER dispatch is not embedded (the
+    hint list is reviewer-facing only)."""
+    focus = ["unique-marker-review-focus-xyz"]
+    _a, carver_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.CARVER, carve_authority="branch", review_focus=focus,
+    )
+    assert "unique-marker-review-focus-xyz" not in carver_prompt
+
+
 # ---------------------------------------------------------------------------
 # P05a (docs/plan-logging.md §5): adapters.py instrumentation -- a provider
 # call -> DEBUG; "a route probe failure/pause" is a named WARNING example.

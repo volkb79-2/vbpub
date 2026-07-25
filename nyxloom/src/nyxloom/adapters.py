@@ -178,7 +178,8 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    carve_authority: str | None = None,
                    attempt_id: str | None = None,
                    prior_verdict: str | None = None,
-                   approved_amendments: list[str] | None = None) -> tuple[list[str], str]:
+                   approved_amendments: list[str] | None = None,
+                   review_focus: list[str] | None = None) -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -215,6 +216,15 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     reviewer which files were approved, so it does not reject the (now
     legitimate) out-of-scope edit as a scope violation. Defaults None (no
     amendments yet) -> byte-identical to the pre-B21 prompt for both roles.
+
+    D1 factory-hardening (2026-07-25, plan-factory-hardening.md §D part 1):
+    `review_focus`, when given, is the carve-authored "adversarially check
+    these" hint list from the handoff's frontmatter (types.Frontmatter.
+    review_focus) -- the package-specific reviewer targeting that caught real
+    bugs this session, now mechanical instead of ad-hoc controller judgment.
+    Only the REVIEW_INDEPENDENT branch consults it, and only when non-empty,
+    appended LAST and bounded to the remaining argv budget (see below) --
+    Defaults None -> byte-identical to the pre-D1 prompt.
     """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
     if role is Role.CARVER:
@@ -447,6 +457,35 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # outcome (reject-loop re-queue) vs. a permanently stranded review
         # attempt (AdapterError here would abort a dispatch whose Attempt
         # record was already created and is never retried -- see LOG.md).
+
+    # D1 factory-hardening (2026-07-25, plan-factory-hardening.md §D part 1):
+    # the carve-authored review_focus hints -- package-specific "adversarially
+    # check these" pointers, moving reviewer targeting from ad-hoc controller
+    # judgment into the carve. Appended LAST and BOUNDED to the remaining
+    # argv budget, the SAME "measure remaining room, truncate to fit, never
+    # strand the dispatch" pattern as prior_verdict's embed above (this is
+    # NOT the approved_amendments "skip whole block" pattern, because
+    # review_focus is prose content like prior_verdict, not a short file
+    # list): a real reviewer prompt is already close to argv_max with real
+    # packet paths (test_review_independent_prompt_stays_under_argv_max_
+    # with_real_paths), so an unbounded embed would overflow it and
+    # permanently strand the review dispatch (the same failure class B21's
+    # LOG.md documents). Absent/empty review_focus (every pre-D1 handoff)
+    # -> this block is a complete no-op, so the prompt is byte-identical to
+    # today.
+    if role is Role.REVIEW_INDEPENDENT and review_focus:
+        header = "\nCarve-authored focus -- adversarially check these:\n"
+        marker = "\n[... review_focus truncated to fit ...]"
+        room = argv_max - len(prompt) - len(header)
+        if room >= 40:
+            body = "\n".join(f"- {item}" for item in review_focus)
+            if len(body) > room:
+                body = body[: room - len(marker)].rstrip() + marker
+            prompt += header + body
+        # else: skip entirely -- dispatching without the focus hints beats
+        # not dispatching at all (same rationale as prior_verdict/scope-
+        # amendment above; the reviewer still runs its base adversarial
+        # checks, just without the carve's extra pointers).
 
     # Check prompt length
     if len(prompt) > argv_max:
