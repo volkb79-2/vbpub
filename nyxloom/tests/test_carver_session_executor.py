@@ -414,6 +414,32 @@ def test_resume_carver_session_unresolvable_pinned_route_needs_operator(
     assert patch_launch == []
 
 
+def test_resume_carver_session_refuses_when_carve_already_in_flight(
+        tmp_state, carver_project, patch_launch):
+    """Symmetric with the Start-side recheck: a live (not-yet-consumed)
+    carver-session turn already occupies the pass's single carve slot, so a
+    second Resume launch refuses cleanly."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch)
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    first = d._execute_resume_carver_session(
+        "demo", cfg, states,
+        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+                                      source_ids=("d1",), generation=1))
+    assert len(first) == 3  # occupies the slot -- left ACTIVE, not consumed
+    assert len(patch_launch) == 1
+
+    second = d._execute_resume_carver_session(
+        "demo", cfg, states,
+        reconcile.ResumeCarverSession(project="demo", mode="targeted-intake",
+                                      source_ids=("i1",), generation=1))
+    assert second == []
+    assert len(patch_launch) == 1  # no second launch
+
+
 # ==========================================================================
 # _consume_carver_session_exit -- exit-consumption half (plan §5.1 items
 # 5-7 / §5.2)
