@@ -11,15 +11,15 @@ depends_on: []
 session: fresh
 scope:
   touch:
-    - "topos/pyproject.toml"
-    - "topos/tools/**"
-    - "topos/tests/**"
-    - "topos/nyxloom-trove/nyxloom.toml"
-    - "topos/nyxloom-trove/4-backlog.md"
-    - "topos/nyxloom-trove/handoffs/topos-P96-max-test-gate.md"
-    - "topos/nyxloom-trove/reports/P96-*.md"
+    - "pyproject.toml"
+    - "tools/**"
+    - "tests/**"
+    - "nyxloom-trove/nyxloom.toml"
+    - "nyxloom-trove/4-backlog.md"
+    - "nyxloom-trove/handoffs/topos-P96-max-test-gate.md"
+    - "nyxloom-trove/reports/P96-*.md"
   forbid:
-    - "topos/src/**"
+    - "src"
 oracles:
   - id: O1
     observable: "topos[dev] directly declares pytest-cov and pytest-xdist, and tester-unified can import both without relying on nyxloom's sibling dependencies"
