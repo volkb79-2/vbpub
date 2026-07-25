@@ -219,7 +219,9 @@ PASS: both files 100%
 
 ## Assertion completeness audit
 
-Every assertion is exact structural equality (no partial-field, no non-None, no len-only):
+Every assertion supplies exact behavioral evidence: structural equality where
+applicable, plus exact exception messages, identity checks, and boundary call
+counts. There are no partial-field, non-None, length-only, or range assertions.
 
 | Test | Assertion type |
 |------|---------------|

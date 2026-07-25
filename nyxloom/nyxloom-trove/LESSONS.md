@@ -373,6 +373,54 @@ the permanent session hovered around its compaction threshold. This is now a
 recurring per-package cost and a concrete reason to rotate the implementer
 session after the Topos project boundary.
 
+### P104 validation: verify claimed causes, receipt plumbing, and repair seams
+
+P104 reached exact coverage for two snapshot modules on the first implementation
+turn, but its self-review was materially false: a test named as an ancestor
+read failure performed a normal successful copy, several "exact" enrichment
+assertions checked only one or two fields, fixed `/tmp` names could collide
+under xdist, and the exhaustion case created 9,999 files. The first Pro review
+found these defects and the repair turn closed some of them, but again claimed
+complete dictionaries and exact commands while retaining partial assertions
+and a shortened diagnostic command. The controller applied the two-strike
+rule, repaired the tests and receipts directly, and routed the immutable result
+back for final approval.
+
+Three additions to the acceptance discipline follow:
+
+1. **A test name or covered line does not prove the claimed causal path.**
+   For swallowed exceptions, assert the precondition that induces the error and
+   the exact postcondition after it is swallowed. P104 pre-created a directory
+   where `write_bytes` expected a file, then asserted both the successful
+   primary cgroup copy and the complete retained ancestor tree. Coverage of the
+   `except` line alone could have come from another test.
+2. **Boundary behavior should not pay the boundary's physical cost when a
+   narrow deterministic seam exists.** The unique-path exhaustion test can
+   patch `Path.exists` to return true, assert exactly 10,000 lookups and the
+   exact error, and create zero files. Do not invent a configurable limit that
+   product code does not have merely because a reviewer proposed one.
+3. **Receipt storage is part of the test-environment contract.** An attempted
+   host bind for coverage JSON appeared mode 0777 on the host but mode 0755
+   root-owned to the tester UID in the container. All 2,040 tests passed, yet
+   pytest-cov exited 3 because it could not write the report. That run was not
+   green and did not count toward 2/2. Printing and hashing the target coverage
+   record inside the fail-closed container chain avoided cross-identity writes
+   while preserving the real gate result.
+
+P104 also reinforced that polished receipt prose is not evidence. "Exact
+gate command" must contain the declared pytest invocation, coverage report, and
+changed-line checker; "all assertions are exact structural equality" should
+instead say exact *behavioral* evidence when the suite legitimately includes
+exact exception matches, identity checks, and call-count boundaries. Automated
+receipt validation should compare such universal claims against the test AST
+and the actual command trace.
+
+The persistent Flash session remained useful at roughly 680k cumulative tokens,
+but P104 incurred repeated log-prefix rewrites of roughly 16k–24k uncached
+tokens during ordinary repair iterations. This strengthens the plan to keep
+the session through the Topos project for contextual continuity, then rotate at
+the next project boundary instead of treating permanent reuse as an invariant.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -428,6 +476,18 @@ prerequisite package, not an edit-refresh mechanism.
   product goal is max standard; close them or cite an explicit product choice.
 - Derive repair assertions from executed deterministic structures, especially
   when a reviewer proposes fields or inputs that have not been run.
+- Require a causal receipt for exception-coverage tests: induced precondition,
+  exact exception branch, and exact postcondition, not a matching test name.
+- Flag fixed shared temporary paths in xdist suites and prefer `tmp_path` or an
+  equally worker-unique fixture.
+- Let boundary tests virtualize narrow filesystem predicates and assert exact
+  call counts instead of creating thousands of real objects.
+- Treat coverage-report writeability and test-runner UID identity as gate
+  prerequisites; a passing pytest summary followed by reporter failure is red.
+- Emit coverage target records and their normalized hash inside the container
+  when host/container identity makes an evidence bind unreliable.
+- Validate universal receipt claims such as "all assertions are exact" and
+  "exact gate command" against the test AST and captured command, not prose.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
