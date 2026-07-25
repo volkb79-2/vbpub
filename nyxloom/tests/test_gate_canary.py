@@ -158,6 +158,43 @@ def test_build_canary_commit_raises_and_still_cleans_up_scratch(tmp_path):
     assert str(scratch) not in _run(root, "worktree", "list").stdout
 
 
+def test_build_canary_commit_worktree_add_failure_raises(tmp_path):
+    """An unknown/invalid commit -> `git worktree add` fails -> CanaryError.
+    Unlike gate_runner.run_gate_at_commit (which falls back to the live
+    root for a placeholder commit), a canary must be built against a REAL
+    commit -- there is no live-root fallback to mutate."""
+    root = tmp_path / "repo"
+    _init_repo(root, {"thing.py": "def over_limit(x):\n    return x > 10\n"})
+    cfg = _FakeCfg(root)
+
+    with pytest.raises(gate_canary.CanaryError, match="could not create a scratch worktree"):
+        gate_canary.build_canary_commit(cfg, "deadbeef" * 5)
+
+
+def test_build_canary_commit_commit_step_failure_raises_and_cleans_up(tmp_path, monkeypatch):
+    """A `git commit` failure after the mutation is staged (e.g. a repo-level
+    policy hook rejecting it) is reported as CanaryError, and the scratch
+    worktree used for the attempt is still removed."""
+    root = tmp_path / "repo"
+    head = _init_repo(root, {"thing.py": "def over_limit(x):\n    return x > 10\n"})
+    cfg = _FakeCfg(root)
+
+    real_run = subprocess.run
+
+    def _fake_run(argv, **kwargs):
+        if gate_canary._CANARY_COMMIT_MESSAGE in argv:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="simulated commit failure")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(gate_canary.subprocess, "run", _fake_run)
+
+    with pytest.raises(gate_canary.CanaryError, match="canary commit failed"):
+        gate_canary.build_canary_commit(cfg, head)
+
+    scratch = root / ".worktrees" / f"canary-{head[:12]}"
+    assert not scratch.exists()
+
+
 def test_build_canary_commit_removes_stale_scratch_before_building(tmp_path):
     """A leftover scratch worktree from an interrupted prior run is removed
     before this run re-adds it (idempotent, mirrors gate_runner's own

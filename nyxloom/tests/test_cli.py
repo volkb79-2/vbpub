@@ -1438,6 +1438,15 @@ def no_gate_project(tmp_state, tmp_path):
     return ProjectConfig.load(root)
 
 
+def test_gate_no_subcommand_prints_help_and_exits_2(tmp_state, capsys):
+    """`nyxloom gate` with no verb (e.g. `verify`) -> usage help, exit 2 --
+    mirrors the same unknown-subcommand handling as `project`/`free-models`/
+    `capability-map`/`finding`."""
+    exit_code = cli.main(["gate"])
+
+    assert exit_code == 2
+
+
 def test_gate_verify_trustworthy(canary_project, tmp_state, capsys, monkeypatch):
     """O1: gate passes on HEAD and fails on the canary -> verdict TRUSTWORTHY,
     exit 0."""
