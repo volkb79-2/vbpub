@@ -1152,8 +1152,16 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             # still run this pass.
         elif status is CarverStatus.WARM:
             if inp.pending_carver_feeds:
-                # Slot 3: ingest pending merge digests.
-                ids = tuple(sorted(f.digest_id for f in inp.pending_carver_feeds))
+                # Slot 3: ingest pending merge digests. Plan §3.2: "preserving
+                # event order" -- sort by event_sequence (arrival order), NOT
+                # digest_id (a "merge:{project}:{commit_sha}" string whose sort
+                # order is an arbitrary commit hash, unrelated to when each
+                # merge happened).
+                # source_ids= is §4.2's authoritative arg name (plan §3.2's
+                # "source_sequences" is a stale cross-reference -- do not
+                # rename toward it).
+                ids = tuple(f.digest_id for f in
+                            sorted(inp.pending_carver_feeds, key=lambda f: f.event_sequence))
                 carver_actions.append(ResumeCarverSession(
                     project=inp.cfg.project_id, mode="merge-feed",
                     source_ids=ids, generation=snap.generation,
@@ -1239,7 +1247,12 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             and frontier_route_available and budget_allows
             and inp.carver_session.status is CarverStatus.WARM
             and inp.pending_human_intakes):
-        ids = tuple(sorted(i.intake_id for i in inp.pending_human_intakes))
+        # Arrival (event_sequence) order, not intake_id sort order -- same
+        # rationale as slot 3's merge-feed ordering above. source_ids= is
+        # §4.2's authoritative arg name (plan §3.2's "source_sequences" is a
+        # stale cross-reference -- do not rename toward it).
+        ids = tuple(i.intake_id for i in
+                    sorted(inp.pending_human_intakes, key=lambda i: i.event_sequence))
         carver_actions.append(ResumeCarverSession(
             project=inp.cfg.project_id, mode="targeted-intake",
             source_ids=ids, generation=inp.carver_session.generation,

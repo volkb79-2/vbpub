@@ -226,13 +226,23 @@ def test_identical_input_yields_identical_plan_and_at_most_one_carver_turn(snaps
 
 def test_warm_feed_beats_headroom_carve():
     snap = make_snapshot(status=CarverStatus.WARM)
+    base = base_kwargs(carver_session=snap)  # empty queue -> headroom eligible
+
+    # Self-contained premise (review Fix 3): establish that WITHOUT the
+    # pending feed, this exact setup plans the legacy headroom CarveDispatch
+    # -- so "feed beats headroom" below proves an actual override, not an
+    # accident of a headroom trigger that was never going to fire anyway.
+    baseline_actions = plan_project(ReconcileInput(**base))
+    baseline_carves = [a for a in baseline_actions if isinstance(a, CarveDispatch)]
+    assert len(baseline_carves) == 1
+
     kwargs = base_kwargs(
         carver_session=snap,
         pending_carver_feeds=(
             CarverFeed(digest_id="merge:demo:1", merge_commit="a" * 40,
                        task_id="demo-P01", event_sequence=1, files_changed=1),
         ),
-    )  # empty queue -> headroom trigger (item 9) would otherwise fire
+    )
     actions = plan_project(ReconcileInput(**kwargs))
 
     feeds = [a for a in actions if isinstance(a, ResumeCarverSession) and a.mode == "merge-feed"]
@@ -240,6 +250,29 @@ def test_warm_feed_beats_headroom_carve():
     assert len(feeds) == 1
     assert feeds[0].source_ids == ("merge:demo:1",)
     assert carve_dispatches == []
+
+
+def test_warm_feed_source_ids_ordered_by_event_sequence_not_digest_id():
+    """Review Fix 1 (frozen-core semantic defect): plan §3.2 requires
+    'preserving event order'. digest_id is 'merge:{project}:{commit_sha}' --
+    an arbitrary hash whose sort order has nothing to do with when each
+    merge happened. Construct two feeds where the digest_id sort order is
+    the EXACT REVERSE of the event_sequence (arrival) order, so this test
+    would fail against the old (buggy) `sorted(f.digest_id for f in ...)`
+    implementation."""
+    snap = make_snapshot(status=CarverStatus.WARM)
+    feed_first = CarverFeed(digest_id="merge:demo:zzz", merge_commit="a" * 40,
+                             task_id="demo-P01", event_sequence=1, files_changed=1)
+    feed_second = CarverFeed(digest_id="merge:demo:aaa", merge_commit="b" * 40,
+                              task_id="demo-P02", event_sequence=2, files_changed=1)
+    # digest_id-sorted order would be (aaa, zzz) -- the reverse of arrival order.
+    assert sorted([feed_first.digest_id, feed_second.digest_id]) == [feed_second.digest_id, feed_first.digest_id]
+
+    kwargs = base_kwargs(carver_session=snap, pending_carver_feeds=(feed_second, feed_first))
+    actions = plan_project(ReconcileInput(**kwargs))
+    feeds = [a for a in actions if isinstance(a, ResumeCarverSession) and a.mode == "merge-feed"]
+    assert len(feeds) == 1
+    assert feeds[0].source_ids == ("merge:demo:zzz", "merge:demo:aaa")
 
 
 # ============================================================================
@@ -488,6 +521,24 @@ def test_priority_targeted_intake_beats_test_health():
     assert len(intake_resumes) == 1
     assert intake_resumes[0].source_ids == ("i1",)
     assert test_health_dispatches == []
+
+
+def test_warm_intake_source_ids_ordered_by_event_sequence_not_intake_id():
+    """Review Fix 2 (same class of bug as Fix 1, softer): arrival order
+    (event_sequence), not intake_id sort order. Construct two intakes where
+    the intake_id sort order is the EXACT REVERSE of the event_sequence
+    order, so this test would fail against a `sorted(i.intake_id for ...)`
+    implementation."""
+    snap = make_snapshot(status=CarverStatus.WARM)
+    intake_first = HumanIntake(intake_id="zzz", kind="idea", event_sequence=1)
+    intake_second = HumanIntake(intake_id="aaa", kind="idea", event_sequence=2)
+    assert sorted([intake_first.intake_id, intake_second.intake_id]) == [intake_second.intake_id, intake_first.intake_id]
+
+    kwargs = base_kwargs(carver_session=snap, pending_human_intakes=(intake_second, intake_first))
+    actions = plan_project(ReconcileInput(**kwargs))
+    intake_resumes = [a for a in actions if isinstance(a, ResumeCarverSession) and a.mode == "targeted-intake"]
+    assert len(intake_resumes) == 1
+    assert intake_resumes[0].source_ids == ("zzz", "aaa")
 
 
 def test_priority_bootstrap_beats_ready_to_carve():
