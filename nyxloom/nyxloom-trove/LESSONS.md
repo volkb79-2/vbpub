@@ -336,6 +336,43 @@ causing about 100k uncached input tokens on that turn before the rewritten
 prefix became cached. Repeated compaction taxes make rotation a package-level
 economic decision, not merely a one-time anomaly.
 
+### P103 validation: approval does not waive residual quality findings
+
+P103 closed the complementary query-engine tranche and reached whole-file
+empty statement and branch sets. The first Pro review rejected eight shallow
+tests. After repair, Pro approved while still listing five "non-blocking"
+inaccuracies and incomplete assertions. The controller treated them as
+blocking because the product goal was max-standard tests, not merely a
+reviewer verdict. It also found additional partial hierarchy and raw-series
+assertions behind the approval.
+
+The safe repair method was to execute the real deterministic fixtures and
+print their structures before editing assertions. That produced exact gauge
+summary cells, hierarchy rows and subtree metadata, byte-cap results, raw
+point lists, and complete truncation dictionaries. The controller then
+replaced every length/range/membership check with full structural equality,
+removed a redundant misnamed test, reran the whole-file gate twice, and routed
+the result back to Pro. Final approval covered 16 exact tests and an empty
+whole-engine gap set.
+
+Two operational rules follow:
+
+1. **An approval verdict does not override the declared quality level.**
+   When review records residual findings—however labeled—the controller must
+   either close them or record an explicit product decision accepting them.
+   "Non-blocking" is reviewer prioritization, not evidence that max standard
+   is met.
+2. **Reviewer repair recipes are hypotheses.** In P103 the first recipe for a
+   cycle fixture would have returned `True` immediately, and the suggested
+   hierarchy fields did not exist in the real row schema. Run the actual
+   fixture and capture its value before writing the repair. Source-reading
+   alone is insufficient for nested deterministic structures.
+
+P103 also caused several small log-prefix rewrites within one Flash turn as
+the permanent session hovered around its compaction threshold. This is now a
+recurring per-package cost and a concrete reason to rotate the implementer
+session after the Topos project boundary.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -387,6 +424,10 @@ prerequisite package, not an edit-refresh mechanism.
   file, and persist the exact before/after intersections in receipts.
 - Treat repeated session compactions as a rotation signal; retain a concise
   project memory handoff instead of repeatedly paying to rewrite stale turns.
+- Do not let an `APPROVED` label waive residual findings when the declared
+  product goal is max standard; close them or cite an explicit product choice.
+- Derive repair assertions from executed deterministic structures, especially
+  when a reviewer proposes fields or inputs that have not been run.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
