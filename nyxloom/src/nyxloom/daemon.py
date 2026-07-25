@@ -1750,19 +1750,24 @@ class Daemon:
         call never raises out of _build_input)."""
         if cfg.carve.session != "project-persistent":
             return None
-        # F018 P3d (AF3 #5): enablement-guard startup WARN -- emit ONCE per
-        # daemon instance for every project that has opted into the still-
-        # incomplete feature.
+        # F018 P4a (AF3 #5): enablement acknowledgement -- emit ONCE per daemon
+        # instance for every project that has opted into the persistent-carver
+        # feature. The PRE-ENABLEMENT CHECKLIST is now fully clear (item 1/ack-
+        # cursor closed by P4a; item 2/compact-half by P3d wiring
+        # _execute_compact_carver_session; items 3-6 by P3d), so this is an
+        # informational pilot acknowledgement -- NOT a "premature" warning and
+        # NOT a hard reject. Enabling project-persistent is the operator's
+        # decision; this line just makes an active pilot visible once at boot.
         if project not in self._carver_enablement_warned:
             self._carver_enablement_warned.add(project)
             log.warning(
-                "carver.enablement.premature",
+                "carver.enablement.active",
                 project=project,
                 session=cfg.carve.session,
-                missing_items="1:ack-cursor(P4),2:compact-half(P4)",
-                notes=("project-persistent is live-but-incomplete: P4 has not "
-                       "landed; ack-cursor(concern-2/#1) and compact-half are "
-                       "still open. Do NOT enable on production projects."),
+                notes=("project-persistent (long-running strategic carver) is "
+                       "ACTIVE for this project: the pre-enablement checklist "
+                       "is fully clear. Operator-acknowledged pilot -- monitor "
+                       "merge-feed cadence and context growth."),
             )
         try:
             events = list(storage.iter_events(project))

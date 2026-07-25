@@ -1980,19 +1980,27 @@ def test_o5_debounce_re_armed_by_rotation(
 # --- O6: enablement WARN ---
 
 def test_o6_enablement_warn_emitted_once(tmp_state, carver_project, monkeypatch):
-    """O6: loading a project with session=='project-persistent' logs
-    exactly one carver.enablement.premature WARN."""
+    """O6: loading a project with session=='project-persistent' logs exactly one
+    informational carver.enablement.active acknowledgement (once per daemon
+    instance). Post-P4a the checklist is fully clear, so the event is an
+    operator-acknowledged pilot notice -- NOT the old 'premature' warning and
+    NOT a hard reject -- and it no longer advertises any missing_items."""
     cfg = carver_project
     assert cfg.carve.session == "project-persistent"
-    warnings_emitted: list[str] = []
+    calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "nyxloom.daemon.log.warning",
-        lambda event, **kw: warnings_emitted.append(event))
+        lambda event, **kw: calls.append((event, kw)))
     d = daemon.Daemon({"demo": cfg.root})
     d._carver_session("demo", cfg)
     d._carver_session("demo", cfg)
 
-    assert len(warnings_emitted) == 1  # once per daemon instance
+    assert len(calls) == 1  # once per daemon instance
+    event, kw = calls[0]
+    assert event == "carver.enablement.active"
+    assert event != "carver.enablement.premature"  # not the pre-P4a warning
+    assert "missing_items" not in kw  # checklist clear -> nothing missing
+    assert kw["session"] == "project-persistent"
 
 
 def test_o6_fresh_project_no_warn(tmp_state, sample_project, monkeypatch):
