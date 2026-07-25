@@ -177,6 +177,24 @@ loop**.
    `canary-verified` only after `TRUSTWORTHY`; rerun it after material gate or
    source-root changes.
 
+### P98 validation: cohesive scope fixed false completion, not review quality
+
+The next package named four adjacent record modules and used a hard `4/4`
+checker. Flash iterated until all four were exact 100% without returning a
+partial result, validating the cohesive-package rule. It still claimed clean
+diff hygiene despite two trailing-whitespace lines and reported 47 focused
+tests when collection showed 46. Pro independently confirmed coverage and
+parity but found three assertion-free tests, two weak assertions, and one
+duplicate. The controller removed the hollow/duplicate cases, strengthened
+exact byte/durability assertions, corrected the final inventory to 44, and
+reran the full target checker successfully.
+
+Therefore the hard target loop and bounded scope solve **completion drift**,
+but do not solve **evidence or test-quality drift**. Test count must come from
+collection, `git diff --check` must be run by the controller/reviewer, and even
+an `APPROVED` review's "non-blocking" findings should be repaired when the
+product goal is max-standard test quality.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
