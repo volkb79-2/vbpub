@@ -263,3 +263,67 @@ engine.py at exact 100% with parity across two runs. 17 tests with
 strengthened exact assertions. Five residual quality notes (R1–R5) are
 non-blocking documentation and assertion-completeness improvements that
 should be addressed in a follow-up cleanup.
+
+
+---
+
+# Final sign-off — 2026-07-25 (commit 52b49d09)
+
+**Reviewer:** Reasonix (same persistent adversarial session)
+**Range:** 6e0de6a7..52b49d09
+**Verdict:** **APPROVED**
+
+## Gate verification
+
+Full xdist gate: **2018 passed, exit 0** in 69s. Focused tests: 16 passed in 1.23s.
+
+```
+Literal: lines=[]  arcs=[]
+Whole:   lines=[]  branches=[]
+PASS: whole-file 100%
+```
+16 functions = 16 collected cases, 2018 total (2002 + 16). `git diff --check`: clean.
+
+## R1–R5 and controller extras — all closed
+
+| Note | Status | Evidence |
+|------|--------|----------|
+| **R1** (17+ wording) | **FIXED** | REPORT: "17 lines, 19 branches" (exact, no +) |
+| **R2** (plus other gaps) | **FIXED** | LOG: "exactly the P103 set: 17 lines and 19 branch pairs" |
+| **R3** (misnamed no-points) | **FIXED** | `test_run_raw_no_points` removed entirely |
+| **R4** (byte-cap partial) | **FIXED** | Full 5-field dict: `truncated`, `policy`, `reason`, `dropped_rows`, `also` + `result == []` |
+| **R5** (summary partial) | **FIXED** | Full 8-field cell dict: `semantic`, `sample_count`, `count`, `min`, `mean`, `p50`, `p95`, `max` + `resets == 0` |
+| LOG literal baseline | **FIXED** | Prints exact 17-line/19-pair baseline sets |
+| LOG whole-file per-run | **FIXED** | `Run 1 whole file: missing_lines=[] missing_branches=[]` (both runs) |
+| REPORT whole-file per-run | **FIXED** | `run 1 whole-file missing_lines: []` / `missing_branches: []` (both runs) |
+
+## Assertion completeness audit
+
+Every test now uses exact structural equality:
+
+| Test | Assertion style |
+|------|----------------|
+| `test_in_slice_not_found` | Exact boolean |
+| `test_in_slice_cycle_safe` | Exact boolean (cycle-safe path) |
+| `test_format_result_pretty` | Exact JSON string via `json.dumps(..., indent=2)` |
+| `test_summary_cells_available_visibility` | Full 8-field cell dict equality + `resets == 0` |
+| `test_cell_stat_none` | Exact None |
+| `test_project_hierarchy_no_sort` | Full row list with `key`/`depth`/`path`/`metrics` |
+| `test_enforce_byte_cap_prior_truncation` | Full 5-field truncation dict + `result == []` |
+| `test_run_current_empty` | `r.rows == []` |
+| `test_run_raw_no_entity` | Exact rows list with points + truncation dict |
+| `test_run_raw_no_metric` | `r.rows == []` + truncation dict |
+| `test_run_raw_hidden_visibility` | `r.rows == []` + truncation dict |
+| `test_run_raw_point_cap` | Exact 3-point list + 4-field truncation dict |
+| `test_run_raw_raw_field` | Exact point with `raw: 500` + truncation dict |
+| `test_run_raw_both_caps` | Exact row/points + 6-field truncation dict with `also` |
+| `test_subtree_aggregate_child_none` | Exact float |
+| `test_project_hierarchy_with_sort` | Full 3-row list with `subtree` dicts (metric/policy/additive/value) |
+
+## Verdict
+
+**APPROVED.** Whole-file engine.py at exact 100% statements and branches.
+All 16 tests use exact structural equality — no weak ranges, no non-None
+checks, no len-only assertions. All R1–R5 and controller extra concerns
+are closed. LOG and REPORT have literal baseline sets, per-run whole-file
+empty lists, and exact 17/19 wording. Evidence package is complete and truthful.
