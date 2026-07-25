@@ -70,6 +70,7 @@
         "BUDGET_WARNING",
         "BUDGET_EXHAUSTED",
         "ARTIFACT_REGISTERED",
+        "CARVER_PROPOSAL_ADMITTED",
         "TICK_ERROR"
       ]
     },

@@ -335,7 +335,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import (
@@ -975,14 +975,12 @@ class Daemon:
         pending_carver_feeds = self._pending_carver_feeds(project, cfg, carver_session_snap)
         # F018 P3b: validated_carve_proposals is now DERIVED (was hardcoded
         # () by A2) -- see _validated_carve_proposals for the full §4.1
-        # validation pipeline and the CONCERN-1 generation filter (this
-        # builder is the SOLE authority; the pure planner does not re-check
-        # it). `states` is threaded through so an already-fully-admitted
-        # proposal (every artifact_id already has a task) is excluded --
-        # otherwise, with no P4 ack-cursor yet, the same proposal_id would
-        # keep winning this pass's single carver-turn slot forever.
+        # validation pipeline, the CONCERN-1 generation filter, and (AD1
+        # fix) the CARVER_PROPOSAL_ADMITTED-marker exclusion (this builder
+        # is the SOLE authority; the pure planner does not re-check any of
+        # it).
         validated_carve_proposals = self._validated_carve_proposals(
-            project, cfg, carver_session_snap, states)
+            project, cfg, carver_session_snap)
 
         return reconcile.ReconcileInput(
             now=utc_now(),
@@ -1774,7 +1772,6 @@ class Daemon:
 
     def _validated_carve_proposals(self, project: str, cfg: ProjectConfig,
                                     snap: carver_session.CarverSessionSnapshot | None,
-                                    states: dict[str, TaskStateFile],
                                     ) -> tuple[carver_session.ValidatedCarveProposal, ...]:
         """F018 P3b (plan-long-running-carver.md §4.1-§4.3): the SOLE
         validation authority for a carver turn's proposal envelope --
@@ -1790,19 +1787,27 @@ class Daemon:
         _validate_carve_proposal_payload -- reconcile.plan_project's pure
         ladder does not re-check this, so this builder is the only gate.
 
-        A proposal every one of whose artifact_ids ALREADY has a task in
-        `states` is also excluded -- it is already fully admitted. There is
-        no P4 CARVER_CONTEXT_CONSUMED ack-cursor yet, so without this check
-        the same already-admitted proposal_id would keep winning this
-        pass's single carver-turn slot forever (reconcile.py's ladder
-        always prefers admission over Start/Resume/Compact) -- see
-        _execute_admit_carve_proposal's own docstring for how this doubles
-        as the "mark the proposal cursor consumed" step (§4.2 item 5).
-        A PARTIALLY-admitted proposal (some but not all artifact_ids
-        present, e.g. a crash mid-admission) is deliberately still
-        returned, so a later pass finishes creating only the missing
-        tasks -- self-healing, never a duplicate (see
-        _execute_admit_carve_proposal's own idempotency check).
+        AD1 FIX (2026-07-25 adversarial review): exclusion of an already-
+        admitted proposal is keyed on a durable CARVER_PROPOSAL_ADMITTED
+        event (_proposal_already_admitted), NOT on task presence in
+        `states`. The original "all artifact_ids already in states"
+        structural check was WRONG: a proposal's artifact MUST sit under
+        cfg.handoff_globs for validation to resolve/hash it, which means
+        plan_project's OWN 'new handoffs' scan (item 1, CreateTask -- see
+        its "Combine results in order" section: lifecycle actions,
+        including CreateTask, are combined into `actions` BEFORE
+        carver_actions) can independently discover and create the SAME
+        task in the SAME pass, before AdmitCarveProposal ever executes.
+        Under the old states-based check this made the proposal look
+        pre-consumed and permanently skipped -- silently dropping step-4
+        re-scope supersession (the origin task would never leave
+        READY_TO_CARVE). Keying exclusion on the ADMISSION EVENT itself
+        (only ever emitted by _execute_admit_carve_proposal's own step 2,
+        which ALSO performs step 4) means a proposal is selected and
+        admitted for real at least once regardless of which path (the
+        ordinary scan or admission) happens to create its tasks first --
+        see test_race_with_ordinary_scan_does_not_suppress_validation and
+        test_ad1_real_run_pass_admits_and_supersedes_origin.
         """
         if snap is None:
             return ()
@@ -1820,12 +1825,30 @@ class Daemon:
             vp = self._validate_carve_proposal_payload(cfg, snap, ev.payload or {})
             if vp is None:
                 continue
-            if all(aid in states for aid in vp.artifact_ids):
+            if self._proposal_already_admitted(project, vp.proposal_id):
                 continue
             candidates.append(vp)
 
         candidates.sort(key=lambda p: p.proposal_id)
         return tuple(candidates)
+
+    def _proposal_already_admitted(self, project: str, proposal_id: str) -> bool:
+        """True iff a CARVER_PROPOSAL_ADMITTED event for this exact
+        proposal_id already exists in the event log -- the durable
+        'consumed' cursor _validated_carve_proposals uses (AD1 fix; see
+        its own docstring for why a states-membership check is
+        insufficient). Never raises; a storage read failure fails safe to
+        False (not-yet-admitted) -- the same conservative direction every
+        other _build_input-adjacent read in this class takes on error."""
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return False
+        return any(
+            ev.type is EventType.CARVER_PROPOSAL_ADMITTED
+            and ev.payload.get("proposal_id") == proposal_id
+            for ev in events
+        )
 
     def _parse_proposal_id(self, cfg: ProjectConfig, proposal_id: Any
                            ) -> tuple[int, str] | None:
@@ -3903,24 +3926,24 @@ class Daemon:
         if snap is None:
             return events  # feature toggled off since planning -- refuse cleanly
 
-        proposals = self._validated_carve_proposals(project, cfg, snap, states)
+        proposals = self._validated_carve_proposals(project, cfg, snap)
         chosen = next((p for p in proposals if p.proposal_id == action.proposal_id), None)
         if chosen is None:
             return events  # effect-boundary recheck failed -- refuse cleanly
 
         # (2) admission marker: a durable, replayable "this proposal is
-        # admitted" audit record. Reuses the existing informational,
-        # no-TaskStateFile-projection ARTIFACT_REGISTERED event type
-        # (payload-differentiated via `kind`, the same technique
-        # PROVIDER_STATE_CHANGED's free-form `state` field already uses)
-        # rather than a new CARVER_PROPOSAL_ADMITTED EventType member --
-        # types.py is scope.forbid for this package, and no such member
-        # exists in the enum today (verified: only the 8 CARVER_* members
-        # P1-P3a already shipped are present).
+        # admitted" audit record -- CARVER_PROPOSAL_ADMITTED (AD1 fix,
+        # 2026-07-25: authorized addition to types.py/event.schema.json/
+        # test_invariants.KNOWN_IGNORED_EVENT_TYPES, mirroring the other
+        # audit-only CARVER_* members). This is THE exclusion cursor
+        # _validated_carve_proposals reads via _proposal_already_admitted
+        # -- see that method's own docstring for why a states-membership
+        # check was wrong (it raced the ordinary 'new handoffs' scan and
+        # could silently skip step 4 below).
         events.append(self._append_ev(
-            project, cfg, states, EventType.ARTIFACT_REGISTERED,
-            {"kind": "carver-proposal-admitted", "proposal_id": chosen.proposal_id,
-             "generation": chosen.generation, "artifact_ids": list(chosen.artifact_ids)},
+            project, cfg, states, EventType.CARVER_PROPOSAL_ADMITTED,
+            {"proposal_id": chosen.proposal_id, "generation": chosen.generation,
+             "artifact_ids": list(chosen.artifact_ids)},
             task_id=None))
 
         # (3) create normal tasks from the already-parsed Frontmatter/paths
@@ -3960,9 +3983,17 @@ class Daemon:
         # until an explicit typed decision/drop disposition'). Cross-
         # checking artifact_ref against chosen.artifact_paths guards
         # against a disposition naming an artifact that was never actually
-        # part of THIS validated/admitted proposal.
+        # part of THIS validated/admitted proposal -- AD2 fix (2026-07-25):
+        # compared via _normalize_repo_relpath (collapses a leading './'/
+        # internal './'/duplicate slashes) on BOTH sides, so a carver that
+        # emits a slightly differently-normalized but equivalent
+        # artifact_ref (e.g. './nyxloom-trove/handoffs/x.md') is not
+        # silently treated as a mismatch.
         record_payload = self._carve_proposal_recorded_payload(project, chosen.proposal_id)
         dispositions = (record_payload or {}).get("dispositions") or []
+        normalized_artifact_paths = {
+            self._normalize_repo_relpath(p) for p in chosen.artifact_paths
+        }
         for d in dispositions:
             if not isinstance(d, dict) or d.get("result") != "handoff":
                 continue
@@ -3971,7 +4002,8 @@ class Daemon:
                 continue
             if states[origin_id].state is not TaskState.READY_TO_CARVE:
                 continue
-            if d.get("artifact_ref") not in chosen.artifact_paths:
+            artifact_ref = self._normalize_repo_relpath(d.get("artifact_ref"))
+            if artifact_ref is None or artifact_ref not in normalized_artifact_paths:
                 continue
             events.append(self._append_ev(
                 project, cfg, states, EventType.TASK_SUPERSEDED,
@@ -3980,14 +4012,24 @@ class Daemon:
                  "notes": f"rescoped -- carve proposal {chosen.proposal_id} admitted"},
                 task_id=origin_id))
 
-        # (5) mark the proposal cursor consumed -- there is no P4 ack-
-        # cursor (CARVER_CONTEXT_CONSUMED) yet, so this package's durable
-        # 'consumed' signal is structural, not a new event: step 3 above
-        # just made every one of chosen.artifact_ids present in `states`,
-        # so _validated_carve_proposals' own "all artifact_ids already in
-        # states" exclusion (see its docstring) means this exact
-        # proposal_id is never re-selected by a later pass.
+        # (5) mark the proposal cursor consumed -- step 2's
+        # CARVER_PROPOSAL_ADMITTED event above IS the durable cursor;
+        # _proposal_already_admitted (see _validated_carve_proposals'
+        # docstring, AD1 fix) means this exact proposal_id is never
+        # re-selected by a later pass, regardless of `states` contents.
         return events
+
+    def _normalize_repo_relpath(self, value: Any) -> str | None:
+        """Textual-only normalization for comparing two repo-relative path
+        strings for equivalence (AD2 fix): collapses a leading './',
+        internal './' segments, and duplicate slashes via PurePosixPath.
+        Never resolves '..' or touches the filesystem -- this is a pure
+        surface-form comparison helper for the re-scope disposition match,
+        NOT a security boundary (_resolve_carve_proposal_artifact already
+        owns traversal rejection for the artifacts that matter)."""
+        if not isinstance(value, str) or not value:
+            return None
+        return PurePosixPath(value).as_posix()
 
     def _crosscheck_head_commit(self, cfg: ProjectConfig, task_id: str, receipt: Receipt) -> None:
         """P21 2026-07-16: never let a lying null head_commit read as "no

@@ -632,6 +632,12 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.CARVER_SESSION_RESUMED,
     EventType.CARVER_CONTEXT_CONSUMED,
     EventType.CARVER_PROPOSAL_RECORDED,
+    # F018 P3b 2026-07-25 (AD1 fix): the durable admission marker (plan
+    # §4.2 step 2) -- audit-only, same no-op shape as its CARVER_* siblings
+    # above. daemon._validated_carve_proposals scans for it directly (no
+    # TaskStateFile projection needed). See daemon.py's
+    # _proposal_already_admitted.
+    EventType.CARVER_PROPOSAL_ADMITTED,
     EventType.CARVER_COMPACTION_REQUESTED,
     EventType.CARVER_COMPACTION_FINISHED,
     EventType.CARVER_SESSION_ROTATED,

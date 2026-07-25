@@ -248,7 +248,7 @@ def test_valid_proposal_produces_one_validated_proposal(tmp_state, carver_projec
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    proposals = d._validated_carve_proposals("demo", cfg, snap, {})
+    proposals = d._validated_carve_proposals("demo", cfg, snap)
 
     assert len(proposals) == 1
     vp = proposals[0]
@@ -267,7 +267,7 @@ def test_feature_off_validated_proposals_is_empty(tmp_state, carver_project):
     _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    assert d._validated_carve_proposals("demo", cfg, None, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, None) == ()
 
 
 @pytest.mark.parametrize("mutate", [
@@ -286,7 +286,7 @@ def test_malformed_payload_not_validated(tmp_state, carver_project, mutate):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_stale_base_revision_not_validated(tmp_state, carver_project):
@@ -298,7 +298,7 @@ def test_stale_base_revision_not_validated(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_hash_mismatch_not_validated(tmp_state, carver_project):
@@ -310,7 +310,7 @@ def test_hash_mismatch_not_validated(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_lint_red_handoff_not_validated(tmp_state, carver_project):
@@ -326,7 +326,7 @@ def test_lint_red_handoff_not_validated(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("turn_mutate", ["absent", "wrong"])
@@ -343,7 +343,7 @@ def test_wrong_or_absent_turn_id_not_validated(tmp_state, carver_project, turn_m
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("bad_path", ["../outside.md", "/etc/passwd", "handoff/../../escape.md"])
@@ -355,7 +355,7 @@ def test_path_traversal_not_validated(tmp_state, carver_project, bad_path):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_concern1_stale_generation_excluded(tmp_state, carver_project):
@@ -373,22 +373,54 @@ def test_concern1_stale_generation_excluded(tmp_state, carver_project):
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
     assert snap.generation == 1
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
     # The SAME artifact, correctly attributed to generation 1, DOES validate.
     fresh_payload = _proposal_payload(generation=1, turn_id="att-1",
                                        artifacts=[_artifact(relpath, sha)])
     _record("demo", fresh_payload)
-    proposals = d._validated_carve_proposals("demo", cfg, snap, {})
+    proposals = d._validated_carve_proposals("demo", cfg, snap)
     assert len(proposals) == 1
     assert proposals[0].proposal_id == "demo:carve:1:att-1"
 
 
-def test_already_admitted_proposal_excluded(tmp_state, carver_project):
-    """Once every artifact_id of a proposal already has a task in `states`,
-    _validated_carve_proposals excludes it -- the structural 'proposal
-    cursor consumed' signal this package uses in place of P4's
-    CARVER_CONTEXT_CONSUMED ack-cursor (see its own docstring)."""
+def test_already_admitted_proposal_excluded_via_marker(tmp_state, carver_project):
+    """AD1 fix: exclusion is keyed on a durable CARVER_PROPOSAL_ADMITTED
+    marker event, NOT on task presence in `states` -- see
+    _proposal_already_admitted. Before the marker exists, the proposal
+    validates; once the marker is recorded (by a real admission), it is
+    excluded."""
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(artifacts=[_artifact(relpath, sha)])
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    snap = d._carver_session("demo", cfg)
+    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1
+
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_PROPOSAL_ADMITTED,
+        payload={"proposal_id": payload["proposal_id"], "generation": 1,
+                 "artifact_ids": ["demo-P901"]},
+    )
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+
+
+def test_race_with_ordinary_scan_does_not_suppress_validation(tmp_state, carver_project):
+    """AD1 REGRESSION (the actual bug): a proposal's artifact_id already
+    present in `states` -- e.g. because the ordinary plan_project 'new
+    handoffs' scan (CreateTask, which runs BEFORE carver_actions in one
+    pass) discovered the same on-disk file first -- must NOT be excluded
+    from validation just because a task with that id already exists. Only
+    a genuine CARVER_PROPOSAL_ADMITTED marker excludes it. The OLD
+    structural check (`all(aid in states for aid in vp.artifact_ids)`)
+    would have wrongly excluded this proposal here, permanently skipping
+    step-4 re-scope supersession -- see the full run_pass regression test
+    below (test_ad1_real_run_pass_admits_and_supersedes_origin) for the
+    end-to-end proof."""
     cfg = carver_project
     _bootstrap_warm()
     relpath, sha = _write_handoff(cfg.root, "demo-P901")
@@ -396,13 +428,23 @@ def test_already_admitted_proposal_excluded(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    already_admitted_states = {
+    # Simulate the ordinary scan having ALREADY created the task -- no
+    # CARVER_PROPOSAL_ADMITTED marker exists yet.
+    raced_states = {
         "demo-P901": TaskStateFile(schema_version=1, task_id="demo-P901", project="demo",
                                     state=TaskState.CARVED, since=utc_now()),
     }
-    assert d._validated_carve_proposals("demo", cfg, snap, already_admitted_states) == ()
-    # Not yet admitted -> still validated.
-    assert len(d._validated_carve_proposals("demo", cfg, snap, {})) == 1
+    proposals = d._validated_carve_proposals("demo", cfg, snap)
+    assert len(proposals) == 1
+    assert proposals[0].artifact_ids == ["demo-P901"]
+    # Confirm _execute_admit_carve_proposal correctly proceeds despite the
+    # race (idempotent task-creation skip, but admission itself -- and
+    # therefore step-4 re-scope -- still runs).
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=proposals[0].proposal_id, artifact_ids=("demo-P901",))
+    events = d._execute_admit_carve_proposal("demo", cfg, raced_states, action)
+    assert any(e.type is EventType.CARVER_PROPOSAL_ADMITTED for e in events)
+    assert not any(e.type is EventType.TASK_CREATED for e in events)  # already existed
 
 
 # ==========================================================================
@@ -425,9 +467,8 @@ def test_admission_creates_task_once_and_emits_admitted_marker(tmp_state, carver
 
     types = [e.type for e in events]
     assert EventType.TASK_CREATED in types
-    marker = [e for e in events if e.type is EventType.ARTIFACT_REGISTERED]
+    marker = [e for e in events if e.type is EventType.CARVER_PROPOSAL_ADMITTED]
     assert len(marker) == 1
-    assert marker[0].payload["kind"] == "carver-proposal-admitted"
     assert marker[0].payload["proposal_id"] == payload["proposal_id"]
     assert marker[0].payload["artifact_ids"] == ["demo-P901"]
     assert "demo-P901" in states
@@ -493,7 +534,7 @@ def test_effect_boundary_recheck_refuses_on_changed_artifact(tmp_state, carver_p
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert len(d._validated_carve_proposals("demo", cfg, snap, {})) == 1  # sanity: valid now
+    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1  # sanity: valid now
 
     # Mutate the artifact's content after validation but before admission.
     (cfg.root / relpath).write_text(
@@ -530,7 +571,7 @@ def test_rescope_supersedes_origin_only_on_successful_admission(tmp_state, carve
     }
     snap = d._carver_session("demo", cfg)
     # Merely being validated does NOT touch the origin.
-    assert len(d._validated_carve_proposals("demo", cfg, snap, states)) == 1
+    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
 
     action = reconcile.AdmitCarveProposal(
@@ -641,18 +682,81 @@ def test_execute_dispatches_admit_carve_proposal_branch(
 
     events = list(storage.iter_events("demo"))
     assert not any(e.type is EventType.TICK_ERROR for e in events)
-    assert any(e.type is EventType.ARTIFACT_REGISTERED
-               and e.payload.get("kind") == "carver-proposal-admitted" for e in events)
+    assert any(e.type is EventType.CARVER_PROPOSAL_ADMITTED for e in events)
     assert storage.load_state("demo", "demo-P901").state is TaskState.CARVED
+
+
+# ==========================================================================
+# AD1 REGRESSION -- the real, UNSTUBBED run_pass flow (reconcile.plan_project
+# is NOT monkeypatched here, unlike every _scripted test above). This is the
+# scenario the structural 'all artifact_ids in states' cursor got wrong: the
+# ordinary 'new handoffs' CreateTask action (lifecycle actions, combined
+# BEFORE carver_actions in reconcile.plan_project's own 'Combine results in
+# order' section) discovers and creates the SAME on-disk artifact task in
+# THIS SAME pass, before AdmitCarveProposal executes. Proves: (1) the task
+# still ends up created (exactly once, whichever path got there first), (2)
+# CARVER_PROPOSAL_ADMITTED still fires, and (3) critically, step-4 re-scope
+# supersession STILL fires -- the origin does not get stranded in
+# READY_TO_CARVE forever. A second run_pass must not re-admit.
+# ==========================================================================
+
+def test_ad1_real_run_pass_admits_and_supersedes_origin(tmp_state, carver_project):
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(
+        artifacts=[_artifact(relpath, sha)],
+        dispositions=[{"source_ref": "demo-origin", "result": "handoff", "artifact_ref": relpath}],
+        mode="rescope",
+    )
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+    states["demo-origin"] = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="demo-origin", project="demo",
+        state=TaskState.READY_TO_CARVE, since=utc_now())
+    storage.save_state(states["demo-origin"])
+
+    # reconcile.plan_project runs FOR REAL -- no _scripted stub.
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    assert not any(e.type is EventType.TICK_ERROR for e in events)
+
+    created = [e for e in events if e.type is EventType.TASK_CREATED
+               and e.task_id == "demo-P901"]
+    assert len(created) == 1  # created exactly once, whichever path won
+    assert storage.load_state("demo", "demo-P901").state is TaskState.CARVED
+
+    admitted = [e for e in events if e.type is EventType.CARVER_PROPOSAL_ADMITTED]
+    assert len(admitted) == 1
+    assert admitted[0].payload["proposal_id"] == payload["proposal_id"]
+
+    origin = storage.load_state("demo", "demo-origin")
+    assert origin.state is TaskState.SUPERSEDED
+    superseded_events = [e for e in events if e.type is EventType.TASK_SUPERSEDED
+                          and e.task_id == "demo-origin"]
+    assert len(superseded_events) == 1
+    assert superseded_events[0].payload["outcome"] == "RESCOPED"
+
+    # A second pass must NOT re-admit (marker already recorded) and must
+    # not error.
+    d.run_pass("demo")
+    events2 = list(storage.iter_events("demo"))
+    assert not any(e.type is EventType.TICK_ERROR for e in events2)
+    assert len([e for e in events2 if e.type is EventType.CARVER_PROPOSAL_ADMITTED]) == 1
+    assert len([e for e in events2 if e.type is EventType.TASK_CREATED
+                and e.task_id == "demo-P901"]) == 1
 
 
 # ==========================================================================
 # Byte-identical feature-off (structural, but asserted): with
 # cfg.carve.session == "fresh" (default), _validated_carve_proposals is
 # always (), so AdmitCarveProposal is never planned/executed -- a
-# representative run_pass produces no ARTIFACT_REGISTERED carver-proposal-
-# admitted marker and no TICK_ERROR, exactly matching
-# test_carver_session_executor.py's own equivalent oracle for Start/Resume.
+# representative run_pass produces no CARVER_PROPOSAL_ADMITTED marker and
+# no TICK_ERROR, exactly matching test_carver_session_executor.py's own
+# equivalent oracle for Start/Resume.
 # ==========================================================================
 
 def test_feature_off_run_pass_never_admits_proposals(tmp_state, sample_project):
@@ -667,11 +771,7 @@ def test_feature_off_run_pass_never_admits_proposals(tmp_state, sample_project):
 
     events = list(storage.iter_events("demo"))
     assert not any(e.type is EventType.TICK_ERROR for e in events)
-    assert not any(
-        e.type is EventType.ARTIFACT_REGISTERED
-        and e.payload.get("kind") == "carver-proposal-admitted"
-        for e in events
-    )
+    assert not any(e.type is EventType.CARVER_PROPOSAL_ADMITTED for e in events)
 
 
 # ==========================================================================
@@ -692,7 +792,7 @@ def test_validated_proposals_storage_error_degrades_to_empty(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_event_sequence_at_or_before_cursor_excluded(tmp_state, carver_project):
@@ -703,10 +803,10 @@ def test_event_sequence_at_or_before_cursor_excluded(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert len(d._validated_carve_proposals("demo", cfg, snap, {})) == 1  # sanity
+    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1  # sanity
 
     snap.last_consumed_event_sequence = ev.sequence
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("proposal_id", [
@@ -726,7 +826,7 @@ def test_malformed_proposal_id_structure_not_validated(
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("bad_path", [None, 123, ""])
@@ -739,7 +839,7 @@ def test_artifact_path_not_a_string_not_validated(tmp_state, carver_project, bad
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_artifact_path_null_byte_resolution_error_not_validated(tmp_state, carver_project):
@@ -754,7 +854,7 @@ def test_artifact_path_null_byte_resolution_error_not_validated(tmp_state, carve
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_discover_handoffs_error_not_validated(tmp_state, carver_project, monkeypatch):
@@ -770,7 +870,7 @@ def test_discover_handoffs_error_not_validated(tmp_state, carver_project, monkey
     monkeypatch.setattr(frontmatter, "discover_handoffs", _boom)
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_read_bytes_oserror_not_validated(tmp_state, carver_project, monkeypatch):
@@ -786,7 +886,7 @@ def test_read_bytes_oserror_not_validated(tmp_state, carver_project, monkeypatch
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_source_not_a_dict_not_validated(tmp_state, carver_project):
@@ -799,7 +899,7 @@ def test_source_not_a_dict_not_validated(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_artifact_entry_not_a_dict_not_validated(tmp_state, carver_project):
@@ -810,7 +910,7 @@ def test_artifact_entry_not_a_dict_not_validated(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("bad_hash", [None, 123, ""])
@@ -824,7 +924,7 @@ def test_artifact_hash_not_a_string_not_validated(tmp_state, carver_project, bad
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_frontmatter_parse_error_not_validated(tmp_state, carver_project):
@@ -839,7 +939,7 @@ def test_frontmatter_parse_error_not_validated(tmp_state, carver_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_lint_file_error_not_validated(tmp_state, carver_project, monkeypatch):
@@ -855,7 +955,7 @@ def test_lint_file_error_not_validated(tmp_state, carver_project, monkeypatch):
     monkeypatch.setattr(lint, "lint_file", _boom)
     d = daemon.Daemon({"demo": cfg.root})
     snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap, {}) == ()
+    assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_carve_proposal_recorded_payload_storage_error_returns_none(
@@ -1029,3 +1129,33 @@ def test_disposition_artifact_ref_mismatch_skipped(tmp_state, carver_project):
 
     assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
+
+
+def test_disposition_artifact_ref_normalized_match_supersedes(tmp_state, carver_project):
+    """AD2 fix: a disposition's artifact_ref that is a differently-
+    normalized but EQUIVALENT form of an admitted artifact path (a leading
+    './' here) still matches -- normalization must not create a false
+    mismatch that silently skips a legitimate supersession."""
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(
+        artifacts=[_artifact(relpath, sha)],
+        dispositions=[{"source_ref": "demo-origin", "result": "handoff",
+                       "artifact_ref": f"./{relpath}"}],
+        mode="rescope",
+    )
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = {
+        "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
+                                      state=TaskState.READY_TO_CARVE, since=utc_now()),
+    }
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
+    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+
+    superseded = [e for e in events if e.type is EventType.TASK_SUPERSEDED]
+    assert len(superseded) == 1
+    assert states["demo-origin"].state is TaskState.SUPERSEDED

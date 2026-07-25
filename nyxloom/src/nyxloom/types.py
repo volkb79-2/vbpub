@@ -298,6 +298,17 @@ class EventType(enum.Enum):
     CARVER_SESSION_RESUMED = "CARVER_SESSION_RESUMED"
     CARVER_CONTEXT_CONSUMED = "CARVER_CONTEXT_CONSUMED"
     CARVER_PROPOSAL_RECORDED = "CARVER_PROPOSAL_RECORDED"
+    # F018 P3b 2026-07-25 (plan-long-running-carver.md §4.2 step 2, AD1 fix):
+    # durable admission marker for a validated carve proposal -- the
+    # exclusion cursor daemon._validated_carve_proposals uses to stop
+    # re-selecting an already-admitted proposal_id (a structural "all
+    # artifact_ids already in states" check is NOT sufficient: the ordinary
+    # 'new handoffs' scan discovers the same on-disk artifact independently
+    # and races admission to create the task first, which would otherwise
+    # make the proposal look pre-consumed and skip step-4 re-scope
+    # supersession entirely). Audit-only, same shape as the other CARVER_*
+    # members above.
+    CARVER_PROPOSAL_ADMITTED = "CARVER_PROPOSAL_ADMITTED"
     CARVER_COMPACTION_REQUESTED = "CARVER_COMPACTION_REQUESTED"
     CARVER_COMPACTION_FINISHED = "CARVER_COMPACTION_FINISHED"
     CARVER_SESSION_ROTATED = "CARVER_SESSION_ROTATED"
