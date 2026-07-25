@@ -195,9 +195,17 @@ by P3d `5b7fd935`; 5 by `a962e731`). F018 is **enablement-ready** — `cfg.carve
 is now safe to set, and doing so is the **operator's decision** (see ENABLEMENT CHECKPOINT below).
 
 **OPTIONAL, non-blocking follow-ups** (all feature-dark; none gate enablement):
-- **P4b / AD3 — structural-invalid carve envelope → bounded repair-proposal turn** (design scouted
-  2026-07-25, ready to author; frozen-core → Sonnet not deepseek per L10; SOLO gate + full adversarial
-  review). **Half already built by P3b:** the `"repair-proposal"` write-authority mode string exists
+- **P4b / AD3 — structural-invalid carve envelope → bounded repair-proposal turn** — ✅ **DONE, MERGED
+  `87d1f4e1` (2026-07-25).** Implemented exactly as scouted: `CarveRepairRequest` DTO in the frozen
+  projector (pure dataclass, no fold change — design-open #2 resolved that way); WARM-ladder repair slot
+  `admit(1) > repair(new) > merge-feed(3) > compaction(4)` with NO `source_ids` (P4a cursor untouched);
+  daemon `_pending_carve_repairs` gated `1 <= invalid < max_proposal_repairs` so it composes with P3b's
+  escalation by one `<`/`>=` boundary (never double-fires); repair packet names the invalid ids + a
+  5-point re-validation checklist. Oracles O1–O7 (+ wrong-gen/storage-error/determinism); SOLO gate
+  GREEN (pytest 0, diff-cov 41/41 = 100%). LOG: `docs/handoff/f018-ad3-LOG.md`. **Discovered a
+  pre-existing frozen-core defect while doing so — see the new pre-enablement blocker below.** Original
+  design notes retained for the record:
+  **Half already built by P3b:** the `"repair-proposal"` write-authority mode string exists
   (`daemon.py:569` `_CARVE_WRITE_AUTHORITY_MODES`) and the *escalation ceiling* exists
   (`_carve_proposal_repair_escalations` daemon.py:2060 — at `invalid >= cfg.carve.max_proposal_repairs`
   it emits `NEEDS_OPERATOR{carver-proposal-invalid}`, debounced per generation). **Missing = the repair
@@ -233,6 +241,20 @@ is now safe to set, and doing so is the **operator's decision** (see ENABLEMENT 
 - Minor cleanups: de-hollow the lease-lost test (uses `_scripted` stub, not the real planner);
   `_recent_merge_digest_ids` uses a raw `["digest_id"]` index vs A2's `.get` (KeyError on a malformed
   digest, feature-on only).
+
+### ⚠️ NEW PRE-ENABLEMENT BLOCKER (found during AD3, 2026-07-25) — projector `last_turn_sequence` TypeError
+`carver_session.project_session` sets `snap.last_turn_sequence` to the **string** `turn_id` on
+`CARVER_PROPOSAL_RECORDED` (`carver_session.py:216`), then `CARVER_SESSION_RESUMED` does
+`last_turn_sequence += 1` (`:200-201`) → `TypeError: str + int`. **Any** proposal-then-resume event
+ordering crashes the fold; `daemon._carver_session` wraps only `iter_events`, not the fold
+(`daemon.py:1904-1908`), so it becomes a **persistent per-tick TICK_ERROR** once such an ordering
+exists in a project's log. Pre-existing (reproduced with two plain merge-feed/carve turns, no repair
+involved) but the AD3 repair flow reliably produces the ordering, so it is a **hard blocker for
+`project-persistent` enablement**. Nothing regresses today (feature DARK). **Fix = its own small
+frozen-core package** (design call: hold `turn_id` as-is and drop the `+= 1`, or make
+`last_turn_sequence` a real int counter never overwritten by `turn_id`); oracle = `project_session`
+over `[STARTED, RESUMED, PROPOSAL_RECORDED, RESUMED]` returns without raising. Detail in
+`docs/handoff/f018-ad3-LOG.md`. **Clear this before flipping enablement below.**
 
 ### ▶ ENABLEMENT CHECKPOINT (operator decision — do NOT auto-flip)
 With the checklist clear, dogfooding the persistent carver is a deliberate manual→autonomous
