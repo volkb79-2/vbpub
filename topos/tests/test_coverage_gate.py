@@ -86,7 +86,7 @@ def test_parse_added_lines_strips_b_prefix_only():
 
 def test_rel_to_source_rejects_false_prefix_match():
     """topos/src/topos must NOT match topos/src/topos_evil.
-    
+
     The prefix boundary check ensures a changed file under a similarly-named
     sibling directory is not falsely accepted as a source file.
     """

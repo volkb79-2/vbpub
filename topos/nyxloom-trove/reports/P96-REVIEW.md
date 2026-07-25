@@ -2,7 +2,7 @@
 
 **Reviewer:** Reasonix (adversarial, not the implementer)
 **Branch:** feat/topos-P96-max-test-gate
-**HEAD:** 9dcdba6e
+**Reviewed implementation HEAD:** 9dcdba6e
 **Verdict:** APPROVED
 
 ## Method
