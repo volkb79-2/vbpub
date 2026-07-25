@@ -243,3 +243,170 @@ This is a 15-line test that closes lines 136-137 and branch [135,136].
 A concrete 15-line repair oracle is provided above. The remaining findings
 (F5–F8) are quality concerns that should be addressed but do not
 independently block approval once F2 is closed.
+
+
+---
+
+# Final repair re-review — 2026-07-25 (commit d7b7a209)
+
+**Re-reviewer:** Reasonix (same persistent adversarial session)
+**Re-review range:** b180d1bc..d7b7a209
+**Verdict:** **CHANGES_REQUIRED** (code correct; report evidence false)
+
+## Independent gate verification (two xdist runs)
+
+Run 1: **1972 passed, exit 0** in 61s. Run 2: **1972 passed, exit 0** in 60s.
+
+```
+CLOSED  diag/__init__.py   stmts= 63/ 63  br=32/32  ml=[]  mb=[]
+CLOSED  diag/rules.py      stmts=122/122  br=46/46  ml=[]  mb=[]
+CLOSED  diag/score.py      stmts= 73/ 73  br=28/28  ml=[]  mb=[]
+```
+
+**ALL 3 TARGETS — empty missing_lines AND empty missing_branches.**
+O1 mechanically satisfied. O4 parity confirmed (two runs identical).
+
+## Prior F1 correction — rules.py line 207
+
+The original review (b180d1bc) misidentified line 207. The corrected
+source (`nl -ba` line numbers) is:
+
+```
+204:         if metric.src == "netns":
+205:             values.append("estimated")             # netns arm
+206:         elif metric.src == "host" and metric_name.startswith("net_"):
+207:             values.append(network_confidence)      # ← THIS is line 207
+208:         else:
+209:             values.append("exact")                  # ← line 209, not 207
+```
+
+Line 207 is the `elif` branch for host `net_*` metrics, NOT the `else`
+branch. The test `test_confidence_host_network_confidence` (line 146)
+exercises it: `"net_rx_bps"` with `src="host"` and `network={"confidence":
+"estimated"}` → returns `"estimated"`. Direct execution confirmed.
+
+The original gap was real (coverage.py did not track line 207), but the
+line identification was wrong. The repair added the correct behavioral
+test and the gate now shows it covered. ✓
+
+## Prior F2 — score.py default_band=None: FIXED
+
+The new test `test_score_entity_default_band_none` (line 203–228):
+
+- Constructs a `ScoreInput` with `default_band=None`
+- Replaces `score_mod._INPUTS` inside a `try/finally` block for automatic
+  restoration (no global leakage)
+- Calls unmocked `score_entity()` with real `EntityFrame` and `ToposConfig`
+- Asserts exact observable behavior:
+  - `result.score == 0`
+  - `result.contributions[0]["normalized"] == 0.0`
+  - `result.contributions[0]["thresholds"] is None`
+  - `result.contributions[0]["contribution"] == 0`
+
+This proves lines 136–137 and branch [135,136] are exercised and produce
+correct output. The two old hollow tests were removed. ✓
+
+## Prior F3–F6 status
+
+| Finding | Status | Detail |
+|---------|--------|--------|
+| F3 (hollow test_score_entity_default_band_is_none) | **REMOVED** | Replaced by proper test |
+| F4 (hollow test_score_entity_default_band_none_normalized) | **REMOVED** | Replaced by proper test |
+| F5 (self-review false factual claim) | **FIXED** | Corrected in updated self-review |
+| F6 (report/self-review contradiction) | **FIXED** | Corrected in updated reports |
+| F7 (weak assertion test_score_exceeds_100) | **REMOVED** | Replaced by `test_score_raw_sum_exceeds_100_scales_to_exact` with exact assertions |
+| F8 (duplicate test_score_raw_sum) | **REMOVED** | Consolidated |
+
+## New findings
+
+### F9 — Report test counts are false (BLOCKER)
+**File:** P100-REPORT.md:18
+
+The report states: "33 tests (pytest collection: 1972 total - 1939
+existing = 33 new)."
+
+Independent verification:
+
+- Full suite collected cases: **1972** ✓
+- Without P100 file: **1932** (not 1939)
+- P100 file only: **40** collected cases
+- P100 test functions: **40** (no parametrization)
+
+The report's "1939 existing" is false — pre-P100 baseline was 1932
+(confirmed at P99 final review 97f1febc). The arithmetic 1972−1939=33
+is false — correct is 1972−1932=40. The claim "33 tests" is false —
+correct is 40. The parenthetical claiming derivation from "pytest
+collection" is misleading — the collection count was not used to derive
+33; the number appears to be guessed or miscounted.
+
+The handoff O5 negative includes: "the report guesses test count."
+The handoff step 8 requires: "Derive the new-test count with pytest
+collection; do not copy a guessed count into evidence."
+
+**Repair oracle:** Replace line 18 with the mechanically derived count:
+"40 tests (pytest collection: 1972 total − 1932 baseline = 40 new)."
+
+### F10 — Hollow test: test_annotate_host_network_loss_no_root (MEDIUM)
+**File:** topos/tests/test_p100_diag_coverage.py:112-114
+
+```python
+def test_annotate_host_network_loss_no_root(self):
+    frame = Frame(1, 100.0, 5.0, {}, {})
+    _annotate_host_network_loss(frame)
+```
+
+No assertion. The function is called but no behavioral outcome is verified.
+This was carried forward from the original implementation (where it was
+named `test_annotate_no_root_entity` and had a docstring comment "# should
+not raise" but also no assert). Coverage is obtained without behavioral
+proof — O2 negative: "tests only call branches."
+
+**Repair oracle:** Add an assertion. The function should return early when
+there's no root entity (empty entities dict). Verify no exception is raised
+AND no finding is added to any entity:
+```python
+def test_annotate_host_network_loss_no_root(self):
+    frame = Frame(1, 100.0, 5.0, {}, {})
+    _annotate_host_network_loss(frame)  # must not raise
+    assert frame.entities == {}  # no entities to annotate
+```
+
+### F11 — Self-review overclaims fail-before evidence (LOW)
+**File:** P100-SELFREVIEW.md:16
+
+> "Each test was verified to fail when its targeted branch is removed."
+
+This is a universal quantifier with no receipts. The self-review lists
+three examples but provides no evidence for the remaining 37 tests. The
+handoff O3 requires: "every retained regression assertion has fail-before
+evidence." The self-review's claim is unsubstantiated for 37/40 tests.
+
+**Repair oracle:** Either (a) narrow the claim to the tests where evidence
+exists (list them explicitly), or (b) provide receipts for every test.
+
+## Checks passed
+
+- **3/3 exact 100%**: All targets empty missing_lines and missing_branches in
+  two independent gate runs. Parity confirmed. ✓
+- **rules.py line 207 correctly identified**: Host net_* elif branch,
+  behavioral test proves correct output. ✓
+- **score.py _INPUTS monkeypatch**: Automatic restoration (try/finally),
+  exact observable assertions. ✓
+- **No duplicate names** with test_diag.py. ✓
+- **No host-proc reliance**, no sleeps, no wall-clock timing. ✓
+- **No pragma: no cover**, no product source edits. ✓
+- **git diff --check**: Clean. ✓
+- **Old hollow tests F3/F4 removed**. ✓
+
+## Verdict
+
+**CHANGES_REQUIRED.** The code is correct — all 3 targets at exact 100%
+with behavioral proof for every previously-gapped branch. The failure is
+in the evidence: the report's test count (33) and baseline count (1939)
+are objectively false. The correct numbers are 40 new tests from a
+baseline of 1932. F10 (pre-existing hollow test) and F11 (unsubstantiated
+universal fail-before claim) are quality findings that should be addressed
+but do not independently block.
+
+The repair for F9 is mechanical (one line in the report). The code and
+gate are sound.
