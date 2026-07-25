@@ -4021,8 +4021,22 @@ class Daemon:
         recheck (_dispatch_admissible) this method would otherwise repeat;
         the route-resolution/no-route handling below mirrors _execute_
         resume_carver_session's own (the session's PINNED route, never
-        re-selected via for_role). B7's re-scope supersede (only after
-        launch commits) is preserved verbatim from the legacy path."""
+        re-selected via for_role).
+
+        AD1 fix (2026-07-25 adversarial review): UNLIKE the legacy launch-
+        time B7 supersede, a normalized re-scope does NOT supersede the
+        origin here. Plan §4.2 explicitly tightens B7 for the proposal
+        protocol: "supersession waits until the replacement is validated/
+        admitted... not merely after launching a carve." The origin's
+        context still seeds this turn's PROMPT (rescope_ctx below) so the
+        carver knows what it is re-scoping, but the actual TASK_SUPERSEDED
+        is emitted later, by _execute_admit_carve_proposal, driven by the
+        RECORDED proposal's own `dispositions` (result=="handoff",
+        source_ref=origin) -- see that method's own step-4 docstring. Firing
+        it at launch, as the legacy path does, would mean a normalized
+        re-scope that turns out empty/invalid still loses the origin with
+        nothing to replace it -- exactly the data-loss bug §4.2 exists to
+        close."""
         events: list[Event] = []
 
         route_id = snap.route.get("route_id") if isinstance(snap.route, dict) else None
@@ -4118,17 +4132,10 @@ class Daemon:
                                        {"attempt": attempt.to_dict()}, task_id=task_id,
                                        attempt_id=attempt_id))
 
-        # B7 2026-07-20 (P75) re-scope supersede, preserved verbatim from
-        # _execute_carve_dispatch's legacy path: only after launch commits,
-        # and only when the origin is still present in states.
-        if origin_task_id is not None and origin_task_id in states:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.TASK_SUPERSEDED,
-                {"from": states[origin_task_id].state.value,
-                 "outcome": _RESCOPE_OUTCOME,
-                 "carve_task_id": task_id,
-                 "notes": f"rescoped -- re-scope carve {task_id} launched (seq={seq})"},
-                task_id=origin_task_id))
+        # AD1 fix: NO launch-time supersede here (unlike the legacy path
+        # above) -- see this method's own docstring. The origin stays
+        # READY_TO_CARVE until _execute_admit_carve_proposal admits a
+        # replacement that names it in a "handoff" disposition.
         return events
 
     def _carver_proposal_report_path(self, cfg: ProjectConfig, attempt: Attempt,
@@ -4209,7 +4216,10 @@ class Daemon:
         modes (merge-feed/targeted-intake/recover) never attempt this parse
         and so are byte-identical to P3a. CARVER_SESSION_RESUMED's payload
         also gains `mode`/`turn_id`/`source_ids` here (plan §2.2 fold-in --
-        P3a shipped only {generation, route})."""
+        P3a shipped only {generation, route}). AD2 fix: a structurally-
+        valid envelope with an EMPTY artifacts list ("carved nothing this
+        turn") records RESUMED but NOT a proposal -- see the inline
+        comment at the CARVER_PROPOSAL_RECORDED emission below."""
         events: list[Event] = []
         tsf = states[task_id]
         attempt = tsf.attempt_by_id(attempt_id)
@@ -4250,13 +4260,30 @@ class Daemon:
                 {"generation": generation, "route": attempt.route.to_dict(),
                  "mode": mode, "turn_id": task_id, "source_ids": list(source_ids)},
                 task_id=task_id, attempt_id=attempt_id))
-            if turn_result is not None:
+            if turn_result is not None and turn_result.artifacts:
                 # F018 P3c (plan §2.2/§4.1): the audit-only, admission-
                 # untouched record of what this write-authority turn
                 # authored. Payload is the envelope's OWN fields verbatim --
                 # the exact shape P3b's _validate_carve_proposal_payload
                 # already consumes (proposal_id/turn_id/source/artifacts/
                 # outcome), so no separate/drifting payload builder exists.
+                #
+                # AD2 fix (2026-07-25 adversarial review): a STRUCTURALLY
+                # valid envelope with an EMPTY artifacts list ("carved
+                # nothing this turn" -- explicitly authorized by the carve
+                # prompt, mirroring the legacy contract's own 'carved: []'
+                # allowance) is a legitimate no-op, not a proposal. P3b's
+                # _validate_carve_proposal_payload rejects an empty-
+                # artifacts payload outright (`if not artifacts: return
+                # None`) and counts every rejection toward the bounded
+                # repair budget -- recording one here for a healthy idle
+                # carver (e.g. outcome ROADMAP_EXHAUSTED with nothing left
+                # to carve) would spuriously burn that budget and
+                # eventually escalate NEEDS_OPERATOR{carver-proposal-
+                # invalid} for a turn that did exactly what was asked.
+                # RESUMED above already recorded the turn; skipping here
+                # simply means no proposal audit trail for a turn that
+                # produced no proposal.
                 events.append(self._append_ev(
                     project, cfg, states, EventType.CARVER_PROPOSAL_RECORDED,
                     turn_result.to_dict(), task_id=task_id, attempt_id=attempt_id))

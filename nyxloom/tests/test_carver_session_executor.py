@@ -1069,22 +1069,31 @@ def test_carve_dispatch_normalizes_to_session_resume_when_warm(
     assert f"demo:carve:1:{task_id}" in argv[-1]
 
 
-def test_carve_dispatch_normalize_rescope_supersedes_origin_after_launch(
+def _seed_ready_to_carve_origin(project: str) -> dict:
+    states = storage.list_states(project)
+    states["demo-origin"] = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="demo-origin", project=project,
+        state=TaskState.READY_TO_CARVE, since=utc_now())
+    storage.save_state(states["demo-origin"])
+    return storage.list_states(project)
+
+
+def test_carve_dispatch_normalize_rescope_carries_context_no_launch_time_supersede(
         tmp_state, carver_project, patch_launch):
-    """A re-scope CarveDispatch (action.task_id set) normalizes the SAME
-    way, carries the rejected task's context, and B7's re-scope supersede
-    (only after launch commits) is preserved."""
+    """AD1 (2026-07-25 adversarial review): a normalized re-scope
+    CarveDispatch (action.task_id set) normalizes the SAME way and carries
+    the rejected task's context into the prompt, but -- UNLIKE the legacy
+    B7 launch-time supersede -- does NOT supersede the origin at launch.
+    Plan §4.2 tightens B7: supersession waits until a replacement is
+    validated/admitted (P3b's _execute_admit_carve_proposal), never merely
+    after a carve launches. The origin stays READY_TO_CARVE right after
+    this launch."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
     patch_launch.clear()
 
-    states = storage.list_states("demo")
-    states["demo-origin"] = TaskStateFile(
-        schema_version=storage.SCHEMA_VERSION, task_id="demo-origin", project="demo",
-        state=TaskState.READY_TO_CARVE, since=utc_now())
-    storage.save_state(states["demo-origin"])
-    states = storage.list_states("demo")
+    states = _seed_ready_to_carve_origin("demo")
 
     action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
     events = d._execute_carve_dispatch("demo", cfg, states, action)
@@ -1097,16 +1106,99 @@ def test_carve_dispatch_normalize_rescope_supersedes_origin_after_launch(
     assert "rescope-of=demo-origin" in tsf.notes
     assert "sources=demo-origin" in tsf.notes
 
-    superseded = [e for e in events if e.type is EventType.TASK_SUPERSEDED
-                  and e.task_id == "demo-origin"]
-    assert len(superseded) == 1
-    assert superseded[0].payload["outcome"] == "RESCOPED"
-    assert superseded[0].payload["carve_task_id"] == task_id
+    # AD1: NO TASK_SUPERSEDED for the origin at launch time.
+    assert [e for e in events if e.type is EventType.TASK_SUPERSEDED] == []
+    assert storage.load_state("demo", "demo-origin").state is TaskState.READY_TO_CARVE
 
     argv = patch_launch[0].argv
     assert "RE-SCOPING" in argv[-1]
     assert "demo-origin" in argv[-1]
     assert '"result": "handoff"' in argv[-1]  # the disposition instruction for a re-carve
+
+
+def test_ad1_empty_proposal_from_normalized_rescope_leaves_origin_ready_to_carve(
+        tmp_state, carver_project, patch_launch):
+    """AD1 regression (data-loss oracle): a normalized re-scope carve turn
+    that produces an EMPTY/invalid envelope must leave the origin
+    READY_TO_CARVE -- not superseded with nothing to replace it. Covers
+    BOTH a structurally-empty-artifacts envelope (AD2's own 'carved
+    nothing' case) and a fully missing envelope (turn-failed-to-produce)."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = _seed_ready_to_carve_origin("demo")
+    action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+
+    # The carve turn produced NO usable envelope at all (e.g. the carver
+    # decided the rejection was unfixable and only opened a decision).
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+    d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    # No proposal was ever recorded, so a real run_pass has nothing to
+    # admit -- the origin must still be READY_TO_CARVE, never superseded.
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    assert not any(e.type is EventType.TICK_ERROR for e in events)
+    assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+    assert [e for e in events if e.type is EventType.TASK_SUPERSEDED
+            and e.task_id == "demo-origin"] == []
+    assert storage.load_state("demo", "demo-origin").state is TaskState.READY_TO_CARVE
+
+
+def test_ad1_valid_rescope_proposal_supersedes_origin_only_on_admission(
+        tmp_state, carver_project, patch_launch):
+    """AD1 happy path: a VALID re-scope proposal naming the origin in its
+    disposition supersedes the origin only after a SECOND, real run_pass
+    admits it -- proving supersession moved from launch to admission."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = _seed_ready_to_carve_origin("demo")
+    action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    attempt_id = states[task_id].attempts[0].attempt_id
+
+    relpath, sha = _write_handoff(cfg.root, "demo-P902")
+    envelope = _carve_envelope(
+        task_id, mode="rescope",
+        artifacts=[{"kind": "handoff", "path": relpath, "sha256": sha,
+                   "source_ref": "demo-origin"}],
+        dispositions=[{"source_ref": "demo-origin", "result": "handoff",
+                       "artifact_ref": relpath, "reason_code": "re-scoped"}])
+    seq = task_id.rsplit("-", 1)[-1]
+    _write_envelope(cfg.root / cfg.reports_dir, seq, envelope)
+
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+    consume_events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    assert any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in consume_events)
+
+    # Right after consumption (before admission), the origin is UNCHANGED.
+    assert storage.load_state("demo", "demo-origin").state is TaskState.READY_TO_CARVE
+
+    # Second, unstubbed pass: validates + admits, THEN supersedes the origin.
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    assert not any(e.type is EventType.TICK_ERROR for e in events)
+    assert any(e.type is EventType.CARVER_PROPOSAL_ADMITTED for e in events)
+    assert storage.load_state("demo", "demo-origin").state is TaskState.SUPERSEDED
+    sup = [e for e in events if e.type is EventType.TASK_SUPERSEDED
+           and e.task_id == "demo-origin"]
+    assert len(sup) == 1
+    assert sup[0].payload["outcome"] == "RESCOPED"
 
 
 def test_carve_dispatch_normalize_targeted_intake_sub_mode(
@@ -1376,6 +1468,52 @@ def test_read_only_resume_turn_never_records_proposal_even_if_envelope_present(
 
     assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+
+
+def test_ad2_carved_nothing_turn_records_resumed_not_proposal_stays_warm(
+        tmp_state, carver_project, patch_launch):
+    """AD2 (2026-07-25 adversarial review): a STRUCTURALLY VALID envelope
+    with an EMPTY artifacts list ("carved nothing this turn" -- explicitly
+    authorized by the carve prompt, mirroring the legacy 'carved: []'
+    allowance) is a legitimate no-op, not a proposal. P3b's
+    _validate_carve_proposal_payload rejects an empty-artifacts payload and
+    counts it toward the bounded repair budget, so recording one here for a
+    healthy idle carver would spuriously burn that budget. Assert: RESUMED
+    is recorded (the turn itself succeeded), NO CARVER_PROPOSAL_RECORDED,
+    the session stays WARM, and a real run_pass afterward never escalates
+    NEEDS_OPERATOR{carver-proposal-invalid}."""
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+    _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
+    patch_launch.clear()
+
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    task_id = launch_events[0].task_id
+    seq = task_id.rsplit("-", 1)[-1]
+    envelope = _carve_envelope(task_id, artifacts=[], dispositions=[],
+                               outcome="ROADMAP_EXHAUSTED", headroom_estimate=0)
+    _write_envelope(cfg.root / cfg.reports_dir, seq, envelope)
+
+    attempt_id = states[task_id].attempts[0].attempt_id
+    _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
+                       result=ReceiptResult.DONE)
+    states = storage.list_states("demo")
+
+    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+
+    assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
+    assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
+    assert not any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
+    assert _snapshot("demo").status is CarverStatus.WARM
+
+    # A real pass afterward finds nothing to validate/repair-escalate.
+    d.run_pass("demo")
+    later = list(storage.iter_events("demo"))
+    assert not any(e.type is EventType.TICK_ERROR for e in later)
+    assert not any(e.type is EventType.NEEDS_OPERATOR
+                   and e.payload.get("reason") == "carver-proposal-invalid" for e in later)
 
 
 # ==========================================================================
