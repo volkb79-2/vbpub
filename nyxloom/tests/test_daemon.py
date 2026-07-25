@@ -5541,3 +5541,71 @@ def test_pending_carver_feeds_caps_at_retain_merge_digests(
     assert len(feeds) == 2
     assert [f.event_sequence for f in feeds] == sorted(f.event_sequence for f in feeds)
     assert [f.digest_id for f in feeds] == ["merge:demo:c3", "merge:demo:c4"]
+
+
+def test_carver_session_fails_safe_to_base_snapshot_on_unreadable_log(
+        tmp_state, sample_project, monkeypatch):
+    """Fail-safe convention (mirrors _history's own try/except-to-[] over
+    storage.iter_events): an unreadable event log must not raise out of
+    _carver_session -- it falls back to an empty event list, which the pure
+    projector turns into the base (ABSENT, generation 0, cursor 0)
+    snapshot."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+
+    def _boom(*_a, **_kw):
+        raise OSError("simulated unreadable event log")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+
+    assert snap is not None
+    assert snap.status is CarverStatus.ABSENT
+    assert snap.generation == 0
+    assert snap.last_consumed_event_sequence == 0
+
+
+def test_pending_carver_feeds_fails_safe_to_empty_tuple_on_unreadable_log(
+        tmp_state, sample_project, monkeypatch):
+    """Same fail-safe convention on the feed-scanning side: an unreadable
+    event log must not raise out of _pending_carver_feeds -- it degrades to
+    no pending feeds rather than propagating."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+    snap = carver_session.CarverSessionSnapshot(
+        project=project, generation=1, status=CarverStatus.WARM)
+
+    def _boom(*_a, **_kw):
+        raise OSError("simulated unreadable event log")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+
+    d = daemon.Daemon({project: cfg.root})
+    assert d._pending_carver_feeds(project, cfg, snap) == ()
+
+
+def test_pending_carver_feeds_retain_zero_means_none_retained(
+        tmp_state, sample_project):
+    """cfg.carve.retain_merge_digests <= 0 is an explicit 'keep none' branch
+    -- guards against Python's `list[-0:]` slicing returning the WHOLE list
+    (since `-0 == 0`), which would silently defeat a 0 cap."""
+    cfg = sample_project
+    project = "demo"
+    cfg.carve.session = "project-persistent"
+    cfg.carve.retain_merge_digests = 0
+
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit1", "source_kind": "review",
+                 "carver_digest": _carver_digest_payload(1)},
+        task_id="t1",
+    )
+
+    d = daemon.Daemon({project: cfg.root})
+    snap = d._carver_session(project, cfg)
+    assert d._pending_carver_feeds(project, cfg, snap) == ()
