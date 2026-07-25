@@ -260,6 +260,46 @@ class TestProjectSession:
         assert snap.last_turn_sequence == 2
         assert snap.successful_turns_since_compaction == 2
 
+    def test_proposal_then_resume_does_not_crash_projector(self):
+        """Regression (F018 AD3 discovery): a CARVER_PROPOSAL_RECORDED carries a
+        STRING turn_id (the carver task id, e.g. 'carver-session-p1-3' -- the
+        existing proposal test used an unrealistic int 5, which masked this).
+        Before the fix, the projector assigned that string to last_turn_sequence
+        (an int COUNTER), so a FOLLOWING CARVER_SESSION_RESUMED folded
+        `str += 1` and raised TypeError out of project_session -- a persistent
+        per-tick crash the AD3 repair flow (invalid proposal -> repair resume)
+        reliably produces. project_session must fold this ordering without
+        raising, and last_turn_sequence must remain the resume-turn counter."""
+        start = _event(EventType.CARVER_SESSION_STARTED, project="p1",
+                        payload={"generation": 1, "session_id": "sess-1"})
+        resume1 = _event(EventType.CARVER_SESSION_RESUMED, project="p1",
+                          payload={"generation": 1})
+        prop = _event(EventType.CARVER_PROPOSAL_RECORDED, project="p1",
+                       payload={"proposal_id": "p1:carve:1:carver-session-p1-3",
+                                "turn_id": "carver-session-p1-3"})
+        resume2 = _event(EventType.CARVER_SESSION_RESUMED, project="p1",
+                          payload={"generation": 1})
+        # Must not raise (the whole point) ...
+        snap = project_session([start, resume1, prop, resume2])
+        # ... and the counter is intact (two RESUMED turns), NOT the string.
+        assert snap.last_turn_sequence == 2
+        assert isinstance(snap.last_turn_sequence, int)
+        # The proposal's identity is still captured.
+        assert snap.last_proposal_id == "p1:carve:1:carver-session-p1-3"
+
+    def test_proposal_recorded_leaves_turn_sequence_counter_untouched(self):
+        """A CARVER_PROPOSAL_RECORDED records the proposal id but does NOT touch
+        the resume-turn counter (its value comes solely from RESUMED)."""
+        start = _event(EventType.CARVER_SESSION_STARTED, project="p1",
+                        payload={"generation": 1, "session_id": "sess-1"})
+        resume = _event(EventType.CARVER_SESSION_RESUMED, project="p1",
+                         payload={"generation": 1})
+        prop = _event(EventType.CARVER_PROPOSAL_RECORDED, project="p1",
+                       payload={"proposal_id": "p1:carve:1:t", "turn_id": "t"})
+        snap = project_session([start, resume, prop])
+        assert snap.last_turn_sequence == 1  # from the single RESUMED, unchanged
+        assert snap.last_proposal_id == "p1:carve:1:t"
+
     def test_context_consumed_advances_cursor(self):
         start = _event(EventType.CARVER_SESSION_STARTED, project="p1",
                         payload={"generation": 1, "session_id": "sess-1"})
