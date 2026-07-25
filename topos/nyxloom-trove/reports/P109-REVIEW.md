@@ -62,7 +62,7 @@ All 15 lines and 15 branch pairs covered with exact behavioral assertions.
 | `test_build_kill_preview_rejects_an_unknown_kind` | Exact `ValueError` message with raw repr |
 | `test_render_kill_preview_includes_the_exact_force_warning` | Complete multiline text with KILL warning, argv, force flag |
 | `test_nonstring_owner_detail_is_discarded_exactly` | Exact `OwnerDetection(owner="ciu", ambiguous=False, detail="")` |
-| `test_config_and_label_shapes_have_exact_verdicts` [4] | Exact `OwnerSafetyRefusal` dataclass or `None` + `calls == ["accepted-target"]` |
+| `test_config_and_label_shapes_have_exact_verdicts` [5] | Exact `OwnerSafetyRefusal` dataclass or `None` + `calls == ["accepted-target"]` |
 | `test_compose_with_no_safe_display_detail_uses_project_instruction` | Exact `OwnerSafetyRefusal` with project-level message |
 | `test_defensive_unknown_owner_message_is_exact` | Exact defensive message text |
 | `test_nameless_identity_is_matched_by_canonical_id` | Exact `OwnerSafetyRefusal` with canonical-id message |
