@@ -79,9 +79,43 @@ keep `[stage.carve]` default-off in every live config until P3 lands.
   P3 lands: DEGRADED-exhausted should set the mutex (no legacy carve) or emit an explicit
   operator escalation — not silently revert to old-vocabulary carving. Spec §2.4/§5 under-specify
   this → likely a D-NNN.
-- A1 fix-before-merge (in flight): merge-feed + intake slots must sort by `event_sequence` (§3.2
+- A1 fix-before-merge (DONE, merged): merge-feed + intake slots sort by `event_sequence` (§3.2
   event-order), not by `digest_id`/`intake_id` (arbitrary hash / id) — gate-invisible (determinism
   holds either way), caught only by review.
+
+## F018 P3 — persistent bootstrap/resume executor + proposal admission (STARTED 2026-07-25)
+Spec: `docs/plan-long-running-carver.md` §12 Package 3 (970–1010) + §5 (476–540 lifecycle) +
+§4.1–4.3 (proposal contract) + §2.5 (bootstrap context) + §6.1 (compaction driver boundary —
+P3 leaves compaction DISABLED; a compaction-due session uses the rotation fallback, no `/compact`).
+**Frozen-core-adjacent** (daemon launch/effect boundary + adapters). Executes the A1 actions the
+daemon currently can't run. Decomposition (serial; A2-reviewer reused):
+- **P3a — carver session executor (Start + Resume) + behavioral fake** *(dispatched)*: in
+  `daemon._execute` (:3515, isinstance-chain at :4289) add `StartCarverSession`/`ResumeCarverSession`
+  branches. Start = mirror `_execute_carve_dispatch` (:2824): admissibility recheck → synthetic
+  carver attempt → bootstrap packet (§2.5) → wrapper-launch with `{project}.strategic-carver` lease
+  (:2950) → `adapters.capture_session` → `CARVER_SESSION_STARTED`+WARM; capture-fail →
+  `CARVER_SESSION_DEGRADED`, never WARM on exit alone. Resume = `adapters.build_resume(session=
+  snapshot.session_id, …)` (reviewer B6 pattern :3636/:3715), fresh turn-id, route-pinned,
+  mode-specific packet (merge-feed/targeted-intake/recover). Byte-identical feature-off. Behavioral
+  fake carver for E2E. Oracles: bootstrap captures S1→WARM; capture-fail→DEGRADED never WARM; resume
+  reuses S1 fresh turn-id; daemon restart resumes S1; lease contention→one winner, loser
+  `lease-lost-race`, no new generation/cursor advance; adapter lacking session-capability→ineligible.
+- **P3b — proposal validation + admission**: validate `CARVER_PROPOSAL_RECORDED` (envelope schema,
+  path/hash, frontmatter, lint, `input_revision==base_revision`, oracle-satisfiability) →
+  `ValidatedCarveProposal` in the daemon input-builder, **current-generation-filtered (concern-1)**;
+  execute `AdmitCarveProposal` (effect-boundary hash recheck → `CARVER_PROPOSAL_ADMITTED` → create
+  tasks from parsed Frontmatter → re-scope supersession ONLY on admission; bounded repair →
+  NEEDS_OPERATOR after N). Consider carrying `generation` on `AdmitCarveProposal`.
+- **P3c — planner migration (`reconcile.py`): route `every carver turn` through the session when
+  WARM** (Package 3 work-item 2): headroom/re-scope/test-health emit `ResumeCarverSession(mode=…)`
+  instead of `CarveDispatch` when feature-on + WARM (completes the §4.2 alias — without this the
+  persistent session never AUTHORS). Frozen-core; full review. *(Scope note: implied by "every
+  carver turn"; not in Package 3's explicit item list — confirm vs §2.1 before building.)*
+- **P3d — rotation + bounded resume recovery + DEGRADED policy (concern-3) + compaction→rotation
+  fallback (§6.1/§5.4)**: typed rotation conditions, cold recovery from durable truth, and the
+  concern-3 decision (DEGRADED-exhausted sets the mutex / escalates, not silent legacy fall-through).
+After P3 → the carver is functional → enable `cfg.carve.session="project-persistent"` on a pilot,
+then dogfood.
 
 `reconcile.py` is FROZEN-CORE: A1 gets a SOLO gate + a full adversarial review; A2 gets a SOLO
 gate + medium review. A1→A2 serial (A2 depends on A1's fields). After A2 lands → **DOGFOOD
