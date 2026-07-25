@@ -1159,3 +1159,42 @@ def test_disposition_artifact_ref_normalized_match_supersedes(tmp_state, carver_
     superseded = [e for e in events if e.type is EventType.TASK_SUPERSEDED]
     assert len(superseded) == 1
     assert states["demo-origin"].state is TaskState.SUPERSEDED
+
+
+def test_disposition_missing_artifact_ref_skipped(tmp_state, carver_project):
+    """A 'handoff' disposition with a valid, READY_TO_CARVE origin but no
+    (or a non-string) artifact_ref never matches -- _normalize_repo_relpath
+    returns None for it, distinct from the 'wrong path' mismatch case."""
+    cfg = carver_project
+    _bootstrap_warm()
+    relpath, sha = _write_handoff(cfg.root, "demo-P901")
+    payload = _proposal_payload(
+        artifacts=[_artifact(relpath, sha)],
+        dispositions=[{"source_ref": "demo-origin", "result": "handoff", "artifact_ref": None}],
+        mode="rescope",
+    )
+    _record("demo", payload)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = {
+        "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
+                                      state=TaskState.READY_TO_CARVE, since=utc_now()),
+    }
+    action = reconcile.AdmitCarveProposal(
+        project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
+    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+
+    assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
+    assert states["demo-origin"].state is TaskState.READY_TO_CARVE
+
+
+def test_proposal_already_admitted_storage_error_fails_safe_to_false(
+        tmp_state, carver_project, monkeypatch):
+    cfg = carver_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._proposal_already_admitted("demo", "demo:carve:1:att-1") is False
