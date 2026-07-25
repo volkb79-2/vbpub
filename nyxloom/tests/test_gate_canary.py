@@ -124,6 +124,20 @@ def test_inject_import_break_is_minimal_one_line_diff(tmp_path):
     assert "x = (1 +\n     2)" in (root / "thing.py").read_text()
 
 
+def test_inject_import_break_prepends_on_syntax_error(tmp_path):
+    """An already-broken (unparseable) source file falls back to a plain
+    prepend rather than crashing -- ast.parse failing is not this
+    function's problem to solve, only to not choke on."""
+    target = tmp_path / "broken.py"
+    target.write_text("def f(:\n")
+
+    description = gate_canary.inject_import_break(target)
+
+    mutated = target.read_text()
+    assert mutated.startswith('raise AssertionError("nyxloom-gate-canary")\n')
+    assert "line 1" in description
+
+
 # --------------------------------------------------------------------------- #
 # _candidate_source_files -- deterministic ranking + exclusions
 # --------------------------------------------------------------------------- #
@@ -166,6 +180,16 @@ def test_candidate_ranking_excludes_test_and_vcs_dirs(tmp_path):
     assert [str(p.relative_to(tmp_path)) for p in candidates] == ["real.py"]
 
 
+def test_candidate_ranking_handles_unstattable_file(tmp_path):
+    """A broken symlink (or any matched path that fails to stat) must not
+    crash ranking -- treated as size 0 rather than propagating the OSError."""
+    (tmp_path / "broken_link.py").symlink_to(tmp_path / "does-not-exist.py")
+
+    candidates = gate_canary._candidate_source_files(tmp_path, limit=10)
+
+    assert [str(p.relative_to(tmp_path)) for p in candidates] == ["broken_link.py"]
+
+
 # --------------------------------------------------------------------------- #
 # _project_subtree_root -- BLOCKER #1's core fix
 # --------------------------------------------------------------------------- #
@@ -203,6 +227,25 @@ def test_project_subtree_root_is_a_subdir_when_project_self_hosts(tmp_path):
 
     assert subtree == (scratch / "myproj").resolve()
     assert subtree != scratch.resolve()
+
+
+def test_project_subtree_root_falls_back_when_repo_root_is_unrelated(tmp_path, monkeypatch):
+    """Pathological case: gate_runner._repo_root's answer is NOT actually an
+    ancestor of cfg.root (relative_to raises ValueError) -- falls back to
+    treating the whole scratch as the subtree rather than crashing."""
+    (tmp_path / "myproj").mkdir()
+    cfg = _FakeCfg(tmp_path / "myproj")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    monkeypatch.setattr(
+        gate_canary.gate_runner, "_repo_root",
+        lambda cfg_: str(tmp_path / "unrelated-repo-root"),
+    )
+
+    subtree = gate_canary._project_subtree_root(cfg, scratch)
+
+    assert subtree == scratch.resolve()
 
 
 # --------------------------------------------------------------------------- #
@@ -259,6 +302,24 @@ def test_discover_canary_candidates_worktree_add_failure_raises(tmp_path):
 
     with pytest.raises(gate_canary.CanaryError, match="could not create a scratch worktree"):
         gate_canary.discover_canary_candidates(cfg, "deadbeef" * 5)
+
+
+def test_discover_canary_candidates_removes_stale_scratch_before_discovering(tmp_path):
+    """A leftover discovery scratch worktree from an interrupted prior run
+    is removed before this run re-adds it (idempotent, mirrors
+    build_canary_commit's own stale-scratch handling)."""
+    root = tmp_path / "repo"
+    head = _init_repo(root, {"a.py": "x = 1\n"})
+    cfg = _FakeCfg(root)
+
+    stale = root / ".worktrees" / f"canary-discover-{head[:12]}"
+    assert _run(root, "worktree", "add", "--detach", str(stale), head).returncode == 0
+    assert stale.exists()
+
+    candidates = gate_canary.discover_canary_candidates(cfg, head)
+
+    assert candidates == ["a.py"]
+    assert not stale.exists()
 
 
 # --------------------------------------------------------------------------- #
