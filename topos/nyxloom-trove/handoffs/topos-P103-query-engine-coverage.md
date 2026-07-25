@@ -22,7 +22,7 @@ scope:
     - "pyproject.toml"
 oracles:
   - id: O1
-    observable: "query/engine.py has empty missing_lines and missing_branches in branch-aware JSON from the complete xdist gate, closing the literal 17-line/19-pair residual and the whole file"
+    observable: "src/topos/query/engine.py has empty missing_lines and missing_branches in branch-aware JSON from the complete xdist gate, closing the literal 17-line/19-pair residual and the whole file"
     negative: "completion is claimed from aggregate, serial, focused, rounded, partial residual closure, or only the P103 subset without whole-file emptiness"
     gate: topos-suite
   - id: O2
