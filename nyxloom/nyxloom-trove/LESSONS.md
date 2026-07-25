@@ -306,6 +306,36 @@ mechanically and Pro approved. This reinforces the two-strike boundary:
 coverage closure does not buy another retry for repeated receipt-quality
 failures.
 
+### P102 validation: split a large file by literal residual sets
+
+P102 showed that a single large source file can still be divided into honest,
+independently verifiable packages. Rather than target all 904 lines of the
+query engine, the handoff declared the validation tranche as a literal set of
+22 missing lines and 20 missing branch pairs. Its acceptance checker
+intersected those exact sets with two full-gate JSON files and required four
+empty intersections, while explicitly leaving 17 lines and 19 arcs for P103.
+This avoided both a false whole-file claim and another oversized package.
+
+Literal tranches impose a matching receipt rule. Flash initially reported only
+"22/22" and even mislabeled arc `148→156` as `155→156`; after review it printed
+the sets in the report but left the log count-only. Pro rejected both partial
+repairs. Final approval required the exact before sets and each run's empty
+line/pair intersections in the durable receipt. When a package oracle is a
+set, counts are diagnostics—not evidence.
+
+The same review also improved test content: a duplicated error case was
+removed, two sort parses moved from non-None/partial-field checks to full
+`SortSpec` structural equality, and test functions were reported separately
+from collected cases. This is the useful shape for intermediate healing:
+literal residual oracle, exact domain object assertions, explicit deferred
+set, and no claim that the containing file is already exact.
+
+The persistent Flash session crossed the compaction boundary again during its
+P102 repair. Reasonix snipped 26 stale tool results and rewrote the prefix,
+causing about 100k uncached input tokens on that turn before the rewritten
+prefix became cached. Repeated compaction taxes make rotation a package-level
+economic decision, not merely a one-time anomaly.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -353,6 +383,10 @@ prerequisite package, not an edit-refresh mechanism.
   expected gate iterations—not file count alone.
 - Add a pre-review hollow-test scanner and interrupt implementation as soon as
   a test body becomes `pass`, assertion-free, or weaker to evade a failure.
+- Support literal residual-set acceptance for tranches inside one large source
+  file, and persist the exact before/after intersections in receipts.
+- Treat repeated session compactions as a rotation signal; retain a concise
+  project memory handoff instead of repeatedly paying to rewrite stale turns.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
