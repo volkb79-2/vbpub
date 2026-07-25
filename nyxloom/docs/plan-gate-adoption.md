@@ -117,7 +117,16 @@ registering a project whose merges can't be verified.
 **Scope.** Onboarding assessment step + gate-scaffold templates + wiring into the
 init/questionnaire flow. Depends on GA1 (the trust verdict) + GA2 (rigor vocab).
 
-### GA4 — carver periodically re-verifies each project's gate · SMALL (needs GA1)
+### GA4 — carver periodically re-verifies each project's gate · SMALL (needs GA1) · ✅ DONE (merge `56c1831c`)
+**Done.** `gate_verify_interval_days` policy knob (0 disables, the default — byte-
+identical to pre-GA4 production behavior, load-bearing oracle). Reconcile module
+contract item 16 mirrors D-065's cadence shape but runs OUTSIDE the single-carve-
+authority mutex (a gate verify needs no LLM route/carve slot) -> `VerifyGate`
+action. Daemon executes it on a background thread + result queue (a full verify
+runs several real gate invocations, minutes) — idempotent while one is in flight,
+main-thread-only event append via a per-pass drain step. On `LAUNDERS`/`BROKEN`,
+raises `NEEDS_OPERATOR{reason: gate-verify-<verdict>}`, debounced. See
+`docs/handoff/ga4-LOG.md`. Gate 91/91 diff-cov green.
 **What.** A cadence-driven check (mirror the D-065 `test_health_interval_days`
 pattern: a `gate_verify_interval_days` policy knob) where the carver/daemon runs
 `nyxloom gate verify` (GA1) per project and, on a `LAUNDERS`/`BROKEN` verdict,
