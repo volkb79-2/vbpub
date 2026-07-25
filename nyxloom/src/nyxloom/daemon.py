@@ -3731,6 +3731,34 @@ class Daemon:
         ]
         return ids[-limit:][::-1]
 
+    def _highest_consumed_feed_sequence(self, project: str,
+                                        source_ids: tuple[str, ...],
+                                        ) -> int | None:
+        """F018 P4a: scan MERGE_RECORDED events for the highest
+        event_sequence whose carver_digest.digest_id appears in
+        source_ids -- so the emit can acknowledge exactly which feeds
+        were consumed and stop re-firing them every pass. Returns None
+        if no match (nothing to acknowledge), mirroring the try/except
+        pattern of the other carver helpers."""
+        if not source_ids:
+            return None
+        id_set = set(source_ids)
+        highest: int | None = None
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return None
+        for ev in events:
+            if ev.type is not EventType.MERGE_RECORDED:
+                continue
+            digest = ev.payload.get("carver_digest")
+            if not digest:
+                continue
+            if digest.get("digest_id") in id_set:
+                if highest is None or ev.sequence > highest:
+                    highest = ev.sequence
+        return highest
+
     def _build_carver_bootstrap_packet(self, cfg: ProjectConfig, project: str,
                                        seq: int, states: dict[str, TaskStateFile]) -> str:
         """F018 P3a (plan §2.5): the COLD BOOTSTRAP packet -- durable truth
@@ -4440,6 +4468,21 @@ class Daemon:
                 {"generation": generation, "route": attempt.route.to_dict(),
                  "mode": mode, "turn_id": task_id, "source_ids": list(source_ids)},
                 task_id=task_id, attempt_id=attempt_id))
+            # F018 P4a: acknowledge merge-feed consumption so the cursor
+            # advances and consumed feeds stop re-firing every pass. Only
+            # for a merge-feed turn; other resume modes (recover/
+            # targeted-intake) do not advance the merge-feed cursor. A
+            # failed turn is caught by `not ok` above and never reaches
+            # this branch.
+            if mode == "merge-feed" and source_ids:
+                highest_seq = self._highest_consumed_feed_sequence(
+                    project, source_ids)
+                if highest_seq is not None:
+                    events.append(self._append_ev(
+                        project, cfg, states, EventType.CARVER_CONTEXT_CONSUMED,
+                        {"highest_event_sequence": highest_seq,
+                         "spine_revisions": self._spine_revisions(cfg)},
+                        task_id=task_id, attempt_id=attempt_id))
             if turn_result is not None and turn_result.artifacts:
                 # F018 P3c (plan §2.2/§4.1): the audit-only, admission-
                 # untouched record of what this write-authority turn
