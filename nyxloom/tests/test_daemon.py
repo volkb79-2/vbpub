@@ -5658,6 +5658,14 @@ def test_carver_ack_O1_headline_no_refire(
     cfg.carve.session = "project-persistent"
 
     # -- seed 2 MERGE_RECORDED events with carver_digest (seq 1, 2)
+    #    plus one MERGE_RECORDED without carver_digest (seq 0) to exercise
+    #    the `not digest: continue` path in _highest_consumed_feed_sequence
+    storage.append_and_apply(  # seq 0: no carver_digest
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit0", "source_kind": "review"},
+        task_id="t0",
+    )
     storage.append_and_apply(  # seq 1
         project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
         type=EventType.MERGE_RECORDED,

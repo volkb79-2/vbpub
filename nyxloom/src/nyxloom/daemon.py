@@ -3741,13 +3741,13 @@ class Daemon:
         if no match (nothing to acknowledge), mirroring the try/except
         pattern of the other carver helpers."""
         if not source_ids:
-            return None
+            return None  # pragma: no cover — gate at caller ensures non-empty
         id_set = set(source_ids)
         highest: int | None = None
         try:
             events = list(storage.iter_events(project))
         except Exception:
-            return None
+            return None  # pragma: no cover — defensive, matches other carver helpers
         for ev in events:
             if ev.type is not EventType.MERGE_RECORDED:
                 continue
