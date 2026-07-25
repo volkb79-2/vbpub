@@ -779,6 +779,11 @@ class Daemon:
             # _build_input/plan_project) so a requeued task's fresh
             # DispatchImplementer can fire in this SAME pass.
             appended.extend(self._transient_escalate(project, cfg, states))
+            # F018 P3b: bounded repair-count escalation for invalid carve
+            # proposals (plan §4.1) -- same early-mutation timing as the two
+            # calls above; a no-op ([]) whenever the carver-session feature
+            # is off (_carver_session's own MASTER GATE).
+            appended.extend(self._carve_proposal_repair_escalations(project, cfg, states))
 
             inp = self._build_input(project, cfg, states)
             actions = reconcile.plan_project(inp)
@@ -968,6 +973,16 @@ class Daemon:
         # `if inp.carver_session is not None` gate).
         carver_session_snap = self._carver_session(project, cfg)
         pending_carver_feeds = self._pending_carver_feeds(project, cfg, carver_session_snap)
+        # F018 P3b: validated_carve_proposals is now DERIVED (was hardcoded
+        # () by A2) -- see _validated_carve_proposals for the full §4.1
+        # validation pipeline and the CONCERN-1 generation filter (this
+        # builder is the SOLE authority; the pure planner does not re-check
+        # it). `states` is threaded through so an already-fully-admitted
+        # proposal (every artifact_id already has a task) is excluded --
+        # otherwise, with no P4 ack-cursor yet, the same proposal_id would
+        # keep winning this pass's single carver-turn slot forever.
+        validated_carve_proposals = self._validated_carve_proposals(
+            project, cfg, carver_session_snap, states)
 
         return reconcile.ReconcileInput(
             now=utc_now(),
@@ -1006,10 +1021,7 @@ class Daemon:
             pending_carver_feeds=pending_carver_feeds,
             # no source events yet -- human-intake package (#17) will populate this
             pending_human_intakes=(),
-            # proposal validation is P3 (Package 3); P3 MUST filter to
-            # current-generation-only (snapshot.generation) before populating
-            # -- see plan-next-batches.md A1-review finding, concern 1
-            validated_carve_proposals=(),
+            validated_carve_proposals=validated_carve_proposals,
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -1757,6 +1769,275 @@ class Daemon:
         elif len(feeds) > retain:
             feeds = feeds[-retain:]
         return tuple(feeds)
+
+    # -- carve-proposal validation + admission (F018 P3b) -----------------
+
+    def _validated_carve_proposals(self, project: str, cfg: ProjectConfig,
+                                    snap: carver_session.CarverSessionSnapshot | None,
+                                    states: dict[str, TaskStateFile],
+                                    ) -> tuple[carver_session.ValidatedCarveProposal, ...]:
+        """F018 P3b (plan-long-running-carver.md §4.1-§4.3): the SOLE
+        validation authority for a carver turn's proposal envelope --
+        untrusted model output never reaches reconcile.plan_project
+        directly (§4.3: "the daemon, not the model, decides whether a
+        proposal was schema-valid"). `snap is None` means the MASTER GATE
+        (_carver_session) is off -- () byte-identical to every pre-P3b
+        test/pass, matching pending_carver_feeds' own convention.
+
+        CONCERN-1 (single-authority generation filter, plan-next-batches.md
+        A1-review finding): a proposal recorded under a PRIOR/stale (or
+        future) generation is excluded HERE, inside
+        _validate_carve_proposal_payload -- reconcile.plan_project's pure
+        ladder does not re-check this, so this builder is the only gate.
+
+        A proposal every one of whose artifact_ids ALREADY has a task in
+        `states` is also excluded -- it is already fully admitted. There is
+        no P4 CARVER_CONTEXT_CONSUMED ack-cursor yet, so without this check
+        the same already-admitted proposal_id would keep winning this
+        pass's single carver-turn slot forever (reconcile.py's ladder
+        always prefers admission over Start/Resume/Compact) -- see
+        _execute_admit_carve_proposal's own docstring for how this doubles
+        as the "mark the proposal cursor consumed" step (§4.2 item 5).
+        A PARTIALLY-admitted proposal (some but not all artifact_ids
+        present, e.g. a crash mid-admission) is deliberately still
+        returned, so a later pass finishes creating only the missing
+        tasks -- self-healing, never a duplicate (see
+        _execute_admit_carve_proposal's own idempotency check).
+        """
+        if snap is None:
+            return ()
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+
+        candidates: list[carver_session.ValidatedCarveProposal] = []
+        for ev in events:
+            if ev.type is not EventType.CARVER_PROPOSAL_RECORDED:
+                continue
+            if ev.sequence <= snap.last_consumed_event_sequence:
+                continue
+            vp = self._validate_carve_proposal_payload(cfg, snap, ev.payload or {})
+            if vp is None:
+                continue
+            if all(aid in states for aid in vp.artifact_ids):
+                continue
+            candidates.append(vp)
+
+        candidates.sort(key=lambda p: p.proposal_id)
+        return tuple(candidates)
+
+    def _parse_proposal_id(self, cfg: ProjectConfig, proposal_id: Any
+                           ) -> tuple[int, str] | None:
+        """(generation, turn_id) parsed from a proposal_id matching plan
+        §4.1's documented format '<project>:carve:<generation>:<turn-id>',
+        or None on any structural mismatch (including a project prefix
+        that is not THIS project, or an empty turn-id segment -- covers
+        the 'wrong ... turn id' negative oracle for a forged/foreign
+        proposal_id). Never raises -- untrusted model-adjacent input."""
+        if not isinstance(proposal_id, str) or not proposal_id:
+            return None
+        parts = proposal_id.split(":")
+        if len(parts) != 4 or parts[0] != cfg.project_id or parts[1] != "carve" or not parts[3]:
+            return None
+        try:
+            generation = int(parts[2])
+        except ValueError:
+            return None
+        return generation, parts[3]
+
+    def _resolve_carve_proposal_artifact(self, cfg: ProjectConfig, raw_path: Any) -> Path | None:
+        """Resolve one proposal artifact's declared path under cfg's
+        configured handoff globs (plan §4.1: 'resolves the path under
+        configured handoff globs; rejects traversal and unexpected
+        paths'). Reuses frontmatter.discover_handoffs(cfg) -- the SAME
+        source of truth _build_input's own ordinary 'new handoffs' scan
+        uses -- as the membership test, rather than a second, independently
+        drifting glob/traversal check: a path this rejects can also never
+        become a task via the ordinary scan, and a path this accepts is
+        exactly one the ordinary scan would also surface. None on any
+        rejection (absolute/parent-relative traversal, not matching any
+        handoff_globs pattern, or resolving outside cfg.root)."""
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        if raw_path.startswith("/") or ".." in Path(raw_path).parts:
+            return None
+        try:
+            resolved = (cfg.root / raw_path).resolve()
+            resolved.relative_to(cfg.root.resolve())
+        except (ValueError, OSError):
+            return None
+        try:
+            discovered = {p.resolve() for p in frontmatter.discover_handoffs(cfg)}
+        except Exception:
+            return None
+        return resolved if resolved in discovered else None
+
+    def _validate_carve_proposal_payload(self, cfg: ProjectConfig,
+                                          snap: carver_session.CarverSessionSnapshot,
+                                          payload: dict[str, Any],
+                                          ) -> carver_session.ValidatedCarveProposal | None:
+        """Plan §4.1's full per-artifact validation pipeline for ONE
+        CARVER_PROPOSAL_RECORDED payload (a CarverTurnResult envelope, see
+        carver_session.CarverTurnResult): proposal_id/turn_id structure and
+        CONCERN-1 generation match, then for every artifact -- path
+        resolution, content-hash verification, frontmatter parse,
+        `nyxloom lint`, `input_revision == source.base_revision`, and
+        every oracle satisfiable within scope.touch (L13) or a named
+        mechanical escalation (L8 -- already lint-error severity). Returns
+        None (never raises) the instant ANY dimension fails -- an invalid
+        proposal creates no ValidatedCarveProposal and no task, only a
+        bounded repair signal counted by
+        _carve_proposal_repair_escalations."""
+        parsed = self._parse_proposal_id(cfg, payload.get("proposal_id"))
+        if parsed is None:
+            return None
+        generation, turn_seg = parsed
+        if generation != snap.generation:
+            return None
+
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, str) or turn_id != turn_seg:
+            return None  # absent, or inconsistent with proposal_id's own turn segment
+
+        source = payload.get("source")
+        if not isinstance(source, dict):
+            return None
+        base_revision = source.get("base_revision")
+
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            return None
+
+        artifact_ids: list[str] = []
+        artifact_paths: list[str] = []
+        artifact_hashes: list[str] = []
+        for art in artifacts:
+            if not isinstance(art, dict):
+                return None
+            declared_hash = art.get("sha256")
+            if not isinstance(declared_hash, str) or not declared_hash:
+                return None
+            resolved = self._resolve_carve_proposal_artifact(cfg, art.get("path"))
+            if resolved is None:
+                return None
+            try:
+                content = resolved.read_bytes()
+            except OSError:
+                return None
+            actual_hash = hashlib.sha256(content).hexdigest()
+            if actual_hash != declared_hash:
+                return None
+            try:
+                fm, _body = frontmatter.parse_handoff(resolved)
+            except Exception:
+                return None
+            if fm.input_revision != base_revision:
+                return None
+            try:
+                findings = lint.lint_file(resolved, cfg)
+            except Exception:
+                return None
+            # L13 ('oracle satisfiable within scope.touch') is warning-
+            # severity in lint.py's own general policy (deliberately, to
+            # avoid gating the pre-existing CARVED->QUEUED corpus-wide --
+            # see lint.py's L13 docstring), but proposal admission has no
+            # independent human reviewer standing in for it, so THIS gate
+            # treats L13 as blocking in addition to lint.has_blocking's
+            # own error-severity findings (which already include L8,
+            # 'escalate_if triggers are mechanical').
+            if lint.has_blocking(findings) or any(f.rule == "L13" for f in findings):
+                return None
+            artifact_ids.append(fm.id)
+            artifact_paths.append(str(resolved.relative_to(cfg.root.resolve())))
+            artifact_hashes.append(actual_hash)
+
+        return carver_session.ValidatedCarveProposal(
+            proposal_id=payload["proposal_id"], generation=generation,
+            source_mode=str(source.get("mode", "")),
+            artifact_ids=artifact_ids, artifact_paths=artifact_paths,
+            artifact_hashes=artifact_hashes, outcome=str(payload.get("outcome", "")),
+        )
+
+    def _carve_proposal_recorded_payload(self, project: str, proposal_id: str) -> dict | None:
+        """The raw CARVER_PROPOSAL_RECORDED payload for `proposal_id`, or
+        None if never recorded / on a storage read error. Used by
+        _execute_admit_carve_proposal to read `dispositions` (not carried
+        by the bounded ValidatedCarveProposal snapshot) for the re-scope
+        supersession step (§4.2 item 4)."""
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return None
+        for ev in events:
+            if (ev.type is EventType.CARVER_PROPOSAL_RECORDED
+                    and (ev.payload or {}).get("proposal_id") == proposal_id):
+                return ev.payload
+        return None
+
+    def _carve_proposal_repair_escalations(self, project: str, cfg: ProjectConfig,
+                                            states: dict[str, TaskStateFile]) -> list[Event]:
+        """F018 P3b (plan §4.1): 'Invalid output creates a bounded repair
+        input for the same warm session... After the configured repair
+        count, emit a typed NEEDS_OPERATOR{reason: carver-proposal-
+        invalid} and preserve the artifacts.' Called early in run_pass
+        (mirrors _transient_escalate's own early-mutation timing, BEFORE
+        _build_input/plan_project) -- a project-level check, not tied to
+        any single reconcile.Action.
+
+        Actually feeding the invalidity back to the carver as a fresh turn
+        is out of scope for this package (no repair ResumeCarverSession
+        mode exists in reconcile.py's ladder yet -- see class contract).
+        This method only tracks + escalates: the count of invalid
+        CARVER_PROPOSAL_RECORDED payloads for the CURRENT generation is
+        recomputed fresh every pass by re-running the SAME per-artifact
+        validation _validated_carve_proposals uses (the append-only event
+        log already IS the durable record -- no new EventType/counter
+        needed). Debounced via _carve_proposal_repair_escalated so a
+        persistent condition escalates ONCE per generation, not every
+        pass forever (mirrors _spec_attention_recently_emitted /
+        _runaway_recently_escalated's own recent-window convention)."""
+        snap = self._carver_session(project, cfg)
+        if snap is None:
+            return []
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+        invalid = 0
+        for ev in events:
+            if ev.type is not EventType.CARVER_PROPOSAL_RECORDED:
+                continue
+            payload = ev.payload or {}
+            parsed = self._parse_proposal_id(cfg, payload.get("proposal_id"))
+            if parsed is None or parsed[0] != snap.generation:
+                continue
+            if self._validate_carve_proposal_payload(cfg, snap, payload) is None:
+                invalid += 1
+        if invalid < cfg.carve.max_proposal_repairs:
+            return []
+        if self._carve_proposal_repair_escalated(project, snap.generation):
+            return []
+        return [self._append_ev(
+            project, cfg, states, EventType.NEEDS_OPERATOR,
+            {"reason": "carver-proposal-invalid", "generation": snap.generation,
+             "invalid_count": invalid},
+            task_id=None)]
+
+    def _carve_proposal_repair_escalated(self, project: str, generation: int) -> bool:
+        """Same recent-window debounce convention as
+        _runaway_recently_escalated -- keyed on generation so a NEW
+        generation (post-rotation) gets its own fresh repair budget."""
+        try:
+            recent = list(storage.iter_events(project))[-500:]
+        except Exception:
+            return False
+        return any(
+            ev.type is EventType.NEEDS_OPERATOR
+            and ev.payload.get("reason") == "carver-proposal-invalid"
+            and ev.payload.get("generation") == generation
+            for ev in recent
+        )
 
     # -- runaway watchdog (P44 2026-07-16) ------------------------------
 
@@ -3596,6 +3877,118 @@ class Daemon:
             task_id=task_id))
         return events
 
+    def _execute_admit_carve_proposal(self, project: str, cfg: ProjectConfig,
+                                       states: dict[str, TaskStateFile],
+                                       action: "reconcile.AdmitCarveProposal") -> list[Event]:
+        """F018 P3b (plan §4.2 steps 1-5): atomic admission of an already-
+        validated carve proposal.
+
+        Step 1 (effect-boundary recheck, 'a proposal whose file changed
+        since validation is refused') is a FRESH call into
+        _validated_carve_proposals: since that call re-reads and re-hashes
+        every artifact from disk every time (no caching between passes),
+        it both re-derives the chosen proposal AND performs the recheck in
+        one step -- a proposal whose artifact changed (or whose generation
+        rotated, or that a repair superseded) simply no longer appears in
+        the fresh result, so `chosen is None` covers refusal for free, the
+        same 'stale plan -> refuse cleanly, no side effect' idiom
+        _execute_start_carver_session/_execute_resume_carver_session
+        already use for their own execution-time rechecks.
+
+        Steps 2-5 (below) only run once a still-valid match is found, and
+        are themselves idempotent -- see each step's own comment."""
+        events: list[Event] = []
+
+        snap = self._carver_session(project, cfg)
+        if snap is None:
+            return events  # feature toggled off since planning -- refuse cleanly
+
+        proposals = self._validated_carve_proposals(project, cfg, snap, states)
+        chosen = next((p for p in proposals if p.proposal_id == action.proposal_id), None)
+        if chosen is None:
+            return events  # effect-boundary recheck failed -- refuse cleanly
+
+        # (2) admission marker: a durable, replayable "this proposal is
+        # admitted" audit record. Reuses the existing informational,
+        # no-TaskStateFile-projection ARTIFACT_REGISTERED event type
+        # (payload-differentiated via `kind`, the same technique
+        # PROVIDER_STATE_CHANGED's free-form `state` field already uses)
+        # rather than a new CARVER_PROPOSAL_ADMITTED EventType member --
+        # types.py is scope.forbid for this package, and no such member
+        # exists in the enum today (verified: only the 8 CARVER_* members
+        # P1-P3a already shipped are present).
+        events.append(self._append_ev(
+            project, cfg, states, EventType.ARTIFACT_REGISTERED,
+            {"kind": "carver-proposal-admitted", "proposal_id": chosen.proposal_id,
+             "generation": chosen.generation, "artifact_ids": list(chosen.artifact_ids)},
+            task_id=None))
+
+        # (3) create normal tasks from the already-parsed Frontmatter/paths
+        # -- the SAME CARVED-state TaskStateFile/TASK_CREATED shape
+        # _execute's own CreateTask branch (plan_project's item-1 'new
+        # handoffs' scan) already uses, so a task admitted here is
+        # indistinguishable from one the ordinary scan would have created
+        # for the same on-disk file. Idempotent: an artifact_id already in
+        # `states` (created by a prior admission pass, OR by that SAME
+        # ordinary scan independently discovering the identical file --
+        # _resolve_carve_proposal_artifact resolves against the exact same
+        # frontmatter.discover_handoffs(cfg) source of truth, so the two
+        # paths can never disagree on what is a legitimate handoff) is
+        # skipped, never duplicated -- 'admitting the same proposal_id
+        # twice creates each task ONCE'.
+        for artifact_id, relpath in zip(chosen.artifact_ids, chosen.artifact_paths):
+            if artifact_id in states:
+                continue
+            tsf = TaskStateFile(
+                schema_version=storage.SCHEMA_VERSION, task_id=artifact_id, project=project,
+                state=TaskState.CARVED, since=utc_now(), handoff_path=relpath,
+            )
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_CREATED,
+                {"statefile": tsf.to_dict()}, task_id=artifact_id))
+
+        # (4) re-scope supersession -- ONLY now, on successful admission
+        # (plan §4.2 tightens B7: no longer 'fires once the re-scope carve
+        # merely launches'). The origin task is read from the RECORDED
+        # proposal's own `dispositions` (§4.1), never from action itself
+        # (AdmitCarveProposal carries no origin field -- reconcile.py is
+        # scope.forbid, so its frozen shape cannot grow one). A
+        # disposition whose result is 'handoff' names the READY_TO_CARVE
+        # task this ADMITTED artifact replaces; any other disposition
+        # (decision/backlog/redundant/drop) leaves its origin untouched --
+        # exactly the negative oracle ('origin remains READY_TO_CARVE ...
+        # until an explicit typed decision/drop disposition'). Cross-
+        # checking artifact_ref against chosen.artifact_paths guards
+        # against a disposition naming an artifact that was never actually
+        # part of THIS validated/admitted proposal.
+        record_payload = self._carve_proposal_recorded_payload(project, chosen.proposal_id)
+        dispositions = (record_payload or {}).get("dispositions") or []
+        for d in dispositions:
+            if not isinstance(d, dict) or d.get("result") != "handoff":
+                continue
+            origin_id = d.get("source_ref")
+            if not origin_id or origin_id not in states:
+                continue
+            if states[origin_id].state is not TaskState.READY_TO_CARVE:
+                continue
+            if d.get("artifact_ref") not in chosen.artifact_paths:
+                continue
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_SUPERSEDED,
+                {"from": states[origin_id].state.value, "outcome": _RESCOPE_OUTCOME,
+                 "proposal_id": chosen.proposal_id,
+                 "notes": f"rescoped -- carve proposal {chosen.proposal_id} admitted"},
+                task_id=origin_id))
+
+        # (5) mark the proposal cursor consumed -- there is no P4 ack-
+        # cursor (CARVER_CONTEXT_CONSUMED) yet, so this package's durable
+        # 'consumed' signal is structural, not a new event: step 3 above
+        # just made every one of chosen.artifact_ids present in `states`,
+        # so _validated_carve_proposals' own "all artifact_ids already in
+        # states" exclusion (see its docstring) means this exact
+        # proposal_id is never re-selected by a later pass.
+        return events
+
     def _crosscheck_head_commit(self, cfg: ProjectConfig, task_id: str, receipt: Receipt) -> None:
         """P21 2026-07-16: never let a lying null head_commit read as "no
         work done" (live P93 lesson: a receipt claimed head_commit=null
@@ -4766,6 +5159,9 @@ class Daemon:
 
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.AdmitCarveProposal):
+            events.extend(self._execute_admit_carve_proposal(project, cfg, states, action))
 
         elif isinstance(action, reconcile.StartCarverSession):
             events.extend(self._execute_start_carver_session(project, cfg, states, action))
