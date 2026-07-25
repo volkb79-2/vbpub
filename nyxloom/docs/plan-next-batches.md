@@ -13,11 +13,17 @@ daemon on and let the factory self-build the rest. Batches B–E are dogfood can
 (or continue controller-driven if preferred).
 
 ## BATCH A — F018 P2b: deterministic carver-session planner (THE DOGFOOD UNLOCK) · HIGH frozen-core
-> **STATUS 2026-07-25:** A1 (reconcile.py planner) **MERGED** to main @ `7654549f` (gate-green
-> 85/85, Opus-reviewed, post-merge suite green). A2 (daemon.py input-builder) **dispatched**
-> (branch `feat/f018-p2b-a2-input-builder` from main). Feature gate confirmed =
-> `cfg.carve.session == "project-persistent"` (default `"fresh"` = off). After A2 merges → P2b
-> complete → DOGFOOD TRANSITION.
+> **STATUS 2026-07-25: F018 P2b COMPLETE.** A1 (reconcile.py planner) merged `7654549f`;
+> A2 (daemon.py input-builder) merged `41dffad2`. Both gate-green (85/85, 35/35), Opus-reviewed,
+> post-merge suites green. Feature gate = `cfg.carve.session == "project-persistent"` (default
+> `"fresh"` = off), so the new carver-session machinery is LIVE-BUT-DARK: the planner+input exist,
+> byte-identical in prod, awaiting P3 (the executor) + an explicit enable.
+> **NEXT FORK:** (a) F018 P3 (persistent bootstrap/resume/admission executor — makes the machinery
+> functional, closes A2 concern-1 gen-filter + concern-3 DEGRADED policy; frozen-core, keep on the
+> controller loop), or (b) DOGFOOD TRANSITION (start daemon + lift the `carve_ahead_target=0` /
+> `test_health_interval_days=0` freeze → let the daemon self-build B–E via the EXISTING carve path;
+> a manual→autonomous control handoff — user's call). Dogfooding does NOT exercise the new P2b
+> machinery (feature-off until P3+enable), so P3-first is the natural sequence.
 
 Spec: `docs/plan-long-running-carver.md` §4.1–4.3 (346–475, contract+determinism) +
 §3.3 (329–345, one-turn priority) + §2.4 (165–187, session states) + §6.2 (571–591,
