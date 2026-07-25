@@ -50,6 +50,27 @@ pipeline matrix — `full` plans session work, `gated`/`lean` never do; NEGATIVE
 None` byte-identical to today. **P2b does NOT execute the new actions** (no executor until P3) —
 keep `[stage.carve]` default-off in every live config until P3 lands.
 
+**A1 review findings (Opus adversarial, 2026-07-25) — carry these forward:**
+- **A2 HARD REQUIREMENT (concern 1, single-authority):** the daemon input-builder MUST populate
+  `validated_carve_proposals` with **current-generation-only** proposals (filter by
+  `snapshot.generation`). The pure planner deliberately does NOT filter (no drifting second copy);
+  it admits the sorted-first proposal in the tuple. Without A2's filter, a stale gen-N proposal left
+  on disk after a rotation to gen N+1 would be admitted (the admit slot fires before the
+  ROTATING→bootstrap slot; the effect-boundary hash-recheck does NOT catch a generation mismatch
+  because the handoff file still hashes identically). Consider also carrying `generation` on
+  `AdmitCarveProposal` so P3's effect boundary can re-check.
+- **P3 POLICY CALL (concern 3):** DEGRADED-with-exhausted-recovery currently plans nothing and does
+  NOT set the carve mutex, so legacy item 12/15/9 `CarveDispatch` falls through. Inert feature-off,
+  but once P3's `CarveDispatch→ResumeCarverSession(mode="carve")` migration alias lands, that
+  fall-through would *resurrect* a dead session (defeating `max_resume_failures`) and could run a
+  re-scope ahead of an un-ingested feed on that dead session (violates §3.3). Decide the policy when
+  P3 lands: DEGRADED-exhausted should set the mutex (no legacy carve) or emit an explicit
+  operator escalation — not silently revert to old-vocabulary carving. Spec §2.4/§5 under-specify
+  this → likely a D-NNN.
+- A1 fix-before-merge (in flight): merge-feed + intake slots must sort by `event_sequence` (§3.2
+  event-order), not by `digest_id`/`intake_id` (arbitrary hash / id) — gate-invisible (determinism
+  holds either way), caught only by review.
+
 `reconcile.py` is FROZEN-CORE: A1 gets a SOLO gate + a full adversarial review; A2 gets a SOLO
 gate + medium review. A1→A2 serial (A2 depends on A1's fields). After A2 lands → **DOGFOOD
 TRANSITION**: `docker start nyxloom-prod-nyxloomd`; decide `max_active_tasks` (concurrency is
