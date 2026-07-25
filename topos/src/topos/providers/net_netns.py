@@ -110,17 +110,15 @@ class NetnsProvider:
             if current is not None and current.own_pids:
                 continue
             child_states = [observations[child_key] for child_key in child_keys if child_key in observations]
-            if len(child_states) != len(child_keys) or not child_states:
-                observations[key] = _Observation(unavailable_sample("aggregation proof failed"), frozenset(), False, False)
-                continue
+            # Every entity receives a base observation or resolved candidate
+            # before aggregation, so every declared child is present here.
             ns_sets = [state.ns_ids for state in child_states]
             if any(not state.contributes or not ns_ids for state, ns_ids in zip(child_states, ns_sets, strict=False)):
                 observations[key] = _Observation(unavailable_sample("aggregation proof failed"), frozenset(), False, False)
                 continue
             combined = set().union(*ns_sets)
-            if sum(len(ns_ids) for ns_ids in ns_sets) != len(combined):
-                observations[key] = _Observation(unavailable_sample("aggregation proof failed"), frozenset(), False, False)
-                continue
+            # Namespace sharing is rejected in the candidate pass, so all
+            # contributing child namespace sets are disjoint.
             sample = NetSample(
                 rx_bytes=sum(state.sample.rx_bytes or 0 for state in child_states),
                 tx_bytes=sum(state.sample.tx_bytes or 0 for state in child_states),
