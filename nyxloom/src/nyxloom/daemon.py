@@ -338,9 +338,9 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    adapters, backlog_items, commands, config, decision_chat, decisions, frontmatter,
-    gate_runner, intake_chat, leases, lint, merge_digest, notify, paths, reconcile,
-    render, stages, storage, watchdog, wrapper,
+    adapters, backlog_items, carver_session, commands, config, decision_chat, decisions,
+    frontmatter, gate_runner, intake_chat, leases, lint, merge_digest, notify, paths,
+    reconcile, render, stages, storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -958,6 +958,15 @@ class Daemon:
             getattr(cfg.policy, "attempt_max_wall_seconds", None)
             or reconcile.DEFAULT_ATTEMPT_MAX_WALL_SECONDS
         )
+        # F018 P2b-A2: carver-snapshot input surface. carver_session is the
+        # MASTER GATE -- _carver_session returns None unless
+        # cfg.carve.session == "project-persistent" (default "fresh"), and
+        # every downstream field defaults empty when it is None, so
+        # ReconcileInput is byte-identical to pre-A2 whenever the feature is
+        # off (see reconcile.plan_project's own top-level
+        # `if inp.carver_session is not None` gate).
+        carver_session_snap = self._carver_session(project, cfg)
+        pending_carver_feeds = self._pending_carver_feeds(project, cfg, carver_session_snap)
 
         return reconcile.ReconcileInput(
             now=utc_now(),
@@ -992,6 +1001,14 @@ class Daemon:
             head_revision=head_revision,
             triage_class=triage_class,
             days_since_test_health_carve=self._days_since_test_health_carve(project),
+            carver_session=carver_session_snap,
+            pending_carver_feeds=pending_carver_feeds,
+            # no source events yet -- human-intake package (#17) will populate this
+            pending_human_intakes=(),
+            # proposal validation is P3 (Package 3); P3 MUST filter to
+            # current-generation-only (snapshot.generation) before populating
+            # -- see plan-next-batches.md A1-review finding, concern 1
+            validated_carve_proposals=(),
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -1663,6 +1680,82 @@ class Daemon:
             return False
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == reason
                    for ev in recent)
+
+    def _carver_session(self, project: str, cfg: ProjectConfig
+                        ) -> carver_session.CarverSessionSnapshot | None:
+        """F018 P2b-A2: the MASTER GATE for the whole carver-snapshot input
+        surface. `cfg.carve.session` defaults to "fresh" ("feature off") --
+        in that case this returns None, which _build_input threads straight
+        through to ReconcileInput.carver_session (itself defaulting to None),
+        and reconcile.plan_project's own top-level `if inp.carver_session is
+        not None` gate means every downstream carve-dispatch decision runs
+        its exact pre-P2b path, byte-identical.
+
+        When "project-persistent", project the durable CARVER_* event log
+        into a snapshot via carver_session's own pure projector -- reading
+        the log the same way _history/_roadmap_exhausted_open/
+        _spec_attention_recently_emitted above do (storage.iter_events,
+        full log, fail-safe to an empty list on a read error so a projector
+        call never raises out of _build_input)."""
+        if cfg.carve.session != "project-persistent":
+            return None
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+        return carver_session.project_session(events)
+
+    def _pending_carver_feeds(self, project: str, cfg: ProjectConfig,
+                              snap: carver_session.CarverSessionSnapshot | None
+                              ) -> tuple[carver_session.CarverFeed, ...]:
+        """F018 P2b-A2: pending merge digests the carver session hasn't
+        consumed yet -- sourced from the P2a `carver_digest` payload the
+        auto-merge path already attaches to MERGE_RECORDED (see the
+        MERGE_RECORDED emission in _execute_auto_merge, just above the
+        backlog auto-tick). `snap is None` means _carver_session's own
+        MASTER GATE was off, so this returns () too -- matching
+        ReconcileInput.pending_carver_feeds' own default and keeping
+        _build_input byte-identical on that path.
+
+        A MERGE_RECORDED without a carver_digest (pre-P2a, or a non-carve
+        project) is skipped -- it cannot become a CarverFeed. Events at or
+        below snap.last_consumed_event_sequence are already-consumed and
+        excluded. The remainder is ordered by event_sequence ascending
+        (arrival order, matching A1's slot-3 consumption -- see
+        reconcile.plan_project's `sorted(inp.pending_carver_feeds, key=...)`
+        use, which is itself just a safety net over this already-sorted
+        tuple) and capped to the most recent cfg.carve.retain_merge_digests
+        (default 10)."""
+        if snap is None:
+            return ()
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+        feeds: list[carver_session.CarverFeed] = []
+        for ev in events:
+            if ev.type is not EventType.MERGE_RECORDED:
+                continue
+            if ev.sequence <= snap.last_consumed_event_sequence:
+                continue
+            digest = ev.payload.get("carver_digest")
+            if not digest:
+                continue
+            diffstat = digest.get("diffstat") or {}
+            feeds.append(carver_session.CarverFeed(
+                digest_id=digest.get("digest_id", ""),
+                merge_commit=digest.get("merge_commit", ""),
+                task_id=digest.get("task_id", ""),
+                event_sequence=ev.sequence,
+                files_changed=diffstat.get("files_changed", 0),
+            ))
+        feeds.sort(key=lambda f: f.event_sequence)
+        retain = cfg.carve.retain_merge_digests
+        if retain <= 0:
+            feeds = []
+        elif len(feeds) > retain:
+            feeds = feeds[-retain:]
+        return tuple(feeds)
 
     # -- runaway watchdog (P44 2026-07-16) ------------------------------
 
