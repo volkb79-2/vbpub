@@ -1,5 +1,10 @@
 # nyxloom operational doctrine — the lessons, and what they cost
 
+> **See also `reference/LESSONS.md`** (canonical) + its `nyxloom-trove/LESSONS.md`
+> sibling — the accumulated general lessons this doctrine distills from, with the
+> write-local-first / propose-upstream promotion model. A matured lesson graduates
+> from LESSONS into a stable rule here.
+>
 > **Canonical doctrine — ships with the nyxloom product** (`reference/DOCTRINE.md`).
 > This file is **not** copied into project troves. **Project-specific additions or
 > overrides live in the same-named sibling `nyxloom-trove/DOCTRINE.md`** — when that
