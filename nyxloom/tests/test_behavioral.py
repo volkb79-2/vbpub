@@ -17,6 +17,7 @@ happens by file (not argv) and what the fake CLI can actually control.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -572,30 +573,6 @@ def _diagnose_stuck_attempt(project: str, task_id: str) -> str:
     return "\n".join(lines)
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "B24 2026-07-23 -- ENVIRONMENTALLY FLAKY under tester-unified (~50% of "
-        "full-suite runs), deterministic nowhere: it passed its own solo branch "
-        "gate (69/69 diff-cov) and then failed the certify on the SAME tree, and "
-        "passes ~12/12 in the devcontainer. Characterised cause: this is the only "
-        "behavioral test that drives a REAL wrapper double-fork "
-        "(wrapper.launch_detached uses os.fork(), not subprocess.Popen) through a "
-        "transient-classified leg, and os.fork() under load on Python 3.14 is a "
-        "known fragility in this image (see tester-unified/Dockerfile's own note). "
-        "It is NOT a defect in B24's feature: the whole D-R17 contract stays "
-        "covered by DETERMINISTIC oracles elsewhere -- the wrapper "
-        "INTERRUPTED-not-EXITED seam (tests/test_wrapper.py), both directions of "
-        "the backoff gate (tests/test_reconcile.py), the at-cap provider-pause "
-        "escalation (tests/test_daemon.py), and the attempts_used TRANSIENT "
-        "exclusion (tests/test_reconcile.py). strict=False (not skip/delete) so "
-        "the test still RUNS -- it keeps exercising the code and stays visible in "
-        "the report -- while a fork-flake cannot red the shared suite. Re-land it "
-        "deterministically (drive the transient leg without a real fork) per "
-        "backlog B25; _diagnose_stuck_attempt() above dumps durable forensics on "
-        "any recurrence."
-    ),
-)
 def test_transient_throttle_resumes_same_attempt_end_to_end(
     behavioral_project, tmp_state, fake_cli, monkeypatch
 ):
@@ -626,11 +603,69 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     REAL, unconditional wall-clock cost every dispatch in this test pays for
     nothing (capture_session always returns None for this bare "fake" cli
     route), and shrinking it shrinks the real-time window for whatever
-    timing-sensitive issue a slower/busier gate container might be hitting."""
+    timing-sensitive issue a slower/busier gate container might be hitting.
+
+    B25 2026-07-25 (de-flaking the former xfail, backlog B25): this test
+    used to drive the transient leg through a REAL wrapper.launch_detached
+    double os.fork() (wrapper.py:146,150) -- the only real-fork primitive
+    in this codebase, and os.fork() under load on Python 3.14 in the
+    tester-unified image is a known fragility (see the retired xfail's own
+    diagnosis and tester-unified/Dockerfile's note). Replaced with
+    `_sync_launch`, a synchronous stand-in adapted from test_daemon.py's
+    `fake_launch_detached`: write spec.json + return a fake pid -- EXACTLY
+    what the real launch_detached does before it forks -- so the daemon's
+    own dispatch-time bookkeeping (the ATTEMPT_PREFLIGHTED / ATTEMPT_RESUMED
+    append right after `wrapper.launch_detached(spec)` returns in daemon.py)
+    still commits FIRST, unchanged from production ordering.
+
+    This ordering is load-bearing, not cosmetic: storage.apply_event's
+    monotonic-regression guard (storage.py's "Monotonic guard" comment,
+    _attempt_regression) only protects a CALLER's stale in-memory `states`
+    object from regressing an attempt that CALLER already observed
+    further along -- it does nothing for a *different* writer's fresher
+    disk state the caller never loaded. CREATED and PREFLIGHTING are both
+    in storage._EARLY_ATTEMPT_STATES, so a naive "run wrapper_main inline,
+    then let the daemon's own subsequent ATTEMPT_PREFLIGHTED append save
+    its stale in-memory copy" would NOT be flagged as a regression -- it
+    would silently clobber the wrapper's fresher on-disk INTERRUPTED+receipt
+    with the daemon's stale PREFLIGHTED snapshot. `_tick_sync` below avoids
+    this by running wrapper_main only AFTER `d.run_pass` has already
+    returned (i.e., after the daemon's own bookkeeping for that pass is on
+    disk) -- fully sequential, so there is nothing left to race.
+
+    The wrapper body itself still runs for REAL (real leases, a real
+    subprocess spawn of the fake CLI, real log classification, real
+    receipt/event writes) -- see test_wrapper.py's identical in-process
+    `wrapper_main(spec_path)` pattern at
+    test_transient_classification_is_interrupted_not_exited -- just driven
+    synchronously instead of via a detached grandchild process. By the time
+    `_tick_sync` returns, the receipt is already on disk; no `_wait`/polling
+    is needed at all for this test's dispatch/resume legs."""
     from nyxloom import config as config_mod
     from nyxloom import wrapper as wrapper_mod
 
     monkeypatch.setattr(wrapper_mod, "SESSION_CAPTURE_DELAY", 0)
+
+    # Real-fork replacement seam (see docstring above): pending_specs
+    # records each attempt spec.json launch_detached would have forked for,
+    # in dispatch order; _tick_sync drains it (running wrapper_main inline)
+    # only once the SAME reconcile pass's own daemon-side event has landed.
+    pending_specs: list[Path] = []
+
+    def _sync_launch(spec: "wrapper_mod.WrapperSpec") -> int:
+        attempt_dir = Path(spec.attempt_dir)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+        pending_specs.append(spec_path)
+        return 4242 + len(pending_specs)
+
+    monkeypatch.setattr(wrapper_mod, "launch_detached", _sync_launch)
+
+    def _tick_sync(d: daemon.Daemon, project: str) -> None:
+        d.run_pass(project)
+        while pending_specs:
+            wrapper_mod.wrapper_main(str(pending_specs.pop(0)))
 
     cfg = behavioral_project
     resume_template = ["fake", "--role", "implementer", "--task", TASK_ID, "{prompt}"]
@@ -666,17 +701,17 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     # A fresh handoff needs several ticks just to go CARVED->QUEUED->ACTIVE
     # (dispatch) before the fake CLI ever runs at all (see e.g.
     # test_scope_amendment_request_triggers_bounded_re_dispatch_not_blocked's
-    # identical `for _ in range(30)` warm-up above) -- the wrapper itself
-    # writes receipt.json + ATTEMPT_INTERRUPTED synchronously before its own
-    # exit, and _tick waits for that receipt after every pass, so once an
-    # attempt exists this loop naturally lands on INTERRUPTED.
+    # identical `for _ in range(30)` warm-up above) -- once dispatch actually
+    # fires, `_tick_sync` drives the WHOLE transient leg (receipt.json +
+    # ATTEMPT_INTERRUPTED) to completion synchronously within that SAME
+    # call, so this loop typically breaks on the very tick dispatch happens.
     def _went_interrupted() -> bool:
         tsf = storage.load_state("demo", TASK_ID)
         return bool(tsf and tsf.attempts
                     and tsf.attempts[-1].state == AttemptState.INTERRUPTED)
 
     for _ in range(30):
-        _tick(d, "demo")
+        _tick_sync(d, "demo")
         if _went_interrupted():
             break
 
@@ -698,7 +733,7 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     storage.save_state(tsf)
 
     for _ in range(20):
-        _tick(d, "demo")
+        _tick_sync(d, "demo")
         events = list(storage.iter_events("demo"))
         if any(e.type is EventType.ATTEMPT_RESUMED and e.attempt_id == attempt_id
                for e in events):

@@ -832,12 +832,11 @@ class TestDetach:
 
             # Patch SESSION_CAPTURE_DELAY to 0 for faster testing
             with patch("nyxloom.wrapper.SESSION_CAPTURE_DELAY", 0):
-                wrapper_pid = launch_detached(spec)
+                wrapper_pid = launch_detached(spec)  # waits for wrapper.pid (<=10s)
 
-        # Wait for wrapper to finish
-        time.sleep(1)
-
-        # Check wrapper.pid file
+        # Check wrapper.pid file (launch_detached already blocked until this
+        # existed, so no wait is needed here -- see the contract in
+        # wrapper.py's own docstring)
         pid_file = attempt_dir / "wrapper.pid"
         assert pid_file.exists()
         assert int(pid_file.read_text().strip()) == wrapper_pid
@@ -851,11 +850,17 @@ class TestDetach:
             # Expected: wrapper is reparented
             pass
 
-        # Wait a bit more for wrapper to complete
-        time.sleep(2)
+        # B25 (de-flaking): bounded poll on receipt.json existing instead of
+        # two blind time.sleep(1)/time.sleep(2) wall-clock guesses -- mirrors
+        # the identical "Poll for receipt.json" idiom used just above in this
+        # same file (TestSigterm). Real fork kept (see module docstring);
+        # only the wall-clock guesswork is removed.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not receipt_path.exists():
+            time.sleep(0.05)
 
         # Check receipt
-        assert receipt_path.exists()
+        assert receipt_path.exists(), "receipt.json never appeared"
         receipt = json.loads(receipt_path.read_text())
         assert receipt["result"] == "done"
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import http.server
 import json
 import threading
-import time
 
 from nyxloom import paths, storage
 from nyxloom.commands import (
@@ -191,6 +190,11 @@ class _FakeNtfyServer:
         self._lock = threading.Lock()
         self._release = threading.Event()
         self.first_get_seen = threading.Event()
+        # B25 (de-flaking): two more Events, set the instant the relevant
+        # request lands, so callers can `.wait()` on them instead of
+        # sleep-polling `gets()`/`posts()`.
+        self.reply_seen = threading.Event()
+        self.second_get_seen = threading.Event()
         server = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -201,6 +205,7 @@ class _FakeNtfyServer:
                 with server._lock:
                     server.events.append({"method": "GET", "path": self.path,
                                            "headers": dict(self.headers)})
+                    get_count = sum(1 for e in server.events if e["method"] == "GET")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
@@ -211,6 +216,8 @@ class _FakeNtfyServer:
                 self.wfile.write((line + "\n").encode("utf-8"))
                 self.wfile.flush()
                 server.first_get_seen.set()
+                if get_count >= 2:
+                    server.second_get_seen.set()
                 # Hold the connection open (long-poll) until released.
                 server._release.wait(timeout=5)
 
@@ -221,6 +228,7 @@ class _FakeNtfyServer:
                     server.events.append({"method": "POST", "path": self.path,
                                            "headers": dict(self.headers),
                                            "body": body})
+                server.reply_seen.set()
                 self.send_response(200)
                 self.end_headers()
 
@@ -289,9 +297,7 @@ def test_transport_reply_and_reconnect_carries_since(tmp_state, tmp_path, monkey
     try:
         assert server.first_get_seen.wait(timeout=5), "listener never connected"
 
-        deadline = time.time() + 5
-        while time.time() < deadline and not server.posts():
-            time.sleep(0.05)
+        assert server.reply_seen.wait(timeout=5), "listener did not send a reply"
         posts = server.posts()
         assert posts, "listener did not send a reply"
         assert posts[0]["headers"].get("Authorization") == "Bearer write-tok"
@@ -309,9 +315,7 @@ def test_transport_reply_and_reconnect_carries_since(tmp_state, tmp_path, monkey
         # listener's perspective this ends the poll, forcing a reconnect.
         server.release_first_connection()
 
-        deadline = time.time() + 5
-        while time.time() < deadline and len(server.gets()) < 2:
-            time.sleep(0.05)
+        assert server.second_get_seen.wait(timeout=5), "listener did not reconnect"
         gets = server.gets()
         assert len(gets) >= 2, "listener did not reconnect"
         assert "since=m1" in gets[1]["path"]
@@ -382,7 +386,18 @@ def test_pause_unknown_mode_emits_warning(tmp_state, sample_project, tmp_path):
 def test_transport_failure_logs_warning(tmp_state, tmp_path, monkeypatch):
     """§5: command dispatch failures -> WARNING. Points the listener at an
     unreachable (closed) port so `_listen_once` genuinely raises inside
-    `_run`'s try/except, and asserts the real WARNING record."""
+    `_run`'s try/except, and asserts the real WARNING record.
+
+    B25 (de-flaking): rather than sleep-polling the rendered JSONL log file
+    for the record to appear, a threading.Event is set the INSTANT the real
+    `commands.log.warning(...)` call fires -- `_Watcher` below forwards
+    every call to the real bound logger unchanged (so the actual persisted
+    record this test asserts on is byte-identical to before) and only
+    additionally flips the Event when the specific transport-failure
+    message is logged. This still drives the REAL `_run()` background
+    thread and its REAL try/except around `_listen_once` -- only the
+    "wait for the async side-effect" mechanism changed."""
+    from nyxloom import commands as commands_mod
     from nyxloom import log as nyx_log
 
     monkeypatch.delenv("NTFY_URL", raising=False)
@@ -396,22 +411,32 @@ def test_transport_failure_logs_warning(tmp_state, tmp_path, monkeypatch):
 
     log_dir = tmp_path / "logs"
     nyx_log.configure(level=nyx_log.WARNING, log_dir=log_dir, console=False)
+
+    warned = threading.Event()
+    real_log = commands_mod.log
+
+    class _Watcher:
+        def __getattr__(self, name):
+            return getattr(real_log, name)
+
+        def warning(self, event, *args, **kwargs):
+            real_log.warning(event, *args, **kwargs)
+            if event == "command listener transport failed":
+                warned.set()
+
+    monkeypatch.setattr(commands_mod, "log", _Watcher())
+
     try:
         cl = CommandListener(load_registry(), poll_timeout=2)
         cl.BACKOFF_INITIAL = 0.02
         cl.BACKOFF_MAX = 0.1
         cl.start()
         try:
-            deadline = time.time() + 5
-            records: list[dict] = []
-            while time.time() < deadline:
-                records = _read_log_records(log_dir / "nyxloom.jsonl")
-                if any(r["msg"] == "command listener transport failed" for r in records):
-                    break
-                time.sleep(0.05)
+            assert warned.wait(timeout=5), "transport failure warning never fired"
         finally:
             cl.stop()
 
+        records = _read_log_records(log_dir / "nyxloom.jsonl")
         failures = [r for r in records if r["msg"] == "command listener transport failed"]
         assert failures, "expected at least one transport-failure WARNING record"
         assert failures[0]["level"] == "warning"
