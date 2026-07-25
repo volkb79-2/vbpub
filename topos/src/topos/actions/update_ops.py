@@ -137,7 +137,7 @@ def _default_current_memory_reader(target: str) -> int | None:
             frame = Collector(config=load(None)).collect_once()
             entities = {k: ef.entity for k, ef in frame.entities.items()}
             key = resolve_container_key(target, entities)
-        except BaseException:
+        except Exception:
             return None
     try:
         raw = (Path("/sys/fs/cgroup") / key / "memory.current").read_text(encoding="utf-8").strip()
@@ -176,9 +176,13 @@ def build_update_argv(
 
     if memory is None and cpus is None:
         raise ValueError("at least one of --memory or --cpus is required")
-    if memory is not None and (not isinstance(memory, int) or memory <= 0):
+    if memory is not None and (type(memory) is not int or memory <= 0):
         raise ValueError("memory must be a positive integer")
-    if cpus is not None and (not isinstance(cpus, (int, float)) or cpus <= 0):
+    if cpus is not None and (
+        isinstance(cpus, bool)
+        or not isinstance(cpus, (int, float))
+        or cpus <= 0
+    ):
         raise ValueError("cpus must be a positive number")
 
     argv = [DOCKER_EXECUTABLE, "update"]
@@ -290,7 +294,7 @@ def build_update_preview(
     if parsed_memory is not None:
         try:
             current_usage = reader(target)
-        except BaseException:
+        except Exception:
             current_usage = None
 
         if not below_current:
