@@ -174,6 +174,11 @@ items:
   type: feature
   component: routing
   context_estimate: medium
+- id: B28
+  title: 'Gate-adoption & verification workstream (GA1-GA4): `nyxloom gate verify` canary verb (run gate + inject known-bad mutation, assert it FAILS), `asserts=[]` gate-rigor + review-depth routing (folds with factory-hardening D), onboarding offer-to-build-a-gate, carver periodic gate re-verify. See docs/plan-gate-adoption.md'
+  type: feature
+  component: gate
+  context_estimate: large
 ---
 
 # nyxloom — backlog

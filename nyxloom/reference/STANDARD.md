@@ -133,6 +133,49 @@ at) as the worked example.
   dashboard keeps the **last `archive_keep_visible` (default 10) completed**
   packages visible; older ones sit behind an **Archive** button.
 
+## What nyxloom requires of a project (the gate contract)
+
+nyxloom orchestrates *around* a project's gate; it never supplies one. The gate is
+the single load-bearing thing nyxloom trusts to answer "is this commit shippable",
+so the contract is deliberately thin and **behavioural, not technological**:
+
+**REQUIRED — the interface.** A project MUST declare at least one `[gates.*]` whose
+`argv` (with the `{worktree}` placeholder) nyxloom can run at a commit in an
+isolated worktree, and which **exits non-zero on any failure with nothing masking
+the exit**. That is the whole hard requirement — `gate_runner.py` + the daemon's
+run/verify/revert path do the rest, identically for any language or toolchain. It is
+what lets dstdns (a `test-runner` container running pytest) and nyxloom (a
+`tester-unified` container running pytest + a coverage floor) run under ONE daemon
+with wholly unrelated gate commands.
+
+**A gate is only as trustworthy as it is discriminating.** A declared gate that
+cannot FAIL is worse than none — it launders every merge as "verified". dstdns
+literally ships a `[gates.gate-probe]` whose `argv` is `true` (a reachability probe,
+not a verdict); `argv=["true"]` as a project's ONLY gate would pass everything. So
+beyond "a gate exists", a *meaningful* gate should:
+- run in a **runtime-faithful, isolated environment** — a separate test
+  container/venv, NEVER the interactive cockpit (whose pins are not a ship signal;
+  see each trove's `GUIDE.md` cockpit-vs-runner note);
+- **fail closed** — a wrapper's trailing `echo`/pipe must not mask the real exit
+  (read the verdict in a step *separate* from the run; canonical `LESSONS.md` L4);
+- ideally enforce a **completeness floor** (e.g. changed-line coverage) and run in
+  **parallel** so the floor stays affordable.
+
+**OFFERED, not mandated — the toolkit.** nyxloom ships `coverage_gate.py` (a
+changed-line coverage floor) and `mutation_gate.py` (hollow-test detection) that a
+project's `argv` MAY call. They are Python-specific and entirely opt-in. nyxloom
+mandates no image, no test framework, no coverage tool — only the interface above.
+The completeness/parallelism *ideas* generalise (`cargo llvm-cov`, `nyc`, `-j`); the
+tools do not.
+
+**Gate rigor is a first-class, per-project fact.** A weak gate shifts the
+correctness burden onto the reviewer, so a project SHOULD declare what its gate
+actually asserts (planned `asserts=[...]` key on `[gates.*]`) — nyxloom can then
+surface it and route review depth accordingly. Full rationale + the layered model
+(gate ⊕ reviewer ⊕ controller): `nyxloom-trove/LESSONS.md` PL2. The onboarding/
+verification workflow (offer to build a missing gate; carver re-verifies the gate
+still rejects a known-bad canary): `docs/plan-gate-adoption.md`.
+
 ## `exec-nyxloom init <project_folder>`
 
 Scaffolds a trove into a target project from nyxloom's bundled templates.
@@ -141,6 +184,18 @@ Because it runs through the **running nyxloom instance** (`exec-nyxloom` →
 can reach the project folder* — a built-in access check. It writes
 `nyxloom-trove/{nyxloom.toml, STANDARD.md, handoffs/, reports/, decisions.md,
 roadmap.md, backlog.md, archive/}` and leaves `[refs]` for the operator to fill.
+
+**Onboarding best practice — the gate is the highest-value setup step.** `init`
+scaffolds the trove but does NOT manufacture a trustworthy gate; that is
+project-specific and must be worked deliberately (the **gate-adoption checklist**,
+`docs/plan-gate-adoption.md`): (1) confirm a **separate** runtime-faithful test
+environment exists — not the cockpit; (2) wire a `[gates.*]` that **fails closed**;
+(3) opt into the **coverage floor + parallelism** where the ecosystem supports it;
+(4) **verify the gate actually REJECTS a deliberately-broken commit** before
+trusting it. If a project has no gate, or an untrustworthy one, onboarding should
+*offer to create* the separate test env + gate rather than register a project whose
+merges nyxloom cannot actually verify — a project without a real gate is not
+factory-ready.
 
 ## Config is schema-validated
 
