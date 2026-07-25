@@ -185,8 +185,8 @@ def validate_target(kind: ActionKind, target: str) -> None:
     if kind is ActionKind.SYSTEMD_SET_PROPERTY:
         # In P49, the target is just the unit name (not a composite).
         # The property/value are validated separately in governance.py.
-        if not target:
-            raise ValueError(f"invalid systemd set-property target (empty): {target!r}")
+        # Empty targets were already rejected by the shared validation at the
+        # start of this function; do not duplicate that invariant here.
         if any(char.isspace() for char in target):
             raise ValueError(f"systemd set-property target must not contain whitespace: {target!r}")
         if not _SYSTEMD_UNIT_RE.fullmatch(target):

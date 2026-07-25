@@ -329,7 +329,7 @@ def build_set_property_preview(
     reader = current_value_reader or _DEFAULT_CURRENT_VALUE_READER
     try:
         current_value = reader(unit)
-    except BaseException:
+    except Exception:
         current_value = None
 
     return SetPropertyPlan(
