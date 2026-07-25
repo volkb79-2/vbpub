@@ -28,9 +28,12 @@ All 26 lines and 10 branch pairs closed. Verified against source at HEAD.
 | softnet parser | 56, 60, 61 + arc 55→56 |
 | SNMP parser | 77, 85, 86 + arc 76→77 |
 | qdisc parser | 97, 102, 103, 104, 109 + arc 96→97, 108→109 |
-| collect (without root) | 144, 147, 148 + arc 143→144, 146→147 |
-| collect (tc runner fail) | 200, 201, 207, 208, 214, 215 + arc 199→200, 206→207, 213→214 |
-| missing aux files | 223, 224, 225 |
+| collect (without root / missing net-dev) | 144, 147, 148 + arc 143→144, 146→147 |
+| missing auxiliary files | 200, 201, 207, 208, 214, 215 + arc 199→200, 206→207, 213→214 |
+| tc runner failure | 223, 224, 225 |
+
+The controller corrected these three category labels after review. The
+reviewer's literal sets, coverage verdict, and test audit were unchanged.
 
 ## Test quality audit (8 tests, all exact structural equality)
 
