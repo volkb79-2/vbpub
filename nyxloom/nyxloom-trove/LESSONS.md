@@ -544,6 +544,31 @@ yet attach the wrong semantic label. Receipt generators should derive
 line→function/category mappings from exact-revision AST/source ranges and ask
 the model only for causal interpretation.
 
+### P109 validation: a green diagnostic can still have no coverage data
+
+P109's 18 exact action-safety cases passed immediately. The initial focused
+diagnostic nevertheless supplied file paths to pytest-cov's `--cov` option,
+where the installed plugin expected an importable module or source root.
+Coverage.py warned that neither named module was imported and that no data was
+collected, then pytest still exited zero because all cases passed. The
+controller explicitly discarded that coverage result and ran the complete
+declared source-root command twice. Both full xdist receipts passed 2,088 cases,
+closed both target files exactly, and produced the same normalized target
+record hash.
+
+A passing test command is not automatically a valid coverage receipt. Coverage
+acceptance must require all of: no collection/report warnings, a report record
+for every declared target, an empty required residual, and successful
+changed-line evaluation. A focused runner hint should carry a validated
+coverage target rather than inviting an agent to derive one from a filesystem
+path.
+
+The independent review also mislabeled a five-case parameterization as four
+while preserving the correct total of 18. The controller corrected the table
+before merge. Receipt validation should mechanically reconcile each parameter
+row count with the collected total; aggregate arithmetic alone cannot prove
+the row-level inventory.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -637,6 +662,12 @@ prerequisite package, not an edit-refresh mechanism.
   keeping each literal acceptance surface and gate receipt independent.
 - Generate receipt line→function/category mappings mechanically from
   exact-revision source; reviewer prose should interpret, not reassign, them.
+- Reject coverage receipts when coverage.py/pytest-cov emits no-data,
+  module-not-imported, or report-generation warnings even if pytest exits zero.
+- Resolve focused coverage selectors as validated import/source targets and
+  require the declared file records to exist before accepting their gaps.
+- Reconcile parameterized row counts mechanically with the total collected-case
+  delta; do not infer row accuracy from correct aggregate arithmetic.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
