@@ -35,7 +35,33 @@ classifying a concrete gate/attempt failure is strictly easier and cache-warm-ch
 Route vocabulary (shared with B4b): `fixable | architectural | product | transient`
 → `{targeted-retry-with-evidence | carver re-scope (RESCOPED) | operator (NEEDS_DECISION) | plain backoff-retry}`.
 
-## P1 — gate-failure diagnosis routing (BUILDING NOW)
+## Status
+
+- **P1a — gate output capture** — MERGED `4f00870a` (GateResult.output_tail).
+- **P1b — gate-failure diagnosis routing** — MERGED (this doc's §P1). Reviewer
+  classifies a gate-caused REVIEW_REJECTED into
+  `{fixable|architectural|product|transient}`; the pure planner routes via the
+  existing triage table; the task never leaves REVIEW_REJECTED during diagnosis;
+  `TASK_TRANSITIONS` untouched. Config `gate_diagnosis_after_failures` (default 1).
+
+### P2 follow-ups (deferred, non-blocking)
+
+- **Rejection-metric bucketing.** A diagnosis emits `REVIEW_RECORDED{result:
+  "rejected"}`, which `_history` counts in `review_rejections_by_area` under
+  `area="unknown"` — the same bucket normal reviewer rejections already use (the
+  review path never sets `area`). Net delta: a repeatedly-failing gate now
+  contributes to that metric where it previously did not, so a persistently
+  failing gate could trip `SpecAttention('rejections')`. Defensible (a stuck gate
+  deserves attention) and mitigated by the window + debounce, but if it proves
+  noisy, tag diagnosis rejections with a distinct `area` (e.g. `gate-diagnosis`)
+  so they bucket separately from genuine code-quality rejections.
+- **Transient → true backoff.** A `transient` class currently routes to a plain
+  QUEUED retry (retry, not re-scope/operator — O3's load-bearing assertion). It
+  does NOT yet feed B24's transient backoff delay (that path is keyed on a
+  transient ATTEMPT exit, not a reject_class). Wire the backoff if flaky-gate
+  retries need pacing.
+
+## P1 — gate-failure diagnosis routing (BUILT — see Status above)
 
 ### Why it currently feels like dumb retry (verified)
 A pre-merge/mutation gate failure already transitions the task to `REVIEW_REJECTED`
