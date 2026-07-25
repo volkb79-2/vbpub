@@ -4528,6 +4528,55 @@ def test_post_merge_gate_failure_emits_error(
     assert gate_failed[0]["exit_code"] != 0
 
 
+def test_post_merge_gate_timeout_captures_output(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """F019 P1a: a post-merge gate that TIMES OUT records exit_code 124 in its
+    GATE_FINISHED event -- exercising the post-merge timeout branch's output
+    capture (the only per-phase timeout path without an existing test). Mirrors
+    test_post_merge_gate_failure_emits_error with a sleep gate + short timeout."""
+    import dataclasses
+    from nyxloom import config as config_mod
+    from nyxloom.config import GateDef
+
+    cfg = sample_project
+    task_id = "demo-P02-timeout"
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+        state=TaskState.CARVED, since=utc_now(), handoff_path="handoff/demo-P02-timeout.md",
+    )
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    cur = storage.load_state("demo", task_id)
+    cur.state = TaskState.VALIDATING
+    cur.merge_commit = "badc0de00003"
+    storage.save_state(cur)
+
+    slow_cfg = dataclasses.replace(cfg, gates={
+        "sleepy": GateDef(gate_id="sleepy", argv=["sleep", "5"], phase="implementation",
+                          timeout_seconds=1, environment="local"),
+    })
+    monkeypatch.setattr(config_mod.ProjectConfig, "load", classmethod(lambda cls, root: slow_cfg))
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    _scripted(monkeypatch, [[reconcile.RunPostMergeGate(task_id=task_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    n = d.run_pass("demo")
+    assert n == 1
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.BLOCKED
+
+    events = list(storage.iter_events("demo"))
+    gate_ev = [e for e in events
+               if e.type is EventType.GATE_FINISHED and e.task_id == task_id
+               and e.payload.get("gate_result", {}).get("phase") == "post-merge"][0]
+    assert gate_ev.payload["gate_result"]["exit_code"] == 124
+
+
 def _write_merge_handoff(root, task_id: str) -> str:
     """A real handoff/*.md matching handoff_globs (SAMPLE_PROJECT_TOML),
     frontmatter `id:` == task_id -- reconcile.plan_project's per-task loop

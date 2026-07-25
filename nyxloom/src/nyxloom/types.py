@@ -557,6 +557,12 @@ class GateResult(_Serde):
     ended: datetime
     environment: str | None = None
     artifacts: list[str] = field(default_factory=list)
+    # F019 P1a: a bounded tail of the gate's stdout+stderr, so a gate FAILURE
+    # is diagnosable (the reviewer-diagnosis routing reads it) and a re-queue can
+    # embed the real failure instead of retrying context-free. Empty by default:
+    # back-compat for events serialized before this field existed, and the tail
+    # is only worth persisting on a non-zero exit (populated by the daemon).
+    output_tail: str = ""
 
     _FIELD_TYPES = {"started": parse_iso, "ended": parse_iso}
 
