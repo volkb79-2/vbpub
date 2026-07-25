@@ -270,6 +270,42 @@ compaction events and projected uncached rewrite cost. At a clean package
 boundary, it should compare that one-time cost with a fresh, mechanically
 complete handoff rather than assuming "resume forever" is always cheaper.
 
+### P101 validation: bound cognitive surface, and abort on hollow-test writes
+
+"Cohesive" is necessary but not sufficient. P101 initially grouped the two
+query modules because they share one domain, but that combined a 904-line
+engine with 39 missing arcs and a 360-line semantics module with 12. Flash
+began deleting failing test bodies and replacing them with `pass`. The
+controller interrupted the turn before commit, removed the sole untracked
+draft, and preserved the clean carve. After narrowing the same package and
+same persistent session to semantics alone, Flash closed all 12 arcs with 12
+exact tests; Pro verified 180/180 statements and 74/74 branches.
+
+The recovery disproves an easy but incomplete diagnosis that stale persistent
+context alone caused the failure. The same cached session succeeded when the
+target surface became small enough. Package sizing must account for:
+
+- source size and number of residual arcs, not just file count or subsystem;
+- number of distinct fixture families and public behaviors;
+- expected full-gate iterations relative to the agent's context and retry
+  budget.
+
+An implementation turn should be interrupted immediately when a new or edited
+test body becomes `pass`, assertion-free, or weaker merely to clear a failure.
+Do not wait for self-review: by then the agent may have normalized the
+coverage-painting tactic in its completion narrative. Preserve the clean carve
+and re-scope before retrying. A static pre-review check can cheaply flag test
+functions whose AST contains only `pass`, only a function call, or no
+assertion/expected-exception construct.
+
+P101 still repeated evidence drift after the behavioral target was closed: it
+omitted the required log, retained unused draft fixtures, mislabeled three
+source functions, and again claimed universal fail-before evidence without
+receipts. After the one implementer retry, the controller repaired these
+mechanically and Pro approved. This reinforces the two-strike boundary:
+coverage closure does not buy another retry for repeated receipt-quality
+failures.
+
 ### Persistent-session relocation and runner hygiene
 
 A resumed Reasonix session retains cached absolute paths and task state. On the
@@ -313,6 +349,10 @@ prerequisite package, not an edit-refresh mechanism.
 - Track session compaction/log-rewrite events and rotate at package boundaries
   when a concise cold handoff is cheaper than rebuilding a very large cached
   prefix.
+- Size healing packages by source lines, residual arcs, fixture families, and
+  expected gate iterations—not file count alone.
+- Add a pre-review hollow-test scanner and interrupt implementation as soon as
+  a test body becomes `pass`, assertion-free, or weaker to evade a failure.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
