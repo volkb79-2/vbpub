@@ -29,9 +29,12 @@ identical. O1/O4 satisfied. 22 collected cases, 2,088 + 22 = 2,110. ✓
 ## Source edit audit
 
 ### Catalog dead-guard removal (O3)
-Lines 188–189 (`if not target: / raise ValueError(...)`) were removed. The
-shared guard at line 156 (`if not isinstance(target, str) or not target:`)
-rejects every non-string/empty target BEFORE kind dispatch at line 176.
+The executable guard at lines 188–189
+(`if not target: / raise ValueError(...)`) was replaced by an invariant
+comment. The shared guard at line 156
+(`if not isinstance(target, str) or not target:`) rejects every
+non-string/empty target before general kind dispatch at line 164 and the
+set-property block at line 185.
 The set-property-specific empty check could never execute — **provably dead
 code**. The public empty-target error behavior is preserved by the shared
 guard and covered by `test_catalog_set_property_rejects_an_empty_target_exactly`. ✓
@@ -76,7 +79,8 @@ All lines verified against source at HEAD:
 | governance.py | 332 | `except Exception:` |
 | governance.py | 333 | `current_value = None` |
 
-Lines 188–189 removed (dead guard). All retained lines + arcs covered.
+The executable lines/pair at 188–189 were removed as a dead guard and replaced
+by comments. All retained executable lines + arcs are covered.
 
 ## Test quality audit (11 functions, 22 collected cases)
 
@@ -84,7 +88,7 @@ Lines 188–189 removed (dead guard). All retained lines + arcs covered.
 |------|:-----:|-----------|
 | `test_catalog_set_property_rejects_an_empty_target_exactly` | 1 | Exact ValueError text |
 | `test_catalog_set_property_rejects_composite_targets_exactly` | 2 | Exact ValueError text (both "=" and whitespace forms) |
-| `test_validate_target_defensively_rejects_unhandled_allowlisted_kind` | 1 | Exact ValueError with kind repr |
+| `test_validate_target_defensively_rejects_an_unhandled_allowlisted_kind` | 1 | Exact ValueError with kind repr |
 | `test_specialized_target_validation_errors_are_exact` | 6 | Exact ValueError per kind (whitespace, unit name, identifier) |
 | `test_digit_limit_conversion_failure_has_exact_error_and_cause` | 1 | Exact error + `type(exc.__cause__) is ValueError`; saves/restores `sys.int_max_str_digits` in `finally` |
 | `test_systemctl_reader_transport_failures_return_none_exactly` | 2 | `is None` + exact subprocess call (OSError, TimeoutExpired) |
