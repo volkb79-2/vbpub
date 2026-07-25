@@ -3,26 +3,29 @@
 ## Summary
 
 Whole query/engine.py at exact 100% statements and branches.
-17 tests (16 + 1 new cycle test), 2019 total (2002 + 17).
+16 test functions and 16 collected cases, 2018 total (2002 + 16). The
+misnamed redundant `test_run_raw_no_points` was removed.
 
 ## Target coverage
 
 | Scope | Before | After |
 |-------|--------|-------|
-| P103 residual (17 lines, 19 pairs) | 17 lines, 19 pairs | 0/0 |
-| Whole engine.py | 17+ lines, 19+ branches | **100%** |
+| P103 residual (17 lines, 19 pairs) | 17 lines, 19 pairs | `[]` / `[]` |
+| Whole engine.py | 17 lines, 19 branches | `[]` / `[]` |
 
 ## Literal residual — run 1
 
 run 1 missing target lines: []
 run 1 missing target pairs: []
-run 1 whole-file lines: 0, branches: 0
+run 1 whole-file missing_lines: []
+run 1 whole-file missing_branches: []
 
 ## Literal residual — run 2
 
 run 2 missing target lines: []
 run 2 missing target pairs: []
-run 2 whole-file lines: 0, branches: 0
+run 2 whole-file missing_lines: []
+run 2 whole-file missing_branches: []
 
 ## Before residual sets
 
@@ -33,14 +36,15 @@ run 2 whole-file lines: 0, branches: 0
 
 ## Tests
 
-17 test functions. 2019 total (2002 baseline + 17). All call real engine functions.
-No assertion-free bodies, no non-None-only checks.
+16 test functions and 16 collected cases. 2018 total (2002 baseline + 16).
+All call real engine functions. No assertion-free bodies, weak ranges,
+non-None-only checks, or redundant cases.
 
 ## Gate
 
 | Run | Tests | Exit | Engine parity |
 |-----|-------|------|---------------|
-| Pass 1 | 2019 | 0 | |
-| Pass 2 | 2019 | 0 | PASS |
+| Pass 1 | 2018 | 0 | |
+| Pass 2 | 2018 | 0 | PASS |
 
 No product source edits, no pragmas.

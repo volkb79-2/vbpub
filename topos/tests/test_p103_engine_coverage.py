@@ -62,16 +62,28 @@ def test_format_result_pretty():
 
 # line 581: _summary_cells available visibility
 def test_summary_cells_available_visibility():
-    ef = _ef("e", {"ram": _g(1.0), "other": MetricValue(1.0, "bpf")})
-    frames = [_frame(0, {"e": ef}), _frame(1, {"e": ef})]
+    frames = [
+        _frame(0, {"e": _ef("e", {"ram": _g(1.0)})}),
+        _frame(1, {"e": _ef("e", {"ram": MetricValue(9.0, "unavail_kernel")})}),
+    ]
     from topos.query.engine import _ResolvedMetric
     rm = _ResolvedMetric(name="ram", semantic=ValueSemantic.GAUGE)
     cells, resets = _summary_cells(frames, ["e"], [rm], "available")
-    cell = cells["e"]["ram"]
-    assert cell["semantic"] == "gauge"
-    assert cell["count"] == 2
-    assert cell["min"] == 1.0
-    assert cell["max"] == 1.0
+    assert cells == {
+        "e": {
+            "ram": {
+                "semantic": "gauge",
+                "sample_count": 1,
+                "count": 1,
+                "min": 1.0,
+                "mean": 1.0,
+                "p50": 1.0,
+                "p95": 1.0,
+                "max": 1.0,
+            }
+        }
+    }
+    assert resets == 0
 
 
 # line 597: _cell_stat None
@@ -87,16 +99,11 @@ def test_project_hierarchy_no_sort():
         Query(shape="summary", metrics=(MetricRef(name="ram"),), projection="hierarchy"),
         ["a", "b", "c"], parents, cells, sort=None, own_values={},
     )
-    assert len(rows) == 3
-    # Unsorted: alphabetically by key
-    assert rows[0]["key"] == "a"
-    assert rows[0]["depth"] == 0
-    assert "path" in rows[0]
-    assert "metrics" in rows[0]
-    # 'b' and 'c' are children of 'a'
-    b_row = next(r for r in rows if r["key"] == "b")
-    assert b_row["depth"] == 1
-    assert b_row["path"] == ["a"]
+    assert rows == [
+        {"key": "a", "depth": 0, "path": [], "metrics": {}},
+        {"key": "b", "depth": 1, "path": ["a"], "metrics": {}},
+        {"key": "c", "depth": 1, "path": ["a"], "metrics": {}},
+    ]
 
 
 # line 754: enforce_byte_cap with prior truncation
@@ -105,8 +112,14 @@ def test_enforce_byte_cap_prior_truncation():
     meta = {"k": "v"}
     result, trunc = _enforce_byte_cap(meta, rows, Caps(10, 100, 500, "truncate"),
                                         truncation={"truncated": True, "reason": "max_rows"})
-    assert trunc["truncated"] is True
-    assert trunc.get("also") == "max_rows"
+    assert result == []
+    assert trunc == {
+        "truncated": True,
+        "policy": "truncate",
+        "reason": "max_bytes",
+        "dropped_rows": 1,
+        "also": "max_rows",
+    }
 
 
 # line 784: _run_current empty frames
@@ -126,9 +139,15 @@ def test_run_raw_no_entity():
         "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    assert len(r.rows) == 1
-    assert r.rows[0]["key"] == "key1"
-    assert len(r.rows[0]["points"]) == 1  # only frame 0 has key1
+    assert r.rows == [
+        {
+            "key": "key1",
+            "metric": "ram",
+            "semantic": "gauge",
+            "points": [{"ts": 0, "value": 1.0, "src": "exact"}],
+        }
+    ]
+    assert r.meta["truncation"] == {"truncated": False, "policy": "truncate"}
 
 
 # line 858: metric absent -> continue
@@ -139,7 +158,8 @@ def test_run_raw_no_metric():
         "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    assert len(r.rows) == 0
+    assert r.rows == []
+    assert r.meta["truncation"] == {"truncated": False, "policy": "truncate"}
 
 
 # line 860: hidden visibility skip
@@ -151,7 +171,8 @@ def test_run_raw_hidden_visibility():
         "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    assert len(r.rows) == 0
+    assert r.rows == []
+    assert r.meta["truncation"] == {"truncated": False, "policy": "truncate"}
 
 
 # line 862: point cap truncation
@@ -163,11 +184,25 @@ def test_run_raw_point_cap():
         "caps": {"max_rows": 100, "max_points": 3, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    t = r.meta["truncation"]
-    assert t["truncated"] is True
-    assert t["reason"] == "max_points"
-    assert len(r.rows) == 1
-    assert len(r.rows[0]["points"]) == 3
+    assert r.rows == [
+        {
+            "key": "e",
+            "metric": "ram",
+            "semantic": "gauge",
+            "points": [
+                {"ts": 0, "value": 0.0, "src": "exact"},
+                {"ts": 1, "value": 1.0, "src": "exact"},
+                {"ts": 2, "value": 2.0, "src": "exact"},
+            ],
+        }
+    ]
+    assert r.meta["truncation"] == {
+        "truncated": True,
+        "policy": "truncate",
+        "reason": "max_points",
+        "emitted_series": 1,
+        "total_series": 1,
+    }
 
 
 # line 866: raw counter included
@@ -178,22 +213,17 @@ def test_run_raw_raw_field():
         "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    assert len(r.rows) == 1
-    assert any(p.get("raw") is not None for p in r.rows[0]["points"])
-
-
-# line 869-847: no points -> no row (covered by test_run_raw_no_metric)
-# kept for coverage completeness but exact assertion
-def test_run_raw_no_points():
-    mv = MetricValue(None, "unavail_kernel")
-    src = _daemon([_frame(0, {"e": _ef("e", {"ram": mv})})])
-    q = Query.from_dict({
-        "shape": "raw", "metrics": ["ram"],
-        "caps": {"max_rows": 100, "max_points": 1000, "max_bytes": 10000, "on_exceed": "truncate"},
-    })
-    r = run_query(src, q)
-    assert len(r.rows) == 1  # entity exists, metric exists, but value is None -> point with None value
-    assert len(r.rows[0]["points"]) == 1
+    assert r.rows == [
+        {
+            "key": "e",
+            "metric": "ram",
+            "semantic": "gauge",
+            "points": [
+                {"ts": 0, "value": None, "src": "derived", "raw": 500}
+            ],
+        }
+    ]
+    assert r.meta["truncation"] == {"truncated": False, "policy": "truncate"}
 
 
 # line 882: both truncated and row_capped
@@ -206,12 +236,26 @@ def test_run_raw_both_caps():
         "caps": {"max_rows": 1, "max_points": 3, "max_bytes": 10000, "on_exceed": "truncate"},
     })
     r = run_query(src, q)
-    t = r.meta["truncation"]
-    assert t["truncated"] is True
-    assert t["reason"] == "max_points"
-    assert t.get("also") == "max_rows"
-    assert len(r.rows) == 1
-    assert len(r.rows[0]["points"]) == 3
+    assert r.rows == [
+        {
+            "key": "e1",
+            "metric": "ram",
+            "semantic": "gauge",
+            "points": [
+                {"ts": 0, "value": 0.0, "src": "exact"},
+                {"ts": 1, "value": 1.0, "src": "exact"},
+                {"ts": 2, "value": 2.0, "src": "exact"},
+            ],
+        }
+    ]
+    assert r.meta["truncation"] == {
+        "truncated": True,
+        "policy": "truncate",
+        "reason": "max_points",
+        "emitted_series": 1,
+        "total_series": 2,
+        "also": "max_rows",
+    }
 
 
 # arc 429-427: subtree_aggregate child None
@@ -232,8 +276,41 @@ def test_project_hierarchy_with_sort():
         Query(shape="summary", metrics=(MetricRef(name="ram"),), projection="hierarchy"),
         ["a", "b", "c"], parents, cells, sort, own_values,
     )
-    assert len(rows) == 3
-    # Descending: c(15) and b(5) as children of a, sorted desc -> c then b
-    assert rows[0]["key"] == "a"
-    assert rows[1]["key"] == "c"
-    assert rows[2]["key"] == "b"
+    assert rows == [
+        {
+            "key": "a",
+            "depth": 0,
+            "path": [],
+            "metrics": {"ram": {"value": 10.0}},
+            "subtree": {
+                "metric": "ram",
+                "policy": "kernel_subtree",
+                "additive": False,
+                "value": 10.0,
+            },
+        },
+        {
+            "key": "c",
+            "depth": 1,
+            "path": ["a"],
+            "metrics": {"ram": {"value": 15.0}},
+            "subtree": {
+                "metric": "ram",
+                "policy": "kernel_subtree",
+                "additive": False,
+                "value": 15.0,
+            },
+        },
+        {
+            "key": "b",
+            "depth": 1,
+            "path": ["a"],
+            "metrics": {"ram": {"value": 5.0}},
+            "subtree": {
+                "metric": "ram",
+                "policy": "kernel_subtree",
+                "additive": False,
+                "value": 5.0,
+            },
+        },
+    ]
