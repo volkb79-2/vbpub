@@ -115,6 +115,22 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               project is not an error: iter_events yields
                               nothing for it, so nothing is printed and the
                               exit code is 0.
+  gate verify <project>        PACKAGE GA1 (docs/plan-gate-adoption.md
+                              checklist item 6): a "gate for the gate" --
+                              selects the project's verification gate
+                              (gate_runner.select_verification_gate), runs
+                              it at HEAD (must PASS), then builds a known-
+                              bad canary commit (gate_canary.
+                              build_canary_commit: a real behavioral
+                              mutation via mutation_gate, or a fallback
+                              module-top-level assertion) and runs the SAME
+                              gate against it (must FAIL). Prints
+                              pass-on-good / fail-on-bad plus a verdict:
+                              NO_GATE (no gate declared), BROKEN (rejects
+                              even good HEAD), LAUNDERS (passes the known-
+                              bad canary -- the `argv=["true"]` trap), or
+                              TRUSTWORTHY (exit 0; every other verdict is
+                              exit 1).
   version                     nyxloom.__version__.
   free-models list [--source NAME]
                               D-R12 (docs/routing-model-redesign.md,
@@ -808,6 +824,87 @@ def cmd_merge(args) -> int:
     return 0
 
 
+def cmd_gate_verify(args) -> int:
+    """gate verify <project>
+
+    PACKAGE GA1 (docs/plan-gate-adoption.md checklist item 6: "Proven to
+    REJECT") -- a "gate for the gate". nyxloom otherwise trusts a project's
+    declared verification gate blindly (`reference/STANDARD.md` §"What
+    nyxloom requires of a project"); this verb proves it instead of assuming
+    it: selects the gate (gate_runner.select_verification_gate), runs it at
+    the project's current HEAD (must PASS), then tries up to several
+    known-bad canary commits against the SAME gate
+    (gate_canary.verify_gate_rejects_canary; see that module for the
+    multi-attempt/subtree-scoping design). Every gate run reuses
+    gate_runner's ONE isolation primitive.
+
+    Verdicts (printed as `verdict: <NAME> -- ...`):
+      NO_GATE      -- project declares no gate at all.             exit 1
+      BROKEN       -- the gate rejects even known-good HEAD.       exit 1
+      LAUNDERS     -- every canary attempt PASSES.                 exit 1
+      INCONCLUSIVE -- no attempt was killed, but at least one never
+                      rendered a real verdict (timeout/exec-failure). exit 3
+      TRUSTWORTHY  -- passes good HEAD AND kills >=1 canary.        exit 0
+    """
+    import subprocess
+
+    from . import gate_canary, gate_runner
+
+    cfg = _cfg(args.project)
+
+    gate = gate_runner.select_verification_gate(cfg)
+    if gate is None:
+        print(f"verdict: NO_GATE -- {args.project} declares no verification gate "
+              "(no [gates.*] with phase 'implementation' or 'post-merge')")
+        return 1
+
+    head = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", "HEAD"],
+        capture_output=True, text=True,
+    )
+    if head.returncode != 0:
+        print(f"error: git rev-parse HEAD failed: {head.stderr.strip()}", file=sys.stderr)
+        return 1
+    commit = head.stdout.strip()
+
+    good = gate_runner.run_gate_at_commit(cfg, gate, commit, phase="verify-good")
+    if good.exit_code != 0:
+        print(f"pass-on-good: FAIL (gate {gate.gate_id} exit {good.exit_code} at "
+              f"known-good HEAD {commit[:12]})")
+        print(f"verdict: BROKEN -- {args.project}'s gate {gate.gate_id} rejects even "
+              "known-good HEAD; fix the gate/HEAD before trusting merges through it")
+        return 1
+
+    try:
+        canary_result = gate_canary.verify_gate_rejects_canary(cfg, gate, commit)
+    except gate_canary.CanaryError as e:
+        print(f"error: cannot build a canary for {args.project}: {e}", file=sys.stderr)
+        return 1
+
+    attempts_desc = "; ".join(
+        f"{a.target_path} (exit {a.exit_code})" for a in canary_result.attempts
+    )
+    print(f"pass-on-good: PASS (gate {gate.gate_id} exit {good.exit_code} at {commit[:12]})")
+    print(f"fail-on-bad: {'PASS' if canary_result.killed else 'FAIL'} "
+          f"({len(canary_result.attempts)} attempt(s): {attempts_desc})")
+
+    if canary_result.killed:
+        print(f"verdict: TRUSTWORTHY -- {args.project}'s gate {gate.gate_id} rejects a "
+              "known-bad canary")
+        return 0
+
+    if canary_result.inconclusive:
+        print(f"verdict: INCONCLUSIVE -- {args.project}'s gate {gate.gate_id} never rendered "
+              "a real verdict on any canary attempt (timeout/exec-failure); cannot confirm "
+              "TRUSTWORTHY or LAUNDERS -- investigate the gate command itself")
+        return 3
+
+    print(f"verdict: LAUNDERS -- {args.project}'s gate {gate.gate_id} PASSES every known-bad "
+          f"canary tried ({len(canary_result.attempts)} attempt(s)); it cannot be trusted to "
+          "reject broken code")
+    return 1
+
+
 def cmd_pause(args) -> int:
     """pause <project> [task]"""
     from . import paths, storage
@@ -1376,6 +1473,13 @@ def main(argv: list[str] | None = None) -> int:
     merge_parser.add_argument("--force", action="store_true",
                               help="Record the merge even if the pre-merge gate fails (operator override; F).")
 
+    # gate (PACKAGE GA1: `gate verify` -- a gate for the gate)
+    gate_parser = subparsers.add_parser("gate")
+    gate_subs = gate_parser.add_subparsers(dest="gate_cmd")
+
+    gate_verify_parser = gate_subs.add_parser("verify")
+    gate_verify_parser.add_argument("project", help="Project ID")
+
     # pause
     pause_parser = subparsers.add_parser("pause")
     pause_parser.add_argument("project", help="Project ID")
@@ -1520,6 +1624,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_reject(args)
         elif args.cmd == "merge":
             return cmd_merge(args)
+        elif args.cmd == "gate":
+            if args.gate_cmd == "verify":
+                return cmd_gate_verify(args)
+            else:
+                parser.print_help(sys.stderr)
+                return 2
         elif args.cmd == "pause":
             return cmd_pause(args)
         elif args.cmd == "resume":

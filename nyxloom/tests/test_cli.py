@@ -1373,3 +1373,279 @@ def test_capability_map_emit_findings_unregistered_project(
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "not registered" in err
+
+
+# --------------------------------------------------------------------------- #
+# gate verify (PACKAGE GA1) -- verdict-logic tests. O1/O2/O3 monkeypatch
+# gate_runner.run_gate_at_commit for fast/deterministic canned exit codes
+# (the real behavior of THAT function is covered by test_gate_runner.py, and
+# the real canary-build/mutation behavior by test_gate_canary.py); the
+# canary-COMMIT-BUILDING step itself runs for real against `canary_project`'s
+# git history, so these tests still exercise cli.cmd_gate_verify's full call
+# sequence end to end.
+# --------------------------------------------------------------------------- #
+
+def _fake_gate_result(exit_code):
+    from nyxloom.types import GateResult, utc_now
+    return lambda cfg, gate, commit, phase="post-merge": GateResult(
+        gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=exit_code,
+        started=utc_now(), ended=utc_now(), environment=gate.environment)
+
+
+@pytest.fixture()
+def canary_project(sample_project):
+    """sample_project + ONE small committed .py source file -- a real
+    target for gate_canary.verify_gate_rejects_canary's single-attempt
+    path."""
+    import subprocess
+
+    (sample_project.root / "thing.py").write_text(
+        "def over_limit(x):\n    return x > 10\n"
+    )
+    subprocess.run(["git", "-C", str(sample_project.root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(sample_project.root), "-c", "user.email=t@t",
+         "-c", "user.name=t", "commit", "-qm", "add source"],
+        check=True,
+    )
+    return sample_project
+
+
+@pytest.fixture()
+def multi_file_canary_project(sample_project):
+    """sample_project + TWO committed .py source files -- for exercising
+    the multi-attempt canary rollup at the CLI layer (MAJOR #2)."""
+    import subprocess
+
+    (sample_project.root / "aaa_first.py").write_text("def f(x):\n    return x + 1\n")
+    (sample_project.root / "zzz_second.py").write_text(
+        "def g(x):\n    return x + 2\n" * 3
+    )
+    subprocess.run(["git", "-C", str(sample_project.root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(sample_project.root), "-c", "user.email=t@t",
+         "-c", "user.name=t", "commit", "-qm", "add two sources"],
+        check=True,
+    )
+    return sample_project
+
+
+@pytest.fixture()
+def no_gate_project(tmp_state, tmp_path):
+    """A registered project declaring NO [gates.*] at all -- for O4."""
+    import subprocess
+
+    from nyxloom import paths
+    from nyxloom.config import ProjectConfig, register_project
+
+    root = tmp_path / "nogate-repo"
+    (root / ".nyxloom").mkdir(parents=True)
+    (root / ".nyxloom" / "project.toml").write_text(
+        "[project]\n"
+        'id = "nogatedemo"\n'
+        'default_branch = "main"\n'
+        'worktree_root = ".worktrees"\n'
+        "handoff_globs = []\n"
+        "\n[policy]\nmax_active_tasks = 2\nready_queue_target = 3\n\n[notify]\n"
+    )
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=root, check=True)
+    register_project("nogatedemo", root)
+    paths.ensure_layout("nogatedemo")
+    return ProjectConfig.load(root)
+
+
+def test_gate_no_subcommand_prints_help_and_exits_2(tmp_state, capsys):
+    """`nyxloom gate` with no verb (e.g. `verify`) -> usage help, exit 2 --
+    mirrors the same unknown-subcommand handling as `project`/`free-models`/
+    `capability-map`/`finding`."""
+    exit_code = cli.main(["gate"])
+
+    assert exit_code == 2
+
+
+def test_gate_verify_trustworthy(canary_project, tmp_state, capsys, monkeypatch):
+    """O1: gate passes on HEAD and fails on the canary -> verdict TRUSTWORTHY,
+    exit 0."""
+    from nyxloom import gate_runner
+    from nyxloom.types import GateResult, utc_now
+
+    calls = []
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        calls.append(phase)
+        exit_code = 0 if phase == "verify-good" else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit,
+                          exit_code=exit_code, started=utc_now(), ended=utc_now(),
+                          environment=gate.environment)
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "pass-on-good: PASS" in out
+    assert "fail-on-bad: PASS" in out
+    assert "verdict: TRUSTWORTHY" in out
+    assert calls == ["verify-good", "verify-canary"]
+
+
+def test_gate_verify_launders(canary_project, tmp_state, capsys, monkeypatch):
+    """O2: sample_project's gate is argv=["true"] -- canned to pass BOTH the
+    good-HEAD run and the canary run (as `true` genuinely would) -> verdict
+    LAUNDERS, exit non-zero."""
+    from nyxloom import gate_runner
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "pass-on-good: PASS" in out
+    assert "fail-on-bad: FAIL" in out
+    assert "verdict: LAUNDERS" in out
+
+
+def test_gate_verify_broken(canary_project, tmp_state, capsys, monkeypatch):
+    """O3: the gate fails even on known-good HEAD -> verdict BROKEN, exit
+    non-zero, and the canary is never built (short-circuits before the real
+    git worktree/injection work)."""
+    from nyxloom import gate_canary, gate_runner
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(1))
+
+    def _must_not_verify(*a, **k):
+        raise AssertionError("canary must NOT be built when good-HEAD already fails")
+    monkeypatch.setattr(gate_canary, "verify_gate_rejects_canary", _must_not_verify)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "pass-on-good: FAIL" in out
+    assert "verdict: BROKEN" in out
+
+
+def test_gate_verify_trustworthy_on_second_attempt(
+        multi_file_canary_project, tmp_state, capsys, monkeypatch):
+    """MAJOR #2 (multi-attempt): the FIRST canary attempt survives (exit 0),
+    the SECOND is genuinely killed -> overall TRUSTWORTHY, with BOTH
+    attempts reported (not just one arbitrary file's result)."""
+    from nyxloom import gate_runner
+    from nyxloom.types import GateResult, utc_now
+
+    canary_calls = {"n": 0}
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        if phase == "verify-good":
+            exit_code = 0
+        else:
+            canary_calls["n"] += 1
+            exit_code = 0 if canary_calls["n"] == 1 else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit,
+                          exit_code=exit_code, started=utc_now(), ended=utc_now(),
+                          environment=gate.environment)
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "verdict: TRUSTWORTHY" in out
+    assert "2 attempt(s)" in out
+    assert canary_calls["n"] == 2
+
+
+def test_gate_verify_launders_only_when_every_attempt_survives(
+        multi_file_canary_project, tmp_state, capsys, monkeypatch):
+    """MAJOR #2: with TWO candidate files, LAUNDERS requires BOTH to
+    survive -- not just the first one tried."""
+    from nyxloom import gate_runner
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: LAUNDERS" in out
+    assert "2 attempt(s)" in out
+
+
+def test_gate_verify_inconclusive_on_canary_timeout(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """MINOR #4: a canary run that times out (124) is neither a genuine
+    kill nor a clean survival -- distinct INCONCLUSIVE verdict, exit 3, not
+    conflated with LAUNDERS."""
+    from nyxloom import gate_runner
+    from nyxloom.types import GateResult, utc_now
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 124
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit,
+                          exit_code=exit_code, started=utc_now(), ended=utc_now(),
+                          environment=gate.environment)
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 3
+    out = capsys.readouterr().out
+    assert "verdict: INCONCLUSIVE" in out
+
+
+def test_gate_verify_no_gate(no_gate_project, tmp_state, capsys):
+    """O4: a project with no [gates.*] at all -> verdict NO_GATE, exit
+    non-zero, no git/canary work attempted."""
+    exit_code = cli.main(["gate", "verify", "nogatedemo"])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "verdict: NO_GATE" in out
+
+
+def test_gate_verify_canary_build_error_reported(
+        sample_project, tmp_state, capsys, monkeypatch):
+    """sample_project (no .py source at all) + a gate that passes HEAD ->
+    gate_canary.CanaryError is caught and reported as a clean error, not a
+    traceback."""
+    from nyxloom import gate_runner
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _fake_gate_result(0))
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "cannot build a canary" in err
+
+
+def test_gate_verify_head_resolution_failure(tmp_state, tmp_path, capsys):
+    """git rev-parse HEAD failing (an unborn/commit-less repo) is reported as
+    a clean error, not a traceback."""
+    import subprocess
+
+    from conftest import SAMPLE_PROJECT_TOML
+    from nyxloom import paths
+    from nyxloom.config import register_project
+
+    root = tmp_path / "nohead-repo"
+    (root / ".nyxloom").mkdir(parents=True)
+    (root / ".nyxloom" / "project.toml").write_text(SAMPLE_PROJECT_TOML)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    # Deliberately no commit -- HEAD is unborn, `git rev-parse HEAD` fails.
+    register_project("nohead", root)
+    paths.ensure_layout("nohead")
+
+    exit_code = cli.main(["gate", "verify", "nohead"])
+
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "git rev-parse HEAD failed" in err
