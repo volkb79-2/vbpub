@@ -784,3 +784,186 @@ prerequisite package, not an edit-refresh mechanism.
 
 <!-- Append new project-local lessons below. Product-scoped ones also get an
      upstream proposal; project-scoped ones stay here. -->
+
+## PL5 — Topos-derived operating playbook for agent-driven coverage healing
+`scope: product` · `upstream: proposed` · **LIVING (update after each consumer project)**
+
+PL4 is the detailed evidence trail. This entry is the short operating contract
+for nyxloom runs that inherit the same goal: repair historic test debt until the
+entire declared product source set has exact statement and branch coverage,
+without turning coverage into assertion-free line execution.
+
+### Sequence the program in two layers
+
+Install a trustworthy project gate **before** beginning the long historic
+coverage campaign. The gate must run in the project's isolated tester, propagate
+every failure, use parallel-safe coverage collection, and pass a canary that
+proves a planted source defect makes it red. This makes every intermediate
+package safe to merge and prevents the cockpit from becoming an accidental ship
+oracle.
+
+Do not confuse that gate with the absolute-coverage campaign oracle. A
+merge-base-to-HEAD changed-line floor is the right permanent regression floor,
+but a test-only repair can legitimately pass it while old source gaps remain.
+Each healing package therefore needs an additional, temporary acceptance check
+over a declared source file or literal residual set. The program is complete
+only when the global branch-aware report has no missing executable lines or
+branch destinations anywhere in the declared product source roots.
+
+Recommended order:
+
+1. make the isolated gate deterministic and canary-verified;
+2. capture and archive the global statement/branch baseline;
+3. carve one cohesive residual package at a time;
+4. merge only an immutable, independently reviewed, twice-gated package;
+5. recompute the global residual after every merge;
+6. finish with a clean-tree global gate, exact empty residual, and a repeated
+   canary verification.
+
+### Carve by cognitive surface, not by file count
+
+A good package normally owns one subsystem, one fixture family, and one
+behavioral vocabulary. Estimate its size from source lines, missing branch
+pairs, OS/runtime seams, and expected debug iterations. A single large file may
+need several literal residual tranches; several tiny adjacent files may fit one
+package.
+
+Freeze the package's before-set in the handoff:
+
+- exact source file keys;
+- exact missing executable-line numbers;
+- exact missing branch pairs;
+- the preceding verified suite total;
+- the baseline commit and expected worktree;
+- explicit deferred residuals outside the package.
+
+Acceptance compares both full-gate coverage records with that literal set and
+requires empty intersections. Counts such as `22/22`, percentages, and prose
+such as "effectively covered" are diagnostics, not completion evidence.
+
+When a residual exposes dead or harmful product behavior, allow a bounded
+source repair. Prefer removing a proven redundant branch or correcting an
+exception/safety policy to manufacturing a test that preserves a defect.
+Deletion-only work additionally needs an invariant proof, neighboring
+regression tests, whole-file coverage, and independent source review because a
+changed-line gate may correctly report `0/0`.
+
+### Use model roles as hypotheses bounded by mechanical checks
+
+The cost-effective topology observed on Topos was:
+
+- a context-rich implementer for code, tests, and self-review;
+- one persistent stronger reviewer that independently reruns the exact package
+  oracle and reviews test quality;
+- a high-reasoning controller that owns scope, immutable evidence, merge
+  decisions, and corrections to either model's claims.
+
+Persistent sessions are valuable while they retain the project's fixtures and
+domain vocabulary. They are not an invariant. Resume once after an ordinary
+miss to preserve cache value; rotate or take over when any health signal
+appears:
+
+- the same mechanical acceptance condition is missed twice;
+- exact assertions are weakened to make failures green;
+- test bodies become `pass`, assertion-free, or duplicate coverage painting;
+- the agent repeatedly reads a stale checkout, guesses a runner, or rewrites a
+  bounded test file instead of making a causal repair;
+- transcript compaction repeatedly converts a large cached prefix into costly
+  uncached rewrites.
+
+A concise fresh handoff with exact residuals can be cheaper and safer than
+permanent reuse after this crossover. Route choice follows observed task
+performance, not loyalty to the initially selected model. Keep the controller
+on the stronger reasoning route during active residual healing; reconsider a
+cheaper route only at a verified package/project boundary where remaining work
+is mechanical.
+
+The reviewer is independent, not authoritative. Its approval, branch labels,
+line mappings, test counts, and repair recipes remain hypotheses until
+mechanically reconciled with the exact commit. Max-standard work closes every
+review finding or records an explicit product decision; a reviewer calling a
+finding "non-blocking" does not lower the declared quality level.
+
+### Make the execution environment non-negotiable
+
+Every resumed task starts with a relocation preflight and records:
+
+```text
+pwd
+git rev-parse --show-toplevel
+git rev-parse HEAD
+git status --short
+```
+
+Nyxloom should constrain both project reads and writes to the selected worktree,
+apart from named canonical references. Inject the resolved tester invocation as
+an executable capability. Agents must not replace it with a cockpit virtualenv,
+copied tree, guessed bind mount, or rebuilt image. Rebuild only when dependency
+or image inputs change.
+
+For Python projects using xdist, collect with pytest-cov in each worker; do not
+wrap the parent in `coverage run`. Reject a coverage receipt even when pytest
+passes if coverage reports no data, a target was not imported, a declared file
+record is absent, or report generation fails. Store or print normalized target
+records inside the tester when host/container UID boundaries make a report bind
+unreliable.
+
+Authoritative gates run against an exact clean implementation commit. In a
+manual fallback flow, create a provisional implementation commit, resolve its
+object ID mechanically, run the full gate twice at that object, and only then
+append receipts and review. Dirty-tree runs and invented expansions of short
+commit IDs are not ship evidence.
+
+### Require causal tests, not merely covered syntax
+
+Before an expensive full gate, scan every newly written test—regardless of
+author—for empty bodies, assertion-free calls, count-only checks, partial
+dictionary/list assertions, and fixed shared temporary paths. A behavioral
+oracle should prove the input, selected branch or failure precondition, complete
+result, side-effect order, and cleanup/restoration where applicable.
+
+Coverage residuals are especially valuable boundary-policy prompts. Review:
+
+- `BaseException` versus `Exception` and operator-interrupt propagation;
+- fail-open versus fail-closed fallback;
+- language subtype traps such as `bool` satisfying `int`;
+- apply/wait/sample/record ordering in control loops;
+- ownership of cleanup across return, exception, and `finally`;
+- complete data flow across composed mocks rather than disconnected call
+  counters.
+
+Mock narrow nondeterministic seams, not the behavior being asserted. Direct
+tests of stable private parsers/readers are acceptable when their outputs are
+deterministic and integration tests also prove composition. Run real
+deterministic fixtures to learn nested expected structures before encoding
+exact equality; neither model-authored field guesses nor test names prove a
+causal path.
+
+### Evidence nyxloom should generate rather than ask a model to narrate
+
+For every package, generate and retain:
+
+- exact clean implementation commit and worktree;
+- before-set and both after-set intersections;
+- complete per-target statement/branch records and normalized hashes;
+- full commands and exit codes, including the changed-line evaluator;
+- collected-case deltas, distinct from test-function counts;
+- diff-derived baseline-to-current line maps and AST-derived
+  line-to-function/category maps;
+- canary commit/path/bad exit/verdict after material gate changes;
+- an inventory of disposable side effects after interrupted agent turns.
+
+Automated validation should reject contradictions such as `done` with non-empty
+required residuals, a green pytest summary followed by coverage-report failure,
+or universal prose claims unsupported by the command trace/test AST. Models
+should explain causal meaning; nyxloom should own identities, arithmetic,
+coordinates, and acceptance.
+
+### Maintenance rule
+
+Keep this entry living through the remaining Topos work and the
+netcup-api-filter and dstdns adoptions. Add only lessons that change routing,
+carving, gate semantics, or evidence requirements; package-specific incidents
+belong in PL4. After all three consumers reach the global goal, distill the
+stable rules into `reference/LESSONS.md` and retain the incident chronology
+here as supporting evidence.
