@@ -634,6 +634,41 @@ def test_run_is_killed_isolated_resolves_subdir_offset(tmp_path):
     assert "mut-" not in _worktree_listing(top)
 
 
+def test_run_is_killed_isolated_worktree_add_failure_falls_back_to_in_place(
+        monkeypatch, tmp_path):
+    """If `git worktree add` itself fails (e.g. a racing cleanup or disk
+    issue) despite a clean tree, `_run_is_killed_isolated` falls back to the
+    in-place path rather than silently skipping the mutant."""
+    repo = _make_small_repo(tmp_path)
+    live_file = repo / "src" / "nyxloom" / "hello.py"
+    original_text = live_file.read_text()
+    assert mg._fanout_safe(str(repo)) is True  # sanity: still clean
+
+    real_run = subprocess.run
+
+    def fake_run(argv, *a, **kw):
+        if "worktree" in argv and "add" in argv:
+            return subprocess.CompletedProcess(
+                argv, returncode=1, stdout="", stderr="simulated failure",
+            )
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(mg.subprocess, "run", fake_run)
+
+    mutant = mg.Mutant(
+        lineno=1, operator="marker", description="m",
+        mutated_source="ISOLATION_MARKER = 1\n",
+    )
+    result = mg._run_is_killed(
+        str(repo), "src/nyxloom/hello.py", mutant,
+        ["grep", "ISOLATION_MARKER", "src/nyxloom/hello.py"],
+    )
+    # Fell back to in-place: grep found the marker written directly into the
+    # LIVE file -> survived, and the live file is restored afterward.
+    assert result is False
+    assert live_file.read_text() == original_text
+
+
 def test_run_is_killed_concurrent_calls_do_not_clobber(tmp_path):
     """Several concurrent `_run_is_killed` calls against the SAME clean repo
     each get their OWN scratch worktree: no cross-mutant clobbering, and
