@@ -610,6 +610,13 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.BUDGET_WARNING,
     EventType.BUDGET_EXHAUSTED,
     EventType.ARTIFACT_REGISTERED,
+    # F (factory-hardening) 2026-07-25: MERGE_REVERTED is an audit-only marker
+    # emitted when the daemon auto-reverts a published-but-failing merge (CAS
+    # update-ref back to the merge commit's parent). Its real state consequence
+    # arrives via the SEPARATE, properly-handled TASK_BLOCKED transition on the
+    # same pass -- so the projection ignores it (same no-op shape as the other
+    # audit markers here). See daemon._run_post_merge_gate + reference/LESSONS.md L4.
+    EventType.MERGE_REVERTED,
     # FN-1 2026-07-24: findings are advisory, projection-less informational
     # events (same no-op shape as ARTIFACT_REGISTERED). See findings.py.
     EventType.FINDING_RECORDED,

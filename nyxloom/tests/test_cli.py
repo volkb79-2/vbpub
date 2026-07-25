@@ -511,6 +511,49 @@ def test_merge_wrong_state_rejected(sample_project, tmp_state, capsys, make_stat
     assert states["demo-P01-test"].merge_commit is None
 
 
+def test_merge_blocked_by_failing_pre_merge_gate(
+        sample_project, tmp_state, capsys, make_statefile, monkeypatch):
+    """F: cmd_merge runs the project gate on the commit FIRST; a failure exits 1
+    and records NOTHING (the merge is not enshrined)."""
+    from nyxloom import gate_runner, storage
+    from nyxloom.types import GateResult, utc_now
+
+    tsf = make_statefile(state=TaskState.MERGE_READY)
+    storage.save_state(tsf)
+
+    monkeypatch.setattr(
+        gate_runner, "run_gate_at_commit",
+        lambda cfg, gate, commit, phase="post-merge": GateResult(
+            gate_id=gate.gate_id, phase=phase, commit=commit, exit_code=1,
+            started=utc_now(), ended=utc_now(), environment="local"),
+    )
+
+    exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", "f" * 40])
+    assert exit_code == 1
+    assert "gate" in capsys.readouterr().err
+
+    events = list(storage.iter_events("demo"))
+    assert not [e for e in events if e.type in (EventType.TASK_TRANSITIONED, EventType.MERGE_RECORDED)]
+    assert storage.list_states("demo")["demo-P01-test"].state == TaskState.MERGE_READY
+
+
+def test_merge_force_bypasses_gate_entirely(
+        sample_project, tmp_state, capsys, make_statefile, monkeypatch):
+    """F: --force skips the gate (it is not even invoked) and records the merge."""
+    from nyxloom import gate_runner, storage
+
+    tsf = make_statefile(state=TaskState.MERGE_READY)
+    storage.save_state(tsf)
+
+    def _must_not_run(*a, **k):
+        raise AssertionError("gate must NOT run under --force")
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", _must_not_run)
+
+    exit_code = cli.main(["merge", "demo", "demo-P01-test", "--force", "--commit", "e" * 40])
+    assert exit_code == 0
+    assert storage.list_states("demo")["demo-P01-test"].state == TaskState.MERGED
+
+
 def test_pause_project(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 9: pause <project> creates flag + PAUSE_SET event."""
     from nyxloom import paths, storage

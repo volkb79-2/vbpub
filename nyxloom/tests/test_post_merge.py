@@ -176,3 +176,116 @@ def test_validating_task_completes_as_noop_when_no_gate_declared(
     types = [e.type for e in storage.iter_events("demo")]
     assert EventType.GATE_FINISHED not in types
     assert EventType.TASK_TRANSITIONED in types
+
+
+# ---------------------------------------------------------------------------
+# F (factory-hardening): a failing post-merge gate AUTO-REVERTS the published
+# tree (CAS update-ref back to the merge commit's parent), not just BLOCKS it.
+
+def _run_git(cwd, *args):
+    import subprocess
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+
+
+def _real_merge_on_main(root) -> tuple[str, str]:
+    """Advance `root`'s main to a real --no-ff merge commit; return
+    (pre_merge_main, merge_commit) where merge_commit^1 == pre_merge_main."""
+    before = _run_git(root, "rev-parse", "main").stdout.strip()
+    assert _run_git(root, "checkout", "-b", "feat/revert-me").returncode == 0
+    (root / "revert_me.txt").write_text("payload\n", encoding="utf-8")
+    assert _run_git(root, "add", "revert_me.txt").returncode == 0
+    assert _run_git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "feat: revert-me").returncode == 0
+    assert _run_git(root, "checkout", "main").returncode == 0
+    assert _run_git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+                    "merge", "--no-ff", "feat/revert-me", "-m", "merge feat/revert-me").returncode == 0
+    merge_commit = _run_git(root, "rev-parse", "main").stdout.strip()
+    assert merge_commit != before
+    return before, merge_commit
+
+
+def _failing_gate_cfg(cfg, **policy_overrides):
+    gates = {"pytest-q": GateDef(gate_id="pytest-q", argv=["false"],
+                                 phase="implementation", timeout_seconds=10, environment="local")}
+    if policy_overrides:
+        return dataclasses.replace(cfg, gates=gates,
+                                   policy=dataclasses.replace(cfg.policy, **policy_overrides))
+    return dataclasses.replace(cfg, gates=gates)
+
+
+def test_failing_post_merge_gate_auto_reverts_main(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """A gate failure on the PUBLISHED tree CAS-reverts <default_branch> back to
+    the merge commit's parent, emits MERGE_REVERTED, and still BLOCKS."""
+    cfg = sample_project
+    task_id = "demo-P01-sample"
+    before, merge_commit = _real_merge_on_main(cfg.root)
+    _seed_task("demo", task_id, TaskState.VALIDATING,
+               handoff_path="handoff/demo-P01-sample.md", merge_commit=merge_commit)
+    _freeze_cfg(monkeypatch, _failing_gate_cfg(cfg))
+    _scripted(monkeypatch, [[reconcile.RunPostMergeGate(task_id=task_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d.run_pass("demo") == 1
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.BLOCKED
+    # main was healed back to the pre-merge commit
+    assert _run_git(cfg.root, "rev-parse", "main").stdout.strip() == before
+
+    ev = list(storage.iter_events("demo"))
+    reverts = [e for e in ev if e.type is EventType.MERGE_REVERTED]
+    assert len(reverts) == 1
+    assert reverts[0].payload["from"] == merge_commit
+    assert reverts[0].payload["to"] == before
+    assert EventType.TASK_BLOCKED in [e.type for e in ev]
+
+
+def test_auto_revert_skipped_when_policy_disabled(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """auto_revert_failed_merge=False -> BLOCKED but main left advanced, no
+    MERGE_REVERTED."""
+    cfg = sample_project
+    task_id = "demo-P01-sample"
+    before, merge_commit = _real_merge_on_main(cfg.root)
+    _seed_task("demo", task_id, TaskState.VALIDATING,
+               handoff_path="handoff/demo-P01-sample.md", merge_commit=merge_commit)
+    _freeze_cfg(monkeypatch, _failing_gate_cfg(cfg, auto_revert_failed_merge=False))
+    _scripted(monkeypatch, [[reconcile.RunPostMergeGate(task_id=task_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d.run_pass("demo") == 1
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.BLOCKED
+    assert _run_git(cfg.root, "rev-parse", "main").stdout.strip() == merge_commit  # NOT reverted
+    assert EventType.MERGE_REVERTED not in [e.type for e in storage.iter_events("demo")]
+
+
+def test_auto_revert_cas_refused_when_main_advanced(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """If <default_branch> moved PAST the merge commit, the CAS update-ref is
+    refused -- main is NOT force-reverted, no MERGE_REVERTED, still BLOCKED."""
+    cfg = sample_project
+    task_id = "demo-P01-sample"
+    before, merge_commit = _real_merge_on_main(cfg.root)
+    # advance main one commit past the merge commit
+    (cfg.root / "later.txt").write_text("later\n", encoding="utf-8")
+    assert _run_git(cfg.root, "add", "later.txt").returncode == 0
+    assert _run_git(cfg.root, "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "later commit").returncode == 0
+    main_now = _run_git(cfg.root, "rev-parse", "main").stdout.strip()
+    assert main_now != merge_commit
+
+    _seed_task("demo", task_id, TaskState.VALIDATING,
+               handoff_path="handoff/demo-P01-sample.md", merge_commit=merge_commit)
+    _freeze_cfg(monkeypatch, _failing_gate_cfg(cfg))
+    _scripted(monkeypatch, [[reconcile.RunPostMergeGate(task_id=task_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d.run_pass("demo") == 1
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.BLOCKED
+    assert _run_git(cfg.root, "rev-parse", "main").stdout.strip() == main_now  # unchanged
+    assert EventType.MERGE_REVERTED not in [e.type for e in storage.iter_events("demo")]

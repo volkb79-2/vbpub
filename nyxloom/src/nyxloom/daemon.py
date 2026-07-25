@@ -339,8 +339,8 @@ from typing import Any
 
 from . import (
     adapters, backlog_items, commands, config, decision_chat, decisions, frontmatter,
-    intake_chat, leases, lint, merge_digest, notify, paths, reconcile, render, stages,
-    storage, watchdog, wrapper,
+    gate_runner, intake_chat, leases, lint, merge_digest, notify, paths, reconcile,
+    render, stages, storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -1912,14 +1912,14 @@ class Daemon:
         was already required to pass, just re-verified post-merge (the
         CLAUDE.md "re-run the gate on main post-merge" discipline this
         pipeline exists to automate). None only if the project declares NO
-        gates at all -- see the no-op-validated-pass branch below."""
-        post_merge = [g for g in cfg.gates.values() if g.phase == "post-merge"]
-        if post_merge:
-            return sorted(post_merge, key=lambda g: g.gate_id)[0]
-        impl = [g for g in cfg.gates.values() if g.phase == "implementation"]
-        if impl:
-            return sorted(impl, key=lambda g: g.gate_id)[0]
-        return None
+        gates at all -- see the no-op-validated-pass branch below.
+
+        F (factory-hardening): the selection logic now lives in
+        `gate_runner.select_verification_gate` so this daemon path and
+        `cli.cmd_merge` share ONE implementation (canonical L1). This method is
+        retained as the daemon-side call site (used by both the pre-merge gate
+        in `_execute_auto_merge` and `_run_post_merge_gate`)."""
+        return gate_runner.select_verification_gate(cfg)
 
     def _select_mutation_gate(self, cfg: ProjectConfig) -> GateDef | None:
         """Return the lowest-gate_id gate with phase == 'mutation', or None."""
@@ -2030,6 +2030,39 @@ class Daemon:
                 project, cfg, states, task_id, TaskState.COMPLETED,
                 f"post-merge gate {gate.gate_id} passed"))
         else:
+            # F (factory-hardening): the gate FAILED on a tree already published
+            # to <default_branch> (the pre-merge gate is skippable, and a
+            # --force cli.cmd_merge or a flaky pass can also let a red commit
+            # through). Only BLOCKING it leaves the broken commit live on main.
+            # Auto-revert: CAS `update-ref` the branch back to the merge commit's
+            # first parent -- CAS (old == commit) so a NEWER merge landed since is
+            # never clobbered; a refused CAS falls through to BLOCKED for a human
+            # (canonical reference/LESSONS.md L4). Opt out: auto_revert_failed_merge.
+            if getattr(cfg.policy, "auto_revert_failed_merge", True) and commit and repo_root:
+                parent = subprocess.run(
+                    ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", f"{commit}^1"],
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                if parent:
+                    rv = subprocess.run(
+                        ["git", "-C", repo_root, "update-ref",
+                         f"refs/heads/{cfg.default_branch}", parent, commit],
+                        capture_output=True, text=True,
+                    )
+                    if rv.returncode == 0:
+                        log.warning("merge-reverted", project=project, task=task_id,
+                                    frm=commit, to=parent, gate=gate.gate_id)
+                        events.append(self._append_ev(
+                            project, cfg, states, EventType.MERGE_REVERTED,
+                            {"from": commit, "to": parent, "branch": cfg.default_branch,
+                             "reason": f"post-merge gate {gate.gate_id} failed (exit {exit_code})"},
+                            task_id=task_id))
+                    else:
+                        # CAS refused: <default_branch> no longer points at the
+                        # merge commit (something merged on top). Never force over
+                        # it -- leave it and let the BLOCKED escalation get a human.
+                        log.error("merge-revert-cas-refused", project=project, task=task_id,
+                                  frm=commit, branch=cfg.default_branch, stderr=rv.stderr[:150])
             blocker = Blocker(
                 # P64 2026-07-20 (A12, M16): a post-merge GATE failure is an
                 # ENVIRONMENT failure (the merged tree failed its own tests),

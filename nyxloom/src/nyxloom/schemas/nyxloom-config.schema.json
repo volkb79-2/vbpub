@@ -79,7 +79,8 @@
         "headroom_warn": {"type": "integer", "minimum": 0},
         "test_health_interval_days": {"type": "integer", "minimum": 0},
         "pre_merge_gate": {"type": "boolean"},
-        "mutation_gate": {"type": "boolean"}
+        "mutation_gate": {"type": "boolean"},
+        "auto_revert_failed_merge": {"type": "boolean"}
       }
     },
     "notify": {
