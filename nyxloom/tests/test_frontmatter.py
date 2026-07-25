@@ -153,6 +153,37 @@ class TestSchemaErrors:
         errors = frontmatter.schema_errors(bad_component)
         assert any("component" in str(e).lower() for e in errors)
 
+    def test_review_focus_optional_and_valid(self):
+        """D1 (factory-hardening §D part 1): review_focus is optional and,
+        when present, must be an array of non-empty strings. O4."""
+        base = {
+            "schema_version": 1,
+            "id": "demo-P01-test",
+            "project": "demo",
+            "title": "Test",
+            "tier": "flash-high",
+            "input_revision": "0000000",
+            "source": {"kind": "review"},
+            "scope": {"touch": ["src/test.py"]},
+            "oracles": [{"id": "O1", "observable": "pass", "negative": "fail", "gate": "gate1"}],
+            "gates": ["gate1"],
+            "escalate_if": ["trigger"],
+        }
+        assert frontmatter.schema_errors(base) == []  # no review_focus: still valid
+
+        with_focus = dict(base, review_focus=["check the CAS revert", "check None-safety"])
+        assert frontmatter.schema_errors(with_focus) == []
+
+        # NEGATIVE: a string instead of a list is rejected.
+        wrong_type = dict(base, review_focus="check the CAS revert")
+        errors = frontmatter.schema_errors(wrong_type)
+        assert any("review_focus" in str(e).lower() for e in errors)
+
+        # NEGATIVE: a list containing non-strings is rejected.
+        wrong_items = dict(base, review_focus=["check this", 42])
+        errors = frontmatter.schema_errors(wrong_items)
+        assert any("review_focus" in str(e).lower() for e in errors)
+
 
 class TestParseHandoff:
     """Test parse_handoff function."""
@@ -247,6 +278,67 @@ class TestParseHandoff:
 
         fm, _body = frontmatter.parse_handoff(path)
         assert fm.component is None
+
+    def test_parse_with_review_focus(self, tmp_path):
+        """D1 O1/O4: a handoff with `review_focus:` parses with .review_focus
+        set to the given list."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test Package
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/test.py"]}
+            oracles:
+              - id: O1
+                observable: "test passes"
+                negative: "test fails"
+                gate: gate1
+            gates: [gate1]
+            escalate_if: ["trigger"]
+            review_focus: ["check the CAS revert", "check None-safety"]
+            ---
+
+            Body content here.
+            """)
+        path = tmp_path / "test.md"
+        path.write_text(content)
+
+        fm, _body = frontmatter.parse_handoff(path)
+        assert fm.review_focus == ["check the CAS revert", "check None-safety"]
+
+    def test_parse_without_review_focus_is_backward_compatible(self, tmp_path):
+        """D1 O2: a handoff without `review_focus:` still validates and
+        parses with .review_focus == [] (every pre-D1 handoff is unaffected)."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test Package
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/test.py"]}
+            oracles:
+              - id: O1
+                observable: "test passes"
+                negative: "test fails"
+                gate: gate1
+            gates: [gate1]
+            escalate_if: ["trigger"]
+            ---
+
+            Body content here.
+            """)
+        path = tmp_path / "test.md"
+        path.write_text(content)
+
+        fm, _body = frontmatter.parse_handoff(path)
+        assert fm.review_focus == []
 
     def test_parse_error_bubbles_up(self, tmp_path):
         """Test that parse errors bubble up with correct path."""

@@ -129,6 +129,13 @@
       "items": {"type": "string", "minLength": 1},
       "description": "Mechanical triggers only (lint L8): named contract unmet, forbidden file needed, threshold exceeded → BLOCKED exit."
     },
+    "review_focus": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "default": [],
+      "description": "Optional carve-authored 'adversarially check these' hints for the independent reviewer (factory-hardening D part 1). Injected into the REVIEW_INDEPENDENT prompt, bounded to argv_max; not a substitute for oracles."
+    },
     "budget": {
       "type": "object",
       "additionalProperties": false,
