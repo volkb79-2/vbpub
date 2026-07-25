@@ -5658,14 +5658,8 @@ def test_carver_ack_O1_headline_no_refire(
     cfg.carve.session = "project-persistent"
 
     # -- seed 2 MERGE_RECORDED events with carver_digest (seq 1, 2)
-    #    plus one MERGE_RECORDED without carver_digest (seq 0) to exercise
+    #    plus one MERGE_RECORDED without carver_digest (seq 3) to exercise
     #    the `not digest: continue` path in _highest_consumed_feed_sequence
-    storage.append_and_apply(  # seq 0: no carver_digest
-        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
-        type=EventType.MERGE_RECORDED,
-        payload={"merge_commit": "commit0", "source_kind": "review"},
-        task_id="t0",
-    )
     storage.append_and_apply(  # seq 1
         project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
         type=EventType.MERGE_RECORDED,
@@ -5685,6 +5679,14 @@ def test_carver_ack_O1_headline_no_refire(
     task_id = "carver-session-demo-1"
     attempt_id = "att-merge-feed"
     source_ids = ("merge:demo:c1", "merge:demo:c2")
+    # seq 3: MERGE_RECORDED without carver_digest — exercises the
+    # `not digest: continue` path in _highest_consumed_feed_sequence
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "commit-nodigest", "source_kind": "review"},
+        task_id="t-nodigest",
+    )
     tsf = _make_carver_session_task(
         project, task_id, attempt_id,
         kind="resume", mode="merge-feed", generation=5,
