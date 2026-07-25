@@ -646,10 +646,6 @@ class TestSamplerFinalGaps:
         assert tick2.coverage.sampled_count >= 1
         import shutil; shutil.rmtree(tmp)
 
-# Rate computation branches [287]-[309] are exercised by
-# test_compute_rates_all_rates but coverage.py may not track
-# them due to CPython optimization of fast-executing functions.
-
 class TestSamplerFrameSource:
     """Test ProcessSampler.frame_source() directly (G1/F2/F5)."""
 
