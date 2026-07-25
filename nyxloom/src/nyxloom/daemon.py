@@ -647,6 +647,9 @@ class Daemon:
         # escalation itself is deduped via the persisted event log instead
         # (restart-safe), not via this dict.
         self._runaway_streak: dict[str, int] = {}
+        # F018 P3d: set of project_ids that already got their enablement-guard
+        # WARN in this daemon instance (emit once per daemon lifetime).
+        self._carver_enablement_warned: set[str] = set()
 
     # -- lifecycle ------------------------------------------------------
 
@@ -1704,6 +1707,31 @@ class Daemon:
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == reason
                    for ev in recent)
 
+    def _needs_operator_recently_emitted(self, project: str, reason: str) -> bool:
+        """F018 P3d (concern-5 #4): debounce for NEEDS_OPERATOR{reason} --
+        suppress re-emitting the same unresolved episode. Scans the event log
+        for an already-emitted NEEDS_OPERATOR with matching reason since the
+        most recent CARVER_SESSION_ROTATED or CARVER_SESSION_STARTED for this
+        project (a rotation/new-generation clears the episode). Pure log-
+        derived, no durable marker needed."""
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return False
+        # Walk backwards to find the most recent clear marker.
+        clear_idx = -1
+        for i in range(len(events) - 1, -1, -1):
+            t = events[i].type
+            if t is EventType.CARVER_SESSION_ROTATED or t is EventType.CARVER_SESSION_STARTED:
+                clear_idx = i
+                break
+        # Scan forward from that clear point for a matching NEEDS_OPERATOR.
+        start = clear_idx + 1 if clear_idx >= 0 else 0
+        for ev in events[start:]:
+            if ev.type is EventType.NEEDS_OPERATOR and ev.payload.get("reason") == reason:
+                return True
+        return False
+
     def _carver_session(self, project: str, cfg: ProjectConfig
                         ) -> carver_session.CarverSessionSnapshot | None:
         """F018 P2b-A2: the MASTER GATE for the whole carver-snapshot input
@@ -1722,6 +1750,20 @@ class Daemon:
         call never raises out of _build_input)."""
         if cfg.carve.session != "project-persistent":
             return None
+        # F018 P3d (AF3 #5): enablement-guard startup WARN -- emit ONCE per
+        # daemon instance for every project that has opted into the still-
+        # incomplete feature.
+        if project not in self._carver_enablement_warned:
+            self._carver_enablement_warned.add(project)
+            log.warning(
+                "carver.enablement.premature",
+                project=project,
+                session=cfg.carve.session,
+                missing_items="1:ack-cursor(P4),2:compact-half(P4)",
+                notes=("project-persistent is live-but-incomplete: P4 has not "
+                       "landed; ack-cursor(concern-2/#1) and compact-half are "
+                       "still open. Do NOT enable on production projects."),
+            )
         try:
             events = list(storage.iter_events(project))
         except Exception:
@@ -3274,6 +3316,31 @@ class Daemon:
         if snap is not None and snap.status is CarverStatus.WARM and snap.session_id:
             return self._execute_carve_via_session_resume(project, cfg, states, action, snap)
 
+        # F018 P3d (concern-3 #2 + checklist #6): close the not-WARM legacy
+        # fall-through. When the persistent session is DEGRADED with recovery
+        # exhausted (the only DEGRADED state that reaches here -- the planner
+        # consumed the mutex for every other feature-on state), do NOT run the
+        # legacy fresh-carve-and-supersede path. Instead, ROTATE the generation
+        # so the planner cold-bootstraps a fresh session next pass.
+        if snap is not None:
+            if snap.status is CarverStatus.DEGRADED:
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.CARVER_SESSION_ROTATED,
+                    {"new_generation": snap.generation + 1,
+                     "reason": "degraded-recovery-exhausted",
+                     "from_generation": snap.generation},
+                    task_id=None))
+                return events
+            # Defensive: any other non-WARM feature-on status (STARTING/
+            # COMPACTING/ROTATING/COLD) that somehow reaches here should
+            # never fall through to legacy carve.
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carve-dispatch-unexpected-status",
+                 "status": snap.status.value},
+                task_id=None))
+            return events
+
         # Defense in depth: reconcile.py's own trigger already requires a
         # healthy 'frontier-review' route before ever emitting CarveDispatch
         # (module contract item 9), but routes.toml could change between
@@ -3716,10 +3783,35 @@ class Daemon:
         digest_ids = self._recent_merge_digest_ids(project, cfg.carve.retain_merge_digests)
         lines.extend([f"- {d}" for d in digest_ids] if digest_ids else ["- (none yet)"])
         lines.append("")
+        lines.append("## Spine revisions (echo these in your BOOTSTRAP-ACK)")
+        spine_revs = self._spine_revisions(cfg)
+        for level, rev in spine_revs.items():
+            lines.append(f"- {level}: {rev}")
+        if not spine_revs:
+            lines.append("- (none configured)")
+        lines.append("")
         lines.append("## REQUIRED OUTPUT")
         lines.append(
-            "Print exactly one line `BOOTSTRAP-ACK: ok` once you have read the "
-            "sources above; no other output is required this turn."
+            f"Write {cfg.reports_dir}/BOOTSTRAP-ACK.json with the following "
+            "content, once you have read the sources above:"
+        )
+        lines.append("")
+        lines.append('```json')
+        lines.append('{')
+        lines.append('  "kind": "bootstrap-ack",')
+        lines.append('  "spine_revisions": {')
+        for i, (level, rev) in enumerate(spine_revs.items()):
+            comma = "," if i < len(spine_revs) - 1 else ""
+            lines.append(f'    "{level}": "{rev}"{comma}')
+        if not spine_revs:
+            lines.append('  }')
+        else:
+            lines.append('  }')
+        lines.append('}')
+        lines.append('```')
+        lines.append(
+            "No other output is required this turn. If you cannot write the "
+            "acknowledgement file, print exactly one line `BOOTSTRAP-ACK: fail`."
         )
         return "\n".join(lines) + "\n"
 
@@ -3741,7 +3833,11 @@ class Daemon:
         elif mode == "targeted-intake":
             task_note = f"Incorporate the pending human intake turn(s): {ids_note}."
         else:  # "recover" (§5.4 bounded DEGRADED recovery)
-            task_note = "Recover this session after a prior resume failure."
+            task_note = (
+                "Recover this session after a prior resume failure. You MUST "
+                "also write a BOOTSTRAP-ACK.json acknowledgement as described "
+                "in the bootstrap packet instructions (spine revisions echo)."
+            )
         return (
             f"Resume the strategic-carver session for project '{project}' "
             f"(mode={mode}, turn={task_id}). This is a READ-ONLY turn -- do "
@@ -3820,9 +3916,11 @@ class Daemon:
         routes_obj = config.Routes.load()
         review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
         if not review_routes:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"reason": "carver-no-route"}, task_id=None))
+            if not self._needs_operator_recently_emitted(
+                    project, "carver-no-route"):
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "carver-no-route"}, task_id=None))
             return events
         route_def = review_routes[0]
 
@@ -3930,9 +4028,11 @@ class Daemon:
         routes_obj = config.Routes.load()
         route_def = routes_obj.routes.get(route_id) if route_id else None
         if route_def is None:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"reason": "carver-no-route"}, task_id=None))
+            if not self._needs_operator_recently_emitted(
+                    project, "carver-no-route"):
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "carver-no-route"}, task_id=None))
             return events
 
         seq = self._next_carve_seq(project)
@@ -4043,9 +4143,11 @@ class Daemon:
         routes_obj = config.Routes.load()
         route_def = routes_obj.routes.get(route_id) if route_id else None
         if route_def is None:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"reason": "carver-no-route"}, task_id=None))
+            if not self._needs_operator_recently_emitted(
+                    project, "carver-no-route"):
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "carver-no-route"}, task_id=None))
             return events
 
         seq = self._next_carve_seq(project)
@@ -4161,6 +4263,19 @@ class Daemon:
             return worktree / prefix / cfg.reports_dir / filename
         return worktree / cfg.reports_dir / filename
 
+    def _carver_bootstrap_ack_path(self, cfg: ProjectConfig, attempt: Attempt) -> Path:
+        """F018 P3d (concern-3 #3): resolve the expected BOOTSTRAP-ACK.json
+        path under cfg.reports_dir, using the SAME worktree-prefix resolution
+        as _carver_proposal_report_path (P3c) so branch authority works."""
+        worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
+        filename = "BOOTSTRAP-ACK.json"
+        if attempt.worktree and worktree.resolve() != cfg.root.resolve():
+            prefix = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", "--show-prefix"],
+                capture_output=True, text=True).stdout.strip()
+            return worktree / prefix / cfg.reports_dir / filename
+        return worktree / cfg.reports_dir / filename
+
     def _parse_carver_turn_result(self, cfg: ProjectConfig, attempt: Attempt,
                                   task_id: str) -> carver_session.CarverTurnResult | None:
         """F018 P3c: STRUCTURAL-only parse of a write-authority turn's
@@ -4185,6 +4300,43 @@ class Daemon:
             return carver_session.CarverTurnResult.from_dict(data)
         except (OSError, json.JSONDecodeError, ValueError, TypeError):
             return None
+
+    def _execute_compact_carver_session(self, project: str, cfg: ProjectConfig,
+                                        states: dict[str, TaskStateFile],
+                                        action: "reconcile.CompactCarverSession"
+                                        ) -> list[Event]:
+        """F018 P3d AF1 (plan-long-running-carver.md §6.1): compaction→
+        rotation fallback. No proven compaction driver exists (§6.1); the
+        only supported strategy is "rotate" (rotate the generation and let
+        the planner cold-bootstrap a fresh one next pass). For any other
+        strategy value, emit NEEDS_OPERATOR{carver-compaction-no-driver}
+        (debounced) and do not rotate. Never hardcodes /compact, never
+        launches a wrapper."""
+        events: list[Event] = []
+
+        snap = self._carver_session(project, cfg)
+        if snap is None or snap.status is not CarverStatus.WARM:
+            return events  # stale plan -- refuse cleanly
+
+        strategy = cfg.carve.compaction_strategy
+        if strategy == "rotate":
+            reason = "compaction-rotate-fallback"
+            events.append(self._append_ev(
+                project, cfg, states, EventType.CARVER_SESSION_ROTATED,
+                {"new_generation": snap.generation + 1,
+                 "reason": reason,
+                 "trigger": action.trigger,
+                 "from_generation": snap.generation},
+                task_id=None))
+        else:
+            if not self._needs_operator_recently_emitted(
+                    project, "carver-compaction-no-driver"):
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "carver-compaction-no-driver",
+                     "strategy": strategy},
+                    task_id=None))
+        return events
 
     def _consume_carver_session_exit(self, project: str, cfg: ProjectConfig,
                                      states: dict[str, TaskStateFile],
@@ -4230,6 +4382,32 @@ class Daemon:
                      and attempt.receipt.result is ReceiptResult.DONE)
         ok = receipt_ok and bool(session_handle)
 
+        # F018 P3d (concern-3 #3): for a bootstrap (kind=start) or recover-
+        # mode resume turn, ok ALSO requires a valid BOOTSTRAP-ACK.json
+        # echoing the spine revisions the packet supplied. A missing/
+        # malformed/mismatched ACK folds into the SAME DEGRADED path as a
+        # bad envelope, with reason "bootstrap-ack-invalid".
+        bootstrap_or_recover = ok and (
+            kind == "start" or (kind == "resume" and mode == "recover"))
+        ack_invalid = False
+        if bootstrap_or_recover:
+            ack_path = self._carver_bootstrap_ack_path(cfg, attempt)
+            ack_valid = False
+            if ack_path.exists():
+                try:
+                    ack_data = json.loads(ack_path.read_text(encoding="utf-8"))
+                    if (isinstance(ack_data, dict)
+                            and ack_data.get("kind") == "bootstrap-ack"):
+                        ack_spine = ack_data.get("spine_revisions", {})
+                        if (isinstance(ack_spine, dict)
+                                and ack_spine == self._spine_revisions(cfg)):
+                            ack_valid = True
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if not ack_valid:
+                ok = False
+                ack_invalid = True
+
         turn_result: carver_session.CarverTurnResult | None = None
         write_authority_turn = ok and kind == "resume" and mode in _CARVE_WRITE_AUTHORITY_MODES
         if write_authority_turn:
@@ -4238,7 +4416,9 @@ class Daemon:
                 ok = False  # malformed/missing envelope -> degraded, never a half-proposal
 
         if not ok:
-            if not session_handle:
+            if ack_invalid:
+                reason = "bootstrap-ack-invalid"
+            elif not session_handle:
                 reason = "capture-failed"
             elif not receipt_ok:
                 reason = "turn-failed"
@@ -5604,6 +5784,9 @@ class Daemon:
 
         elif isinstance(action, reconcile.ResumeCarverSession):
             events.extend(self._execute_resume_carver_session(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.CompactCarverSession):
+            events.extend(self._execute_compact_carver_session(project, cfg, states, action))
 
         elif isinstance(action, reconcile.RunPostMergeGate):
             events.extend(self._run_post_merge_gate(project, cfg, states, action))
