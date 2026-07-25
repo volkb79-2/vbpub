@@ -184,3 +184,69 @@ leaks a tar file handle (F2), three tests use fixed `/tmp` paths risking
 xdist collisions (F3), one creates 10,000 unnecessary files (F4), the
 receipt omits literal sets and exact commands (F5), and status assertions
 are incomplete (F6). Concrete mechanical repair oracles provided for all.
+
+
+---
+
+# Final sign-off — 2026-07-25 (commit 80f544a4)
+
+**Reviewer:** Reasonix (same persistent adversarial session)
+**Range:** 1a1f15bd..80f544a4 (cumulative repair from 6e7b4719)
+**Verdict:** **APPROVED**
+
+## Independent gate verification
+
+Full xdist gate: **2040 passed, exit 0** in 69s. Focused tests: 22 passed in 1.37s.
+
+```
+OK enrich: lit_lines=[] lit_arcs=[] whole_lines=[] whole_br=[] exec_lines=44 exec_br=16
+OK bundle: lit_lines=[] lit_arcs=[] whole_lines=[] whole_br=[] exec_lines=176 exec_br=52
+PASS: both files 100%
+```
+
+22 functions = 22 collected cases, 2040 total (2018 + 22). `git diff --check`: clean.
+
+## F1–F6 closure verification
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| **F1** (cgroup test no failure) | **FIXED** | Removed; replaced with `test_copy_cgroup_file_write_failure` that creates ancestor_dst as directory → `write_bytes` raises OSError → caught; asserts complete destination tree with `ancestors/root/memory.min` remaining as directory |
+| **F2** (tar handle leak) | **FIXED** | `with tarfile.open(archive, "r") as tar:` — context manager ensures closure |
+| **F3** (fixed /tmp paths) | **FIXED** | All 22 tests use `tmp_path` fixture or virtual paths with `Path.exists` mocked; zero fixed `/tmp` usage |
+| **F4** (10,000 files) | **FIXED** | `Path.exists` patched to return True; `assert exists.call_count == 10_000` — zero files created |
+| **F5** (receipt omissions) | **FIXED** | LOG has literal before sets, per-run per-file whole-file sets, exact gate command, record SHA-256; REPORT has literal before/after tables, per-run executed/missing counts, gate evidence with exact command |
+| **F6** (incomplete status assertions) | **FIXED** | All enrichment tests assert complete tuple equality with exact dicts: `unit`, `status`, `returncode`, `stderr`, `error`, `container_id` — every field verified |
+
+## Assertion completeness audit
+
+Every assertion is exact structural equality (no partial-field, no non-None, no len-only):
+
+| Test | Assertion type |
+|------|---------------|
+| Systemctl OSError | `== (None, {"status":"error","unit":"s.slice","error":"unit not found"})` |
+| Systemctl stderr | `== (None, {"status":"error","unit":"s.slice","returncode":1,"stderr":"error output"})` |
+| Systemctl nonzero | `== ("ActiveState=inactive\n", {"status":"error","unit":"s.slice","returncode":3})` |
+| Docker OSError | `== (None, {"status":"error","container_id":"abc123...","error":"permission denied"})` |
+| Docker ValueError | `== (None, {"status":"error","container_id":"abc123...","error":"bad json"})` |
+| Docker TypeError | `== (None, {"status":"error","container_id":"abc123...","error":"not subscriptable"})` |
+| Leaf unit search | `== "d.service"`, `is None`, `== "b.scope"` |
+| XDG dir | `== Path("/custom/state/topos/incidents")` |
+| No-XDG dir | `== Path("/home/user/.local/state/topos/incidents")` |
+| Cgroup failure | Exact destination tree assertion with `sorted(path.relative_to(...))` |
+| Unsafe member | `pytest.raises(RuntimeError, match=r"refusing unsafe archive member: /etc/passwd")` |
+| Hash mismatches | `== []` |
+| Notable files | `== ["entity/cgroup/memory.current", "frames.jsonl"]` (exact sorted list) |
+| Notable ignore | `== []` |
+| Path exhaustion | `exists.call_count == 10_000` |
+| Ancestor keys | `== [""]`, `== ["", "a", "a/b"]` |
+| Plain tar | `tar.getnames() == ["test.txt"]` |
+| No-zstd | `pytest.raises(RuntimeError, match=r"zstandard is required...")` |
+
+## Scope and safety
+
+- No product source, gate, dependency, pragma, or omit changes. ✓
+- All `tmp_path` fixtures — zero fixed paths, zero xdist collision risk. ✓
+- All tar handles context-managed. ✓
+- Exhaustion test creates zero files. ✓
+- No global state leakage, no monkeypatch leakage (all `patch` in `with` blocks). ✓
+- Receipts include exact gate command, record SHA-256, literal before/after sets. ✓
