@@ -33,6 +33,7 @@ from topos.compare import (
     OUTCOME_REDACTED,
     OUTCOME_RESET_BOUNDARY,
     OUTCOME_SEMANTIC_MISMATCH,
+    OUTCOME_UNSUPPORTED_SEMANTIC,
     OUTCOME_ZERO_BASELINE,
     OUTCOME_ZERO_ZERO,
     combine_exit_codes,
@@ -540,3 +541,153 @@ class TestAgainstRealQueryEngine:
         assert d.outcome == OUTCOME_OK
         assert d.current == current_result["rows"][0]["metrics"]["ram"]["p95"]
         assert d.baseline == baseline_result["rows"][0]["metrics"]["ram"]["p95"]
+
+
+# ---------------------------------------------------------------------------
+# P130 coverage completion: malformed inputs, serialization, and rule semantics
+# ---------------------------------------------------------------------------
+
+
+class TestMalformedInput:
+    def test_non_dict_top_level_current_raises_compare_error(self):
+        """Non-dict top-level current input raises CompareError with identifying message."""
+        current = []  # not a dict
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        with pytest.raises(CompareError, match="not a P88 query result"):
+            compare_summaries(current, baseline)
+
+    def test_non_mapping_meta_raises_compare_error(self):
+        """Meta which is not a mapping raises CompareError."""
+        current = {"meta": "not_a_dict", "rows": []}
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        with pytest.raises(CompareError, match="meta is not a mapping"):
+            compare_summaries(current, baseline)
+
+    def test_rows_not_a_list_raises_compare_error(self):
+        """Rows which are not a list raises CompareError."""
+        current = {
+            "meta": {"shape": "summary", "projection": "flat", "visibility": "all", "coverage": {"complete": True}},
+            "rows": "not_a_list"
+        }
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        with pytest.raises(CompareError, match="rows is not a list"):
+            compare_summaries(current, baseline)
+
+    def test_row_missing_key_raises_compare_error(self):
+        """Row missing 'key' field raises CompareError."""
+        current = _summary_result([{"metrics": {"ram": _gauge_cell(9.0)}}])  # missing "key"
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        with pytest.raises(CompareError, match="row missing 'key'/'metrics'"):
+            compare_summaries(current, baseline)
+
+    def test_row_missing_metrics_raises_compare_error(self):
+        """Row missing 'metrics' field raises CompareError."""
+        current = _summary_result([{"key": "a.scope"}])  # missing "metrics"
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        with pytest.raises(CompareError, match="row missing 'key'/'metrics'"):
+            compare_summaries(current, baseline)
+
+
+class TestRefusedComparisonSerialization:
+    def test_refused_comparison_serializes_with_null_deltas(self):
+        """Serialize a refused/redacted comparison; scalar deltas are None and reason survives."""
+        current = _summary_result([_row("a.scope", {"ram": {"redacted": True}})])
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        deltas = compare_summaries(current, baseline)
+
+        jsonable = compare_to_jsonable(deltas)
+        assert len(jsonable["deltas"]) == 1
+        delta_json = jsonable["deltas"][0]
+        assert delta_json["outcome"] == OUTCOME_REDACTED
+        assert delta_json["current"] is None
+        assert delta_json["baseline"] is None
+        assert delta_json["delta"] is None
+        assert delta_json["pct"] is None
+        assert delta_json["reason"] is not None
+        assert "redacted" in delta_json["reason"]
+
+
+class TestUnsupportedSemanticAndBooleanCoercion:
+    def test_two_state_duration_cells_yield_unsupported_semantic(self):
+        """Two state_duration cells must yield unsupported-semantic outcome."""
+        cur_cell = {"semantic": "state_duration", "total_time": 50.0, "state": "active"}
+        base_cell = {"semantic": "state_duration", "total_time": 40.0, "state": "active"}
+        current = _summary_result([_row("a.scope", {"state_time": cur_cell})])
+        baseline = _summary_result([_row("a.scope", {"state_time": base_cell})])
+        [d] = compare_summaries(current, baseline)
+        assert d.outcome == OUTCOME_UNSUPPORTED_SEMANTIC
+        assert d.delta is None and d.pct is None
+
+    def test_boolean_p95_in_baseline_yields_missing_baseline_not_coercion(self):
+        """Boolean p95 in baseline must yield missing-baseline (not numeric zero/one coercion)."""
+        cur_cell = _gauge_cell(9.0)
+        base_cell = {"semantic": "gauge", "sample_count": 5, "count": 5, "min": False, "mean": False, "p50": False, "p95": False, "max": False}
+        current = _summary_result([_row("a.scope", {"ram": cur_cell})])
+        baseline = _summary_result([_row("a.scope", {"ram": base_cell})])
+        [d] = compare_summaries(current, baseline)
+        assert d.outcome == OUTCOME_MISSING_BASELINE
+        assert d.delta is None and d.pct is None
+
+
+class TestRuleResultsWithAssertions:
+    def test_passing_rule_has_no_reason_key_in_json(self):
+        """Serialize passing rule result; 'reason' key absent when passed."""
+        current = _summary_result([_row("a.scope", {"ram": _gauge_cell(9.0)})])
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        deltas = compare_summaries(current, baseline)
+        rule = parse_compare_rule("a.scope:ram:pct<=100")
+        results = evaluate_compare_rules(deltas, [rule])
+
+        jsonable = compare_to_jsonable(deltas, assertions=results)
+        assert len(jsonable["assertions"]) == 1
+        assertion_json = jsonable["assertions"][0]
+        assert assertion_json["passed"] is True
+        assert "reason" not in assertion_json
+
+    def test_breached_rule_has_breached_reason_in_json(self):
+        """Serialize breached rule result; 'reason' key begins with 'breached:'."""
+        current = _summary_result([_row("a.scope", {"ram": _gauge_cell(9.0)})])
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        deltas = compare_summaries(current, baseline)
+        rule = parse_compare_rule("a.scope:ram:pct<=10")
+        results = evaluate_compare_rules(deltas, [rule])
+
+        jsonable = compare_to_jsonable(deltas, assertions=results)
+        assert len(jsonable["assertions"]) == 1
+        assertion_json = jsonable["assertions"][0]
+        assert assertion_json["passed"] is False
+        assert assertion_json["reason"].startswith("breached:")
+
+    def test_format_compare_pretty_produces_valid_json(self):
+        """format_compare(..., pretty=True) parses as valid JSON with indentation."""
+        current = _summary_result([_row("a.scope", {"ram": _gauge_cell(9.0)})])
+        baseline = _summary_result([_row("a.scope", {"ram": _gauge_cell(6.0)})])
+        deltas = compare_summaries(current, baseline)
+        rule = parse_compare_rule("a.scope:ram:pct<=100")
+        results = evaluate_compare_rules(deltas, [rule])
+
+        pretty_str = format_compare(deltas, assertions=results, pretty=True)
+        compact_str = format_compare(deltas, assertions=results, pretty=False)
+
+        # Both must parse as identical JSON
+        pretty_data = json.loads(pretty_str)
+        compact_data = json.loads(compact_str)
+        assert pretty_data == compact_data
+
+        # Pretty must contain newlines and indentation
+        assert "\n" in pretty_str
+        assert "  " in pretty_str
+
+
+class TestNonFiniteRuleValues:
+    def test_parse_compare_rule_rejects_infinity(self):
+        """parse_compare_rule rejects infinity; parser accepts exponent syntax but rejects infinity."""
+        with pytest.raises(CompareError, match="finite"):
+            parse_compare_rule("a.scope:ram:delta<=1e309")
+
+    def test_parse_compare_rule_accepts_large_finite_exponents(self):
+        """Large but finite exponent values are accepted."""
+        # 1e100 is large but finite
+        rule = parse_compare_rule("a.scope:ram:delta<=1e100")
+        assert rule.value == 1e100
+        assert not (rule.value == float('inf'))
