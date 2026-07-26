@@ -399,9 +399,7 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             "\nIf REJECTED, also add a line `REJECT_CLASS: <fixable|architectural|"
             "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
             "product=human decision). Omit it on APPROVED."
-            "\nDRY check: reject if the implementer has copied production logic "
-            "without extracting a shared helper — never fix duplication yourself, "
-            "as that changes production logic beyond scope."
+            "\nDRY: reject if copied; never fix."
         )
         # B21 2026-07-23 (D-R16 §3): the scope-amendment note (if any) is
         # appended LATER, after argv_max is known -- this prompt is already

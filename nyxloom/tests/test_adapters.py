@@ -1650,9 +1650,9 @@ def test_review_independent_prompt_contains_dry_instruction():
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
         role=Role.REVIEW_INDEPENDENT,
     )
-    assert "DRY check" in prompt
-    assert "reject if the implementer has copied" in prompt
-    assert "never fix duplication yourself" in prompt
+    assert "DRY" in prompt
+    assert "reject if copied" in prompt
+    assert "never fix" in prompt
 
     _a2, impl_prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
@@ -1672,11 +1672,11 @@ def test_review_independent_dry_and_reject_class_both_present():
         role=Role.REVIEW_INDEPENDENT,
     )
     assert "REJECT_CLASS" in prompt
-    assert "DRY check" in prompt
+    assert "DRY" in prompt
     # Ensure DRY appears after REJECT_CLASS (order matters for clarity)
     reject_pos = prompt.find("REJECT_CLASS")
-    dry_pos = prompt.find("DRY check")
-    assert reject_pos < dry_pos, "REJECT_CLASS should appear before DRY check in prompt"
+    dry_pos = prompt.find("DRY")
+    assert reject_pos < dry_pos, "REJECT_CLASS should appear before DRY in prompt"
 
 
 def test_review_independent_prompt_with_dry_stays_under_argv_max():
@@ -1698,7 +1698,7 @@ def test_review_independent_prompt_with_dry_stays_under_argv_max():
     # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
     assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim content"
     assert "REJECT_CLASS" in prompt          # base reviewer content survives
-    assert "DRY check" in prompt             # DRY instruction survives too
+    assert "DRY" in prompt                   # DRY instruction survives too
 
 
 # ============================================================================
