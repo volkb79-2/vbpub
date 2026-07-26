@@ -1721,7 +1721,16 @@ def test_review_independent_prompt_with_dry_yields_the_real_paths_margin():
     the addition that finally eats the margin B4b's own live incident exists
     to protect. NEGATIVE (the simple-path case, in
     test_review_focus_absent_prompt_is_byte_identical_to_pre_d1's snapshot)
-    proves DRY is not simply dead code -- it DOES appear when there is room."""
+    proves DRY is not simply dead code -- it DOES appear when there is room.
+
+    D-R3 (2026-07-26, refined): the ceiling below is 1400, matching
+    test_review_independent_prompt_stays_under_argv_max_with_real_paths' own
+    re-anchor -- `incapable` joining REJECT_CLASS's vocabulary is a PERMANENT
+    unconditional addition to the base prompt (unlike DRY's own optional
+    bounded append), so it necessarily ate into the margin both tests
+    originally pinned at 1300. The ~1369 base (without DRY, correctly
+    skipped per the -200 check) sits between the two margins -- proving DRY's
+    own yield logic still holds even though the absolute floor moved."""
     long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
     _argv, prompt = adapters.build_dispatch(
         _fake_route(),
@@ -1732,10 +1741,10 @@ def test_review_independent_prompt_with_dry_yields_the_real_paths_margin():
         receipt_path=f"/state/attempts/att-0123456789abcdef/receipt.json",
         role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
     )
-    # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
-    assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim content"
+    # argv_max default is 1500; keep >= 100 chars of headroom for even longer paths.
+    assert len(prompt) <= 1400, f"reviewer prompt too long ({len(prompt)}); trim content"
     assert "REJECT_CLASS" in prompt   # base reviewer content survives
-    assert "DRY" not in prompt        # skipped -- the 200-char margin is protected
+    assert "DRY" not in prompt        # skipped -- the margin is protected
 
 
 # ============================================================================
