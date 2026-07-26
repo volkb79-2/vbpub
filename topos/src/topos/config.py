@@ -342,10 +342,8 @@ def _coerce_float(value: object, default: float) -> float:
         return default
 
 
-def _load_score_weights(thresholds: object) -> dict[str, float]:
+def _load_score_weights(thresholds: dict[str, Any]) -> dict[str, float]:
     defaults = dict(_DEFAULT_SCORE_WEIGHTS)
-    if not isinstance(thresholds, dict):
-        return defaults
     pressure_score = thresholds.get("pressure_score")
     if not isinstance(pressure_score, dict):
         return defaults
