@@ -1358,18 +1358,33 @@ def _fake_route():
 
 
 def test_review_independent_prompt_requires_reject_class():
-    """The reviewer prompt instructs a REJECT_CLASS line with all three classes
-    on a REJECTED verdict (the Tier-2 producer). NEGATIVE: the IMPLEMENTER and
-    CARVER prompts carry NO such instruction -- only the reviewer classifies."""
+    """The reviewer prompt instructs a REJECT_CLASS line with all four classes
+    on a REJECTED verdict (the Tier-2 producer; D-R3 2026-07-26 refined added
+    'incapable'). NEGATIVE: the IMPLEMENTER and CARVER prompts carry NO such
+    instruction -- only the reviewer classifies."""
     _argv, prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
         role=Role.REVIEW_INDEPENDENT,
     )
     assert "REJECT_CLASS" in prompt
-    for cls in ("fixable", "architectural", "product"):
+    for cls in ("fixable", "architectural", "incapable", "product"):
         assert cls in prompt, f"reviewer prompt must define the {cls!r} class"
     assert "REJECTED" in prompt
+
+
+def test_review_independent_reject_class_distinguishes_incapable_from_architectural():
+    """D-R3 (2026-07-26, refined): the prompt's REJECT_CLASS instruction carries
+    a short clause distinguishing 'incapable' (model-capability failure, tier
+    bump) from 'architectural' (scope/design wrong) -- not just two bare tokens
+    in an enum with no guidance on which to pick."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    assert "wasn't capable" in prompt
+    assert "scope/design wrong" in prompt
 
     _a2, impl_prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
@@ -1386,7 +1401,16 @@ def test_review_independent_prompt_stays_under_argv_max_with_real_paths():
     paths overflowed 1500 -> build_dispatch raised -> the review leg never
     dispatched -> every task stranded at AWAITING_REVIEW (7 behavioral tests).
     Pin a realistic long path AND a comfortable margin so a future prompt edit
-    that eats the headroom fails HERE, cheaply, not in a stranded daemon."""
+    that eats the headroom fails HERE, cheaply, not in a stranded daemon.
+
+    D-R3 (2026-07-26, refined): the bound was 1300 (base ~1263 + ~37 chars of
+    natural slack) before `incapable` joined REJECT_CLASS's vocabulary --
+    that clause is a PERMANENT, unconditional addition to the base prompt (not
+    an optional bounded-append like review_focus/review_depth/escalation_note),
+    so it necessarily eats into that slack. Re-measured at ~1369; the bound
+    below keeps a real margin (>100 chars) below argv_max=1500 for even longer
+    paths, same spirit as the original margin, just re-anchored to the new
+    permanent floor."""
     long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
     _argv, prompt = adapters.build_dispatch(
         _fake_route(),
@@ -1397,9 +1421,10 @@ def test_review_independent_prompt_stays_under_argv_max_with_real_paths():
         receipt_path=f"/state/attempts/att-0123456789abcdef/receipt.json",
         role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
     )
-    # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
-    assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim the REJECT_CLASS block"
+    # argv_max default is 1500; keep >= 100 chars of headroom for even longer paths.
+    assert len(prompt) <= 1400, f"reviewer prompt too long ({len(prompt)}); trim the REJECT_CLASS block"
     assert "REJECT_CLASS" in prompt          # not trimmed away entirely
+    assert "incapable" in prompt             # not trimmed away entirely either
 
 
 def test_implementer_re_dispatch_embeds_prior_verdict():
@@ -1622,6 +1647,16 @@ def test_review_independent_amendment_note_skipped_when_argv_max_too_tight():
 # Captured verbatim from build_dispatch BEFORE the D1 change (git blame:
 # pre-review_focus adapters.py), for the simple-paths REVIEW_INDEPENDENT
 # case below -- the O2 snapshot-equality proof.
+#
+# D-R3 (2026-07-26, refined): re-captured to match the REJECT_CLASS text
+# AFTER `incapable` joined its vocabulary -- that clause is a PERMANENT,
+# unconditional part of the base REVIEW_INDEPENDENT prompt (unlike
+# review_focus/review_depth/escalation_note, which are all optional bounded
+# appends this constant still represents the ABSENT/neutral case for), so
+# this snapshot necessarily reflects it too. This remains the correct O2
+# byte-identical baseline for review_focus/review_depth/escalation_note all
+# being absent -- it is not, and was never meant to be, a snapshot of the
+# REJECT_CLASS text itself.
 _PRE_D1_SIMPLE_REVIEW_PROMPT = (
     "Handoff: h.md\n"
     "Worktree: /wt\n"
@@ -1634,9 +1669,11 @@ _PRE_D1_SIMPLE_REVIEW_PROMPT = (
     "onto the task's own feat/ branch -- never main, and never a code "
     "change. The daemon reads your verdict from that committed file, NOT "
     "from the receipt.\n"
-    "If REJECTED, also add a line `REJECT_CLASS: <fixable|architectural|"
-    "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
-    "product=human decision). Omit it on APPROVED.\n"
+    "If REJECTED, also add `REJECT_CLASS: <fixable|architectural|incapable|"
+    "product>` (fixable=local defect; architectural=scope/design wrong, "
+    "re-carve; incapable=scope fine but the model wasn't capable -- "
+    "structural, not a one-off defect -- bump tier; product=human "
+    "decision). Omit on APPROVED.\n"
     "Doctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; then any "
     "same-named `nyxloom-trove/` sibling for project overrides."
 )
@@ -1760,7 +1797,13 @@ def test_review_independent_review_focus_skipped_when_argv_max_too_tight():
     # argv_max forces the (itself argv-budgeted) doctrine manifest to be
     # skipped, isolating the REVIEW_INDEPENDENT core content this test
     # anchors its margin to.
-    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    # D-R3 (2026-07-26, refined): bumped 1000 -> 1100. The floor must fit the
+    # manifest-free BASE REVIEW_INDEPENDENT prompt (now ~1065 chars since
+    # `incapable` joined REJECT_CLASS's vocabulary as a PERMANENT, unconditional
+    # addition -- unlike review_focus/review_depth/escalation_note, which are
+    # all optional bounded appends); 1000 now overflows on the base prompt
+    # alone, before any of these optional blocks are even considered.
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
     _f, floor_prompt = adapters.build_dispatch(
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
     assert "Doctrine:" not in floor_prompt  # sanity: manifest genuinely absent
@@ -1941,7 +1984,13 @@ def test_review_depth_worst_case_argv_degrades_never_raises():
     review_depth."""
     kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
               task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
-    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    # D-R3 (2026-07-26, refined): bumped 1000 -> 1100. The floor must fit the
+    # manifest-free BASE REVIEW_INDEPENDENT prompt (now ~1065 chars since
+    # `incapable` joined REJECT_CLASS's vocabulary as a PERMANENT, unconditional
+    # addition -- unlike review_focus/review_depth/escalation_note, which are
+    # all optional bounded appends); 1000 now overflows on the base prompt
+    # alone, before any of these optional blocks are even considered.
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
     _f, floor_prompt = adapters.build_dispatch(
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
     assert "Review depth:" not in floor_prompt  # sanity: genuinely absent
@@ -1973,7 +2022,13 @@ def test_review_depth_truncates_when_room_tight_but_above_floor():
     < len(directive))."""
     kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
               task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
-    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    # D-R3 (2026-07-26, refined): bumped 1000 -> 1100. The floor must fit the
+    # manifest-free BASE REVIEW_INDEPENDENT prompt (now ~1065 chars since
+    # `incapable` joined REJECT_CLASS's vocabulary as a PERMANENT, unconditional
+    # addition -- unlike review_focus/review_depth/escalation_note, which are
+    # all optional bounded appends); 1000 now overflows on the base prompt
+    # alone, before any of these optional blocks are even considered.
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
     _f, floor_prompt = adapters.build_dispatch(
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
 
@@ -2018,6 +2073,129 @@ def test_review_depth_coexists_with_review_focus():
     assert len(prompt) <= 1500  # _fake_route().argv_max is None -> build_dispatch's 1500 default
     # review_depth is appended LAST (after review_focus).
     assert prompt.index("Carve-authored focus") < prompt.index("Review depth:")
+
+
+# ============================================================================
+# D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3). `escalation_note`
+# is the incapable-escalation meta-note -- a caller-computed (daemon-side,
+# `_incapable_escalation_note`), pure-string signal injected into the
+# REVIEW_INDEPENDENT prompt using the SAME bounded-append idiom as
+# review_focus/review_depth immediately above. Oracle O1: the note actually
+# reaches the prompt, only for REVIEW_INDEPENDENT. Oracle O2 (LOAD-BEARING
+# SAFETY ORACLE): an absent note reproduces the EXACT pre-D-R3 prompt
+# (snapshot equality). Oracle O3: bounded -- skipped, never raising, when
+# argv_max is too tight. Oracle O4: coexists with review_focus/review_depth.
+# Each pins a NEGATIVE so the assertion cannot pass hollowly.
+# ============================================================================
+
+_ESCALATION_NOTE = (
+    "This is a fresh implementation from a higher-tier model, dispatched "
+    "because a previous reviewer judged the assigned tier incapable of "
+    "this task across multiple dimensions. Form your OWN independent "
+    "judgment of THIS implementation -- do not assume anything about "
+    "what was previously wrong."
+)
+
+
+def test_review_independent_prompt_embeds_escalation_note():
+    """O1: a REVIEW_INDEPENDENT dispatch with escalation_note embeds it
+    verbatim. NEGATIVE: the same note passed to an IMPLEMENTER dispatch is
+    NOT embedded (only the reviewer that follows an incapable-escalated
+    re-implementation gets this context)."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, escalation_note=_ESCALATION_NOTE,
+    )
+    assert _ESCALATION_NOTE in prompt
+    assert "higher-tier model" in prompt
+
+    _a2, impl_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, escalation_note=_ESCALATION_NOTE,
+    )
+    assert _ESCALATION_NOTE not in impl_prompt
+    assert "higher-tier model" not in impl_prompt
+
+
+def test_escalation_note_absent_prompt_is_byte_identical_to_pre_d_r3():
+    """O2: a REVIEW_INDEPENDENT dispatch with NO escalation_note (the
+    default, and every non-escalated dispatch -- nearly all of them)
+    reproduces the prompt EXACTLY, via both the literal snapshot and
+    explicit escalation_note=None/"" parity."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    assert prompt == _PRE_D1_SIMPLE_REVIEW_PROMPT
+
+    _a2, prompt_explicit_empty = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, escalation_note="",
+    )
+    assert prompt_explicit_empty == _PRE_D1_SIMPLE_REVIEW_PROMPT
+
+
+def test_escalation_note_skipped_when_argv_max_too_tight():
+    """O3: a route with room for the core prompt but NOT even the note's
+    header is SKIPPED entirely (never truncated into something misleading,
+    never raising) -- same 'skip, never strand' idiom as review_focus's own
+    tight-route regression guard, anchored to the manifest-free floor."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    # D-R3 (2026-07-26, refined): bumped 1000 -> 1100. The floor must fit the
+    # manifest-free BASE REVIEW_INDEPENDENT prompt (now ~1065 chars since
+    # `incapable` joined REJECT_CLASS's vocabulary as a PERMANENT, unconditional
+    # addition -- unlike review_focus/review_depth/escalation_note, which are
+    # all optional bounded appends); 1000 now overflows on the base prompt
+    # alone, before any of these optional blocks are even considered.
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    assert "Doctrine:" not in floor_prompt  # sanity: manifest genuinely absent
+
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 25)
+    _b, tight_base = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        escalation_note=_ESCALATION_NOTE, **kw)
+
+    assert "higher-tier model" not in prompt      # skipped, not truncated
+    assert len(prompt) <= tight_route.argv_max    # never raises AdapterError
+    assert prompt == tight_base                   # byte-identical to the no-note dispatch
+
+
+def test_escalation_note_coexists_with_review_focus_and_review_depth():
+    """O4: a REVIEW_INDEPENDENT dispatch carrying review_focus, review_depth,
+    AND escalation_note together embeds all three, in append order
+    review_focus -> review_depth -> escalation_note (escalation_note is
+    appended LAST). Uses a route with ample argv_max so all three fit
+    UNTRUNCATED -- stacking three optional blocks under the tight 1500
+    default is a truncation scenario (already covered by each block's own
+    truncate-to-fit tests), not what this coexistence oracle is checking."""
+    ample_route = RouteDef(route_id="ample", cli="fake", model="m", argv_max=3000)
+    focus = ["check the CAS revert for a stale head_commit"]
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    assert directive != ""
+
+    _argv, prompt = adapters.build_dispatch(
+        ample_route, handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_focus=focus, review_depth=directive,
+        escalation_note=_ESCALATION_NOTE,
+    )
+    assert "check the CAS revert for a stale head_commit" in prompt
+    assert directive in prompt
+    assert _ESCALATION_NOTE in prompt
+    assert len(prompt) <= ample_route.argv_max
+    assert (prompt.index("Carve-authored focus") < prompt.index("Review depth:")
+            < prompt.index("higher-tier model"))
 
 
 # ---------------------------------------------------------------------------

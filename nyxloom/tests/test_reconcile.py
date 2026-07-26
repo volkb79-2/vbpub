@@ -3862,6 +3862,71 @@ def test_review_rejected_architectural_no_carve_escalates():
     assert "no carve" in (t.notes or "").lower()
 
 
+# -- D-R3 (2026-07-26, refined): 'incapable' class routing -------------------
+# `incapable` (the model wasn't capable of a correctly-scoped task) routes to
+# the SAME READY_TO_CARVE destination as `architectural`, same precedence
+# position, same has_carve guard, same carve-less fallback to NEEDS_DECISION
+# -- but the daemon-side rescope-dict builder needs to recover WHICH class
+# fired, so the transition note must name it distinctly, never collapse the
+# two into one indistinguishable string. Mirrors the architectural tests
+# immediately above; each oracle carries its own NEGATIVE control.
+
+def test_review_rejected_incapable_class_routes_to_re_carve():
+    """O1: Tier-2 'incapable' -- the model wasn't capable of a correctly-scoped
+    task -> READY_TO_CARVE (re-carve at a higher tier), OVERRIDING the
+    budget-remaining re-queue, exactly like 'architectural' does. NEGATIVE
+    (parametrized by test_review_rejected_fixable_class_requeues above): the
+    SAME input with class='fixable' takes the mechanical QUEUED path instead,
+    proving the READY_TO_CARVE route is caused by the class value."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="abc123def",  # no drift
+                      triage_class={"P01": "incapable"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.READY_TO_CARVE
+    assert "incapable" in (t.notes or "").lower()
+
+
+def test_review_rejected_incapable_no_carve_escalates():
+    """Same closure safety for the incapable class in a carve-less pipeline
+    -> NEEDS_DECISION, never a dead-end READY_TO_CARVE."""
+    cfg = replace(make_config(max_attempts_per_task=3), pipeline=list(_NO_CARVE_PIPELINE))
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, cfg=cfg, head_revision="abc123def",
+                      triage_class={"P01": "incapable"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.NEEDS_DECISION
+    assert "no carve" in (t.notes or "").lower()
+    assert "incapable" in (t.notes or "").lower()
+
+
+def test_review_rejected_architectural_vs_incapable_notes_are_distinguishable():
+    """The requirement Work 2 states explicitly: do NOT collapse the two
+    classes into one indistinguishable note. Same input, only the class
+    differs -> both route to READY_TO_CARVE, but the notes text itself must
+    differ so the daemon can recover which one fired. A regression that
+    hardcoded a single shared note string (e.g. always 'architectural') would
+    fail this even though the routing oracle above still passes."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+
+    inp_arch = _reject_inp(fm=fm, tsf=_rejected_tsf(), head_revision="abc123def",
+                           triage_class={"P01": "architectural"})
+    t_arch = _reject_transition(inp_arch)
+
+    inp_incap = _reject_inp(fm=fm, tsf=_rejected_tsf(), head_revision="abc123def",
+                            triage_class={"P01": "incapable"})
+    t_incap = _reject_transition(inp_incap)
+
+    assert t_arch.to == TaskState.READY_TO_CARVE
+    assert t_incap.to == TaskState.READY_TO_CARVE
+    assert t_arch.notes != t_incap.notes
+    assert "architectural" in (t_arch.notes or "").lower()
+    assert "incapable" in (t_incap.notes or "").lower()
+    assert "incapable" not in (t_arch.notes or "").lower()
+    assert "architectural" not in (t_incap.notes or "").lower()
+
+
 # -- graceful degradation / parity -------------------------------------------
 
 def test_review_rejected_unclassified_matches_pre_b4b_budget_path():

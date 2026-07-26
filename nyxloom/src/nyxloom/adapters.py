@@ -255,7 +255,8 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    prior_verdict: str | None = None,
                    approved_amendments: list[str] | None = None,
                    review_focus: list[str] | None = None,
-                   review_depth: str = "") -> tuple[list[str], str]:
+                   review_depth: str = "",
+                   escalation_note: str = "") -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -312,6 +313,22 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     "" (the empty-string neutral case: low complexity band + a rigorous
     declared gate, or simply no signal available) -> byte-identical to the
     pre-BATCHC prompt.
+
+    D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): `escalation_note`,
+    when non-empty, is a terse NON-SPECIFIC context note for the review that
+    follows a re-implementation carved via the `incapable` REJECT_CLASS path
+    (a prior reviewer judged the ORIGIN task's assigned TIER incapable, not
+    its scope wrong -- see the `_carve_packet_body_lines` rescope branch this
+    pairs with). The caller resolves the provenance marker and computes the
+    note's TEXT; this function makes no route/tier choice -- the SAME "pure
+    signal computed at the call site, then argv-bounded append" shape
+    review_depth uses. Only the REVIEW_INDEPENDENT branch consults it,
+    appended LAST (after review_depth) and bounded to the remaining argv
+    budget. Never embeds the prior reviewer's specific findings -- that would
+    anchor the new review on stale specifics about code that no longer
+    exists; it only names WHY a stronger tier ran. Defaults "" (every
+    non-escalated dispatch, which is nearly all of them) -> byte-identical to
+    the pre-D-R3 prompt.
     """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
     if role is Role.CARVER:
@@ -396,9 +413,19 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             # classifier of WHY -- the daemon routes on it, no 2nd model call. Kept
             # TERSE: the reviewer prompt is close to argv_max (a verbose version
             # overflowed it, stranding the review dispatch -- caught by the gate).
-            "\nIf REJECTED, also add a line `REJECT_CLASS: <fixable|architectural|"
-            "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
-            "product=human decision). Omit it on APPROVED."
+            # D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): `incapable`
+            # joins the vocabulary, distinct from `architectural` -- architectural
+            # means the scope/design was wrong (re-scope, tier unspecified);
+            # incapable means the scope was FINE but the model showed a
+            # structural/repeated capability gap (not a one-off local defect) ->
+            # re-carve at a HIGHER tier, scope held constant. Kept terse: this
+            # prompt is close to argv_max with real paths (see
+            # test_review_independent_prompt_stays_under_argv_max_with_real_paths).
+            "\nIf REJECTED, also add `REJECT_CLASS: <fixable|architectural|incapable|"
+            "product>` (fixable=local defect; architectural=scope/design wrong, "
+            "re-carve; incapable=scope fine but the model wasn't capable -- "
+            "structural, not a one-off defect -- bump tier; product=human "
+            "decision). Omit on APPROVED."
         )
         # B21 2026-07-23 (D-R16 §3): the scope-amendment note (if any) is
         # appended LATER, after argv_max is known -- this prompt is already
@@ -597,6 +624,32 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # beats not dispatching at all (same rationale as review_focus
         # above; the reviewer still runs its base adversarial checks, just
         # without the extra depth guidance).
+
+    # D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): the
+    # incapable-escalation meta-note -- seeds the review that follows a
+    # re-implementation carved via the `incapable` REJECT_CLASS path with a
+    # terse, NON-SPECIFIC reason a higher tier ran, so the reviewer forms its
+    # OWN judgment of the fresh diff instead of anchoring on stale specifics
+    # about code that no longer exists (the prior reviewer's actual findings
+    # are deliberately NEVER embedded here -- see docstring). SAME
+    # bounded-append idiom as review_focus/review_depth immediately above --
+    # appended LAST, measure remaining room, skip entirely (never truncate
+    # into something misleading) if too tight. Absent/empty escalation_note
+    # (every non-escalated dispatch, which is nearly all of them) -> this
+    # block is a complete no-op, so the prompt is byte-identical to today.
+    if role is Role.REVIEW_INDEPENDENT and escalation_note:
+        header = "\n"
+        marker = " [... truncated to fit ...]"
+        room = argv_max - len(prompt) - len(header)
+        if room >= 40:
+            body = escalation_note
+            if len(body) > room:
+                body = body[: room - len(marker)].rstrip() + marker
+            prompt += header + body
+        # else: skip entirely -- dispatching without the meta-note beats not
+        # dispatching at all (same rationale as review_depth/review_focus
+        # above; the reviewer still runs its base adversarial checks, just
+        # without the context on why a stronger tier ran).
 
     # Check prompt length
     if len(prompt) > argv_max:
