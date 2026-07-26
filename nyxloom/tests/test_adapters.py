@@ -1963,6 +1963,39 @@ def test_review_depth_worst_case_argv_degrades_never_raises():
     assert prompt == tight_base                    # byte-identical to the no-depth dispatch
 
 
+def test_review_depth_truncates_when_room_tight_but_above_floor():
+    """Oracle 6 (companion): the OTHER worst-case branch -- room is >= 40 (the
+    header fits) but too small for the full directive body. The body is
+    TRUNCATED-WITH-MARKER (never silently dropped, never raising), mirroring
+    prior_verdict/review_focus's own truncate-to-fit behavior. Distinct from
+    the test above, which covers the 'skip the whole block' branch (room <
+    40) -- this one covers the 'truncate the body' branch (room >= 40 but
+    < len(directive))."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    assert len(directive) > 60  # sanity: long enough that a 46-char room truncates it
+
+    # room = argv_max - len(floor_prompt) - len("\nReview depth: ") ~= 46:
+    # comfortably >= 40 (header fits, block is NOT skipped) but far short of
+    # len(directive) (body must truncate).
+    medium_route = RouteDef(route_id="medium", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 60)
+    _argv, prompt = adapters.build_dispatch(
+        medium_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        review_depth=directive, **kw)
+
+    assert "Review depth:" in prompt               # header present -- not skipped
+    assert directive not in prompt                 # full body did NOT fit
+    assert "truncated to fit" in prompt             # truncation marker present
+    assert len(prompt) <= medium_route.argv_max     # never raises AdapterError, never overflows
+
+
 def test_review_depth_coexists_with_review_focus():
     """Oracle 7: a REVIEW_INDEPENDENT dispatch carrying BOTH a review_focus
     list and a review_depth directive embeds BOTH, still under argv_max,
