@@ -289,6 +289,24 @@ def test_pilot_replay_status_and_step_controls() -> None:
     asyncio.run(run())
 
 
+def test_pilot_replay_space_pauses_before_positive_gap_frame_advances() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert "mode=REPLAY paused speed=1x frame=1/2" in _status_text(app)
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert "mode=REPLAY playing" in _status_text(app)
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert "mode=REPLAY paused speed=1x frame=1/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_pilot_replay_auto_advances_same_timestamp_frames_to_terminal_pause() -> None:
     async def run() -> None:
         base = fixture_frame()
