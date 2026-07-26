@@ -1561,10 +1561,18 @@ def test_implementer_amendment_note_skipped_when_argv_max_too_tight():
     route_wide = _fake_route()
     _a, base_prompt = adapters.build_dispatch(route_wide, role=Role.IMPLEMENTER, **kw)
 
-    # A route whose argv_max sits strictly between the base prompt's length
-    # and (base + note)'s length: the base fits, the note-augmented one does
-    # not.
-    tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(base_prompt) + 20)
+    # Two-pass construction: a route sized off the WIDE base_prompt (which
+    # includes the doctrine manifest) is not self-consistent once budgeted
+    # appends compete for freed-up room -- at that width the manifest itself
+    # gets dropped (its own -200 margin isn't met), which frees enough space
+    # that a LONGER note could slip in even though the test wants it
+    # excluded. Probe once to find the actual no-manifest content length at
+    # a tight width, THEN size the real tight_route off THAT measurement so
+    # "base fits, base+note does not" holds regardless of which optional
+    # block (manifest, DRY) the freed-up room would otherwise go to.
+    probe_route = RouteDef(route_id="probe", cli="fake", model="m", argv_max=len(base_prompt) + 20)
+    _p, probe_base = adapters.build_dispatch(probe_route, role=Role.IMPLEMENTER, **kw)
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(probe_base) + 20)
     # Baseline must be built under the SAME route: the doctrine manifest is
     # argv-budgeted too (doc-ownership 2026-07-23), so comparing a tight build
     # against a WIDE-route baseline would conflate two independent variables.
@@ -1679,12 +1687,16 @@ def test_review_independent_dry_and_reject_class_both_present():
     assert reject_pos < dry_pos, "REJECT_CLASS should appear before DRY in prompt"
 
 
-def test_review_independent_prompt_with_dry_stays_under_argv_max():
+def test_review_independent_prompt_with_dry_yields_the_real_paths_margin():
     """O3 (extends test_review_independent_prompt_stays_under_argv_max_with_
     real_paths): the SAME long-path/attempt-id scenario that guards the base
-    reviewer prompt, now ALSO carrying the DRY standing instruction, must
-    still stay within argv_max — and the DRY instruction must actually survive
-    (not be silently dropped) for confirmation."""
+    reviewer prompt's 200-char safety margin. DRY is checked against that SAME
+    margin (argv_max - 200, mirroring the doctrine manifest's own check), so
+    for this real-long-path scenario it correctly YIELDS -- proving DRY is not
+    the addition that finally eats the margin B4b's own live incident exists
+    to protect. NEGATIVE (the simple-path case, in
+    test_review_focus_absent_prompt_is_byte_identical_to_pre_d1's snapshot)
+    proves DRY is not simply dead code -- it DOES appear when there is room."""
     long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
     _argv, prompt = adapters.build_dispatch(
         _fake_route(),
@@ -1697,8 +1709,8 @@ def test_review_independent_prompt_with_dry_stays_under_argv_max():
     )
     # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
     assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim content"
-    assert "REJECT_CLASS" in prompt          # base reviewer content survives
-    assert "DRY" in prompt                   # DRY instruction survives too
+    assert "REJECT_CLASS" in prompt   # base reviewer content survives
+    assert "DRY" not in prompt        # skipped -- the 200-char margin is protected
 
 
 # ============================================================================
@@ -1732,7 +1744,8 @@ _PRE_D1_SIMPLE_REVIEW_PROMPT = (
     "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
     "product=human decision). Omit it on APPROVED.\n"
     "Doctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; then any "
-    "same-named `nyxloom-trove/` sibling for project overrides."
+    "same-named `nyxloom-trove/` sibling for project overrides.\n"
+    "DRY: reject duplicated production logic; never fix it yourself."
 )
 
 

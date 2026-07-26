@@ -620,8 +620,18 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         if len(prompt) + len(note) <= argv_max:
             prompt += note
     elif role is Role.REVIEW_INDEPENDENT:
+        # REVIEW_INDEPENDENT-specific: uses the SAME -200 margin the doctrine
+        # manifest above already reserves, not a bare <=argv_max check. B4b's
+        # own live incident (test_review_independent_prompt_stays_under_
+        # argv_max_with_real_paths' docstring) is exactly this failure class:
+        # a real long-path dispatch overflowed argv_max and permanently
+        # stranded a review attempt. That test pins a 200-char headroom
+        # specifically so a FUTURE prompt addition (this one) fails a cheap
+        # unit test instead of eating the last of that margin in production.
+        # DRY is generic and low-value enough to yield the margin outright
+        # rather than risk being the addition that finally consumes it.
         note = "\nDRY: reject duplicated production logic; never fix it yourself."
-        if len(prompt) + len(note) <= argv_max:
+        if len(prompt) + len(note) <= argv_max - 200:
             prompt += note
 
     # Check prompt length
