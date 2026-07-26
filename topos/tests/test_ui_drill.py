@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
+from textual.app import App
+from textual.widgets import Static
 
 from topos.config import ToposConfig
 from topos.model import DockerMeta, Entity, EntityFrame, Finding, Frame, MetricValue
 from topos.record.ring import HistoryRing
-from topos.ui.drill import render_drill_text
+from topos.ui.damon_control import DamonConfirmScreen
+from topos.ui.drill import DrillDownScreen, render_drill_text
 
 
 KEY = "system.slice/demo.scope"
@@ -100,3 +104,59 @@ def test_render_drill_text_degrades_optional_metadata_without_fabrication(tmp_pa
     assert "ram                      - [unavail_perm]" in text
     assert "no history" in text and "no visible processes" in text
     assert "FINDINGS\n  none" in text
+
+
+def test_mounted_drill_screen_surfaces_unavailable_damon_controls(tmp_path: Path) -> None:
+    async def run() -> None:
+        screen = DrillDownScreen(
+            _frame(), KEY, config=ToposConfig(), ring=HistoryRing(2),
+            cgroup_root=tmp_path / "missing-cgroup", proc_root=tmp_path / "proc",
+            damon_root=tmp_path / "missing-damon", damon_state_dir=tmp_path / "state",
+            damon_require_root=False,
+        )
+        marker = tmp_path / "state" / "damon" / "kdamond-0.json"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("not json\n")
+        app = App()
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            assert "DAMON CONTROL\n  start unavailable:" in str(screen.query_one("#drill-body", Static).render())
+            await pilot.press("s")
+            await pilot.pause()
+            assert "DAMON CONTROL\n  stop unavailable:" in str(screen.query_one("#drill-body", Static).render())
+
+    asyncio.run(run())
+
+
+def test_mounted_drill_screen_reports_public_confirmation_cancellation(tmp_path: Path) -> None:
+    async def run() -> None:
+        cgroup = tmp_path / "cgroup" / KEY
+        cgroup.mkdir(parents=True)
+        (cgroup / "cgroup.procs").write_text("123\n")
+        damon = tmp_path / "damon"
+        damon.mkdir()
+        (damon / "nr_kdamonds").write_text("1\n")
+        slot = damon / "0"
+        slot.mkdir()
+        (slot / "state").write_text("off\n")
+        screen = DrillDownScreen(
+            _frame(), KEY, config=ToposConfig(), ring=HistoryRing(2),
+            cgroup_root=tmp_path / "cgroup", proc_root=tmp_path / "proc",
+            damon_root=damon, damon_state_dir=tmp_path / "state", damon_require_root=False,
+        )
+        app = App()
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is screen
+            assert "DAMON CONTROL\n  start cancelled" in str(screen.query_one("#drill-body", Static).render())
+
+    asyncio.run(run())
