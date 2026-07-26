@@ -1608,6 +1608,100 @@ def test_review_independent_amendment_note_skipped_when_argv_max_too_tight():
 
 
 # ============================================================================
+# DRY standing instructions (2026-07-26, routing-model-redesign.md D-R2).
+# Explicit standing instructions on EVERY implementer/reviewer dispatch
+# enforcing code-standards (DRY, non-duplication). Oracle O1: the IMPLEMENTER
+# prompt contains the DRY instruction. Oracle O2: the REVIEW_INDEPENDENT prompt
+# contains the DRY instruction AND explicitly says to REJECT (not fix)
+# production-logic duplication. Oracle O3: the existing argv_max boundary test
+# still passes with the additions included. Each pins a NEGATIVE so the
+# assertion cannot pass hollowly.
+# ============================================================================
+
+def test_implementer_prompt_contains_dry_instruction():
+    """O1: EVERY implementer dispatch is told to keep the diff DRY: extract
+    a shared helper instead of copying similar logic. NEGATIVE: a CARVER
+    dispatch does NOT get this instruction (carvers write handoff files, not
+    production code)."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER,
+    )
+    assert "Keep your diff DRY" in prompt
+    assert "extract a shared helper" in prompt
+
+    _a2, carver_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.CARVER, carve_authority="branch",
+    )
+    assert "Keep your diff DRY" not in carver_prompt
+
+
+def test_review_independent_prompt_contains_dry_instruction():
+    """O2: EVERY review_independent dispatch is told to check for DRY
+    violations and REJECT (never fix) when the implementer has copied
+    production logic without extracting a shared helper. NEGATIVE: the
+    IMPLEMENTER and CARVER prompts do NOT contain this reviewer-facing
+    instruction."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    assert "DRY check" in prompt
+    assert "reject if the implementer has copied" in prompt
+    assert "never fix duplication yourself" in prompt
+
+    _a2, impl_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER,
+    )
+    assert "DRY check" not in impl_prompt
+
+
+def test_review_independent_dry_and_reject_class_both_present():
+    """Regression guard: the DRY instruction is appended AFTER the existing
+    REJECT_CLASS line, so both must coexist in the prompt. This pins that
+    adding DRY did not accidentally remove or elide REJECT_CLASS."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    assert "REJECT_CLASS" in prompt
+    assert "DRY check" in prompt
+    # Ensure DRY appears after REJECT_CLASS (order matters for clarity)
+    reject_pos = prompt.find("REJECT_CLASS")
+    dry_pos = prompt.find("DRY check")
+    assert reject_pos < dry_pos, "REJECT_CLASS should appear before DRY check in prompt"
+
+
+def test_review_independent_prompt_with_dry_stays_under_argv_max():
+    """O3 (extends test_review_independent_prompt_stays_under_argv_max_with_
+    real_paths): the SAME long-path/attempt-id scenario that guards the base
+    reviewer prompt, now ALSO carrying the DRY standing instruction, must
+    still stay within argv_max — and the DRY instruction must actually survive
+    (not be silently dropped) for confirmation."""
+    long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(),
+        handoff_path=f"nyxloom-trove/handoffs/{long_task}.md",
+        worktree=f"/workspaces/vbpub/.worktrees/flow-stages/nyxloom/.worktrees/feat/{long_task}",
+        branch=f"feat/{long_task}", task_id=long_task,
+        gate_hint="cd .. && MOCK_MODE=true pytest tests -q",
+        receipt_path=f"/state/attempts/att-0123456789abcdef/receipt.json",
+        role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
+    )
+    # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
+    assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim content"
+    assert "REJECT_CLASS" in prompt          # base reviewer content survives
+    assert "DRY check" in prompt             # DRY instruction survives too
+
+
+# ============================================================================
 # D1 factory-hardening (2026-07-25, plan-factory-hardening.md §D part 1).
 # `review_focus` is the carve-authored "adversarially check these" hint list
 # (types.Frontmatter.review_focus), injected into the REVIEW_INDEPENDENT
