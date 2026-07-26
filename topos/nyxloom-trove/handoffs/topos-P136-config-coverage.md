@@ -92,9 +92,9 @@ or a suppression.
   HistoryConfig non-positive intervals, NetConfig.classify_port miss,
   out-of-range integer / non-int-non-str port list values, and non-dict
   score weights via real TOML `load()`.  Total `18 passed`.
-- BLOCKED: branch [347,348] (`_load_score_weights` receiving non-dict
+- The final dead branch [347,348] (`_load_score_weights` receiving non-dict
   `thresholds`) is unreachable through the public `load(path)` contract.
   `load()` line 393 wraps `thresholds` in `dict(data.get("thresholds", {})
   or {})`, so the parameter passed to `_load_score_weights` is always a
-  dict.  Reaching this residual would require a forbidden production-code
-  change or a private-helper call.
+  dict. It is resolved by separately scoped `topos-P137-config-invariant`, not
+  by a private-helper call or coverage suppression.
