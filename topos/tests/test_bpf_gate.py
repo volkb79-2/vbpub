@@ -110,7 +110,7 @@ def test_bpf_gate_pin_root_accessible_unblocked(tmp_path: Path) -> None:
     assert "live BPF loading: not attempted" in text
 
 
-def test_bpf_gate_provider_errors_rendering(tmp_path: Path) -> None:
+def test_bpf_gate_provider_errors_rendering() -> None:
     report = BpfGateReport(
         uid=0,
         bpftool="/usr/bin/bpftool",
