@@ -267,6 +267,39 @@ def test_pilot_replay_status_and_step_controls() -> None:
     asyncio.run(run())
 
 
+def test_pilot_replay_auto_advances_same_timestamp_frames_to_terminal_pause() -> None:
+    async def run() -> None:
+        base = fixture_frame()
+        later = Frame(
+            schema_version=base.schema_version,
+            ts=base.ts,
+            interval_s=base.interval_s,
+            host=base.host,
+            entities=base.entities,
+        )
+        app = ToposApp(
+            (),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            replay_driver=ReplayDriver([base, later]),
+            replay_step=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 2.0
+            while loop.time() < deadline:
+                await pilot.pause()
+                if "paused" in _status_text(app) and "frame=2/2" in _status_text(app):
+                    break
+            else:
+                raise AssertionError("replay did not reach terminal pause")
+            assert "mode=REPLAY paused" in _status_text(app)
+            assert "frame=2/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_pilot_replay_step_controls_are_bounded_and_show_state() -> None:
     async def run() -> None:
         app = _replay_app()
