@@ -632,6 +632,126 @@ def test_pilot_damon_stop_surface_stops_only_topos_owned_sessions(tmp_path: Path
     asyncio.run(run())
 
 
+def test_pilot_hostmem_stop_action_shows_stopped_count_notice(tmp_path: Path) -> None:
+    """Host-memory 's' action shows exact stopped-count notice in rendered output."""
+    async def run() -> None:
+        damon_root = _damon_root(tmp_path)
+        state_dir = tmp_path / "state"
+        app = ToposApp(
+            iter([fixture_frame()]),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("m")  # open host memory screen
+            await pilot.pause()
+            assert isinstance(app.screen, HostMemoryScreen)
+            await pilot.press("s")  # stop action
+            await pilot.pause()
+            body = _static_text(app.screen.query_one("#hostmem-body", Static))
+            assert "stopped 0 topos-owned DAMON session(s)" in body
+
+    asyncio.run(run())
+
+
+def test_pilot_hostmem_stop_with_exception_shows_unavailable_message(tmp_path: Path, monkeypatch) -> None:
+    """Host-memory stop with exception shows 'stop unavailable: <message>'."""
+    async def run() -> None:
+        from topos.ui import hostmem
+
+        damon_root = _damon_root(tmp_path)
+        state_dir = tmp_path / "state"
+        app = ToposApp(
+            iter([fixture_frame()]),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+
+        # Patch stop_owned_sessions to raise an exception
+        def mock_stop(*args, **kwargs):
+            raise RuntimeError("test error message")
+
+        monkeypatch.setattr(hostmem, "stop_owned_sessions", mock_stop)
+
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("m")  # open host memory screen
+            await pilot.pause()
+            assert isinstance(app.screen, HostMemoryScreen)
+            await pilot.press("s")  # stop action (will raise)
+            await pilot.pause()
+            body = _static_text(app.screen.query_one("#hostmem-body", Static))
+            assert "stop unavailable: test error message" in body
+
+    asyncio.run(run())
+
+
+def test_pilot_hostmem_control_result_none_shows_cancelled(tmp_path: Path) -> None:
+    """HostMemoryScreen._on_control_result(None) renders 'start cancelled'."""
+    async def run() -> None:
+        damon_root = _damon_root(tmp_path)
+        state_dir = tmp_path / "state"
+        app = ToposApp(
+            iter([fixture_frame()]),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("m")  # open host memory screen
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, HostMemoryScreen)
+            # Simulate the callback with None result
+            screen._on_control_result(None)
+            body = _static_text(screen.query_one("#hostmem-body", Static))
+            assert "start cancelled" in body
+
+    asyncio.run(run())
+
+
+def test_pilot_hostmem_control_result_with_text_shows_result(tmp_path: Path) -> None:
+    """HostMemoryScreen._on_control_result(text) renders that exact text."""
+    async def run() -> None:
+        damon_root = _damon_root(tmp_path)
+        state_dir = tmp_path / "state"
+        app = ToposApp(
+            iter([fixture_frame()]),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("m")  # open host memory screen
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, HostMemoryScreen)
+            # Simulate the callback with result text
+            result_text = "DAMON paddr host session started on kdamond 0"
+            screen._on_control_result(result_text)
+            body = _static_text(screen.query_one("#hostmem-body", Static))
+            assert result_text in body
+
+    asyncio.run(run())
+
+
 # ── P50: Mouse Table Interactions ─────────────────────────────────────────
 
 

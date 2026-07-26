@@ -379,3 +379,216 @@ def _base_sys(root: Path) -> Path:
     (zdebug / "stored_pages").write_text("0\n")
     (sys / "block").mkdir(parents=True)
     return sys
+
+
+# --- P132 hostmem rendering coverage tests ---
+
+
+def test_render_hostmem_malformed_host_meta_non_dict_retains_valid_device() -> None:
+    """Malformed host_meta (non-dict) safely retains rendering without crash."""
+    frame = _minimal_frame(host_meta="not_a_dict")
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    assert "ZRAM DEVICES" in text
+    assert "(no zram devices)" in text
+
+
+def test_render_hostmem_malformed_zram_devices_non_list_and_mixed_non_dict() -> None:
+    """Malformed zram_devices (non-list and mixed non-dict/dict) retains valid device."""
+    frame = _minimal_frame(
+        host_meta={
+            "zram_devices": [
+                "not_a_dict",  # malformed, skipped
+                {"name": "zram0", "orig_bytes": 1024, "compr_bytes": 512},  # valid, kept
+                None,  # malformed, skipped
+            ]
+        }
+    )
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    assert "ZRAM DEVICES" in text
+    assert "zram0" in text
+    assert "1.0KiB" in text
+
+
+def test_render_hostmem_root_entity_non_list_damon_sessions_renders_no_session() -> None:
+    """Root entity with non-list DAMON sessions renders 'no paddr session detected'."""
+    entity = Entity(key="", kind="root", parent=None)
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "": EntityFrame(
+                entity=entity,
+                metrics={},
+                damon={"host_sessions": "not_a_list"},  # malformed
+            )
+        },
+    )
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    assert "PADDR HEAT" in text
+    assert "no paddr session detected" in text
+
+
+def test_render_hostmem_paddr_session_without_class_bytes_and_regions_renders_ownership() -> None:
+    """Paddr session lacking class_bytes/regions still renders ownership line."""
+    entity = Entity(key="", kind="root", parent=None)
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "": EntityFrame(
+                entity=entity,
+                metrics={},
+                damon={
+                    "host_sessions": [
+                        {
+                            "owner": "topos",
+                            "kdamond_idx": 0,
+                            "context_idx": 0,
+                            "scheme_idx": 0,
+                            "state": "running",
+                            "sample_us": 5000,
+                            "aggr_us": 10000,
+                            "update_us": 60000,
+                            "mode": "paddr",
+                            # no class_bytes, no regions
+                        }
+                    ]
+                },
+            )
+        },
+    )
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    assert "owner=topos" in text
+    assert "stop: topos damon stop --all-mine" in text
+
+
+def test_render_hostmem_topos_session_all_class_bytes_zero_renders_empty_heat_bars() -> None:
+    """Topos-owned session with all class bytes zero renders four empty dot bars."""
+    entity = Entity(key="", kind="root", parent=None)
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={
+            "host_damon_hot_bytes": MetricValue(0, "host"),
+            "host_damon_warm_bytes": MetricValue(0, "host"),
+            "host_damon_cold_bytes": MetricValue(0, "host"),
+            "host_damon_idle_bytes": MetricValue(0, "host"),
+            "host_damon_sample_age_s": MetricValue(10.0, "host"),
+        },
+        entities={
+            "": EntityFrame(
+                entity=entity,
+                metrics={},
+                damon={
+                    "host_sessions": [
+                        {
+                            "owner": "topos",
+                            "kdamond_idx": 0,
+                            "context_idx": 0,
+                            "scheme_idx": 0,
+                            "state": "running",
+                            "sample_us": 5000,
+                            "aggr_us": 10000,
+                            "update_us": 60000,
+                            "mode": "paddr",
+                            "class_bytes": {"hot": 0, "warm": 0, "cold": 0, "idle": 0},
+                        }
+                    ]
+                },
+            )
+        },
+    )
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    # All-zero totals produce empty bars with 24 dots each
+    empty_bar = "[" + "." * 24 + "]"
+    # Count occurrences of empty bar for hot, warm, cold, idle
+    assert text.count(empty_bar) == 4
+
+
+def test_render_hostmem_integer_and_missing_damon_metrics() -> None:
+    """Integer DAMON metrics render as int; missing metrics render as '-'."""
+    entity = Entity(key="", kind="root", parent=None)
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={
+            "host_damon_hot_bytes": MetricValue(1000, "host"),
+            "host_damon_warm_bytes": MetricValue(500, "host"),
+            "host_damon_cold_bytes": MetricValue(200, "host"),
+            "host_damon_idle_bytes": MetricValue(100, "host"),
+            "host_damon_sample_age_s": MetricValue(5, "host"),  # integer, should render as "5"
+        },
+        entities={
+            "": EntityFrame(
+                entity=entity,
+                metrics={},
+                damon={
+                    "host_sessions": [
+                        {
+                            "owner": "topos",
+                            "kdamond_idx": 0,
+                            "context_idx": 0,
+                            "scheme_idx": 0,
+                            "state": "running",
+                            "sample_us": 5000,
+                            "aggr_us": 10000,
+                            "update_us": 60000,
+                            "mode": "paddr",
+                            "class_bytes": {"hot": 1000, "warm": 500, "cold": 200, "idle": 100},
+                        }
+                    ]
+                },
+            )
+        },
+    )
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    assert "age=5s" in text  # Integer should render without decimal
+
+
+def test_render_hostmem_boolean_zram_counters_and_ratio() -> None:
+    """Boolean zram counters render as 0/1; boolean ratio renders '-'."""
+    frame = _minimal_frame(
+        host_meta={
+            "zram_devices": [
+                {
+                    "name": "zram0",
+                    "orig_bytes": 1024,
+                    "compr_bytes": 512,
+                    "mem_used_bytes": 600,
+                    "failed_reads": True,  # boolean True -> 1
+                    "failed_writes": False,  # boolean False -> 0
+                    "writeback_bytes": 100,
+                    "ratio": True,  # boolean -> "-"
+                }
+            ]
+        }
+    )
+    config = ToposConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    # Parse the zram0 row: expect rd_er=1 (True), wr_er=0 (False), ratio="-" (boolean)
+    # Format: {name:<12} {orig:>10} {compr:>10} {mem_used:>10} {ratio:>6} {rd_er:>5} {wr_er:>5} {wb:>10}
+    # Expected: zram0        1.0KiB      512B      600B      -     1     0       100B
+    assert "zram0" in text
+    assert "1.0KiB" in text  # orig_bytes: 1024
+    assert "512B" in text    # compr_bytes: 512
+    assert "600B" in text    # mem_used_bytes: 600
+    # Verify the ratio is shown as "-" (not a number, since it's boolean True)
+    # and failed_reads shows 1 (True) and failed_writes shows 0 (False)
+    lines = text.split("\n")
+    zram_lines = [l for l in lines if "zram0" in l]
+    assert len(zram_lines) > 0
+    zram_row = zram_lines[0]
+    # Check that the row contains rd_er=1 and wr_er=0 in correct positions
+    assert "     1     0       100B" in zram_row  # rd_er=1, wr_er=0, wb=100B
