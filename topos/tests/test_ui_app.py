@@ -267,6 +267,70 @@ def test_pilot_replay_status_and_step_controls() -> None:
     asyncio.run(run())
 
 
+def test_pilot_replay_step_controls_are_bounded_and_show_state() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            driver = app._replay_driver
+            assert driver is not None
+            assert driver.index == 0
+            assert "mode=REPLAY paused speed=1x frame=1/2" in _status_text(app)
+
+            await pilot.press("comma")
+            await pilot.pause()
+            assert driver.index == 0
+            assert "paused speed=1x frame=1/2" in _status_text(app)
+
+            await pilot.press("full_stop")
+            await pilot.pause()
+            assert driver.index == 1
+            assert "paused speed=1x frame=2/2" in _status_text(app)
+
+            await pilot.press("full_stop")
+            await pilot.pause()
+            assert driver.index == 1
+            assert "paused speed=1x frame=2/2" in _status_text(app)
+
+            await pilot.press("comma")
+            await pilot.pause()
+            assert driver.index == 0
+            assert "paused speed=1x frame=1/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_speed_keys_cycle_and_clamp_with_visible_status() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            driver = app._replay_driver
+            assert driver is not None
+
+            for speed in (2, 4, 8):
+                await pilot.press("plus")
+                await pilot.pause()
+                assert driver.index == 0
+                assert f"paused speed={speed}x frame=1/2" in _status_text(app)
+
+            await pilot.press("plus")
+            await pilot.pause()
+            assert "paused speed=8x frame=1/2" in _status_text(app)
+
+            for speed in (4, 2, 1):
+                await pilot.press("minus")
+                await pilot.pause()
+                assert driver.index == 0
+                assert f"paused speed={speed}x frame=1/2" in _status_text(app)
+
+            await pilot.press("minus")
+            await pilot.pause()
+            assert "paused speed=1x frame=1/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_pilot_replay_first_and_last_jump() -> None:
     async def run() -> None:
         app = _replay_app()
@@ -477,6 +541,19 @@ def test_pilot_replay_jump_in_non_replay_mode_shows_unavailable_message() -> Non
             await pilot.press("j")
             await pilot.pause()
             assert "only available in --replay mode" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_controls_in_live_mode_show_unavailable_status() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            for key in ("space", "comma", "full_stop", "plus", "minus"):
+                await pilot.press(key)
+                await pilot.pause()
+                assert "only available in --replay mode" in _status_text(app)
 
     asyncio.run(run())
 
