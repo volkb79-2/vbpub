@@ -25,6 +25,7 @@ modules.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import PropertyMock, patch
 
 from rich.text import Text
 
@@ -32,6 +33,7 @@ from conftest import fixture_frame, fixture_root
 from topos.config import ToposConfig
 from topos.model import CiuMeta, DockerMeta, Entity, EntityFrame, Frame, MetricValue
 from topos.ui.app import ToposApp
+from topos.ui.data_table import MouseTable
 from topos.ui.drill import DrillDownScreen
 
 
@@ -336,3 +338,73 @@ def test_pilot_oracle6_zero_ciu_frame_every_entity_once_no_group_header() -> Non
             assert len(entity_row_keys) == len(set(entity_row_keys)) == len(frame.entities)
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# P122 — MouseTable safety: invalid selections, tree delegation, unsupported-app
+# ---------------------------------------------------------------------------
+
+
+def test_mousetable_invalid_keys_safe() -> None:
+    """Unknown/missing keys do not move cursor; empty placeholders never become entity selections."""
+
+    async def run() -> None:
+        lab = _ciu_entity_frame("c-lab", "lab-01", stack="app/web", phase_raw="phase_1", phase=1, source="label")
+        app = _make_ciu_app([lab])
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            initial_coord = mt.cursor_coordinate
+            mt.update_cursor_from_key(None)
+            mt.update_cursor_from_key("missing-key")
+            assert mt.cursor_coordinate == initial_coord
+
+            app.filter_text = "ZZZZ_NONEXISTENT_ZZZZ"
+            app._refresh_view()
+            await pilot.pause()
+            assert mt.row_key_at_cursor() is None
+
+    asyncio.run(run())
+
+
+def test_mousetable_tree_delegation() -> None:
+    """Tree collapse/expand actions are delegated to the real app, not mocked."""
+
+    async def run() -> None:
+        frame = fixture_frame()
+        app = ToposApp(
+            iter([frame]),
+            config=ToposConfig(default_view="tree", default_column_profile="triage"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            mt.update_cursor_from_key("besteffort.slice")
+            await pilot.pause()
+            child_key = "besteffort.slice/docker-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.scope"
+            assert child_key in app._visible_row_keys
+
+            mt.action_cursor_left()
+            await pilot.pause()
+            assert "besteffort.slice" in app._collapsed_tree_keys
+            assert child_key not in app._visible_row_keys
+
+            mt.action_cursor_right()
+            await pilot.pause()
+            assert "besteffort.slice" not in app._collapsed_tree_keys
+            assert child_key in app._visible_row_keys
+
+    asyncio.run(run())
+
+
+def test_mousetable_unsupported_app_safe() -> None:
+    """Tree actions on non-App owner are safe no-ops."""
+    mt = MouseTable()
+    with patch.object(MouseTable, "app", new_callable=PropertyMock) as mock_app:
+        mock_app.return_value = object()
+        mt.action_cursor_left()
+        mt.action_cursor_right()
