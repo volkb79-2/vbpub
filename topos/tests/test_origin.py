@@ -493,11 +493,11 @@ def test_ancestor_chain_with_unlimited_then_finite_child_exercises_saw_unlimited
         entities={
             "": EntityFrame(
                 entity=Entity("", "root", None),
-                metrics={"mem_min": MetricValue(None, "unlimited")},
+                metrics={"mem_min": MetricValue(100, "exact")},
             ),
             "parent.slice": EntityFrame(
                 entity=Entity("parent.slice", "slice", ""),
-                metrics={"mem_min": MetricValue(256, "exact")},
+                metrics={"mem_min": MetricValue(None, "unlimited")},
             ),
             "parent.slice/child.scope": EntityFrame(
                 entity=Entity("parent.slice/child.scope", "scope", "parent.slice"),
@@ -508,8 +508,8 @@ def test_ancestor_chain_with_unlimited_then_finite_child_exercises_saw_unlimited
     annotate_frame_governance(frame, mock_runner)
     child = frame.entities["parent.slice/child.scope"]
     assert child.governance is not None
-    # Finite values exist, so clamped_by should show the smallest
-    assert child.governance["effective_memory_min"]["clamped_by"]["value"] == 256
+    # Root excluded from child path; parent is unlimited, child finite 512 is the only finite value
+    assert child.governance["effective_memory_min"]["clamped_by"] == {"key": "parent.slice/child.scope", "value": 512}
 
 
 def test_systemd_memory_max_with_live_finite_value_produces_raw_write_reason() -> None:
@@ -574,3 +574,71 @@ def test_entity_with_two_independent_unmanaged_drifted_limits() -> None:
     assert "mem_min" in entity.governance["summary"]["drifted_limits"]
     assert "mem_low" in entity.governance["summary"]["drifted_limits"]
     assert len(entity.governance["summary"]["reasons"]) == 2
+
+
+def test_returncode_nonzero_means_found_false_despite_parsed_stdout() -> None:
+    """Returncode != 0 means found=false, so no recorded_origin despite parsed stdout."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        # found=false because returncode != 0, despite having parsed stdout
+        return ShowResult(
+            stdout="MemoryHigh=100\n",
+            returncode=1,
+        )
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "test.slice": EntityFrame(
+                entity=Entity("test.slice", "slice", ""),
+                metrics={"mem_high": MetricValue(100, "exact")},
+            )
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    entity = frame.entities["test.slice"]
+    assert entity.governance is not None
+    # found=false because returncode != 0, so no recorded_origin and raw_write despite parsed stdout
+    assert entity.governance["summary"]["origin"] == "raw_write"
+    assert entity.governance["limits"]["mem_high"]["recorded_origin"] is None
+
+
+def test_parent_with_float_metric_value_exercises_effective_scan_fallthrough() -> None:
+    """Parent with non-int metric value (float) skipped in finite scan; child finite value governs effective."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        return ShowResult(stdout="", returncode=1)
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "": EntityFrame(
+                entity=Entity("", "root", None),
+                metrics={"mem_min": MetricValue(100, "exact")},
+            ),
+            "parent.slice": EntityFrame(
+                entity=Entity("parent.slice", "slice", ""),
+                metrics={"mem_min": MetricValue(1.5, "exact")},
+            ),
+            "parent.slice/child.scope": EntityFrame(
+                entity=Entity("parent.slice/child.scope", "scope", "parent.slice"),
+                metrics={"mem_min": MetricValue(512, "exact")},
+            ),
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    child = frame.entities["parent.slice/child.scope"]
+    assert child.governance is not None
+    # Parent's float value is skipped; child's 512 is the only finite value governing effective
+    assert child.governance["effective_memory_min"]["value"] == 512
+    assert child.governance["effective_memory_min"]["clamped_by"] == {"key": "parent.slice/child.scope", "value": 512}
