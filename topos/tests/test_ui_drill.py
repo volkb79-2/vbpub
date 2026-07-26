@@ -8,6 +8,7 @@ from textual.app import App
 from textual.widgets import Static
 
 from topos.config import ToposConfig
+from topos.diag.score import ScoreInput
 from topos.model import DockerMeta, Entity, EntityFrame, Finding, Frame, MetricValue
 from topos.record.ring import HistoryRing
 from topos.ui.damon_control import DamonConfirmScreen
@@ -104,6 +105,39 @@ def test_render_drill_text_degrades_optional_metadata_without_fabrication(tmp_pa
     assert "ram                      - [unavail_perm]" in text
     assert "no history" in text and "no visible processes" in text
     assert "FINDINGS\n  none" in text
+
+
+def test_render_drill_text_omits_thresholds_for_thresholdless_score_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import topos.diag.score as score_mod
+
+    input_spec = ScoreInput(
+        key="thresholdless_metric", label="Thresholdless", metrics=("thresholdless_metric",),
+        weight_key="thresholdless_metric", threshold_key=None, default_band=None, detail="supported without threshold",
+    )
+    monkeypatch.setattr(score_mod, "_INPUTS", (input_spec,))
+    frame = _frame()
+    frame.entities[KEY].metrics["thresholdless_metric"] = MetricValue(5, "exact")
+    text = _render(frame, HistoryRing(2), tmp_path)
+    contribution = next(line for line in text.splitlines() if "Thresholdless" in line)
+    assert "value=5 [exact/exact]" in contribution
+    assert "warn=" not in contribution and "crit=" not in contribution
+
+
+def test_render_drill_text_preserves_no_history_for_all_missing_recorded_series(tmp_path: Path) -> None:
+    frame = _frame()
+    ring = HistoryRing(2, tracked_metrics=("rf_d_per_s", "cpu_pct", "ram"))
+    ring.append_frame(Frame(
+        1, 100, 5, {},
+        {KEY: EntityFrame(frame.entities[KEY].entity, {
+            "rf_d_per_s": MetricValue(None, "unavail_kernel"),
+            "cpu_pct": MetricValue(None, "unavail_kernel"),
+            "ram": MetricValue(None, "unavail_kernel"),
+        })},
+    ))
+    text = _render(frame, ring, tmp_path)
+    assert "rf_d_per_s   no history" in text
+    assert "cpu_pct      no history" in text
+    assert "ram          no history" in text
 
 
 def test_mounted_drill_screen_surfaces_unavailable_damon_controls(tmp_path: Path) -> None:

@@ -338,8 +338,6 @@ def _format_metric(metric) -> str:
 
 
 def _sparkline(values: list[float | None]) -> str:
-    if not values:
-        return "no history"
     finite = [value for value in values if value is not None]
     if not finite:
         return "no history"
@@ -371,10 +369,12 @@ def _fmt_bytes(value: int) -> str:
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     scaled = float(value)
     unit = units[0]
-    for unit in units:
-        if abs(scaled) < 1024.0 or unit == units[-1]:
+    for unit in units[:-1]:
+        if abs(scaled) < 1024.0:
             break
         scaled /= 1024.0
+    else:
+        unit = units[-1]
     if unit == "B":
         return f"{int(scaled)}{unit}"
     return f"{scaled:.1f}{unit}"
