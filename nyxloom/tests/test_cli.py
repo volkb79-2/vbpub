@@ -967,6 +967,57 @@ def test_onboard_check_gate_reports_an_existing_gate(tmp_path, capsys):
     assert "NO GATE" not in out
 
 
+# ---------------------------------------------------------------------------
+# onboard --scaffold-gate (PACKAGE GA3 v2) -- act on a missing verification
+# gate by writing a reviewable Dockerfile + `[gates.*]` skeleton, opt-in.
+
+def test_onboard_without_scaffold_gate_flag_prints_nothing_scaffold_related(tmp_path, capsys):
+    """Oracle: omitting --scaffold-gate leaves onboard's output untouched --
+    the step is strictly opt-in, mirroring --check-gate's own oracle."""
+    project_folder = tmp_path / "greenfield"
+
+    exit_code = cli.main(["onboard", str(project_folder)])
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "gate scaffold" not in out
+    assert not (project_folder / "nyxloom-trove" / "gate-scaffold").exists()
+
+
+def test_onboard_scaffold_gate_writes_a_skeleton_when_none_declared(tmp_path, capsys):
+    """A freshly-onboarded project has no `[gates.*]` yet -- `--scaffold-gate`
+    must write the Dockerfile + config section and confirm the paths."""
+    project_folder = tmp_path / "greenfield"
+
+    exit_code = cli.main(["onboard", str(project_folder), "--scaffold-gate"])
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "gate scaffolded: 'scaffolded-pytest'" in out
+    assert "Dockerfile" in out
+
+    dockerfile = project_folder / "nyxloom-trove" / "gate-scaffold" / "Dockerfile"
+    assert dockerfile.is_file()
+    toml_text = (project_folder / "nyxloom-trove" / "nyxloom.toml").read_text()
+    assert "[gates.scaffolded-pytest]" in toml_text
+
+
+def test_onboard_scaffold_gate_second_run_prints_the_skip_message(tmp_path, capsys):
+    """Re-running --scaffold-gate against an already-scaffolded project must
+    not duplicate anything -- it reports the skip reason instead."""
+    project_folder = tmp_path / "greenfield"
+
+    assert cli.main(["onboard", str(project_folder), "--scaffold-gate"]) == 0
+    capsys.readouterr()  # discard the first call's output
+
+    exit_code = cli.main(["onboard", str(project_folder), "--scaffold-gate"])
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    assert "gate scaffold skipped:" in out
+    assert "already declares gate" in out
+
+
 def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
     """Guidance: --debug flag re-raises exceptions."""
     from nyxloom import decisions

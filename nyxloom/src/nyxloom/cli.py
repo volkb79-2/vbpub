@@ -1333,6 +1333,22 @@ def cmd_onboard(args) -> int:
             print("gate check: NO GATE declared")
         print(f"  {offer.recommendation}")
 
+    if getattr(args, "scaffold_gate", False):
+        from . import gate_scaffold, onboarding_gate
+
+        offer = onboarding_gate.assess_gate(project_folder)
+        scaffold_result = gate_scaffold.scaffold_gate(project_folder, offer)
+        if scaffold_result.scaffolded:
+            print(f"gate scaffolded: '{scaffold_result.gate_id}'")
+            print(f"  Dockerfile: {scaffold_result.dockerfile_path}")
+            print(f"  config:     {scaffold_result.config_path}")
+            print(
+                "  review the `# nyxloom-scaffold: adjust` markers, then run "
+                "`nyxloom gate verify` to confirm it actually rejects broken code"
+            )
+        else:
+            print(f"gate scaffold skipped: {scaffold_result.skipped_reason}")
+
     if getattr(args, "scan", False):
         from . import onboarding_scan
 
@@ -1688,6 +1704,13 @@ def main(argv: list[str] | None = None) -> int:
                                       "no subprocess) whether this project declares a usable "
                                       "verification gate, and print an offer/recommendation if not "
                                       "(docs/plan-gate-adoption.md §GA3)")
+    onboard_parser.add_argument("--scaffold-gate", action="store_true", dest="scaffold_gate",
+                                 help="PACKAGE GA3 v2: after the non-AI wizard, if no verification "
+                                      "gate is declared, write a reviewable gate-runner Dockerfile "
+                                      "and a `[gates.*]` skeleton into the project's trove -- a "
+                                      "review skeleton (`# nyxloom-scaffold: adjust` markers), not a "
+                                      "guaranteed-working gate; run `nyxloom gate verify` after "
+                                      "adjusting it (docs/plan-gate-adoption.md §GA3)")
 
     # free-models (D-R12: pluggable free-model discovery + routes.toml refresh)
     free_models_parser = subparsers.add_parser("free-models")
