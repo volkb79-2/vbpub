@@ -302,3 +302,121 @@ def test_banner_loss_annotation_ignores_malformed_rates() -> None:
 
     assert "LOSS" not in line
     assert "eth0" in line
+
+
+def test_banner_collapsed_and_verdicts() -> None:
+    """Collapsed banner shows HOST OK; PSI determines WARN and CRIT verdicts."""
+    frame = _make_base_frame()
+    snapshot = render_banner(frame, ToposConfig(), collapsed=True)
+    assert len(snapshot.lines) == 1
+    assert snapshot.lines[0] == "HOST OK"
+
+    frame_warn = _make_base_frame()
+    frame_warn.host["host_psi_mem_full_avg10"] = MetricValue(1.0, "host")
+    snapshot_warn = render_banner(frame_warn, ToposConfig())
+    assert snapshot_warn.verdict == "WARN"
+
+    frame_crit = _make_base_frame()
+    frame_crit.host["host_psi_mem_full_avg10"] = MetricValue(2.0, "host")
+    snapshot_crit = render_banner(frame_crit, ToposConfig())
+    assert snapshot_crit.verdict == "CRIT"
+
+
+def test_banner_damon_heat_rendering() -> None:
+    """Partial DAMON hides heat; complete DAMON renders heat with visualization."""
+    frame_partial = _make_base_frame()
+    frame_partial.host["host_damon_mode"] = MetricValue("pids", "host")
+    frame_partial.host["host_damon_hot_bytes"] = MetricValue(40, "host")
+    snapshot_partial = render_banner(frame_partial, ToposConfig())
+    assert not any(line.startswith("DRAM HEAT") for line in snapshot_partial.lines)
+
+    frame_full = _make_base_frame()
+    frame_full.host["host_damon_mode"] = MetricValue("pids", "host")
+    frame_full.host["host_damon_hot_bytes"] = MetricValue(40, "host")
+    frame_full.host["host_damon_warm_bytes"] = MetricValue(30, "host")
+    frame_full.host["host_damon_cold_bytes"] = MetricValue(20, "host")
+    frame_full.host["host_damon_idle_bytes"] = MetricValue(10, "host")
+    frame_full.host["host_damon_hot_pct"] = MetricValue(40.0, "host")
+    frame_full.host["host_damon_warm_pct"] = MetricValue(30.0, "host")
+    frame_full.host["host_damon_cold_pct"] = MetricValue(20.0, "host")
+    frame_full.host["host_damon_idle_pct"] = MetricValue(10.0, "host")
+    frame_full.host["host_damon_sample_age_s"] = MetricValue(0.1, "host")
+    snapshot_full = render_banner(frame_full, ToposConfig())
+    heat_line = next((line for line in snapshot_full.lines if line.startswith("DRAM HEAT")), None)
+    assert heat_line is not None
+    assert "[HHHHHHHHWWWWWWCCCCII]" in heat_line
+    assert "owner unknown" in heat_line
+
+
+def test_banner_gpu_vram_and_malformed_fields() -> None:
+    """GPU line renders without busy; malformed swap and large memory degrade safely."""
+    frame_gpu = _make_base_frame()
+    frame_gpu.host["host_gpu_vram_total"] = MetricValue(2048, "host")
+    frame_gpu.host["host_gpu_vram_used"] = MetricValue(1024, "host")
+    snapshot_gpu = render_banner(frame_gpu, ToposConfig())
+    gpu_line = next((line for line in snapshot_gpu.lines if line.startswith("GPU")), None)
+    assert gpu_line is not None
+    assert gpu_line.startswith("GPU 1.0KiB/2.0KiB")
+    assert "busy" not in gpu_line
+
+    frame_malformed = _make_base_frame()
+    frame_malformed.host["host_swap_backend"] = MetricValue("bad", "host")
+    frame_malformed.host["host_mem_total"] = MetricValue(1024**5, "host")
+    frame_malformed.host["host_mem_available"] = MetricValue(1024**5, "host")
+    snapshot_malformed = render_banner(frame_malformed, ToposConfig())
+    swap_line = next((line for line in snapshot_malformed.lines if line.startswith("SWAP")), None)
+    assert swap_line is not None
+    assert "SWAP backend ?" in swap_line
+    load_mem_line = next((line for line in snapshot_malformed.lines if "LOAD" in line or "MEM" in line), None)
+    assert load_mem_line is not None
+    assert "1024.0TiB" in load_mem_line
+
+
+def test_banner_network_with_high_loss_annotation() -> None:
+    """Network device with packet rate and error annotation renders correctly."""
+    frame = _make_base_frame()
+    frame.host_meta = {
+        "net_devices": [
+            {
+                "name": "eth0",
+                "rx_bps": 1000.0,
+                "tx_bps": 500.0,
+                "rx_pps": 1_000_000.0,
+                "tx_pps": 1.0,
+                "rx_drops_s": 0.0,
+                "tx_drops_s": 0.0,
+                "rx_errors_s": 0.0,
+                "tx_errors_s": 100.0,
+                "src": "host",
+            }
+        ]
+    }
+    snapshot = render_banner(frame, ToposConfig())
+    net_line = next((line for line in snapshot.lines if line.startswith("NET")), None)
+    assert net_line is not None
+    assert "rx1.0M/s" in net_line
+    assert "LOSS" in net_line
+    assert "tx_err100/s" in net_line
+
+
+def test_banner_malformed_damon_ownership_safe_fallback() -> None:
+    """Malformed damon ownership falls back safely to 'owner unknown' without crashing."""
+    frame = _make_base_frame()
+    frame.host["host_damon_mode"] = MetricValue("pids", "host")
+    frame.host["host_damon_hot_bytes"] = MetricValue(40, "host")
+    frame.host["host_damon_warm_bytes"] = MetricValue(30, "host")
+    frame.host["host_damon_cold_bytes"] = MetricValue(20, "host")
+    frame.host["host_damon_idle_bytes"] = MetricValue(10, "host")
+    frame.host["host_damon_hot_pct"] = MetricValue(40.0, "host")
+    frame.host["host_damon_warm_pct"] = MetricValue(30.0, "host")
+    frame.host["host_damon_cold_pct"] = MetricValue(20.0, "host")
+    frame.host["host_damon_idle_pct"] = MetricValue(10.0, "host")
+    frame.host["host_damon_sample_age_s"] = MetricValue(0.1, "host")
+
+    entity = Entity("", "root", "")
+    frame.entities[""] = EntityFrame(entity=entity, metrics={}, damon={"host_sessions": "malformed"})
+
+    snapshot = render_banner(frame, ToposConfig())
+    heat_line = next((line for line in snapshot.lines if line.startswith("DRAM HEAT")), None)
+    assert heat_line is not None
+    assert "owner unknown" in heat_line
