@@ -397,7 +397,7 @@ def _fmt_bytes(value: float) -> str:
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     scaled = value
     unit = units[0]
-    for unit in units:
+    for unit in units:  # pragma: no branch; final tuple element always breaks
         if abs(scaled) < 1024 or unit == units[-1]:
             break
         scaled /= 1024.0
