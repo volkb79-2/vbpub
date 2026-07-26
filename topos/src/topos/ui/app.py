@@ -241,6 +241,8 @@ class ToposApp(App[None]):
     def on_data_table_row_highlighted(self, event: MouseTable.RowHighlighted) -> None:
         """Handle cursor move — update the selected key."""
         event.stop()
+        if event.row_key is None:
+            return
         self.selected_key = event.row_key.value
 
     def on_data_table_row_selected(self, event: MouseTable.RowSelected) -> None:

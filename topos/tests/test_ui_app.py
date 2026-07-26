@@ -1200,6 +1200,30 @@ def test_p50_keyboard_parity_up_down_native() -> None:
     asyncio.run(run())
 
 
+def test_p149_empty_source_up_down_is_safe() -> None:
+    async def run() -> None:
+        app = ToposApp(
+            (),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            base_screen = app.screen
+            assert "mode=LIVE waiting for frames" in _status_text(app)
+
+            await pilot.press("up")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert app.screen is base_screen
+            assert "mode=LIVE waiting for frames" in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_p50_keyboard_parity_enter_drilldown() -> None:
     """Enter key opens drill-down (parity with old keyboard workflow)."""
     async def run() -> None:
