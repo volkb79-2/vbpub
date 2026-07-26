@@ -1651,8 +1651,8 @@ def test_review_independent_prompt_contains_dry_instruction():
         role=Role.REVIEW_INDEPENDENT,
     )
     assert "DRY" in prompt
-    assert "reject if copied" in prompt
-    assert "never fix" in prompt
+    assert "reject duplicated production logic" in prompt
+    assert "never fix it yourself" in prompt
 
     _a2, impl_prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
