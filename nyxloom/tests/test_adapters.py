@@ -1731,6 +1731,7 @@ _PRE_D1_SIMPLE_REVIEW_PROMPT = (
     "If REJECTED, also add a line `REJECT_CLASS: <fixable|architectural|"
     "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
     "product=human decision). Omit it on APPROVED.\n"
+    "DRY: reject if copied; never fix.\n"
     "Doctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; then any "
     "same-named `nyxloom-trove/` sibling for project overrides."
 )
