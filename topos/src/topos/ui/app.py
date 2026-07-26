@@ -30,6 +30,8 @@ from .keys import BINDINGS, key_help
 from .table import SORT_ORDER, VIEW_MODES, available_profiles, normalize_profile_name, render_data_table_container, render_data_table_container_grouped
 from .tree import render_data_table_tree
 
+MIN_REPLAY_DELAY_S = 0.001
+
 
 class FilterScreen(Screen[str | None]):
     def __init__(self, value: str) -> None:
@@ -524,7 +526,9 @@ class ToposApp(App[None]):
         self._cancel_replay_timer()
         current = self._replay_driver.current
         upcoming = self._replay_driver.frames[self._replay_driver.index + 1]
-        delay_s = max(0.0, (upcoming.ts - current.ts) / self._replay_speed)
+        delay_s = (upcoming.ts - current.ts) / self._replay_speed
+        if delay_s <= 0.0:
+            delay_s = MIN_REPLAY_DELAY_S
         self._replay_timer = self.set_timer(delay_s, self._advance_replay)
 
     def _advance_replay(self) -> None:
