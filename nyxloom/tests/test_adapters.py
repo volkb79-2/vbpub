@@ -2170,6 +2170,33 @@ def test_escalation_note_skipped_when_argv_max_too_tight():
     assert prompt == tight_base                   # byte-identical to the no-note dispatch
 
 
+def test_escalation_note_truncates_when_room_tight_but_above_floor():
+    """Companion to the skip-entirely test above: the OTHER worst-case branch
+    -- room is >= 40 (the header fits) but too small for the full note body.
+    The body is TRUNCATED-WITH-MARKER (never silently dropped, never
+    raising), mirroring review_depth's own truncate-to-fit behavior."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+
+    assert len(_ESCALATION_NOTE) > 60  # sanity: long enough that a tight room truncates it
+
+    # room = argv_max - len(floor_prompt) - len("\n") ~= 59: comfortably >= 40
+    # (header fits, block is NOT skipped) but far short of len(_ESCALATION_NOTE)
+    # (body must truncate).
+    medium_route = RouteDef(route_id="medium", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 60)
+    _argv, prompt = adapters.build_dispatch(
+        medium_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        escalation_note=_ESCALATION_NOTE, **kw)
+
+    assert _ESCALATION_NOTE not in prompt           # full body did NOT fit
+    assert "truncated to fit" in prompt              # truncation marker present
+    assert len(prompt) <= medium_route.argv_max      # never raises AdapterError, never overflows
+
+
 def test_escalation_note_coexists_with_review_focus_and_review_depth():
     """O4: a REVIEW_INDEPENDENT dispatch carrying review_focus, review_depth,
     AND escalation_note together embeds all three, in append order

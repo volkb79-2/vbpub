@@ -974,6 +974,25 @@ def test_rescope_context_graceful_when_no_handoff_and_no_review(
     assert ctx["origin_tier"] is None
 
 
+def test_rescope_context_graceful_when_handoff_unparsable(
+        tmp_state, sample_project, patch_siblings):
+    """Coverage/D-R3: handoff_path is SET but the file is missing (git-state
+    drift, or a not-yet-materialized worktree) -> frontmatter.parse_handoff
+    raises, and BOTH input_revision AND origin_tier degrade to None via the
+    except branch (not just the pre-existing input_revision) -- the re-scope
+    carve must still be launchable with partial data."""
+    cfg = sample_project
+    _seed_task("demo", "demo-P10", TaskState.READY_TO_CARVE,
+               handoff_path="handoff/does-not-exist.md")
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._rescope_context(cfg, states, "demo-P10")
+    assert ctx["input_revision"] is None
+    assert ctx["origin_tier"] is None
+    assert ctx["drifted"] is False
+
+
 def test_rescope_context_reads_reject_class_and_origin_tier(
         tmp_state, sample_project, patch_siblings):
     """D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): _rescope_context
