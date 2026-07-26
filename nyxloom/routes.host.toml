@@ -102,6 +102,13 @@ probe = ["codex", "--version"]
 resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
 usage_source = "exec-output-footer"
 
+# OpenAI models are always dispatched through Codex, never through OpenRouter.
+# This low-effort route is intentionally trial-only; the controller selects it
+# explicitly after the cheaper OpenRouter routes have their two-package record.
+[routes.codex-luna-low]
+inherit = "codex-luna-high"
+effort = "low"
+
 [routes.claude-sonnet5-high]
 cli = "claude"
 model = "sonnet"
@@ -161,3 +168,23 @@ resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model"
 inherit = "openrouter-free-nemotron-ultra"
 model = "openrouter/poolside/laguna-xs-2.1:free"
 resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/poolside/laguna-xs-2.1:free", "--dir", "{worktree}", "{prompt}"]
+
+# Paid OpenRouter trial routes.  Both model IDs were verified against the
+# OpenRouter catalog on 2026-07-26.  The controller invokes them explicitly,
+# keeps a single session per two-package trial, and uses backoff+resume on 429
+# rather than a fresh prompt/session.  Do not substitute an OpenAI model here.
+[routes.opencode-qwen37-plus]
+cli = "opencode"
+model = "openrouter/qwen/qwen3.7-plus"
+argv_max = 1500
+prompt_hints = ["incremental-write"]
+probe = ["opencode", "--version"]
+dispatch_extra = ["--auto"]
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/qwen/qwen3.7-plus", "--dir", "{worktree}", "{prompt}"]
+session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
+usage_source = "session-json"
+
+[routes.opencode-mimo-v25]
+inherit = "opencode-qwen37-plus"
+model = "openrouter/xiaomi/mimo-v2.5"
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/xiaomi/mimo-v2.5", "--dir", "{worktree}", "{prompt}"]

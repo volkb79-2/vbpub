@@ -51,19 +51,36 @@ record and review verdict.
 
 | Order | Route | Why it is here | Status before trial |
 |---:|---|---|---|
-| 1 | `openrouter/poolside/laguna-xs-2.1:free` | Lowest cash-cost configured implementation route; establishes the lower bound. | Configured and previously provider-probed; re-probe required. |
-| 2 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | Free route with substantially more capacity/context. | Configured and previously provider-probed; re-probe required. |
-| 3 | `gpt-5.6-luna` at `medium` | First paid low-effort Codex floor. It has historical operational competence but missed semantic defects on a far harder P51 protocol package. | Requires a distinct route/probe. |
-| 4 | `gpt-5.6-terra` at `low` | Next low-effort paid check; DeepSWE's 24% is a prior, not an automatic rejection for narrow test packages. | Requires a distinct route/probe. |
-| 5 | DeepSeek Flash High/Max | Retest only after the dispatcher/tool wrapper can mechanically prevent host-runner drift. Prompt wording alone failed that requirement in P113. | Not eligible yet. |
+| 0 | `openrouter/poolside/laguna-xs-2.1:free` | Lowest cash-cost configured route; an availability/scope probe, not a presumed full trial. | Configured and previously provider-probed; re-probe required. |
+| 1 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | Free route with substantially more capacity/context. | Configured and previously provider-probed; re-probe required. |
+| 2 | `openrouter/qwen/qwen3.7-plus` | Large-context paid OpenRouter coding candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
+| 3 | `openrouter/xiaomi/mimo-v2.5` | Low-price, large-context paid OpenRouter candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
+| 4 | `gpt-5.6-luna` at `low` via Codex | First OpenAI low-effort floor. | Dedicated Codex route added; live probe required. |
+| 5 | `gpt-5.6-luna` at `medium` via Codex | Next OpenAI effort if Luna-low misses the oracle. | Requires a distinct Codex route/probe. |
+| 6 | `gpt-5.6-terra` at `low` via Codex | Next low-effort paid check; DeepSWE's 24% is a prior, not an automatic rejection for narrow test packages. | Requires a distinct Codex route/probe. |
 
-`poolside/laguna-m.1`, `qwen/qwen3.7-plus`, `x-ai/grok-4.5`, and
-`z-ai/glm-5.2` are **probe candidates**, not runnable routes yet: exact
-OpenCode slugs, availability, price, context, and effort semantics must be
-verified without a generation before they join the ladder. Sonnet 5 Medium is
-deferred: the captured P51 result cost about USD 4.53 for a much larger task,
-so it cannot satisfy this experiment's hard budget. The configured free
-Laguna model is `laguna-xs-2.1`, not Laguna M.1; do not conflate them.
+Laguna XS has a deliberately early abort: after the no-edit route probe, stop
+without a second package on the first runner/worktree breach, out-of-scope read,
+empty/non-causal test proposal, provider refusal, or rate-limit exhaustion. It
+is not failed merely for being cheap; a clean first package earns the ordinary
+second package. `poolside/laguna-m.1`, `x-ai/grok-4.5`, and `z-ai/glm-5.2`
+remain **probe candidates**: exact OpenCode slugs, availability, price, context,
+and effort semantics must be verified without a generation before they join the
+ladder. Sonnet 5 Medium is deferred: the captured P51 result cost about USD
+4.53 for a much larger task, so it cannot satisfy this experiment's hard budget.
+The configured free Laguna model is `laguna-xs-2.1`, not Laguna M.1; do not
+conflate them. **OpenAI models always use Codex, never OpenRouter.**
+
+## OpenRouter rate-limit handling
+
+For an OpenCode/OpenRouter route, a provider `429`, quota, or temporary
+availability refusal is a `LIMIT`, not a model-quality failure and not an
+invitation to start a fresh session. Preserve the session id and worktree; wait
+30 seconds, then 60 seconds, then 120 seconds (at most three resumes), and
+resume the same session with the same bounded handoff. Record every wait and
+provider message. Stop as `LIMIT_EXHAUSTED` after the third refusal or when the
+budget reserve cannot fund a resumed call. Do not test a competing route while a
+free route is merely backoff-pending: the experiment stays serial.
 
 ## Promotion record
 
