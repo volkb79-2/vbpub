@@ -1025,6 +1025,27 @@ def test_terminate_process_already_dead() -> None:
     _terminate_process(proc)  # must not raise
 
 
+def test_mcp_smoke_contains_daemon_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A daemon spawn error becomes a typed failing smoke result."""
+    import topos.acceptance as acceptance
+
+    def _fail_to_spawn(*_args: object, **_kwargs: object) -> object:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(acceptance.subprocess, "Popen", _fail_to_spawn)
+
+    result = acceptance.run_mcp_smoke(timeout_s=0.1)
+
+    assert result.ok is False
+    daemon_start = [check for check in result.checks if check.name == "daemon_start"]
+    assert len(daemon_start) == 1
+    assert daemon_start[0].ok is False
+    assert "permission denied" in daemon_start[0].message
+    assert daemon_start[0].details == {"error": "permission denied"}
+
+
 class _FakeToolResult:
     """A CallToolResult stand-in: transport status plus a JSON text block."""
 
@@ -1122,6 +1143,60 @@ class _FakeProc:
 
     def wait(self, timeout: float | None = None) -> int:
         return self.returncode if self.returncode is not None else 0
+
+
+class _TimeoutThenKillProc:
+    """A fake process whose graceful wait times out before kill succeeds."""
+
+    def __init__(self, *, post_kill_wait_error: BaseException | None = None) -> None:
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+        self.wait_calls = 0
+        self.post_kill_wait_error = post_kill_wait_error
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        if self.wait_calls == 1:
+            raise subprocess.TimeoutExpired("fake-daemon", timeout)
+        if self.post_kill_wait_error is not None:
+            raise self.post_kill_wait_error
+        return self.returncode if self.returncode is not None else 0
+
+
+def test_terminate_process_kills_after_graceful_wait_timeout() -> None:
+    """A process that ignores terminate is killed and waited for."""
+    from topos.acceptance import _terminate_process
+
+    proc = _TimeoutThenKillProc()
+    _terminate_process(proc)
+
+    assert proc.terminated is True
+    assert proc.killed is True
+    assert proc.wait_calls == 2
+
+
+def test_terminate_process_swallows_post_kill_wait_failure() -> None:
+    """A cleanup-only failure after kill does not escape teardown."""
+    from topos.acceptance import _terminate_process
+
+    proc = _TimeoutThenKillProc(post_kill_wait_error=OSError("wait failed"))
+    _terminate_process(proc)
+
+    assert proc.terminated is True
+    assert proc.killed is True
+    assert proc.wait_calls == 2
 
 
 def _listening_unix_socket(path: Path):
