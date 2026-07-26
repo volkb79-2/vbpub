@@ -16,7 +16,7 @@ from topos.drift.origin import ShowResult
 from topos.model import Frame, MetricValue
 from topos.record.replay import ReplayDriver
 from topos.snapshot.bundle import _extract_archive
-from topos.ui.app import ToposApp
+from topos.ui.app import ToposApp, run_ui
 from topos.ui.damon_control import DamonConfirmScreen
 from topos.ui.drill import DrillDownScreen
 from topos.ui.hostmem import HostMemoryScreen
@@ -50,6 +50,18 @@ def _replay_app(*, step: bool = True) -> ToposApp:
         replay_driver=ReplayDriver([base, later]),
         replay_step=step,
     )
+
+
+def test_run_ui_smoke_reports_fixture_success() -> None:
+    result = run_ui(
+        iter([fixture_frame()]),
+        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        proc_root=fixture_root() / "procfs" / "network",
+        smoke=True,
+    )
+
+    assert result == "ui smoke ok frames=1 view=tree profile=auto"
 
 
 def _wait_for_frame(app: ToposApp):
