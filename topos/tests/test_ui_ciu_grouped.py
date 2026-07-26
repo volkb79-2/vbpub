@@ -28,6 +28,7 @@ import asyncio
 from unittest.mock import PropertyMock, patch
 
 from rich.text import Text
+from textual.coordinate import Coordinate
 
 from conftest import fixture_frame, fixture_root
 from topos.config import ToposConfig
@@ -408,3 +409,11 @@ def test_mousetable_unsupported_app_safe() -> None:
         mock_app.return_value = object()
         mt.action_cursor_left()
         mt.action_cursor_right()
+
+
+def test_mousetable_negative_cursor_rejected() -> None:
+    """Negative cursor row is rejected; Python's negative indexing does not apply."""
+    mt = MouseTable()
+    mt._row_keys = ("real",)
+    mt.cursor_coordinate = Coordinate(-1, 0)
+    assert mt.row_key_at_cursor() is None
