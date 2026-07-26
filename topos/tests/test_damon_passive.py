@@ -56,6 +56,107 @@ def _collector(*, damon_root: Path, now: float, metrics_mode: str = "full") -> C
     )
 
 
+def _damon_fixture(tmp_path: Path, kind: str = "passive-vaddr") -> tuple[Path, Path, Path]:
+    root = tmp_path / "kdamonds"
+    shutil.copytree(fixture_root() / "damonfs" / kind / "kdamonds", root)
+    proc = tmp_path / "proc"
+    shutil.copytree(fixture_root() / "procfs" / "network", proc)
+    cgroup = tmp_path / "cgroup"
+    shutil.copytree(fixture_root() / "cgroupfs" / "gstammtisch", cgroup)
+    return root, proc, cgroup
+
+
+def _region(root: Path, idx: str, start: int, end: int, accesses: int, age: int) -> None:
+    path = root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions" / idx
+    path.mkdir(parents=True, exist_ok=True)
+    for name, value in (("start", start), ("end", end), ("nr_accesses", accesses), ("age", age)):
+        (path / name).write_text(f"{value}\n")
+
+
+def _collector_with_inputs(root: Path, proc: Path, cgroup: Path, now: float = 100.0) -> Collector:
+    return Collector(
+        cgroup_root=cgroup,
+        config=ToposConfig(interval=5.0, tiers={"prod": ["system.slice"]}),
+        docker_inspect=lambda _cid: None,
+        host_collector=_host_stub,
+        now=lambda: now,
+        network_providers=(),
+        proc_root=proc,
+        damon_root=root,
+    )
+
+
+def test_collect_once_passive_regions_observe_classifier_boundaries(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    regions = root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions"
+    shutil.rmtree(regions)
+    _region(root, "0", 0, 4096, 0, 1)
+    _region(root, "1", 4096, 8192, 1, 40)
+    _region(root, "2", 8192, 4096, 20, 1)
+    (root / "0" / "contexts" / "0" / "monitoring_attrs" / "intervals" / "sample_us").write_text("0\n")
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+    session = frame.entities[GAME_KEY].damon["sessions"][0]
+    assert [r["class"] for r in session["regions"]] == ["warm", "cold", "warm"]
+    assert session["regions"][2]["access_rate_pct"] == 0.0
+    assert [r["size_bytes"] for r in session["regions"]] == [4096, 4096, 0]
+    assert frame.entities[GAME_KEY].damon["summary"]["total_bytes"] == 8192
+    assert frame.entities[GAME_KEY].metrics["damon_cold_bytes"].v == 4096
+
+
+def test_collect_once_stat_scheme_wins_and_empty_candidate_is_skipped(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    schemes = root / "0" / "contexts" / "0" / "schemes"
+    second = schemes / "1" / "tried_regions"
+    second.mkdir(parents=True)
+    (schemes / "1" / "action").write_text("pageout\n")
+    (second / "total_bytes").write_text("999\n")
+    (schemes / "2").mkdir()
+    (schemes / "2" / "action").write_text("pageout\n")
+    session = _collector_with_inputs(root, proc, cgroup).collect_once().entities[GAME_KEY].damon["sessions"][0]
+    assert session["scheme_idx"] == 0
+    assert session["scheme_action"] == "stat"
+    assert session["scheme_count"] == 3
+
+
+def test_collect_once_valid_scheme_uses_total_bytes_fallback(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
+    tried = root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions"
+    shutil.rmtree(tried)
+    tried.mkdir()
+    (tried / "total_bytes").write_text("12345\n")
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+    assert frame.host["host_damon_warm_bytes"].v == 0
+    assert frame.entities[""].damon["host_sessions"][0]["total_bytes"] == 12345
+
+
+def test_collect_once_vaddr_requires_one_resolved_entity(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    target = root / "0" / "contexts" / "0" / "targets" / "0" / "pid_target"
+    target.write_text("not-a-pid\n")
+    assert _collector_with_inputs(root, proc, cgroup).collect_once().entities[GAME_KEY].damon is None
+    target.write_text("9999\n")
+    assert _collector_with_inputs(root, proc, cgroup).collect_once().entities[GAME_KEY].damon is None
+    target.write_text("1001\n")
+    (root / "0" / "contexts" / "0" / "targets" / "1").mkdir()
+    (root / "0" / "contexts" / "0" / "targets" / "1" / "pid_target").write_text("3001\n")
+    assert _collector_with_inputs(root, proc, cgroup).collect_once().entities[GAME_KEY].damon is None
+    shutil.rmtree(root / "0" / "contexts" / "0" / "targets" / "1")
+    (cgroup / GAME_KEY / "cgroup.procs").unlink()
+    session = _collector_with_inputs(root, proc, cgroup).collect_once().entities[GAME_KEY].damon["sessions"][0]
+    assert session["entity_pid_count"] is None
+
+
+def test_collect_once_paddr_is_host_only_and_unsupported_context_is_omitted(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
+    bad = root / "0" / "contexts" / "1"
+    bad.mkdir()
+    (bad / "operations").write_text("unsupported\n")
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+    assert frame.entities[GAME_KEY].damon is None
+    assert frame.entities[""].damon["host_sessions"][0]["mode"] == "paddr"
+    assert frame.host["host_damon_mode"].v == 2
+
+
 def test_fieldlist_damon_preserves_structured_damon_block(tmp_path: Path) -> None:
     damon_root = tmp_path / "kdamonds"
     shutil.copytree(fixture_root() / "damonfs" / "passive-vaddr" / "kdamonds", damon_root)
