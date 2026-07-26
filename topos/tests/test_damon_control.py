@@ -384,3 +384,19 @@ def test_teardown_recreates_absent_context_state_safely(tmp_path: Path) -> None:
     assert result == 1
     assert not marker_path.exists()
     assert (damon_root / "0" / "contexts" / "nr_contexts").read_text().strip() == "0"
+
+
+def test_nonpositive_pids_fail_closed(tmp_path: Path) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    (cgroup_root / "nonpositive.scope").mkdir(parents=True)
+    (cgroup_root / "nonpositive.scope" / "cgroup.procs").write_text("0\n-5\n")
+
+    with pytest.raises(NoEntityPids):
+        plan_start_session(
+            "nonpositive.scope",
+            cgroup_root=cgroup_root,
+            damon_root=_damon_root(tmp_path / "damon"),
+            state_dir=_state_dir(tmp_path / "state"),
+            config=DamonConfig(),
+            require_root=False,
+        )
