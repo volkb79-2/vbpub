@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 from conftest import fixture_root
-from topos.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
+from topos.bpf_gate import BpfGateReport, report_to_jsonable, render_report, run_bpf_gate
 from topos.cli import main
 
 
@@ -68,3 +69,57 @@ def test_bpf_gate_cli_json_smoke(tmp_path: Path, capsys) -> None:
     with patch("topos.bpf_gate.shutil.which", return_value=None):
         report = run_bpf_gate(proc_root=proc_fixture(), pin_root=pin_root, command_runner=qdisc_stub, uid=1003)
     assert report_to_jsonable(report)["pin_root"] == str(pin_root)
+
+
+def test_bpf_gate_pin_root_writable_denial(tmp_path: Path) -> None:
+    pin_root = tmp_path / "topos"
+    pin_root.mkdir()
+    real_access = os.access
+
+    def access_for_pin(path, mode):
+        if Path(path) == pin_root:
+            raise OSError("denied")
+        return real_access(path, mode)
+
+    with patch("topos.bpf_gate.os.access", side_effect=access_for_pin):
+        report = run_bpf_gate(
+            proc_root=proc_fixture(),
+            pin_root=pin_root,
+            command_runner=qdisc_stub,
+            uid=0,
+            bpftool_path="/usr/bin/bpftool",
+        )
+
+    assert report.pin_root_writable is False
+    assert report.blockers == (f"{pin_root} is not writable",)
+
+
+def test_bpf_gate_pin_root_accessible_unblocked(tmp_path: Path) -> None:
+    pin_root = tmp_path / "topos"
+    pin_root.mkdir()
+    report = run_bpf_gate(
+        proc_root=proc_fixture(),
+        pin_root=pin_root,
+        command_runner=qdisc_stub,
+        uid=0,
+        bpftool_path="/usr/bin/bpftool",
+    )
+
+    assert report.blockers == ()
+    text = render_report(report)
+    assert "live BPF loading: not attempted" in text
+
+
+def test_bpf_gate_provider_errors_rendering() -> None:
+    report = BpfGateReport(
+        uid=0,
+        bpftool="/usr/bin/bpftool",
+        pin_root="/tmp/pin",
+        pin_root_writable=True,
+        blockers=(),
+        probe_commands=(),
+        live_commands=(),
+        baseline={"provider_status": {"errors": ["fixture unavailable"]}},
+    )
+    text = render_report(report)
+    assert "provider errors: ['fixture unavailable']" in text
