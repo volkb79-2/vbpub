@@ -452,3 +452,14 @@ against the isolated target, list every required constructor field, and verify
 that a mocked boundary cannot accidentally intercept a downstream dependency.
 If that preflight is wrong, invalidate the package rather than charging the
 model for faithfully implementing an impossible instruction.
+
+**CLI-path corollary (Claude Code, Topos P121–P123).** Capability grammar is
+part of the route, so preflight it too. On this host, `--bare` bypassed the
+normal authenticated credential integration; a normal `dontAsk` invocation
+was authenticated. Path-scoped `Read` worked only against the real absolute
+worktree path (not a convenient virtual alias), while path-scoped `Edit(...)`
+was rejected by the CLI. The safe fallback was not broad shell access: retain
+the `Read Edit` tool ceiling, permit `Edit` only after the handoff limits it to
+one file, and let the controller audit the exact diff. A clean BLOCKED caused
+by a stale resumed handoff name or a denied capability is a session/harness
+signal; repair the capsule or rotate the session before scoring model quality.
