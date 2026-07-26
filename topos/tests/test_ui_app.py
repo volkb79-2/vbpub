@@ -159,6 +159,82 @@ def test_pilot_tree_branch_collapse_and_expand_preserves_selection() -> None:
     asyncio.run(run())
 
 
+def test_p145_mounted_keys_toggle_banner_and_cycle_selection() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            table = app.query_one("#body-table")
+            banner = app.query_one("#banner", Static)
+            expanded_banner = _static_text(banner)
+            initial = table.row_key_at_cursor()
+            assert initial == app.selected_key
+
+            await pilot.press("b")
+            await pilot.pause()
+            collapsed_banner = _static_text(banner)
+            assert collapsed_banner != expanded_banner
+
+            await pilot.press("down")
+            await pilot.pause()
+            next_key = table.row_key_at_cursor()
+            assert next_key != initial
+            assert next_key == app.selected_key
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert table.row_key_at_cursor() == initial
+            assert app.selected_key == initial
+
+    asyncio.run(run())
+
+
+def test_p145_mounted_keys_collapse_child_and_return_to_parent() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            table = app.query_one("#body-table")
+
+            # Root -> parent -> child using only mounted navigation keys.
+            await pilot.press("down")
+            await pilot.pause()
+            parent = table.row_key_at_cursor()
+            assert parent == app.selected_key
+            await pilot.press("down")
+            await pilot.pause()
+            child = table.row_key_at_cursor()
+            assert child == app.selected_key
+            assert child is not None and child.startswith(parent + "/")
+
+            rows_before = table.row_count
+            await pilot.press("left")
+            await pilot.pause()
+            assert table.row_key_at_cursor() == parent
+            assert app.selected_key == parent
+            # First left moves selection to parent; second left collapses it.
+            await pilot.press("left")
+            await pilot.pause()
+            assert table.row_count < rows_before
+
+            await pilot.press("right")
+            await pilot.pause()
+            assert table.row_count == rows_before
+            assert table.row_key_at_cursor() == parent
+            assert app.selected_key == parent
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert table.row_key_at_cursor() == child
+            assert app.selected_key == child
+            await pilot.press("left")
+            await pilot.pause()
+            assert table.row_key_at_cursor() == parent
+            assert app.selected_key == parent
+
+    asyncio.run(run())
+
+
 def test_collapsed_tree_filter_still_reveals_matching_descendants() -> None:
     async def run() -> None:
         app = _make_app()
