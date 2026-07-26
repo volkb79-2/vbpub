@@ -28,6 +28,12 @@ the doc set (`STANDARD.md`):
 - A discovered lesson is **always written project-local first** (`nyxloom-trove/LESSONS.md`).
   The factory NEVER auto-mutates a shipped `reference/` surface — that would be the
   daemon committing to the product's public docs.
+- **Before** writing a new trove lesson, grep this file + `DOCTRINE.md` for an existing
+  canonical rule it duplicates or extends. If one exists, write the trove entry as
+  *incident evidence* tagged `upstream: integrated (ref: L#)` — not as a fresh
+  `proposed` rule. Skipping this check produces `proposed` trove entries that merely
+  restate an already-shipped rule, and leaves stale `proposed` markers on lessons the
+  reference file has since absorbed.
 - A `scope: product` lesson **additionally emits an upstream proposal** (the
   system→system lessons channel — see `docs/plan-factory-hardening.md`, reusing the
   findings-channel plumbing: a `LESSON_DISCOVERED` finding with `scope=product`).
@@ -328,3 +334,33 @@ explain a current failure, and compaction can turn a tentative diagnosis into a
 false fact. A resumed or compacted session must run the relocation preflight and
 reproduce any claimed failure before editing (L8). If those checks fail, start a
 fresh session from the generated handoff rather than compacting again.
+
+## L13 — Base-guard every merge against a concurrently-advancing main; it is what makes disjoint-file parallel implementation safe
+
+**Rule.** When more than one branch merges into a `main` that is *also* advancing
+underneath you — a parallel implementation stream, a second controller, the daemon
+dispatching concurrent tasks — a merge is safe only if the incoming branch and
+everything `main` gained since that branch's merge-base touch **disjoint files**.
+Verify it mechanically *before every merge*: the intersection of {files `main`
+advanced since the merge-base} ∩ {files the branch touched} must be **empty**; then
+`--no-ff` merge and post-merge re-verify. The *implementation* can be massively
+parallel; the *merge* stays serial on one `main` regardless.
+
+**Evidence (gate-adoption + F018 batch, 2026-07-25/26).** ~5 parallel implementation
+agents merged package-by-package while `main` advanced ~7 times underneath them via a
+disjoint Topos coverage stream. Each merge was preceded by a base-guard check (`comm
+-12` of the two sorted `--name-only` diffs); every intersection came back empty, so
+each `--no-ff` merge applied cleanly and its post-merge re-gate stayed green. The
+base-guard — not luck, and not file-locking — is the *only* reason independent agents
+could implement in parallel against a moving target without collision.
+
+**How to apply.** Structurally the daemon must own this on its concurrent-merge path:
+compute the merge-base intersection before publishing and refuse/re-queue on a
+non-empty result rather than racing an `update-ref`. Any manual or controller-driven
+merge reproduces it as a distinct pre-merge step — exactly as L4 makes gate→verdict→
+merge distinct acts. Scope parallel packages onto disjoint files *up front* (the
+carver's `scope.touch`) so the base-guard is expected-empty by construction; a
+non-empty intersection is the signal to **serialize those two packages**, not to
+merge-and-hope. This is the merge-discipline complement to the verification rules:
+L7 says *re-verify the tree*, L13 says *verify the tree still composes with where
+`main` went*.

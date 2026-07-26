@@ -98,7 +98,7 @@ incidental fork coverage.
   (e.g. `mutation_gate`'s per-mutant runs) don't pay xdist startup overhead.
 
 ## PL4 — Coverage healing needs a machine-checkable target loop; never accept the agent's completion narrative
-`scope: product` · `upstream: proposed` · **LIVING (extend after each consumer adoption)**
+`scope: product` · `upstream: integrated (ref: L7 — the completion-narrative rule; L4 — read the real verdict)` · **LIVING (topos incident body; extend after each consumer adoption)**
 
 The first consumer-adoption run used one persistent DeepSeek Flash Max session
 for implementation + self-review and one persistent DeepSeek Pro Max session
@@ -967,3 +967,57 @@ carving, gate semantics, or evidence requirements; package-specific incidents
 belong in PL4. After all three consumers reach the global goal, distill the
 stable rules into `reference/LESSONS.md` and retain the incident chronology
 here as supporting evidence.
+
+## PL6 — The Opus-scout / Sonnet-implement model scales, but its safety is three non-optional controller disciplines
+`scope: product` · `upstream: integrated (ref: L13 — base-guard)` · confirms L7 / L9 / L10
+
+**Graduation note (2026-07-26).** This entry is the nyxloom-self incident evidence at
+scale; its general *rules* are canonical, not trove-local. The four disciplines map to
+shipped `reference/LESSONS.md`: re-inspect for uncommitted work + re-gate authoritatively
+= **L7**; feature-off-by-default-enables-delegation = **L9**; scout-then-route-to-the-
+cheapest-capable-model economics = **L10**; and the previously un-captured
+base-guard-enables-parallelism discipline was **promoted from here to L13**. Kept below as
+the concrete worked example (five agents, ~2,700 lines, ~7 concurrent `main` advances)
+those rules were confirmed against — not as a competing statement of the rule.
+
+**Measured at scale (2026-07-25, the gate-adoption batch GA4/B25/GA3/mut-fanout).**
+Five parallel Sonnet `Agent(model:sonnet)` implementation agents produced **~2,700
+lines** across four packages — including a *frozen-core* one (GA4, `reconcile.py`) —
+while Opus token spend was confined to four activities that actually reward
+reasoning: **Explore-scouting the seams, authoring the AUTHORING.md-style handoff,
+adversarial review, and authoritative re-gating.** The economics hold: implementation
+is bounded enough for the cheaper model when the handoff carries the behavioral
+oracles and the exact gate command; judgment is where Opus earns its cost.
+
+But the model is only safe because of three disciplines that are **load-bearing, not
+overhead** — remove any one and the batch ships broken work:
+
+1. **Re-inspect before trusting any "completed" turn.** `git log main..<branch>` AND
+   `git status` the worktree on every agent completion. One of the five agents (GA3)
+   left its work **fully uncommitted — not even `git add`ed** (untracked new files).
+   The controller stages+commits the agent's tree itself; `coverage_gate --base main`
+   needs a real commit to diff against. (Extends **PL4** / canonical **L4**: the
+   completion narrative is not evidence.)
+2. **Re-gate authoritatively — run the real gate yourself, read the OUTPUT FILE.**
+   All five agents parked on a *backgrounded* gate and emitted "completed" ("standing
+   by for the gate notification") before any verdict returned — this is the **default
+   behaviour, not an edge case**. An agent's self-reported verdict is worthless, and
+   doubly so because its own gate ran against the *uncommitted* tree from (1). Run the
+   tester-unified gate solo (2× for thread/flake-class packages), read
+   `PYTEST_EXIT` + the `diff-coverage OK` line from the file — never the notification.
+3. **Base-guard every merge against the parallel stream.** Main advanced **~7 times
+   mid-round** via a disjoint topos coverage stream. Before each `--no-ff` merge,
+   confirm `comm -12` of {files main advanced since merge-base} ∩ {files my branch
+   touched} is **empty**, then post-merge re-verify. This guard — not luck — is the
+   *only* reason two implementation agents could run in parallel against a moving main
+   without colliding. Merging stays serial on one `main` regardless.
+
+**The enabling safety property is feature-off-by-default.** GA4 mutated the frozen
+`reconcile.py`, yet was safely delegable to Sonnet because the new cadence item is
+inert until `gate_verify_interval_days > 0` — a mistake stays byte-identical-off until
+an operator opts in. Frozen-core work becomes fan-out-eligible precisely when the
+change is dark by construction; without that property, keep it on the controller loop.
+
+Related: [[PL4]] (never accept the completion narrative), canonical **L4** (never
+trust a wrapper's exit-0), and the operator-mechanics record in session memory
+(`nyxloom-false-done-turn-parking`).
