@@ -101,3 +101,4 @@ credential is available. The two real Topos packages are the acceptance test.
 | Route | Package(s) | Verdict | Evidence |
 |---|---|---|---|
 | `openrouter/poolside/laguna-xs-2.1:free` | P115 only | **UNFIT** | No-edit probe returned `ROUTE_READY` at zero cost. The implementation session then read an unlisted, stale global coverage report before editing; this met the explicit early-abort trigger. Controller terminated it, confirmed a clean worktree, issued no second package, and spent no reviewer. See Topos P115 LOG. |
+| `openrouter/poolside/laguna-m.1:free` | P116 only | **UNFIT** | No-edit probe returned `ROUTE_READY` at zero cost. The first turn hit a temporary free-tier limit; controller stopped OpenCode's rapid internal retries, waited 30 seconds, and resumed the same session once. It then read the full 1,186-line test file despite a narrow subsection boundary. Worktree stayed clean; no second package or reviewer. See Topos P116 LOG. |
