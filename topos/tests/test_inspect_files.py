@@ -319,7 +319,7 @@ class TestPathSafety:
 
     def test_validate_cgroup_target_direct_delegation(self) -> None:
         from topos.inspect_files.catalog import _validate_cgroup_target
-        _validate_cgroup_target("system.slice/ssh.service")
+        assert _validate_cgroup_target("system.slice/ssh.service") is None
 
     def test_cgroup_target_accepts_sysfs_path(self) -> None:
         plan = build_inspect_plan("cgroup-files", "/sys/fs/cgroup/system.slice/ssh.service")
