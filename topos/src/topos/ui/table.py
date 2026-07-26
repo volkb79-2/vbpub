@@ -408,10 +408,12 @@ def _fmt_bytes(value: float) -> str:
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     scaled = value
     unit = units[0]
-    for unit in units:
-        if abs(scaled) < 1024 or unit == units[-1]:
+    for unit in units[:-1]:
+        if abs(scaled) < 1024:
             break
         scaled /= 1024.0
+    else:
+        unit = units[-1]
     if unit == "B":
         return f"{int(scaled)}{unit}"
     return f"{scaled:.1f}{unit}"
