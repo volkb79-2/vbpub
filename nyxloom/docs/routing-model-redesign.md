@@ -101,6 +101,37 @@ both write the carve path (gap-engine emits carve candidates; D-R3 stamps each
 candidate's band). So D-R3 sequences **with** F5, while the rest of the routing
 bundle (D-R1, D-R12..D-R15) is parallelizable ahead of it.
 
+**(refined 2026-07-26) A new `REJECT_CLASS` value, `incapable`, is required and
+is NOT interchangeable with `architectural`.** `architectural` means the
+*scope/design* was wrong — same-base retries can't fix it, so it re-carves for a
+re-*scope*, tier unspecified. `incapable` means the *model* was wrong for a
+correctly-scoped task — the reviewer self-classifies this when the implementer's
+failure looks structural/repeated rather than a one-off local defect (e.g. it
+generated redundant/overlapping coverage instead of a compact suite, ignored
+standing guidelines, or otherwise showed the deficiency wasn't a fluke). Both
+classes route through `READY_TO_CARVE` (the sole persistent carver, D-R10, is
+still the only carve authority — see D-R10 below), but the carve consumer MUST
+branch on which class triggered it: `architectural` → re-scope the work, tier
+left to the carver's normal band-prediction; `incapable` → bump the tier while
+holding the scope roughly constant. Collapsing both into one generic "re-carve"
+signal (as `architectural`'s current handling does) loses exactly the
+distinction that makes tier escalation possible at all.
+
+**(refined 2026-07-26) The review that follows an `incapable`-escalated
+re-implementation must be capability-matched to the NEW tier (D-R2) and seeded
+with a terse, non-specific meta-note** — e.g. "this is a fresh implementation
+from a higher-tier model; a previous reviewer judged escalation necessary due
+to broad incapability across several dimensions" — never the prior reviewer's
+specific findings. The escalated implementation is an entirely new artifact the
+prior reviewer never saw, so there is nothing concrete to anchor on; naming
+*why* a stronger model ran contextualizes the dispatch without priming the
+review of the new diff's actual content. Mechanically this is the same idiom
+`build_dispatch` already uses for `prior_verdict` on implementer retries
+(`adapters.py:255`) — a bounded prose embed, not a session resume (a true CLI
+session resume only works same-model/same-route, which by definition an
+escalated tier is not; B6/P74's reviewer session-reuse stays scoped to
+same-route cache efficiency, unrelated to this cross-tier handoff).
+
 ## D-R4 — Availability layer (temporary disable, config preserved)
 
 Independently toggle-able enabled/health state; the toml config is **not removed**:
@@ -171,6 +202,31 @@ operation**; in parallel/batch scheduling, out-of-scope reviewer edits risk
 conflicts, so the policy **couples to the scheduling mode**: serial → inline-fix
 on/encouraged; batch → bounded (reviewed-diff files only) or off. A reviewer that
 fixes MUST re-gate and record what it changed (trust-git-not-receipts still holds).
+
+**(refined 2026-07-26) "Issues it finds" is bounded, not open-ended: missed
+branches, missing fixtures, missing assertions, missing test cases — never a
+production-logic redesign.** That is an IMPLEMENTER'S job, and the reasoning for
+the boundary is asymmetric: a model that failed on production logic tends to
+fail the same way again (a systemic/structural deficiency, see the new
+`incapable` REJECT_CLASS above), so patching it in the reviewer's own hands
+just relocates the same risk one tier up without independent verification. A
+missed branch or absent fixture is a local, low-blast-radius gap the reviewer
+(already required to be strictly more capable than the implementer it reviews,
+D-R2) has good odds of fixing correctly, and — critically — the boundary is
+**mechanically enforceable, not merely prompted**: the on-the-fly-fix dispatch
+gets the SAME `scope.touch`/`scope.forbid` fields an implementer dispatch
+already carries, with test/fixture paths in `touch` and production `src/`
+paths in `forbid`. A repair that touches anything outside that allowlist is an
+automatic reject of the repair itself, no reviewer judgment call required. No
+NEW verdict-recheck layer is needed beyond the existing "MUST re-gate"
+requirement above — consistent with this project's own merge-time design
+(`reconcile.py` module contract item 13: "no separate verdict re-check belongs
+here," because the mechanical gate re-verification is what's trusted, not a
+re-derivation of the verdict) — precisely BECAUSE the scope restriction bounds
+the repair's blast radius to what that mechanical gate can already catch. The
+reviewer records a self-repair in the same committed `<task>-REVIEW.md`, e.g.
+`VERDICT: APPROVED (repaired)` plus a short note of what was patched — mirrors
+the existing `REJECT_CLASS:` idiom rather than inventing a new artifact.
 
 ## D-R9 — `route doctor` verb (supporting)
 
