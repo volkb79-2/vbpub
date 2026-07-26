@@ -34,12 +34,14 @@ def _frame(*, damon: dict[str, object] | None = None, details: bool = True) -> F
     }
     if not details:
         metrics = {"ram": MetricValue(None, "unavail_perm")}
+        findings: list[Finding] = []
+    else:
+        findings = [Finding("memory.high", "warn", "memory limit reached", "raise memory.high")]
     governance = {
         "summary": {"origin": "systemd", "drift": True, "severity": "warn"},
         "limits": {"mem_min": {"live_value": 10, "recorded_value": 20, "origin": "unit", "severity": "warn"}},
     }
     network = {"source_label": "netns", "confidence": "high", "aggregation": "sum", "unavailable_reason": "provider delayed", "proto": "tcp"}
-    findings = [Finding("memory.high", "warn", "memory limit reached", "raise memory.high")]
     return Frame(1, 100.0, 5.0, {}, {KEY: EntityFrame(entity, metrics, findings, governance, network, damon)})
 
 
