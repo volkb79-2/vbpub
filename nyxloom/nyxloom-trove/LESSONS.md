@@ -33,7 +33,7 @@ documenting the dir's reference-only purpose. The general principle
 canonical **L1**, which uses this very incident as its worked example.
 
 ## PL2 — The gate's value is a *composition*; nyxloom requires an interface, offers a toolkit, mandates no infra
-`scope: product` · `upstream: proposed`
+`scope: product` · `upstream: integrated (ref: L16)`
 
 Factory-hardening A/F validated that "the gate catches real bugs" — but the value
 is not any single component (not docker, not `tester-unified`). It is a **stack**,
@@ -67,7 +67,7 @@ selection, optionally probe-verified by an adversarial meta-gate (must reject a
 canary). See `docs/plan-factory-hardening.md` §D.
 
 ## PL3 — A parallel gate's coverage that drops fork-child lines is exposing hollow tests, not miscounting
-`scope: product` · `upstream: proposed`
+`scope: product` · `upstream: integrated (ref: L17)`
 
 Factory-hardening G moved the gate to `pytest -n auto` and switched coverage from
 `coverage run -m pytest` to `pytest-cov` (the only way to measure xdist's execnet

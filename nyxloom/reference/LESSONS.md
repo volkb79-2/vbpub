@@ -453,6 +453,75 @@ that a mocked boundary cannot accidentally intercept a downstream dependency.
 If that preflight is wrong, invalidate the package rather than charging the
 model for faithfully implementing an impossible instruction.
 
+## L16 — A project gate is a composition of four layers; nyxloom requires only the interface layer, never mandates the infra layer
+
+**Rule.** "The gate catches real bugs" is not one property of one component — it is
+the sum of four separable layers: (1) **infra**, a runtime-faithful *isolated*
+environment, project-owned, expressed entirely inside the gate's `argv`; (2)
+**toolkit**, an opt-in, ecosystem-specific completeness floor (changed-line
+coverage, mutation) that nyxloom may ship but never requires; (3) **content**, the
+project's own invariant/behavioral tests, which no amount of infra or toolkit can
+substitute for; (4) **discipline**, GATE→VERDICT→MERGE as separate acts (L4) with
+SOLO serialization across concurrent gates. nyxloom's contract with a consumer
+project is layer 1 only: a `[gates.*]` command that runs isolated at a commit and
+exits non-zero on failure with nothing masking it — the `{worktree}` placeholder is
+the sole integration seam. Layers 2-4 are the daemon's own orchestration and an
+optional menu, never a requirement on the project's infra choice.
+
+**Evidence (factory-hardening A/F/G, gate-adoption GA1-GA4, 2026-07 through
+2026-07-26).** The two real catches from package F were a config-schema invariant
+test and a coverage floor — neither is infra. dstdns (docker `test-runner`, no
+coverage floor) and nyxloom (docker `tester-unified`, with a coverage floor) run
+under one daemon today with wholly unrelated gate commands and no shared
+infrastructure assumption; onboarding's gate-scaffold (GA3) offers the toolkit
+without ever hardcoding docker, pytest, or any specific runner.
+
+**How to apply.** When onboarding or reviewing a new consumer project's gate,
+verify only that `[gates.*].argv` is isolated, deterministic, and honestly
+non-zero-on-failure — never require a specific test runner, container base, or
+language toolchain. Offer `coverage_gate`/`mutation_gate`-equivalent tooling as an
+opt-in menu item (the *interface* generalizes past Python — e.g. `cargo
+llvm-cov`/`nyc` for other ecosystems), gated behind the project's own choice to
+declare `asserts=[...]` rigor. A project that declares no toolkit assert is not
+broken; a project whose gate argv is untrustworthy (`["true"]`) is what the
+coverage-canary/gate-verify machinery (GA1/GA2b/GA4) exists to catch — that is a
+*content* problem to surface, not a reason to mandate infra.
+
+## L17 — A parallel gate's coverage that drops fork-child lines is exposing hollow tests, not miscounting
+
+**Rule.** When a coverage-floor gate moves from serial execution to `pytest -n
+auto`/xdist, the coverage TOOL must also move from `coverage run -m pytest` to
+`pytest-cov` (the only way to measure xdist's execnet worker processes — `coverage
+run` traces only the parent, so under `-n auto` it measures ~nothing and a
+changed-line floor would false-FAIL every package). That tool switch can then
+surface lines that were serial-covered but are xdist-missed. The correct reading of
+that gap is never "the parallel measurement is broken, reconfigure it to recapture
+the coverage" — it is "those lines had no deterministic test; an integration test
+happened to fork a child that incidentally ran them." xdist-`pytest-cov` is *more*
+honest, not less; the fix is writing the missing deterministic unit test (L1), never
+re-widening the measurement to paper over hollow coverage.
+
+**Evidence (factory-hardening G, 2026-07).** Moving nyxloom's own gate to `pytest -n
+auto` + `pytest-cov` surfaced 6 `render.py` liveness lines that a pre-ship
+coverage-parity check (serial `coverage run` vs. xdist `pytest-cov`, per-file
+executed-line superset) flagged as serial-covered-but-xdist-missed. Mechanism:
+`coverage run` follows its tracer into a test's real `os.fork()` child and writes
+the child's data to the shared coverage file; `pytest-cov` under xdist combines only
+per-WORKER data and drops a worker's forked grandchild's coverage entirely. The
+lines were real gaps in deterministic test coverage, not a measurement regression.
+
+**How to apply.** Before trusting any newly-parallelized coverage gate (in nyxloom
+itself or a consumer project adopting one via the onboarding toolkit), run a
+pre-ship parity check: per-file executed-line superset, serial vs. parallel. The
+only dangerous direction is serial-covered-but-parallel-missed (a future false-FAIL
+once the floor tightens); parallel-covers-more is harmless and needs no action.
+Separate intrinsic suite nondeterminism from a real parallel gap by running the
+SERIAL gate TWICE first — lines that flake serial-vs-serial (timing/poll races) are
+not the parallel runner's fault; only serial-STABLE-but-parallel-missed lines are a
+genuine gap. Put parallelism in the gate's own `argv`, not a global pytest
+`addopts`, so single-file tool invocations (e.g. a mutation gate's per-mutant runs)
+don't pay xdist startup overhead they don't need.
+
 **CLI-path corollary (Claude Code, Topos P121–P123).** Capability grammar is
 part of the route, so preflight it too. On this host, `--bare` bypassed the
 normal authenticated credential integration; a normal `dontAsk` invocation
