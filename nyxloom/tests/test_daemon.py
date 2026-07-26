@@ -4510,8 +4510,14 @@ def test_resume_attempt_emits_warning_attempt_retry(
 def test_post_merge_gate_failure_emits_error(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """Oracle 2: a gate failure emits ERROR. Self-contained (mirrors
-    tests/test_post_merge.py's test_validating_task_blocks_on_failing_gate,
-    which this package may not touch -- see scope.touch)."""
+    tests/test_post_merge.py's test_validating_task_blocks_on_failing_gate).
+
+    B3-followon 2026-07-26: dispatch is now async (see
+    test_post_merge_gate_timeout_captures_output's docstring for the full
+    rationale) -- the "false" gate is near-instant, but the gate log/state
+    settle only after the background thread is joined and a second pass
+    drains it, so this test needs the same two-step idiom even though the
+    gate itself is fast."""
     import dataclasses
     from nyxloom import config as config_mod
     from nyxloom.config import GateDef
@@ -4545,6 +4551,13 @@ def test_post_merge_gate_failure_emits_error(
     n = d.run_pass("demo")
     assert n == 1
 
+    t = d._post_merge_gate_running.get(task_id)
+    assert t is not None, "RunPostMergeGate did not start a background thread"
+    t.join(timeout=10)
+    assert not t.is_alive()
+
+    d.run_pass("demo")
+
     tsf2 = storage.load_state("demo", task_id)
     assert tsf2.state is TaskState.BLOCKED
 
@@ -4563,7 +4576,17 @@ def test_post_merge_gate_timeout_captures_output(
     """F019 P1a: a post-merge gate that TIMES OUT records exit_code 124 in its
     GATE_FINISHED event -- exercising the post-merge timeout branch's output
     capture (the only per-phase timeout path without an existing test). Mirrors
-    test_post_merge_gate_failure_emits_error with a sleep gate + short timeout."""
+    test_post_merge_gate_failure_emits_error with a sleep gate + short timeout.
+
+    B3-followon 2026-07-26: post-merge gates now DISPATCH onto a background
+    thread (see daemon.py's _run_post_merge_gate / _run_post_merge_gate_bg /
+    _drain_post_merge_gate_results) instead of running inline, so the first
+    run_pass only STARTS the gate -- mirrors
+    test_end_to_end_dispatch_thread_then_drain_closes_the_cadence's idiom in
+    test_gate_verify_cadence.py exactly: join the started thread, THEN run a
+    second pass (the existing `_scripted` harness's fake plan_project pops []
+    for any call beyond its one scripted action, so this second run_pass just
+    drains) before asserting the terminal state/events."""
     import dataclasses
     from nyxloom import config as config_mod
     from nyxloom.config import GateDef
@@ -4597,14 +4620,323 @@ def test_post_merge_gate_timeout_captures_output(
     n = d.run_pass("demo")
     assert n == 1
 
+    # First pass only dispatched the gate -- task is still VALIDATING.
+    tsf_mid = storage.load_state("demo", task_id)
+    assert tsf_mid.state is TaskState.VALIDATING
+
+    # O1 (async, not blocking): run_pass returned WITHOUT waiting out the
+    # gate's own 5s sleep (let alone its 1s timeout) -- the background
+    # thread is still mid-flight right here, proving run_pass did not block
+    # for the gate's duration the way the old synchronous code did.
+    t = d._post_merge_gate_running.get(task_id)
+    assert t is not None, "RunPostMergeGate did not start a background thread"
+    assert t.is_alive(), "gate thread already finished -- this run_pass call did not return early"
+    t.join(timeout=10)
+    assert not t.is_alive()
+
+    # Second pass: plan_project (still scripted, now exhausted -> []) drains
+    # the finished result and settles the terminal state.
+    d.run_pass("demo")
+
     tsf2 = storage.load_state("demo", task_id)
     assert tsf2.state is TaskState.BLOCKED
+    assert task_id not in d._post_merge_gate_running
 
     events = list(storage.iter_events("demo"))
     gate_ev = [e for e in events
                if e.type is EventType.GATE_FINISHED and e.task_id == task_id
                and e.payload.get("gate_result", {}).get("phase") == "post-merge"][0]
     assert gate_ev.payload["gate_result"]["exit_code"] == 124
+
+
+# ==========================================================================
+# B3-followon 2026-07-26: _run_post_merge_gate_bg / _run_post_merge_gate /
+# _drain_post_merge_gate_results direct-call unit coverage, mirroring
+# test_gate_verify_cadence.py's own _run_gate_verify_bg / _execute_verify_gate
+# / _drain_gate_verify_results suites (see daemon.py's block comment above
+# _select_post_merge_gate for the full design).
+# ==========================================================================
+
+def _run_git(cwd, *args):
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+
+
+def _real_merge_commit(root) -> tuple[str, str]:
+    """Advance `root`'s main to a real --no-ff merge commit; return
+    (pre_merge_main, merge_commit) where merge_commit^1 == pre_merge_main.
+    Mirrors test_post_merge.py's helper of the same shape (kept local per
+    this file's own no-conftest-additions convention)."""
+    before = _run_git(root, "rev-parse", "main").stdout.strip()
+    assert _run_git(root, "checkout", "-b", "feat/bg-revert-me").returncode == 0
+    (root / "bg_revert_me.txt").write_text("payload\n", encoding="utf-8")
+    assert _run_git(root, "add", "bg_revert_me.txt").returncode == 0
+    assert _run_git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "feat: bg-revert-me").returncode == 0
+    assert _run_git(root, "checkout", "main").returncode == 0
+    assert _run_git(root, "-c", "user.email=t@t", "-c", "user.name=t",
+                    "merge", "--no-ff", "feat/bg-revert-me", "-m", "merge feat/bg-revert-me").returncode == 0
+    merge_commit = _run_git(root, "rev-parse", "main").stdout.strip()
+    assert merge_commit != before
+    return before, merge_commit
+
+
+def test_run_post_merge_gate_bg_gate_passes(tmp_state, sample_project):
+    """Direct bg-method call, no thread: a passing gate yields a
+    COMPLETED-shaped result dict on the queue -- the bg method itself never
+    appends an event or transitions state."""
+    commit = _run_git(sample_project.root, "rev-parse", "HEAD").stdout.strip()
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._run_post_merge_gate_bg("demo", sample_project, "demo-P01-sample", commit)
+
+    result = d._post_merge_gate_results.get_nowait()
+    assert result["outcome"] == "completed"
+    assert result["gate_id"] == "pytest-q"
+    assert result["gate_result"]["exit_code"] == 0
+    assert result["gate_result"]["phase"] == "post-merge"
+    assert result["gate_result"]["commit"] == commit
+    assert d._post_merge_gate_running == {}  # bg method never touches this dict
+
+
+def test_run_post_merge_gate_bg_no_gate_declared(tmp_state, sample_project):
+    import dataclasses
+
+    no_gate_cfg = dataclasses.replace(sample_project, gates={})
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._run_post_merge_gate_bg("demo", no_gate_cfg, "demo-P01-sample", "somecommit")
+
+    result = d._post_merge_gate_results.get_nowait()
+    assert result == {
+        "project": "demo", "task_id": "demo-P01-sample",
+        "gate_id": None, "gate_result": None, "outcome": "no_gate",
+    }
+
+
+def test_run_post_merge_gate_bg_gate_fails_and_reverts(tmp_state, sample_project):
+    import dataclasses
+    from nyxloom.config import GateDef
+
+    before, merge_commit = _real_merge_commit(sample_project.root)
+    failing_cfg = dataclasses.replace(sample_project, gates={
+        "pytest-q": GateDef(gate_id="pytest-q", argv=["false"], phase="implementation",
+                             timeout_seconds=10, environment="local"),
+    })
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._run_post_merge_gate_bg("demo", failing_cfg, "demo-P01-sample", merge_commit)
+
+    result = d._post_merge_gate_results.get_nowait()
+    assert result["outcome"] == "blocked"
+    assert result["reverted"] is True
+    assert result["revert_from"] == merge_commit
+    assert result["revert_to"] == before
+    assert result["gate_result"]["exit_code"] != 0
+    # the revert really happened on disk
+    assert _run_git(sample_project.root, "rev-parse", "main").stdout.strip() == before
+
+
+def test_run_post_merge_gate_bg_gate_fails_cas_refused(tmp_state, sample_project):
+    """<default_branch> moved PAST the merge commit before the gate finished
+    -- the CAS update-ref is refused, main is left untouched, still
+    outcome 'blocked' but reverted False."""
+    import dataclasses
+    from nyxloom.config import GateDef
+
+    before, merge_commit = _real_merge_commit(sample_project.root)
+    (sample_project.root / "later.txt").write_text("later\n", encoding="utf-8")
+    assert _run_git(sample_project.root, "add", "later.txt").returncode == 0
+    assert _run_git(sample_project.root, "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "later commit").returncode == 0
+    main_now = _run_git(sample_project.root, "rev-parse", "main").stdout.strip()
+    assert main_now != merge_commit
+
+    failing_cfg = dataclasses.replace(sample_project, gates={
+        "pytest-q": GateDef(gate_id="pytest-q", argv=["false"], phase="implementation",
+                             timeout_seconds=10, environment="local"),
+    })
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._run_post_merge_gate_bg("demo", failing_cfg, "demo-P01-sample", merge_commit)
+
+    result = d._post_merge_gate_results.get_nowait()
+    assert result["outcome"] == "blocked"
+    assert result["reverted"] is False
+    assert "revert_from" not in result
+    assert _run_git(sample_project.root, "rev-parse", "main").stdout.strip() == main_now
+
+
+def test_run_post_merge_gate_starts_no_second_thread_while_one_is_alive(
+        tmp_state, sample_project, monkeypatch):
+    """Mirrors test_gate_verify_cadence.py's
+    test_execute_verify_gate_starts_no_second_thread_while_one_is_alive
+    exactly, applied to the post-merge dispatcher (keyed by task_id)."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_bg(self, project, cfg, task_id, commit):
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(daemon.Daemon, "_run_post_merge_gate_bg", fake_bg)
+    d = daemon.Daemon({"demo": sample_project.root})
+    task_id = "demo-P01-sample"
+    cur = _seed_task("demo", task_id, TaskState.VALIDATING)
+    cur.merge_commit = "c0ffee0001"
+    storage.save_state(cur)
+    states = {task_id: cur}
+    action = reconcile.RunPostMergeGate(task_id=task_id)
+
+    try:
+        events1 = d._run_post_merge_gate("demo", sample_project, states, action)
+        assert events1 == []
+        assert started.wait(timeout=2), "background thread never started"
+        first = d._post_merge_gate_running[task_id]
+        assert first.is_alive()
+
+        events2 = d._run_post_merge_gate("demo", sample_project, states, action)
+        assert events2 == []
+        second = d._post_merge_gate_running[task_id]
+        assert second is first, "a second thread was started while the first was still alive"
+    finally:
+        release.set()
+        d._post_merge_gate_running[task_id].join(timeout=5)
+
+
+def test_run_post_merge_gate_starts_a_fresh_thread_once_the_prior_one_finished(
+        tmp_state, sample_project, monkeypatch):
+    """Positive control for the idempotence test above: once a gate run
+    genuinely finishes, the NEXT RunPostMergeGate action does start a new
+    thread (idempotence guards a live run, not the feature)."""
+    calls = []
+
+    def fake_bg(self, project, cfg, task_id, commit):
+        calls.append(1)
+
+    monkeypatch.setattr(daemon.Daemon, "_run_post_merge_gate_bg", fake_bg)
+    d = daemon.Daemon({"demo": sample_project.root})
+    task_id = "demo-P01-sample"
+    cur = _seed_task("demo", task_id, TaskState.VALIDATING)
+    cur.merge_commit = "c0ffee0002"
+    storage.save_state(cur)
+    states = {task_id: cur}
+    action = reconcile.RunPostMergeGate(task_id=task_id)
+
+    d._run_post_merge_gate("demo", sample_project, states, action)
+    d._post_merge_gate_running[task_id].join(timeout=5)
+    d._run_post_merge_gate("demo", sample_project, states, action)
+    d._post_merge_gate_running[task_id].join(timeout=5)
+    assert len(calls) == 2
+
+
+def _pm_result(task_id: str, **overrides) -> dict:
+    base = {
+        "project": "demo", "task_id": task_id, "gate_id": "pytest-q",
+        "gate_result": GateResult(gate_id="pytest-q", phase="post-merge", commit="c0ffee",
+                                   exit_code=0, started=utc_now(), ended=utc_now()).to_dict(),
+        "outcome": "completed",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_drain_post_merge_gate_completed_transitions_task(
+        tmp_state, sample_project, monkeypatch):
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    d = daemon.Daemon({"demo": sample_project.root})
+    task_id = "demo-P01-sample"
+    cur = _seed_task("demo", task_id, TaskState.VALIDATING)
+    states = {task_id: cur}
+    d._post_merge_gate_running[task_id] = object()  # sentinel: must be cleared
+    d._post_merge_gate_results.put(_pm_result(task_id))
+
+    events = d._drain_post_merge_gate_results("demo", sample_project, states)
+
+    types_ = [e.type for e in events]
+    assert EventType.GATE_FINISHED in types_
+    assert EventType.TASK_TRANSITIONED in types_
+    assert states[task_id].state is TaskState.COMPLETED
+    assert task_id not in d._post_merge_gate_running
+
+
+def test_drain_post_merge_gate_no_gate_transitions_task_no_gate_finished_event(
+        tmp_state, sample_project, monkeypatch):
+    """The no_gate outcome mirrors the old no-op-validated-pass branch: a
+    terminal transition, but no GATE_FINISHED (there is nothing to record)."""
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    d = daemon.Daemon({"demo": sample_project.root})
+    task_id = "demo-P01-sample"
+    cur = _seed_task("demo", task_id, TaskState.VALIDATING)
+    states = {task_id: cur}
+    d._post_merge_gate_results.put(_pm_result(
+        task_id, gate_id=None, gate_result=None, outcome="no_gate"))
+
+    events = d._drain_post_merge_gate_results("demo", sample_project, states)
+
+    types_ = [e.type for e in events]
+    assert EventType.GATE_FINISHED not in types_
+    assert EventType.TASK_TRANSITIONED in types_
+    assert states[task_id].state is TaskState.COMPLETED
+
+
+def test_drain_post_merge_gate_blocked_appends_task_blocked(
+        tmp_state, sample_project, monkeypatch):
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    d = daemon.Daemon({"demo": sample_project.root})
+    task_id = "demo-P01-sample"
+    cur = _seed_task("demo", task_id, TaskState.VALIDATING)
+    states = {task_id: cur}
+    failing_result = GateResult(gate_id="pytest-q", phase="post-merge", commit="c0ffee",
+                                 exit_code=1, started=utc_now(), ended=utc_now()).to_dict()
+    d._post_merge_gate_results.put(_pm_result(
+        task_id, gate_result=failing_result, outcome="blocked", reverted=False))
+
+    events = d._drain_post_merge_gate_results("demo", sample_project, states)
+
+    types_ = {e.type for e in events}
+    assert EventType.GATE_FINISHED in types_
+    assert EventType.TASK_BLOCKED in types_
+    assert EventType.MERGE_REVERTED not in types_
+    assert states[task_id].state is TaskState.BLOCKED
+    assert states[task_id].blocker.type is BlockerType.ENVIRONMENT
+
+
+def test_drain_post_merge_gate_blocked_with_revert_appends_merge_reverted(
+        tmp_state, sample_project, monkeypatch):
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    d = daemon.Daemon({"demo": sample_project.root})
+    task_id = "demo-P01-sample"
+    cur = _seed_task("demo", task_id, TaskState.VALIDATING)
+    states = {task_id: cur}
+    failing_result = GateResult(gate_id="pytest-q", phase="post-merge", commit="deadbeef",
+                                 exit_code=1, started=utc_now(), ended=utc_now()).to_dict()
+    d._post_merge_gate_results.put(_pm_result(
+        task_id, gate_result=failing_result, outcome="blocked",
+        reverted=True, revert_from="deadbeef", revert_to="c0ffee"))
+
+    events = d._drain_post_merge_gate_results("demo", sample_project, states)
+
+    types_ = {e.type for e in events}
+    assert EventType.MERGE_REVERTED in types_
+    assert EventType.TASK_BLOCKED in types_
+    reverted_ev = next(e for e in events if e.type is EventType.MERGE_REVERTED)
+    assert reverted_ev.payload["from"] == "deadbeef"
+    assert reverted_ev.payload["to"] == "c0ffee"
+    assert reverted_ev.payload["branch"] == sample_project.default_branch
+    assert states[task_id].state is TaskState.BLOCKED
+
+
+def test_drain_post_merge_gate_requeues_results_belonging_to_other_projects(
+        tmp_state, sample_project, monkeypatch):
+    """The result queue is shared across every registered project (one
+    Daemon, one queue) -- a drain call scoped to 'demo' must not consume (or
+    lose) a result stamped for a different project."""
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._post_merge_gate_results.put(_pm_result("other-task", project="other"))
+
+    events = d._drain_post_merge_gate_results("demo", sample_project, {})
+
+    assert events == []
+    requeued = d._post_merge_gate_results.get_nowait()
+    assert requeued["project"] == "other"
+    assert d._post_merge_gate_results.empty()
 
 
 def _write_merge_handoff(root, task_id: str) -> str:
