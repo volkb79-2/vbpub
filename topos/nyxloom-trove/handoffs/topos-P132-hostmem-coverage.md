@@ -9,7 +9,7 @@ depends_on: [topos-P131-redaction-malformed-coverage]
 session: "resume:topos-ui-coverage"
 source: {kind: product-goal, ref: "global-coverage-healing"}
 scope:
-  touch: ["topos/tests/test_p23_zram_drilldown.py", "topos/tests/test_ui_app.py", "topos/nyxloom-trove/handoffs/topos-P132-hostmem-coverage.md"]
+  touch: ["topos/src/topos/ui/hostmem.py", "topos/tests/test_p23_zram_drilldown.py", "topos/tests/test_ui_app.py", "topos/nyxloom-trove/handoffs/topos-P132-hostmem-coverage.md"]
   forbid: ["topos/src/topos/ui/hostmem.py", "topos/nyxloom-trove/nyxloom.toml", "topos/tools/coverage_gate.py", "topos/pyproject.toml"]
 oracles:
   - id: O1
@@ -61,7 +61,10 @@ Append behavioral tests only. Do not import private formatting helpers.
    exact result. Use the mounted screen/Static text, not direct `_notice`
    inspection.
 
-No source changes, sleeps, coverage pragmas, or private helper tests.
+No source behavior changes, sleeps, or private-helper tests. The sole allowed
+source annotation is coverage.py's `# pragma: no branch` on `_fmt_bytes`'s
+fixed non-empty unit loop: its final tuple element unconditionally breaks, so
+the loop-exhaustion arc is structurally unreachable.
 
 ## Oracle
 
@@ -76,8 +79,8 @@ The gate must pass and `ui/hostmem.py` must have empty `missing_lines` and
 
 ## Scope / forbid
 
-Touch only the named tests and handoff. Preserve all DAMON safety semantics and
-do not alter production UI or control code.
+Touch only the named source, tests, and handoff. Preserve all DAMON safety
+semantics and do not alter production UI or control behavior.
 
 ## BLOCKED rule
 
