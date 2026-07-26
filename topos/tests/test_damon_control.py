@@ -14,8 +14,10 @@ from topos.collect.collector import Collector
 from topos.config import DamonConfig, ToposConfig
 from topos.damon.control import (
     APPROVAL_TEXT,
+    DamonControlError,
     NoEntityPids,
     NoFreeKdamond,
+    OwnershipError,
     RootRequired,
     StaleEntityPids,
     confirmation_text,
@@ -227,3 +229,83 @@ def test_cli_damon_stop_all_mine_uses_fixture_root(tmp_path: Path) -> None:
         stdout=subprocess.PIPE,
     )
     assert proc.stdout.strip() == "stopped 1 topos-owned DAMON session(s)"
+
+
+def test_capacity_and_marker_ownership_fail_closed_before_writes(tmp_path: Path) -> None:
+    # Capacity check fails before writes
+    damon_root = _damon_root(tmp_path / "part1")
+    state_dir = _state_dir(tmp_path / "part1")
+    state_dir.mkdir(parents=True)
+    (state_dir / "damon").mkdir()
+    (state_dir / "damon" / "kdamond-99.json").write_text("{}")
+
+    with pytest.raises(NoFreeKdamond):
+        plan_start_session(
+            GAME_KEY,
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            damon_root=damon_root,
+            state_dir=state_dir,
+            config=DamonConfig(max_concurrent_targets=1),
+            require_root=False,
+        )
+
+    # Marker ownership check fails before writes
+    damon_root2 = _damon_root(tmp_path / "part2")
+    state_dir2 = _state_dir(tmp_path / "part2")
+    plan = plan_start_session(
+        GAME_KEY,
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        damon_root=damon_root2,
+        state_dir=state_dir2,
+        config=DamonConfig(),
+        require_root=False,
+    )
+    marker_path = state_dir2 / "damon" / f"kdamond-{plan.kdamond_idx}.json"
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text("{}")
+
+    with pytest.raises(OwnershipError):
+        start_planned_session(plan, confirmed_text=APPROVAL_TEXT, require_root=False)
+    assert json.loads(marker_path.read_text()) == {}
+
+
+def test_stop_explicit_selection_foreign_owner_and_root_isolation(tmp_path: Path) -> None:
+    damon_root = _damon_root(tmp_path)
+    state_dir = _state_dir(tmp_path)
+
+    # Ambiguous scope (no all_mine and no kdamond_idx)
+    with pytest.raises(DamonControlError):
+        stop_owned_sessions(
+            damon_root=damon_root,
+            state_dir=state_dir,
+            all_mine=False,
+            kdamond_idx=None,
+            require_root=False,
+        )
+
+    # Foreign owner rejection
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "damon").mkdir(parents=True, exist_ok=True)
+    marker_path = state_dir / "damon" / "kdamond-0.json"
+    marker_path.write_text(json.dumps({"owner": "foreign", "kdamond_idx": 0, "damon_root": str(damon_root)}))
+
+    with pytest.raises(OwnershipError):
+        stop_owned_sessions(
+            damon_root=damon_root,
+            state_dir=state_dir,
+            all_mine=True,
+            require_root=False,
+        )
+    assert json.loads(marker_path.read_text())["owner"] == "foreign"
+
+    # Root isolation (different damon_root in marker)
+    marker_path.write_text(json.dumps({"owner": "topos", "kdamond_idx": 0, "damon_root": str(tmp_path / "other-root")}))
+
+    result = stop_owned_sessions(
+        damon_root=damon_root,
+        state_dir=state_dir,
+        all_mine=True,
+        require_root=False,
+    )
+    assert result == 0
+    assert json.loads(marker_path.read_text())["owner"] == "topos"
