@@ -31,6 +31,26 @@ run host Python, substitute the devcontainer, weaken tests, expand scope, or
 claim success without both gates. A violation ends that route's trial as
 **UNFIT**, even before a code change.
 
+### Harness policy
+
+Prompt text is not a capability boundary. The P115/P116 probes showed that a
+cheap route can read outside an explicitly frozen context before it makes a
+single edit. Every later OpenCode package therefore starts with a
+**per-worktree `opencode.json` capability capsule**: deny reads except the
+handoff and its explicitly named source/test context, deny edits except the
+nominated test and receipt files, and deny shell, network, task delegation,
+and external directories. The controller alone executes the declared
+`tester-unified` commands and records their raw evidence. The capsule is
+untracked trial harness configuration, never product configuration, and is
+removed after the trial.
+
+This first hardening pass is a **draft-floor probe**, not a claim that the
+route is already autonomous: a route cannot become `QUALIFIED` until its
+second package also performs the declared self-review and supplies correct
+evidence under a safely allowlisted runner. It can, however, be rejected
+cheaply if it cannot make a causal, gate-clean test under an intentionally
+small, controller-attested context capsule.
+
 The controller runs the full gate and literal coverage check for each result.
 Only after both pass does one resumed DeepSeek Pro review session receive the
 complete frozen receipts for the pair. It reviews both commits independently
@@ -82,6 +102,15 @@ resume the same session with the same bounded handoff. Record every wait and
 provider message. Stop as `LIMIT_EXHAUSTED` after the third refusal or when the
 budget reserve cannot fund a resumed call. Do not test a competing route while a
 free route is merely backoff-pending: the experiment stays serial.
+
+OpenCode may itself retry a free-provider error on a short fixed cadence.
+Wrap each invocation in a controller deadline, terminate the *exact session
+process* on the first observed refusal, and apply the schedule above outside
+the client. Do not mistake the client's hidden rapid retries for the approved
+backoff policy. The configured `session_discover` template must also be kept
+compatible with the installed CLI: this build's `opencode session list` has no
+`--dir` option, so the controller records the session id emitted by `run`
+rather than treating discovery output as authoritative.
 
 ## Promotion record
 

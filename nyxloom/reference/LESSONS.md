@@ -411,3 +411,37 @@ Use them to reject implausible routes before spending, then promote only routes
 that pass this two-package, real-gate experiment. An independent reviewer is a
 corroborator and adversary, never the route-health owner (L12) or the final gate
 authority (L7).
+
+## L15 — A prompt-only scope is not a tool boundary; capability-capsule an untrusted route before measuring it
+
+**Rule.** A model route has not honored a frozen scope merely because its prompt
+says so. Enforce that scope with the tool harness: default-deny its reads,
+edits, shell, network, delegation, and external-directory access, then allow
+only the exact context and output paths needed for that package. Keep gate
+execution controller-owned until the runner can be allowlisted as one bounded,
+auditable capability. A route that escapes the declared context before editing
+is an implementation-route failure, not a harmless exploration.
+
+**Evidence (Topos low-cost route trial, 2026-07-26).** Poolside Laguna XS read
+an unlisted stale global coverage report immediately after a no-edit probe.
+Laguna M.1 subsequently read an entire 1,186-line test module despite being
+given a narrow test subsection; it also encountered a free-tier limit. Neither
+worktree was changed, but both events invalidate a claim that the prompt alone
+contained the task. OpenCode's `--auto` mode approves requests unless an
+explicit deny overrides them, and its client retried the transient provider
+refusal rapidly. The controller stopped both exact session processes and
+recorded them as UNFIT rather than converting unsafe exploration into model
+credit.
+
+**How to apply.** Build a small controller-attested context capsule for a
+bounded test package (literal residual, relevant source excerpt, fixture
+contract, and expected assertions). Run a per-worktree permission config with
+an ordered default-deny rule and a short path allowlist; leave its configuration
+untracked and remove it with the disposable worktree. For a cheap drafting
+probe, allow only the nominated test-file edit and let the controller execute
+the isolated test/gate. That can reject a weak route cheaply, but cannot qualify
+an autonomous implementer: promotion still requires a second package with
+correct self-review and auditable runner evidence. Treat provider retries as a
+controller concern—bound the client process, preserve its session id, and
+apply an explicit 30/60/120-second resume policy rather than accepting hidden
+rapid retries.
