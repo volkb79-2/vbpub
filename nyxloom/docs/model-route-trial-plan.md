@@ -74,12 +74,14 @@ record and review verdict.
 | 0 | `openrouter/poolside/laguna-xs-2.1:free` | Lowest cash-cost configured route; an availability/scope probe, not a presumed full trial. | Configured and previously provider-probed; re-probe required. |
 | 1 | `openrouter/poolside/laguna-m.1:free` | Larger free Poolside candidate at the same known 262K context tier. | Catalog-verified 2026-07-26; route added, live probe required. |
 | 2 | `openrouter/inclusionai/ling-3.0-flash:free` | Additional free coding/tool-use candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
-| 3 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | Free route with substantially more capacity/context. | Configured and previously provider-probed; re-probe required. |
-| 4 | `openrouter/qwen/qwen3.7-plus` | Large-context paid OpenRouter coding candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
-| 5 | `openrouter/xiaomi/mimo-v2.5` | Low-price, large-context paid OpenRouter candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
-| 6 | `gpt-5.6-luna` at `low` via Codex | First OpenAI low-effort floor. | Dedicated Codex route added; live probe required. |
-| 7 | `gpt-5.6-luna` at `medium` via Codex | Next OpenAI effort if Luna-low misses the oracle. | Requires a distinct Codex route/probe. |
-| 8 | `gpt-5.6-terra` at `low` via Codex | Next low-effort paid check; DeepSWE's 24% is a prior, not an automatic rejection for narrow test packages. | Requires a distinct Codex route/probe. |
+| 3 | `claude/haiku` at `high` via Claude Code | User-requested low-cost Claude implementation floor. | Route added; alias/effort probe and USD-meter reserve required. |
+| 4 | `claude/sonnet` at `medium` via Claude Code | User-requested Claude comparison at a higher capability tier. | Route added; alias/effort probe and USD-meter reserve required. |
+| 5 | `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` | Free route with substantially more capacity/context. | Configured and previously provider-probed; re-probe required. |
+| 6 | `openrouter/qwen/qwen3.7-plus` | Large-context paid OpenRouter coding candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
+| 7 | `openrouter/xiaomi/mimo-v2.5` | Low-price, large-context paid OpenRouter candidate. | Catalog-verified 2026-07-26; route added, live probe required. |
+| 8 | `gpt-5.6-luna` at `low` via Codex | First OpenAI low-effort floor. | Dedicated Codex route added; live probe required. |
+| 9 | `gpt-5.6-luna` at `medium` via Codex | Next OpenAI effort if Luna-low misses the oracle. | Requires a distinct Codex route/probe. |
+| 10 | `gpt-5.6-terra` at `low` via Codex | Next low-effort paid check; DeepSWE's 24% is a prior, not an automatic rejection for narrow test packages. | Requires a distinct Codex route/probe. |
 
 Laguna XS has a deliberately early abort: after the no-edit route probe, stop
 without a second package on the first runner/worktree breach, out-of-scope read,

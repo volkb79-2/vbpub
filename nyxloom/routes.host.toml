@@ -124,9 +124,10 @@ inherit = "claude-sonnet5-high"
 model = "opus"
 role_default = "review-independent"
 
-# Haiku 4.5 — cheap/fast tier for mechanical implementation. Explicit route
-# (not `inherit`) so the resume template carries `--model haiku`, not the
-# inherited `--model sonnet` literal. No `--effort` (haiku has no effort tiers).
+# Haiku — cheap/fast tier for mechanical implementation. Explicit route (not
+# `inherit`) so the resume template carries `--model haiku`, not the inherited
+# `--model sonnet` literal. The high-effort trial below is explicit because
+# `build_resume` does not interpolate effort into a parent's literal argv.
 [routes.claude-haiku]
 cli = "claude"
 model = "haiku"
@@ -135,6 +136,16 @@ probe = ["claude", "--version"]
 session_capture = "newest-jsonl"
 resume = ["claude", "--resume", "{session}", "--model", "haiku", "-p", "{prompt}"]
 usage_source = "output-format-json"
+
+[routes.claude-haiku-high]
+inherit = "claude-haiku"
+effort = "high"
+resume = ["claude", "--resume", "{session}", "--model", "haiku", "--effort", "high", "-p", "{prompt}"]
+
+[routes.claude-sonnet-medium]
+inherit = "claude-sonnet5-high"
+effort = "medium"
+resume = ["claude", "--resume", "{session}", "--model", "sonnet", "--effort", "medium", "-p", "{prompt}"]
 
 # --- vetted free OpenRouter routes (see [tiers.implement-1-free] note) ------
 # Every free route carries prompt_hints=["free-endpoint"] -> the no-secrets
