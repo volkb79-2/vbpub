@@ -405,7 +405,11 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # close to argv_max with real paths (see
         # test_review_independent_prompt_stays_under_argv_max_with_real_paths),
         # so it MUST be bounded the same way prior_verdict's embed below is,
-        # not appended unconditionally here.
+        # not appended unconditionally here. The DRY instruction (below,
+        # after argv_max is known) follows the same rule -- an earlier
+        # version appended it unconditionally into this literal and broke
+        # a real route with argv_max=1000 (1023 > 1000), the exact overflow
+        # class this comment already warns about.
     else:
         # IMPLEMENTER (default). The pre-P44 core text is preserved verbatim;
         # B21 2026-07-23 appends the standing scope-amendment escape-hatch
@@ -597,6 +601,38 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # beats not dispatching at all (same rationale as review_focus
         # above; the reviewer still runs its base adversarial checks, just
         # without the extra depth guidance).
+
+    # D-R2 refinement (2026-07-26, routing-model-redesign.md): standing DRY
+    # instruction on every dispatch of these two roles. Appended LAST (lowest
+    # priority -- a generic reminder yields budget to task-specific content
+    # like review_focus/review_depth/prior_verdict above) and BOUNDED to the
+    # remaining argv budget, the SAME "skip whole addition if it doesn't fit,
+    # never truncate a short fixed string" pattern approved_amendments' notes
+    # use above (not review_focus's truncate-with-marker pattern -- DRY text
+    # is a short fixed string, not variable-length prose). An earlier version
+    # appended this unconditionally into the base prompt literal and broke a
+    # real route with argv_max=1000 (measured overflow: 1023 > 1000) -- the
+    # exact overflow class every other append in this function already
+    # guards against.
+    if role is Role.IMPLEMENTER:
+        note = ("\nKeep your diff DRY: extract a shared helper instead of "
+                 "copying similar logic within the files you touch.")
+        if len(prompt) + len(note) <= argv_max:
+            prompt += note
+    elif role is Role.REVIEW_INDEPENDENT:
+        # REVIEW_INDEPENDENT-specific: uses the SAME -200 margin the doctrine
+        # manifest above already reserves, not a bare <=argv_max check. B4b's
+        # own live incident (test_review_independent_prompt_stays_under_
+        # argv_max_with_real_paths' docstring) is exactly this failure class:
+        # a real long-path dispatch overflowed argv_max and permanently
+        # stranded a review attempt. That test pins a 200-char headroom
+        # specifically so a FUTURE prompt addition (this one) fails a cheap
+        # unit test instead of eating the last of that margin in production.
+        # DRY is generic and low-value enough to yield the margin outright
+        # rather than risk being the addition that finally consumes it.
+        note = "\nDRY: reject duplicated production logic; never fix it yourself."
+        if len(prompt) + len(note) <= argv_max - 200:
+            prompt += note
 
     # Check prompt length
     if len(prompt) > argv_max:
