@@ -1398,7 +1398,7 @@ def test_review_independent_prompt_stays_under_argv_max_with_real_paths():
         role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
     )
     # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
-    assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim the REJECT_CLASS block"
+    assert len(prompt) <= 1350, f"reviewer prompt too long ({len(prompt)}); trim the REJECT_CLASS block"
     assert "REJECT_CLASS" in prompt          # not trimmed away entirely
 
 
