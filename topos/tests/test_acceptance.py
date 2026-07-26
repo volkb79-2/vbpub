@@ -125,6 +125,78 @@ def test_run_smoke_nonexistent_replay() -> None:
     assert "does not exist" in replay_check.message
 
 
+def test_run_smoke_contains_collection_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A collector failure skips dependent frame checks without escaping."""
+    import topos.acceptance as acceptance
+
+    def _explode(_cgroup_root: Path | None) -> dict[str, object]:
+        raise RuntimeError("collector unavailable")
+
+    monkeypatch.setattr(acceptance, "_collect_frame", _explode)
+
+    result = acceptance.run_smoke(cgroup_root=FIXTURE_CGROUP)
+
+    checks = {check.name: check for check in result.checks}
+    assert result.ok is False
+    assert checks["collect"].ok is False
+    assert "collector unavailable" in checks["collect"].message
+    assert checks["collect"].details == {"error": "collector unavailable"}
+    assert checks["serialize"].ok is False
+    assert checks["serialize"].message == "Skipped (collect did not produce a frame)"
+    assert checks["source_labels"].ok is False
+    assert checks["source_labels"].message == "Skipped (no frame available)"
+    assert checks["replay"].ok is True
+    assert result.frame_summary is None
+
+
+def test_run_smoke_contains_serialization_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A round-trip failure preserves collection and source evidence."""
+    import topos.acceptance as acceptance
+    import topos.model as model
+
+    def _explode(_frame_dict: dict[str, object]) -> object:
+        raise RuntimeError("round-trip unavailable")
+
+    monkeypatch.setattr(model, "frame_from_jsonable", _explode)
+
+    result = acceptance.run_smoke(cgroup_root=FIXTURE_CGROUP)
+
+    checks = {check.name: check for check in result.checks}
+    assert result.ok is False
+    assert checks["collect"].ok is True
+    assert checks["serialize"].ok is False
+    assert "round-trip unavailable" in checks["serialize"].message
+    assert checks["serialize"].details == {"error": "round-trip unavailable"}
+    assert checks["source_labels"].ok is True
+    assert checks["source_labels"].details
+    assert checks["replay"].ok is True
+    assert result.frame_summary is not None
+
+
+def test_run_smoke_contains_existing_replay_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loader failure on an existing replay is distinct from a missing path."""
+    import topos.acceptance as acceptance
+
+    def _explode(_path: Path) -> dict[str, object]:
+        raise RuntimeError("replay unreadable")
+
+    monkeypatch.setattr(acceptance, "_run_replay", _explode)
+
+    result = acceptance.run_smoke(cgroup_root=FIXTURE_CGROUP, replay_path=FIXTURE_FRAME)
+
+    checks = {check.name: check for check in result.checks}
+    assert result.ok is False
+    assert checks["collect"].ok is True
+    assert checks["serialize"].ok is True
+    assert checks["source_labels"].ok is True
+    assert checks["replay"].ok is False
+    assert "Replay load failed: replay unreadable" == checks["replay"].message
+    assert checks["replay"].details == {"error": "replay unreadable"}
+    assert result.frame_summary is not None
+
+
 def test_no_textual_import() -> None:
     """Ensure textual is not imported by the acceptance module.
 
