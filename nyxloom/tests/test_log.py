@@ -16,6 +16,10 @@ Oracles (docs/plan-logging.md §6, P01):
 Oracle 8 (the converted http_bind notice) is covered by the two updated
 tests in test_daemon.py, not here.
 
+Oracle 9 (P27-followon): configure() swaps root.handlers via a single
+atomic list rebind, never remove-then-add, so a concurrent warning() call
+can never observe an empty handler list mid-configure().
+
 structlog's global config (and the "nyxloom" stdlib channel) are PROCESS-
 WIDE state, so every test below reconfigures explicitly rather than relying
 on ambient state left by another test -- and the local autouse fixture
@@ -29,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -227,6 +232,63 @@ def test_effective_level_introspection(tmp_path):
     assert lg.get_effective_level() == log.WARNING
     assert lg.is_enabled_for(log.ERROR) is True
     assert lg.is_enabled_for(log.INFO) is False
+
+
+# --------------------------------------------------------------------------
+# P27-followon: configure() must swap root.handlers atomically. The old
+# remove-then-add sequence left a real window where root.handlers was the
+# empty list; a concurrent warning() call landing in that window silently
+# vanished (no exception, no output). This proves the window is closed by
+# hammering configure() from two threads against distinct tmp dirs while a
+# third thread concurrently logs and watches root.handlers for emptiness.
+
+def test_configure_never_leaves_handlers_observably_empty_under_concurrency(tmp_path):
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    nyxloom_logger = logging.getLogger("nyxloom")
+
+    # Establish a baseline configuration before the threads start (mirrors
+    # real usage: configure() is always called before loggers are used) so
+    # the prober thread never observes the pre-first-configure() state,
+    # which is a separate, expected, non-racy empty window.
+    log.configure(level=log.INFO, log_dir=dir_a, console=False)
+
+    stop = threading.Event()
+    empty_observations: list[int] = []
+
+    def configure_loop(log_dir: Path) -> None:
+        for _ in range(200):
+            log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    def warn_loop() -> None:
+        lg = log.get_logger("prober")
+        i = 0
+        while not stop.is_set():
+            if len(nyxloom_logger.handlers) == 0:
+                empty_observations.append(i)
+            lg.warning("probe", seq=i)
+            i += 1
+
+    t_warn = threading.Thread(target=warn_loop)
+    t_a = threading.Thread(target=configure_loop, args=(dir_a,))
+    t_b = threading.Thread(target=configure_loop, args=(dir_b,))
+
+    t_warn.start()
+    t_a.start()
+    t_b.start()
+    t_a.join()
+    t_b.join()
+    stop.set()
+    t_warn.join(timeout=5)
+
+    assert empty_observations == [], (
+        f"root.handlers was observed empty {len(empty_observations)} time(s) "
+        "during concurrent configure() calls -- the handler-swap window is "
+        "not atomic"
+    )
+
+    # Restore default logging so later tests aren't left pointed at tmp_path.
+    log.configure(level=log.INFO, console=False)
 
 
 # --------------------------------------------------------------------------

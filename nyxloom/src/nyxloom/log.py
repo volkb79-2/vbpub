@@ -306,9 +306,6 @@ def configure(level: int | str = INFO, log_dir: str | Path | None = None, consol
     )
 
     root = logging.getLogger(_LOGGER_NAME)
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-        handler.close()
     root.propagate = False
     # The real gate is structlog's wrapper_class above; keep this logger's
     # OWN level maximally permissive so it never redundantly re-filters
@@ -320,6 +317,18 @@ def configure(level: int | str = INFO, log_dir: str | Path | None = None, consol
     # to let through. `1` is the lowest real level, distinct from NOTSET's
     # delegate-to-parent meaning.
     root.setLevel(1)
+
+    # Build the full new handler set BEFORE touching root.handlers at all,
+    # then swap it in with a single atomic list-object rebind below --
+    # never remove-then-add. A remove/add sequence leaves a real window
+    # (however short) where root.handlers is the empty list; a concurrent
+    # Logger.callHandlers() call landing in that window silently drops the
+    # record (no exception, no output -- this was the P27-followon bug).
+    # CPython's GIL makes a single attribute rebind of a list observably
+    # atomic to other threads: a concurrent reader of root.handlers either
+    # sees the fully old list object or the fully new one, never a partial
+    # state.
+    new_handlers: list[logging.Handler] = []
 
     if log_dir is not None:
         log_dir_path = Path(log_dir)
@@ -333,7 +342,7 @@ def configure(level: int | str = INFO, log_dir: str | Path | None = None, consol
         )
         file_handler.setLevel(logging.NOTSET)
         file_handler.setFormatter(_json_formatter())
-        root.addHandler(file_handler)
+        new_handlers.append(file_handler)
 
     if console:
         console_handler = logging.StreamHandler(sys.stderr)
@@ -342,7 +351,17 @@ def configure(level: int | str = INFO, log_dir: str | Path | None = None, consol
         # through; the console (-> `docker logs`) stays terse on purpose.
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(_console_formatter())
-        root.addHandler(console_handler)
+        new_handlers.append(console_handler)
+
+    old_handlers = list(root.handlers)
+    root.handlers = new_handlers  # atomic swap -- see comment above
+
+    # Only now, after the rebind, tear down the old handlers. They are
+    # already gone from root.handlers via the rebind, so this is a plain
+    # .close() (not removeHandler(), which would be redundant/unsafe list
+    # surgery on the list we just replaced).
+    for handler in old_handlers:
+        handler.close()
 
 
 def set_level(level: int | str) -> None:
