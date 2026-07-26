@@ -309,6 +309,31 @@ reviewed (frozen-core-adjacent). **Deferred to D-R2/D-R3:** actual reviewer-tier
 SELECTION by band (needs `review-1`/`review-2` routes built first).
 
 ## BATCH D — test-health + mutation (enables H + reliable concurrency)
+- **B3-followon — ✅ DONE (merge `f9f5234f`, 2026-07-26).** "gates async-with-timeout"
+  from `plan-flow-hardening.md`'s B3/P71 (per-stage concurrency shipped the
+  `concurrency`/serial-1 knobs; this was its deferred second half). The
+  post-merge gate ran as a fully blocking `subprocess.run(...,
+  timeout=gate.timeout_seconds)` inline in the reconcile pass — `Daemon.run()`
+  iterates registered projects sequentially in one thread, so a slow gate for
+  one project stalled every other project's pass for up to `timeout_seconds`
+  (flagged as a known follow-up when the sync design was originally chosen).
+  Converted to the background-thread-plus-drain shape GA4's gate-verify
+  cadence already proved: `_run_post_merge_gate` is now the idempotent
+  dispatcher (keyed per `task_id`), `_run_post_merge_gate_bg` does all
+  git/filesystem/subprocess work off-thread and never touches daemon state,
+  `_drain_post_merge_gate_results` (once per pass) is the sole main-thread
+  seam appending GATE_FINISHED/MERGE_REVERTED/TASK_BLOCKED/COMPLETED,
+  byte-identical to the old branch logic. Pre-merge/mutation gates inside
+  `_execute_auto_merge` remain synchronous (deliberately out of scope). Scope
+  grew by 2 files beyond the original handoff (`test_post_merge.py`,
+  `test_auto_merge.py` — a scoping gap, not overreach: 6 existing tests
+  assumed synchronous completion within one `run_pass`); adapted via
+  join-then-drain, with the two real-`plan_project` tests draining directly
+  to avoid a genuine double-dispatch race a naive extra pass would hit. Gate
+  green 2× (agent) + 2× (controller re-gate) + post-merge 2×, 100% diff
+  coverage (59/59) throughout; one post-merge run hit the same pre-existing
+  `test_mutation_gate.py` hash-seed flake noted under P27-followon below —
+  attributed, not a regression (unrelated files).
 - **Flake-hardening** — deterministic tests for the intrinsic flakes: `commands.py:269`
   poll race; the real-`os.fork()` daemon/wrapper tests (fragile under load/py3.14). Enables
   reliable concurrent gates. Test-health theme (D-065).

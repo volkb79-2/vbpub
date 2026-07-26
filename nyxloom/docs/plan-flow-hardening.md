@@ -79,7 +79,16 @@ See CRITIQUE §4 "Wave B" table (B1–B7) for the authoritative per-package spec
   an engine; behaviour-parity suite for the default pipeline).
 - B3 P71 per-stage concurrency (`concurrency` replaces lone `max_active_tasks`;
   review serial-1; gates async-with-timeout) — enables the serial/parallel
-  scheduling knobs.
+  scheduling knobs. Per-stage `concurrency`/`review` serial-1 shipped with
+  P71. **gates async-with-timeout ✅ DONE (merge `f9f5234f`, 2026-07-26,
+  tracked as "B3-followon" in `plan-next-batches.md`):** the post-merge gate
+  no longer blocks `Daemon.run()`'s sequential per-project loop for up to
+  `timeout_seconds` — converted to the same background-thread-plus-drain
+  shape GA4 already proved for its gate-verify cadence (see
+  `daemon.py`'s `_run_post_merge_gate` / `_run_post_merge_gate_bg` /
+  `_drain_post_merge_gate_results`). The pre-merge/mutation gates inside
+  `_execute_auto_merge` remain synchronous — deliberately out of scope,
+  a separate follow-up if it proves to matter in practice.
 - B4 P72 triage stage (mechanical drift-guard tier + LLM tier; re-dispatch embeds
   the review verdict; route-escalation ladder).
 - B5 P73 self-review stage (un-reserve Role.SELF_REVIEW; implement→self_review→
