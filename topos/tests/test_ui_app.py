@@ -1279,6 +1279,52 @@ def test_p149_empty_source_up_down_is_safe() -> None:
     asyncio.run(run())
 
 
+def test_p155_empty_source_selection_actions_are_safe() -> None:
+    async def run() -> None:
+        app = ToposApp(
+            (),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            base_screen = app.screen
+            assert "mode=LIVE waiting for frames" in _status_text(app)
+
+            assert await app.run_action("select_prev")
+            assert await app.run_action("select_next")
+            await pilot.pause()
+
+            assert app.screen is base_screen
+            assert "mode=LIVE waiting for frames" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_p155_populated_selection_actions_wrap_public_cursor() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            table = app.query_one("#body-table")
+            first_key = table.row_key_at_cursor()
+            assert first_key is not None
+            assert table.row_count > 1
+
+            assert await app.run_action("select_prev")
+            await pilot.pause()
+            last_key = table.row_key_at_cursor()
+            assert last_key is not None
+            assert last_key != first_key
+
+            assert await app.run_action("select_next")
+            await pilot.pause()
+            assert table.row_key_at_cursor() == first_key
+
+    asyncio.run(run())
+
+
 def test_p150_empty_source_commands_are_safe() -> None:
     async def run() -> None:
         app = ToposApp(
