@@ -69,6 +69,25 @@ def _freeze_cfg(monkeypatch, cfg) -> None:
     monkeypatch.setattr(config.ProjectConfig, "load", classmethod(lambda cls, root: cfg))
 
 
+def _join_and_drain(d: "daemon.Daemon", task_id: str) -> None:
+    """B3-followon 2026-07-26: post-merge gates DISPATCH onto a background
+    thread and only settle on a later drain (see daemon.py's
+    _run_post_merge_gate / _run_post_merge_gate_bg /
+    _drain_post_merge_gate_results). Every test below scripts plan_project
+    to a single RunPostMergeGate action (_scripted pops [] for any call
+    beyond it), so a second `run_pass` after joining the started thread is
+    a safe, deterministic drain -- unlike a REAL (unscripted) plan_project,
+    it cannot re-plan (and re-dispatch) a second gate run for the
+    still-VALIDATING task (see
+    test_merged_task_reaches_completed_via_real_passing_gate's docstring
+    for that race and why it drains directly instead)."""
+    t = d._post_merge_gate_running.get(task_id)
+    assert t is not None, "RunPostMergeGate did not start a background thread"
+    t.join(timeout=10)
+    assert not t.is_alive()
+    d.run_pass("demo")
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: MERGED -> VALIDATING -> COMPLETED, real plan_project (no
 # _scripted mocking) -- the strongest proof the pipeline is genuinely wired,
@@ -79,7 +98,18 @@ def test_merged_task_reaches_completed_via_real_passing_gate(
     """sample_project's own declared gate (`[gates.pytest-q] argv = ["true"]`,
     phase 'implementation' -- no project in this codebase declares a
     dedicated 'post-merge' phase gate, so this also proves the documented
-    fallback: re-run the implementation gate as the post-merge check)."""
+    fallback: re-run the implementation gate as the post-merge check).
+
+    B3-followon 2026-07-26: post-merge gates now DISPATCH onto a background
+    thread and only settle on a later drain (see daemon.py's
+    _run_post_merge_gate / _run_post_merge_gate_bg /
+    _drain_post_merge_gate_results). This test uses REAL (unscripted)
+    plan_project -- deliberately, per its own docstring, to prove the
+    pipeline is genuinely wired -- so a naive third `run_pass` after joining
+    the thread would re-evaluate the still-VALIDATING task and dispatch a
+    SECOND, unwanted gate run before this pass's own drain settles the
+    first (plan_project has no way to know a result is already queued).
+    Draining directly sidesteps that replanning race entirely."""
     cfg = sample_project
     task_id = "demo-P01-sample"
     _seed_task("demo", task_id, TaskState.MERGED,
@@ -93,8 +123,20 @@ def test_merged_task_reaches_completed_via_real_passing_gate(
 
     n2 = d.run_pass("demo")
     assert n2 == 1
+    # n2 only DISPATCHED the gate -- still VALIDATING until drained.
+    tsf_mid = storage.load_state("demo", task_id)
+    assert tsf_mid.state is TaskState.VALIDATING
+
+    t = d._post_merge_gate_running.get(task_id)
+    assert t is not None, "RunPostMergeGate did not start a background thread"
+    t.join(timeout=10)
+    assert not t.is_alive()
+
+    d._drain_post_merge_gate_results("demo", cfg, storage.list_states("demo"))
+
     tsf2 = storage.load_state("demo", task_id)
     assert tsf2.state is TaskState.COMPLETED
+    assert task_id not in d._post_merge_gate_running
 
     assert len(tsf2.gate_results) == 1
     gr = tsf2.gate_results[0]
@@ -127,6 +169,7 @@ def test_validating_task_blocks_on_failing_gate(tmp_state, sample_project, patch
     d = daemon.Daemon({"demo": cfg.root})
     n = d.run_pass("demo")
     assert n == 1
+    _join_and_drain(d, task_id)
 
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.BLOCKED
@@ -227,6 +270,7 @@ def test_failing_post_merge_gate_auto_reverts_main(
 
     d = daemon.Daemon({"demo": cfg.root})
     assert d.run_pass("demo") == 1
+    _join_and_drain(d, task_id)
 
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.BLOCKED
@@ -255,6 +299,7 @@ def test_auto_revert_skipped_when_policy_disabled(
 
     d = daemon.Daemon({"demo": cfg.root})
     assert d.run_pass("demo") == 1
+    _join_and_drain(d, task_id)
 
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.BLOCKED
@@ -284,6 +329,7 @@ def test_auto_revert_cas_refused_when_main_advanced(
 
     d = daemon.Daemon({"demo": cfg.root})
     assert d.run_pass("demo") == 1
+    _join_and_drain(d, task_id)
 
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.BLOCKED

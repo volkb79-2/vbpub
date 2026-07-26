@@ -234,7 +234,18 @@ def test_post_merge_gate_runs_on_merge_commit_not_live_checkout(
     not the operator's live checkout -- which no longer contains the merged
     files (auto-merge stopped materializing them). A gate that requires a
     merge-only file passes only when run at the merge commit (in the scratch
-    worktree), and fails if run against the live root (as it did before)."""
+    worktree), and fails if run against the live root (as it did before).
+
+    B3-followon 2026-07-26: post-merge gates now DISPATCH onto a background
+    thread and only settle on a later drain (see daemon.py's
+    _run_post_merge_gate / _run_post_merge_gate_bg /
+    _drain_post_merge_gate_results). This test uses REAL (unscripted)
+    plan_project, so a naive 5th run_pass to "give the drain one more pass"
+    would re-evaluate the still-VALIDATING task and dispatch a SECOND,
+    unwanted gate run before the queued first result gets drained (see
+    tests/test_post_merge.py's
+    test_merged_task_reaches_completed_via_real_passing_gate docstring for
+    the same race, and why draining directly sidesteps it)."""
     gate = config.GateDef(
         gate_id="check-merged-file",
         argv=["test", "-f", "{worktree}/new_thing.txt"],
@@ -249,8 +260,18 @@ def test_post_merge_gate_runs_on_merge_commit_not_live_checkout(
     _seed_merge_ready(cfg.root, "demo", "demo-P78", "feat/demo-P78")
 
     d = daemon.Daemon({"demo": cfg.root})
-    for _ in range(4):   # MERGE_READY->MERGED->VALIDATING->gate->COMPLETED
+    for _ in range(3):   # MERGE_READY->MERGED->VALIDATING->gate DISPATCHED
         d.run_pass("demo")
+
+    tsf_mid = storage.load_state("demo", "demo-P78")
+    assert tsf_mid.state is TaskState.VALIDATING   # gate only dispatched so far
+
+    t = d._post_merge_gate_running.get("demo-P78")
+    assert t is not None, "RunPostMergeGate did not start a background thread"
+    t.join(timeout=10)
+    assert not t.is_alive()
+
+    d._drain_post_merge_gate_results("demo", cfg, storage.list_states("demo"))
 
     tsf = storage.load_state("demo", "demo-P78")
     assert tsf.state is TaskState.COMPLETED     # gate saw new_thing.txt at the merge commit

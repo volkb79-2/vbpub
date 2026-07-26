@@ -662,6 +662,18 @@ class Daemon:
         # _drain_gate_verify_results, never here.
         self._gate_verify_running: dict[str, threading.Thread] = {}
         self._gate_verify_results: queue.Queue = queue.Queue()
+        # B3-followon 2026-07-26 (mirrors GA4 above): background-thread state
+        # for post-merge gate execution (module contract item 11). A gate
+        # re-run against the merged default branch is a real subprocess run
+        # (up to gate.timeout_seconds), so it MUST NOT run inline in a
+        # reconcile tick -- see _run_post_merge_gate / _run_post_merge_gate_bg.
+        # Keyed by task_id, NOT project (unlike the GA4 cadence above): more
+        # than one task can be VALIDATING -- and gating -- concurrently for
+        # the same project. The queue is the ONLY channel the background
+        # thread may write to -- every event append happens on the main
+        # thread, in _drain_post_merge_gate_results, never here.
+        self._post_merge_gate_running: dict[str, threading.Thread] = {}
+        self._post_merge_gate_results: queue.Queue = queue.Queue()
 
     # -- lifecycle ------------------------------------------------------
 
@@ -860,6 +872,13 @@ class Daemon:
             # unconditionally every pass, even for a project whose cadence is
             # off: the queue is empty for it and this is a cheap no-op).
             appended.extend(self._drain_gate_verify_results(project, cfg, states))
+            # B3-followon 2026-07-26: drain any completed background
+            # post-merge-gate results ONCE PER PASS -- same shape as the GA4
+            # drain immediately above (the sole place a post-merge
+            # GATE_FINISHED/MERGE_REVERTED/TASK_BLOCKED/COMPLETED is ever
+            # appended; see _drain_post_merge_gate_results for why this is a
+            # cheap no-op for a project with nothing in flight).
+            appended.extend(self._drain_post_merge_gate_results(project, cfg, states))
             # P05a (§5): "per-pass counts ... -> DEBUG" -- one summary line
             # per reconcile pass (the reconcile-trace breadcrumbs above
             # already cover the per-decision "guard evals" half of this
@@ -2735,21 +2754,41 @@ class Daemon:
     # consumer of GateDef.phase/timeout_seconds and GateResult (both were
     # declared but never read/produced anywhere in daemon.py before this).
     #
-    # SYNC, not planned-action-polled: _run_post_merge_gate blocks this one
-    # pass for up to gate.timeout_seconds. The daemon's own tick loop
-    # (Daemon.run) iterates registered projects SEQUENTIALLY in a single
-    # thread, so a slow post-merge gate for one project does stall every
-    # other registered project's reconcile pass for that same window -- a
-    # real, but bounded (by timeout_seconds) and infrequent (merges are a
-    # manual operator step under merge_mode=manual, not a hot dispatch path)
-    # cost. Chosen anyway because it needs zero new Role/Attempt/wrapper
-    # machinery (types.py's Role enum is out of scope for this package, and
-    # none of its four members fits "re-verify a merged gate" without
-    # misusing an existing one) -- "minimal and correct" per the handoff. A
-    # fully async/detached re-cut (mirroring DispatchImplementer's
-    # launch-then-poll-receipt shape) is the natural follow-up if this
-    # blocking proves to matter in practice; flagged here, not silently
-    # hidden.
+    # ASYNC, background-thread-plus-drain (B3-followon, 2026-07-26): mirrors
+    # GA4's gate-verify cadence exactly (see _execute_verify_gate /
+    # _run_gate_verify_bg / _drain_gate_verify_results above -- read that
+    # block comment first, this is the SAME shape applied to a different
+    # trigger). Originally (module contract item 11, 2026-07-17)
+    # _run_post_merge_gate ran the gate as a fully blocking
+    # subprocess.run(..., timeout=gate.timeout_seconds) inline in the
+    # reconcile pass; the daemon's own tick loop (Daemon.run) iterates
+    # registered projects SEQUENTIALLY in a single thread, so a slow gate
+    # for one project stalled every OTHER project's reconcile pass for up
+    # to timeout_seconds. That blocking design was chosen initially because
+    # it needed zero new Role/Attempt/wrapper machinery, with this async
+    # re-cut flagged as "the natural follow-up if this blocking proves to
+    # matter in practice" -- this package is that follow-up.
+    #
+    # The execution model, byte-identical in spirit to GA4's: the background
+    # thread (_run_post_merge_gate_bg) NEVER appends an event, calls
+    # self._transition, or touches `states` directly -- it does ONLY
+    # git/filesystem/subprocess side effects (gate selection, scratch-
+    # worktree add/remove, the gate subprocess itself, and on failure the
+    # auto-revert CAS attempt) and ends by `.put()`-ing a small result dict.
+    # ALL state mutation (event append, running-thread bookkeeping, the
+    # COMPLETED/BLOCKED transition) happens on the MAIN thread, in
+    # _drain_post_merge_gate_results, called once per pass from run_pass
+    # (right next to the GA4 drain call). _run_post_merge_gate itself is now
+    # just the IDEMPOTENT DISPATCHER: a live background thread for a given
+    # task_id (unlike GA4's per-project cadence, post-merge gates are keyed
+    # per-task, since more than one task can be VALIDATING at once) means a
+    # gate for that task is already running, so it starts NO second thread --
+    # harmless, since VALIDATING re-emits RunPostMergeGate(task_id) every
+    # pass until the drain step transitions the task off VALIDATING
+    # (reconcile.py ~L1139-1141). On daemon restart mid-gate the in-memory
+    # thread is simply lost; VALIDATING re-fires the trigger next pass and
+    # the gate re-runs -- idempotent, no durable half-state to reconcile,
+    # the same argument GA4's own comment already makes.
     def _select_post_merge_gate(self, cfg: ProjectConfig) -> GateDef | None:
         """Prefer a gate the project declares phase == 'post-merge'. No
         project registered today declares one (nyxloom's own nyxloom-trove/
@@ -2808,24 +2847,64 @@ class Daemon:
     def _run_post_merge_gate(self, project: str, cfg: ProjectConfig,
                               states: dict[str, TaskStateFile],
                               action: "reconcile.RunPostMergeGate") -> list[Event]:
-        """VALIDATING -> COMPLETED (gate passes) or BLOCKED (gate fails,
-        errors, or times out) -- see the module-level note above for the
-        sync/blocking rationale and gate-selection/worktree-substitution
-        helpers this calls."""
+        """IDEMPOTENT DISPATCHER for a post-merge gate -- mirrors
+        _execute_verify_gate exactly (see the block comment above for the
+        full design). A live background thread for this task_id means a
+        gate for it is already running, so this starts NO second thread --
+        which is exactly why VALIDATING may harmlessly re-emit the same
+        RunPostMergeGate(task_id) every pass until the drain step's
+        transition moves the task off VALIDATING. Appends no event itself
+        (the gate can take up to timeout_seconds; see
+        _run_post_merge_gate_bg / _drain_post_merge_gate_results for the
+        actual event-append seam, main-thread only). Keyed by task_id, NOT
+        project: unlike GA4's per-project verify cadence, more than one task
+        can be VALIDATING (and gating) concurrently for the same project."""
         task_id = action.task_id
-        events: list[Event] = []
+        running = self._post_merge_gate_running.get(task_id)
+        if running is not None and running.is_alive():
+            return []
+        # The merge commit is the one piece of durable task state the bg
+        # thread needs; read it here, on the MAIN thread, and hand it down
+        # as a plain string -- the bg thread must not touch `states` itself
+        # (states/event-log mutation is main-thread-only, see the block
+        # comment above).
+        commit = states[task_id].merge_commit or ""
+        t = threading.Thread(target=self._run_post_merge_gate_bg,
+                              args=(project, cfg, task_id, commit), daemon=True)
+        self._post_merge_gate_running[task_id] = t
+        t.start()
+        return []
+
+    def _run_post_merge_gate_bg(self, project: str, cfg: ProjectConfig,
+                                 task_id: str, commit: str) -> None:
+        """The actual post-merge gate run -- runs on the background thread
+        started by _run_post_merge_gate. Does ALL the git/filesystem/
+        subprocess work the old synchronous method did (gate selection,
+        scratch-worktree add/remove, the gate subprocess itself, and on
+        failure the auto-revert `git update-ref` CAS attempt) -- none of
+        that is daemon *state*, it is external side effects, so it is safe
+        to run off-thread exactly like _run_gate_verify_bg already runs
+        `git rev-parse HEAD` off-thread.
+
+        MUST NOT touch the event log, call self._transition, or read/write
+        `states` -- every mutation from a non-main thread would race the
+        main-thread reconcile loop. Ends by `.put()`-ing a small result
+        dict for _drain_post_merge_gate_results to turn into events/
+        transitions on the main thread; NEVER appends an event itself."""
         gate = self._select_post_merge_gate(cfg)
 
         if gate is None:
             # No gate declared at all for this project: the documented
             # default is a no-op-validated pass straight to COMPLETED (no
-            # GateResult recorded -- there is nothing to record).
-            events.append(self._transition(
-                project, cfg, states, task_id, TaskState.COMPLETED,
-                "post-merge validation: project declares no gate, no-op pass"))
-            return events
+            # GateResult recorded -- there is nothing to record). Early
+            # return through the SAME .put() seam as every other outcome --
+            # the dispatcher stays generic, this is not special-cased there.
+            self._post_merge_gate_results.put({
+                "project": project, "task_id": task_id,
+                "gate_id": None, "gate_result": None, "outcome": "no_gate",
+            })
+            return
 
-        commit = states[task_id].merge_commit or ""
         started = utc_now()
         # P63 2026-07-20 (M13): run the gate in a CLEAN scratch worktree checked
         # out at the merge commit -- never against the operator's live checkout
@@ -2874,47 +2953,120 @@ class Daemon:
             exit_code=exit_code, started=started, ended=ended,
             environment=gate.environment, output_tail=out_tail,
         )
-        events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
-                                       {"gate_result": gate_result.to_dict()}, task_id=task_id))
+        result: dict[str, Any] = {
+            "project": project, "task_id": task_id, "gate_id": gate.gate_id,
+            "gate_result": gate_result.to_dict(),
+        }
 
         if exit_code == 0:
-            events.append(self._transition(
-                project, cfg, states, task_id, TaskState.COMPLETED,
-                f"post-merge gate {gate.gate_id} passed"))
-        else:
-            # F (factory-hardening): the gate FAILED on a tree already published
-            # to <default_branch> (the pre-merge gate is skippable, and a
-            # --force cli.cmd_merge or a flaky pass can also let a red commit
-            # through). Only BLOCKING it leaves the broken commit live on main.
-            # Auto-revert: CAS `update-ref` the branch back to the merge commit's
-            # first parent -- CAS (old == commit) so a NEWER merge landed since is
-            # never clobbered; a refused CAS falls through to BLOCKED for a human
-            # (canonical reference/LESSONS.md L4). Opt out: auto_revert_failed_merge.
-            if getattr(cfg.policy, "auto_revert_failed_merge", True) and commit and repo_root:
-                parent = subprocess.run(
-                    ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", f"{commit}^1"],
+            result["outcome"] = "completed"
+            self._post_merge_gate_results.put(result)
+            return
+
+        # F (factory-hardening): the gate FAILED on a tree already published
+        # to <default_branch> (the pre-merge gate is skippable, and a
+        # --force cli.cmd_merge or a flaky pass can also let a red commit
+        # through). Only BLOCKING it leaves the broken commit live on main.
+        # Auto-revert: CAS `update-ref` the branch back to the merge commit's
+        # first parent -- CAS (old == commit) so a NEWER merge landed since is
+        # never clobbered; a refused CAS falls through to BLOCKED for a human
+        # (canonical reference/LESSONS.md L4). Opt out: auto_revert_failed_merge.
+        result["outcome"] = "blocked"
+        result["reverted"] = False
+        if getattr(cfg.policy, "auto_revert_failed_merge", True) and commit and repo_root:
+            parent = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", f"{commit}^1"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            if parent:
+                rv = subprocess.run(
+                    ["git", "-C", repo_root, "update-ref",
+                     f"refs/heads/{cfg.default_branch}", parent, commit],
                     capture_output=True, text=True,
-                ).stdout.strip()
-                if parent:
-                    rv = subprocess.run(
-                        ["git", "-C", repo_root, "update-ref",
-                         f"refs/heads/{cfg.default_branch}", parent, commit],
-                        capture_output=True, text=True,
-                    )
-                    if rv.returncode == 0:
-                        log.warning("merge-reverted", project=project, task=task_id,
-                                    frm=commit, to=parent, gate=gate.gate_id)
-                        events.append(self._append_ev(
-                            project, cfg, states, EventType.MERGE_REVERTED,
-                            {"from": commit, "to": parent, "branch": cfg.default_branch,
-                             "reason": f"post-merge gate {gate.gate_id} failed (exit {exit_code})"},
-                            task_id=task_id))
-                    else:
-                        # CAS refused: <default_branch> no longer points at the
-                        # merge commit (something merged on top). Never force over
-                        # it -- leave it and let the BLOCKED escalation get a human.
-                        log.error("merge-revert-cas-refused", project=project, task=task_id,
-                                  frm=commit, branch=cfg.default_branch, stderr=rv.stderr[:150])
+                )
+                if rv.returncode == 0:
+                    # Logging is not the states/event-log mutation the
+                    # main-thread-only rule is about -- kept here, same as
+                    # GA4's own bg thread logs its verdict derivation.
+                    log.warning("merge-reverted", project=project, task=task_id,
+                                frm=commit, to=parent, gate=gate.gate_id)
+                    result["reverted"] = True
+                    result["revert_from"] = commit
+                    result["revert_to"] = parent
+                else:
+                    # CAS refused: <default_branch> no longer points at the
+                    # merge commit (something merged on top). Never force over
+                    # it -- leave it and let the BLOCKED escalation get a human.
+                    log.error("merge-revert-cas-refused", project=project, task=task_id,
+                              frm=commit, branch=cfg.default_branch, stderr=rv.stderr[:150])
+        # P05a (§5, §6 P05a oracle 2): "a gate failure" is one of the
+        # named ERROR examples in the rubric.
+        log.error("gate-failed", project=project, task=task_id,
+                  gate=gate.gate_id, exit_code=exit_code)
+        self._post_merge_gate_results.put(result)
+
+    def _drain_post_merge_gate_results(self, project: str, cfg: ProjectConfig,
+                                        states: dict[str, TaskStateFile]) -> list[Event]:
+        """Called ONCE PER PASS from run_pass, main thread only -- the sole
+        consumer of `self._post_merge_gate_results` and the sole place a
+        post-merge GATE_FINISHED/MERGE_REVERTED/TASK_BLOCKED/COMPLETED
+        transition is ever appended (mirrors _drain_gate_verify_results).
+        The queue is shared across every registered project (one Daemon,
+        one queue), so this drains the WHOLE queue and re-queues any result
+        that does not belong to `project` -- harmless, since run_pass loops
+        over every registered project each tick, so that project's own call
+        picks its result back up.
+
+        For each result belonging to `project`: pop
+        _post_merge_gate_running[task_id] (a fresh RunPostMergeGate may now
+        start a new thread for this task_id, though VALIDATING will not
+        re-emit one once this drain moves the task off VALIDATING), then
+        reconstruct exactly what the OLD synchronous code did with the
+        result dict -- GATE_FINISHED (unless outcome is "no_gate", which
+        never had one), MERGE_REVERTED when a revert succeeded, and the
+        terminal COMPLETED/BLOCKED transition, byte-identical to the old
+        branch logic."""
+        events: list[Event] = []
+        pending: list[dict] = []
+        while True:
+            try:
+                pending.append(self._post_merge_gate_results.get_nowait())
+            except queue.Empty:
+                break
+        for result in pending:
+            if result.get("project") != project:
+                self._post_merge_gate_results.put(result)
+                continue
+            task_id = result["task_id"]
+            self._post_merge_gate_running.pop(task_id, None)
+            outcome = result.get("outcome")
+
+            if outcome == "no_gate":
+                events.append(self._transition(
+                    project, cfg, states, task_id, TaskState.COMPLETED,
+                    "post-merge validation: project declares no gate, no-op pass"))
+                continue
+
+            gate_id = result.get("gate_id")
+            gate_result = result.get("gate_result")
+            events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
+                                           {"gate_result": gate_result}, task_id=task_id))
+
+            if outcome == "completed":
+                events.append(self._transition(
+                    project, cfg, states, task_id, TaskState.COMPLETED,
+                    f"post-merge gate {gate_id} passed"))
+                continue
+
+            # outcome == "blocked"
+            exit_code = gate_result["exit_code"]
+            if result.get("reverted"):
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.MERGE_REVERTED,
+                    {"from": result.get("revert_from"), "to": result.get("revert_to"),
+                     "branch": cfg.default_branch,
+                     "reason": f"post-merge gate {gate_id} failed (exit {exit_code})"},
+                    task_id=task_id))
             blocker = Blocker(
                 # P64 2026-07-20 (A12, M16): a post-merge GATE failure is an
                 # ENVIRONMENT failure (the merged tree failed its own tests),
@@ -2925,12 +3077,8 @@ class Daemon:
                 # keeps it out of that counter (see _history).
                 type=BlockerType.ENVIRONMENT,
                 unblock_condition="operator: inspect post-merge gate failure",
-                detail=f"post-merge gate {gate.gate_id} exit_code={exit_code}"[:200],
+                detail=f"post-merge gate {gate_id} exit_code={exit_code}"[:200],
             )
-            # P05a (§5, §6 P05a oracle 2): "a gate failure" is one of the
-            # named ERROR examples in the rubric.
-            log.error("gate-failed", project=project, task=task_id,
-                      gate=gate.gate_id, exit_code=exit_code)
             events.append(self._append_ev(
                 project, cfg, states, EventType.TASK_BLOCKED,
                 {"from": states[task_id].state.value, "blocker": blocker.to_dict()},
