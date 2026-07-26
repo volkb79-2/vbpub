@@ -3,14 +3,17 @@ from __future__ import annotations
 from rich.console import Console
 
 from topos.config import ToposConfig
-from topos.model import Entity, EntityFrame, Frame, MetricValue
+from topos.model import DockerMeta, Entity, EntityFrame, Frame, MetricValue
 from topos.ui.tree import render_data_table_tree, render_tree_table
 
 
 def _frame() -> Frame:
     def ef(key: str, name: str, parent: str | None, ram: int) -> EntityFrame:
         return EntityFrame(
-            entity=Entity(key=key, kind="scope", parent=parent, tier="work"),
+            entity=Entity(
+                key=key, kind="scope", parent=parent, tier="work",
+                docker=DockerMeta(cid=key, full_id=f"sha256:{key}_deadbeef", name=name, image=f"{name.lower()}:latest"),
+            ),
             metrics={"ram": MetricValue(ram, "exact"), "cpu_pct": MetricValue(ram, "exact")},
             network={"source_label": "fixture"},
         )
@@ -43,7 +46,9 @@ def test_rich_tree_orders_filters_preserves_ancestors_and_collapses() -> None:
         selected_key=None, collapsed_keys=set(),
     )
     assert by_name.row_keys == ("sibling", "parent", "child")
-    assert "▾ Zulu" in _text(by_name.table) and "  ▾ Zulu" not in _text(by_name.table)
+    rendered = _text(by_name.table)
+    assert "▾ Zulu" in rendered
+    assert "    ▾ Zulu" not in rendered  # depth-0: no tree-depth indent beyond Rich column padding
 
     by_ram = render_tree_table(
         frame, config, width=80, profile="minimal", sort_by="ram", filter_text="",
@@ -101,3 +106,19 @@ def test_data_table_tree_has_public_columns_prefix_reverse_and_empty_sentinel() 
     )
     assert empty_keys == ("__empty__",)
     assert empty_rows[0][0].plain == "no rows"
+
+
+def test_tree_renderers_keep_rows_when_a_custom_profile_has_no_supported_columns() -> None:
+    config = ToposConfig(columns={"profiles": {"empty": {"list": ["not_a_metric"]}}})
+
+    rich_result = render_tree_table(
+        _frame(), config, width=80, profile="empty", sort_by="name", filter_text="",
+        selected_key=None, collapsed_keys=set(),
+    )
+    assert rich_result.row_keys == ("sibling", "parent", "child")
+
+    columns, labels, keys, rows = render_data_table_tree(
+        _frame(), config, width=80, profile="empty", sort_by="name", filter_text="",
+        collapsed_keys=set(),
+    )
+    assert (columns, labels, keys, rows) == ((), (), ("sibling", "parent", "child"), [[], [], []])
