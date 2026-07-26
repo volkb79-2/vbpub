@@ -420,3 +420,19 @@ def test_banner_malformed_damon_ownership_safe_fallback() -> None:
     heat_line = next((line for line in snapshot.lines if line.startswith("DRAM HEAT")), None)
     assert heat_line is not None
     assert "owner unknown" in heat_line
+
+
+def test_banner_damon_heat_underfill() -> None:
+    """Heat bar renders remaining width as dots when class percentages underflow."""
+    frame = _make_base_frame()
+    frame.host["host_damon_mode"] = MetricValue("pids", "host")
+    frame.host["host_damon_hot_bytes"] = MetricValue(10, "host")
+    frame.host["host_damon_warm_bytes"] = MetricValue(20, "host")
+    frame.host["host_damon_cold_bytes"] = MetricValue(30, "host")
+    frame.host["host_damon_idle_bytes"] = MetricValue(40, "host")
+    frame.host["host_damon_hot_pct"] = MetricValue(10.0, "host")
+    frame.host["host_damon_sample_age_s"] = MetricValue(0.1, "host")
+    snapshot = render_banner(frame, ToposConfig())
+    heat_line = next((line for line in snapshot.lines if line.startswith("DRAM HEAT")), None)
+    assert heat_line is not None
+    assert "[HH..................]" in heat_line
