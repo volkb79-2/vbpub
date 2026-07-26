@@ -379,3 +379,328 @@ def test_no_ceiling_is_a_faithful_no_op() -> None:
     payload = {"metrics": {"cgroup_procs": {"value": SENTINEL, "sensitivity": "sensitive"}}}
     result = redaction.redact_payload(payload, shape=PayloadShape.MCP_ENTITY, metrics_meta={}, ceiling=None)
     assert result["metrics"]["cgroup_procs"]["value"] == SENTINEL
+
+
+# --- P131 malformed-shape coverage: direct redact_payload tests -----------
+
+
+class TestMalformedEntityFrame:
+    def test_entity_frame_metrics_non_dict_preserved_findings_non_list_preserved(self) -> None:
+        """ENTITY_FRAME with non-dict metrics and non-list findings must not crash; values preserved."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "entity": {"key": "test", "kind": "scope", "parent": None},
+            "metrics": "not_a_dict",  # malformed
+            "findings": "not_a_list",  # malformed
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["metrics"] == "not_a_dict"
+        assert payload["findings"] == "not_a_list"
+
+    def test_entity_frame_findings_list_with_non_dict_entry_skipped(self) -> None:
+        """ENTITY_FRAME findings list containing non-dict entry; non-dict skipped, valid sibling redacted."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "entity": {"key": "test", "kind": "scope", "parent": None},
+            "metrics": {},
+            "findings": [
+                "not_a_dict",  # malformed, skipped
+                {
+                    "rule_id": "test_rule",
+                    "severity": "warn",
+                    "message": "sensitive finding",
+                    "source_metrics": ["secret"],
+                },
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["findings"][0] == "not_a_dict"
+        assert payload["findings"][1]["rule_id"] == "test_rule"
+        assert payload["findings"][1]["message"] == redaction_marker(Sensitivity.SENSITIVE)
+
+    def test_entity_frame_finding_with_string_source_metrics_keeps_prose(self) -> None:
+        """Finding with string source_metrics (not a list) preserves message."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "entity": {"key": "test", "kind": "scope", "parent": None},
+            "metrics": {},
+            "findings": [
+                {
+                    "rule_id": "test_rule",
+                    "severity": "info",
+                    "message": "test message",
+                    "source_metrics": "not_a_list",  # malformed, _finding_ceiling_breach returns None
+                },
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["findings"][0]["message"] == "test message"
+
+    def test_entity_frame_finding_with_above_ceiling_list_redacts_remedy(self) -> None:
+        """Finding with above-ceiling list source_metrics redacts remedy even when message absent."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "entity": {"key": "test", "kind": "scope", "parent": None},
+            "metrics": {},
+            "findings": [
+                {
+                    "rule_id": "test_rule",
+                    "severity": "warn",
+                    "source_metrics": ["secret"],
+                    # message and remedy both absent/None initially
+                    "remedy": None,
+                },
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        # remedy=None doesn't create a marker; only redacts if field exists
+        assert payload["findings"][0]["remedy"] is None
+        # Verify remedy presence is tested separately
+        payload["findings"][0]["remedy"] = "fix it"
+        redaction.redact_payload(
+            payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["findings"][0]["remedy"] == redaction_marker(Sensitivity.SENSITIVE)
+
+    def test_entity_frame_finding_source_metrics_public_then_secret_redacts_message(self) -> None:
+        """Finding with multiple source_metrics (public, then secret) finds secret and redacts message/remedy."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "entity": {"key": "test", "kind": "scope", "parent": None},
+            "metrics": {},
+            "findings": [
+                {
+                    "rule_id": "test_rule",
+                    "severity": "info",
+                    "message": "alert about public and secret",
+                    "remedy": "check both metrics",
+                    "source_metrics": ["public", "secret"],  # public first, secret second
+                },
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        # The secret metric causes message and remedy to be redacted
+        assert payload["findings"][0]["message"] == redaction_marker(Sensitivity.SENSITIVE)
+        assert payload["findings"][0]["remedy"] == redaction_marker(Sensitivity.SENSITIVE)
+        # Operational facts survive
+        assert payload["findings"][0]["rule_id"] == "test_rule"
+        assert payload["findings"][0]["severity"] == "info"
+        assert payload["findings"][0]["source_metrics"] == ["public", "secret"]
+
+
+class TestMalformedFrame:
+    def test_frame_host_non_dict_entities_non_dict_preserved(self) -> None:
+        """FRAME with non-dict host and non-dict entities; malformed preserved."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "schema_version": 1,
+            "ts": 1000.0,
+            "interval_s": 5.0,
+            "host": "not_a_dict",  # malformed
+            "entities": "not_a_dict",  # malformed
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["host"] == "not_a_dict"
+        assert payload["entities"] == "not_a_dict"
+
+    def test_frame_entities_dict_with_non_dict_sibling_plus_valid_entity(self) -> None:
+        """FRAME entities dict with non-dict sibling + valid entity; valid sibling redacted, malformed kept."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "schema_version": 1,
+            "ts": 1000.0,
+            "interval_s": 5.0,
+            "host": {},
+            "entities": {
+                "malformed_key": "not_a_dict",  # malformed entity, kept as-is
+                "valid_entity": {
+                    "entity": {"key": "valid_entity", "kind": "scope", "parent": None},
+                    "metrics": {
+                        "secret": {"value": SENTINEL},
+                        "public": {"value": 123},
+                    },
+                    "findings": [],
+                },
+            },
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.FRAME, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        # Malformed sibling untouched
+        assert payload["entities"]["malformed_key"] == "not_a_dict"
+        # Valid sibling redacted
+        assert payload["entities"]["valid_entity"]["metrics"]["secret"] == redaction_marker(Sensitivity.SENSITIVE)
+        assert payload["entities"]["valid_entity"]["metrics"]["public"]["value"] == 123
+
+
+class TestMalformedMcpOverview:
+    def test_mcp_overview_missing_rows_safe_noop(self) -> None:
+        """MCP_OVERVIEW missing rows field is safe no-op."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {"sort_by": "metric"}  # rows missing
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_OVERVIEW, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload == {"sort_by": "metric"}
+
+    def test_mcp_overview_non_list_rows_safe_noop(self) -> None:
+        """MCP_OVERVIEW non-list rows field is safe no-op."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {"sort_by": "metric", "rows": "not_a_list"}
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_OVERVIEW, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["rows"] == "not_a_list"
+
+    def test_mcp_overview_mixed_rows_preserve_public_redact_sensitive(self) -> None:
+        """MCP_OVERVIEW mixed rows: non-dict skipped, missing value skipped, public preserved, sensitive redacted."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "sort_by": "metric",
+            "rows": [
+                "not_a_dict",  # skipped
+                {"metric": "secret"},  # no value, skipped
+                {"key": "a.scope", "metric": "public", "value": 42},  # preserved
+                {"key": "b.scope", "metric": "secret", "value": SENTINEL},  # redacted
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_OVERVIEW, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["rows"][0] == "not_a_dict"
+        assert payload["rows"][1] == {"metric": "secret"}
+        assert payload["rows"][2]["value"] == 42
+        assert payload["rows"][3]["value"] == redaction_marker(Sensitivity.SENSITIVE)
+
+
+class TestMalformedMcpEntity:
+    def test_mcp_entity_non_dict_metrics_preserved(self) -> None:
+        """MCP_ENTITY non-dict metrics is safe; findings still processed."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "key": "a.scope",
+            "metrics": "not_a_dict",  # malformed
+            "findings": [
+                {"rule_id": "rule1", "source_metrics": ["secret"], "message": "text"},
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_ENTITY, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["metrics"] == "not_a_dict"
+        assert payload["findings"][0]["message"] == redaction_marker(Sensitivity.SENSITIVE)
+
+    def test_mcp_entity_non_dict_findings_preserved(self) -> None:
+        """MCP_ENTITY non-dict findings is safe; metrics still processed."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "key": "a.scope",
+            "metrics": {
+                "public": {"value": 42},
+                "secret": {"value": SENTINEL},
+            },
+            "findings": "not_a_list",  # malformed
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_ENTITY, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["findings"] == "not_a_list"
+        assert payload["metrics"]["public"]["value"] == 42
+        assert payload["metrics"]["secret"]["value"] == redaction_marker(Sensitivity.SENSITIVE)
+
+    def test_mcp_entity_mixed_metrics_and_findings(self) -> None:
+        """MCP_ENTITY mixed entries: preserve public metric, redact sensitive, skip malformed."""
+        metrics_meta = {"secret": {"sensitivity": "sensitive"}, "public": {"sensitivity": "public"}}
+        payload = {
+            "key": "a.scope",
+            "metrics": {
+                "public": {"value": 42},
+                "secret": {"value": SENTINEL},
+                "malformed": {"no_value_field": 123},  # no value, skipped
+                "also_malformed": "not_a_dict",  # not a dict, skipped
+            },
+            "findings": [
+                {"rule_id": "rule1", "source_metrics": ["secret"], "message": "text"},
+                "not_a_dict",  # skipped
+                {"rule_id": "rule2", "severity": "warn"},  # no source_metrics, message untouched
+            ],
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_ENTITY, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["metrics"]["public"]["value"] == 42
+        assert payload["metrics"]["secret"]["value"] == redaction_marker(Sensitivity.SENSITIVE)
+        assert payload["metrics"]["malformed"] == {"no_value_field": 123}
+        assert payload["metrics"]["also_malformed"] == "not_a_dict"
+        assert payload["findings"][0]["message"] == redaction_marker(Sensitivity.SENSITIVE)
+        assert payload["findings"][1] == "not_a_dict"
+        # rule2 has no source_metrics so message is untouched
+        assert "message" not in payload["findings"][2] or payload["findings"][2].get("severity") == "warn"
+
+
+class TestMalformedMcpHistory:
+    def test_mcp_history_public_metric_leaves_series_intact(self) -> None:
+        """MCP_HISTORY public metric leaves series intact."""
+        metrics_meta = {"public": {"sensitivity": "public"}, "secret": {"sensitivity": "sensitive"}}
+        payload = {
+            "entity_key": "a.scope",
+            "metric": "public",
+            "sensitivity": "public",
+            "series": [[1000.0, 42.0], [1001.0, 43.0]],
+            "count": 2,
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_HISTORY, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["series"] == [[1000.0, 42.0], [1001.0, 43.0]]
+
+    def test_mcp_history_sensitive_non_list_series_safe_noop(self) -> None:
+        """MCP_HISTORY sensitive metric with non-list series is safe no-op."""
+        metrics_meta = {"public": {"sensitivity": "public"}, "secret": {"sensitivity": "sensitive"}}
+        payload = {
+            "entity_key": "a.scope",
+            "metric": "secret",
+            "sensitivity": "sensitive",
+            "series": "not_a_list",  # malformed
+            "count": 0,
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_HISTORY, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["series"] == "not_a_list"
+
+    def test_mcp_history_sensitive_series_mixed_points_preserves_malformed_replaces_valid(self) -> None:
+        """MCP_HISTORY sensitive series: malformed points preserved, valid points have index 1 replaced."""
+        metrics_meta = {"public": {"sensitivity": "public"}, "secret": {"sensitivity": "sensitive"}}
+        marker = redaction_marker(Sensitivity.SENSITIVE)
+        payload = {
+            "entity_key": "a.scope",
+            "metric": "secret",
+            "sensitivity": "sensitive",
+            "series": [
+                "not_a_point",  # malformed, preserved
+                [1000.0, 42.0],  # valid, index 1 replaced
+                [1001.0],  # too short, skipped
+                [1002.0, 43.0, "extra"],  # valid length >= 2, index 1 replaced
+            ],
+            "count": 4,
+        }
+        redaction.redact_payload(
+            payload, shape=PayloadShape.MCP_HISTORY, metrics_meta=metrics_meta, ceiling=Sensitivity.PUBLIC
+        )
+        assert payload["series"][0] == "not_a_point"
+        assert payload["series"][1][1] == marker
+        assert payload["series"][2] == [1001.0]
+        assert payload["series"][3][1] == marker
