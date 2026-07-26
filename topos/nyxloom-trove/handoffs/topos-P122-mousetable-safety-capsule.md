@@ -43,8 +43,8 @@ tests/gates.
    pattern to mount the real app. With its real `#body-table`, save the initial
    `cursor_coordinate`, call `update_cursor_from_key(None)` and then
    `update_cursor_from_key("missing-key")`, and assert the coordinate is
-   unchanged. Then set `app.filter_text` to the exact no-match string used by
-   the existing zero-results test, call `app._refresh_view()`, pause, and
+   unchanged. Then set `app.filter_text` to the frozen exact no-match string
+   `"ZZZZ_NONEXISTENT_ZZZZ"`, call `app._refresh_view()`, pause, and
    assert `mt.row_key_at_cursor() is None`. This proves a restored stale key
    cannot move selection and an empty placeholder can never be treated as an
    entity.
