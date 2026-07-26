@@ -36,6 +36,7 @@ from topos.model import CiuMeta, DockerMeta, Entity, EntityFrame, Frame, MetricV
 from topos.ui.app import ToposApp
 from topos.ui.data_table import MouseTable
 from topos.ui.drill import DrillDownScreen
+from topos.ui.table import render_data_table_container_grouped
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +110,45 @@ def _mounted_row_keys(mt) -> tuple[str, ...]:
     """Row keys in the MOUNTED DataTable's actual display order (``ordered_rows``),
     independent of ``app._visible_row_keys`` (the renderer's return value)."""
     return tuple(row.key.value for row in mt.ordered_rows)
+
+
+def test_direct_grouped_renderer_empty_filter_includes_group_and_ungrouped_context() -> None:
+    grouped = _ciu_entity_frame("c-web", "web-01", stack="app/web", phase_raw="phase_1", phase=1)
+    ungrouped = _ciu_entity_frame("c-plain", "plain-01", has_ciu=False)
+
+    _, _, row_keys, _ = render_data_table_container_grouped(
+        _frame([grouped, ungrouped]),
+        ToposConfig(),
+        width=120,
+        profile="triage",
+        sort_by="name",
+        filter_text="",
+    )
+
+    assert row_keys == (
+        "__group__app/web__phase_1",
+        "c-web",
+        "__ungrouped__",
+        "c-plain",
+    )
+
+
+def test_direct_grouped_renderer_no_match_filter_shows_only_empty_row() -> None:
+    grouped = _ciu_entity_frame("c-web", "web-01", stack="app/web", phase_raw="phase_1", phase=1)
+    ungrouped = _ciu_entity_frame("c-plain", "plain-01", has_ciu=False)
+
+    _, _, row_keys, rows = render_data_table_container_grouped(
+        _frame([grouped, ungrouped]),
+        ToposConfig(),
+        width=120,
+        profile="triage",
+        sort_by="name",
+        filter_text="does-not-match",
+    )
+
+    assert row_keys == ("__empty__",)
+    assert rows[0][0].plain == "no container rows"
+    assert not any(key.startswith("__group__") for key in row_keys)
 
 
 # ---------------------------------------------------------------------------
