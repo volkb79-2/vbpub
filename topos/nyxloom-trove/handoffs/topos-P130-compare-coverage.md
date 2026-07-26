@@ -9,7 +9,7 @@ depends_on: [topos-P129-paddr-lifecycle-coverage]
 session: "resume:topos-compare-coverage"
 source: {kind: product-goal, ref: "global-coverage-healing"}
 scope:
-  touch: ["topos/tests/test_compare.py", "topos/nyxloom-trove/handoffs/topos-P130-compare-coverage.md"]
+  touch: ["topos/src/topos/compare.py", "topos/tests/test_compare.py", "topos/nyxloom-trove/handoffs/topos-P130-compare-coverage.md"]
   forbid: ["topos/src/topos/compare.py", "topos/nyxloom-trove/nyxloom.toml", "topos/tools/coverage_gate.py", "topos/pyproject.toml"]
 oracles:
   - id: O1
@@ -76,8 +76,10 @@ The full gate must pass and `compare.py` must have empty `missing_lines` and
 
 ## Scope / forbid
 
-Touch only the named test and handoff. Do not alter comparison semantics,
-coverage tooling/configuration, dependencies, or production code.
+Touch only the named source, test, and handoff. The sole permitted production
+change is removing `_round`'s unreachable `None` branch: all its call sites
+already guard absent values, so its input/output type is `float -> float`.
+Do not alter comparison semantics, coverage tooling/configuration, or dependencies.
 
 ## BLOCKED rule
 

@@ -93,9 +93,7 @@ class Delta:
     reason: str | None
 
 
-def _round(v: float | None) -> float | None:
-    if v is None:
-        return None
+def _round(v: float) -> float:
     return round(v, _ROUND_DIGITS)
 
 
