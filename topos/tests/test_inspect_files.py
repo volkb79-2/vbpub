@@ -296,6 +296,31 @@ class TestPathSafety:
         with pytest.raises(ValueError, match="must not be empty"):
             build_inspect_plan("cgroup-files", "")
 
+    def test_docker_json_log_rejects_unsafe_path(self) -> None:
+        with pytest.raises(ValueError, match="unsafe path characters"):
+            build_inspect_plan("docker-json-log", "abc/def")
+
+    def test_cgroup_target_accepts_relative_path(self) -> None:
+        plan = build_inspect_plan("cgroup-files", "sys/fs/cgroup/system.slice/ssh.service")
+        assert isinstance(plan, InspectFilesPlan)
+        assert all(str(path).startswith("/sys/fs/cgroup/system.slice/ssh.service/") for path in plan.path_previews)
+
+    def test_cgroup_target_rejects_absolute_root(self) -> None:
+        with pytest.raises(ValueError, match="must not be empty"):
+            build_inspect_plan("cgroup-files", "/sys/fs/cgroup/")
+
+    def test_cgroup_target_rejects_unsafe_characters(self) -> None:
+        with pytest.raises(ValueError, match="unsafe characters"):
+            build_inspect_plan("cgroup-files", "system.slice/evil!")
+
+    def test_cgroup_target_rejects_empty_path_segment(self) -> None:
+        with pytest.raises(ValueError, match="unsafe path segments"):
+            build_inspect_plan("cgroup-files", "system.slice//ssh.service")
+
+    def test_validate_cgroup_target_direct_delegation(self) -> None:
+        from topos.inspect_files.catalog import _validate_cgroup_target
+        _validate_cgroup_target("system.slice/ssh.service")
+
     def test_cgroup_target_accepts_sysfs_path(self) -> None:
         plan = build_inspect_plan("cgroup-files", "/sys/fs/cgroup/system.slice/ssh.service")
         assert isinstance(plan, InspectFilesPlan)
