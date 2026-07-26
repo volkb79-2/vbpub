@@ -95,3 +95,9 @@ Public benchmarks only determine ordering: DeepSWE is the per-effort coding
 prior; Terminal-Bench is the terminal/tool-use prior; Artificial Analysis can
 supply current Terminal-Bench, LiveCodeBench, and SCIcode values when its API
 credential is available. The two real Topos packages are the acceptance test.
+
+## Trial record
+
+| Route | Package(s) | Verdict | Evidence |
+|---|---|---|---|
+| `openrouter/poolside/laguna-xs-2.1:free` | P115 only | **UNFIT** | No-edit probe returned `ROUTE_READY` at zero cost. The implementation session then read an unlisted, stale global coverage report before editing; this met the explicit early-abort trigger. Controller terminated it, confirmed a clean worktree, issued no second package, and spent no reviewer. See Topos P115 LOG. |
