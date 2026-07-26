@@ -104,10 +104,9 @@ def annotate_frame_damon(
             if mode == "paddr":
                 root_host_sessions.append(session)
                 continue
-            entity_key = session.get("entity_key")
-            if not isinstance(entity_key, str):
-                continue
-            attributed.setdefault(entity_key, []).append(session)
+            # _read_context_session returns vaddr sessions only after assigning
+            # their string entity_key from _single_target_entity.
+            attributed.setdefault(session["entity_key"], []).append(session)
 
     for entity_key, sessions in attributed.items():
         entity_frame = frame.entities.get(entity_key)
@@ -137,15 +136,12 @@ def _apply_entity_sessions(entity_frame: EntityFrame, sessions: list[dict[str, o
     total_bytes = 0
     sample_ages: list[float] = []
     for session in sessions:
-        class_bytes = session.get("class_bytes")
-        if isinstance(class_bytes, dict):
-            for name in _CLASS_NAMES:
-                value = int(class_bytes.get(name, 0) or 0)
-                totals[name] += value
-                total_bytes += value
-        sample_age = session.get("sample_age_s")
-        if isinstance(sample_age, (int, float)):
-            sample_ages.append(float(sample_age))
+        class_bytes = session["class_bytes"]
+        for name in _CLASS_NAMES:
+            value = int(class_bytes.get(name, 0) or 0)
+            totals[name] += value
+            total_bytes += value
+        sample_ages.append(float(session["sample_age_s"]))
 
     for name in _CLASS_NAMES:
         entity_frame.metrics[f"damon_{name}_bytes"] = MetricValue(totals[name], "exact")
@@ -167,12 +163,11 @@ def _apply_host_paddr_sessions(frame: Frame, sessions: list[dict[str, object]]) 
     total_bytes = 0
     sample_ages: list[float] = []
     for session in sessions:
-        class_bytes = session.get("class_bytes")
-        if isinstance(class_bytes, dict):
-            for name in _CLASS_NAMES:
-                value = int(class_bytes.get(name, 0) or 0)
-                totals[name] += value
-                total_bytes += value
+        class_bytes = session["class_bytes"]
+        for name in _CLASS_NAMES:
+            value = int(class_bytes.get(name, 0) or 0)
+            totals[name] += value
+            total_bytes += value
         sample_age = session.get("sample_age_s")
         if isinstance(sample_age, (int, float)):
             sample_ages.append(float(sample_age))
@@ -316,9 +311,8 @@ def _read_regions(tried_regions_dir: Path) -> list[_Region]:
         age, age_src = _read_int(region_dir / "age")
         if not all(src == "exact" for src in (start_src, end_src, accesses_src, age_src)):
             continue
-        if not all(isinstance(value, int) for value in (start, end, nr_accesses, age)):
-            continue
-        regions.append(_Region(start=start, end=end, nr_accesses=nr_accesses, age_aggr_intervals=age))
+        # _read_int reports "exact" only together with an integer value.
+        regions.append(_Region(start=int(start), end=int(end), nr_accesses=int(nr_accesses), age_aggr_intervals=int(age)))
     return regions
 
 
@@ -334,8 +328,8 @@ def _target_pids(targets_dir: Path) -> list[int]:
     out: list[int] = []
     for target_dir in _numeric_dirs(targets_dir):
         pid, src = _read_int(target_dir / "pid_target")
-        if src == "exact" and isinstance(pid, int):
-            out.append(pid)
+        if src == "exact":
+            out.append(int(pid))
     return out
 
 
@@ -376,16 +370,13 @@ def _cgroup_pids(cgroup_root: Path, entity_key: EntityKey) -> set[int] | None:
 
 
 def _sample_age_seconds(paths: list[Path], now: float) -> float | None:
-    newest_mtime: float | None = None
+    mtimes: list[float] = []
     for path in paths:
         try:
-            mtime = path.stat().st_mtime
+            mtimes.append(path.stat().st_mtime)
         except OSError:
             continue
-        newest_mtime = mtime if newest_mtime is None else max(newest_mtime, mtime)
-    if newest_mtime is None:
-        return None
-    return max(0.0, now - newest_mtime)
+    return max((max(0.0, now - mtime) for mtime in mtimes), default=None)
 
 
 def _numeric_dirs(path: Path) -> list[Path]:
@@ -396,8 +387,9 @@ def _numeric_dirs(path: Path) -> list[Path]:
     return sorted(children, key=lambda child: int(child.name))
 
 
-def _numeric_name(path: Path) -> int | None:
-    return int(path.name) if path.name.isdigit() else None
+def _numeric_name(path: Path) -> int:
+    # Every caller receives a member returned by _numeric_dirs.
+    return int(path.name)
 
 
 def _read_text_value(path: Path) -> str | None:
@@ -426,9 +418,7 @@ def _default_state_dir() -> Path:
     return (Path(base) if base else Path.home() / ".local" / "state") / "topos"
 
 
-def _session_owner(state_dir: Path, kdamond_idx: int | None, damon_root: Path) -> str:
-    if kdamond_idx is None:
-        return "foreign"
+def _session_owner(state_dir: Path, kdamond_idx: int, damon_root: Path) -> str:
     marker = state_dir / "damon" / f"kdamond-{kdamond_idx}.json"
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
