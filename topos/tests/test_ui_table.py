@@ -106,6 +106,15 @@ def test_format_metric_value_shows_unlimited_limits_as_max() -> None:
     assert format_metric_value("mem_max", entity_frame).plain == "max"
 
 
+def test_format_metric_value_caps_bytes_at_tib() -> None:
+    entity_frame = EntityFrame(
+        entity=Entity(key="demo.scope", kind="scope", parent=""),
+        metrics={"ram": MetricValue(1024 ** 5, "exact")},
+    )
+
+    assert format_metric_value("ram", entity_frame).plain == "1024.0TiB"
+
+
 def test_damon_profile_uses_registry_backed_columns() -> None:
     assert resolve_columns(ToposConfig(), width=140, profile="damon") == (
         "name",
