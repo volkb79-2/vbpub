@@ -6374,6 +6374,26 @@ class Daemon:
                 for f in self._scope_amendment_files(project, t):
                     if f not in approved_amendments:
                         approved_amendments.append(f)
+            # D-BATCHC (2026-07-26, plan-factory-hardening.md §D part 2): the
+            # review-depth directive -- computed from the wave's PRIMARY
+            # task's complexity band (Frontmatter.tier, with a scope.touch
+            # -size fallback) and the project's declared gate rigor
+            # (gate_runner.select_verification_gate(cfg).asserts). Two
+            # ALREADY-EXISTING inputs, no new schema field. Scoped to
+            # first_task (the wave's primary task, already used above for
+            # task_id/receipt naming) rather than aggregated across every
+            # member -- mirrors gate_hint's own project-level, not
+            # per-member, scope. compute_review_depth_directive is pure and
+            # returns "" for the neutral low-band+rigorous-gate case, so
+            # build_dispatch's append is a no-op then (byte-identical dispatch).
+            first_tsf = states.get(first_task) if first_task else None
+            first_fm = self._frontmatter_for(cfg, first_tsf) if first_tsf is not None else None
+            review_gate = gate_runner.select_verification_gate(cfg)
+            review_depth = adapters.compute_review_depth_directive(
+                tier=first_fm.tier if first_fm is not None else None,
+                scope_touch=first_fm.scope.touch if first_fm is not None else [],
+                gate_asserts=review_gate.asserts if review_gate is not None else [],
+            )
             if action.resume_session:
                 # B6/P74 (D-R10): WARM resume of a prior review session -> the
                 # ~35-40k role-contract/orientation prefix replays from prompt
@@ -6398,6 +6418,7 @@ class Daemon:
                     gate_hint=gate_hint, receipt_path=receipt_path, role=Role.REVIEW_INDEPENDENT,
                     attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
                     approved_amendments=approved_amendments,
+                    review_depth=review_depth,  # D-BATCHC: complexity/gate-rigor directive
                 )
             # P61 (A9): the review holds the UNION of its members' leases, so a
             # concurrent carve/dispatch cannot touch a task while it is under

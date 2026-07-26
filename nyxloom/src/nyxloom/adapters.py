@@ -172,6 +172,81 @@ def render_argv(template: list[str], mapping: dict[str, str]) -> list[str]:
     return result
 
 
+# D-BATCHC (2026-07-26, plan-factory-hardening.md; Batch C -- modulate
+# review depth by complexity band + declared gate rigor). Two ALREADY-
+# EXISTING inputs drive the band (Frontmatter.tier / types.py:434, a
+# scope-size fallback when tier is absent or unparseable / types.py
+# :403-405) -- no new schema field, no new frontmatter key.
+_TIER_BAND = {"implement-1": 1, "implement-2": 2, "implement-3": 3}
+_LOW_BAND = 1
+_HIGH_BAND = 3
+# >N touched paths in scope.touch is treated as band 3 when tier can't be
+# read at all -- a handoff spanning that many files is, by the same
+# "mechanical/cheap vs. hard" banding routes.host.toml already uses for
+# implement-1 vs. implement-3, no longer a small/cheap change.
+_HIGH_BAND_SCOPE_TOUCH_THRESHOLD = 5
+# A gate whose `.asserts` (config.GateDef.asserts) is missing EITHER of
+# these is "shallow" (catches less); one declaring BOTH is "rigorous".
+_RIGOROUS_ASSERTS = {"changed-line-coverage", "mutation"}
+
+
+def compute_review_depth_directive(tier: str | None, scope_touch: list[str] | None,
+                                   gate_asserts: list[str] | None) -> str:
+    """Pure signal -> reviewer-prompt directive (no I/O, no route/tier choice).
+
+    Mirrors D1's `review_focus` shape: this function computes the SIGNAL only;
+    `build_dispatch` below does the bounded argv append -- same "pure helper,
+    then argv-bounded append" split.
+
+    Band comes from `tier` ('implement-1'..'implement-3' per _TIER_BAND); an
+    absent or unrecognized tier falls back to a scope-size proxy on
+    `scope_touch` (see _HIGH_BAND_SCOPE_TOUCH_THRESHOLD). Gate rigor comes
+    from `gate_asserts` (config.GateDef.asserts; None/[] is the shallowest
+    case -- no gate, or a gate declaring nothing, both read as maximally
+    shallow, never crash).
+
+    Returns '' when the band is BELOW high (i.e. implement-1/implement-2, or
+    the fallback's small-scope case) AND the gate is rigorous (declares both
+    changed-line-coverage and mutation) -- the load-bearing neutral case:
+    `build_dispatch` appends nothing and the REVIEW_INDEPENDENT prompt stays
+    byte-identical to a pre-BATCHC dispatch. Otherwise returns a short
+    directive naming the SPECIFIC reason(s) it fired (high band and/or the
+    missing gate rigor) -- never a generic "look harder" with no reason,
+    since the reviewer's own judgment about what to double-check depends on
+    WHY it's being asked to.
+    """
+    band = _TIER_BAND.get(tier or "")
+    if band is None:
+        band = (_HIGH_BAND
+                if len(scope_touch or []) > _HIGH_BAND_SCOPE_TOUCH_THRESHOLD
+                else _LOW_BAND)
+
+    asserts_set = set(gate_asserts or [])
+    missing_rigor = _RIGOROUS_ASSERTS - asserts_set
+    shallow = bool(missing_rigor)
+
+    if band < _HIGH_BAND and not shallow:
+        return ""
+
+    reasons = []
+    if band >= _HIGH_BAND:
+        reasons.append(
+            "This is a high-complexity change -- verify architectural "
+            "correctness and edge cases, not just the handoff's stated "
+            "oracles."
+        )
+    if shallow:
+        if asserts_set:
+            gate_desc = f"The automated gate asserts only {', '.join(sorted(asserts_set))}"
+        else:
+            gate_desc = "The automated gate declares no assertions"
+        reasons.append(
+            f"{gate_desc} -- no coverage or mutation floor, so verify "
+            "coverage and edge-cases yourself."
+        )
+    return " ".join(reasons)
+
+
 def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    branch: str, task_id: str, gate_hint: str,
                    receipt_path: str, role: Role = Role.IMPLEMENTER,
@@ -179,7 +254,8 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    attempt_id: str | None = None,
                    prior_verdict: str | None = None,
                    approved_amendments: list[str] | None = None,
-                   review_focus: list[str] | None = None) -> tuple[list[str], str]:
+                   review_focus: list[str] | None = None,
+                   review_depth: str = "") -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -225,6 +301,17 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     Only the REVIEW_INDEPENDENT branch consults it, and only when non-empty,
     appended LAST and bounded to the remaining argv budget (see below) --
     Defaults None -> byte-identical to the pre-D1 prompt.
+
+    D-BATCHC (2026-07-26, plan-factory-hardening.md §D part 2): `review_depth`,
+    when non-empty, is the caller-computed complexity-band/gate-rigor
+    directive from `compute_review_depth_directive` (see above) -- the SAME
+    "pure helper computed at the call site, then argv-bounded append" shape
+    review_focus uses, not a new route/tier (only ONE review tier exists
+    today). Only the REVIEW_INDEPENDENT branch consults it, appended LAST
+    (after review_focus) and bounded to the remaining argv budget. Defaults
+    "" (the empty-string neutral case: low complexity band + a rigorous
+    declared gate, or simply no signal available) -> byte-identical to the
+    pre-BATCHC prompt.
     """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
     if role is Role.CARVER:
@@ -486,6 +573,30 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # not dispatching at all (same rationale as prior_verdict/scope-
         # amendment above; the reviewer still runs its base adversarial
         # checks, just without the carve's extra pointers).
+
+    # D-BATCHC (2026-07-26, plan-factory-hardening.md §D part 2): the
+    # complexity-band/gate-rigor review-depth directive from
+    # compute_review_depth_directive (caller-computed, passed in as a plain
+    # string -- this function makes NO route/tier choice). Appended LAST
+    # (after review_focus, so both coexist when both fire) and BOUNDED to the
+    # remaining argv budget, the SAME "measure remaining room, truncate to
+    # fit, skip entirely if too tight, never strand the dispatch" pattern as
+    # review_focus immediately above. Absent/empty review_depth (the neutral
+    # low-band + rigorous-gate case, and every pre-BATCHC call site) -> this
+    # block is a complete no-op, so the prompt is byte-identical to today.
+    if role is Role.REVIEW_INDEPENDENT and review_depth:
+        header = "\nReview depth: "
+        marker = " [... truncated to fit ...]"
+        room = argv_max - len(prompt) - len(header)
+        if room >= 40:
+            body = review_depth
+            if len(body) > room:
+                body = body[: room - len(marker)].rstrip() + marker
+            prompt += header + body
+        # else: skip entirely -- dispatching without the depth directive
+        # beats not dispatching at all (same rationale as review_focus
+        # above; the reviewer still runs its base adversarial checks, just
+        # without the extra depth guidance).
 
     # Check prompt length
     if len(prompt) > argv_max:
