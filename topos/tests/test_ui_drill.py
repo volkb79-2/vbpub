@@ -60,6 +60,8 @@ def test_render_drill_text_renders_real_sections_and_fixtures(tmp_path: Path) ->
                 "class_bytes": {"hot": 1024, "warm": 512, "cold": 0, "idle": 0},
                 "class_pct": {"hot": 110, "warm": -5, "cold": 0, "idle": None},
                 "regions": [{"class": "hot"}, {"class": "bad"}, "malformed"],
+            }, {
+                "class_bytes": {"hot": 1024 ** 5},
             }],
             "host_sessions": [{"mode": "paddr", "covered_pid_count": 3}],
         }
@@ -78,7 +80,8 @@ def test_render_drill_text_renders_real_sections_and_fixtures(tmp_path: Path) ->
     text = _render(frame, ring, tmp_path)
     assert "DETAIL system.slice/demo.scope" in text and "name: demo" in text
     assert "DAMON" in text and "summary: total=1.5KiB" in text
-    assert "session covers 1/2 pids" in text and "regions: hot=1 warm=0 cold=0 idle=0" in text
+    assert "session covers 1/2 pids" in text and "coverage: unattributed" in text
+    assert "regions: hot=1 warm=0 cold=0 idle=0" in text and "hot=1024.0TiB" in text
     assert "110.0%" in text and "############" in text and "0.0%" in text
     assert "GOVERNANCE" in text and "mem_min    live=10 recorded=20" in text
     assert "NETWORK" in text and "reason: provider delayed" in text and "proto: tcp" in text
