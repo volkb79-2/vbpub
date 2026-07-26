@@ -4,6 +4,7 @@ from rich.console import Console
 
 from topos.config import ToposConfig
 from topos.model import DockerMeta, Entity, EntityFrame, Frame, MetricValue
+from topos.record.ring import HistoryRing
 from topos.ui.table import (
     available_profiles,
     format_metric_value,
@@ -126,6 +127,21 @@ def test_custom_profile_reports_unsupported_columns_gracefully() -> None:
     assert layout.ignored_columns == ("bogus_metric",)
 
 
+def test_snapshot_custom_profile_with_only_unsupported_columns_keeps_entity_key() -> None:
+    config = ToposConfig(
+        columns={"profiles": {"unsupported": {"list": ["bogus_metric", "also_bogus"]}}}
+    )
+
+    snapshot = snapshot_container_table(
+        _container_frame(), config, width=140, profile="unsupported", sort_by="name",
+        filter_text="alpha", selected_key=None,
+    )
+
+    assert snapshot.columns == ()
+    assert snapshot.row_keys == ("system.slice/alpha.scope",)
+    assert snapshot.cells == ((),)
+
+
 def _container_frame() -> Frame:
     def entity_frame(key: str, name: str | None, ram: int) -> EntityFrame:
         return EntityFrame(
@@ -176,6 +192,43 @@ def test_container_table_public_render_and_snapshot_filter_sort_and_selection() 
     filtered = render_container_table(frame, ToposConfig(), **{**kwargs, "filter_text": "zulu", "selected_key": None})
     assert filtered.row_keys == ("system.slice/zulu.scope",)
     assert "zulu" in _rendered_text(filtered.table) and "alpha" not in _rendered_text(filtered.table)
+
+
+def test_public_table_edges_render_literal_unknowns_codes_and_ignored_title() -> None:
+    entity_frame = EntityFrame(
+        entity=Entity(key="system.slice/alpha.scope", kind="scope", parent="system.slice", docker=DockerMeta("k", "full", "alpha", "image")),
+        metrics={
+            "present_unknown": MetricValue("literal-value", "exact"),
+            "governance_origin": MetricValue(99, "exact"),
+            "governance_drift": MetricValue(None, "unavail_kernel"),
+            "damon_mode": MetricValue(99, "exact"),
+        },
+    )
+    frame = Frame(schema_version=1, ts=100.0, interval_s=5.0, host={}, entities={entity_frame.entity.key: entity_frame})
+    config = ToposConfig(columns={"profiles": {"edge": {"list": ["name", "present_unknown", "bogus_metric"]}}})
+
+    assert format_metric_value("present_unknown", entity_frame).plain == "literal-value"
+    assert format_metric_value("governance_origin", entity_frame).plain == "99"
+    assert format_metric_value("governance_drift", entity_frame).plain == "-"
+    assert format_metric_value("damon_mode", entity_frame).plain == "99"
+    rendered = render_container_table(
+        frame, config, width=140, profile="edge", sort_by="name", filter_text="", selected_key=None,
+    )
+    assert "ignored=present_unknown,bogus_metric" in rendered.title
+    text = _rendered_text(rendered.table)
+    assert "ignored=present_unknown,bogus_metric" in text
+
+
+def test_public_cpu_trend_is_dim_dash_for_existing_all_missing_history() -> None:
+    entity_frame = EntityFrame(entity=Entity(key="demo.scope", kind="scope", parent=""), metrics={"cpu_pct": MetricValue(None, "unavail_kernel")})
+    frame = Frame(schema_version=1, ts=100.0, interval_s=5.0, host={}, entities={entity_frame.entity.key: entity_frame})
+    ring = HistoryRing(capacity=4, tracked_metrics=("cpu_pct",))
+    ring.append_frame(frame)
+
+    trend = format_metric_value("cpu_trend", entity_frame, ring=ring)
+
+    assert trend.plain == "-"
+    assert trend.style == "dim"
 
 
 def test_container_table_renders_no_container_rows_placeholder_after_filter() -> None:
