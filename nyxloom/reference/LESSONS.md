@@ -364,3 +364,50 @@ non-empty intersection is the signal to **serialize those two packages**, not to
 merge-and-hope. This is the merge-discipline complement to the verification rules:
 L7 says *re-verify the tree*, L13 says *verify the tree still composes with where
 `main` went*.
+
+## L14 — Evaluate an implementation route with sequential, oracle-bound packages; a benchmark is only a prior
+
+**Rule.** Do not select a cheap implementation model from a public leaderboard, a
+single impressive patch, or a parallel shoot-out. For a defined task class, test
+one `(provider, model, effort, tool-wrapper)` route on **two sequential, bounded
+packages** with the same controller contract: immutable base and literal coverage
+residual, declared worktree and isolated runner, focused plus full gate, exact
+coverage evidence, and independent review. The controller owns the oracle and
+records the result. A route that violates the runner/worktree contract receives
+no implementation credit even if it has not yet edited a file.
+
+**Evidence (Topos global coverage healing, P97–P113, 2026-07-25/26).** A
+persistent DeepSeek Flash Max implementation session could produce useful
+test-only packages early, but degraded with stale-worktree reads, weak
+assertions, and incorrect runners. A newly started Flash Max session was given a
+much smaller, highly literal P113 handoff, preflighted the stated files, then
+used host `python3` instead of the mandated `tester-unified` container; the
+controller stopped it before an edit. This establishes that more descriptive
+prompting and a fresh context alone do not make the route safe as an unattended
+owner. A DeepSeek Pro Max reviewer independently found incomplete coverage and
+test-quality problems, but required complete receipts and controller
+re-measurement to avoid line/arc interpretation mistakes. The useful result is
+not “Flash bad” or “Pro sufficient”: it is a measurable route profile.
+
+**How to apply.** Record, per package: the exact handoff/base/residual; time and
+cached/uncached token use; runner/worktree/scoping violations; focused and full
+gate verdicts; literal residual closure; controller repair or takeover; reviewer
+findings; and rework count. Rate a route as:
+
+- **UNFIT** — any safety/runner/worktree breach, hollow-test attempt, or
+  controller takeover needed to obtain a valid package;
+- **CONDITIONAL** — two packages gate cleanly, but a bounded controller repair
+  or reviewer finding remains; use only behind hard tool policy and close
+  supervision;
+- **QUALIFIED** — two clean packages, complete self-review/evidence, and only
+  non-blocking independent-review findings; and
+- **PREFERRED** — retains QUALIFIED behaviour across at least four packages and
+  has the lowest measured total cost (model + controller + review + retries),
+  not merely the lowest token price.
+
+DeepSWE supplies a useful *per-effort coding prior*; Terminal-Bench measures
+terminal/tool operations; neither can certify project-local testing discipline.
+Use them to reject implausible routes before spending, then promote only routes
+that pass this two-package, real-gate experiment. An independent reviewer is a
+corroborator and adversary, never the route-health owner (L12) or the final gate
+authority (L7).
