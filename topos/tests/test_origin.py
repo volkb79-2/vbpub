@@ -408,3 +408,169 @@ def test_entity_with_no_fragment_or_dropin_vs_runtime_dropin() -> None:
     runtime = frame.entities["runtime.slice"]
     assert runtime.governance is not None
     assert runtime.governance["summary"]["origin"] == "systemd_runtime_dropin"
+
+
+def test_protected_child_under_root_not_clamped_by_root() -> None:
+    """Protected child under root; _effective_memory_min removes root "" from non-root path, so child value is effective."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        return ShowResult(stdout="", returncode=1)
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "": EntityFrame(
+                entity=Entity("", "root", None),
+                metrics={"mem_min": MetricValue(512, "exact")},
+            ),
+            "child.scope": EntityFrame(
+                entity=Entity("child.scope", "scope", "", is_protected=True),
+                metrics={"mem_min": MetricValue(1024, "exact")},
+            ),
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    child = frame.entities["child.scope"]
+    assert child.governance is not None
+    # Root removed from path, so child's own value (1024) is effective
+    assert child.governance["summary"]["severity"] == "warn"
+    assert child.governance["summary"]["origin"] == "raw_write"
+    assert child.governance["effective_memory_min"]["value"] == 1024
+    assert child.governance["effective_memory_min"]["clamped_by"] == {"key": "child.scope", "value": 1024}
+
+
+def test_systemctl_record_without_fragment_or_dropin_paths_yields_raw_write() -> None:
+    """Systemctl record present but no FragmentPath/DropInPaths; recorded_origin is None, live is non-default."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        # Unit found but no fragment or dropin paths
+        return ShowResult(
+            stdout="MemoryHigh=100\nFragmentPath=\nDropInPaths=\n",
+            returncode=0,
+        )
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "test.slice": EntityFrame(
+                entity=Entity("test.slice", "slice", ""),
+                metrics={"mem_high": MetricValue(100, "exact")},
+            )
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    entity = frame.entities["test.slice"]
+    assert entity.governance is not None
+    # No fragment/dropin means recorded_origin is None; non-default live value is raw_write
+    assert entity.governance["summary"]["origin"] == "raw_write"
+    assert entity.governance["limits"]["mem_high"]["recorded_origin"] is None
+    assert entity.governance["limits"]["mem_high"]["severity"] == "warn"
+
+
+def test_ancestor_chain_with_unlimited_then_finite_child_exercises_saw_unlimited() -> None:
+    """Ancestor chain including unlimited then finite child exercises saw_unlimited branch."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        return ShowResult(stdout="", returncode=1)
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "": EntityFrame(
+                entity=Entity("", "root", None),
+                metrics={"mem_min": MetricValue(None, "unlimited")},
+            ),
+            "parent.slice": EntityFrame(
+                entity=Entity("parent.slice", "slice", ""),
+                metrics={"mem_min": MetricValue(256, "exact")},
+            ),
+            "parent.slice/child.scope": EntityFrame(
+                entity=Entity("parent.slice/child.scope", "scope", "parent.slice"),
+                metrics={"mem_min": MetricValue(512, "exact")},
+            ),
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    child = frame.entities["parent.slice/child.scope"]
+    assert child.governance is not None
+    # Finite values exist, so clamped_by should show the smallest
+    assert child.governance["effective_memory_min"]["clamped_by"]["value"] == 256
+
+
+def test_systemd_memory_max_with_live_finite_value_produces_raw_write_reason() -> None:
+    """Systemd MemoryHigh=max with live finite value produces raw-write reason containing 'max'."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        return ShowResult(
+            stdout="MemoryHigh=max\nFragmentPath=/etc/systemd/system/test.slice\n",
+            returncode=0,
+        )
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "test.slice": EntityFrame(
+                entity=Entity("test.slice", "slice", ""),
+                metrics={"mem_high": MetricValue(512, "exact")},
+            )
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    entity = frame.entities["test.slice"]
+    assert entity.governance is not None
+    assert entity.governance["summary"]["origin"] == "raw_write"
+    assert entity.governance["limits"]["mem_high"]["severity"] == "warn"
+    assert "max" in entity.governance["limits"]["mem_high"]["reason"]
+
+
+def test_entity_with_two_independent_unmanaged_drifted_limits() -> None:
+    """Entity with two unmanaged non-default finite limits yields two drifted_limits and reasons."""
+    from topos.drift.origin import annotate_frame_governance, ShowResult
+    from topos.model import Entity, EntityFrame, Frame, MetricValue
+
+    def mock_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
+        return ShowResult(stdout="", returncode=1)
+
+    frame = Frame(
+        schema_version=1,
+        ts=100.0,
+        interval_s=5.0,
+        host={},
+        entities={
+            "test.slice": EntityFrame(
+                entity=Entity("test.slice", "slice", ""),
+                metrics={
+                    "mem_min": MetricValue(512, "exact"),  # unmanaged, non-default (default 0)
+                    "mem_low": MetricValue(256, "exact"),  # unmanaged, non-default (default 0)
+                },
+            )
+        },
+    )
+    annotate_frame_governance(frame, mock_runner)
+    entity = frame.entities["test.slice"]
+    assert entity.governance is not None
+    assert entity.governance["summary"]["origin"] == "raw_write"
+    assert len(entity.governance["summary"]["drifted_limits"]) == 2
+    assert "mem_min" in entity.governance["summary"]["drifted_limits"]
+    assert "mem_low" in entity.governance["summary"]["drifted_limits"]
+    assert len(entity.governance["summary"]["reasons"]) == 2

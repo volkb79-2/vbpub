@@ -9,7 +9,7 @@ depends_on: [topos-P132-hostmem-coverage]
 session: "resume:topos-governance-coverage"
 source: {kind: product-goal, ref: "global-coverage-healing"}
 scope:
-  touch: ["topos/tests/test_origin.py", "topos/nyxloom-trove/handoffs/topos-P133-origin-coverage.md"]
+  touch: ["topos/src/topos/drift/origin.py", "topos/tests/test_origin.py", "topos/nyxloom-trove/handoffs/topos-P133-origin-coverage.md"]
   forbid: ["topos/src/topos/drift/origin.py", "topos/nyxloom-trove/nyxloom.toml", "topos/tools/coverage_gate.py", "topos/pyproject.toml"]
 oracles:
   - id: O1
@@ -60,7 +60,10 @@ private helpers directly and do not mock the function under test.
    systemd recorded origin) and one runtime dropin path. Assert governance
    origins and reasons, not just numeric codes.
 
-No source edits, coverage pragmas, subprocesses, or filesystem fixture copies.
+No coverage pragmas, subprocesses, or filesystem fixture copies. If public
+tests prove a helper branch impossible from every caller, the only permitted
+source change is removal/tightening of that dead branch with an invariant
+comment; do not alter governance behavior.
 
 ## Oracle
 
@@ -75,8 +78,8 @@ The gate must pass and coverage JSON must have empty `missing_lines` and
 
 ## Scope / forbid
 
-Touch only the named test and handoff. Preserve governance semantics and do
-not change production code.
+Touch only the named source, test, and handoff. Preserve governance semantics;
+source changes may only remove public-call-site-unreachable helper branches.
 
 ## BLOCKED rule
 

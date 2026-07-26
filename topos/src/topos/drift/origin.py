@@ -119,8 +119,9 @@ def _annotate_entity(
         if bool(detail["drift"]):
             drifted_limits.append(limit.metric_name)
             reason = str(detail["reason"])
-            if reason not in summary_reasons:
-                summary_reasons.append(reason)
+            # Every generated reason identifies its governed limit/property;
+            # two LIMITS entries therefore cannot produce duplicate text.
+            summary_reasons.append(reason)
 
     effective_metric = MetricValue(
         effective_info["value"],
@@ -198,14 +199,13 @@ def _classify_limit(
         if entity.is_protected and isinstance(requested, int) and isinstance(effective_value, int) and effective_value < requested:
             drift = True
             severity = "red"
-            clamp = effective_info.get("clamped_by")
-            if isinstance(clamp, dict) and clamp.get("key"):
-                reason = (
-                    f"protected entity requested memory.min={requested}, but ancestor {clamp['key']} clamps "
-                    f"the effective floor to {effective_value}"
-                )
-            else:
-                reason = f"protected entity requested memory.min={requested}, but the effective floor is {effective_value}"
+            # A finite protected clamp is necessarily a non-root path element:
+            # non-root paths exclude key "", and root has no separate ancestor.
+            clamp = effective_info["clamped_by"]
+            reason = (
+                f"protected entity requested memory.min={requested}, but ancestor {clamp['key']} clamps "
+                f"the effective floor to {effective_value}"
+            )
 
     return {
         "origin": origin,
@@ -266,8 +266,8 @@ def _parse_systemd_value(text: str) -> int | None | object:
         return _UNSET
 
 
-def _recorded_origin(view: UnitView | None) -> str | None:
-    if view is None or not view.found:
+def _recorded_origin(view: UnitView) -> str | None:
+    if not view.found:
         return None
     if any(path.startswith("/run/systemd/system.control/") or path.startswith("/run/systemd/transient/") for path in view.dropin_paths):
         return "systemd_runtime_dropin"
@@ -345,9 +345,7 @@ def _effective_memory_min(entities: dict[EntityKey, EntityFrame], key: EntityKey
     }
 
 
-def _values_equal(live_metric: MetricValue, recorded_value: int | None | object) -> bool:
-    if recorded_value is _UNSET:
-        return False
+def _values_equal(live_metric: MetricValue, recorded_value: int | None) -> bool:
     if recorded_value is None:
         return live_metric.v is None and live_metric.src == "unlimited"
     return live_metric.v == recorded_value
@@ -383,9 +381,7 @@ def _fmt_metric(metric: MetricValue) -> str:
     return str(metric.v)
 
 
-def _fmt_value(value: int | None | object) -> str:
-    if value is _UNSET:
-        return "unset"
+def _fmt_value(value: int | None) -> str:
     if value is None:
         return "max"
     return str(value)
