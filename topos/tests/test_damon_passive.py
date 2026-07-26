@@ -226,6 +226,19 @@ def test_collect_once_omits_vaddr_when_no_cgroup_line_identifies_an_entity(tmp_p
     assert frame.entities[GAME_KEY].damon is None
 
 
+def test_collect_once_uses_the_newest_damon_sample_for_age(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    tried = root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions"
+    for path in tried.rglob("*"):
+        if path.is_file():
+            os.utime(path, (80.0, 80.0))
+    os.utime(tried / "0" / "age", (95.0, 95.0))
+
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    assert frame.entities[GAME_KEY].metrics["damon_sample_age_s"] == MetricValue(5.0, "exact")
+
+
 def test_annotate_frame_damon_preserves_paddr_host_metadata_without_root_entity(tmp_path: Path) -> None:
     root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
     frame = Frame(schema_version=1, ts=100.0, interval_s=5.0, host={}, entities={})

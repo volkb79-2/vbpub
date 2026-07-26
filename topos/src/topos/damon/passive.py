@@ -376,7 +376,7 @@ def _sample_age_seconds(paths: list[Path], now: float) -> float | None:
             mtimes.append(path.stat().st_mtime)
         except OSError:
             continue
-    return max((max(0.0, now - mtime) for mtime in mtimes), default=None)
+    return min((max(0.0, now - mtime) for mtime in mtimes), default=None)
 
 
 def _numeric_dirs(path: Path) -> list[Path]:
