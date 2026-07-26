@@ -169,6 +169,16 @@ inherit = "openrouter-free-nemotron-ultra"
 model = "openrouter/poolside/laguna-xs-2.1:free"
 resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/poolside/laguna-xs-2.1:free", "--dir", "{worktree}", "{prompt}"]
 
+[routes.openrouter-free-laguna-m1]
+inherit = "openrouter-free-nemotron-ultra"
+model = "openrouter/poolside/laguna-m.1:free"
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/poolside/laguna-m.1:free", "--dir", "{worktree}", "{prompt}"]
+
+[routes.openrouter-free-ling30-flash]
+inherit = "openrouter-free-nemotron-ultra"
+model = "openrouter/inclusionai/ling-3.0-flash:free"
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/inclusionai/ling-3.0-flash:free", "--dir", "{worktree}", "{prompt}"]
+
 # Paid OpenRouter trial routes.  Both model IDs were verified against the
 # OpenRouter catalog on 2026-07-26.  The controller invokes them explicitly,
 # keeps a single session per two-package trial, and uses backoff+resume on 429
