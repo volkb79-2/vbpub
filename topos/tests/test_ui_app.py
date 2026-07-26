@@ -231,6 +231,70 @@ def test_pilot_replay_jump_prompt_with_frame_number() -> None:
     asyncio.run(run())
 
 
+def test_pilot_filter_prompt_submits_text_and_focuses_input() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("/")
+            await pilot.pause()
+            from topos.ui.app import FilterScreen
+
+            assert isinstance(app.screen, FilterScreen)
+            input_widget = app.screen.query_one("#filter-input", Input)
+            assert input_widget.has_focus
+            input_widget.value = "paks"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.filter_text == "paks"
+            assert not isinstance(app.screen, FilterScreen)
+
+    asyncio.run(run())
+
+
+def test_pilot_filter_prompt_escape_clears_filter() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("/")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.filter_text == ""
+
+    asyncio.run(run())
+
+
+def test_pilot_jump_prompt_escape_cancels_and_glossary_renders_and_dismisses() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("j")
+            await pilot.pause()
+            from topos.ui.app import GlossaryScreen, JumpScreen
+
+            assert isinstance(app.screen, JumpScreen)
+            jump_input = app.screen.query_one("#jump-input", Input)
+            assert jump_input.has_focus
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, JumpScreen)
+            assert app._replay_driver.index == 0
+
+            await pilot.press("f1")
+            await pilot.pause()
+            assert isinstance(app.screen, GlossaryScreen)
+            glossary = app.screen.query_one("#glossary-body", Static)
+            assert "GLOSSARY" in _static_text(glossary)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, GlossaryScreen)
+
+    asyncio.run(run())
+
+
 def test_pilot_replay_jump_prompt_invalid_input_preserves_current_frame() -> None:
     async def run() -> None:
         app = _replay_app()
