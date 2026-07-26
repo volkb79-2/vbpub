@@ -1050,14 +1050,22 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
             #                      main; re-work would build on a moved base)
             #   architectural  -> READY_TO_CARVE  (design/scope wrong; same-base
             #                      retries cannot fix it -> re-scope via the carver)
+            #   incapable      -> READY_TO_CARVE  (D-R3, 2026-07-26 refined: scope was
+            #                      fine, the MODEL wasn't capable of it -- same
+            #                      destination as architectural, but a DISTINCT
+            #                      transition note so the daemon-side rescope-dict
+            #                      builder can tell which one fired and bump the
+            #                      tier instead of re-scoping; see
+            #                      daemon._carve_packet_body_lines)
             #   fixable / none -> the mechanical attempt-budget path (below), a
             #                      TARGETED re-queue whose re-dispatch packet embeds
             #                      the review verdict (daemon build_dispatch
             #                      prior_verdict) so it is never the bare
             #                      context-free same-model retry the critique bans.
-            # Drift & architectural both re-carve, so in a carve-less pipeline
-            # (gated/lean) they share the exhausted case's terminating escalation
-            # to NEEDS_DECISION -- never a dead-end in READY_TO_CARVE with no owner.
+            # Drift & architectural/incapable all re-carve, so in a carve-less
+            # pipeline (gated/lean) they share the exhausted case's terminating
+            # escalation to NEEDS_DECISION -- never a dead-end in READY_TO_CARVE
+            # with no owner.
             tclass = inp.triage_class.get(fm_id)
             has_carve = "carve" in inp.cfg.pipeline
             drifted = _premise_drifted(fm.input_revision, inp.head_revision)
@@ -1072,17 +1080,21 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
                     notes=(f"review rejected -- stale premise (input_revision "
                            f"{fm.input_revision} != main {inp.head_revision[:7]}); routed for re-carve"),
                 ))
-            elif tclass == "architectural" and has_carve:
+            elif tclass in ("architectural", "incapable") and has_carve:
                 task_actions.append(Transition(
                     task_id=fm_id, to=TaskState.READY_TO_CARVE,
-                    notes="review rejected -- triage: architectural; routed for re-scope",
+                    notes=f"review rejected -- triage: {tclass}; routed for re-scope",
                 ))
-            elif (drifted or tclass == "architectural") and not has_carve:
-                # Stale-premise or architectural, but the composed pipeline has no
-                # carve stage to re-scope the work (gated/lean). Escalate to a human
-                # -- same terminating logic B4a uses for the exhausted case, so the
-                # reject loop still closes rather than dead-ending in READY_TO_CARVE.
-                reason = "stale premise" if drifted else "architectural"
+            elif (drifted or tclass in ("architectural", "incapable")) and not has_carve:
+                # Stale-premise, architectural, or incapable, but the composed
+                # pipeline has no carve stage to re-scope the work (gated/lean).
+                # Escalate to a human -- same terminating logic B4a uses for the
+                # exhausted case, so the reject loop still closes rather than
+                # dead-ending in READY_TO_CARVE. When not drifted, this branch's
+                # own condition guarantees tclass is one of the two carve-routed
+                # classes, so using it directly (rather than hardcoding
+                # "architectural") preserves that class's own name in the note.
+                reason = "stale premise" if drifted else tclass
                 task_actions.append(Transition(
                     task_id=fm_id, to=TaskState.NEEDS_DECISION,
                     notes=f"review rejected -- triage: {reason}; no carve stage, escalating to operator",

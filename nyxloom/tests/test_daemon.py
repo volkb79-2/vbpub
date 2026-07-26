@@ -818,6 +818,102 @@ def test_build_carve_packet_rescope_no_drift_no_verdict_negative(
     assert "no committed review report found" in packet
 
 
+# D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): the incapable
+# tier-bump rescope intro is a NEW branch inside the SAME rescope section --
+# fires ONLY when BOTH reject_class=='incapable' AND a real origin_tier are
+# present; every other case (architectural, absent class, missing tier) keeps
+# the pre-existing generic intro BYTE-IDENTICAL (O3, the load-bearing safety
+# oracle -- this touches reconcile-adjacent carve-prompt construction, frozen-
+# core-adjacent). O2 pins the positive: origin tier value + tier-bump/
+# not-a-redesign language present, and the old generic sentence ABSENT.
+
+# Captured verbatim from _carve_packet_body_lines's rescope branch BEFORE the
+# incapable branch was added (git blame: pre-D-R3 daemon.py).
+_PRE_INCAPABLE_RESCOPE_INTRO = (
+    "You are RE-SCOPING one rejected task for project 'demo'. Task "
+    "'demo-P01' was implemented, REVIEWED, and REJECTED, and triage "
+    "classified it as architectural or stale-premise -- a same-base retry by "
+    "the implementer cannot fix it. YOU decide what happens: write a fresh, "
+    "corrected handoff package (re-carve), drop the work if the review shows "
+    "it is no longer worth doing, or escalate a genuine product question as a "
+    "D-NNN decision. Do NOT simply re-emit the original handoff unchanged, and "
+    "do NOT implement the work yourself."
+)
+
+
+def test_carve_packet_rescope_intro_byte_identical_for_architectural(
+        tmp_state, sample_project, patch_siblings):
+    """O3: reject_class='architectural' with a real origin_tier present still
+    takes the OLD generic intro, byte-for-byte -- the incapable branch
+    requires BOTH reject_class=='incapable' AND a non-None origin_tier;
+    architectural alone must never trip it."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "demo-P01", "handoff_path": "handoff/demo-P01.md",
+        "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
+        "drifted": False, "reject_class": "architectural", "origin_tier": "flash-high",
+    }
+    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert _PRE_INCAPABLE_RESCOPE_INTRO in packet
+
+
+def test_carve_packet_rescope_intro_byte_identical_when_reject_class_absent(
+        tmp_state, sample_project, patch_siblings):
+    """O3: no reject_class key at all (every pre-D-R3 rescope dict, and every
+    rescope where the origin's review carried no class) -> the old generic
+    intro, unchanged."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "demo-P01", "handoff_path": "handoff/demo-P01.md",
+        "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
+        "drifted": False,
+    }
+    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert _PRE_INCAPABLE_RESCOPE_INTRO in packet
+
+
+def test_carve_packet_rescope_intro_byte_identical_when_origin_tier_missing(
+        tmp_state, sample_project, patch_siblings):
+    """O3: reject_class='incapable' but origin_tier is None (couldn't be
+    recovered -- Work 3's graceful degradation) -> the old generic intro,
+    unchanged. Proves the incapable branch requires BOTH signals, not just
+    the class alone."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "demo-P01", "handoff_path": "handoff/demo-P01.md",
+        "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
+        "drifted": False, "reject_class": "incapable", "origin_tier": None,
+    }
+    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert _PRE_INCAPABLE_RESCOPE_INTRO in packet
+
+
+def test_carve_packet_rescope_incapable_intro_instructs_tier_bump(
+        tmp_state, sample_project, patch_siblings):
+    """O2: reject_class='incapable' AND a real origin_tier -> the packet
+    contains the origin tier value AND language distinguishing this from the
+    architectural-rescope text (explicitly a tier bump, NOT a re-scope).
+    NEGATIVE: the old generic 'architectural or stale-premise' sentence is
+    ABSENT -- proving this REPLACES the intro for this case, not adds
+    alongside it."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "demo-P01", "handoff_path": "handoff/demo-P01.md",
+        "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
+        "drifted": False, "reject_class": "incapable", "origin_tier": "flash-high",
+    }
+    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert "flash-high" in packet
+    assert "HIGHER" in packet
+    assert "Do NOT redesign the scope" in packet
+    assert "architectural or stale-premise" not in packet
+    assert "source.ref" in packet
+
+
 def test_build_carve_packet_untargeted_has_no_rescope_section(
         tmp_state, sample_project, patch_siblings):
     """Discrimination: the untargeted headroom packet (rescope=None, item_id=None)
@@ -873,6 +969,159 @@ def test_rescope_context_graceful_when_no_handoff_and_no_review(
     assert ctx["input_revision"] is None
     assert ctx["verdict"] is None
     assert ctx["drifted"] is False
+    # D-R3 (2026-07-26 refined): both new keys degrade gracefully too.
+    assert ctx["reject_class"] is None
+    assert ctx["origin_tier"] is None
+
+
+def test_rescope_context_graceful_when_handoff_unparsable(
+        tmp_state, sample_project, patch_siblings):
+    """Coverage/D-R3: handoff_path is SET but the file is missing (git-state
+    drift, or a not-yet-materialized worktree) -> frontmatter.parse_handoff
+    raises, and BOTH input_revision AND origin_tier degrade to None via the
+    except branch (not just the pre-existing input_revision) -- the re-scope
+    carve must still be launchable with partial data."""
+    cfg = sample_project
+    _seed_task("demo", "demo-P10", TaskState.READY_TO_CARVE,
+               handoff_path="handoff/does-not-exist.md")
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._rescope_context(cfg, states, "demo-P10")
+    assert ctx["input_revision"] is None
+    assert ctx["origin_tier"] is None
+    assert ctx["drifted"] is False
+
+
+def test_rescope_context_reads_reject_class_and_origin_tier(
+        tmp_state, sample_project, patch_siblings):
+    """D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): _rescope_context
+    also surfaces the origin's self-stamped reject_class (re-read via the SAME
+    _parse_reject_class helper that produced the REVIEW_RECORDED stamp) and the
+    origin handoff's tier: frontmatter field -- the two inputs Work 4's rescope
+    prompt branch needs to distinguish an incapable tier-bump from every other
+    re-scope reason."""
+    cfg = sample_project
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "# Review\n\nThe implementation was structurally weak across the board.\n\n"
+        "VERDICT: REJECTED\nREJECT_CLASS: incapable\n")
+    rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef")  # tier: flash-high
+    _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._rescope_context(cfg, states, "demo-P01")
+    assert ctx["reject_class"] == "incapable"
+    assert ctx["origin_tier"] == "flash-high"
+
+
+# -- D-R3 (2026-07-26, refined): _incapable_escalation_note ------------------
+# The provenance-marker resolution _incapable_escalation_note performs: a NEW
+# task's frontmatter `source.ref` (Work 4's rescope prompt instructs the
+# carver to stamp the origin task id there) is re-checked against the
+# ORIGIN's own committed review via the SAME _parse_reject_class helper
+# _rescope_context uses. Each oracle carries its own NEGATIVE control.
+
+def _write_handoff_with_source_ref(root, task_id, source_ref):
+    """A minimal schema-valid handoff for `task_id` whose `source.ref` is
+    `source_ref` (or omitted entirely when None -- an ordinary, non-escalated
+    handoff)."""
+    ref_line = f"  ref: {source_ref}\n" if source_ref is not None else ""
+    text = (
+        "---\n"
+        "schema_version: 1\n"
+        f"id: {task_id}\n"
+        "project: demo\n"
+        "title: Escalated sample\n"
+        "tier: flash-max\n"
+        'input_revision: "0000000"\n'
+        "source:\n"
+        "  kind: review\n"
+        f"{ref_line}"
+        "scope:\n"
+        '  touch: ["src/demo/escalated.py"]\n'
+        "oracles:\n"
+        "  - id: O1\n"
+        '    observable: "pytest tests/test_escalated.py::test_x passes"\n'
+        '    negative: "a bad value raises ValueError (test_x_violation)"\n'
+        "    gate: pytest-q\n"
+        "gates: [pytest-q]\n"
+        'escalate_if: ["a named contract cannot be met as specified"]\n'
+        "---\n\n# Escalated sample\nBody.\n"
+    )
+    rel = f"handoff/{task_id}.md"
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return rel
+
+
+def test_incapable_escalation_note_resolves_provenance_marker(
+        tmp_state, sample_project, patch_siblings):
+    """O4 positive: a NEW task whose source.ref points at an origin task
+    committed-rejected 'incapable' gets a non-empty, non-specific meta-note.
+    Never embeds the prior reviewer's specific finding text (D-R3's documented
+    anti-anchoring rationale)."""
+    cfg = sample_project
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "# Review\n\nSpecific finding: off-by-one-xyz in the retry cap.\n\n"
+        "VERDICT: REJECTED\nREJECT_CLASS: incapable\n")
+    rel = _write_handoff_with_source_ref(cfg.root, "demo-P02", "demo-P01")
+    _seed_task("demo", "demo-P02", TaskState.QUEUED, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    tsf = storage.load_state("demo", "demo-P02")
+    fm = d._frontmatter_for(cfg, tsf)
+
+    note = d._incapable_escalation_note(cfg, fm)
+    assert note != ""
+    assert "higher-tier model" in note
+    assert "own" in note.lower() and "judgment" in note.lower()
+    assert "off-by-one-xyz" not in note  # never anchors on prior specifics
+
+
+def test_incapable_escalation_note_negative_origin_not_incapable(
+        tmp_state, sample_project, patch_siblings):
+    """NEGATIVE: source.ref points at a real origin task, but that origin's
+    own rejection class was 'architectural', not 'incapable' -> ''."""
+    cfg = sample_project
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "VERDICT: REJECTED\nREJECT_CLASS: architectural\n")
+    rel = _write_handoff_with_source_ref(cfg.root, "demo-P02", "demo-P01")
+    _seed_task("demo", "demo-P02", TaskState.QUEUED, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    tsf = storage.load_state("demo", "demo-P02")
+    fm = d._frontmatter_for(cfg, tsf)
+
+    assert d._incapable_escalation_note(cfg, fm) == ""
+
+
+def test_incapable_escalation_note_negative_no_source_ref(
+        tmp_state, sample_project, patch_siblings):
+    """NEGATIVE: an ordinary (non-escalated) handoff has no source.ref at all
+    -- every handoff carved BEFORE this package, and most carved after it --
+    -> ''."""
+    cfg = sample_project
+    rel = _write_handoff_with_source_ref(cfg.root, "demo-P03", None)
+    _seed_task("demo", "demo-P03", TaskState.QUEUED, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    tsf = storage.load_state("demo", "demo-P03")
+    fm = d._frontmatter_for(cfg, tsf)
+
+    assert d._incapable_escalation_note(cfg, fm) == ""
+
+
+def test_incapable_escalation_note_negative_no_frontmatter():
+    """NEGATIVE: fm=None (e.g. an unparsable/missing handoff, the SAME
+    graceful-degradation case _frontmatter_for itself returns) -> ''. No cfg
+    access needed -- proves the None-check short-circuits before any I/O."""
+    d = daemon.Daemon({})
+    assert d._incapable_escalation_note(None, None) == ""
 
 
 def test_execute_carve_dispatch_rescope_supersedes_origin_with_rescoped_outcome(
@@ -3749,6 +3998,32 @@ def test_review_independent_rejected_stamps_reject_class(
     assert recorded.payload["reject_class"] == "architectural"
 
 
+def test_review_independent_rejected_stamps_incapable_reject_class(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """D-R3 (2026-07-26 refined): the SAME end-to-end capture as the
+    architectural case above, for 'incapable' -- proves the new class
+    survives the full committed-report -> daemon -> event payload path, not
+    just the regex in isolation."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rc-incap", "att-rc-incap"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nThe implementation produced bloated, redundant coverage "
+        "instead of a compact suite -- a structural, repeated gap.\n\n"
+        "VERDICT: REJECTED\nREJECT_CLASS: incapable\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
+    assert recorded.payload["reject_class"] == "incapable"
+
+
 def test_review_independent_approved_has_no_reject_class(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
@@ -3796,7 +4071,9 @@ def test_review_independent_rejected_without_class_omits_key(
 
 def test_parse_reject_class_unit(tmp_state, sample_project):
     """_parse_reject_class reads the committed line; NEGATIVE: absent line ->
-    None; an unrecognised value -> None (never a garbage class into routing)."""
+    None; an unrecognised value -> None (never a garbage class into routing).
+    D-R3 (2026-07-26 refined) adds a positive for 'incapable' alongside the
+    existing 'product' case."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -3813,6 +4090,11 @@ def test_parse_reject_class_unit(tmp_state, sample_project):
     _commit_review_report(cfg.root, "t-pc-3", cfg.reports_dir,
                           "VERDICT: REJECTED\nREJECT_CLASS: totally-bogus\n")
     assert d._parse_reject_class(cfg, "t-pc-3") is None
+
+    _make_feature_branch(cfg.root, "t-pc-4", "d.py", "# d\n")
+    _commit_review_report(cfg.root, "t-pc-4", cfg.reports_dir,
+                          "VERDICT: REJECTED\nREJECT_CLASS: incapable\n")
+    assert d._parse_reject_class(cfg, "t-pc-4") == "incapable"
 
 
 def test_review_rationale_unit(tmp_state, sample_project):
@@ -3871,7 +4153,9 @@ def test_triage_classes_binds_latest_rejected_event(tmp_state, sample_project):
     LATEST REVIEW_RECORDED event. Three NEGATIVE controls: (a) a task not in
     REVIEW_REJECTED is excluded; (b) a task whose LATEST review leg is an infra
     'incomplete' does NOT inherit an earlier rejection's class (no stale bleed);
-    (c) a rejected event with no class is excluded."""
+    (c) a rejected event with no class is excluded. A second POSITIVE (d, D-R3
+    2026-07-26 refined) proves 'incapable' is accepted alongside 'architectural',
+    not just tolerated by the regex but actually surfaced in the output dict."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -3888,12 +4172,15 @@ def test_triage_classes_binds_latest_rejected_event(tmp_state, sample_project):
     # (c) rejected but NO class stamped
     _seed_task("demo", "t-tc-noclass", TaskState.REVIEW_REJECTED)
     _seed_review_recorded("demo", "t-tc-noclass", "rejected")
+    # (d) D-R3: rejected + 'incapable', task in REVIEW_REJECTED
+    _seed_task("demo", "t-tc-incap", TaskState.REVIEW_REJECTED)
+    _seed_review_recorded("demo", "t-tc-incap", "rejected", reject_class="incapable")
 
     states = {tid: storage.load_state("demo", tid) for tid in
-              ("t-tc-pos", "t-tc-wrongstate", "t-tc-infra", "t-tc-noclass")}
+              ("t-tc-pos", "t-tc-wrongstate", "t-tc-infra", "t-tc-noclass", "t-tc-incap")}
     out = d._triage_classes("demo", states)
 
-    assert out == {"t-tc-pos": "architectural"}
+    assert out == {"t-tc-pos": "architectural", "t-tc-incap": "incapable"}
 
 
 def test_dispatch_implementer_embeds_prior_review_verdict(

@@ -1151,10 +1151,10 @@ class Daemon:
     def _triage_classes(self, project: str, states: dict[str, TaskStateFile]) -> dict[str, str]:
         """B4b (D-060 triage Tier-2; D-066): for each task CURRENTLY in
         REVIEW_REJECTED, the frontier reviewer's self-classification of the
-        rejection ("fixable"|"architectural"|"product"), read from the reject_class
-        stamped on its LATEST REVIEW_RECORDED event. reconcile stays pure -- it
-        consumes this precomputed dict rather than reading events itself, exactly
-        like review_rejections_by_area.
+        rejection ("fixable"|"architectural"|"incapable"|"product"), read from
+        the reject_class stamped on its LATEST REVIEW_RECORDED event. reconcile
+        stays pure -- it consumes this precomputed dict rather than reading
+        events itself, exactly like review_rejections_by_area.
 
         Bind to the latest REVIEW_RECORDED of ANY result (not just the latest
         'rejected' one), then classify only if THAT event is a genuine rejection
@@ -1184,7 +1184,12 @@ class Daemon:
                 # faithfully surfaced. It carries no dedicated route: not
                 # product/architectural, it falls through reconcile's triage table
                 # to the same plain retry `fixable`/unclassified already take.
-                if cls in ("fixable", "architectural", "product", "transient"):
+                # D-R3 (2026-07-26, refined): `incapable` also joins the
+                # vocabulary -- routes like `architectural` (READY_TO_CARVE),
+                # but reconcile's triage table keeps the two distinguishable in
+                # the transition note so the carve consumer can branch on which
+                # one fired (tier bump vs. re-scope).
+                if cls in ("fixable", "architectural", "incapable", "product", "transient"):
                     out[task_id] = cls
         return out
 
@@ -3662,15 +3667,49 @@ class Daemon:
                 else f"current -- input_revision {input_rev} still matches main "
                      f"{(head_rev[:7] if isinstance(head_rev, str) else head_rev)}"
             )
+            # D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): an
+            # `incapable`-classified rejection (the model wasn't capable of a
+            # correctly-scoped task -- a structural/repeated capability gap, NOT
+            # a design defect) gets a DIFFERENT intro paragraph: tier bump, scope
+            # held constant, explicitly NOT a re-scope. Only fires when BOTH the
+            # class is `incapable` AND an origin tier was actually recovered
+            # (Work 3's graceful degradation) -- every other case (architectural,
+            # stale-premise, reject_class absent/unrecognised, or origin_tier
+            # unavailable) falls through to the EXISTING generic re-scope text,
+            # UNCHANGED byte-for-byte (see
+            # test_carve_packet_rescope_architectural_intro_byte_identical_to_pre_incapable).
+            # Purely additive: a new branch, never a rewrite of the old one.
+            reject_class = rescope.get("reject_class")
+            origin_tier = rescope.get("origin_tier")
+            if reject_class == "incapable" and origin_tier is not None:
+                intro = (
+                    f"You are RE-SCOPING one rejected task for project '{project}'. Task "
+                    f"'{origin_id}' was implemented, REVIEWED, and REJECTED -- the "
+                    f"reviewer judged the SCOPE fine but the assigned tier "
+                    f"'{origin_tier}' INCAPABLE of it (a model-capability failure, "
+                    "NOT a design/scope defect -- do not confuse this with an "
+                    "architectural rescope). Write a fresh, corrected handoff for the "
+                    f"SAME work, targeted at an implementer tier HIGHER than "
+                    f"'{origin_tier}'. Do NOT redesign the scope -- only re-target it "
+                    "at a stronger tier. Record this task's id, "
+                    f"'{origin_id}', as the new handoff's `source.ref` (parent task "
+                    "id) so the follow-up review is seeded with why a stronger tier "
+                    "ran. Do NOT simply re-emit the original handoff unchanged, and "
+                    "do NOT implement the work yourself."
+                )
+            else:
+                intro = (
+                    f"You are RE-SCOPING one rejected task for project '{project}'. Task "
+                    f"'{origin_id}' was implemented, REVIEWED, and REJECTED, and triage "
+                    "classified it as architectural or stale-premise -- a same-base retry by "
+                    "the implementer cannot fix it. YOU decide what happens: write a fresh, "
+                    "corrected handoff package (re-carve), drop the work if the review shows "
+                    "it is no longer worth doing, or escalate a genuine product question as a "
+                    "D-NNN decision. Do NOT simply re-emit the original handoff unchanged, and "
+                    "do NOT implement the work yourself."
+                )
             lines.extend([
-                f"You are RE-SCOPING one rejected task for project '{project}'. Task "
-                f"'{origin_id}' was implemented, REVIEWED, and REJECTED, and triage "
-                "classified it as architectural or stale-premise -- a same-base retry by "
-                "the implementer cannot fix it. YOU decide what happens: write a fresh, "
-                "corrected handoff package (re-carve), drop the work if the review shows "
-                "it is no longer worth doing, or escalate a genuine product question as a "
-                "D-NNN decision. Do NOT simply re-emit the original handoff unchanged, and "
-                "do NOT implement the work yourself.",
+                intro,
                 "",
                 "## Re-scope source: the rejected task",
                 f"- Original handoff: {rescope.get('handoff_path') or '(none recorded)'}",
@@ -5517,22 +5556,31 @@ class Daemon:
 
     def _parse_reject_class(self, cfg: ProjectConfig, task_id: str) -> str | None:
         """B4b (D-060 triage Tier-2; D-066): extract the reviewer's self-stamped
-        `REJECT_CLASS: <fixable|architectural|product|transient>` line from the
-        committed review report (adapters.build_dispatch's REVIEW_INDEPENDENT
-        prompt requires it on a REJECTED verdict). Returns the class lowercased, or
-        None when the line is absent or its value is unrecognised -> the task stays
-        unclassified and reconcile falls back to the mechanical attempt-budget
-        path. Only meaningful on a rejection; the REVIEW_INDEPENDENT consumption
-        site calls it only when the verdict is not 'approved'.
+        `REJECT_CLASS: <fixable|architectural|incapable|product|transient>` line
+        from the committed review report (adapters.build_dispatch's
+        REVIEW_INDEPENDENT prompt requires it on a REJECTED verdict). Returns the
+        class lowercased, or None when the line is absent or its value is
+        unrecognised -> the task stays unclassified and reconcile falls back to
+        the mechanical attempt-budget path. Only meaningful on a rejection; the
+        REVIEW_INDEPENDENT consumption site calls it only when the verdict is not
+        'approved'.
 
         F019 P1b: `transient` (D-F019-2) is a valid class the gate-diagnosis
         reviewer emits for a flaky gate; it routes to the same plain retry as
-        `fixable`, never a re-scope/escalation."""
+        `fixable`, never a re-scope/escalation.
+
+        D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): `incapable`
+        joins the vocabulary -- distinct from `architectural` (scope/design
+        wrong): incapable means the scope was fine but the model showed a
+        structural/repeated capability gap, so reconcile's triage table routes
+        it to the SAME READY_TO_CARVE re-scope destination but the carve
+        consumer (`_rescope_context`/`_carve_packet_body_lines`) branches on
+        which class fired to bump the tier instead of re-scoping."""
         text = self._review_report_text(cfg, task_id)
         if not text:
             return None
         m = re.search(
-            r"^\s*REJECT_CLASS:\s*(fixable|architectural|product|transient)\b",
+            r"^\s*REJECT_CLASS:\s*(fixable|architectural|incapable|product|transient)\b",
             text, re.IGNORECASE | re.MULTILINE,
         )
         return m.group(1).lower() if m else None
@@ -5572,16 +5620,29 @@ class Daemon:
         reconcile._premise_drifted); an un-committed review -> verdict None. A re-scope
         carve MUST still launch with whatever context exists -- the ATOMIC supersede
         (emitted only AFTER the carve launches) is what must never be skipped, not the
-        packet's richness. Read-only: no writes, no transitions."""
+        packet's richness. Read-only: no writes, no transitions.
+
+        D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): also assembles
+        `reject_class` (the origin's self-stamped triage class, re-read directly via
+        `_parse_reject_class` -- the same helper that produced the class stamped on
+        the REVIEW_RECORDED event in the first place, so no new plumbing) and
+        `origin_tier` (the origin handoff's `tier:` frontmatter field). Both degrade
+        gracefully to None (missing report, missing/unparsable handoff) -- consumed
+        by `_carve_packet_body_lines`'s rescope branch to distinguish an
+        `incapable` tier-bump from every other re-scope reason; None on either key
+        falls back to the existing generic re-scope text unchanged."""
         origin = states.get(origin_task_id)
         handoff_path = origin.handoff_path if origin else None
         input_revision: str | None = None
+        origin_tier: str | None = None
         if handoff_path:
             try:
                 fm, _body = frontmatter.parse_handoff(cfg.root / handoff_path)
                 input_revision = fm.input_revision
+                origin_tier = fm.tier
             except Exception:
                 input_revision = None
+                origin_tier = None
         head_revision = self._head_revision(cfg)
         return {
             "origin_task_id": origin_task_id,
@@ -5590,7 +5651,41 @@ class Daemon:
             "input_revision": input_revision,
             "head_revision": head_revision,
             "drifted": reconcile._premise_drifted(input_revision, head_revision),
+            "reject_class": self._parse_reject_class(cfg, origin_task_id),
+            "origin_tier": origin_tier,
         }
+
+    def _incapable_escalation_note(self, cfg: ProjectConfig, fm) -> str:
+        """D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): resolve the
+        `incapable`-escalation provenance marker (Work 4's rescope prompt instructs
+        the carver to stamp the origin task's id into the new handoff's
+        `source.ref`, per schema `handoff-frontmatter.schema.json`'s "parent task
+        id" field -- NOT `depends_on`, which would gate this task's dispatch on
+        the origin task reaching COMPLETED/merged, something a REJECTED-then-
+        superseded origin task never does) into the terse, NON-SPECIFIC review
+        meta-note `build_dispatch`'s REVIEW_INDEPENDENT branch appends.
+
+        Returns '' (no note -> build_dispatch's append is a no-op, byte-identical
+        dispatch) unless `fm.source.ref` names a real prior task whose OWN latest
+        committed review report is still readable AND self-stamped
+        `REJECT_CLASS: incapable` (re-checked via `_parse_reject_class`, the SAME
+        helper `_rescope_context` uses -- no new plumbing, no new storage). A
+        task whose `source.ref` points to an ordinary/non-escalated origin (or has
+        no `source.ref` at all -- every non-rescoped handoff) returns ''."""
+        if fm is None or fm.source is None:
+            return ""
+        origin_id = fm.source.ref
+        if not origin_id:
+            return ""
+        if self._parse_reject_class(cfg, origin_id) != "incapable":
+            return ""
+        return (
+            "This is a fresh implementation from a higher-tier model, dispatched "
+            "because a previous reviewer judged the assigned tier incapable of "
+            "this task across multiple dimensions. Form your OWN independent "
+            "judgment of THIS implementation -- do not assume anything about "
+            "what was previously wrong."
+        )
 
     def _parse_self_review_verdict(self, cfg: ProjectConfig, task_id: str) -> str:
         """B5 2026-07-20: the self_review leg's verdict, read from the warm
@@ -6542,6 +6637,12 @@ class Daemon:
                 scope_touch=first_fm.scope.touch if first_fm is not None else [],
                 gate_asserts=review_gate.asserts if review_gate is not None else [],
             )
+            # D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): the
+            # incapable-escalation meta-note -- resolved from first_fm's
+            # `source.ref` provenance marker (see _incapable_escalation_note),
+            # the SAME first_task-scoped, "" -> no-op pattern review_depth uses
+            # immediately above.
+            escalation_note = self._incapable_escalation_note(cfg, first_fm)
             if action.resume_session:
                 # B6/P74 (D-R10): WARM resume of a prior review session -> the
                 # ~35-40k role-contract/orientation prefix replays from prompt
@@ -6567,6 +6668,7 @@ class Daemon:
                     attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
                     approved_amendments=approved_amendments,
                     review_depth=review_depth,  # D-BATCHC: complexity/gate-rigor directive
+                    escalation_note=escalation_note,  # D-R3: incapable-escalation meta-note
                 )
             # P61 (A9): the review holds the UNION of its members' leases, so a
             # concurrent carve/dispatch cannot touch a task while it is under
