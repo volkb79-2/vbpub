@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -10,7 +11,8 @@ import pytest
 from conftest import fixture_root
 from topos.collect.collector import Collector
 from topos.config import ToposConfig
-from topos.model import MetricValue
+from topos.damon import annotate_frame_damon
+from topos.model import Frame, MetricValue
 from topos.record.ring import HistoryRing
 from topos.ui.drill import render_drill_text
 
@@ -73,7 +75,13 @@ def _region(root: Path, idx: str, start: int, end: int, accesses: int, age: int)
         (path / name).write_text(f"{value}\n")
 
 
-def _collector_with_inputs(root: Path, proc: Path, cgroup: Path, now: float = 100.0) -> Collector:
+def _collector_with_inputs(
+    root: Path,
+    proc: Path,
+    cgroup: Path,
+    now: float = 100.0,
+    damon_state_dir: Path | None = None,
+) -> Collector:
     return Collector(
         cgroup_root=cgroup,
         config=ToposConfig(interval=5.0, tiers={"prod": ["system.slice"]}),
@@ -83,6 +91,7 @@ def _collector_with_inputs(root: Path, proc: Path, cgroup: Path, now: float = 10
         network_providers=(),
         proc_root=proc,
         damon_root=root,
+        damon_state_dir=damon_state_dir,
     )
 
 
@@ -155,6 +164,117 @@ def test_collect_once_paddr_is_host_only_and_unsupported_context_is_omitted(tmp_
     assert frame.entities[GAME_KEY].damon is None
     assert frame.entities[""].damon["host_sessions"][0]["mode"] == "paddr"
     assert frame.host["host_damon_mode"].v == 2
+
+
+def test_collect_once_degrades_for_paddr_without_a_usable_scheme(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
+    schemes = root / "0" / "contexts" / "0" / "schemes"
+    shutil.rmtree(schemes)
+    schemes.mkdir()
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    session = frame.entities[""].damon["host_sessions"][0]
+    assert session["mode"] == "paddr"
+    assert "scheme_idx" not in session
+    assert session["sample_age_s"] is None
+    assert frame.host["host_damon_warm_bytes"] == MetricValue(0, "exact")
+    assert frame.host["host_damon_sample_age_s"] == MetricValue(None, "unavail_kernel")
+
+
+def test_collect_once_omits_vaddr_with_an_unattributable_entity(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    target = root / "0" / "contexts" / "0" / "targets" / "0" / "pid_target"
+    target.write_text("1001\n")
+    (proc / "1001" / "cgroup").write_text("0::/missing-but-string\n")
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    assert frame.entities[GAME_KEY].damon is None
+    assert all(value.v is None for name, value in frame.entities[GAME_KEY].metrics.items() if name.startswith("damon_"))
+
+
+def test_collect_once_skips_bad_regions_and_degrades_bad_proc_and_samples(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    tried = root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions"
+    bad = tried / "9"
+    bad.mkdir()
+    for name in ("start", "end", "nr_accesses", "age"):
+        (bad / name).write_text("not-a-number\n")
+    (proc / "1001" / "cgroup").write_text(f"garbage\n1:memory\n0::/{GAME_KEY}\n")
+    (cgroup / GAME_KEY / "cgroup.procs").write_text("not-a-pid\n1001\n")
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    game = frame.entities[GAME_KEY]
+    assert game.damon is not None
+    assert game.damon["sessions"][0]["covered_pids"] == [1001]
+
+
+def test_collect_once_accepts_root_cgroup_after_malformed_proc_lines(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    (proc / "1001" / "cgroup").write_text("garbage\n1:memory:/irrelevant\n0::/\n")
+    (cgroup / "cgroup.procs").write_text("not-a-pid\n1001\n")
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    assert frame.entities[""].damon["sessions"][0]["entity_key"] == ""
+
+
+def test_collect_once_omits_vaddr_when_no_cgroup_line_identifies_an_entity(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    (proc / "1001" / "cgroup").write_text("garbage\n1:memory\n")
+
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    assert frame.entities[GAME_KEY].damon is None
+
+
+def test_collect_once_uses_the_newest_damon_sample_for_age(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path)
+    tried = root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions"
+    for path in tried.rglob("*"):
+        if path.is_file():
+            os.utime(path, (80.0, 80.0))
+    os.utime(tried / "0" / "age", (95.0, 95.0))
+
+    frame = _collector_with_inputs(root, proc, cgroup).collect_once()
+
+    assert frame.entities[GAME_KEY].metrics["damon_sample_age_s"] == MetricValue(5.0, "exact")
+
+
+def test_annotate_frame_damon_preserves_paddr_host_metadata_without_root_entity(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
+    frame = Frame(schema_version=1, ts=100.0, interval_s=5.0, host={}, entities={})
+
+    assert annotate_frame_damon(
+        frame,
+        damon_root=root,
+        proc_root=proc,
+        cgroup_root=cgroup,
+        config=ToposConfig().damon,
+        now=100.0,
+        state_dir=tmp_path / "state",
+    ).host["host_damon_mode"] == MetricValue(2, "exact")
+    assert frame.entities == {}
+
+
+@pytest.mark.parametrize("marker", [None, "{", '{"owner": "other"}', '{"owner": "topos", "damon_root": "/other"}'])
+def test_collect_once_reports_foreign_for_unowned_markers(tmp_path: Path, marker: str | None) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
+    state = tmp_path / "state"
+    marker_path = state / "damon" / "kdamond-0.json"
+    if marker is not None:
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(marker)
+    frame = _collector_with_inputs(root, proc, cgroup, damon_state_dir=state).collect_once()
+    assert frame.entities[""].damon["host_sessions"][0]["owner"] == "foreign"
+
+
+def test_collect_once_reports_topos_for_matching_marker(tmp_path: Path) -> None:
+    root, proc, cgroup = _damon_fixture(tmp_path, "passive-paddr")
+    state = tmp_path / "state"
+    marker = state / "damon" / "kdamond-0.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"owner": "topos", "damon_root": str(root)}))
+    frame = _collector_with_inputs(root, proc, cgroup, damon_state_dir=state).collect_once()
+    assert frame.entities[""].damon["host_sessions"][0]["owner"] == "topos"
 
 
 def test_fieldlist_damon_preserves_structured_damon_block(tmp_path: Path) -> None:
