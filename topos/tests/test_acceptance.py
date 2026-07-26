@@ -614,6 +614,81 @@ def test_run_tui_smoke_with_profile() -> None:
     assert result.profile == "minimal"
 
 
+def test_run_tui_smoke_forwards_config_and_profile_to_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured child receives all TUI arguments and its smoke line is parsed."""
+    import topos.acceptance as acceptance
+
+    config_path = tmp_path / "topos.toml"
+    captured: dict[str, object] = {}
+    real_run = acceptance.subprocess.run
+
+    def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if "topos.cli" not in cmd:
+            return real_run(cmd, **kwargs)
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="ui smoke ok frames=7 view=tree profile=ci\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(acceptance.subprocess, "run", _run)
+    monkeypatch.setattr(acceptance.platform, "platform", lambda: "test-platform")
+
+    result = acceptance.run_tui_smoke(
+        FIXTURE_FRAME, config_path=config_path, profile="ci"
+    )
+
+    assert captured["cmd"] == [
+        sys.executable,
+        "-m",
+        "topos.cli",
+        "--replay",
+        str(FIXTURE_FRAME),
+        "--step",
+        "--ui-smoke",
+        "--config",
+        str(config_path),
+        "--profile",
+        "ci",
+    ]
+    assert result.ok is True
+    assert result.smoke_line == "ui smoke ok frames=7 view=tree profile=ci"
+    assert (result.frames, result.view, result.profile) == (7, "tree", "ci")
+
+
+def test_run_tui_smoke_rejects_incomplete_and_clips_child_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero exit without a smoke line fails and bounds both evidence snippets."""
+    import topos.acceptance as acceptance
+
+    stdout = "o" * 700
+    stderr = "e" * 700
+
+    def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(acceptance.subprocess, "run", _run)
+    monkeypatch.setattr(acceptance.platform, "platform", lambda: "test-platform")
+
+    result = acceptance.run_tui_smoke(FIXTURE_FRAME)
+
+    assert result.ok is False
+    assert result.exit_code == 0
+    assert result.smoke_line is None
+    assert result.frames is None
+    assert result.view is None
+    assert result.profile is None
+    assert result.stdout_snippet == stdout[:500]
+    assert result.stderr_snippet == stderr[:500]
+    assert len(result.stdout_snippet) == len(result.stderr_snippet) == 500
+
+
 def test_format_tui_smoke_text_contains_expected_markers() -> None:
     """Text output contains expected markers."""
     from topos.acceptance import TuiSmokeResult, format_tui_smoke_text
