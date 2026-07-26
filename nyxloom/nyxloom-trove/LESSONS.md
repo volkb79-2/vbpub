@@ -1021,3 +1021,58 @@ change is dark by construction; without that property, keep it on the controller
 Related: [[PL4]] (never accept the completion narrative), canonical **L4** (never
 trust a wrapper's exit-0), and the operator-mechanics record in session memory
 (`nyxloom-false-done-turn-parking`).
+
+## PL7 — Green-in-isolation / red-under-load is a shared-global-state smell; instrument for WHERE the artifact went before theorizing about timing
+`scope: product` · `upstream: proposed`
+
+**Rule.** When a test passes alone but fails under parallel full-suite load
+(`-n4`), the cause is almost always **shared process-global state mutated by a
+concurrent or leaked peer**, not a timing/flush race inside the test. Do not
+theorize about timing. **Instrument for the artifact** — was it produced at all,
+and *where did it go* — before proposing a fix. And when two confident fixes fail
+in a row, STOP proposing fixes: you don't have the mechanism yet, so go get it.
+
+**Evidence (B27, 2026-07-26).** `test_daemon.py::test_nonloopback_bind_prints_
+unauthenticated_notice` was green 5/5 in isolation, red 3/3 under full-suite
+`-n4` (a latent flake this session's ~17 new tests pushed over the reproducibility
+edge — cf. **L5**: added load exposes the pre-existing house). TWO confident
+controller hypotheses — (1) "stop-before-flush, so poll for the record before
+stopping" and (2) "the daemon's own `configure()` swaps the handler, so freeze
+it" — both shipped and both STILL failed 3/3, because both theorized about
+timing/handler-swap with no evidence. A single **emission-capture probe** (wrap
+`daemon.log.warning`, record the call) plus a filesystem search settled it in one
+run: the daemon *did* call `log.warning(..., http_bind="0.0.0.0")` exactly once,
+yet the record reached **no file anywhere on disk**. Root cause: `daemon.run()`
+reconfigures the *process-global* logger from inside its own thread
+(`log.configure` closes all handlers); under load a concurrent/leaked daemon
+thread's `configure()` closes the file handler *between* the "daemon started"
+info write and the warning write, dropping the warning to a closed handler. Fix
+(test-only): assert on the **emission**, not the shared JSONL file.
+
+**How to apply.**
+1. **3-point triage (two cheap runs).** Run the failing test (a) in isolation and
+   (b) with only its own file under `-n4`. Isolation-pass + file-alone-pass +
+   full-suite-fail ⇒ **cross-file global-state contamination** — stop looking
+   inside the test.
+2. **Instrument for the artifact, not the clock.** Capture at the *production*
+   point (did the code emit/produce the thing?) and *search* for where it landed
+   (which file / which state). One fact replaces N rounds of hypothesis.
+3. **Two wrong fixes = a hard stop on guessing.** This is [[PL4]]/**L7/L8** turned
+   inward: as the controller distrusts an agent's self-report, it must distrust
+   *its own* confident hypothesis. A guess that has survived one failed fix is
+   *more* seductive, not less.
+4. **Robust fix = assert through a deterministic in-process seam**, not the
+   race-prone shared resource (same shape as **B25**). This is *decoupling*, not
+   weakening: the behavioral assertion (msg + fields) is unchanged; only the
+   flaky transport is removed. The tell that it's legitimate: the behaviour was
+   never in doubt (the emission happened every time) — only the shared file lost
+   it. What the shared path uniquely proved (log-module→file persistence) must
+   already be covered elsewhere (`test_log.py`), or move it there.
+5. **Product backlog.** A service that reconfigures *process-global* logging
+   inside its own run-thread is inherently hostile to parallel test harnesses.
+   Consider making `log.configure` idempotent / lock-guarded / no-op-when-already-
+   configured so concurrent daemons can't tear each other's handlers down.
+
+Related: **L8** (evidence outranks the hypothesis; a summarized/repeated diagnosis
+is more dangerous, not less), [[PL4]] (never accept a narrative — here, your own),
+and **B25** (the in-process-seam de-flake shape).

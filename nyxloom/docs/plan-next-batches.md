@@ -320,11 +320,25 @@ SELECTION by band (needs `review-1`/`review-2` routes built first).
     receipt-poll for the two blind `time.sleep()`s in `test_launch_detached_script` (real fork
     KEPT), and `threading.Event` sync for the `test_commands.py` listener tests. Authoritative
     gate GREEN 3×. Test-only.
+  - **B27 — ✅ DONE (merge `e615e765`, 2026-07-26).** `test_daemon.py::test_nonloopback_bind_
+    prints_unauthenticated_notice` — a THIRD real-fork/global-state flake (distinct from B26's
+    two), surfaced by BATCH C's post-merge (this round added ~17 tests → more `-n4` load → the
+    latent flake became reliably reproducible: 3/3 red under full-suite load, 5/5 green in
+    isolation). Root cause (found by emission-level instrumentation after TWO wrong hypotheses):
+    `daemon.run()` reconfigures the process-global logger in-thread (`log_module.configure(paths.
+    logs_dir())`, which closes all handlers); under load a concurrent/leaked daemon thread's
+    `configure()` closes the file handler *between* this daemon's "daemon started" info write and
+    its UNAUTHENTICATED warning write, so the warning is emitted but dropped to a closed handler
+    (the daemon called `log.warning(..., http_bind="0.0.0.0")` once, yet the record reached NO
+    file anywhere). Fix (test-only): assert on the warning EMISSION captured at `daemon.log.warning`,
+    not the shared JSONL file (file persistence is `test_log.py`'s job). Flake-fix gate GREEN 3×
+    under `-n4`; post-merge 2×. Lesson in `nyxloom-trove/LESSONS.md` PL7.
   - **B26 — CLEARED (watch-item), 2026-07-26:** ran the full suite 3× under `-n 4` on main
-    @`4d1c26f8` — 3/3 `PYTEST_EXIT:0`; neither suspect test reproduced, and none flaked across
-    the subsequent GA3-v2 + BATCH-C re-gates/post-merges. No de-flake dispatched (can't verify a
-    fix against a non-reproducing flake). Remains a watch-item: if either recurs under load,
-    de-flake via the B25 in-process-wrapper seam. Original candidate note follows:
+    @`4d1c26f8` — 3/3 `PYTEST_EXIT:0`; neither of B26's two suspect tests reproduced (a
+    *different* real-fork flake, B27 above, did surface later under the round's heavier load). No
+    de-flake dispatched for B26 (can't verify a fix against a non-reproducing flake). Remains a
+    watch-item: if either recurs under load, de-flake via the B25 in-process seam or B27's
+    assert-at-emission approach. Original candidate note follows:
   - **B26 (candidate, reported 2026-07-25 during B25 de-flake verification — NOT yet
     independently confirmed):** two OTHER real-fork behavioral tests intermittently red under
     `-n 4` parallel load, green 6/6 in isolation — `test_config_ui.py::test_policy_update_full_flow`
