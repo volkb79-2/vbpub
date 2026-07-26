@@ -107,7 +107,7 @@ D mechanizes** (band + gate-rigor → review depth) — build them together.
 render, routing/review-depth selection, `adapters.py` REVIEW_INDEPENDENT (argv_max-
 bounded injection — see §D caveat), tests. Frozen-core-adjacent (routing/adapters).
 
-### GA3 — onboarding offers to build a missing/untrustworthy gate · MEDIUM · v1 ✅ DONE (detect + offer only)
+### GA3 — onboarding offers to build a missing/untrustworthy gate · MEDIUM · v1 ✅ DONE (detect + offer) · v2 ✅ DONE (scaffold skeleton, merge `bdb0daab`)
 **v1 done (detect + offer, no scaffolding).** New `onboarding_gate.py`
 (`assess_gate(project_root) -> GateOffer{has_gate, gate_id, recommendation}`):
 a cheap, deterministic, AI-free config read (`gate_runner.select_verification_gate`
@@ -124,20 +124,24 @@ to the operator or GA4). Omitting `--check-gate` leaves `onboard`'s output byte-
 identical to before this package (oracle in tests/test_cli.py). Does NOT check
 `nyxloom gate verify`'s LAUNDERS/BROKEN verdicts (that would mean dispatching a
 real gate run inline at onboarding time) — v1 is presence-only.
-**v2 deferred (not built here).** Actually *scaffolding* a missing gate — a
-`test-runner`-style Dockerfile + a fail-closed pytest/coverage/xdist `argv` from
-per-ecosystem templates, writing the resulting `[gates.*]` TOML section, wiring
-a `LAUNDERS`/`BROKEN` `gate verify` verdict into the same offer path — is
-explicitly out of scope for v1 and left as a follow-up package.
-**What (original, v2's remaining scope).** Extend the onboarding engine (F2/F3/F4)
-so that when a project is registered/assessed and has no gate — or
-`nyxloom gate verify` (GA1) returns `LAUNDERS`/`BROKEN` — onboarding **offers to
-scaffold a separate test env + a fail-closed `[gates.*]`** (from per-ecosystem
-templates: a `test-runner`-style Dockerfile + a pytest/coverage/xdist gate
-command for Python), rather than registering a project whose merges can't be
-verified.
-**Scope.** Onboarding assessment step + gate-scaffold templates + wiring into the
-init/questionnaire flow. Depends on GA1 (the trust verdict) + GA2 (rigor vocab).
+**v2 done (merge `bdb0daab`, 2026-07-26).** New `gate_scaffold.py`: pure emitters
+(`render_gate_dockerfile` / `render_gate_def` / `render_gate_toml_section`) +
+`scaffold_gate(project_root, offer)` — when `offer.has_gate is False`, writes a
+`test-runner`-style Dockerfile under `<trove>/gate-scaffold/Dockerfile` and appends a real
+`[gates.scaffolded-pytest]` section (pytest+coverage+xdist argv, `phase="post-merge"`,
+`asserts=["tests-pass","changed-line-coverage"]`) to the trove `nyxloom.toml` via the
+line-surgical `_wire_spine_keys` idiom (**no `tomli_w`** — nyxloom has no TOML-writer dep),
+so a following `assess_gate` reports `has_gate=True` and `ProjectConfig.load` parses it. Per
+**D-GA3v2** this is a *reviewable SKELETON*, not a guaranteed-working gate: every
+project-specific value carries a `# nyxloom-scaffold: adjust` marker; the TRUST check stays
+`nyxloom gate verify` (GA1) — v2 scaffolds, GA1 verifies, they compose. Wired as
+`--scaffold-gate` (opt-in; re-assesses then scaffolds; byte-identical when omitted; skips +
+reports when a gate already exists). Single ecosystem (Python/pytest). Gate 58/58 diff-cov
+green; authoritative re-gate + post-merge green.
+**v3 deferred (not built).** Reacting to a `nyxloom gate verify` `LAUNDERS`/`BROKEN` verdict
+in the offer path (not just NO_GATE); multi-ecosystem templates; a defensive duplicate-
+`[gates.*]`-section guard for a future non-CLI caller (the CLI flow re-assesses so it can't
+hit it today). Depends on GA1 (the trust verdict) + GA2 (rigor vocab).
 
 ### GA4 — carver periodically re-verifies each project's gate · SMALL (needs GA1) · ✅ DONE (merge `56c1831c`)
 **Done.** `gate_verify_interval_days` policy knob (0 disables, the default — byte-

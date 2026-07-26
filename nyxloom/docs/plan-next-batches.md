@@ -284,13 +284,29 @@ Spec: `docs/plan-gate-adoption.md`.
   touches `reconcile.py` (frozen-core — careful).
 - **GA3** — onboarding offers to build a gate + separate test-env when a project has none or
   an untrustworthy one. MEDIUM; needs the onboarding engine (F2/F3/F4) internals.
+  - **v1 ✅ DONE** (`3cc0f40f`): detect + offer (`onboarding_gate.assess_gate`, `--check-gate`).
+  - **v2 ✅ DONE** (`bdb0daab`, 2026-07-26): `gate_scaffold.py` writes a Dockerfile + a real
+    `[gates.scaffolded-pytest]` skeleton (adjust-markers) via `--scaffold-gate`; flips
+    `has_gate` True; line-surgical TOML (no `tomli_w`). Gate 58/58. v3 = LAUNDERS/BROKEN-verdict
+    reaction + multi-ecosystem (deferred).
 
-## BATCH C — review-depth routing · D part 2 · MEDIUM
+## BATCH C — review-depth routing · D part 2 · MEDIUM · ✅ DONE (merge `d64138a1`, 2026-07-26)
 Spec: `plan-factory-hardening.md` §D + `plan-gate-adoption.md` §GA2. Route review
-depth by the carver's complexity band AND declared gate rigor (`asserts`). **~19-test
-frontier-review blast radius; needs a complexity-band signal** (add one, or derive from
-scope size / frozen-core touch). Frozen-core-adjacent (adapters/routing); argv_max-bounded
-prompt appends (same idiom as D-part-1's `review_focus`).
+depth by the carver's complexity band AND declared gate rigor (`asserts`).
+**DONE via the PROMPT-DIRECTIVE lever, NOT tier selection** (D-BATCHC): only ONE review
+tier (`review-3`) exists today, so routing depth by *tier* is D-R2/D-R3 (unbuilt, after F5).
+Instead `adapters.compute_review_depth_directive(tier, scope_touch, gate_asserts)` derives a
+review-depth directive from two ALREADY-EXISTING signals — the handoff's `Frontmatter.tier`
+band (`implement-1/2/3`, scope-size fallback >5 touched paths) + the project's declared gate
+rigor (`select_verification_gate(cfg).asserts`; shallow = missing `changed-line-coverage`
+and/or `mutation`) — and `build_dispatch` appends it to the REVIEW_INDEPENDENT prompt with
+the argv-bounded `review_focus` idiom (appended LAST, truncate-or-skip, role-scoped).
+**Byte-identical when neutral** (low band + rigorous gate → `""` → no-op; proven vs the
+`_PRE_D1` snapshot). No new schema field, no route/tier change (dodged the ~19-test
+`for_role`/`for_tier` blast radius entirely). Daemon touch = the single `LaunchReview`
+cold-dispatch site (both `None` cases guarded). Gate 36/36 diff-cov green; adversarially
+reviewed (frozen-core-adjacent). **Deferred to D-R2/D-R3:** actual reviewer-tier/model
+SELECTION by band (needs `review-1`/`review-2` routes built first).
 
 ## BATCH D — test-health + mutation (enables H + reliable concurrency)
 - **Flake-hardening** — deterministic tests for the intrinsic flakes: `commands.py:269`
@@ -304,6 +320,11 @@ prompt appends (same idiom as D-part-1's `review_focus`).
     receipt-poll for the two blind `time.sleep()`s in `test_launch_detached_script` (real fork
     KEPT), and `threading.Event` sync for the `test_commands.py` listener tests. Authoritative
     gate GREEN 3×. Test-only.
+  - **B26 — CLEARED (watch-item), 2026-07-26:** ran the full suite 3× under `-n 4` on main
+    @`4d1c26f8` — 3/3 `PYTEST_EXIT:0`; neither suspect test reproduced, and none flaked across
+    the subsequent GA3-v2 + BATCH-C re-gates/post-merges. No de-flake dispatched (can't verify a
+    fix against a non-reproducing flake). Remains a watch-item: if either recurs under load,
+    de-flake via the B25 in-process-wrapper seam. Original candidate note follows:
   - **B26 (candidate, reported 2026-07-25 during B25 de-flake verification — NOT yet
     independently confirmed):** two OTHER real-fork behavioral tests intermittently red under
     `-n 4` parallel load, green 6/6 in isolation — `test_config_ui.py::test_policy_update_full_flow`
