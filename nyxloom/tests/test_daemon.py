@@ -2974,22 +2974,52 @@ def test_nonloopback_bind_prints_unauthenticated_notice(
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
     _set_ephemeral_http_port(sample_project)
-    log_dir = tmp_state / "logs"
-    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+    log.configure(level=log.INFO, log_dir=tmp_state / "logs", console=False)
+    # B27 de-flake (2026-07-26): assert on the WARNING EMISSION, not on the
+    # shared JSONL log file. daemon.run() reconfigures the PROCESS-GLOBAL logger
+    # from inside its own thread (daemon.py: log_module.configure(paths.logs_dir()),
+    # which removes+closes ALL handlers). Under -n4 full-suite load a
+    # concurrent/leaked daemon thread's configure() closes the file handler
+    # BETWEEN this daemon's "daemon started" info write and its UNAUTHENTICATED
+    # warning write, so the warning record is emitted but silently dropped to a
+    # closed handler. Instrumentation confirmed it precisely: the daemon CALLED
+    # log.warning(..., http_bind="0.0.0.0") once, yet that record reached NO file
+    # anywhere on disk (green in isolation, red under load). Proving the log
+    # module persists a record to file end-to-end is test_log.py's job; THIS
+    # daemon test's contract is only "a non-loopback bind EMITS the
+    # UNAUTHENTICATED warning", so capture the emission at daemon.log.warning --
+    # immune to the global-logger/file race (same de-flake shape as B25: assert
+    # through a deterministic in-process seam, not a race-prone shared resource).
+    emitted: list[tuple[str, dict]] = []
+    _real_log = daemon.log
+
+    class _CapturingLog:
+        def warning(self, msg, **kw):
+            emitted.append((msg, dict(kw)))
+            return _real_log.warning(msg, **kw)
+
+        def __getattr__(self, name):
+            return getattr(_real_log, name)
+
+    monkeypatch.setattr(daemon, "log", _CapturingLog())
 
     d = daemon.Daemon({"demo": sample_project.root})
     t = threading.Thread(target=d.run, daemon=True)
     t.start()
+
+    def _notice_emitted() -> bool:
+        return any("UNAUTHENTICATED" in m and kw.get("http_bind") == "0.0.0.0"
+                   for m, kw in emitted)
+
     deadline = time.monotonic() + 5
-    while d.http_port == 0 and time.monotonic() < deadline:
-        time.sleep(0.05)
+    while not _notice_emitted() and time.monotonic() < deadline:
+        time.sleep(0.02)
     d.stop()
     t.join(timeout=5)
 
-    warnings = [r for r in _read_log_records(log_dir) if r.get("level") == "warning"]
-    assert any(
-        "UNAUTHENTICATED" in r.get("msg", "") and r.get("http_bind") == "0.0.0.0"
-        for r in warnings
+    assert _notice_emitted(), (
+        "expected the daemon to emit an UNAUTHENTICATED http_bind=0.0.0.0 warning "
+        f"on a non-loopback bind; captured warnings: {emitted}"
     )
 
 
