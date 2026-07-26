@@ -12,7 +12,9 @@ from topos.daemon.paddr_lifecycle import (
     DaemonPaddrLifecycle,
     PaddrLifecycleOutcome,
     PaddrLifecycleStartError,
+    PaddrLifecycleStopError,
 )
+from topos.damon.control import DamonControlError, stop_owned_sessions
 from topos.damon.control import APPROVAL_TEXT
 from topos.damon.paddr import plan_start_paddr_session, start_planned_paddr_session
 
@@ -572,3 +574,202 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
         monkeypatch.undo()
 
     assert server.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Failure handling and marker validation (P129 coverage)
+# ---------------------------------------------------------------------------
+
+
+def test_lifecycle_start_damon_control_error_raises_start_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start failure via DamonControlError is wrapped as PaddrLifecycleStartError."""
+    lc, _state_dir = _lifecycle(tmp_path, paddr_enabled=True)
+    monkeypatch.setattr(
+        "topos.daemon.paddr_lifecycle.start_planned_paddr_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DamonControlError("start broke")
+        ),
+    )
+    with pytest.raises(
+        PaddrLifecycleStartError, match="cannot start paddr session"
+    ):
+        lc.start()
+    assert lc.started is False
+    assert lc.session is None
+
+
+def test_lifecycle_stop_damon_control_error_raises_stop_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stop failure via DamonControlError is wrapped as PaddrLifecycleStopError."""
+    lc, _state_dir = _lifecycle(tmp_path, paddr_enabled=True)
+    lc.start()
+    assert lc.started is True
+    assert lc.session is not None
+
+    monkeypatch.setattr(
+        "topos.daemon.paddr_lifecycle.stop_owned_sessions",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            DamonControlError("stop broke")
+        ),
+    )
+    with pytest.raises(
+        PaddrLifecycleStopError, match="cannot stop paddr session"
+    ):
+        lc.stop()
+    assert lc.started is True
+    assert lc.session is not None
+
+
+def test_lifecycle_marker_empty_damon_root_fails_closed(tmp_path: Path) -> None:
+    """A marker with empty damon_root fails closed and remains present."""
+    d_root = _damon_root(tmp_path, slots=("on",))
+    state_dir = tmp_path / "state"
+    marker = _write_marker(state_dir, 0, payload={"damon_root": ""})
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    with pytest.raises(PaddrLifecycleStartError, match="no valid damon_root"):
+        lc.start()
+    assert marker.exists()
+    assert lc.started is False
+
+
+def test_lifecycle_marker_boolean_kdamond_idx_fails_closed(tmp_path: Path) -> None:
+    """A marker with boolean kdamond_idx fails closed and remains present."""
+    d_root = _damon_root(tmp_path, slots=("on",))
+    state_dir = tmp_path / "state"
+    marker = _write_marker(
+        state_dir, 0, payload={"damon_root": str(d_root), "kdamond_idx": True}
+    )
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    with pytest.raises(PaddrLifecycleStartError, match="invalid kdamond_idx"):
+        lc.start()
+    assert marker.exists()
+    assert lc.started is False
+
+
+def test_lifecycle_marker_different_mode_ignored(tmp_path: Path) -> None:
+    """A marker with different mode (e.g. vaddr) is ignored; fresh lifecycle starts."""
+    d_root = _damon_root(tmp_path, slots=("off", "on"))
+    state_dir = tmp_path / "state"
+    marker = _write_marker(
+        state_dir, 1, payload={"damon_root": str(d_root), "mode": "vaddr"}
+    )
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    lc.start()
+    assert lc.started is True
+    assert lc.session is not None
+    assert lc.session.kdamond_idx == 0
+    assert marker.exists()
+
+
+def test_lifecycle_matching_marker_paused_state_fails_closed(tmp_path: Path) -> None:
+    """A matching marker whose kdamond is in state 'paused' fails closed."""
+    d_root = _damon_root(tmp_path, slots=("paused",))
+    state_dir = tmp_path / "state"
+    marker = _write_marker(state_dir, 0, payload={"damon_root": str(d_root)})
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    with pytest.raises(PaddrLifecycleStartError, match="unexpected state"):
+        lc.start()
+    assert marker.exists()
+    assert lc.started is False
+
+
+def test_lifecycle_matching_marker_no_operations_fails_closed(tmp_path: Path) -> None:
+    """A matching marker with missing operations file fails closed."""
+    d_root = _damon_root(tmp_path, slots=("on",))
+    (d_root / "0" / "contexts" / "0" / "operations").unlink()
+    state_dir = tmp_path / "state"
+    marker = _write_marker(state_dir, 0, payload={"damon_root": str(d_root)})
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    with pytest.raises(PaddrLifecycleStartError, match="no operations path"):
+        lc.start()
+    assert marker.exists()
+    assert lc.started is False
+
+
+def test_lifecycle_matching_marker_array_payload_fails_closed(tmp_path: Path) -> None:
+    """A marker with JSON array payload fails closed and remains present."""
+    d_root = _damon_root(tmp_path, slots=("on",))
+    state_dir = tmp_path / "state"
+    marker_dir = state_dir / "damon"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    marker = marker_dir / "kdamond-0.json"
+    marker.write_text(json.dumps([]) + "\n")
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    with pytest.raises(PaddrLifecycleStartError, match="must contain a JSON object"):
+        lc.start()
+    assert marker.exists()
+    assert lc.started is False
+
+
+def test_lifecycle_marker_filename_parser_fallback(tmp_path: Path) -> None:
+    """Filename parser ValueError fallback: non-numeric kdamond index raises error."""
+    d_root = _damon_root(tmp_path, slots=("on",))
+    state_dir = tmp_path / "state"
+    marker_dir = state_dir / "damon"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    marker = marker_dir / "kdamond-not-a-number.json"
+    data = {
+        "owner": "topos",
+        "mode": "paddr",
+        "kdamond_idx": 0,
+        "damon_root": str(d_root),
+        "created_at": 100.0,
+    }
+    marker.write_text(json.dumps(data) + "\n")
+
+    lc = DaemonPaddrLifecycle(
+        damon_root=d_root,
+        state_dir=state_dir,
+        config=DamonConfig(paddr_enabled=True),
+        now=lambda: 100.0,
+        require_root=False,
+    )
+    with pytest.raises(PaddrLifecycleStartError, match="index does not match"):
+        lc.start()
+    assert marker.exists()
+    assert lc.started is False
