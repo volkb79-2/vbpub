@@ -309,3 +309,78 @@ def test_stop_explicit_selection_foreign_owner_and_root_isolation(tmp_path: Path
     )
     assert result == 0
     assert json.loads(marker_path.read_text())["owner"] == "topos"
+
+
+def test_missing_pids_and_unreadable_slot_count_fail_closed(tmp_path: Path) -> None:
+    # Empty cgroup with no cgroup.procs fails with NoEntityPids
+    cgroup_root = tmp_path / "cgroup_empty"
+    (cgroup_root / "empty.scope").mkdir(parents=True)
+    with pytest.raises(NoEntityPids):
+        plan_start_session(
+            "empty.scope",
+            cgroup_root=cgroup_root,
+            damon_root=_damon_root(tmp_path / "damon1"),
+            state_dir=_state_dir(tmp_path / "state1"),
+            config=DamonConfig(),
+            require_root=False,
+        )
+
+    # Unreadable nr_kdamonds fails with NoFreeKdamond
+    damon_root = _damon_root(tmp_path / "damon2")
+    (damon_root / "nr_kdamonds").write_text("not-a-number\n")
+    with pytest.raises(NoFreeKdamond):
+        plan_start_session(
+            GAME_KEY,
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            damon_root=damon_root,
+            state_dir=_state_dir(tmp_path / "state2"),
+            config=DamonConfig(),
+            require_root=False,
+        )
+
+
+def test_reserved_slot_and_malformed_marker_handled_safely(tmp_path: Path) -> None:
+    damon_root = _damon_root(tmp_path, slots=("off", "off"))
+    state_dir = _state_dir(tmp_path)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "damon").mkdir(parents=True, exist_ok=True)
+
+    # Mark slot 0 as reserved
+    (state_dir / "damon" / "kdamond-0.json").write_text("{}")
+    # Add malformed marker that should be ignored
+    (state_dir / "damon" / "kdamond-not-an-index.json").write_text("{}")
+
+    plan = plan_start_session(
+        GAME_KEY,
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        damon_root=damon_root,
+        state_dir=state_dir,
+        config=DamonConfig(),
+        require_root=False,
+    )
+    assert plan.kdamond_idx == 1
+
+
+def test_teardown_recreates_absent_context_state_safely(tmp_path: Path) -> None:
+    damon_root = _damon_root(tmp_path, slots=("off",))
+    state_dir = _state_dir(tmp_path)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "damon").mkdir(parents=True, exist_ok=True)
+
+    marker_data = {
+        "owner": "topos",
+        "kdamond_idx": 0,
+        "damon_root": str(damon_root),
+    }
+    marker_path = state_dir / "damon" / "kdamond-0.json"
+    marker_path.write_text(json.dumps(marker_data))
+
+    result = stop_owned_sessions(
+        damon_root=damon_root,
+        state_dir=state_dir,
+        all_mine=True,
+        require_root=False,
+    )
+    assert result == 1
+    assert not marker_path.exists()
+    assert (damon_root / "0" / "contexts" / "nr_contexts").read_text().strip() == "0"
