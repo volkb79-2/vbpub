@@ -5,12 +5,95 @@ from rich.console import Console
 from topos.config import ToposConfig
 from topos.model import DockerMeta, Entity, EntityFrame, Frame, MetricValue
 from topos.ui.table import (
+    available_profiles,
     format_metric_value,
+    metric_sort_value,
     render_container_table,
     resolve_columns,
     resolve_profile,
     snapshot_container_table,
 )
+
+
+def test_profiles_discover_and_normalize_configured_profiles() -> None:
+    config = ToposConfig(
+        default_column_profile="forensics",
+        columns={"profiles": {"forensics": {"list": ["name", "ram"]}}},
+    )
+
+    assert "forensics" in available_profiles(config)
+    assert resolve_profile(config, width=80, profile="forensics").columns == ("name", "ram")
+    assert resolve_profile(config, width=80, profile="missing").name == "forensics"
+
+    invalid_default = ToposConfig(
+        default_column_profile="missing",
+        columns={"profiles": {"forensics": {"list": ["name", "ram"]}}},
+    )
+    assert resolve_profile(invalid_default, width=80, profile="missing").name == "auto"
+
+
+def test_malformed_custom_profile_falls_back_to_builtin_layout() -> None:
+    config = ToposConfig(columns={"profiles": {"broken": {"list": "name,ram"}}})
+
+    layout = resolve_profile(config, width=80, profile="broken")
+
+    assert layout.name == "broken"
+    assert layout.columns == resolve_profile(ToposConfig(), width=80, profile="triage").columns
+
+
+def test_format_metric_value_covers_governance_damon_and_registry_units() -> None:
+    entity_frame = EntityFrame(
+        entity=Entity(key="demo.scope", kind="scope", parent=""),
+        metrics={
+            "ram": MetricValue(2048, "exact"),
+            "io_r_bps": MetricValue(2048, "exact"),
+            "psi_mem_full_avg10": MetricValue(12.34, "exact"),
+            "ratio": MetricValue(1.25, "exact"),
+            "damon_sample_age_s": MetricValue(2.5, "exact"),
+            "cpu_quota_us": MetricValue(50000, "exact"),
+            "damon_mode": MetricValue(2, "exact"),
+            "unknown": MetricValue(None, "unavail_kernel"),
+        },
+        governance={"summary": {"origin": "raw_write", "severity": "drift"}},
+    )
+
+    assert format_metric_value("governance_origin", entity_frame).plain == "raw_write"
+    assert format_metric_value("governance_drift", entity_frame).plain == "drift"
+    no_drift = EntityFrame(
+        entity=entity_frame.entity,
+        metrics={},
+        governance={"summary": {"origin": "docker_default", "drift": False, "severity": "none"}},
+    )
+    assert format_metric_value("governance_drift", no_drift).plain == "none"
+    assert format_metric_value("damon_mode", entity_frame).plain == "paddr"
+    assert format_metric_value("ram", entity_frame).plain == "2.0KiB"
+    assert format_metric_value("io_r_bps", entity_frame).plain == "2.0KiB/s"
+    assert format_metric_value("psi_mem_full_avg10", entity_frame).plain == "12.3%"
+    assert format_metric_value("ratio", entity_frame).plain == "1.2x"
+    assert format_metric_value("damon_sample_age_s", entity_frame).plain == "2.5s"
+    assert format_metric_value("cpu_quota_us", entity_frame).plain == "50000"
+    assert format_metric_value("unknown", entity_frame).plain == "-"
+    assert format_metric_value("missing_metric", entity_frame).plain == "-"
+
+
+def test_metric_sort_value_is_deterministic_for_public_sort_keys() -> None:
+    def frame(name: str, tier: str | None, source: str | None, cpu: MetricValue | None, value: MetricValue) -> EntityFrame:
+        return EntityFrame(
+            entity=Entity(key=f"{name}.scope", kind="scope", parent="", tier=tier),
+            metrics={"ordinary": value, **({"cpu_pct": cpu} if cpu is not None else {})},
+            network={"source_label": source} if source is not None else None,
+        )
+
+    present = frame("Alpha", "gold", "host", MetricValue(4, "exact"), MetricValue("z", "exact"))
+    missing = frame("Beta", None, None, None, MetricValue(None, "unavail_kernel"))
+
+    assert metric_sort_value("name", present) == (0, "alpha.scope")
+    assert metric_sort_value("tier", present) == (0, "gold")
+    assert metric_sort_value("net_source", present) == (0, "host")
+    assert metric_sort_value("ordinary", present) == (0, "z")
+    assert metric_sort_value("ordinary", missing) == (1, 0.0)
+    assert metric_sort_value("cpu_trend", present) == (0, 4.0)
+    assert metric_sort_value("cpu_trend", missing) == (1, 0.0)
 
 
 def test_format_metric_value_shows_unlimited_limits_as_max() -> None:
