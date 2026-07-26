@@ -543,6 +543,16 @@ def test_parse_ui_smoke_line_handles_garbage() -> None:
     assert _parse_ui_smoke_line("ui smoke fail") == {}
 
 
+def test_parse_ui_smoke_line_keeps_valid_fields_when_frames_is_malformed() -> None:
+    """A bad frame count does not prevent parsing the remaining smoke fields."""
+    from topos.acceptance import _parse_ui_smoke_line
+
+    result = _parse_ui_smoke_line("ui smoke ok frames=not-a-number view=tree profile=minimal")
+
+    assert result == {"view": "tree", "profile": "minimal"}
+    assert "frames" not in result
+
+
 def test_run_tui_smoke_fixture_replay() -> None:
     """``run_tui_smoke`` with fixture replay returns ok=true with measurements."""
     from topos.acceptance import run_tui_smoke
@@ -631,6 +641,34 @@ def test_format_tui_smoke_text_contains_expected_markers() -> None:
     assert "sys:" in text
     assert "RSS:" in text
     assert "exit code: 0" in text
+
+
+def test_format_tui_smoke_text_reports_absent_line_and_bounded_stderr() -> None:
+    """A failed child without a smoke line remains transparent and concise."""
+    from topos.acceptance import TuiSmokeResult, format_tui_smoke_text
+
+    result = TuiSmokeResult(
+        ok=False,
+        exit_code=1,
+        version="0.1.0",
+        python="3.13.5",
+        platform="Linux-x86_64",
+        smoke_line=None,
+        stdout_snippet="ordinary child output\n",
+        stderr_snippet="one\ntwo\nthree\nfour\nfive\nsix",
+        frames=None,
+        view=None,
+        profile=None,
+        measurements={"wall_s": 0.3, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 40000.0},
+    )
+
+    text = format_tui_smoke_text(result)
+
+    assert "UI smoke: line not found" in text
+    assert "SOME CHECKS FAILED" in text
+    for line in ("one", "two", "three", "four", "five"):
+        assert f"    {line}" in text
+    assert "    six" not in text
 
 
 def test_format_tui_smoke_json_parseable() -> None:
@@ -944,6 +982,48 @@ def test_tool_call_failure_reads_the_payload_not_just_is_error() -> None:
 
     raised = _FakeToolResult({"data": {}}, is_error=True)
     assert _tool_call_failure(raised) is not None
+
+
+def test_mcp_helper_classifies_malformed_payloads_and_typed_success() -> None:
+    """MCP payload parsing preserves raw text and rejects invalid result shapes."""
+    from topos.acceptance import _parse_tool_content, _tool_call_failure
+
+    raw_block = type("Block", (), {"text": "not json", "type": "text"})()
+    raw_result = type("ToolResult", (), {"content": [raw_block], "isError": False})()
+    assert _parse_tool_content(raw_result) == "not json"
+    assert _tool_call_failure(raw_result) == "non-dict payload: 'not json'"
+
+    non_dict = _FakeToolResult(["not", "a", "mapping"])
+    assert _tool_call_failure(non_dict) == "non-dict payload: ['not', 'a', 'mapping']"
+
+    malformed_error = _FakeToolResult({"error": "not a typed error"})
+    assert _tool_call_failure(malformed_error) == "malformed error field: 'not a typed error'"
+
+    typed_success = _FakeToolResult({"data": {"rows": []}})
+    assert _tool_call_failure(typed_success) is None
+
+
+def test_update_byte_size_uses_utf8_and_handles_absent_or_untextual_content() -> None:
+    """Response accounting counts UTF-8 text and treats no text as zero bytes."""
+    from topos.acceptance import _update_byte_size
+
+    text_blocks = [
+        type("Block", (), {"text": "plain", "type": "text"})(),
+        type("Block", (), {"text": "é", "type": "text"})(),
+    ]
+    text_result = type("ToolResult", (), {"content": text_blocks})()
+    absent_result = type("ToolResult", (), {})()
+    untextual_block = type("Block", (), {"type": "image"})()
+    untextual_result = type("ToolResult", (), {"content": [untextual_block]})()
+
+    details: dict[str, object] = {}
+    _update_byte_size(text_result, "text", details)
+    _update_byte_size(absent_result, "absent", details)
+    _update_byte_size(untextual_result, "image", details)
+
+    assert details["text"] == {"bytes": 7}
+    assert details["absent"] == {"bytes": 0}
+    assert details["image"] == {"bytes": 0}
 
 
 class _FakeProc:
