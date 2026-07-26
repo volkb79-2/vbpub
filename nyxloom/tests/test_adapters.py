@@ -1794,6 +1794,232 @@ def test_review_focus_only_embedded_for_review_independent_role():
     assert "unique-marker-review-focus-xyz" not in carver_prompt
 
 
+# ============================================================================
+# D-BATCHC (2026-07-26, plan-factory-hardening.md §D part 2): review-depth
+# directive by complexity band (Frontmatter.tier, with a scope.touch-size
+# fallback) + declared gate rigor (GateDef.asserts). Mirrors review_focus's
+# own oracle set immediately above -- pure-helper correctness (O1/O3/O4),
+# the load-bearing byte-identical-when-neutral safety property (O2), role
+# scoping (O5), worst-case argv degradation (O6), and coexistence with
+# review_focus (O7). Each pins a NEGATIVE so the assertion cannot pass
+# hollowly.
+# ============================================================================
+
+def test_compute_review_depth_directive_embeds_high_complexity_and_shallow_gate():
+    """Oracle 1: a high band (implement-3) combined with a shallow gate
+    (asserts only tests-pass -- missing changed-line-coverage AND mutation)
+    returns a non-empty directive naming BOTH reasons. build_dispatch then
+    embeds that directive verbatim into the REVIEW_INDEPENDENT prompt."""
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    assert directive != ""
+    assert "high-complexity" in directive          # names the band reason
+    assert "tests-pass" in directive                # names the shallow-gate reason
+    assert "coverage" in directive and "mutation" in directive
+
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_depth=directive,
+    )
+    assert directive in prompt
+    assert "Review depth:" in prompt
+
+
+def test_review_depth_absent_prompt_is_byte_identical_to_pre_batchc():
+    """Oracle 2 (LOAD-BEARING SAFETY ORACLE): low band (implement-1) +
+    rigorous gate (both changed-line-coverage AND mutation declared) ->
+    compute_review_depth_directive returns ''. build_dispatch's output for
+    that '' is then BYTE-IDENTICAL to the pre-BATCHC prompt (the same
+    snapshot O2 pins for review_focus, since neither feature fires here) --
+    proving zero regression for every existing handoff, not merely 'still
+    works'. Checked via the literal snapshot AND explicit review_depth=""
+    /default-omitted parity."""
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-1", scope_touch=["a.py"],
+        gate_asserts=["tests-pass", "changed-line-coverage", "mutation"])
+    assert directive == ""
+
+    _argv, prompt_default = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    _a2, prompt_explicit_empty = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_depth=directive,
+    )
+    assert prompt_default == _PRE_D1_SIMPLE_REVIEW_PROMPT
+    assert prompt_explicit_empty == _PRE_D1_SIMPLE_REVIEW_PROMPT
+    assert "Review depth:" not in prompt_default
+    assert "Review depth:" not in prompt_explicit_empty
+
+
+def test_compute_review_depth_directive_shallow_gate_alone_triggers_it():
+    """Oracle 3: LOW band (implement-1) but a shallow gate still fires --
+    the directive names ONLY the rigor gap, NOT a high-complexity reason
+    (proves the two signals are independent triggers, not just band-driven).
+    Proves gate_asserts=[] and gate_asserts=None (a project with no
+    declared gate at all) are both handled -- no crash, both read as
+    maximally shallow."""
+    for asserts in (["tests-pass"], [], None):
+        directive = adapters.compute_review_depth_directive(
+            tier="implement-1", scope_touch=["a.py"], gate_asserts=asserts)
+        assert directive != "", f"gate_asserts={asserts!r} should still be shallow"
+        assert "high-complexity" not in directive   # band is low -- NOT the reason
+        assert "coverage" in directive and "mutation" in directive
+
+    # No crash dispatching with either shallow-gate directive either.
+    directive_empty_asserts = adapters.compute_review_depth_directive(
+        tier="implement-1", scope_touch=["a.py"], gate_asserts=None)
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_depth=directive_empty_asserts,
+    )
+    assert "declares no assertions" in prompt
+
+
+def test_compute_review_depth_directive_scope_size_fallback():
+    """Oracle 4: an absent/unparseable tier falls back to a scope.touch-size
+    proxy. A large scope_touch (above _HIGH_BAND_SCOPE_TOUCH_THRESHOLD) is
+    treated as band 3 (directive fires, naming high-complexity) even with a
+    RIGOROUS gate paired in both cases -- isolating that the FALLBACK band
+    alone (not gate rigor) drives the difference. A tiny scope_touch stays
+    band 1 (directive empty)."""
+    rigorous = ["tests-pass", "changed-line-coverage", "mutation"]
+    large_scope = [f"src/file{i}.py" for i in range(8)]
+    directive_large = adapters.compute_review_depth_directive(
+        tier=None, scope_touch=large_scope, gate_asserts=rigorous)
+    assert directive_large != ""
+    assert "high-complexity" in directive_large
+
+    tiny_scope = ["src/one_file.py"]
+    directive_tiny = adapters.compute_review_depth_directive(
+        tier=None, scope_touch=tiny_scope, gate_asserts=rigorous)
+    assert directive_tiny == ""
+
+    # An unrecognized (not just absent) tier string falls back the same way.
+    directive_unparseable = adapters.compute_review_depth_directive(
+        tier="not-a-real-tier", scope_touch=large_scope, gate_asserts=rigorous)
+    assert directive_unparseable != ""
+    assert "high-complexity" in directive_unparseable
+
+
+def test_review_depth_only_embedded_for_review_independent_role():
+    """Oracle 5: mirrors review_focus's own role-scoping pin -- a non-empty
+    review_depth passed to an IMPLEMENTER (or CARVER) dispatch appends
+    NOTHING (the directive is reviewer-facing only)."""
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    assert directive != ""  # sanity: a real, non-empty directive
+
+    _a, impl_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, review_depth=directive,
+    )
+    assert directive not in impl_prompt
+    assert "Review depth:" not in impl_prompt
+
+    _b, carver_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.CARVER, carve_authority="branch", review_depth=directive,
+    )
+    assert directive not in carver_prompt
+    assert "Review depth:" not in carver_prompt
+
+
+def test_review_depth_worst_case_argv_degrades_never_raises():
+    """Oracle 6: mirrors test_review_independent_review_focus_skipped_when_
+    argv_max_too_tight's technique -- when even the 'Review depth: ' header
+    alone would not leave 40 chars of room, the whole block is skipped
+    (never truncated to something unreadable, never raising), and the
+    resulting prompt is byte-identical to the same dispatch without
+    review_depth."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    assert "Review depth:" not in floor_prompt  # sanity: genuinely absent
+
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 25)
+    _b, tight_base = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        review_depth=directive, **kw)
+
+    assert "Review depth:" not in prompt          # skipped, not truncated
+    assert directive not in prompt
+    assert len(prompt) <= tight_route.argv_max     # never raises AdapterError
+    assert prompt == tight_base                    # byte-identical to the no-depth dispatch
+
+
+def test_review_depth_truncates_when_room_tight_but_above_floor():
+    """Oracle 6 (companion): the OTHER worst-case branch -- room is >= 40 (the
+    header fits) but too small for the full directive body. The body is
+    TRUNCATED-WITH-MARKER (never silently dropped, never raising), mirroring
+    prior_verdict/review_focus's own truncate-to-fit behavior. Distinct from
+    the test above, which covers the 'skip the whole block' branch (room <
+    40) -- this one covers the 'truncate the body' branch (room >= 40 but
+    < len(directive))."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
+    _f, floor_prompt = adapters.build_dispatch(
+        floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    assert len(directive) > 60  # sanity: long enough that a 46-char room truncates it
+
+    # room = argv_max - len(floor_prompt) - len("\nReview depth: ") ~= 46:
+    # comfortably >= 40 (header fits, block is NOT skipped) but far short of
+    # len(directive) (body must truncate).
+    medium_route = RouteDef(route_id="medium", cli="fake", model="m",
+                            argv_max=len(floor_prompt) + 60)
+    _argv, prompt = adapters.build_dispatch(
+        medium_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        review_depth=directive, **kw)
+
+    assert "Review depth:" in prompt               # header present -- not skipped
+    assert directive not in prompt                 # full body did NOT fit
+    assert "truncated to fit" in prompt             # truncation marker present
+    assert len(prompt) <= medium_route.argv_max     # never raises AdapterError, never overflows
+
+
+def test_review_depth_coexists_with_review_focus():
+    """Oracle 7: a REVIEW_INDEPENDENT dispatch carrying BOTH a review_focus
+    list and a review_depth directive embeds BOTH, still under argv_max,
+    with review_depth appended AFTER review_focus (sane order/spacing --
+    the focus header/body is not corrupted by the depth append)."""
+    focus = ["check the CAS revert for a stale head_commit"]
+    directive = adapters.compute_review_depth_directive(
+        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+    assert directive != ""
+
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, review_focus=focus, review_depth=directive,
+    )
+    assert "check the CAS revert for a stale head_commit" in prompt
+    assert "Carve-authored focus" in prompt
+    assert directive in prompt
+    assert "Review depth:" in prompt
+    assert len(prompt) <= 1500  # _fake_route().argv_max is None -> build_dispatch's 1500 default
+    # review_depth is appended LAST (after review_focus).
+    assert prompt.index("Carve-authored focus") < prompt.index("Review depth:")
+
+
 # ---------------------------------------------------------------------------
 # P05a (docs/plan-logging.md §5): adapters.py instrumentation -- a provider
 # call -> DEBUG; "a route probe failure/pause" is a named WARNING example.
