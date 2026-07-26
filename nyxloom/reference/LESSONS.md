@@ -445,3 +445,10 @@ correct self-review and auditable runner evidence. Treat provider retries as a
 controller concern—bound the client process, preserve its session id, and
 apply an explicit 30/60/120-second resume policy rather than accepting hidden
 rapid retries.
+
+The capsule is itself part of the oracle and must be preflighted by the
+controller before a route is scored: execute its proposed seam/fixture matrix
+against the isolated target, list every required constructor field, and verify
+that a mocked boundary cannot accidentally intercept a downstream dependency.
+If that preflight is wrong, invalidate the package rather than charging the
+model for faithfully implementing an impossible instruction.
