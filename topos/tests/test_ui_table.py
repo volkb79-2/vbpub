@@ -19,10 +19,18 @@ from topos.ui.table import (
 def test_profiles_discover_and_normalize_configured_profiles() -> None:
     config = ToposConfig(
         default_column_profile="forensics",
-        columns={"profiles": {"forensics": {"list": ["name", "ram"]}}},
+        columns={
+            "profiles": {
+                "forensics": {"list": ["name", "ram"]},
+                "operations": {"list": ["name", "cpu_pct"]},
+                "auto": {"list": ["name"]},
+            }
+        },
     )
 
-    assert "forensics" in available_profiles(config)
+    profiles = available_profiles(config)
+    assert {"forensics", "operations"} <= set(profiles)
+    assert profiles.count("auto") == 1
     assert resolve_profile(config, width=80, profile="forensics").columns == ("name", "ram")
     assert resolve_profile(config, width=80, profile="missing").name == "forensics"
 
