@@ -351,6 +351,26 @@ SELECTION by band (needs `review-1`/`review-2` routes built first).
   per-mutant worktree isolation — `_run_is_killed` writes in-place). Leaf. Enables H.
 - **H** — frozen-core mutation audit (reconcile/daemon/storage/types, whole-module). Epic;
   needs fan-out + a budget.
+- **P27-followon — ✅ DONE (merge `be04f602`, 2026-07-26).** `log.configure()`'s root cause
+  behind B27: `removeHandler`-then-`addHandler` left a real window where `root.handlers` was
+  the empty list; a concurrent `log.warning()` landing in that window silently vanished (no
+  exception, no output — exactly B27's symptom). Fixed at the source: build the new handler
+  set off to the side, swap it in with one atomic list-object rebind (CPython's GIL makes a
+  plain attribute rebind observably atomic — a concurrent reader sees fully-old or fully-new,
+  never partial), close old handlers only after the swap. New concurrency regression test
+  proven to fail 3/3 against the old code and pass 3/3 against the fix. Gate green 2× (agent)
+  + 1× (controller) + post-merge 1× green with zero failures.
+  - **New watch-item discovered during controller re-gate:** `test_mutation_gate.py::
+    test_evaluate_parallel_matches_serial_reference` failed once on the pre-merge gate run
+    (`total=10, killed=10, survivors=[]`) — unrelated to this branch (touches only `log.py`/
+    `test_log.py`). Root cause: the test's stub bucket function is `hash(key) % 3`, and
+    Python randomizes string-hash seeds per process by default (no `PYTHONHASHSEED` pinned
+    anywhere in this harness) — its own "arbitrary but stable" comment is only true *within*
+    one process, not *across* invocations. Confirmed pre-existing: passed in isolation against
+    bare `main` on a separate invocation; post-merge full-suite run was clean (0 failures). Not
+    de-flaked this round (attribution was sufficient to safely merge P27-followon). Fix, when
+    picked up: either pin the stub's split via an explicit deterministic mapping instead of
+    `hash()`, or set `PYTHONHASHSEED=0` for this test via a fixture/marker.
 
 ## BATCH E — epic (design-first)
 - **C** — system→system lessons channel: a `LESSON_DISCOVERED` record → `nyxloom-trove/
