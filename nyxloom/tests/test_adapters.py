@@ -1855,7 +1855,7 @@ def test_review_independent_review_focus_skipped_when_argv_max_too_tight():
     # argv_max forces the (itself argv-budgeted) doctrine manifest to be
     # skipped, isolating the REVIEW_INDEPENDENT core content this test
     # anchors its margin to.
-    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
     _f, floor_prompt = adapters.build_dispatch(
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
     assert "Doctrine:" not in floor_prompt  # sanity: manifest genuinely absent
@@ -2036,7 +2036,7 @@ def test_review_depth_worst_case_argv_degrades_never_raises():
     review_depth."""
     kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
               task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
-    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
     _f, floor_prompt = adapters.build_dispatch(
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
     assert "Review depth:" not in floor_prompt  # sanity: genuinely absent
@@ -2068,7 +2068,7 @@ def test_review_depth_truncates_when_room_tight_but_above_floor():
     < len(directive))."""
     kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
               task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
-    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1100)
+    floor_route = RouteDef(route_id="floor", cli="fake", model="m", argv_max=1000)
     _f, floor_prompt = adapters.build_dispatch(
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
 
