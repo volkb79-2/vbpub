@@ -437,9 +437,6 @@ class ToposApp(App[None]):
     def _run_snapshot_worker(self) -> None:
         entity_key = self._snapshot_entity_key or ""
         frame = self._snapshot_frame
-        if frame is None:
-            self.call_from_thread(self._on_snapshot_failed, RuntimeError("no frame captured"))
-            return
         previous_frames = self._snapshot_previous_frames
         try:
             systemctl_show, systemctl_status = collect_systemctl_show(
