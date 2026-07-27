@@ -398,6 +398,12 @@ def _run_is_killed(
 
 _IN_PLACE_LOCK = threading.Lock()
 
+# `git worktree add`/`remove` mutate one per-repo admin area and are not safe
+# to run concurrently against the same repo; this serializes ONLY those git
+# admin calls (never the test subprocess between them). See
+# `_run_is_killed_isolated`.
+_WORKTREE_ADMIN_LOCK = threading.Lock()
+
 
 def _run_is_killed_in_place(
     repo: str,
@@ -477,10 +483,21 @@ def _run_is_killed_isolated(
     uniq = f"mut-{mutant.lineno}-{next(_SCRATCH_COUNTER)}-{uuid.uuid4().hex[:8]}"
     scratch = os.path.join(repo_root, ".worktrees", uniq)
 
-    add = subprocess.run(
-        ["git", "-C", repo_root, "worktree", "add", "--detach", scratch, "HEAD"],
-        capture_output=True, text=True,
-    )
+    # `git worktree add`/`remove` mutate the SAME per-repo admin area
+    # (`.git/worktrees`, the index/config locks), so they are NOT safe to run
+    # concurrently against one repo -- two threads racing an add/remove can
+    # leave the loser's operation half-done: observed as a scratch worktree
+    # that `remove` (below) failed to unregister, orphaning `.worktrees/mut-*`
+    # (a ~2.5% intermittent leftover, 2026-07-27). Serialize ONLY the git
+    # admin calls under `_WORKTREE_ADMIN_LOCK`; the expensive part -- the test
+    # subprocess -- still runs fully concurrently outside the lock, so the
+    # fan-out speedup is preserved. This is the same "one writer at a time for
+    # a shared admin resource" shape as `_IN_PLACE_LOCK`, one layer up.
+    with _WORKTREE_ADMIN_LOCK:
+        add = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "--detach", scratch, "HEAD"],
+            capture_output=True, text=True,
+        )
     if add.returncode != 0:
         # Could not create the isolated scratch tree for some reason (e.g. a
         # racing cleanup); fall back to in-place rather than silently
@@ -503,10 +520,21 @@ def _run_is_killed_isolated(
     finally:
         # Always remove the scratch worktree, even on exception/timeout —
         # mirrors gate_runner.run_gate_at_commit's own finally-block discipline.
-        subprocess.run(
-            ["git", "-C", repo_root, "worktree", "remove", "--force", scratch],
-            capture_output=True, text=True,
-        )
+        # Serialized with `add` above (see the lock's rationale there): a remove
+        # racing a concurrent add is exactly what left the worktree registered.
+        # If the remove still reports failure, prune the now-deleted-or-stale
+        # admin entry so nothing is left in `git worktree list` -- the test
+        # asserts a clean listing, and production must not accumulate orphans.
+        with _WORKTREE_ADMIN_LOCK:
+            removed = subprocess.run(
+                ["git", "-C", repo_root, "worktree", "remove", "--force", scratch],
+                capture_output=True, text=True,
+            )
+            if removed.returncode != 0:
+                subprocess.run(
+                    ["git", "-C", repo_root, "worktree", "prune"],
+                    capture_output=True, text=True,
+                )
 
 
 def _resolve_added_lines(

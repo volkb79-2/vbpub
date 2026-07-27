@@ -1311,11 +1311,12 @@ together under that name, but the host-level ceiling the operator intended
 `gstammtisch-guide` cgroup tooling for a worked example of authoring such
 units) silently does not apply: the containers run **unconfined** at the
 slice level even though the compose file "looks" governed. This is a
-degradation, not a failure — CIU has no way to detect a missing systemd unit
-from inside a container-facing overlay generator, so operators MUST ensure
-`cgroup_parent`'s target slice is a real, provisioned systemd unit before
-relying on it for enforcement; `mem_limit`/`mem_reservation`/`blkio_config`
-are per-container (not slice-dependent) and always apply regardless.
+degradation, not a failure — `composefile.generate_overlay` still has no way
+to detect a missing systemd unit from inside a container-facing overlay
+generator (no host access there); **S15.12 closes this gap at deploy time
+instead**, where `ciu-deploy` *does* have host access, before any container
+starts. `mem_limit`/`mem_reservation`/`blkio_config` are per-container (not
+slice-dependent) and always apply regardless.
 
 ### S15.9 — `ciu iops-baseline` (self-contained measurement)
 
@@ -1418,6 +1419,51 @@ is inert for them. `environment`/`volumes` are MERGE keys in the overlay
 S15.3 author-precedence rule for scalar keys does not apply.
 `exempt_services` opts individual services out. The one-line S15.7
 summary includes `ksm_optin=<path|off>`.
+
+### S15.12 — Named-slice existence preflight (D-G9 check 1)
+
+Closes the S15.8 gap: for every selected stack whose resolved governance
+table is `enabled = true` **and** whose effective `cgroup_parent` is a
+`*.slice` name **other than** the CIU-shipped default
+(`GOVERNANCE_DEFAULTS["cgroup_parent"]`, normally `besteffort.slice` — CIU's
+own setup tooling's responsibility, not re-verified here), `ciu-deploy`
+probes the target host's systemd for that unit **before any deploy phase
+starts** (`deploy.governance_slice_preflight`, alongside `vault_preflight` /
+`provisioning_preflight` / `registry_preflight`):
+
+- **systemd present, slice loaded** (`systemctl show <slice>
+  --property=LoadState` reports `LoadState=loaded`) — pass, one `[INFO]`
+  line per slice.
+- **systemd present, slice NOT loaded** — fail closed: `ValueError`
+  (`[S15.G9-1]`, S10.3 exit 2) naming the missing slice and every stack that
+  would place a container under it, before `up` starts anything. This is the
+  case S15.8 describes: Docker/systemd would otherwise auto-create the slice
+  transiently with no limits, and the deploy would proceed as if it were
+  governed.
+- **no `systemctl` on the host at all** (`shutil.which("systemctl") is
+  None`) — skip with an `[INFO]` note, not a failure: a non-systemd host
+  (CI runner, macOS, a minimal container) cannot honor governance slices
+  either way, so there is nothing to enforce.
+- Multiple stacks naming the **same** slice are checked once, not once per
+  stack (`governance.check_slice_unit`).
+
+Skipped entirely under `--no-preflight` (the same break-glass flag
+`provisioning_preflight` honors) — an explicit operator opt-out, not a
+default.
+
+### S15.13 — Unknown-key warning in `[<root>.governance]` (D-G9 check 2)
+
+S15.2 keeps `resolve_config` permissive by design (unknown keys pass
+through unchanged — a newer stack config running against an older CIU is a
+legitimate case, and a hard reject there would break forward-compat). But a
+silently-swallowed unknown key is also exactly how a typo
+(`cgroup_parnet`) or a key meant for a different table goes unnoticed
+indefinitely. `resolve_config` now prints one `[WARN] [S15.2]` line naming
+every key present in the raw table that is not in `GOVERNANCE_DEFAULTS`,
+while still returning normally — the DEFAULT behavior stays a warning, never
+a raise, so forward-compat is preserved. An opt-in `strict_unknown_keys=True`
+keyword turns the same condition into a `ValueError` instead, for callers
+that want to hard-fail on it; nothing in CIU sets this by default.
 
 ---
 
