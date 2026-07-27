@@ -656,6 +656,238 @@ def test_vault_preflight_flags_misplaced_directive(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Governance slice preflight (D-G9 check 1, S15.8) — fail CLOSED
+# ---------------------------------------------------------------------------
+
+
+def _governance_selection_rendered(cgroup_parent: str, *, enabled: bool = True):
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/app",
+            "name": "app",
+            "service": {"path": "applications/app", "name": "app", "enabled": True},
+        }
+    ]
+    rendered = {
+        "applications/app": {
+            "app": {"governance": {"enabled": enabled, "cgroup_parent": cgroup_parent}}
+        }
+    }
+    return selection, rendered
+
+
+def _plain_config() -> dict:
+    return {"deploy": {"project_name": "p", "environment_tag": "t", "phases": {}}}
+
+
+def test_governance_slice_preflight_raises_when_slice_missing(monkeypatch, tmp_path):
+    import pytest
+
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice")
+
+    monkeypatch.setattr(
+        deploy.governance_mod,
+        "check_slice_unit",
+        lambda name: (False, f"{name}: LoadState=not-found"),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert "[S15.G9-1]" in str(exc_info.value)
+    assert "nyxloom-daemon.slice" in str(exc_info.value)
+    # A missing slice is a configuration/setup failure → exit 2 (S10.3), like
+    # registry_preflight's missing-`docker login` case.
+    from ciu import engine as _engine
+
+    assert _engine._exit_code_for(exc_info.value) == 2
+
+
+def test_governance_slice_preflight_passes_when_slice_exists(monkeypatch, tmp_path):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice")
+
+    monkeypatch.setattr(
+        deploy.governance_mod,
+        "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_skips_on_non_systemd_host(monkeypatch, tmp_path, capsys):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice")
+
+    monkeypatch.setattr(
+        deploy.governance_mod,
+        "check_slice_unit",
+        lambda name: (None, "no systemctl on this host — skipping the slice-existence preflight"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+    out = capsys.readouterr().out
+    assert "no systemctl" in out
+
+
+def test_governance_slice_preflight_skips_default_slice(monkeypatch, tmp_path):
+    """besteffort.slice (the ciu-shipped default) is never probed at all."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("besteffort.slice")
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called for the default slice")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_noop_when_governance_disabled(monkeypatch, tmp_path):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice", enabled=False)
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called when governance is disabled")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_noop_without_governance_table(tmp_path):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/app",
+            "name": "app",
+            "service": {"path": "applications/app", "name": "app", "enabled": True},
+        }
+    ]
+    rendered = {"applications/app": {"app": {"env": {"FOO": "bar"}}}}
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_honors_no_preflight_flag(monkeypatch, tmp_path, capsys):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice")
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called under --no-preflight")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(
+        tmp_path, profile, selection, rendered, no_preflight=True
+    )  # must not raise
+    assert "skipping" in capsys.readouterr().out
+
+
+def test_governance_slice_preflight_dedupes_same_slice_across_stacks(monkeypatch, tmp_path):
+    """Two stacks sharing the same missing slice → checked ONCE, both named in the error."""
+    import pytest
+
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection = [
+        {
+            "phase_num": 1, "phase_key": "phase_1", "path": "applications/a", "name": "a",
+            "service": {"path": "applications/a", "name": "a", "enabled": True},
+        },
+        {
+            "phase_num": 2, "phase_key": "phase_2", "path": "applications/b", "name": "b",
+            "service": {"path": "applications/b", "name": "b", "enabled": True},
+        },
+    ]
+    rendered = {
+        "applications/a": {"a": {"governance": {"enabled": True, "cgroup_parent": "shared.slice"}}},
+        "applications/b": {"b": {"governance": {"enabled": True, "cgroup_parent": "shared.slice"}}},
+    }
+    calls: list[str] = []
+
+    def fake_check(name):
+        calls.append(name)
+        return False, f"{name}: LoadState=not-found"
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fake_check)
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert calls == ["shared.slice"]  # checked ONCE, not once per stack
+    assert "applications/a" in str(exc_info.value)
+    assert "applications/b" in str(exc_info.value)
+
+
+def test_governance_slice_preflight_skips_entry_missing_from_rendered(monkeypatch, tmp_path):
+    """A selection entry with no corresponding `rendered` key (e.g. render was
+    filtered upstream) is skipped, not KeyError'd."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/unrendered",
+            "name": "unrendered",
+            "service": {"path": "applications/unrendered", "name": "unrendered", "enabled": True},
+        }
+    ]
+    rendered: dict = {}  # deliberately missing "applications/unrendered"
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called with nothing rendered")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_skips_malformed_stack_shape(monkeypatch, tmp_path):
+    """A stack config that fails S3.5 shape validation (e.g. two root keys) is
+    skipped here — that's a separate validation's job, not this preflight's."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/malformed",
+            "name": "malformed",
+            "service": {"path": "applications/malformed", "name": "malformed", "enabled": True},
+        }
+    ]
+    # Two non-reserved top-level keys → validate_stack_shape raises [S3.5].
+    rendered = {
+        "applications/malformed": {
+            "app_a": {"governance": {"enabled": True, "cgroup_parent": "x.slice"}},
+            "app_b": {"governance": {"enabled": True, "cgroup_parent": "y.slice"}},
+        }
+    }
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called for a malformed stack shape")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_skips_shipped_stacks(monkeypatch, tmp_path):
+    """S8.6 shipped stacks have no CIU config to resolve governance from."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/shipped",
+            "name": "shipped",
+            "service": {"path": "applications/shipped", "name": "shipped", "enabled": True, "shipped": True},
+        }
+    ]
+    # No rendered entry at all for a shipped stack (mirrors render_selected_stacks' skip).
+    rendered: dict = {}
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called for a shipped stack")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # CLI helpers (S10.2 action surface; --groups removed)
 # ---------------------------------------------------------------------------
 

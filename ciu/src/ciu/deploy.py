@@ -13,6 +13,7 @@ secret / compose logic of its own:
   - secret directive discovery . secrets.directives (S4 / S7.6 vault preflight)
   - vault address/token ........ secrets.providers (S4.16)
   - registry auth .............. deploy_pkg.registry (S7.9)
+  - governance slice checks .... governance.check_slice_unit (D-G9 / S15.8)
   - all subprocess use ......... procutil.run_cmd / procutil.docker
 
 Spec contracts enforced here:
@@ -26,6 +27,9 @@ Spec contracts enforced here:
   - S7.7  health gate: pending FAILS; ``no-healthcheck`` is a warning.
   - S7.8  container lookups use anchored name filters, never substrings.
   - S10.3 exit codes: 0 ok · 1 runtime · 2 config/validation · 3 env/bootstrap.
+  - S15.G9-1 governance slice preflight: a named, non-default cgroup slice
+          must exist on the host (systemd) before any phase runs, else the
+          container would silently run unbounded (D-G9 check 1).
 
 Discipline (S7.3 / S8.4): no ``sys.exit`` inside actions — every action
 returns an int; ``main()`` is the single exit point and maps exceptions to the
@@ -44,6 +48,7 @@ from typing import Optional
 
 from . import config_model
 from . import engine
+from . import governance as governance_mod
 from . import procutil
 from .cli_utils import get_cli_version
 from .config_constants import (
@@ -533,6 +538,109 @@ def registry_preflight(config: dict) -> None:
         "in the Docker config (auths/credHelpers/credsStore). Run `docker "
         "login` for that registry, then retry."
     )
+
+
+# ===========================================================================
+# Governance slice preflight (D-G9 check 1, S15.8) — fail CLOSED
+# ===========================================================================
+
+
+def governance_slice_preflight(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+    *,
+    no_preflight: bool = False,
+) -> None:
+    """D-G9 check 1 — verify every explicitly-configured governance slice exists.
+
+    Background (S15.8): S15 governance can inject
+    ``cgroup_parent = "<name>.slice"`` into every non-exempt service. With
+    the systemd cgroup driver, a slice with no static unit file is
+    implicitly, transiently created by systemd on first reference — with NO
+    resource limits of its own. The compose file then "looks" governed
+    (``cgroup_parent`` is set) but the container runs completely unconfined
+    at the slice level, silently. This preflight catches that BEFORE any
+    phase starts, by asking the host's systemd whether the named slice is
+    actually loaded (:func:`governance.check_slice_unit`).
+
+    Only checks slices *other than* CIU's own shipped default
+    (``governance.GOVERNANCE_DEFAULTS["cgroup_parent"]``, normally
+    ``besteffort.slice``) — provisioning that one is CIU's own setup
+    tooling's responsibility, not this preflight's (S15.1).
+
+    Skipped entirely when *no_preflight* is set (the same break-glass flag
+    :func:`provisioning_preflight` honors), or when the host has no
+    ``systemctl`` at all — a non-systemd host cannot honor governance slices
+    either way, so that is an informational note, not a CIU error.
+
+    Raises
+    ------
+    ValueError
+        [S15.G9-1] a systemd host is missing a named, non-default governance
+        slice (S10.3 → exit 2 — a configuration/setup failure, mirroring
+        :func:`registry_preflight`'s missing-`docker login` pattern).
+    """
+    if no_preflight:
+        info("[INFO] --no-preflight: skipping governance slice preflight")
+        return
+
+    config = profile.config
+    default_slice = governance_mod.GOVERNANCE_DEFAULTS["cgroup_parent"]
+    # slice_name -> [stack rel paths that would place a container under it]
+    checked: dict[str, list[str]] = {}
+
+    for entry in selection:
+        rel = entry["path"]
+        # Shipped stacks (S8.6) have no CIU config — nothing to resolve.
+        if phases_pkg.service_shipped(entry["service"]):
+            continue
+        if rel not in rendered:
+            continue
+        try:
+            root_key = config_model.validate_stack_shape(rendered[rel])
+        except ValueError:
+            continue
+        merged = config_model.deep_merge(config, rendered[rel])
+        raw_governance = governance_mod.resolve_stack_governance(
+            merged.get(root_key, {}).get("governance"), config
+        )
+        if raw_governance is None:
+            continue
+        gov_cfg = governance_mod.resolve_config(raw_governance)
+        if not gov_cfg.get("enabled"):
+            continue
+        slice_name = str(gov_cfg.get("cgroup_parent") or "")
+        if not slice_name.endswith(".slice") or slice_name == default_slice:
+            continue
+        checked.setdefault(slice_name, []).append(rel)
+
+    if not checked:
+        return
+
+    missing: list[str] = []
+    for slice_name, stacks in checked.items():
+        exists, note = governance_mod.check_slice_unit(slice_name)
+        if exists is None:
+            info(f"[INFO] [S15.G9-1] {note}")
+            return  # inconclusive/no-systemd applies to every slice equally
+        if exists:
+            info(f"[INFO] [S15.G9-1] governance slice OK — {note}")
+        else:
+            missing.append(f"  '{slice_name}' (used by: {', '.join(stacks)}) — {note}")
+
+    if missing:
+        raise ValueError(
+            "[S15.G9-1] governance names a cgroup slice that is not installed "
+            "on this host. Docker/systemd will auto-create a missing slice "
+            "TRANSIENTLY with NO resource limits (S15.8) — the container will "
+            "appear governed (cgroup_parent is set) but run completely "
+            "unbounded. Install the slice unit(s) first (a systemd .slice "
+            "file under /etc/systemd/system/, then `systemctl daemon-reload`), "
+            "or point [<root>.governance].cgroup_parent at a slice that "
+            "already exists:\n" + "\n".join(missing)
+        )
 
 
 # ===========================================================================
@@ -1557,7 +1665,7 @@ Examples:
     control.add_argument("--strict", action="store_true",
                          help="Preflight: treat any missing-tool warning as a hard failure (exit 1)")
     control.add_argument("--no-preflight", dest="no_preflight", action="store_true",
-                         help="Skip provisioning preflight checks (break-glass)")
+                         help="Skip provisioning + governance-slice preflight checks (break-glass)")
     control.add_argument("--live", action="store_true",
                          help="With --check: also probe live state (Vault/Postgres/MinIO/Consul/Docker)")
     control.add_argument("--format", dest="graph_format", default="mermaid",
@@ -1684,6 +1792,10 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             probe=False,  # static lint up-front; live probing runs per-phase in action_deploy
         )
         registry_preflight(profile.config)
+        governance_slice_preflight(
+            repo_root, profile, selection, rendered,
+            no_preflight=getattr(args, 'no_preflight', False),
+        )
         # Ensure the workspace network exists before compose (devcontainer no-op
         # off-devcontainer); reads the profile-resolved auto_connect setting.
         ensure_workspace_network(
@@ -1699,6 +1811,10 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
             probe=False,  # static lint up-front; live probing runs per-phase in action_deploy
+        )
+        governance_slice_preflight(
+            repo_root, profile, selection, rendered,
+            no_preflight=getattr(args, 'no_preflight', False),
         )
 
     for action in actions:
