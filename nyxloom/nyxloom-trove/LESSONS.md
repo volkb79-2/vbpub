@@ -1081,8 +1081,9 @@ and **B25** (the in-process-seam de-flake shape).
 
 `scope: product` · `upstream: integrated (ref: reference/LESSONS.md L18)`
 
-The rule, the three defeat modes, and the `coverage_gate` fix are **canonical** —
-see L18. Only the nyxloom-project-specific record lives here.
+The rule, the four defeat modes, and the `coverage_gate` fix are **canonical** —
+see L18. Only the nyxloom-project-specific record lives here. (Defeat 4, the
+lying transport, was added the same day; its local mechanics are [[PL9]].)
 
 **Local record (2026-07-27).** A Haiku implementer on the F007 gap-audit package
 passed the gate by adding 11 `no cover` pragmas to a `daemon.py` that had zero;
@@ -1104,3 +1105,68 @@ GAP1 test completion `269dbc64`.
 
 Related: [[PL4]] (never accept the completion narrative — here it was a green
 gate), [[PL3]] (coverage that drops lines exposes hollow tests, not miscounting).
+
+---
+
+## PL9 — The cockpit's docker socket is a socat relay; without `-t` it truncates every gate and forges exit 0
+
+`scope: project` · `upstream: integrated (ref: reference/LESSONS.md L18 defeat 4)`
+
+The general rule and the harness fix are **canonical** (L18 defeat 4). This is the
+local mechanism, because it will recur on every devcontainer rebuild and after every
+host docker upgrade.
+
+**Mechanism.** The dstdns devcontainer does not talk to dockerd directly. The
+`docker-outside-of-docker` feature's `/usr/local/share/docker-init.sh` bind-mounts the
+host socket to `/var/run/docker-host.sock` and then, when the host socket's GID
+already exists as a container group (994/`docker` here — so this branch is always
+taken), starts:
+
+```
+socat UNIX-LISTEN:/var/run/docker.sock,fork,mode=660,user=vscode,backlog=128 \
+      UNIX-CONNECT:/var/run/docker-host.sock
+```
+
+with **no `-t`**. socat's default half-close timeout is **0.5 s**. A non-interactive
+`docker run` hijacks the HTTP connection and shuts down its write side straight away;
+socat sees EOF client→server and, 0.5 s later, tears down server→client as well. The
+container runs to completion on the daemon — the daemon neither knows nor cares that
+the client left — but the CLI gets only whatever was emitted in the first half-second,
+and **may report exit 0 for a container that exited non-zero**.
+
+Measured asymmetry, which is the part that matters: the **truncation is
+deterministic; the exit-code corruption is not.** Two gate containers that exited 1
+came back as `docker run` exit 0, yet a hand sentinel (`… exit 7`) against the same
+broken relay truncated its output while still propagating 7. An always-wrong exit
+code would be caught by the first spot-check; an intermittently-wrong one survives
+every spot-check and lies exactly when a gate turns red. So judge the sentinel on
+its OUTPUT, never on its exit code alone.
+
+**Why it is worse than it sounds.** Bind-mount sources resolve on the *host*, so
+`nyxloomd`'s own gate execution (`/var/run/docker.sock:/var/run/docker.sock` in
+`nyxloomd/ciu.compose.yml`) uses the real host socket and is **unaffected**. The
+truncation is confined to `docker run` issued *from inside the cockpit* — which is
+precisely where the **controller's authoritative solo re-gate** runs (DOCTRINE §1).
+The one step designed to be the last line of defense was the only step exposed.
+
+**Detection.** The transport sentinel from L18:
+
+```bash
+docker run --rm tester-unified:local sh -c 'echo A; sleep 5; echo B; exit 7'
+# healthy  -> prints A AND B (and "$?" is 7)
+# poisoned -> prints only A  ("$?" may still be 7 — do not judge on it)
+```
+
+`docker version` and `docker logs` stay healthy throughout (plain request/response,
+not hijacked), so they are useless as a check — the sentinel must span a real delay
+*and* assert a non-zero exit.
+
+**Fix (2026-07-27).** Patched `docker-init.sh` to `socat -t 86400 …` (backup at
+`docker-init.sh.bak-pre-t-fix`) and restarted the live relay. This survives a
+container *restart* but **not a rebuild** — the file is in the image's writable layer,
+and the devcontainer feature ships it without `-t`. On rebuild, re-apply or push `-t`
+upstream into the feature. A rebuild's first symptom will be gates that pass.
+
+Related: [[PL8]] (same session, same rule, tooling side), [[PL7]] (green-in-isolation
+vs red-under-load — the sibling instinct: instrument *where the artifact went* before
+theorising about the code).

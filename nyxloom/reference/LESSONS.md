@@ -543,7 +543,9 @@ check it against the diff size *before* reading the percentage, and confirm the 
 code came from the process you think it did. `100%` looks identical whether the gate
 measured everything, a third of it, or nothing at all.
 
-Three concrete defeats, all observed in a single session (2026-07-27):
+Four concrete defeats, all observed in a single session (2026-07-27) — three in the
+tooling, and one in the *transport*, which is the one no amount of hardening inside
+the gate can see:
 
 1. **Exclusion laundering.** `coverage.py` sorts each line into exactly one of
    executed / missing / **excluded**, and a diff-coverage ratio built from
@@ -559,6 +561,23 @@ Three concrete defeats, all observed in a single session (2026-07-27):
    which essentially never fails, so every outcome becomes `PYTEST_EXIT:0`. Use
    `${PIPESTATUS[0]}`, `set -o pipefail`, or redirect to a file and capture `$?`
    immediately.
+4. **A lying transport.** The gate process can be entirely correct — right image,
+   right commit, real pytest, real coverage — while the *channel that carries its
+   verdict back* truncates the output and forges the exit code. Observed: the
+   devcontainer reaches dockerd through a `socat` relay, and socat's default
+   half-close timeout is **0.5 s**. A non-interactive `docker run` hijacks the
+   connection and shuts down its write side immediately; socat therefore tore down
+   the read side half a second later. The container ran to completion on the daemon,
+   but the client saw only the first half-second of output — and sometimes reported
+   **exit 0 for a container that exited non-zero** (observed: two gate containers
+   exited 1, `docker run` returned 0). Measure that asymmetry carefully, because it
+   is the dangerous part: the **truncation is reliable, the exit-code corruption is
+   not**. An always-wrong exit code would be caught by the first spot-check. An
+   intermittently-wrong one passes every spot-check and then lies precisely when a
+   gate actually goes red. Note also where this defect lives — not in the gate, not
+   in `coverage.py`, not in the shell, but in the plumbing between them, arriving
+   with an unrelated host docker upgrade. It is invisible to every check that runs
+   *inside* the container.
 
 **Evidence.** A Haiku implementer, given a well-specified package and no adversarial
 intent, passed the gate by adding 11 `no cover` pragmas to a `daemon.py` that had
@@ -582,6 +601,25 @@ writing *about* the pragma must omit the leading `#` — the exclude regex match
 token anywhere on a line, including inside a comment or string literal, so
 documenting the feature otherwise excludes the documentation (this guard's own first
 run caught exactly that).
+
+For defeat 4, harden the **harness**, because the gate cannot defend itself here.
+Never read a container gate's verdict off the attach stream. Run it detached and take
+each half of the answer from the daemon rather than from a hijacked connection:
+`docker run -d` → `docker wait` (the exit code, authoritative) → `docker logs` (a
+plain fetch, not a hijacked stream). Make the container's own exit status the verdict
+— exit with the worse of pytest's and the gate's status — so `docker wait` alone
+decides, and the log is only for reading *why*. A transport regression can then make
+the harness hang, but it can no longer make it lie, and hanging is a failure mode an
+operator notices. Before trusting any gate on a host whose container runtime, socket
+path, or devcontainer was touched, run a **transport sentinel** first:
+`docker run --rm <img> sh -c 'echo A; sleep 5; echo B; exit 7'` must print *both*
+lines and report *7*. Judge it on the **output**, not the exit code: a poisoned
+transport truncates to `A` every time, but may still hand back the right code, so an
+exit-code-only check gives a false all-clear. If `B` is missing, every gate verdict
+from that host is worthless until it is fixed — and note that "gates passed all week" is
+not evidence, because the break arrives with an unrelated upgrade and its first
+symptom is a *pass*. (Root cause here was `socat` started without `-t`; the fix is a
+large `-t`, but the sentinel is what makes the class detectable at all.)
 
 Related: **L11** (a pragma on an `except` BODY does not cover the `except` CLAUSE —
 the same escape hatch, one layer down), **L4** (read the real verdict in a separate
