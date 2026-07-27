@@ -164,6 +164,17 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               routes (free_models.write_routes_toml).
                               --dry-run computes and prints the identical
                               plan without writing.
+  route doctor [--no-probe]   BACKLOG B1 (src/nyxloom/route_doctor.py):
+                              schema-validate every routes.toml route/tier
+                              and live-probe each route via adapters.probe
+                              (the same probe daemon.py's _provider_ok
+                              memoizes). Read-only -- never writes routes.
+                              toml, never dispatches a task. Prints a
+                              per-route OK/problem table + findings; exits 1
+                              on any critical/error finding (cmd_doctor's
+                              rule). --no-probe restricts to schema
+                              validation only (offline-safe, no subprocess/
+                              network).
   init <project_folder>       PACKAGE P23. Scaffold nyxloom-trove/ into
                               <project_folder> from this package's bundled
                               templates (STANDARD.md + AUTHORING.md copied
@@ -1710,6 +1721,48 @@ def cmd_capability_map_refresh(args) -> int:
     return 0
 
 
+def cmd_route_doctor(args) -> int:
+    """route doctor [--no-probe]
+
+    BACKLOG B1: schema-validate every routes.toml route/tier
+    (route_doctor.check_schema) and, unless --no-probe, live-probe each
+    route (route_doctor.check_live -> adapters.probe -- the SAME function
+    daemon.py's _provider_ok memoizes; read-only, never dispatches a task).
+    Prints a per-route OK/problem summary plus the findings table; exits 1
+    on any critical/error finding (mirrors cmd_doctor's exit-code rule
+    exactly)."""
+    from . import route_doctor
+
+    live_probe = not getattr(args, "no_probe", False)
+    routes, findings = route_doctor.doctor_routes(live_probe=live_probe)
+
+    if routes is not None:
+        problem_ids: set[str] = set()
+        for f in findings:
+            problem_ids.update(rid for rid in f.refs if rid in routes.routes)
+        rows = [{
+            "route": route_id,
+            "cli": route.cli,
+            "model": route.model,
+            "status": "problem" if route_id in problem_ids else "OK",
+        } for route_id, route in sorted(routes.routes.items())]
+        if rows:
+            print(_format_table(rows, ["route", "cli", "model", "status"]))
+
+    if findings:
+        if routes is not None:
+            print()
+        print(_format_table([{
+            "kind": f.kind,
+            "severity": f.severity,
+            "message": f.message,
+            "refs": ", ".join(f.refs),
+        } for f in findings], ["kind", "severity", "message", "refs"]))
+
+    has_critical_or_error = any(f.severity in ("critical", "error") for f in findings)
+    return 1 if has_critical_or_error else 0
+
+
 def cmd_version(args) -> int:
     """version"""
     from . import __version__
@@ -1915,6 +1968,15 @@ def main(argv: list[str] | None = None) -> int:
                                    metavar="PROJECT", default=None,
                                    help="record cost_crossover findings under this registered project")
 
+    # route (B1: route doctor -- validate routes.toml + live-probe each route)
+    route_parser = subparsers.add_parser("route")
+    route_subs = route_parser.add_subparsers(dest="route_cmd")
+
+    route_doctor_parser = route_subs.add_parser("doctor")
+    route_doctor_parser.add_argument("--no-probe", action="store_true", dest="no_probe",
+                                      help="skip live route probing -- schema validation only "
+                                           "(offline-safe)")
+
     # finding (FN-4: CLI verbs)
     finding_parser = subparsers.add_parser("finding")
     finding_subs = finding_parser.add_subparsers(dest="finding_cmd")
@@ -2004,6 +2066,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "capability-map":
             if args.capability_map_cmd == "refresh":
                 return cmd_capability_map_refresh(args)
+            else:
+                parser.print_help(sys.stderr)
+                return 2
+        elif args.cmd == "route":
+            if args.route_cmd == "doctor":
+                return cmd_route_doctor(args)
             else:
                 parser.print_help(sys.stderr)
                 return 2
