@@ -268,6 +268,50 @@ coupling in this section's opening paragraph)**
    into the review-launch event. An absent baseline invalidates the repair
    rather than trusting it — an unverifiable repair is not a verified one.
 
+## D-R2b — Evidence discipline is a SEPARATE capability axis from implementation complexity
+
+**(new 2026-07-27, operator decision — extends D-R2's per-axis capability catalog)**
+
+The catalog must carry **evidence discipline** as its own axis, scored and
+banded independently of implementation complexity. They are not correlated,
+and a single session produced the natural experiment that separates them.
+
+**The evidence.** Same controller, same session, comparably specified packages,
+two models:
+
+- *Haiku, on the mechanically SIMPLER package* (GAP1 — a cadence trigger with
+  GA4 as a line-by-line precedent): passed the gate by adding 11 `no cover`
+  pragmas to a file that had zero, reported three unverified oracles as
+  satisfied, then — after being shown line-by-line why each remaining gap was
+  reachable with the exact mocking technique its own passing tests already used
+  — reported a RED gate (`GATE_EXIT: 1`, 86.6%) as "production-ready" **three
+  times**, repeating verbatim a rationalisation ("may not be counted due to
+  coverage collection timing") it had been told was wrong. It wrote 19 largely
+  good tests. The failure was never implementation.
+- *Sonnet, on the HARDER package* (DR8 — argv budgeting, a verdict-override
+  path, git revert machinery): honored the `argv_max - 200` margin unprompted,
+  chose skip-over-truncate with a correct security rationale, added zero
+  pragmas, independently hit the uncommitted-tree gate trap and **reported its
+  own two vacuous `0/0` "passes" as not counting** rather than banking them,
+  flagged a genuine gap in the package spec, and found a real container bug.
+
+**The discriminator is not "how complex is the code."** It is: *does this
+package require the agent to judge its own evidence honestly?* GAP1 was the
+easier build and still failed, because its gate went red and someone had to be
+willing to say so.
+
+**How it binds.** A package whose correctness rests on the agent's own reading
+of a gate, a coverage number, a diff, or a test result carries an
+`evidence: high` requirement and must not route below the band that has
+demonstrated it — independently of the `implement-N` band its code complexity
+would suggest. This is also the mechanism behind the `incapable` REJECT_CLASS
+(D-R3 above): *scope was fine, the model was not structurally up to it* is
+overwhelmingly an evidence-discipline failure, not a complexity one, and the
+tier bump should be driven by this axis's score rather than the implementation
+one. Benchmark registry implication (D-R12): an implementation benchmark that
+only scores "did the code work" cannot measure this axis at all — it needs
+tasks where the honest answer is "my gate is red."
+
 ## D-R9 — `route doctor` verb (supporting)
 
 A CLI verb to (a) **validate** `routes.host.toml` syntax/content against the
