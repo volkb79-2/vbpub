@@ -740,3 +740,12 @@ months because nobody read the two together.
   experiment yields a true observation and a false conclusion, and it is the
   conclusion that gets written down as doctrine and reused as a reason not to fix
   real defects.
+- **Push the rule to where tests are WRITTEN, not just where they are diagnosed.**
+  The consolidated anti-pattern list lives in `reference/AUTHORING.md` §3b (paste
+  it into any handoff that asks for tests — an implementation agent has no access
+  to our incident history and will otherwise reproduce these by default), and it
+  is a standing contract in each trove's `STANDING.md`. Auditing this repo's own
+  standing contract while writing L20 found it said *"no sleeps>2s"* — a rule
+  that **licensed** the defect, since a 2s budget is still a budget. A weak rule
+  in the place agents actually read is worse than no rule: it reads as
+  permission.

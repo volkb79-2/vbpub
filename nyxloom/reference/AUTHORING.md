@@ -79,6 +79,69 @@ Each oracle is a checkable claim with an **observable** (what proves it) and a
 The classic failure is a *hollow test*: it passes but asserts implementation
 trivia, not the contract. Name the behavior, not the line.
 
+### 3b. What an oracle must NOT contain — paste this into any handoff that asks for tests
+
+Every rule below is the residue of a real incident; the `L`/`PL` refs are the
+write-ups in `reference/LESSONS.md`. **If a handoff asks an agent to write
+tests, copy this list into it** — an implementation agent has no access to our
+incident history and will otherwise reproduce these by default.
+
+**A. Nothing may make the verdict depend on how fast the machine is.** (L20)
+- ✗ `deadline = time.monotonic() + N` followed by an assertion. A time budget is
+  a proxy for "eventually" and is hardware-dependent by construction.
+- ✗ `time.sleep(N)` to "let the thread get there", then assert.
+- ✗ Asserting on elapsed time, or on how many iterations something completed.
+- ✓ Wait on a **real synchronization point**: `join()` a process/thread, block on
+  an `Event` the code under test sets, drain a queue.
+- ✓ **Best: remove the wait.** Extract the pure per-iteration step and call it
+  directly from the main thread. Deterministic *and* trivially coverable.
+- ✓ A timeout is legal ONLY as a failsafe against hanging the suite forever
+  (make it generous — 60s, not 3s). It must never be the thing that decides
+  pass/fail. If shrinking the timeout could flip the result, it is an oracle.
+- **Rule: a test that fails when the machine is slow is a TRUE red — a real race
+  the slow host revealed. Fix the test. Never widen a timeout, and never raise a
+  cgroup weight / add CPU to make a suite pass.**
+
+**B. Nothing may depend on test order, worker assignment, or a sibling test.**
+- ✗ Mutating **process-global** state (logging config, `os.environ`, module
+  attributes, singletons) without restoring it. Under `pytest-xdist` the damage
+  lands in whichever test shares that worker. (PL7 §5)
+- ✗ `monkeypatch.setattr` on an object that synthesizes attributes via
+  `__getattr__` (lazy proxies, `SimpleNamespace` façades, ORM rows). Teardown
+  *materializes* the patched attribute as a permanent instance attribute and
+  pins it forever. Patch the **namespace that owns it** instead. (L19)
+- ✗ Teardown that destroys shared state rather than restoring the prior value.
+- ✓ Fresh `tmp_path` per test; assert cleanup actually restored what it found.
+- When a test fails only in the full parallel suite, ask **"what did an earlier
+  test leave behind?"** before "what raced?" — pollution is more common than a
+  race and reproduces deterministically once you know the pair.
+
+**C. No hollow tests.** (§3 above, and DOCTRINE's review checklist)
+- ✗ A test body that is `pass`, or asserts only that nothing raised.
+- ✗ Asserting implementation trivia (a call count, a private attribute, a log
+  string) instead of the behavioral contract.
+- ✗ Weakening or deleting an assertion to get past a failure.
+- ✓ Assert the **contract**: given this input/state, this observable outcome.
+- ✓ Where a check guards a real crash, add a test proving the crash is real —
+  it ties the check to reality instead of to a style rule.
+
+**D. No coverage evasion.** (L11, GA2b)
+- ✗ A no-cover exclusion pragma on changed lines. nyxloom's gate **rejects**
+  them, and note it matches the literal token anywhere on a line — including in
+  a comment that merely *describes* the rule.
+- ✗ Excluding an `except` body and assuming the `except` clause is covered too —
+  it is not; that off-by-one killed a diff-coverage floor once already. (L11)
+- ✓ If a line is genuinely unreachable, restructure so it does not exist.
+
+**E. Network, clock, and filesystem are inputs — control them.**
+- ✗ Real network calls, real registries, real model endpoints in a unit test.
+- ✗ `datetime.now()` / `time.time()` where the assertion depends on the value.
+- ✓ Inject or mock the boundary; make offline the default path.
+
+**Author's check:** for every test you specify, ask *"could this flip its verdict
+on a slower machine, in a different worker, or in a different order?"* If yes,
+it is not an oracle yet.
+
 ### 4. The gate is the project's REAL gate — never the cockpit
 State the exact gate command. It runs in the project's declared gate
 environment (for the vbpub family: the `tester-unified` container; for dstdns:
@@ -119,6 +182,9 @@ worktree changes are reviewed too, not discarded.
 - [ ] "Context to read first" names exact files/sections — nothing to re-derive.
 - [ ] Work steps are numbered, imperative, and scoped to named files.
 - [ ] Every oracle has observable + negative + gate; none is hollow.
+- [ ] **If the handoff asks for tests: §3b's anti-pattern list is pasted into it**
+      (no wall-clock deadlines, no global-state leaks, no hollow tests, no
+      no-cover pragmas, no live network/clock). An agent cannot infer these.
 - [ ] Gate command is the project's real gate (never the cockpit).
 - [ ] `scope.touch` / `forbid` are explicit; out-of-scope is a BLOCKED trigger.
 - [ ] BLOCKED rule present (mechanical); product gaps routed to a `D-` decision.

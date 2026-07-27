@@ -39,8 +39,25 @@ says so. Never import-and-hope; never reimplement another package's logic.
   appended, exit codes, rendered content), not call bookkeeping. Every
   bound/negative case in your handoff's oracles gets a test that VIOLATES
   it and asserts the outcome.
-- Determinism: no sleeps>2s, no network (except handoff-specified loopback
-  servers), no reliance on wall-clock beyond monotonic ordering.
+- **Determinism — hardware speed must NEVER decide a test's verdict** (L20; the
+  full anti-pattern list is `reference/AUTHORING.md` §3b). This supersedes the
+  old "no sleeps>2s" wording, which licensed exactly the defect it meant to
+  prevent — a 2s budget is still a budget, and a slower machine still fails it.
+  - FORBIDDEN: `time.sleep(N)` then assert; `deadline = monotonic() + N` then
+    assert; asserting on elapsed time or on iterations completed. If shrinking
+    the number could flip the result, it is an oracle and it is wrong.
+  - REQUIRED: wait on a real synchronization point (`join()`, an `Event` the
+    code sets, draining a queue) — or better, delete the wait by extracting the
+    pure per-iteration step and calling it directly from the main thread.
+  - A timeout is legal ONLY as a failsafe against hanging the suite forever, and
+    must be generous (60s, not 3s) so it can never be the deciding factor.
+  - A test that fails on a slow/loaded machine is a TRUE red — a real race the
+    slow host revealed. Fix the test; never widen a timeout or add CPU.
+- Determinism, other axes: no network (except handoff-specified loopback
+  servers); no `datetime.now()`/`time.time()` where an assertion depends on the
+  value; never leave process-global state (logging config, env vars, module
+  attributes) mutated at teardown — under xdist the damage lands in a sibling
+  test, not yours.
 
 ## Deliverables (all four, or the package is incomplete)
 
