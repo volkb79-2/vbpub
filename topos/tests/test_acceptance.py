@@ -1282,6 +1282,101 @@ def test_mcp_smoke_does_not_unlink_a_caller_supplied_socket(
         listener.close()
 
 
+def test_mcp_session_daemon_loss_keeps_server_alive_and_relists_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Losing the daemon is typed, while the MCP server remains usable.
+
+    This drives the session seam directly: the fake overview response changes
+    only after the supplied daemon handle has been terminated, and the fake
+    server records both discovery calls.  It therefore catches both a missing
+    daemon-loss probe and a regression which reports server liveness without
+    actually re-driving ``list_tools()``.
+    """
+    import asyncio
+    import builtins
+    from types import SimpleNamespace
+
+    import topos.acceptance as acceptance
+
+    daemon = _FakeProc()
+    expected_tools = acceptance._MCP_SMOKE_TOOLS
+
+    class _ServerParameters:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class _StdioClient:
+        async def __aenter__(self) -> tuple[object, object]:
+            return object(), object()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class _Session:
+        list_tools_calls = 0
+
+        def __init__(self, _read: object, _write: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def list_tools(self) -> object:
+            type(self).list_tools_calls += 1
+            return SimpleNamespace(
+                tools=[SimpleNamespace(name=name) for name in sorted(expected_tools)]
+            )
+
+        async def call_tool(self, name: str, arguments: dict[str, object]) -> object:
+            if name == "topos_overview" and daemon.returncode is not None:
+                payload: object = {"error": {"code": "daemon-unavailable"}}
+            elif name == "topos_entity" and arguments.get("selector") == "__nonexistent__":
+                payload = {"error": {"code": "invalid-selector"}}
+            elif name == "topos_overview":
+                payload = {"data": {"rows": [{"key": "unit.slice"}]}}
+            else:
+                payload = {"data": {}}
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=json.dumps(payload))],
+                isError=False,
+            )
+
+    original_import = builtins.__import__
+
+    def _mcp_import(name: str, globals_: object = None, locals_: object = None,
+                    fromlist: object = (), level: int = 0) -> object:
+        if name == "mcp.client.stdio":
+            return SimpleNamespace(
+                StdioServerParameters=_ServerParameters,
+                stdio_client=lambda _params: _StdioClient(),
+            )
+        if name == "mcp.client.session":
+            return SimpleNamespace(ClientSession=_Session)
+        return original_import(name, globals_, locals_, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _mcp_import)
+
+    checks, _max_bytes = asyncio.run(
+        acceptance._run_mcp_client_session(Path("/tmp/topos.sock"), {}, daemon)
+    )
+
+    assert daemon.terminated is True
+    assert _Session.list_tools_calls == 2, "liveness must be observed by re-listing tools"
+    daemon_loss = next(check for check in checks if check.name == "daemon_loss")
+    assert daemon_loss.ok is True
+    assert daemon_loss.details == {
+        "typed_error_code": "daemon-unavailable",
+        "server_alive": True,
+    }
+
+
 def test_mcp_smoke_no_daemon_yields_checks() -> None:
     """``run_mcp_smoke`` with a non-existent socket yields a failing hello check, no crash."""
     from topos.acceptance import run_mcp_smoke
