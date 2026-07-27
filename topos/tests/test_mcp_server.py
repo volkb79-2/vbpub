@@ -22,11 +22,13 @@ from mcp.shared.memory import create_connected_server_and_client_session  # noqa
 from topos.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity, metric_sensitivity
 from topos.daemon.redaction import classify_metric
 from topos.daemon.client import (
+    DaemonClientError,
     DaemonConnectError,
     DaemonCurrentResult,
     DaemonEntityResult,
     DaemonHello,
     DaemonHistoryResult,
+    DaemonProtocolError,
     DaemonResponseError,
 )
 from topos.daemon.component_health import ComponentSnapshot, ComponentState, HealthSnapshot
@@ -298,6 +300,49 @@ def test_adapter_secrets_never_cross_the_mcp_boundary() -> None:
     assert "TOKEN" not in payload
     assert "/private/path" not in payload
     assert "topsecret" not in payload
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (DaemonProtocolError("secret incompatible envelope"), "daemon-unavailable"),
+        (DaemonResponseError("secret request too large", code="oversized_response"), "over-limit"),
+        (DaemonClientError("secret client failure"), "daemon-unavailable"),
+        (RuntimeError("secret unexpected failure"), "internal"),
+    ],
+)
+def test_health_translates_daemon_failures_to_safe_typed_tool_results(
+    failure: Exception, expected_code: str
+) -> None:
+    """A daemon exception must become a stable public result, never exception text."""
+
+    class FailingHealthClient(FakeClient):
+        def request_health(self) -> HealthSnapshot:
+            raise failure
+
+    _, result = call(McpServer(FailingHealthClient()), "topos_health")
+    payload = json.dumps(result)
+    assert error_code(result) == expected_code
+    assert "secret" not in payload
+
+
+def test_history_window_parsing_rejects_non_finite_and_out_of_range_values() -> None:
+    """The public history tool must not turn malformed numeric windows into daemon calls."""
+    server = McpServer(FakeClient())
+    cases = {
+        "last:not-a-number": "invalid-selector",
+        "last:nan": "over-limit",
+        "last:inf": "over-limit",
+        "last:604801": "over-limit",
+        "since:not-a-number": "invalid-selector",
+        "since:nan": "invalid-selector",
+        "since:-1": "invalid-selector",
+    }
+    for window, expected_code in cases.items():
+        _, result = call(
+            server, "topos_history", selector=DOCKER_KEY, metric="ram", window=window, limit=1
+        )
+        assert error_code(result) == expected_code
 
 
 class LossyClient(FakeClient):
