@@ -292,6 +292,43 @@ def test_task_final_diff_genuinely_empty_is_not_none(tmp_state, sample_project):
     assert diff is not None
 
 
+def test_empty_diff_renders_its_own_message_not_the_unavailable_one(
+        tmp_state, sample_project):
+    """The helper's None/"" split has to survive all the way into the packet
+    TEXT, which is the only thing the auditor ever sees.
+
+    "unavailable" means we could not resolve the merged diff -- the auditor
+    has no evidence and should say so. "empty" means we resolved it fine and
+    the merge genuinely changed nothing -- which is itself a finding, and a
+    suspicious one for a task recorded APPROVED. Rendering both the same way
+    would hand the auditor "no information" when we actually know something
+    specific. The helper-level split is asserted directly above; this asserts
+    the RENDERER honours it, because a correct helper feeding a renderer that
+    collapses the two is indistinguishable from a broken helper."""
+    cfg = sample_project
+    cfg.policy.verdict_audit_sample_size = 5
+
+    _make_feature_branch(cfg.root, "demo-P70", "p70.py", "unused\n")
+    # Reset the branch to main's tree so the merge introduces genuinely
+    # nothing (same technique as the helper test above).
+    for args in (["checkout", "feat/demo-P70"], ["reset", "--hard", "main"],
+                 ["checkout", "main"]):
+        subprocess.run(["git", "-C", str(cfg.root), *args],
+                       check=True, capture_output=True)
+    merge_sha = _merge_feature_branch(cfg.root, "demo-P70", allow_empty=True)
+    h = _write_completed_handoff(cfg.root, "demo-P70", component="worker")
+    _seed_completed_task("demo", "demo-P70", h, merge_sha, since=utc_now())
+
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+    body = "\n".join(d._carve_packet_body_lines(
+        cfg, "demo", seq=1, states=states, kind="gap-audit"))
+
+    assert "Diff: (empty -- merge introduced no changes)" in body
+    # The negative: the two degrade renderings must not be conflated.
+    assert "Diff: (unavailable" not in body
+
+
 # ==========================================================================
 # Oracle 4: component grouping is real (positive + missing-component negative)
 # ==========================================================================
