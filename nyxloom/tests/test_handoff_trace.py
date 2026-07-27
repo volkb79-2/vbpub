@@ -95,9 +95,14 @@ def test_happy_path_multi_leg_trace():
     kinds = [leg.kind for leg in trace.legs]
     assert kinds == ["created", "attempt", "transition", "attempt", "review",
                      "transition", "gate", "merge", "transition"]
-    # strictly ordered by the log's own sequence, regardless of internal
-    # attempt-grouping/deferred-append order
-    assert [leg.sequence for leg in trace.legs] == sorted(l.sequence for l in trace.legs)
+    # Exact sequences, not `== sorted(itself)`: comparing a list to its own
+    # sorted copy only proves sorting sorts, and it passes even if the sort is
+    # removed whenever append order happens to match. Hardcoding pins BOTH the
+    # ordering AND the attempt-grouping anchor: att-1 spans events 2-3 and att-2
+    # spans 5-6, and each must collapse to ONE leg anchored at the group's FIRST
+    # sequence (2 and 5) -- so 3 and 6 must be absent, and a regression that
+    # anchored on the last event would show up as [.. 3 .. 6 ..] here.
+    assert [leg.sequence for leg in trace.legs] == [1, 2, 4, 5, 7, 8, 9, 10, 11]
 
     created_leg = trace.legs[0]
     assert created_leg.detail["handoff_path"] == "handoff/demo-T1.md"
