@@ -98,6 +98,61 @@ Rejected: a host service that periodically scans for cgroups outside known
 slices and retro-applies limits. Reactive, races container startup, and adds a
 daemon whose own failure mode is silent.
 
+## D-G0 — LIVE FINDING: the daemon is already configured for a slice that does not exist
+
+`nyxloomd/ciu.toml` has declared, since before this plan existed:
+
+```toml
+[nyxloomd.runtime]
+cgroup_parent = "nyxloom.slice"
+```
+
+**`nyxloom.slice` has never existed on this host.** The installed units are
+`besteffort`, `dev-workloads`, `interactive`, `soulmask-*`, `wings-*` — no
+`nyxloom*` anything.
+
+Per the fail-open behaviour measured in the facts table above, that means
+systemd has been auto-creating a transient `nyxloom.slice` with **no limits**,
+every time the daemon started. The daemon has therefore been running
+**completely unbounded** while its config file made it look correctly placed —
+no error, no warning, no log line, for as long as this setting has existed.
+
+This is the single best argument for the whole design:
+
+- It is not a hypothetical hazard. It is **live, in production, right now**.
+- Installing the slice templates (`infra/slices/`) is therefore **not a new
+  feature** — it is completing a configuration that already exists and has been
+  silently ineffective.
+- `doctor`'s existence check (D-G2) is what turns "silently unbounded" into a
+  loud failure. Without it, the next such typo is equally invisible.
+- It is also a textbook instance of canonical **L18**: a degraded outcome
+  ("unbounded transient slice") rendering identically to the healthy one
+  ("placed in the slice I asked for"), one layer down in the infrastructure.
+
+Note the placement key lives in `[<stack>.runtime]`, **not** in a
+`[governance]` table — governance is a separate ciu mechanism (S15) that
+injects `cgroup_parent`/`mem_limit`/`mem_reservation`/`blkio_config` and only
+fills keys the author did not set. nyxloom uses the runtime key; dstdns uses
+governance. Both are valid; do not assume one from the other. (This document
+previously asserted nyxloomd had no placement at all — that was wrong, from
+grepping `ciu.global.toml` and the compose files but not the stack's own
+`ciu.toml`.)
+
+**Two ciu defaults that would bite nyxloom if governance is ever enabled here:**
+
+- `cgroup_parent` defaults to `besteffort.slice` (CPUWeight 20). Enabling
+  governance without setting it would put the *dispatcher* in the most
+  deferential slice on the host — the opposite of what a latency-sensitive
+  daemon needs.
+- `device` defaults to `""` = autodetect via `findmnt --target /var/lib/docker`,
+  which **silently fails** in this devcontainer (docker-outside-of-docker has no
+  such mount), so blkio caps would be skipped. dstdns sets `/dev/vda`
+  explicitly for exactly this reason.
+
+Also: ciu's `mem_reservation` maps to compose's soft `memory.low`, **not**
+`memory.min`. It does not replace the slice unit's `MemoryMin` — they are
+complementary.
+
 ## D-G2 — Who may do what (the root boundary)
 
 nyxloom **can** set cgroup values: `--cgroup-parent`, `--memory`,
