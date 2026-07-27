@@ -6,7 +6,7 @@ title: "Specify inspect-files CLI result and diagnostic dispatch"
 tier: luna-low
 input_revision: "f376c53b"
 depends_on: [topos-P170-cli-compare-dispatch]
-session: resume cli
+session: resume:cli
 source: {kind: product-goal, ref: "global-coverage-healing"}
 scope:
   touch: ["topos/tests/test_cli_inspect_files_dispatch.py", "topos/nyxloom-trove/handoffs/topos-P171-cli-inspect-files-dispatch.md"]
