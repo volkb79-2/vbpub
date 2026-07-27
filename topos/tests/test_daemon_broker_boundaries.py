@@ -52,7 +52,7 @@ def test_stop_callback_failure_preserves_stopped_state_and_wakes_waiters() -> No
     def blocked_source():
         release.wait()
         return
-        yield _frame_at(1.0)  # pragma: no cover - establishes generator shape
+        yield _frame_at(1.0)
 
     def failing_callback() -> None:
         release.set()
