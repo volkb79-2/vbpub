@@ -13,3 +13,4 @@
 
 ciu   # https://github.com/volkb79-2/vbpub/releases — ciu-v* releases carry the wheel (deps Jinja2/PyYAML/tomli_w provided by requirements/toolkit.txt)
 cmru  # https://github.com/volkb79-2/vbpub/releases — cmru-v* releases carry the wheel (no runtime deps)
+nyxloom  # https://github.com/volkb79-2/vbpub/releases — nyxloom-v* releases carry the wheel (deps structlog/PyYAML/jsonschema provided by requirements/toolkit.txt)

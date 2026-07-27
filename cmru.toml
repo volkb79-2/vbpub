@@ -18,15 +18,15 @@ registry = ["ghcr.io"]       # OCI registries to push images to (S11.3)
 [orchestration]
 # Only projects listed here are auto-tagged/released by `status`/`release` (S-CLI.2).
 # empyrion-translation stays on-demand (date-tagged game asset, not in this set).
-project_order    = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-default_projects = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+project_order    = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+default_projects = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
 default_steps    = ["run-tests", "build", "push", "validate"]
 execution_mode   = "project-first"
 
 [orchestration.step_project_order]
 run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
-build     = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-push      = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+build     = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+push      = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
 validate  = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
 
 [cleanup]
@@ -75,6 +75,25 @@ strategy = "scm"
 bump     = "conventional"
 [project.cmru.env]
 CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos. The incomplete built-in OCI repack prototype now fails closed before auth/Docker work; standard Buildx load/push remains supported while the production-equivalence requirements are implemented.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
+
+# ─── nyxloom — Python wheel (built-in handlers; dogfood-style, no step scripts) ─
+# Files-first daemon control plane. Ordered BEFORE modern-debian-tools-python-debug
+# so the nyxloom-v* wheel's GitHub Release exists when mdt's devcontainer build
+# resolves first-party wheels (modern-debian-tools-python-debug/pip/wheels.list).
+# strategy=scm mints the `nyxloom-vX.Y.Z` tag that setuptools_scm reads
+# (nyxloom/pyproject.toml). The `nyxloom` CLI (onboard/lint/gate-verify/doctor/
+# resync/daemon) ships in the wheel. OCI images (daemon + agent-cli bundle) are a
+# SEPARATE step-driven addition (nyxloom/build-push.py) added when that lands.
+[project.nyxloom]
+prefix    = "nyxloom-v"
+artifacts = ["wheel"]
+scm_dist  = "nyxloom"
+cwd       = "nyxloom"
+[project.nyxloom.version]
+strategy = "scm"
+bump     = "conventional"
+[project.nyxloom.env]
+NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development. Installs the `nyxloom` CLI: project onboarding, handoff lint, gate verify, doctor, resync, and the reconciler daemon.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
 
 # ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
 # Deliverable is the ghcr image(s) only — NOT a GitHub Release. So: no semver git tag
