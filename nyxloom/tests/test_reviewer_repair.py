@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import types
+from pathlib import Path
 
 import pytest
 
@@ -455,3 +457,181 @@ def test_policy_off_repaired_verdict_handled_by_ordinary_logic_no_enforcement(
         ["git", "-C", str(cfg_off.root), "show", f"feat/{task_id}:src/thing.py"],
         capture_output=True, text=True)
     assert show.returncode == 0, "policy off -> no revert, the file must still be present"
+
+
+# ---------------------------------------------------------------------------
+# Coverage-completeness: direct unit tests of each helper's own degrade/error
+# branches -- the end-to-end EmitAttemptExit scenarios above exercise the
+# HAPPY paths of each helper (in-bounds, out-of-bounds, missing baseline,
+# empty diff, policy off), but never the helpers' OWN internal I/O-failure
+# branches (git command failures, a bad/missing event, etc.) -- those need a
+# narrower, direct call.
+
+def test_verdict_is_repaired_false_when_no_review_report(tmp_state, sample_project):
+    """_verdict_is_repaired's `not text` branch: no <task>-REVIEW.md was ever
+    committed at all (distinct from one committed without the marker)."""
+    cfg = sample_project
+    task_id = "t-no-review-yet"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._verdict_is_repaired(cfg, task_id) is False
+
+
+def test_pre_review_sha_returns_none_on_storage_error(tmp_state, sample_project, monkeypatch):
+    """_pre_review_sha's `except Exception` branch: storage.iter_events itself
+    raises (a corrupt/unreadable event log) -- degrades to None (unresolved
+    baseline), never a crashed pass."""
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(storage, "iter_events", boom)
+    assert d._pre_review_sha("demo", "t-x", "att-x") is None
+
+
+def test_pre_review_sha_returns_none_when_no_matching_attempt_created(tmp_state, sample_project):
+    """_pre_review_sha's fall-through `return None`: ATTEMPT_CREATED events
+    exist in the log, but none bound to this EXACT (task_id, attempt_id)
+    pair -- distinct from the storage-error branch above (the loop runs to
+    completion here, never raises)."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    _seed_review_attempt("demo", "t-other", "att-other", pre_review_sha="deadbeef")
+    assert d._pre_review_sha("demo", "t-other", "att-DIFFERENT") is None
+
+
+def test_reviewer_repair_touched_paths_empty_on_git_diff_failure(tmp_state, sample_project):
+    """_reviewer_repair_touched_paths' `res.returncode != 0` branch: an
+    unresolvable pre_sha makes `git diff` itself fail -- degrades to []
+    (vacuously in-bounds), never a crashed pass."""
+    cfg = sample_project
+    task_id = "t-bad-diff"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    d = daemon.Daemon({"demo": cfg.root})
+    touched = d._reviewer_repair_touched_paths(cfg, task_id, "not-a-real-sha-deadbeef")
+    assert touched == []
+
+
+def test_reviewer_repair_touched_paths_skips_blank_diff_lines(tmp_state, sample_project, monkeypatch):
+    """_reviewer_repair_touched_paths' blank-line `continue`: a real `git
+    diff --name-only` never emits one, so this is exercised via a targeted
+    subprocess.run interception (only the diff/--name-only call is faked;
+    every other git call in this test runs for real) -- the SAME technique
+    the revert-failure/CAS-refused tests below use, and for the same reason:
+    the branch is genuine defensive code, not reachable from real git
+    output, so a real repo alone cannot exercise it."""
+    cfg = sample_project
+    task_id = "t-blank-diff"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    baseline = _branch_head(cfg.root, task_id)
+    real_run = subprocess.run
+
+    def fake_run(argv, *a, **kw):
+        if "diff" in argv and "--name-only" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="tests/test_a.py\n\nsrc/b.py\n", stderr="")
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    d = daemon.Daemon({"demo": cfg.root})
+    touched = d._reviewer_repair_touched_paths(cfg, task_id, baseline)
+    assert touched == ["tests/test_a.py", "src/b.py"]
+
+
+def test_revert_reviewer_repair_repo_root_unresolved_returns_false(tmp_state, tmp_path):
+    """_revert_reviewer_repair's `not repo_root` branch: cfg.root is not
+    inside any git repo at all."""
+    non_git_dir = tmp_path / "not-a-git-repo"
+    non_git_dir.mkdir()
+    cfg_stub = types.SimpleNamespace(root=non_git_dir)
+    d = daemon.Daemon({})
+    ok = d._revert_reviewer_repair("demo", cfg_stub, "t-x", "deadbeef")
+    assert ok is False
+
+
+def test_revert_reviewer_repair_branch_tip_unresolved_returns_false(tmp_state, sample_project):
+    """_revert_reviewer_repair's `tip_res.returncode != 0` branch: the repo
+    resolves fine, but feat/<task_id> does not exist."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    ok = d._revert_reviewer_repair("demo", sample_project, "t-does-not-exist", "deadbeef")
+    assert ok is False
+
+
+def test_revert_reviewer_repair_worktree_add_failure_returns_false(tmp_state, sample_project):
+    """_revert_reviewer_repair's scratch-cleanup (`scratch.exists()`) AND
+    `add.returncode != 0` branches together: a stray REGULAR FILE (not a
+    registered worktree) already occupies the scratch path -- the cleanup
+    `worktree remove` silently no-ops (not a real worktree) and the
+    subsequent `worktree add` then fails because the target path is
+    occupied by a non-directory."""
+    cfg = sample_project
+    task_id = "t-worktree-add-fail"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    baseline = _branch_head(cfg.root, task_id)
+    _commit_files_on_branch(cfg.root, task_id, {"src/thing.py": "x\n"}, "repair")
+    repo_root = _git(cfg.root, "rev-parse", "--show-toplevel").stdout.strip()
+    scratch = Path(repo_root) / ".worktrees" / f"repair-revert-{task_id}"
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    scratch.write_text("occupied by a stray file, not a real worktree")
+
+    d = daemon.Daemon({"demo": cfg.root})
+    ok = d._revert_reviewer_repair("demo", cfg, task_id, baseline)
+    assert ok is False
+
+
+def test_revert_reviewer_repair_git_revert_command_failure_aborts_and_returns_false(
+    tmp_state, sample_project, monkeypatch
+):
+    """_revert_reviewer_repair's `rv.returncode != 0` branch (the `git
+    revert` invocation itself fails) plus its `revert --abort` cleanup call.
+    A genuine git-revert CONFLICT is not reliably constructible from a
+    strictly linear single-branch commit sequence (git guarantees a
+    reverse-order revert of a linear range applies cleanly), so this uses
+    the SAME targeted subprocess.run interception the blank-diff-line test
+    above uses -- only the `revert --no-edit ...` call is faked (never the
+    `revert --abort` cleanup, which lacks `--no-edit` and is asserted to
+    have actually run via the real subprocess call succeeding)."""
+    cfg = sample_project
+    task_id = "t-revert-cmd-fail"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    baseline = _branch_head(cfg.root, task_id)
+    _commit_files_on_branch(cfg.root, task_id, {"src/thing.py": "x\n"}, "repair")
+    real_run = subprocess.run
+    abort_calls = []
+
+    def fake_run(argv, *a, **kw):
+        if "revert" in argv and "--no-edit" in argv:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="simulated conflict")
+        if "revert" in argv and "--abort" in argv:
+            abort_calls.append(argv)
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    d = daemon.Daemon({"demo": cfg.root})
+    ok = d._revert_reviewer_repair("demo", cfg, task_id, baseline)
+    assert ok is False
+    assert abort_calls, "revert --abort must be issued on a failed revert"
+
+
+def test_revert_reviewer_repair_update_ref_cas_refused_returns_false(
+    tmp_state, sample_project, monkeypatch
+):
+    """_revert_reviewer_repair's final `else` branch: the revert itself
+    succeeds, but the CAS `update-ref` is refused (the branch moved
+    concurrently) -- simulated via the same targeted interception; the real
+    `git revert` still runs for real, so a genuine revert commit exists."""
+    cfg = sample_project
+    task_id = "t-revert-cas-fail"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    baseline = _branch_head(cfg.root, task_id)
+    _commit_files_on_branch(cfg.root, task_id, {"src/thing.py": "x\n"}, "repair")
+    real_run = subprocess.run
+
+    def fake_run(argv, *a, **kw):
+        if "update-ref" in argv:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="cas refused")
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    d = daemon.Daemon({"demo": cfg.root})
+    ok = d._revert_reviewer_repair("demo", cfg, task_id, baseline)
+    assert ok is False
