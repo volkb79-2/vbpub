@@ -1081,8 +1081,9 @@ and **B25** (the in-process-seam de-flake shape).
 
 `scope: product` · `upstream: integrated (ref: reference/LESSONS.md L18)`
 
-The rule, the three defeat modes, and the `coverage_gate` fix are **canonical** —
-see L18. Only the nyxloom-project-specific record lives here.
+The rule, the four defeat modes, and the `coverage_gate` fix are **canonical** —
+see L18. Only the nyxloom-project-specific record lives here. (Defeat 4, the
+lying transport, was added the same day; its local mechanics are [[PL9]].)
 
 **Local record (2026-07-27).** A Haiku implementer on the F007 gap-audit package
 passed the gate by adding 11 `no cover` pragmas to a `daemon.py` that had zero;
@@ -1104,3 +1105,126 @@ GAP1 test completion `269dbc64`.
 
 Related: [[PL4]] (never accept the completion narrative — here it was a green
 gate), [[PL3]] (coverage that drops lines exposes hollow tests, not miscounting).
+
+---
+
+## PL9 — The cockpit's docker socket is a socat relay; without `-t` it truncates every gate and forges exit 0
+
+`scope: project` · `upstream: integrated (ref: reference/LESSONS.md L18 defeat 4)`
+
+The general rule and the harness fix are **canonical** (L18 defeat 4). This is the
+local mechanism, because it will recur on every devcontainer rebuild and after every
+host docker upgrade.
+
+**Mechanism.** The dstdns devcontainer does not talk to dockerd directly. The
+`docker-outside-of-docker` feature's `/usr/local/share/docker-init.sh` bind-mounts the
+host socket to `/var/run/docker-host.sock` and then, when the host socket's GID
+already exists as a container group (994/`docker` here — so this branch is always
+taken), starts:
+
+```
+socat UNIX-LISTEN:/var/run/docker.sock,fork,mode=660,user=vscode,backlog=128 \
+      UNIX-CONNECT:/var/run/docker-host.sock
+```
+
+with **no `-t`**. socat's default half-close timeout is **0.5 s**. A non-interactive
+`docker run` hijacks the HTTP connection and shuts down its write side straight away;
+socat sees EOF client→server and, 0.5 s later, tears down server→client as well. The
+container runs to completion on the daemon — the daemon neither knows nor cares that
+the client left — but the CLI gets only whatever was emitted in the first half-second,
+and **may report exit 0 for a container that exited non-zero**.
+
+Measured asymmetry, which is the part that matters: the **truncation is
+deterministic; the exit-code corruption is not.** Two gate containers that exited 1
+came back as `docker run` exit 0, yet a hand sentinel (`… exit 7`) against the same
+broken relay truncated its output while still propagating 7. An always-wrong exit
+code would be caught by the first spot-check; an intermittently-wrong one survives
+every spot-check and lies exactly when a gate turns red. So judge the sentinel on
+its OUTPUT, never on its exit code alone.
+
+**Why it is worse than it sounds.** Bind-mount sources resolve on the *host*, so
+`nyxloomd`'s own gate execution (`/var/run/docker.sock:/var/run/docker.sock` in
+`nyxloomd/ciu.compose.yml`) uses the real host socket and is **unaffected**. The
+truncation is confined to `docker run` issued *from inside the cockpit* — which is
+precisely where the **controller's authoritative solo re-gate** runs (DOCTRINE §1).
+The one step designed to be the last line of defense was the only step exposed.
+
+**Detection.** The transport sentinel from L18:
+
+```bash
+docker run --rm tester-unified:local sh -c 'echo A; sleep 5; echo B; exit 7'
+# healthy  -> prints A AND B (and "$?" is 7)
+# poisoned -> prints only A  ("$?" may still be 7 — do not judge on it)
+```
+
+`docker version` and `docker logs` stay healthy throughout (plain request/response,
+not hijacked), so they are useless as a check — the sentinel must span a real delay
+*and* assert a non-zero exit.
+
+**Fix (2026-07-27).** Patched `docker-init.sh` to `socat -t 86400 …` (backup at
+`docker-init.sh.bak-pre-t-fix`) and restarted the live relay. This survives a
+container *restart* but **not a rebuild** — the file is in the image's writable layer,
+and the devcontainer feature ships it without `-t`. On rebuild, re-apply or push `-t`
+upstream into the feature. A rebuild's first symptom will be gates that pass.
+
+Related: [[PL8]] (same session, same rule, tooling side), [[PL7]] (green-in-isolation
+vs red-under-load — the sibling instinct: instrument *where the artifact went* before
+theorising about the code).
+
+---
+
+## PL10 — The full-suite-only logging failure was proxy pollution, not a structlog reversion
+
+`scope: product` · `upstream: integrated (ref: reference/LESSONS.md L19)`
+
+The rule (never patch an attribute onto an object that synthesises attributes via
+`__getattr__`; patch the owning namespace) is **canonical** — see L19. Local record
+only here, plus one correction that matters for anyone re-reading the old analysis.
+
+**Correction to `docs/analysis-logging-route-reversion.md`.** That document's
+defect **(b)** — "something reverts structlog to defaults, and `nyxloomd` could
+therefore silently lose file logging in production" — is **DISPROVEN**. Nothing
+reverts the configuration. Instrumenting `_Configuration.__setattr__` recorded 619
+and 543 `logger_factory` writes across two full runs: **every one** of them wrote
+`_NyxloomLoggerFactory`, and **zero** wrote the default. The file's title is a
+misnomer; there was no reversion. The defect lives entirely in the test suite,
+because only a test ever monkeypatches the proxy, so there is **no production
+impact**. Delete the production concern rather than carrying it forward — a stale
+worry in a note is exactly the kind of thing that stops the next person looking in
+the right place.
+
+**What actually happened.** `tests/test_carver_session_executor.py` (the two O6
+tests) did `monkeypatch.setattr("nyxloom.daemon.log.warning", ...)`. On teardown
+monkeypatch's `undo` materialised the synthetic bound method onto the proxy, pinning
+`daemon.log.warning` for the rest of that xdist worker to a logger frozen at
+structlog's unconfigured default. The victim,
+`test_daemon.py::test_resume_attempt_emits_warning_attempt_retry`, then emitted to
+stdout instead of its own `nyxloom.jsonl` — while its own `log.configure()` had
+demonstrably worked.
+
+**Diagnostic sequence worth reusing.** The renderer shape (default console output,
+`event` not renamed to `msg`, no ISO `ts`) proved the record bypassed our processor
+chain — correct, and it is what sent the investigation toward "the config changed".
+The step that actually resolved it was instrumenting the **object** rather than the
+subsystem: a `__setattr__` hook on `BoundLoggerLazyProxy`, which caught the
+`monkeypatch.undo` frame in the act. Before that, a fingerprint taken at the moment
+of emission had already shown the live config to be *entirely correct* — right
+factory, right processors, handler open on the very file the test then read — while
+`type(proxy).warning` was absent and `proxy.__dict__["warning"]` was present. That
+pair of facts is the whole diagnosis; everything else was scaffolding to reach it.
+
+**Also surfaced, not the cause, still worth fixing.** `Daemon.run()` calls
+`log_module.configure(...)` (with `console` defaulting to True), and the
+`http_daemon` fixture starts it in a thread joined with `timeout=5` and no
+termination assert. Recorded writes show `Thread-15 (run)` and `Thread-18 (run)`
+reconfiguring process-global logging during *other tests' setup*. It writes the
+correct config so it did not cause this failure, but a leftover thread mutating
+global logging mid-suite is a live pollution vector. Backlog it.
+
+Fix commits: `fb4d793a` (crc32, the unrelated second red test), `8b7258e6` (the
+proxy fix + AST guard).
+
+Related: [[PL7]] (green-in-isolation / red-under-load is a shared-global-state
+smell — this is the strongest instance of that rule yet: the smell was right, and
+the shared state was an attribute on an object, not a config), [[PL8]] (same
+session, the measurement-vs-verdict rule).

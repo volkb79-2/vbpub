@@ -2126,6 +2126,50 @@ def test_o5_debounce_re_armed_by_rotation(
 
 # --- O6: enablement WARN ---
 
+
+class _LogSpy:
+    """Stand-in for a module-level structlog logger; records ``warning`` calls
+    and ignores every other level.
+
+    Patch the MODULE ATTRIBUTE (``monkeypatch.setattr(daemon, "log", spy)``) --
+    never an attribute ON the logger object
+    (``monkeypatch.setattr("nyxloom.daemon.log.warning", ...)``). The two look
+    equivalent and are not:
+
+    ``daemon.log`` is a ``structlog`` ``BoundLoggerLazyProxy``, which defines NO
+    per-level methods -- ``log.warning`` is synthesised by ``__getattr__``,
+    which re-binds against the LIVE structlog config on *every* call. That is
+    the mechanism that lets ``log.configure()`` reach already-imported modules.
+    ``monkeypatch.setattr`` captures the old value with ``getattr``, so it
+    captures that *synthetic* bound method, and on undo restores it with
+    ``setattr`` -- **materialising it as a permanent instance attribute**. From
+    that moment ``log.warning`` is found by ordinary attribute lookup,
+    ``__getattr__`` never runs again, and every later ``log.warning`` in that
+    worker goes to a logger frozen to whatever config was live during THIS
+    test -- structlog's unconfigured default, printing to stdout.
+
+    That is not a hypothetical: it was the cause of
+    ``test_daemon.py::test_resume_attempt_emits_warning_attempt_retry``
+    failing only under a full ``-n4`` suite (diagnosed 2026-07-27). The victim
+    called ``log.configure()`` correctly, the global config was verifiably
+    correct at the moment of emission, and the record still went to stdout via
+    a stale ``PrintLogger`` -- because these two tests had already pinned the
+    proxy. Patching the module attribute avoids it entirely: ``daemon.log`` is
+    a real entry in the module ``__dict__``, so undo restores it properly.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def warning(self, event, **kw):
+        self.calls.append((event, kw))
+
+    def __getattr__(self, _name):
+        # info/debug/error/trace are irrelevant to these oracles -- swallow them
+        # rather than force every caller of _carver_session to be enumerated.
+        return lambda *a, **kw: None
+
+
 def test_o6_enablement_warn_emitted_once(tmp_state, carver_project, monkeypatch):
     """O6: loading a project with session=='project-persistent' logs exactly one
     informational carver.enablement.active acknowledgement (once per daemon
@@ -2134,10 +2178,9 @@ def test_o6_enablement_warn_emitted_once(tmp_state, carver_project, monkeypatch)
     NOT a hard reject -- and it no longer advertises any missing_items."""
     cfg = carver_project
     assert cfg.carve.session == "project-persistent"
-    calls: list[tuple[str, dict]] = []
-    monkeypatch.setattr(
-        "nyxloom.daemon.log.warning",
-        lambda event, **kw: calls.append((event, kw)))
+    spy = _LogSpy()
+    monkeypatch.setattr(daemon, "log", spy)  # module attr -- see _LogSpy's docstring
+    calls = spy.calls
     d = daemon.Daemon({"demo": cfg.root})
     d._carver_session("demo", cfg)
     d._carver_session("demo", cfg)
@@ -2154,14 +2197,12 @@ def test_o6_fresh_project_no_warn(tmp_state, sample_project, monkeypatch):
     """O6: a session=='fresh' project logs no enablement WARN."""
     cfg = sample_project
     assert cfg.carve.session == "fresh"
-    warnings_emitted: list[str] = []
-    monkeypatch.setattr(
-        "nyxloom.daemon.log.warning",
-        lambda event, **kw: warnings_emitted.append(event))
+    spy = _LogSpy()
+    monkeypatch.setattr(daemon, "log", spy)  # module attr -- see _LogSpy's docstring
     d = daemon.Daemon({"demo": cfg.root})
     d._carver_session("demo", cfg)
 
-    assert warnings_emitted == []
+    assert [event for event, _kw in spy.calls] == []
 
 
 # --- O7: byte-identical-off ---
