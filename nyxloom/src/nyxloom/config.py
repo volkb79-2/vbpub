@@ -234,6 +234,20 @@ class Policy:
     reviewer_repair_paths: list[str] = field(default_factory=lambda: [
         "*/tests/*", "tests/*", "*/conftest.py", "*/test_*.py",
     ])
+    # F007 2026-07-27 (gap-engine wave 2, GAP2 -- plan-gap-engine-and-reviewer-
+    # repair.md §GAP2): bounds AND enables the verdict-audit extension appended
+    # to the gap-audit carve packet (reconcile.py module contract item 17,
+    # unchanged -- GAP2 adds no new trigger/knob for CADENCE, it reuses
+    # gap_audit_after_changed_lines). Each gap-audit carve samples at most this
+    # many recently-COMPLETED tasks and asks the carver to judge each BLIND
+    # (oracles + final merged diff only -- never the recorded verdict/
+    # rationale/REJECT_CLASS) before the daemon compares that blind judgment
+    # against what it already recorded. 0 disables (the default: a project must
+    # opt in) -- with the knob at 0 the gap-audit packet and REQUIRED OUTPUT
+    # CONTRACT are byte-identical to pre-GAP2 output, same "opt-in must not
+    # perturb existing behaviour" convention gap_audit_after_changed_lines
+    # itself follows.
+    verdict_audit_sample_size: int = 0
 
 
 @dataclass
