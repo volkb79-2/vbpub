@@ -169,8 +169,15 @@ def test_policy_update_full_flow(cfg_daemon, sample_project, monkeypatch):
     captured = []
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: (captured.append(inp), [])[1])
     d.run_pass("demo")
-    assert len(captured) == 1
-    assert captured[0].cfg.policy.max_active_tasks == 5
+    # NB: assert the CONTRACT ("a reconcile pass after the config change sees
+    # the new cap"), not an exact call count. The cfg_daemon fixture runs a
+    # LIVE Daemon.run() reconcile loop in the background, which shares this same
+    # monkeypatched plan_project and can slip in its own "demo" pass between the
+    # setattr above and this assertion -- a real ~5%-under-xdist race that
+    # `== 1` turned into an intermittent gate failure (2026-07-27). Every
+    # captured input reflects the post-change config, so check the last one.
+    assert captured, "run_pass did not invoke plan_project"
+    assert captured[-1].cfg.policy.max_active_tasks == 5
 
 
 # ==========================================================================
