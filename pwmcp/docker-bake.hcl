@@ -44,12 +44,12 @@ variable "LIGHTHOUSE_VERSION" {
 
 // Compatibility alias for the coordinated pwmcp release (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.61.0-r9"
+  default = "1.61.0-r10"
 }
 
 // Compatibility alias for the coordinated pwmcp release.
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.0-r9"
+  default = "1.61.0-r10"
 }
 
 variable "OCI_SOURCE" {
