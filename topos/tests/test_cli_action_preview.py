@@ -99,7 +99,7 @@ def test_resolution_failure_never_reaches_preview_audit_or_render(monkeypatch: p
     (SetPropertyPlan("systemd-set-property", "unit.service", "memory.high", "123", ("set",), "max", "persistent"), "SET TEXT", {"type": "set"}, {"kind": "systemd-set-property", "target": "unit.service", "argv": ("set",), "admin": True}),
     (KillPlan("docker-kill", "container", "TERM", ("kill",), False), "KILL TEXT", {"type": "kill"}, {"kind": "docker-kill", "target": "container", "argv": ("kill",), "admin": True}),
     (UpdatePlan("docker-update", "container", 123, 1.5, ("update",), 100, False), "UPDATE TEXT", {"type": "update"}, {"kind": "docker-update", "target": "container", "argv": ("update",), "admin": True}),
-    (ActionPlan(ActionKind.DOCKER_RESTART, "container", ("restart",), "generic"), "GENERIC TEXT", {"type": "generic"}, {"kind": "docker-restart", "target": "container", "argv": ("restart",), "admin": True}),
+    (ActionPlan(ActionKind.DOCKER_RESTART, "container", ("restart",), "generic"), "GENERIC TEXT", {"argv": ["restart"], "description": "generic", "kind": "docker-restart", "mode": "preview", "target": "container"}, {"kind": "docker-restart", "target": "container", "argv": ("restart",), "admin": True}),
 ])
 def test_each_plan_uses_its_renderer_json_contract_and_configured_audit(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], plan: object,
@@ -139,4 +139,4 @@ def test_each_plan_uses_its_renderer_json_contract_and_configured_audit(
     if type(plan) in converters:
         assert json_output == jsonable
     else:
-        assert json_output["kind"] == kind
+        assert json_output == jsonable
