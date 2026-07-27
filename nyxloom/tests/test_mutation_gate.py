@@ -12,6 +12,7 @@ import sys
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -822,6 +823,90 @@ def test_run_is_killed_concurrent_calls_do_not_clobber(tmp_path):
     assert results == [False] * 6
     assert live_file.read_text() == original_text
     assert "mut-" not in _worktree_listing(_repo_top_level(str(repo)))
+
+
+def test_concurrent_fanout_leaves_no_leftover_worktrees_under_stress(tmp_path):
+    """Regression guard for the concurrent worktree-admin race (2026-07-27).
+
+    `git worktree add`/`remove` mutate one per-repo admin area and are NOT safe
+    to run concurrently against the same repo. Before `_WORKTREE_ADMIN_LOCK`
+    serialized those calls, a `remove` racing another thread's `add` failed
+    (its exit code was ignored), orphaning a `.worktrees/mut-*` scratch tree in
+    `git worktree list` -- an intermittent ~2.5% leftover, invisible in a
+    single-shot test and thus a defeat of any single-sample gate.
+
+    Repeating the 6-way fan-out amplifies the old race well past that per-run
+    rate while staying fast (grep is instant, the tiny repo checks out in
+    milliseconds). With the admin lock every iteration is deterministically
+    clean; a regression that drops the lock will orphan a worktree in one of
+    these iterations with high probability. Each iteration also re-asserts the
+    core no-clobber property, so this is a stronger superset of the single-shot
+    oracle above, not a mere duplicate.
+    """
+    repo = _make_small_repo(tmp_path)
+    live_file = repo / "src" / "nyxloom" / "hello.py"
+    original_text = live_file.read_text()
+    top = _repo_top_level(str(repo))
+
+    def worker(i):
+        mutant = mg.Mutant(
+            lineno=1, operator="marker", description=f"m{i}",
+            mutated_source=f"ISOLATION_MARKER_{i} = 1\n",
+        )
+        return mg._run_is_killed(
+            str(repo), "src/nyxloom/hello.py", mutant,
+            ["grep", f"ISOLATION_MARKER_{i}", "src/nyxloom/hello.py"],
+        )
+
+    for iteration in range(20):
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(worker, range(6)))
+        assert results == [False] * 6, f"clobber on iteration {iteration}"
+        assert live_file.read_text() == original_text
+        assert "mut-" not in _worktree_listing(top), (
+            f"orphaned scratch worktree after iteration {iteration} "
+            "-- the git worktree-admin race regressed"
+        )
+
+
+def test_scratch_worktree_remove_failure_falls_back_to_prune(tmp_path, monkeypatch):
+    """If `git worktree remove` reports failure (which the admin lock makes
+    rare but does not make impossible -- e.g. a held file, an FS quirk),
+    `_run_is_killed_isolated` must fall back to `git worktree prune` so the
+    stale admin entry is dropped and nothing accumulates in `git worktree
+    list`. Real add + real grep; only the ONE `worktree remove` call is forced
+    to fail, and we assert prune was invoked AND the listing ends clean."""
+    repo = _make_small_repo(tmp_path)
+    top = _repo_top_level(str(repo))
+
+    real_run = mg.subprocess.run
+    seen = {"remove": 0, "prune": 0}
+
+    def fake_run(argv, *a, **kw):
+        if argv[:1] == ["git"] and "worktree" in argv and "remove" in argv:
+            seen["remove"] += 1
+            # Pretend the remove failed, but ALSO really remove the dir so a
+            # subsequent real `prune` can drop the now-danging admin entry
+            # (prune only cleans entries whose working dir is gone).
+            result = real_run(argv, *a, **kw)  # actually removes it
+            return SimpleNamespace(returncode=1, stdout="", stderr="forced-fail")
+        if argv[:1] == ["git"] and "worktree" in argv and "prune" in argv:
+            seen["prune"] += 1
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(mg.subprocess, "run", fake_run)
+
+    mutant = mg.Mutant(lineno=1, operator="marker", description="m",
+                       mutated_source="ISOLATION_MARKER_x = 1\n")
+    result = mg._run_is_killed(
+        str(repo), "src/nyxloom/hello.py", mutant,
+        ["grep", "ISOLATION_MARKER_x", "src/nyxloom/hello.py"],
+    )
+
+    assert result is False                       # grep found its own marker
+    assert seen["remove"] == 1
+    assert seen["prune"] == 1                     # the fallback fired
+    assert "mut-" not in _worktree_listing(top)   # and left a clean listing
 
 
 # --------------------------------------------------------------------------- #

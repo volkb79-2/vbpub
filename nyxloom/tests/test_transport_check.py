@@ -140,6 +140,32 @@ def test_delay_and_timeout_are_passed_through(monkeypatch):
     assert seen["timeout"] == 99
 
 
+def test_probe_default_uses_default_image(monkeypatch):
+    seen = {}
+    monkeypatch.delenv(tc.PROBE_IMAGE_ENV_VAR, raising=False)
+    monkeypatch.setattr(
+        tc, "probe_docker_transport",
+        lambda image, **kw: seen.update(image=image, kw=kw)
+        or TransportProbe("healthy", "x"),
+    )
+    probe = tc.probe_default(delay_s=2)
+    assert probe.status == "healthy"
+    assert seen["image"] == tc.DEFAULT_PROBE_IMAGE
+    assert seen["kw"] == {"delay_s": 2}  # kwargs are forwarded
+
+
+def test_probe_default_honors_env_override(monkeypatch):
+    seen = {}
+    monkeypatch.setenv(tc.PROBE_IMAGE_ENV_VAR, "my-mirror/probe:pinned")
+    monkeypatch.setattr(
+        tc, "probe_docker_transport",
+        lambda image, **kw: seen.update(image=image) or TransportProbe("lying", "x"),
+    )
+    probe = tc.probe_default()
+    assert probe.lying
+    assert seen["image"] == "my-mirror/probe:pinned"
+
+
 def test_transportprobe_dataclass_flags():
     assert TransportProbe("healthy", "x").healthy
     assert not TransportProbe("healthy", "x").lying

@@ -29,6 +29,7 @@ read_baseline_method(path) -> str | None
 derive_read_iops(configured, *, baseline_path=None, configured_path="") -> (int, str)
 detect_device() -> str
 resolve_device(configured) -> (str, str)
+check_slice_unit(slice_name) -> (bool | None, str)                         — D-G9 check 1
 build_injections(compose_services, config) -> (dict[str, dict], list[str])
 parse_fio_json(text) -> int
 select_fio_engine(fio_bin="fio") -> (str, str | None)
@@ -129,16 +130,43 @@ MEASURE_METHOD_BURST = "burst-v1"
 KNOWN_MEASURE_METHODS: tuple[str, ...] = (MEASURE_METHOD_BURST, "sustained-v3")
 
 
-def resolve_config(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+def resolve_config(
+    raw: Mapping[str, Any] | None,
+    *,
+    strict_unknown_keys: bool = False,
+) -> dict[str, Any]:
     """Merge *raw* (a stack's ``[<root>.governance]`` table) over the defaults.
 
     *raw* is ``None`` when the stack declares no ``governance`` table at all
     (the common case — this function is only ever called once a caller has
     already decided the table is present, see composefile.generate_overlay).
-    Unknown/extra keys in *raw* pass through unchanged (no schema — S15.2).
+    Unknown/extra keys in *raw* pass through unchanged (no schema — S15.2):
+    a newer stack config running against an older CIU may legitimately name
+    a key this version doesn't know yet, and that MUST NOT hard-fail.
+
+    D-G9 check 2 — but a silently-swallowed unknown key is also exactly how
+    a typo (``cgroup_parnet``) or a key misplaced into the wrong table goes
+    unnoticed for a long time (a dead-config-key incident, S15.8-adjacent).
+    So by default this now prints a ``[WARN] [S15.2]`` line naming every
+    unrecognised key, loud enough to catch a typo, while still returning
+    normally (forward-compat is preserved — this is a WARN, not a raise).
+    Pass ``strict_unknown_keys=True`` to instead raise ``ValueError`` on any
+    unknown key (opt-in only; the module-level default stays permissive).
     """
     cfg = dict(GOVERNANCE_DEFAULTS)
     if raw:
+        unknown = sorted(k for k in raw if k not in GOVERNANCE_DEFAULTS)
+        if unknown:
+            message = (
+                "[WARN] [S15.2] [<root>.governance] has unrecognised key(s): "
+                + ", ".join(unknown)
+                + " — passed through unchanged (forward-compat). If this isn't "
+                "a newer key for an older CIU, check for a typo or a key meant "
+                "for a different table."
+            )
+            if strict_unknown_keys:
+                raise ValueError(message.replace("[WARN] ", ""))
+            print(message, flush=True)
         cfg.update(raw)
 
     if not isinstance(cfg.get("enabled"), bool):
@@ -378,6 +406,75 @@ def resolve_device(configured: str) -> tuple[str, str]:
     if detected:
         return detected, "autodetected from /var/lib/docker mount"
     return "", "autodetect failed (findmnt unavailable, or /var/lib/docker not on a block device)"
+
+
+# ---------------------------------------------------------------------------
+# D-G9 check 1 — named-slice existence probe (S15.8 rationale, now checkable)
+# ---------------------------------------------------------------------------
+#
+# S15.8 explains WHY this matters: `cgroup_parent` only *places* a container
+# under a named systemd slice; with the systemd cgroup driver, a slice with
+# no static unit file is implicitly/transiently created on first reference,
+# with NO resource limits of its own. The compose file "looks" governed
+# (`cgroup_parent` is set) but the container runs completely unconfined at
+# the slice level. This was previously undetectable from CIU's overlay
+# generator (no host access there); the deploy-time preflight below DOES
+# have host access, so it can catch it before `up` ever starts a container.
+
+
+def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
+    """Probe whether a systemd slice UNIT is loaded on this host (D-G9 check 1).
+
+    Returns ``(exists, note)``:
+
+    - ``exists is None`` — this host has no ``systemctl`` at all (not a
+      systemd host — CI runner, macOS, a minimal container). Governed cgroup
+      slices cannot be honored here regardless of what's configured, so the
+      caller must SKIP the check, not fail it; *note* explains why.
+    - ``exists is True`` — ``systemctl show <slice> --property=LoadState``
+      reports ``LoadState=loaded``: the unit is installed and known to
+      systemd.
+    - ``exists is False`` — systemd is present but the slice is NOT loaded
+      (typically ``LoadState=not-found`` — never installed, or installed
+      under a different name than configured). This is the fail-closed case:
+      Docker would silently auto-create this slice transiently with no
+      limits (S15.8).
+
+    Uses ``systemctl show --property=LoadState`` rather than ``systemctl
+    cat``: ``show`` always exits 0 (even for a unit that doesn't exist) and
+    reports the load state as a parseable ``KEY=VALUE`` line, so failure is a
+    STRING to read, not a process exit code that a transient/permission
+    error could be confused with. Any subprocess error (timeout, systemctl
+    missing mid-probe, unexpected OSError) is treated the same as
+    "inconclusive" and reported via ``exists is None`` — this probe never
+    raises; the caller decides what an inconclusive probe means for the
+    deploy.
+    """
+    if shutil.which("systemctl") is None:
+        return None, (
+            "no systemctl on this host — not a systemd host, so governed "
+            "cgroup slices cannot be honored here regardless; skipping the "
+            "slice-existence preflight"
+        )
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", slice_name, "--property=LoadState"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"systemctl probe failed ({exc}) — skipping the slice-existence preflight"
+
+    output = (result.stdout or "").strip()
+    load_state = output.split("=", 1)[1] if "=" in output else ""
+    if load_state == "loaded":
+        return True, f"{slice_name}: LoadState=loaded"
+    return False, (
+        f"{slice_name}: LoadState={load_state or '(unknown — systemctl returned no LoadState)'} "
+        "— the unit is not installed on this host"
+    )
 
 
 # ---------------------------------------------------------------------------
