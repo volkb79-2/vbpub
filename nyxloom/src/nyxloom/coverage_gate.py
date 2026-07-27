@@ -118,7 +118,14 @@ class Verdict:
     fail_under: float
     files_missing_coverage: list[str] = field(default_factory=list)
     # GA5 2026-07-27: changed lines coverage.py EXCLUDED from measurement --
-    # i.e. carrying `# pragma: no cover`. Deliberately a separate bucket from
+    # i.e. carrying `pragma: no cover`. (Every mention of that token in this
+    # module deliberately OMITS the leading '#'. coverage.py's exclude regex
+    # matches the full token anywhere on a line -- including inside a comment
+    # or a string literal -- so writing it out in full would exclude the very
+    # line explaining the feature. This guard caught exactly that on its own
+    # first run: three lines of prose about pragmas, excluded by their own
+    # example. Do not "fix" the missing '#'.)
+    # Deliberately a separate bucket from
     # `uncovered`, because it is a different failure with a different remedy:
     # an uncovered line is untested, an excluded line is *unmeasured by
     # request*. Excluded lines appear in neither `executed_lines` nor
@@ -161,7 +168,7 @@ def evaluate(
     edits to `schemas/nyxloom-config.schema.json` as a test-coverage failure, a
     verdict no test could ever clear. Unmeasur*able* is not unmeasur*ed*.
 
-    GA5 2026-07-27: changed lines carrying `# pragma: no cover` are collected
+    GA5 2026-07-27: changed lines carrying `pragma: no cover` are collected
     separately and fail the gate unless `allow_excluded`. Unmeasur*able* is not
     unmeasur*ed* (above) — but a pragma is neither: it is a request to stop
     measuring, and honouring it on a CHANGED line lets a change opt out of the
@@ -287,7 +294,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", default=".",
                    help="git repo/worktree to run diff in (default: cwd)")
     p.add_argument("--allow-excluded", action="store_true",
-                   help="permit `# pragma: no cover` on CHANGED lines (default: "
+                   help="permit `pragma: no cover` on CHANGED lines (default: "
                         "off -- a pragma on a changed line fails the gate). Opting "
                         "in belongs in the project's declared gate argv, where it "
                         "is a visible, reviewable config change.")
@@ -319,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     if v.excluded and not v.allow_excluded:
         print(
             f"diff-coverage FAIL: {v.excluded_count} changed line(s) are EXCLUDED "
-            f"from coverage by `# pragma: no cover`:"
+            f"from coverage by `pragma: no cover`:"
         )
         for path in sorted(v.excluded):
             print(f"  {path}: {sorted(v.excluded[path])}")

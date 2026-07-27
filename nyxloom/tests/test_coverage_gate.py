@@ -341,7 +341,7 @@ def test_arg_parser_defaults():
 
 
 # --------------------------------------------------------------------------- #
-# GA5 — `# pragma: no cover` on CHANGED lines cannot launder the gate
+# GA5 — `pragma: no cover` on CHANGED lines cannot launder the gate
 # --------------------------------------------------------------------------- #
 
 def test_excluded_changed_lines_are_invisible_to_the_percentage_THE_HOLE():
@@ -349,7 +349,7 @@ def test_excluded_changed_lines_are_invisible_to_the_percentage_THE_HOLE():
 
     coverage.py sorts every line into exactly one of executed / missing /
     excluded. The ratio is built from executed ∪ missing, so an EXCLUDED line
-    leaves the numerator AND the denominator. Adding `# pragma: no cover` to an
+    leaves the numerator AND the denominator. Adding `pragma: no cover` to an
     uncovered changed line therefore does not merely hide it -- it raises the
     reported percentage. This test pins that arithmetic so the guard below can
     never be quietly regressed into a no-op."""
