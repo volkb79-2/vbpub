@@ -121,9 +121,22 @@ def render_gate_def(
         "python -m nyxloom.coverage_gate --base main "
         "--coverage-json /tmp/scaffolded-gate-cov.json --source src"
     )
+    # DETACHED, not attached (`docker run -d` -> `docker wait` -> `docker logs`),
+    # deliberately. An attached `docker run --rm` reads its verdict off the
+    # hijacked HTTP stream, which a lying transport (e.g. a socat relay without
+    # -t) truncates -- returning partial output and a FORGED exit code, so a red
+    # gate reads as green (canonical reference/LESSONS.md L18 defeat 4). The
+    # detached form takes the exit code from the daemon via `docker wait` and
+    # the output from a plain `docker logs` fetch (never a hijacked stream), so
+    # a broken transport can only make this HANG, never lie. Do NOT "simplify"
+    # this back to a single attached `docker run --rm`.
     outer = (
-        "docker run --rm -v {worktree}:{worktree} scaffolded-pytest-gate:local "
-        f"bash -c '{inner}'  "
+        'cid=$(docker run -d -v {worktree}:{worktree} scaffolded-pytest-gate:local '
+        f"bash -c '{inner}'); "
+        'code=$(docker wait "$cid"); '
+        'docker logs "$cid"; '
+        'docker rm "$cid" >/dev/null 2>&1 || true; '
+        'exit "$code"  '
         f"# {ADJUST_MARKER} the image tag, the mount path, source dir "
         '("src"), test dir ("tests"), and --source above are placeholders '
         "for YOUR project's real layout -- build the scaffolded Dockerfile "

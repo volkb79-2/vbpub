@@ -36,6 +36,20 @@ def _silence_nyxloom_logging():
         handler.close()
 
 
+@pytest.fixture(autouse=True)
+def _healthy_transport_by_default(monkeypatch):
+    """`cmd_gate_verify` now runs a real docker transport probe FIRST (L18
+    defeat 4). Default it to "healthy" for every test here so the gate-verify
+    suite stays hermetic -- it must never depend on a live docker socket, which
+    is present in the devcontainer but ABSENT in the gate container. The
+    transport-specific tests below override this explicitly."""
+    from nyxloom import transport_check
+    monkeypatch.setattr(
+        transport_check, "probe_default",
+        lambda **kw: transport_check.TransportProbe("healthy", "test-default"),
+    )
+
+
 @pytest.fixture()
 def make_statefile():
     """Factory for TaskStateFile objects."""
@@ -1714,6 +1728,90 @@ def test_gate_verify_no_gate(no_gate_project, tmp_state, capsys):
     assert exit_code == 1
     out = capsys.readouterr().out
     assert "verdict: NO_GATE" in out
+
+
+# --- transport preflight (L18 defeat 4) ---
+
+def test_gate_verify_transport_lying_short_circuits(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """A definitively-lying transport yields TRANSPORT_UNTRUSTED (exit 4)
+    BEFORE any gate runs -- no verdict computed over a truncating transport can
+    be trusted, not even 'good HEAD passes'."""
+    from nyxloom import gate_runner, transport_check
+
+    ran = []
+    monkeypatch.setattr(
+        gate_runner, "run_gate_at_commit",
+        lambda *a, **k: ran.append(k.get("phase", "?")) or (_ for _ in ()).throw(
+            AssertionError("gate must NOT run when the transport is lying")),
+    )
+    monkeypatch.setattr(
+        transport_check, "probe_default",
+        lambda **kw: transport_check.TransportProbe("lying", "socat truncation demo"),
+    )
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    assert exit_code == 4
+    out = capsys.readouterr().out
+    assert "verdict: TRANSPORT_UNTRUSTED" in out
+    assert "pass-on-good" not in out  # never got to running the gate
+    assert ran == []
+
+
+def test_gate_verify_transport_unavailable_proceeds_note_on_stderr(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """An 'unavailable' probe (no docker / no probe image) must NOT block: the
+    verdict is computed as normal and the skip note goes to STDERR so stdout
+    (the verdict contract) is byte-unchanged."""
+    from nyxloom import gate_runner, transport_check
+    from nyxloom.types import GateResult, utc_now
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit,
+                          exit_code=exit_code, started=utc_now(), ended=utc_now(),
+                          environment=gate.environment)
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+    monkeypatch.setattr(
+        transport_check, "probe_default",
+        lambda **kw: transport_check.TransportProbe("unavailable", "no docker socket"),
+    )
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "verdict: TRUSTWORTHY" in captured.out
+    assert "transport:" not in captured.out          # note is NOT on stdout
+    assert "transport: probe skipped" in captured.err  # it is on stderr
+
+
+def test_gate_verify_transport_healthy_is_silent_on_stdout(
+        canary_project, tmp_state, capsys, monkeypatch):
+    """A healthy transport adds NOTHING to stdout -- byte-compatible with the
+    pre-transport-preflight output."""
+    from nyxloom import gate_runner, transport_check
+    from nyxloom.types import GateResult, utc_now
+
+    def fake_run(cfg, gate, commit, phase="post-merge"):
+        exit_code = 0 if phase == "verify-good" else 1
+        return GateResult(gate_id=gate.gate_id, phase=phase, commit=commit,
+                          exit_code=exit_code, started=utc_now(), ended=utc_now(),
+                          environment=gate.environment)
+
+    monkeypatch.setattr(gate_runner, "run_gate_at_commit", fake_run)
+    monkeypatch.setattr(
+        transport_check, "probe_default",
+        lambda **kw: transport_check.TransportProbe("healthy", "ok"),
+    )
+
+    exit_code = cli.main(["gate", "verify", "demo"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "verdict: TRUSTWORTHY" in out
+    assert "transport" not in out.lower()
 
 
 def test_gate_verify_canary_build_error_reported(
