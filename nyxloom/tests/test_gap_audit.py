@@ -327,7 +327,7 @@ def test_oracle_7_generic_exception_returns_zero(tmp_state, sample_project, monk
 # Oracle 8: Checkpoint round-trip (head_sha written and read back)
 # ==========================================================================
 
-def test_oracle_8_checkpoint_round_trip(tmp_state, sample_project):
+def test_oracle_8_checkpoint_round_trip(tmp_state, sample_project, monkeypatch):
     """Oracle 8: head_sha is written by production code and read back."""
     d = daemon.Daemon({"demo": sample_project.root})
     cfg = _cfg()
@@ -335,7 +335,7 @@ def test_oracle_8_checkpoint_round_trip(tmp_state, sample_project):
 
     expected_sha = "deadbeefcafebabe0123456789abcdef"
 
-    # Append with the expected sha
+    # Append with the expected sha (as daemon would write it)
     tsf = TaskStateFile(
         schema_version=storage.SCHEMA_VERSION, task_id="carve-demo-1", project="demo",
         state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
@@ -346,11 +346,20 @@ def test_oracle_8_checkpoint_round_trip(tmp_state, sample_project):
         type=EventType.TASK_CREATED, payload=payload, task_id="carve-demo-1",
     )
 
-    # Helper reads it back (would call git diff with it, but we don't care about the result)
-    # Just verify it doesn't fail when reading the sha
+    # Mock git diff to verify it's called with the expected sha
+    class MockResult:
+        returncode = 0
+        stdout = "10\t5\tfile.py\n"
+
+    def mock_run(cmd, **kwargs):
+        # Verify the sha is in the git diff command
+        assert expected_sha in cmd or f"{expected_sha}..HEAD" in " ".join(cmd)
+        return MockResult()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
     result = d._changed_lines_since_gap_audit("demo", cfg)
-    # Result is None or 0+ (depending on git), key point is it didn't fail
-    assert result is not None or result == 0
+    assert result == 15  # 10 + 5
 
 
 # ==========================================================================
