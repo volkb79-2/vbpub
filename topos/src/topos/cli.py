@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import threading
 import time
@@ -1086,9 +1087,15 @@ def _main_report(argv: list[str]) -> int:
     except ValueError:
         print("invalid --stability-cov — must be a finite non-negative number", file=sys.stderr)
         return 2
+    if not math.isfinite(stability_cov) or stability_cov < 0:
+        print("invalid --stability-cov — must be a finite non-negative number", file=sys.stderr)
+        return 2
     try:
         min_frames = int(args.min_frames)
     except ValueError:
+        print("invalid --min-frames — must be a positive integer", file=sys.stderr)
+        return 2
+    if min_frames <= 0:
         print("invalid --min-frames — must be a positive integer", file=sys.stderr)
         return 2
 
