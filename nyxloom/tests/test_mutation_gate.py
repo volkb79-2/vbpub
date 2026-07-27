@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -424,8 +425,22 @@ def test_evaluate_parallel_matches_serial_reference():
         # Deterministic function of (path, lineno, description) ONLY -- the
         # same inputs always produce the same verdict, so execution order
         # (serial vs. concurrent) cannot change the outcome.
+        #
+        # crc32, NOT the builtin hash(). hash() of a str is salted per
+        # interpreter (PYTHONHASHSEED), so it is stable only WITHIN one
+        # process. That is enough for the parallel-vs-serial comparison
+        # below -- both halves run here -- but NOT for the sanity assertions
+        # at the end, which require the split to actually contain a mix. With
+        # a per-process salt the whole split is redrawn on every run, and
+        # ~1.4% of seeds put all 10 mutants on one side, failing
+        # `0 < len(survivors) < total`. Measured: PYTHONHASHSEED=25 and =83
+        # both give 0 survivors and fail deterministically; 7 of 501 seeds
+        # do. Under xdist each worker is a fresh process with its own salt,
+        # so the suite drew that seed regularly. crc32 is a fixed function of
+        # the bytes with no salt, so the split is identical in every process
+        # forever (currently 2 survivors of 10).
         key = f"{path}:{mutant.lineno}:{mutant.description}"
-        return (hash(key) % 3) != 0  # arbitrary but stable kill/survive split
+        return (zlib.crc32(key.encode()) % 3) != 0  # arbitrary but FIXED split
 
     parallel_result = mg.evaluate(targets, stub)
     serial_result = _serial_reference_evaluate(targets, stub)
