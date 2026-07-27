@@ -1,6 +1,6 @@
 [project]
 name = "nyxloom"
-version = "0.1.0a0"
+dynamic = ["version"]
 description = "Files-first, daemon-supervised control plane for role-separated AI-assisted development"
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6", "jsonschema>=4", "structlog>=24,<27"]  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
@@ -14,12 +14,26 @@ test = ["pytest>=8", "hypothesis>=6", "coverage[toml]>=7", "pytest-xdist>=3", "p
 [project.scripts]
 nyxloom = "nyxloom.cli:main"
 
+# Build toolchain pinned exactly (matches ciu/cmru) so wheel builds are
+# reproducible — same toolchain + SOURCE_DATE_EPOCH → identical sha256.
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Version is derived from git tags by setuptools-scm (no clock, no manual bump),
+# matching the estate's other wheel projects (ciu, cmru). Release = annotated tag
+# `nyxloom-vX.Y.Z`; untagged commit = `X.Y.(Z+1).devN+g<sha>`. cmru's
+# `strategy = "scm"` + `bump = "conventional"` computes and applies these tags
+# (cmru.toml [project.nyxloom]). `root = ".."` because the git root is one level
+# up (the vbpub monorepo), same as ciu.
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^nyxloom-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "nyxloom-v*"]
+fallback_version = "0.1.0"
 
 [tool.setuptools.package-data]
 nyxloom = ["schemas/*.json"]

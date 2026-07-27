@@ -8,4 +8,21 @@ Package modules (one implementation handoff each, see ../../handoff/):
     notify, decisions, doctor, cli
 """
 
-__version__ = "0.1.0a0"
+# setuptools-scm stamps the version into the wheel METADATA at build time (git-tag
+# derived — see pyproject [tool.setuptools_scm]); at runtime we read it back from the
+# installed distribution's metadata. An un-installed source checkout (the daemon runs
+# from mounted source via PYTHONPATH) has no metadata, so it reports a sentinel until
+# it runs installed. Extracted to a helper so BOTH branches are unit-tested: nyxloom's
+# changed-line coverage gate rejects no-cover exclusions on changed lines (GA2b), so
+# there is deliberately no un-covered fallback here.
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+
+def _resolve_version() -> str:
+    try:
+        return _dist_version("nyxloom")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
+__version__ = _resolve_version()
