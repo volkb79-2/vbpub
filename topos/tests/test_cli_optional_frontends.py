@@ -56,6 +56,12 @@ def test_mcp_defensive_nonserve_returns_before_optional_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cli, "parse_mcp_args", lambda _argv: SimpleNamespace(command="delete"))
+    # Prove the optional import is gated: if the guard is ever broken,
+    # the import + call hits this fail instead of silently succeeding.
+    monkeypatch.setattr(
+        "topos.mcp.server.run_server",
+        lambda *_args, **_kwargs: pytest.fail("MCP import/start not gated"),
+    )
     assert cli._main_mcp(["delete"]) == 2
 
 
