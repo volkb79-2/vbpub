@@ -7,6 +7,10 @@ re-run the tests; a mutant that SURVIVES (tests still green) marks a
 hollow-tested line. Scoped to changed lines only via
 `coverage_gate.parse_added_lines` so it remains affordable.
 
+The mutation catalogue is `compare-swap`, `boolop-swap`, `bool-const-flip`, and
+`falsy-swap`. The last one changes a direct falsy return value to a different
+falsy value, exposing error paths that degrade to a benign result.
+
 Usage:
 
     python -m nyxloom.mutation_gate --test "pytest -q -x tests/"
@@ -61,7 +65,7 @@ _BOOLOP_SWAP: dict[type, type] = {
 @dataclass
 class Mutant:
     lineno: int
-    operator: str          # "compare-swap" | "boolop-swap" | "bool-const-flip"
+    operator: str          # "compare-swap" | "boolop-swap" | "bool-const-flip" | "falsy-swap"
     description: str       # e.g. "Lt->LtE", "And->Or", "True->False"
     mutated_source: str    # the FULL file source with exactly this one mutation
 
@@ -104,6 +108,23 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
     _compare_idx: dict[int, int] = {}
     _boolop_idx: dict[int, int] = {}
     _const_idx: dict[int, int] = {}
+    _falsy_idx: dict[int, int] = {}
+
+    def _falsy_swap_target(value: ast.expr) -> ast.expr | None:
+        """Return a distinct falsy AST value for a direct return value."""
+        if isinstance(value, ast.Constant):
+            if isinstance(value.value, bool):
+                return None
+            if value.value is None:
+                return ast.List(elts=[], ctx=ast.Load())
+            if value.value == 0 or value.value == "" or value.value == b"":
+                return ast.Constant(value=None)
+            return None
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)) and not value.elts:
+            return ast.Constant(value=None)
+        if isinstance(value, ast.Dict) and not value.keys:
+            return ast.Constant(value=None)
+        return None
 
     class _Collector(ast.NodeVisitor):
         def visit_Compare(self, node):
@@ -159,6 +180,23 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
                 ))
             self.generic_visit(node)
 
+        def visit_Return(self, node):
+            if node.lineno in target_lines:
+                target_val = _falsy_swap_target(node.value)
+                if target_val is not None:
+                    idx = _falsy_idx.get(node.lineno, 0)
+                    _falsy_idx[node.lineno] = idx + 1
+                    sites.append((
+                        (node.lineno, 3, idx),  # type 3 = falsy return
+                        node.lineno,
+                        "falsy-swap",
+                        f"{ast.unparse(node.value)}->{ast.unparse(target_val)}",
+                        target_val,
+                        idx,  # which falsy return on this line
+                        0,
+                    ))
+            self.generic_visit(node)
+
     _Collector().visit(tree)
     sites.sort(key=lambda s: s[0])
 
@@ -198,6 +236,16 @@ def generate_mutants(source: str, target_lines: set[int]) -> list[Mutant]:
                     if self._const_visited == node_idx:
                         node.value = target_val  # type: ignore[assignment]
                     self._const_visited += 1
+                return self.generic_visit(node)
+
+            _falsy_visited: int = 0
+
+            def visit_Return(self, node):
+                if node.lineno == lineno and operator == "falsy-swap":
+                    if _falsy_swap_target(node.value) is not None:
+                        if self._falsy_visited == node_idx:
+                            node.value = copy.deepcopy(target_val)  # type: ignore[assignment]
+                        self._falsy_visited += 1
                 return self.generic_visit(node)
 
         _Mutator().visit(tree_copy)
