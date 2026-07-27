@@ -53,17 +53,22 @@ evolution    = "docs/EVOLUTION.md"
 #     container, same python (3.14) the nyxloomd runtime uses. {worktree} = the
 #     attempt checkout; the nyxloom package is at {worktree}/nyxloom.
 [gates.tester-unified]
-# `--cgroup-parent=dev-workloads.slice` (2026-07-27): a gate is a CPU-heavy
-# background job (pytest -n auto, ~4 min, 8-core host) that must never compete
-# with production services for CPU. Docker's default placement puts it under the
-# docker/system slice at normal weight; naming a slice explicitly moves the whole
-# container tree under the host's dev-workload accounting. Verified live: both
-# `dev-workloads.slice` and `besteffort.slice` are accepted as cgroup parents
-# here (cgroups v2, systemd driver). `besteffort.slice` defers harder and is the
-# right choice if prod contention is the only concern -- but a gate that is
-# starved still has to finish before a merge can proceed, so the dev-workload
-# slice is the default. Switch if the host's weights say otherwise.
-argv = ["bash", "-c", "docker run --rm --cgroup-parent=dev-workloads.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:/tmp/nyxloom-cov.json && PYTHONPATH=src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --base main --coverage-json /tmp/nyxloom-cov.json --source src/nyxloom'"]
+# `--cgroup-parent=nyxloom-gates.slice` (2026-07-27): a gate is a CPU- AND
+# IO-heavy background job (pytest -n auto, ~4 min, 8-core host) that must never
+# compete with the production game servers on this host for CPU or disk. It runs
+# in the estate's dedicated batch slice `nyxloom.slice/nyxloom-gates.slice`
+# (infra/slices/): CPUWeight=25 (lowest in the factory) plus operator-set
+# IOReadIOPSMax/IOWriteIOPSMax caps (63000/41000 riops/wiops on /dev/vda,
+# applied on the host via `systemctl set-property nyxloom-gates.slice`).
+# Verified live 2026-07-27: a container launched with this parent lands at
+# `/nyxloom.slice/nyxloom-gates.slice/docker-<id>.scope` and inherits those IO
+# caps + CPU weight down the cgroup-v2 hierarchy (leaf `io.max` is empty =
+# "inherit parent throttle", NOT unbounded). A MISSING slice fails OPEN
+# (systemd creates a transient limitless slice), so `nyxloom doctor` asserts
+# every gate-argv slice exists as a real unit and fails closed otherwise
+# (doctor.doctor_host, infra/slices/README.md). topos's gate uses the same slice;
+# this migrates nyxloom's own gate off the shared `dev-workloads.slice`.
+argv = ["bash", "-c", "docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:/tmp/nyxloom-cov.json && PYTHONPATH=src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --base main --coverage-json /tmp/nyxloom-cov.json --source src/nyxloom'"]
 # D-064-L2: the gate runs pytest under coverage, then fails if any changed
 # executable source line (vs merge-base with main, or the merged delta post-merge)
 # is uncovered -- the deterministic test-completeness floor. `# pragma: no cover`
