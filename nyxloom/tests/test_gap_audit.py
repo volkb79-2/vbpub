@@ -147,7 +147,9 @@ def test_gap_audit_schema_entries_are_correct():
 def test_never_carved_fires_a_gap_audit_carve():
     """None ('never run') means FIRE, not 'no data, skip': turning the knob
     on is itself the request for a first pass."""
-    carves = _carves(_inp(changed_lines_since_gap_audit=None))
+    carves = _carves(_inp(
+        cfg=_cfg(test_health_interval_days=0),  # disable test-health
+        changed_lines_since_gap_audit=None))
     assert len(carves) == 1
     assert carves[0].kind == "gap-audit"
     assert carves[0].project == "demo"
@@ -158,7 +160,7 @@ def test_disabled_threshold_never_fires_gap_audit_THE_OPT_IN_DISCRIMINATOR():
     never-carved input: proves the trigger keys on the opt-in knob and not
     merely on 'no gap-audit carve has ever run'. Item 9 still gets its
     slot, so disabling gap-audit costs no work carving."""
-    carves = _carves(_inp(cfg=_cfg(gap_audit_after_changed_lines=0),
+    carves = _carves(_inp(cfg=_cfg(gap_audit_after_changed_lines=0, test_health_interval_days=0),
                           changed_lines_since_gap_audit=None))
     assert len(carves) == 1
     assert carves[0].kind == "headroom"
@@ -166,19 +168,19 @@ def test_disabled_threshold_never_fires_gap_audit_THE_OPT_IN_DISCRIMINATOR():
 
 def test_over_threshold_fires():
     """changed_lines >= threshold fires."""
-    assert [c.kind for c in _carves(_inp(changed_lines_since_gap_audit=2500))] == ["gap-audit"]
+    assert [c.kind for c in _carves(_inp(cfg=_cfg(test_health_interval_days=0), changed_lines_since_gap_audit=2500))] == ["gap-audit"]
 
 
 def test_exactly_at_threshold_fires_boundary():
     """>= threshold, not > -- a 2000-line threshold fires ON line 2000."""
-    assert [c.kind for c in _carves(_inp(changed_lines_since_gap_audit=2000))] == ["gap-audit"]
+    assert [c.kind for c in _carves(_inp(cfg=_cfg(test_health_interval_days=0), changed_lines_since_gap_audit=2000))] == ["gap-audit"]
 
 
 def test_under_threshold_does_not_fire_and_does_not_consume_the_work_slot():
     """1500 lines into a 2000-line threshold: no gap-audit carve. And the
     DISCRIMINATOR half -- item 9's headroom refill still fires, proving a
     gap-audit MISS releases the slot rather than swallowing the pass."""
-    carves = _carves(_inp(changed_lines_since_gap_audit=1500))
+    carves = _carves(_inp(cfg=_cfg(test_health_interval_days=0), changed_lines_since_gap_audit=1500))
     assert len(carves) == 1
     assert carves[0].kind == "headroom"
 
@@ -189,14 +191,13 @@ def test_activity_counted_not_time_counted_CORE_BEHAVIORAL_DISCRIMINATOR():
     changes exceed the threshold. This test proves the trigger keys on activity,
     not time. Set large days values to prove they do NOT matter."""
     inp = _inp(
-        cfg=_cfg(),
-        days_since_test_health_carve=365.0,  # A full year
-        days_since_gate_verify=365.0,  # A full year
+        cfg=_cfg(test_health_interval_days=0),  # disable test-health
+        days_since_test_health_carve=365.0,  # A full year (doesn't matter)
+        days_since_gate_verify=365.0,  # A full year (doesn't matter)
         changed_lines_since_gap_audit=1500,  # Below threshold
     )
     carves = _carves(inp)
-    # Item 9's headroom refill fires (no test-health/gate-verify because they're
-    # old, but gap-audit is below threshold). Exactly one carve, and it's headroom.
+    # Item 9's headroom refill fires (gap-audit is below threshold). Exactly one carve, and it's headroom.
     assert len(carves) == 1
     assert carves[0].kind == "headroom"
 
@@ -212,7 +213,7 @@ def test_gap_audit_outranks_headroom_refill_for_the_single_slot():
     Paired with test_disabled_threshold_... above (identical input, knob off
     -> the ONE carve is 'headroom'), this proves precedence rather than
     just 'something fired'."""
-    carves = _carves(_inp(changed_lines_since_gap_audit=None))
+    carves = _carves(_inp(cfg=_cfg(test_health_interval_days=0), changed_lines_since_gap_audit=None))
     assert len(carves) == 1
     assert carves[0].kind == "gap-audit"
 
@@ -294,3 +295,41 @@ def test_gap_audit_respects_exhausted_budget():
         budget_remaining=0,
         changed_lines_since_gap_audit=None))
     assert len(carves) == 0
+
+
+# ==========================================================================
+# Daemon helper: _changed_lines_since_gap_audit (oracles 7 and 8)
+# ==========================================================================
+
+def test_changed_lines_helper_smoke(tmp_state, sample_project, monkeypatch):
+    """Smoke test: _changed_lines_since_gap_audit successfully computes
+    changed lines when a gap-audit carve marker exists with head_sha."""
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    # Append a gap-audit carve marker with a valid head_sha
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="carve-demo-1", project="demo",
+        state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+    )
+    payload: dict = {"statefile": tsf.to_dict(), "carve_kind": "gap-audit", "head_sha": "abc123"}
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.TASK_CREATED, payload=payload, task_id="carve-demo-1",
+    )
+
+    # Mock subprocess.run to simulate a successful git diff
+    import subprocess
+    class MockResult:
+        returncode = 0
+        stdout = "5\t3\tfile1.py\n2\t0\tfile2.py\n"
+
+    def mock_run(*args, **kwargs):
+        return MockResult()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    cfg = _cfg()
+    cfg.root = sample_project.root
+    result = d._changed_lines_since_gap_audit("demo", cfg)
+    # 5 added + 3 deleted + 2 added = 10 total
+    assert result == 10
