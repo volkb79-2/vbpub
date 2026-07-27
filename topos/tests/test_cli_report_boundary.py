@@ -17,6 +17,16 @@ def _computation() -> SimpleNamespace:
     return SimpleNamespace(profiles=["PROFILE SENTINEL"], window_selection="WINDOW SENTINEL")
 
 
+def test_report_returns_argparse_usage_exit_without_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _main_report(["--not-a-report-option", str(REPORT_PATH)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unrecognized arguments: --not-a-report-option" in captured.err
+    assert "Traceback" not in captured.err
+
+
 @pytest.mark.parametrize(
     ("option", "value", "message"),
     [
