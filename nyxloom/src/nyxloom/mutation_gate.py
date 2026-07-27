@@ -17,6 +17,14 @@ Usage:
 
 The `-x` (stop-on-first-failure) is recommended: a mutant only needs one test
 to fail to be killed, so -x makes each mutant run cheap.
+
+Exit codes mirror `coverage_gate` exactly (2026-07-27): 0 = all mutants killed,
+1 = at least one survived, 2 = a git/IO boundary broke (`CoverageGateError`),
+3 = no measurement was possible at all -- a dirty tree under `--source` or a
+`base == HEAD` resolution (`coverage_gate.NoMeasurementError`, reused rather
+than reimplemented via `_resolve_added_lines`). Without that guard this gate
+would report `{} -> "no changed source files to mutate"` on exactly the same
+defect: a vacuous pass indistinguishable from "genuinely nothing changed".
 """
 
 from __future__ import annotations
@@ -507,8 +515,14 @@ def _resolve_added_lines(
     source: str,
 ) -> dict[str, set[int]]:
     """Resolve the merge base and return added lines (delegates to
-    coverage_gate)."""
+    coverage_gate). Also runs coverage_gate's own no-measurement guard
+    (`_check_measurable`) between the two -- reusing it rather than
+    duplicating it means a dirty tree under `source` or a `base == HEAD`
+    resolution refuses HERE too, exactly as it does for the coverage gate,
+    instead of this gate separately reaching its own `{} -> "no changed
+    source files to mutate"` vacuous pass on the same defect (2026-07-27)."""
     base_rev = coverage_gate._resolve_base(repo, base)
+    coverage_gate._check_measurable(repo, base_rev, source)
     return coverage_gate._git_added_lines(repo, base_rev, source)
 
 
@@ -561,6 +575,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         added = _resolve_added_lines(args.repo, args.base, args.source)
+    except coverage_gate.NoMeasurementError as exc:
+        print(f"mutation-gate NO MEASUREMENT: {exc}", file=sys.stderr)
+        return 3
     except coverage_gate.CoverageGateError as exc:
         print(f"mutation-gate ERROR: {exc}", file=sys.stderr)
         return 2

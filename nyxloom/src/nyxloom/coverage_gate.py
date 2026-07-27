@@ -36,6 +36,20 @@ Base resolution makes BOTH gate phases meaningful with one command:
   * post-merge (HEAD is the merge commit, ≥2 parents) → diff vs its FIRST parent:
     exactly the merged delta, re-verified against the merged tree's own test run.
 An empty delta (nothing changed under --source) is a clean pass, never a false fail.
+
+NO MEASUREMENT (exit 3, 2026-07-27): "0/0 changed executable lines covered
+(100.0%)" reads identically whether the gate measured everything and found
+nothing to cover, or measured NOTHING at all -- and the second case is a real
+failure mode, not a hypothetical: a gate run against an uncommitted tree (the
+diff is computed from committed HEAD, so working-tree edits are invisible to
+it) and a gate run where `--base main` resolves to `main` itself (no delta by
+construction) both render that exact string. Neither is a tool failure
+(`CoverageGateError`, exit 2) and neither is a real verdict (0 or 1) -- they
+are a THIRD outcome: the measurement never happened, so no percentage
+computed from it means anything. `_check_measurable` is the guard, checked
+before `evaluate` ever runs (so `evaluate` stays pure and never sees either
+failure mode); it does NOT fire on a genuinely empty delta with a clean,
+committed tree -- a docs-only commit still passes at 0/0, exactly as before.
 """
 
 from __future__ import annotations
@@ -56,6 +70,20 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 class CoverageGateError(Exception):
     """A gate I/O boundary failed (git or coverage-json), distinct from a
     coverage *verdict* failure — the CLI maps it to exit 2, not 1."""
+
+
+class NoMeasurementError(Exception):
+    """No measurement was possible at all -- distinct from BOTH a rendered
+    verdict (`Verdict`/`evaluate`, exit 0 or 1) and a broken tool
+    (`CoverageGateError`, exit 2). Raised by `_check_measurable` for a
+    precondition that makes any diff-coverage percentage meaningless before
+    `evaluate` is even called: uncommitted changes under `--source` (the
+    `base..HEAD` diff cannot see them) or a resolved base identical to HEAD
+    (no delta, by construction). The CLI maps this to its own exit code (3).
+    Conflating this with exit 2 ("the tool broke, maybe retry") or with a
+    passing verdict ("nothing to fix") is exactly the ambiguity this module
+    exists to eliminate -- see the module docstring's "NO MEASUREMENT"
+    section."""
 
 
 def parse_added_lines(diff_text: str) -> dict[str, set[int]]:
@@ -266,6 +294,77 @@ def _git_added_lines(repo: str, base_rev: str, source: str) -> dict[str, set[int
     return parse_added_lines(out)
 
 
+def _head_rev(repo: str) -> str:
+    return _git(repo, ["rev-parse", "HEAD"]).strip()
+
+
+def _dirty_paths_under_source(repo: str, source: str) -> list[str]:
+    """Paths with uncommitted changes -- staged OR unstaged OR untracked --
+    scoped to `source`. `git status --porcelain` reports the index AND the
+    worktree in one pass (unlike `git diff`, which only ever shows one side),
+    so a staged-but-uncommitted change (`git add` with no `git commit`) is
+    caught exactly like an unstaged one: both are equally invisible to a
+    `base..HEAD` diff. The `--` pathspec scopes the query to what the gate
+    actually measures, so a dirty file OUTSIDE `source` (an in-progress doc
+    edit, say) never trips this.
+
+    `git status --porcelain` ALWAYS reports paths relative to the repo TOP
+    LEVEL, never to cwd (unlike `git diff --relative`, which is why
+    `_git_added_lines` above passes that flag explicitly) -- when nyxloom
+    self-hosts as a subdirectory of the vbpub monorepo, that means a raw
+    status line reads `nyxloom/src/nyxloom/x.py`, not `src/nyxloom/x.py`.
+    Route every path through `_rel_to_source` (the same normalizer
+    `evaluate` uses for coverage-json keys) so callers always see the
+    `source`-prefixed spelling regardless of where the repo top level sits."""
+    prefix = os.path.normpath(source).replace(os.sep, "/")
+    out = _git(repo, ["status", "--porcelain", "--", source])
+    paths: set[str] = set()
+    for line in out.splitlines():
+        if not line:
+            continue
+        path = line[3:]
+        if " -> " in path:  # rename/copy: "old -> new" -- only the new path still exists
+            path = path.split(" -> ", 1)[1]
+        paths.add(_rel_to_source(path, prefix))
+    return sorted(paths)
+
+
+def _check_measurable(repo: str, base_rev: str, source: str) -> None:
+    """Raise `NoMeasurementError` when nothing downstream (the added-lines
+    diff, the coverage intersection) could produce a verdict worth trusting,
+    however it happens to render. Two independent preconditions, checked
+    BEFORE any diff is computed and before `evaluate` ever runs:
+
+    1. Uncommitted changes under `source` -- a `base_rev..HEAD` diff cannot
+       see them, so "0 changed lines" from that diff would mean "the diff
+       can't see what's actually being tested", not "nothing changed".
+    2. `base_rev == HEAD` -- there is no delta between the two sides being
+       diffed, by construction (this is what `--base main` resolving TO
+       `main` itself produces), so any percentage computed from it is
+       vacuous regardless of what it says.
+
+    A genuinely empty delta on a clean, committed tree (a docs-only or
+    test-only commit) trips NEITHER check and reaches `evaluate` normally,
+    which is where the legitimate 0/0 pass is decided -- this function only
+    ever rules out measurements that could not have been trustworthy in the
+    first place."""
+    dirty = _dirty_paths_under_source(repo, source)
+    if dirty:
+        raise NoMeasurementError(
+            f"{len(dirty)} uncommitted file(s) under {source} -- the gate "
+            f"diffs committed HEAD, so these are invisible. Commit, then "
+            f"re-run. Affected: {', '.join(dirty)}"
+        )
+    head_rev = _head_rev(repo)
+    if base_rev == head_rev:
+        raise NoMeasurementError(
+            f"resolved base ({base_rev[:12]}) IS HEAD -- there is no delta "
+            f"to measure. --base should resolve to an ANCESTOR of HEAD (the "
+            f"branch's fork point); check that HEAD is not already the tip "
+            f"of that ref."
+        )
+
+
 def _load_coverage(path: str) -> dict[str, dict]:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -305,8 +404,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     try:
         base_rev = _resolve_base(args.repo, args.base)
+        _check_measurable(args.repo, base_rev, args.source)
         added = _git_added_lines(args.repo, base_rev, args.source)
         coverage_files = _load_coverage(args.coverage_json)
+    except NoMeasurementError as exc:
+        print(f"diff-coverage NO MEASUREMENT: {exc}", file=sys.stderr)
+        return 3
     except CoverageGateError as exc:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
         return 2

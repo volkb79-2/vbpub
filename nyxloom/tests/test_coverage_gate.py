@@ -9,6 +9,7 @@ branches discriminate on *executability* (not merely on "a test ran").
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -286,6 +287,78 @@ def test_load_coverage_raises_on_missing_file_and_on_bad_shape(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# NO MEASUREMENT (2026-07-27) — the third outcome, unit level (mocked _git)
+# --------------------------------------------------------------------------- #
+
+def test_head_rev_strips_and_returns(monkeypatch):
+    monkeypatch.setattr(cg, "_git", lambda repo, args: "DEADBEEF\n")
+    assert cg._head_rev(".") == "DEADBEEF"
+
+
+def test_dirty_paths_under_source_parses_porcelain_and_normalizes(monkeypatch):
+    """`git status --porcelain` ALWAYS reports paths relative to the repo TOP
+    LEVEL, even with `-C` into a subdirectory -- unlike `git diff --relative`,
+    which is why `_git_added_lines` passes that flag explicitly. Route every
+    line through `_rel_to_source` so a self-hosting subdir (nyxloom inside
+    vbpub) still reports the `source`-prefixed spelling everything else in
+    this module uses. Also exercises: staged (`A `), unstaged (` M`), a
+    rename (only the NEW path survives), and a blank trailing line ignored."""
+    def fake_git(repo, args):
+        assert args[:2] == ["status", "--porcelain"]
+        return (
+            " M nyxloom/src/nyxloom/a.py\n"
+            "A  nyxloom/src/nyxloom/b.py\n"
+            "R  nyxloom/src/nyxloom/old.py -> nyxloom/src/nyxloom/new.py\n"
+            "\n"
+        )
+    monkeypatch.setattr(cg, "_git", fake_git)
+    assert cg._dirty_paths_under_source(".", "src/nyxloom") == [
+        "src/nyxloom/a.py", "src/nyxloom/b.py", "src/nyxloom/new.py",
+    ]
+
+
+def test_dirty_paths_under_source_none_when_clean(monkeypatch):
+    monkeypatch.setattr(cg, "_git", lambda repo, args: "")
+    assert cg._dirty_paths_under_source(".", "src/nyxloom") == []
+
+
+def test_check_measurable_raises_on_dirty_tree_and_names_paths_BEFORE_head_check(monkeypatch):
+    """Dirty-tree is checked FIRST: `_head_rev` must never even be called
+    when the tree is already dirty (it would raise if it were)."""
+    monkeypatch.setattr(
+        cg, "_dirty_paths_under_source",
+        lambda repo, source: ["src/nyxloom/a.py", "src/nyxloom/b.py"],
+    )
+
+    def must_not_be_called(repo):
+        raise AssertionError("base==HEAD check ran despite a dirty tree")
+    monkeypatch.setattr(cg, "_head_rev", must_not_be_called)
+
+    with pytest.raises(cg.NoMeasurementError) as exc:
+        cg._check_measurable(".", "BASE", "src/nyxloom")
+    msg = str(exc.value)
+    assert "2 uncommitted file(s)" in msg
+    assert "src/nyxloom/a.py" in msg and "src/nyxloom/b.py" in msg
+    assert "src/nyxloom" in msg  # names the --source scope, not just the files
+
+
+def test_check_measurable_raises_on_base_equals_head(monkeypatch):
+    monkeypatch.setattr(cg, "_dirty_paths_under_source", lambda repo, source: [])
+    monkeypatch.setattr(cg, "_head_rev", lambda repo: "SAMESHA")
+    with pytest.raises(cg.NoMeasurementError) as exc:
+        cg._check_measurable(".", "SAMESHA", "src/nyxloom")
+    assert "IS HEAD" in str(exc.value)
+
+
+def test_check_measurable_passes_on_clean_tree_and_real_delta_NEGATIVE(monkeypatch):
+    """The negative proving the guard is scoped to the two real preconditions
+    -- a clean tree with base != HEAD must not raise at all."""
+    monkeypatch.setattr(cg, "_dirty_paths_under_source", lambda repo, source: [])
+    monkeypatch.setattr(cg, "_head_rev", lambda repo: "HEADSHA")
+    cg._check_measurable(".", "BASESHA", "src/nyxloom")  # must not raise
+
+
+# --------------------------------------------------------------------------- #
 # main — the CLI wiring (parse → evaluate → print → exit code)
 # --------------------------------------------------------------------------- #
 
@@ -297,6 +370,10 @@ def _write_cov(tmp_path, files):
 
 def test_main_pass_returns_0_and_prints_ok(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    # This test drives ONLY the pass/fail wiring below _check_measurable, not
+    # the guard itself (that has its own dedicated tests) -- stub it out so
+    # the assertion is not coupled to real git state at the default --repo ".".
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
     monkeypatch.setattr(cg, "_git_added_lines", lambda repo, base, source: {"src/nyxloom/x.py": {5}})
     cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {"executed_lines": [5], "missing_lines": []}})
     rc = cg.main(["--coverage-json", cov])
@@ -306,6 +383,7 @@ def test_main_pass_returns_0_and_prints_ok(monkeypatch, tmp_path, capsys):
 
 def test_main_fail_returns_1_and_lists_uncovered(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
     monkeypatch.setattr(cg, "_git_added_lines", lambda repo, base, source: {"src/nyxloom/x.py": {5, 6}})
     cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {"executed_lines": [5], "missing_lines": [6]}})
     rc = cg.main(["--coverage-json", cov, "--fail-under", "100"])
@@ -316,6 +394,7 @@ def test_main_fail_returns_1_and_lists_uncovered(monkeypatch, tmp_path, capsys):
 
 def test_main_unmeasured_file_tag_is_shown(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
     monkeypatch.setattr(cg, "_git_added_lines", lambda repo, base, source: {"src/nyxloom/orphan.py": {3}})
     cov = _write_cov(tmp_path, {})  # file absent from coverage
     rc = cg.main(["--coverage-json", cov])
@@ -398,6 +477,7 @@ def test_pragma_on_an_UNCHANGED_line_is_not_penalised_NEGATIVE():
 
 def test_main_excluded_changed_line_returns_1_and_explains(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
     monkeypatch.setattr(cg, "_git_added_lines",
                         lambda repo, base, source: {"src/nyxloom/x.py": {5}})
     cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {
@@ -411,6 +491,7 @@ def test_main_excluded_changed_line_returns_1_and_explains(monkeypatch, tmp_path
 
 def test_main_allow_excluded_passes_and_says_so(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
     monkeypatch.setattr(cg, "_git_added_lines",
                         lambda repo, base, source: {"src/nyxloom/x.py": {5}})
     cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {
@@ -425,6 +506,7 @@ def test_main_reports_BOTH_failures_when_a_diff_has_each(monkeypatch, tmp_path, 
     """A diff can be laundered AND undertested at once; the operator needs both
     lists, not whichever branch happened to run first."""
     monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
     monkeypatch.setattr(cg, "_git_added_lines",
                         lambda repo, base, source: {"src/nyxloom/x.py": {5, 6}})
     cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {
@@ -434,3 +516,166 @@ def test_main_reports_BOTH_failures_when_a_diff_has_each(monkeypatch, tmp_path, 
     assert rc == 1
     assert "EXCLUDED" in out and "[5]" in out          # the laundering
     assert "Uncovered changed lines" in out and "[6]" in out  # the plain gap
+
+
+def test_all_four_exit_codes_are_mutually_distinct(monkeypatch, tmp_path):
+    """ORACLE: 0 (pass), 1 (fail), 2 (tool error), 3 (no measurement) are four
+    DIFFERENT integers. A caller must be able to tell "ship it" (0) apart
+    from "fix your code" (1) apart from "the tool broke, maybe retry" (2)
+    apart from "commit first, this isn't a verdict at all" (3) -- collapsing
+    any two of these into the same code is the exact ambiguity this whole
+    package exists to remove."""
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_check_measurable", lambda repo, base_rev, source: None)
+    monkeypatch.setattr(cg, "_git_added_lines", lambda repo, base, source: {"src/nyxloom/x.py": {1}})
+
+    cov_pass = _write_cov(tmp_path, {"src/nyxloom/x.py": {"executed_lines": [1], "missing_lines": []}})
+    rc_pass = cg.main(["--coverage-json", cov_pass])
+
+    cov_fail = _write_cov(tmp_path, {"src/nyxloom/x.py": {"executed_lines": [], "missing_lines": [1]}})
+    rc_fail = cg.main(["--coverage-json", cov_fail])
+
+    def boom_tool(repo, base):
+        raise cg.CoverageGateError("git exploded")
+    monkeypatch.setattr(cg, "_resolve_base", boom_tool)
+    rc_error = cg.main(["--coverage-json", cov_pass])
+
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+
+    def boom_no_measurement(repo, base_rev, source):
+        raise cg.NoMeasurementError("dirty tree")
+    monkeypatch.setattr(cg, "_check_measurable", boom_no_measurement)
+    rc_no_measurement = cg.main(["--coverage-json", cov_pass])
+
+    assert (rc_pass, rc_fail, rc_error, rc_no_measurement) == (0, 1, 2, 3)
+    assert len({rc_pass, rc_fail, rc_error, rc_no_measurement}) == 4
+
+
+# --------------------------------------------------------------------------- #
+# NO MEASUREMENT — end-to-end oracles against a REAL git repo (2026-07-27)
+# --------------------------------------------------------------------------- #
+
+def _run_git(args, cwd):
+    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    assert r.returncode == 0, f"git {args} failed: {r.stderr}"
+    return r.stdout
+
+
+def _init_feature_repo(tmp_path):
+    """A real git repo, branch `main` at one commit, branch `feature`
+    (checked out == HEAD) also at that SAME commit -- the exact shape
+    `--base main` is designed for, and also the degenerate base==HEAD case
+    before `_advance_feature` is called. `src/nyxloom/x.py` + `README.md`
+    both exist from the first commit so later tests can dirty either one."""
+    repo = tmp_path / "repo"
+    (repo / "src" / "nyxloom").mkdir(parents=True)
+    (repo / "src" / "nyxloom" / "x.py").write_text("a = 1\n")
+    (repo / "README.md").write_text("hello\n")
+    _run_git(["init", "-q", "-b", "main"], repo)
+    _run_git(["config", "user.email", "t@t.com"], repo)
+    _run_git(["config", "user.name", "T"], repo)
+    _run_git(["add", "-A"], repo)
+    _run_git(["commit", "-q", "-m", "initial"], repo)
+    _run_git(["checkout", "-q", "-b", "feature"], repo)
+    return repo
+
+
+def _advance_feature(repo, rel_path, content, message="feature work"):
+    """Commit one more change on `feature` so base(`main`) != HEAD. Used to
+    isolate the dirty-tree oracles from the base==HEAD guard: without this,
+    a fresh `_init_feature_repo` (feature == main == HEAD) would ALSO trip
+    the base==HEAD check, and a test naming "the dirty tree" as its subject
+    would actually be exercising two conditions at once."""
+    p = repo / rel_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    _run_git(["add", "-A"], repo)
+    _run_git(["commit", "-q", "-m", message], repo)
+
+
+def test_oracle_dirty_source_tree_exits_3_and_names_the_path(tmp_path, capsys):
+    repo = _init_feature_repo(tmp_path)
+    _advance_feature(repo, "README.md", "hello v2\n")  # real delta, base != HEAD
+    (repo / "src" / "nyxloom" / "x.py").write_text("a = 2\n")  # unstaged, uncommitted
+    cov = _write_cov(tmp_path, {})
+    rc = cg.main(["--repo", str(repo), "--coverage-json", cov])
+    err = capsys.readouterr().err
+    assert rc == 3
+    assert "diff-coverage NO MEASUREMENT" in err
+    assert "src/nyxloom/x.py" in err
+
+
+def test_oracle_NEGATIVE_dirty_tree_outside_source_does_not_trip(tmp_path, capsys):
+    repo = _init_feature_repo(tmp_path)
+    _advance_feature(repo, "src/nyxloom/x.py", "a = 2\n")  # real delta, base != HEAD
+    (repo / "README.md").write_text("dirty docs, not under --source\n")  # dirty, out of scope
+    cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {"executed_lines": [1], "missing_lines": []}})
+    rc = cg.main(["--repo", str(repo), "--coverage-json", cov, "--source", "src/nyxloom"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "diff-coverage OK" in out
+
+
+def test_oracle_staged_but_uncommitted_also_trips_it(tmp_path, capsys):
+    repo = _init_feature_repo(tmp_path)
+    _advance_feature(repo, "README.md", "hello v2\n")
+    (repo / "src" / "nyxloom" / "x.py").write_text("a = 3\n")
+    _run_git(["add", "src/nyxloom/x.py"], repo)  # staged, NOT committed
+    cov = _write_cov(tmp_path, {})
+    rc = cg.main(["--repo", str(repo), "--coverage-json", cov])
+    err = capsys.readouterr().err
+    assert rc == 3
+    assert "src/nyxloom/x.py" in err
+
+
+def test_oracle_base_equals_head_exits_3(tmp_path, capsys):
+    repo = _init_feature_repo(tmp_path)  # no further commits: feature == main == HEAD
+    cov = _write_cov(tmp_path, {})
+    rc = cg.main(["--repo", str(repo), "--coverage-json", cov])
+    err = capsys.readouterr().err
+    assert rc == 3
+    assert "IS HEAD" in err
+
+
+def test_oracle_legitimate_0_of_0_docs_only_change_still_passes_THE_FALSE_FAIL_GUARD(
+    tmp_path, capsys,
+):
+    """The most important negative in the package: a committed docs-only
+    change on a clean tree is a real, non-degenerate delta that happens to
+    touch zero source lines. It must still exit 0 with the ordinary OK
+    message -- this package must not turn every docs-only commit into a
+    false NO MEASUREMENT."""
+    repo = _init_feature_repo(tmp_path)
+    _advance_feature(repo, "README.md", "hello v2\n")  # committed, clean tree
+    cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {"executed_lines": [], "missing_lines": []}})
+    rc = cg.main(["--repo", str(repo), "--coverage-json", cov])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == "diff-coverage OK: 0/0 changed executable lines covered (100.0% ≥ 100.0% floor)\n"
+
+
+def test_oracle_normal_pass_and_fail_are_unchanged_SNAPSHOT(tmp_path, capsys):
+    """Normal pass/fail wiring, on a real committed clean tree, is exactly
+    what it was before this package -- pinned so the NO MEASUREMENT guard
+    can never regress it."""
+    repo = _init_feature_repo(tmp_path)
+    _advance_feature(repo, "src/nyxloom/x.py", "a = 2\n")
+
+    cov_pass = _write_cov(tmp_path, {"src/nyxloom/x.py": {
+        "executed_lines": [1], "missing_lines": [], "excluded_lines": []}})
+    rc_pass = cg.main(["--repo", str(repo), "--coverage-json", cov_pass])
+    out_pass = capsys.readouterr().out
+    assert rc_pass == 0
+    assert out_pass == "diff-coverage OK: 1/1 changed executable lines covered (100.0% ≥ 100.0% floor)\n"
+
+    cov_fail = _write_cov(tmp_path, {"src/nyxloom/x.py": {
+        "executed_lines": [], "missing_lines": [1], "excluded_lines": []}})
+    rc_fail = cg.main(["--repo", str(repo), "--coverage-json", cov_fail])
+    out_fail = capsys.readouterr().out
+    assert rc_fail == 1
+    assert out_fail == (
+        "diff-coverage FAIL: 0/1 changed executable lines covered "
+        "(0.0% < 100.0% floor). Uncovered changed lines:\n"
+        "  src/nyxloom/x.py: [1]\n"
+        "Add a test that exercises these lines.\n"
+    )
