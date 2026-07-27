@@ -88,6 +88,22 @@ def test_scaffold_gate_writes_a_dockerfile_with_adjust_markers(tmp_path):
     assert any(gate_scaffold.ADJUST_MARKER in tok for tok in gate.argv)
 
 
+def test_scaffolded_gate_uses_the_detached_transport_safe_form():
+    """The scaffolded argv must run the container DETACHED (docker run -d ->
+    docker wait -> docker logs), never an attached `docker run --rm`. An
+    attached run reads its verdict off the hijacked stream, which a truncating
+    transport corrupts (reference/LESSONS.md L18 defeat 4). Guards against a
+    future 'simplification' back to the vulnerable form."""
+    gate = gate_scaffold.render_gate_def()
+    outer = gate.argv[-1]
+    assert "docker run -d" in outer
+    assert "docker wait" in outer
+    assert "docker logs" in outer
+    assert 'exit "$code"' in outer
+    # the vulnerable attached form must be gone
+    assert "docker run --rm" not in outer
+
+
 # ---------------------------------------------------------------------------
 # oracle 4: no-overwrite / idempotent
 
