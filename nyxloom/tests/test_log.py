@@ -406,3 +406,99 @@ def test_log_file_rotates_by_size_and_backups_are_bounded(tmp_path, monkeypatch)
 
     # Restore default logging so later tests aren't left pointed at tmp_path.
     log.configure(level=log.INFO, console=False)
+
+
+# ---------------------------------------------------------------------------
+# Guard: never monkeypatch a level method ONTO a structlog lazy proxy.
+# ---------------------------------------------------------------------------
+
+def test_no_test_monkeypatches_a_level_method_onto_a_lazy_proxy():
+    """A static guard, deliberately not a runtime one.
+
+    `daemon.log` (and every other module's) is a structlog
+    `BoundLoggerLazyProxy`. It defines NO per-level methods -- `log.warning` is
+    synthesised by `__getattr__`, which re-binds against the LIVE structlog
+    config on every call. That is precisely the mechanism that lets
+    `log.configure()` reach modules which imported their logger at import time.
+
+    `monkeypatch.setattr(target, name, value)` captures the old value with
+    `getattr`. Against this object that captures a SYNTHETIC bound method, and
+    `undo()` restores it with `setattr` -- materialising it as a permanent
+    instance attribute. The level method is then found by ordinary attribute
+    lookup, `__getattr__` never runs again, and every later call in that worker
+    uses a logger frozen to whatever config was live during the patching test
+    (in practice structlog's unconfigured default, printing to stdout). A
+    temporary patch thereby becomes permanent global pollution.
+
+    Evidence this is worth a guard: two such patches in
+    test_carver_session_executor.py silently broke
+    test_daemon.py::test_resume_attempt_emits_warning_attempt_retry, but only
+    under a full `-n 4` run -- the victim configured logging correctly, the
+    global config was verified correct at the moment of emission, and the
+    record still went to stdout. It cost a long instrumented hunt (2026-07-27).
+
+    STATIC, not runtime, on purpose: a runtime assertion could only observe
+    pollution created by a test that already ran, so it would be order- and
+    worker-dependent -- exactly the property that made the original bug so hard
+    to see. Reading the source is deterministic.
+
+    AST, not regex, also on purpose: the fix's own explanatory docstrings have
+    to spell the anti-pattern out, and a text scan cannot tell prose from code
+    (the first cut of this guard failed on the comment describing it). Matching
+    real Call nodes sees only executable patches.
+
+    The fix is always to patch the OWNING NAMESPACE instead:
+    `monkeypatch.setattr(daemon, "log", spy)` -- `log` is a real entry in the
+    module `__dict__`, so undo restores it cleanly.
+    """
+    import ast
+    from pathlib import Path
+
+    LEVELS = {"warning", "info", "error", "debug", "critical",
+              "exception", "trace", "warn", "msg"}
+
+    def _dotted(node):
+        """Render a Name/Attribute chain as 'a.b.c', else None."""
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return None
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+
+    offenders = []
+    for path in sorted(Path(__file__).parent.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            is_setattr = ((isinstance(fn, ast.Attribute) and fn.attr == "setattr")
+                          or (isinstance(fn, ast.Name) and fn.id == "setattr"))
+            if not is_setattr or not node.args:
+                continue
+            a0 = node.args[0]
+            # string form: setattr("pkg.mod.log.warning", ...)
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                bits = a0.value.split(".")
+                if len(bits) >= 2 and bits[-2] == "log" and bits[-1] in LEVELS:
+                    offenders.append(f"{path.name}:{node.lineno}: setattr({a0.value!r}, ...)")
+                continue
+            # object form: setattr(<...>.log, "warning", ...)
+            if len(node.args) >= 2:
+                a1 = node.args[1]
+                target = _dotted(a0)
+                if (target and target.split(".")[-1] == "log"
+                        and isinstance(a1, ast.Constant)
+                        and a1.value in LEVELS):
+                    offenders.append(
+                        f"{path.name}:{node.lineno}: setattr({target}, {a1.value!r}, ...)")
+
+    assert not offenders, (
+        "monkeypatching a level method onto a structlog lazy proxy permanently "
+        "pins that proxy for the whole worker (see this test's docstring). "
+        "Patch the owning module attribute instead -- "
+        "monkeypatch.setattr(<module>, 'log', spy):\n  " + "\n  ".join(offenders)
+    )
