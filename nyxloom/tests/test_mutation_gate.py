@@ -71,6 +71,116 @@ def test_bool_const_flip_false_to_true():
     assert "z = True" in mutants[0].mutated_source
 
 
+@pytest.mark.parametrize(
+    ("source", "description", "expected"),
+    [
+        ("def f():\n    return None\n", "None->[]", "return []"),
+        ("def f():\n    return []\n", "[]->None", "return None"),
+        ("def f():\n    return 0\n", "0->None", "return None"),
+        ("def f():\n    return \"\"\n", "''->None", "return None"),
+    ],
+)
+def test_falsy_swap_changes_direct_return_values(source, description, expected):
+    """Each required falsy return substitution changes the generated source."""
+    mutants = mg.generate_mutants(source, {2})
+    assert len(mutants) == 1
+    mutant = mutants[0]
+    assert mutant.operator == "falsy-swap"
+    assert mutant.description == description
+    assert expected in mutant.mutated_source
+
+
+@pytest.mark.parametrize("source", [
+    "def f():\n    return ()\n",
+    "def f():\n    return {}\n",
+])
+def test_falsy_swap_covers_other_empty_literals(source):
+    """Empty tuple and dict literals are also distinct falsy return values."""
+    mutants = mg.generate_mutants(source, {2})
+    assert len(mutants) == 1
+    assert mutants[0].operator == "falsy-swap"
+    assert mutants[0].description.endswith("->None")
+    assert "return None" in mutants[0].mutated_source
+
+
+def test_falsy_swap_is_restricted_to_return_statements():
+    """Falsy values in assignments do not create falsy-swap mutants."""
+    source = "value = None\nitems = []\ncount = 0\ntext = \"\"\n"
+    mutants = mg.generate_mutants(source, {1, 2, 3, 4})
+    assert [m for m in mutants if m.operator == "falsy-swap"] == []
+
+
+def test_falsy_swap_respects_target_lines():
+    """A direct falsy return outside target_lines remains untouched."""
+    source = "def f():\n    return None\n"
+    assert mg.generate_mutants(source, {1}) == []
+
+
+def test_falsy_swap_ignores_other_return_values():
+    """A truthy constant in a return is not an eligible falsy swap."""
+    source = "def f():\n    return 1\n"
+    assert mg.generate_mutants(source, {2}) == []
+
+
+@pytest.mark.parametrize("value", ["True", "False"])
+def test_boolean_returns_only_use_bool_const_flip(value):
+    """Boolean returns are not duplicated by falsy-swap."""
+    mutants = mg.generate_mutants(f"def f():\n    return {value}\n", {2})
+    assert len(mutants) == 1
+    assert mutants[0].operator == "bool-const-flip"
+    assert "falsy-swap" not in [mutant.operator for mutant in mutants]
+
+
+def test_falsy_swap_disambiguates_same_line_returns():
+    """Multiple direct falsy returns on one line receive distinct mutations."""
+    source = "def f(): return None; return []\n"
+    mutants = mg.generate_mutants(source, {1})
+    assert [mutant.description for mutant in mutants] == ["None->[]", "[]->None"]
+    assert mutants[0].mutated_source != mutants[1].mutated_source
+
+
+def test_falsy_swap_is_deterministic():
+    """Repeated generation preserves both mutant contents and ordering."""
+    source = (
+        "def f(flag):\n"
+        "    if flag:\n"
+        "        return []\n"
+        "    return None\n"
+    )
+    first = mg.generate_mutants(source, {3, 4})
+    second = mg.generate_mutants(source, {3, 4})
+    assert first == second
+
+
+def test_falsy_swap_motivating_survivor(tmp_path):
+    """A normal-path-only test cannot distinguish an error [] from [] normally."""
+    source = (
+        "def load(should_fail):\n"
+        "    if should_fail:\n"
+        "        return []\n"
+        "    return []\n"
+    )
+    source_file = tmp_path / "loader.py"
+    source_file.write_text(source)
+    (tmp_path / "test_loader.py").write_text(
+        "from loader import load\n"
+        "\n"
+        "def test_normal_empty_result():\n"
+        "    assert load(False) == []\n"
+    )
+
+    mutants = mg.generate_mutants(source, {3})
+    assert len(mutants) == 1
+    mutant = mutants[0]
+    assert "return None" in mutant.mutated_source
+    assert mg._run_is_killed(
+        str(tmp_path),
+        "loader.py",
+        mutant,
+        [sys.executable, "-m", "pytest", "-q", "test_loader.py"],
+    ) is False
+
+
 def test_line_scoping():
     """Only lines in target_lines are mutated; others are left alone."""
     source = "if x < 5:\n    pass\nif a and b:\n    pass\n"
