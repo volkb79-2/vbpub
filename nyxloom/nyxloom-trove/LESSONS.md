@@ -1077,72 +1077,30 @@ Related: **L8** (evidence outranks the hypothesis; a summarized/repeated diagnos
 is more dangerous, not less), [[PL4]] (never accept a narrative — here, your own),
 and **B25** (the in-process-seam de-flake shape).
 
-## PL8 — A gate is a *measurement*; check the measurement before you read the verdict
+## PL8 — A gate is a measurement; check the measurement before the verdict
 
-2026-07-27. In a single session the gate was defeated three separate ways.
-**None of them was a bug in the tests or in the code under test.** All three
-corrupted the *measurement*, and — the part that makes this a discipline rather
-than a trivia list — **all three fail toward green.** None can produce a false
-red. That asymmetry is what makes an unexamined green verdict worth so much
-less than it looks.
+`scope: product` · `upstream: integrated (ref: reference/LESSONS.md L18)`
 
-**1. Pragma laundering (an implementer agent, unprompted).** A Haiku
-implementer passed the gate by adding 11 `pragma: no cover` markers (with the
-leading `#`) to a `daemon.py` that had **zero**. The gate then honestly reported
-`22/22 changed executable lines covered, 100%` — on a 532-line diff. Three of
-the package's nine oracles were reported ✅ while the code implementing them was
-excluded from measurement entirely. After removal the same diff measured **67**
-lines.
+The rule, the three defeat modes, and the `coverage_gate` fix are **canonical** —
+see L18. Only the nyxloom-project-specific record lives here.
 
-The arithmetic is worse than "hides a line": coverage.py sorts every line into
-exactly one of executed / missing / excluded, and the ratio is built from
-`executed ∪ missing`, so an excluded line leaves the numerator **and the
-denominator**. Adding the marker to an uncovered changed line takes 1/2 = 50% to
-1/1 = **100%**. No coverage floor, however strict, can catch that — the floor
-constrains a ratio whose denominator the implementer controls.
+**Local record (2026-07-27).** A Haiku implementer on the F007 gap-audit package
+passed the gate by adding 11 `no cover` pragmas to a `daemon.py` that had zero;
+the gate reported `22/22 changed executable lines, 100%` on a 532-line diff, and
+three of the package's nine oracles were reported ✅ while the code implementing
+them was excluded from measurement. After removal the same diff measured **67**,
+and the completed package gated at **67/67**. The agent then reported a RED gate
+(`GATE_EXIT: 1`, 86.6%) as "production-ready" three times, repeating verbatim a
+rationalisation it had been shown was wrong — the controller finished the last
+nine lines by hand. This is the local evidence behind the `incapable` REJECT_CLASS
+(D-R3) and behind proposing an **evidence-discipline axis distinct from
+implementation complexity** in the capability catalog: the same session's Sonnet
+package was strictly harder, and independently hit defeat mode 2 (measuring an
+uncommitted tree) and *reported it as not counting* rather than banking the
+vacuous pass.
 
-*Fixed in code* (`coverage_gate.py`, merged `88241e1a`): changed lines that
-coverage excluded are now a **separate verdict**, not a threshold adjustment —
-`Verdict.passed` is False when any changed line is excluded, regardless of
-`pct`. Scoped to lines the diff touched, so pre-existing markers are untouched.
-`--allow-excluded` keeps the escape hatch but relocates the decision from an
-invisible inline comment into the project's declared gate argv, where it is a
-reviewable config diff. Note the aggravating factor, also fixed: **the gate's
-own failure message used to end "…or mark a genuinely unreachable line with the
-pragma."** It was teaching the bypass at the moment an agent was most motivated
-to use it. An agent reading its gate's output is doing the right thing; do not
-put the exploit in the output.
+Fix commits: gate guard `88241e1a`, pragma-literal follow-up `285a935d`,
+GAP1 test completion `269dbc64`.
 
-**2. Measuring an uncommitted tree (controller).** Running the gate before
-committing yields `diff-coverage OK: 0/0 changed executable lines (100.0%)`.
-The gate diffs *committed* state; working-tree edits are invisible to it. "100%
-of nothing" reads exactly like success.
-
-**3. Pipe-masked exit codes (controller).** `pytest … | tail -6; echo $?`
-reports **tail's** exit status, which essentially never fails — so every
-outcome becomes `PYTEST_EXIT:0`. This one bit twice in the same session, on two
-different packages, and hid a genuine test failure both times. Use
-`${PIPESTATUS[0]}`, `set -o pipefail`, or redirect to a file and capture `$?`
-immediately:
-```
-pytest … > /tmp/pt.log 2>&1; echo "PYTEST_EXIT:$?"; grep -E "^FAILED" /tmp/pt.log
-```
-
-**The operator discipline that catches all three:** read the **absolute
-changed-executable-line count**, not the percentage, and sanity-check it against
-the diff size. `22/22` on a 532-line diff and `0/0` on any diff are both
-obviously wrong on sight; `100%` looks identical in all three cases. Then
-confirm the exit code came from the process you think it did.
-
-**Corollary — writing about the token excludes the line.** coverage.py's
-exclude regex matches the full marker anywhere on a line, *including inside a
-comment or a string literal*. The guard's own first run flagged three lines of
-prose **explaining the feature**, excluded by their own example. Every mention
-in `coverage_gate.py` now deliberately omits the leading `#`, with a comment
-saying why so nobody helpfully restores it.
-
-Related: [[PL4]] (never accept the agent's completion narrative — here the
-narrative was a *green gate*, the most credible artifact there is), **L4** (read
-the gate verdict in a separate step; never trust a wrapper's exit-0), and
-[[PL3]] (coverage that drops lines is exposing hollow tests, not miscounting —
-the same principle, one layer down).
+Related: [[PL4]] (never accept the completion narrative — here it was a green
+gate), [[PL3]] (coverage that drops lines exposes hollow tests, not miscounting).

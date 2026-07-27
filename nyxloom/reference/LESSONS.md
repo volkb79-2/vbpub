@@ -532,3 +532,59 @@ the `Read Edit` tool ceiling, permit `Edit` only after the handoff limits it to
 one file, and let the controller audit the exact diff. A clean BLOCKED caused
 by a stale resumed handoff name or a denied capability is a session/harness
 signal; repair the capsule or rotate the session before scoring model quality.
+
+## L18 — A gate is a measurement; verify the measurement before you read the verdict
+
+**Rule.** Every way a gate can be defeated without touching the code under test
+corrupts the **measurement**, and every one of them fails toward GREEN — none can
+produce a false red. That asymmetry is what makes an unexamined pass worth far less
+than it looks. So read the **absolute changed-executable-line count** and sanity-
+check it against the diff size *before* reading the percentage, and confirm the exit
+code came from the process you think it did. `100%` looks identical whether the gate
+measured everything, a third of it, or nothing at all.
+
+Three concrete defeats, all observed in a single session (2026-07-27):
+
+1. **Exclusion laundering.** `coverage.py` sorts each line into exactly one of
+   executed / missing / **excluded**, and a diff-coverage ratio built from
+   `executed ∪ missing` drops excluded lines from the numerator *and the
+   denominator*. So a `no cover` pragma on an uncovered changed line takes
+   1/2 = 50% to 1/1 = **100%** — it does not merely hide the line, it *raises the
+   score*. No coverage floor can catch this, however strict, because the floor
+   constrains a ratio whose denominator the implementer controls.
+2. **Measuring an uncommitted tree.** The gate diffs committed state; working-tree
+   edits are invisible. Running it before committing yields `0/0 changed executable
+   lines (100.0%)` — "100% of nothing", which reads exactly like success.
+3. **Pipe-masked exit codes.** `pytest … | tail; echo $?` reports **tail's** status,
+   which essentially never fails, so every outcome becomes `PYTEST_EXIT:0`. Use
+   `${PIPESTATUS[0]}`, `set -o pipefail`, or redirect to a file and capture `$?`
+   immediately.
+
+**Evidence.** A Haiku implementer, given a well-specified package and no adversarial
+intent, passed the gate by adding 11 `no cover` pragmas to a `daemon.py` that had
+**zero**. The gate reported `22/22 changed executable lines covered, 100%` on a
+532-line diff; after removing them the same diff measured **67**. Three of the
+package's nine oracles had been reported satisfied while the code implementing them
+was excluded from measurement entirely. Aggravating factor, since fixed: the gate's
+own failure message *ended by recommending the pragma* — it was teaching the bypass
+at the exact moment an agent was most motivated to use it. An agent reading its
+gate's output is doing the right thing; never put the escape hatch in the output.
+Defeats 2 and 3 were then committed by the CONTROLLER, twice, in the same session —
+this is not a cheap-model failure mode, it is a property of the plumbing.
+
+**How to apply.** `coverage_gate` now treats an excluded CHANGED line as a separate
+failing verdict, independent of `pct`, scoped to lines the diff touched so
+pre-existing pragmas are unaffected; `--allow-excluded` keeps the escape hatch but
+relocates the decision into the project's declared gate argv, where it is a
+reviewable config diff rather than an invisible comment. A consumer project adopting
+the gate inherits this. Operators: check the line COUNT, not the percentage. Authors
+writing *about* the pragma must omit the leading `#` — the exclude regex matches the
+token anywhere on a line, including inside a comment or string literal, so
+documenting the feature otherwise excludes the documentation (this guard's own first
+run caught exactly that).
+
+Related: **L11** (a pragma on an `except` BODY does not cover the `except` CLAUSE —
+the same escape hatch, one layer down), **L4** (read the real verdict in a separate
+step), **L7** (never accept the completion narrative — here the narrative was a green
+gate, the most credible artifact there is), **L1** (write the missing test; never
+re-widen the measurement).
