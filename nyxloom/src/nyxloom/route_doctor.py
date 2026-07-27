@@ -110,11 +110,23 @@ def check_schema(routes: config.Routes) -> list[DoctorFinding]:
                 project=None,
                 refs=[route_id],
             ))
-        if not route.model:
+        # Type AND emptiness. `not route.model` alone lets a truthy NON-STRING
+        # through: TOML `model = 3.5` / `model = true` parse to float/bool,
+        # `RouteDef` annotates `model: str` but a dataclass does not enforce it,
+        # and `Routes.load` passes the parsed value straight to the constructor.
+        # Such a route reads as clean here, then `build_dispatch` renders it
+        # straight into argv (adapters.py:761/768/776) and `subprocess.run`
+        # raises `TypeError: expected str, bytes or os.PathLike object, not
+        # float` at DISPATCH time -- a false OK on a genuinely broken config,
+        # which is the one failure class this verb exists to prevent. (`cli` is
+        # already type-safe via set membership; `probe` via isinstance +
+        # _is_valid_probe_argv. `model` was the lone gap.) Verified live.
+        if not isinstance(route.model, str) or not route.model:
             findings.append(DoctorFinding(
                 kind="route-missing-model",
                 severity="critical",
-                message=f"route {route_id!r}: model is empty",
+                message=(f"route {route_id!r}: model must be a non-empty string, "
+                         f"got {route.model!r}"),
                 project=None,
                 refs=[route_id],
             ))

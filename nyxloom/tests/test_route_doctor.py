@@ -67,6 +67,33 @@ class TestCheckSchema:
         assert findings[0].severity == "critical"
         assert findings[0].refs == ["r1"]
 
+    @pytest.mark.parametrize("bad_model", [3.5, True, 42, ["sonnet"]])
+    def test_non_string_model_is_critical(self, bad_model):
+        """A truthy NON-STRING model must still be rejected.
+
+        TOML `model = 3.5` / `model = true` parse to float/bool and survive
+        `Routes.load` (RouteDef annotates `model: str` but a dataclass does not
+        enforce it), so a falsy-only guard reports the route CLEAN. It then
+        reaches `build_dispatch`, which renders it straight into argv, and
+        `subprocess.run` raises TypeError at dispatch. A false OK on a broken
+        config is the one failure class this verb exists to prevent.
+        """
+        routes = _routes(routes={"r1": RouteDef(route_id="r1", cli="fake", model=bad_model)})
+        findings = route_doctor.check_schema(routes)
+        assert len(findings) == 1
+        assert findings[0].kind == "route-missing-model"
+        assert findings[0].severity == "critical"
+        assert repr(bad_model) in findings[0].message
+
+    def test_non_string_model_would_really_break_subprocess(self):
+        """Proves the finding above guards a REAL crash, not a style rule:
+        a non-str argv element is rejected by subprocess itself."""
+        import subprocess
+
+        bad = RouteDef(route_id="r1", cli="fake", model=3.5).model
+        with pytest.raises(TypeError):
+            subprocess.run(["echo", "--model", bad], capture_output=True)
+
     def test_probe_named_builtin_is_valid(self):
         routes = _routes(routes={
             "r1": RouteDef(route_id="r1", cli="fake", model="m1", probe="one-token-ping"),
