@@ -17,6 +17,7 @@ from nyxloom.types import (
     TaskStateFile, Attempt, Route, Usage, Basis, AttemptState,
     Receipt, ReceiptResult, TaskState, Actor, ActorKind, Event,
     EventType, Frontmatter, Source, Scope, Oracle, Role,
+    Blocker, BlockerType,
 )
 from nyxloom.config import ProjectConfig
 from conftest import SAMPLE_HANDOFF
@@ -579,6 +580,70 @@ def test_task_page_handoff_body_no_markdown(seed_data, sample_project):
         assert "Sample bounded package" in pre_content
         # Make sure it's in the pre block itself
         assert "<pre>" in handoff_section.split("Sample bounded package")[0]
+
+
+# ---------------------------------------------------------------------------
+# B26: per-handoff processing trace (task page section)
+
+def test_task_page_trace_shows_no_events_placeholder_for_event_free_task(seed_data, sample_project):
+    """demo-P02-done is seeded via storage.save_state only (no events.jsonl
+    entries) -- the trace section must render cleanly, not crash, and show
+    the empty-trace placeholder."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "task" / "demo" / "demo-P02-done.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Processing Trace" in content
+    assert "No trace events recorded" in content
+
+
+def test_task_page_trace_renders_leg_row_for_recorded_event(seed_data, sample_project):
+    """A MERGE_RECORDED event for this task must surface as a
+    data-kind="merge" trace row carrying the merge commit."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+    storage.append_event(
+        "demo", actor=Actor(ActorKind.TICK, "nyxloomd"), type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "f" * 40, "source_kind": "review"},
+        task_id="demo-P01-sample",
+    )
+
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "task" / "demo" / "demo-P01-sample.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'data-kind="merge"' in content
+    assert "f" * 40 in content
+
+
+def test_task_page_trace_escapes_hostile_summary_text(seed_data, sample_project):
+    """A TASK_BLOCKED event whose blocker.detail carries a <script> tag
+    (untrusted, potentially agent-authored text) must reach the page
+    escaped, never as live markup -- same discipline as _render_findings."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+    blocker = Blocker(type=BlockerType.CONTRACT, unblock_condition="triage BLOCKED reason",
+                      detail="<script>alert('trace-xss')</script>")
+    storage.append_event(
+        "demo", actor=Actor(ActorKind.TICK, "nyxloomd"), type=EventType.TASK_BLOCKED,
+        payload={"from": "ACTIVE", "blocker": blocker.to_dict()},
+        task_id="demo-P01-sample",
+    )
+
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "task" / "demo" / "demo-P01-sample.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Processing Trace" in content
+    assert 'data-kind="transition"' in content
+    assert "<script>alert" not in content
+    assert "&lt;script&gt;alert" in content
 
 
 def test_dag_html_state_class(seed_data, sample_project):

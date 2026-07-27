@@ -91,6 +91,12 @@ INTERFACE CONTRACT (frozen):
                     gate results, id="log-excerpt" <pre> with the REDACTED
                     last 64KB of the newest attempt log, decisions
                     referenced, events tail (last 50 for this task).
+                    B26 2026-07-27: a "Processing Trace" table -- one row
+                    per handoff_trace.TraceLeg (created/attempt/review/gate/
+                    merge/transition/scope-amendment, tr.trace-leg[data-kind]),
+                    the task's own leg-by-leg implement/review/gate/merge
+                    history reconstructed PURELY from events.jsonl (no new
+                    writes — see handoff_trace.py).
     config.html     P15 2026-07-15 (spec amendment, user directive): per-
                     project policy form (current values for the 9 editable
                     Policy keys — 7 int, P16 2026-07-15 adds 2 more int
@@ -176,9 +182,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import capability_map, decision_chat, decisions, intake_chat, paths, storage, config, frontmatter
+from . import capability_map, decision_chat, decisions, handoff_trace, intake_chat, paths, storage, config, frontmatter
 from .log import get_logger
-from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter, BlockerType
+from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter, BlockerType, Event
 
 log = get_logger("render")
 
@@ -606,8 +612,12 @@ def render_all(registry: dict[str, Path]) -> Path:
     for project in registry.keys():
         states = all_states.get(project, {})
         (www / "task" / project).mkdir(parents=True, exist_ok=True)
+        # B26: fetch this project's events ONCE per project (not once per
+        # task) -- handoff_trace.build_trace itself filters to one task_id,
+        # so re-reading the whole log per task would be O(tasks * events).
+        project_events = list(storage.iter_events(project))
         for task_id, tsf in states.items():
-            _render_task_page(www, project, tsf, registry[project])
+            _render_task_page(www, project, tsf, registry[project], project_events)
 
     # Render live.html
     _render_live(www)
@@ -1896,7 +1906,53 @@ def _render_intake(www: Path, registry: dict[str, Path]) -> None:
     (www / "intake.html").write_text(html_content, encoding="utf-8")
 
 
-def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -> None:
+def _render_trace_leg_row(leg: handoff_trace.TraceLeg) -> str:
+    """One <tr> for the B26 processing-trace table. Every dynamic string is
+    html.escape'd -- `summary` and `detail` values may carry untrusted,
+    agent-authored text (Receipt.blocked_reason, a gate's output_tail, a
+    scope-amendment reason, ...), same escaping discipline as
+    _render_findings above."""
+    detail_str = ", ".join(f"{k}={v}" for k, v in leg.detail.items())
+    return f"""
+      <tr class="trace-leg" data-kind="{html.escape(leg.kind)}">
+        <td>{html.escape(str(leg.sequence))}</td>
+        <td>{html.escape(leg.kind)}</td>
+        <td>{html.escape(leg.stage)}</td>
+        <td>{html.escape(leg.outcome or "unknown")}</td>
+        <td>{html.escape(leg.started or "—")}</td>
+        <td>{html.escape(leg.ended or "—")}</td>
+        <td>{html.escape(leg.actor)}</td>
+        <td>{html.escape(leg.summary or "—")}</td>
+        <td>{html.escape(detail_str) if detail_str else "—"}</td>
+      </tr>
+    """
+
+
+def _render_processing_trace_html(tsf: TaskStateFile,
+                                    project_events: list[Event]) -> str:
+    """B26: leg-by-leg processing trace for this task, derived entirely
+    from already-recorded events (handoff_trace.build_trace is pure; this
+    function is the render-side I/O boundary/consumer)."""
+    trace = handoff_trace.build_trace(tsf.task_id, project_events)
+    rows = "".join(_render_trace_leg_row(leg) for leg in trace.legs)
+    return f"""
+    <h2>Processing Trace</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Seq</th><th>Kind</th><th>Stage</th><th>Outcome</th>
+          <th>Started</th><th>Ended</th><th>Actor</th><th>Summary</th><th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows if rows else '<tr><td colspan="9">No trace events recorded</td></tr>'}
+      </tbody>
+    </table>
+    """
+
+
+def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path,
+                       project_events: list[Event]) -> None:
     """Render a task/<project>/<task_id>.html page."""
     log.debug("page render", page="task", project=project, task_id=tsf.task_id)
     task_dir = www / "task" / project
@@ -2007,6 +2063,7 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
         {"".join(attempts_rows) if attempts_rows else '<tr><td colspan="9">No attempts</td></tr>'}
       </tbody>
     </table>
+    {_render_processing_trace_html(tsf, project_events)}
     <h2>Log</h2>
     <pre id="log-excerpt">{html.escape(log_excerpt)}</pre>
     """
