@@ -336,3 +336,101 @@ def test_arg_parser_defaults():
     args = cg._build_arg_parser().parse_args(["--coverage-json", "c.json"])
     assert (args.base, args.source, args.fail_under, args.repo) == (
         "main", "src/nyxloom", 100.0, ".")
+    # GA5: strict by default -- a pragma on a changed line must be opted into.
+    assert args.allow_excluded is False
+
+
+# --------------------------------------------------------------------------- #
+# GA5 — `# pragma: no cover` on CHANGED lines cannot launder the gate
+# --------------------------------------------------------------------------- #
+
+def test_excluded_changed_lines_are_invisible_to_the_percentage_THE_HOLE():
+    """The defect this guard closes, stated as an executable fact.
+
+    coverage.py sorts every line into exactly one of executed / missing /
+    excluded. The ratio is built from executed ∪ missing, so an EXCLUDED line
+    leaves the numerator AND the denominator. Adding `# pragma: no cover` to an
+    uncovered changed line therefore does not merely hide it -- it raises the
+    reported percentage. This test pins that arithmetic so the guard below can
+    never be quietly regressed into a no-op."""
+    added = {"src/nyxloom/x.py": {1, 2}}
+    # Line 2 uncovered -> 50%.
+    honest = cg.evaluate(added, {"src/nyxloom/x.py": {
+        "executed_lines": [1], "missing_lines": [2], "excluded_lines": []}})
+    assert (honest.covered, honest.changed_executable, honest.pct) == (1, 2, 50.0)
+
+    # Same code, line 2 pragma'd -> the denominator shrinks and it reads 100%.
+    laundered = cg.evaluate(added, {"src/nyxloom/x.py": {
+        "executed_lines": [1], "missing_lines": [], "excluded_lines": [2]}},
+        allow_excluded=True)
+    assert (laundered.covered, laundered.changed_executable, laundered.pct) == (1, 1, 100.0)
+
+
+def test_excluded_changed_line_fails_the_gate_by_default():
+    """The guard: the same laundered input above must NOT pass. Note the
+    percentage is a perfect 100.0 -- the verdict is False anyway, which is the
+    whole point. No coverage floor could have produced this."""
+    v = cg.evaluate({"src/nyxloom/x.py": {1, 2}}, {"src/nyxloom/x.py": {
+        "executed_lines": [1], "missing_lines": [], "excluded_lines": [2]}})
+    assert v.pct == 100.0
+    assert v.excluded == {"src/nyxloom/x.py": {2}}
+    assert v.excluded_count == 1
+    assert v.passed is False
+
+
+def test_allow_excluded_restores_the_escape_hatch():
+    """The escape hatch survives, but only as a deliberate, reviewable choice in
+    the project's declared gate argv -- never as an invisible comment."""
+    v = cg.evaluate({"src/nyxloom/x.py": {1, 2}}, {"src/nyxloom/x.py": {
+        "executed_lines": [1], "missing_lines": [], "excluded_lines": [2]}},
+        allow_excluded=True)
+    assert v.excluded_count == 1 and v.passed is True
+
+
+def test_pragma_on_an_UNCHANGED_line_is_not_penalised_NEGATIVE():
+    """Deliberate negative: the guard is scoped to lines this diff touched.
+    Pre-existing pragmas elsewhere in a changed file are none of its business,
+    or every edit to a file containing one would fail forever."""
+    v = cg.evaluate({"src/nyxloom/x.py": {1}}, {"src/nyxloom/x.py": {
+        "executed_lines": [1], "missing_lines": [], "excluded_lines": [99]}})
+    assert v.excluded == {} and v.passed is True
+
+
+def test_main_excluded_changed_line_returns_1_and_explains(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_git_added_lines",
+                        lambda repo, base, source: {"src/nyxloom/x.py": {5}})
+    cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {
+        "executed_lines": [], "missing_lines": [], "excluded_lines": [5]}})
+    rc = cg.main(["--coverage-json", cov])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "EXCLUDED" in out and "src/nyxloom/x.py" in out and "[5]" in out
+    assert "--allow-excluded" in out  # tells the operator the deliberate route
+
+
+def test_main_allow_excluded_passes_and_says_so(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_git_added_lines",
+                        lambda repo, base, source: {"src/nyxloom/x.py": {5}})
+    cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {
+        "executed_lines": [], "missing_lines": [], "excluded_lines": [5]}})
+    rc = cg.main(["--coverage-json", cov, "--allow-excluded"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "diff-coverage OK" in out
+    assert "excluded by pragma" in out  # never silent, even when allowed
+
+
+def test_main_reports_BOTH_failures_when_a_diff_has_each(monkeypatch, tmp_path, capsys):
+    """A diff can be laundered AND undertested at once; the operator needs both
+    lists, not whichever branch happened to run first."""
+    monkeypatch.setattr(cg, "_resolve_base", lambda repo, base: "BASE")
+    monkeypatch.setattr(cg, "_git_added_lines",
+                        lambda repo, base, source: {"src/nyxloom/x.py": {5, 6}})
+    cov = _write_cov(tmp_path, {"src/nyxloom/x.py": {
+        "executed_lines": [], "missing_lines": [6], "excluded_lines": [5]}})
+    rc = cg.main(["--coverage-json", cov])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "EXCLUDED" in out and "[5]" in out          # the laundering
+    assert "Uncovered changed lines" in out and "[6]" in out  # the plain gap

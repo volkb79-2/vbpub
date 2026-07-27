@@ -117,9 +117,25 @@ class Verdict:
     pct: float                      # 100*covered/changed_executable (100 if none)
     fail_under: float
     files_missing_coverage: list[str] = field(default_factory=list)
+    # GA5 2026-07-27: changed lines coverage.py EXCLUDED from measurement --
+    # i.e. carrying `# pragma: no cover`. Deliberately a separate bucket from
+    # `uncovered`, because it is a different failure with a different remedy:
+    # an uncovered line is untested, an excluded line is *unmeasured by
+    # request*. Excluded lines appear in neither `executed_lines` nor
+    # `missing_lines`, so before this they fell out of BOTH the numerator and
+    # the denominator -- adding a pragma made the percentage go UP, and no
+    # coverage floor, however strict, could ever surface them.
+    excluded: dict[str, set[int]] = field(default_factory=dict)
+    allow_excluded: bool = False
+
+    @property
+    def excluded_count(self) -> int:
+        return sum(len(v) for v in self.excluded.values())
 
     @property
     def passed(self) -> bool:
+        if self.excluded and not self.allow_excluded:
+            return False
         return self.pct >= self.fail_under
 
 
@@ -128,6 +144,7 @@ def evaluate(
     coverage_files: dict[str, dict],
     source_prefix: str = "src/nyxloom",
     fail_under: float = 100.0,
+    allow_excluded: bool = False,
 ) -> Verdict:
     """Pure heart: intersect changed lines with coverage classification.
 
@@ -142,7 +159,18 @@ def evaluate(
     JSON schema, a template, a .toml fixture — can never appear in the coverage
     report. Treating its absence as "unmeasured, therefore uncovered" flagged
     edits to `schemas/nyxloom-config.schema.json` as a test-coverage failure, a
-    verdict no test could ever clear. Unmeasur*able* is not unmeasur*ed*."""
+    verdict no test could ever clear. Unmeasur*able* is not unmeasur*ed*.
+
+    GA5 2026-07-27: changed lines carrying `# pragma: no cover` are collected
+    separately and fail the gate unless `allow_excluded`. Unmeasur*able* is not
+    unmeasur*ed* (above) — but a pragma is neither: it is a request to stop
+    measuring, and honouring it on a CHANGED line lets a change opt out of the
+    very gate it must pass. This was found in the wild: an implementer agent
+    added 11 pragmas to a file that had zero, and the gate reported "22/22
+    changed executable lines, 100%" on a 532-line diff. Nothing about a
+    percentage floor can catch that, because the exclusions shrink the
+    denominator. Pre-existing pragmas on UNCHANGED lines are untouched — only
+    lines this diff actually added or modified are held to it."""
     prefix = os.path.normpath(source_prefix).replace(os.sep, "/")
     cov_by_norm: dict[str, dict] = {
         _rel_to_source(k, prefix): v for k, v in coverage_files.items()
@@ -150,6 +178,7 @@ def evaluate(
     total_changed_exec = 0
     total_covered = 0
     uncovered: dict[str, set[int]] = {}
+    excluded: dict[str, set[int]] = {}
     files_missing: list[str] = []
     for path, lines in added.items():
         npath = _rel_to_source(path, prefix)
@@ -172,6 +201,12 @@ def evaluate(
         missing = set(cov.get("missing_lines", []))
         executed = set(cov.get("executed_lines", []))
         executable = missing | executed
+        # GA5: an excluded line is in NEITHER executed nor missing, so it would
+        # otherwise vanish from the ratio entirely. Collect it before the
+        # intersection below silently drops it.
+        exc = lines & set(cov.get("excluded_lines", []))
+        if exc:
+            excluded[npath] = exc
         changed_exec = lines & executable
         unc = changed_exec & missing
         total_changed_exec += len(changed_exec)
@@ -186,6 +221,8 @@ def evaluate(
         pct=pct,
         fail_under=fail_under,
         files_missing_coverage=sorted(files_missing),
+        excluded=excluded,
+        allow_excluded=allow_excluded,
     )
 
 
@@ -249,6 +286,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="minimum %% of changed executable lines covered (default: 100)")
     p.add_argument("--repo", default=".",
                    help="git repo/worktree to run diff in (default: cwd)")
+    p.add_argument("--allow-excluded", action="store_true",
+                   help="permit `# pragma: no cover` on CHANGED lines (default: "
+                        "off -- a pragma on a changed line fails the gate). Opting "
+                        "in belongs in the project's declared gate argv, where it "
+                        "is a visible, reviewable config change.")
     return p
 
 
@@ -262,23 +304,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
         return 2
 
-    v = evaluate(added, coverage_files, args.source, args.fail_under)
+    v = evaluate(added, coverage_files, args.source, args.fail_under,
+                 allow_excluded=args.allow_excluded)
     if v.passed:
+        note = (f" [{v.excluded_count} changed line(s) excluded by pragma, "
+                f"allowed via --allow-excluded]" if v.excluded else "")
         print(
             f"diff-coverage OK: {v.covered}/{v.changed_executable} changed "
             f"executable lines covered ({v.pct:.1f}% ≥ {v.fail_under:.1f}% floor)"
+            f"{note}"
         )
         return 0
 
-    print(
-        f"diff-coverage FAIL: {v.covered}/{v.changed_executable} changed executable "
-        f"lines covered ({v.pct:.1f}% < {v.fail_under:.1f}% floor). Uncovered changed lines:"
-    )
-    for path in sorted(v.uncovered):
-        tag = " [file unmeasured]" if path in v.files_missing_coverage else ""
-        print(f"  {path}:{tag} {sorted(v.uncovered[path])}")
-    print("Add a test that exercises these lines, or mark a genuinely "
-          "unreachable line with `# pragma: no cover`.")
+    if v.excluded and not v.allow_excluded:
+        print(
+            f"diff-coverage FAIL: {v.excluded_count} changed line(s) are EXCLUDED "
+            f"from coverage by `# pragma: no cover`:"
+        )
+        for path in sorted(v.excluded):
+            print(f"  {path}: {sorted(v.excluded[path])}")
+        print("A pragma on a CHANGED line opts that line out of the very gate the "
+              "change has to pass -- and because excluded lines leave the "
+              "denominator, adding one makes the reported percentage go UP. Test "
+              "the line instead. If it is genuinely unreachable, opt in "
+              "deliberately by adding --allow-excluded to the project's declared "
+              "gate argv: a visible, reviewable config change, not a comment.")
+    if v.pct < v.fail_under:
+        print(
+            f"diff-coverage FAIL: {v.covered}/{v.changed_executable} changed executable "
+            f"lines covered ({v.pct:.1f}% < {v.fail_under:.1f}% floor). Uncovered changed lines:"
+        )
+        for path in sorted(v.uncovered):
+            tag = " [file unmeasured]" if path in v.files_missing_coverage else ""
+            print(f"  {path}:{tag} {sorted(v.uncovered[path])}")
+        print("Add a test that exercises these lines.")
     return 1
 
 
