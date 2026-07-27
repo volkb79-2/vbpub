@@ -1,0 +1,26 @@
+[Unit]
+Description=nyxloom gate runs — CPU-heavy batch; lowest priority in the factory
+Before=slices.target
+
+[Slice]
+# Lowest weight inside nyxloom.slice. A gate is `pytest -n auto` for minutes --
+# the dominant CPU consumer and the least latency-sensitive.
+#
+# MEASURED CAVEAT (2026-07-27): starving a gate does not merely slow it, it
+# manufactures FALSE REDS. Running the suite under besteffort.slice (CPUWeight
+# 20) produced two novel timing failures that vanished at weight 50. Those are
+# genuine test defects -- a correct test asserts on causality, not timing, and
+# a slow host only reveals the race it already had -- but until they are fixed,
+# weighting gates too low costs more in false failures than it saves in CPU.
+CPUWeight=25
+IOWeight=30
+
+# OPERATOR MUST SET: cap RAM, allow GENEROUS swap (a gate that swaps finishes
+# slowly; a gate that OOMs fails a merge), and cap IOPS at 60-80% of measured
+# device ceilings -- reuse /var/lib/gstammtisch/io-baseline.env rather than
+# re-measuring.
+# MemoryHigh=
+# MemoryMax=
+# MemorySwapMax=
+# IOReadIOPSMax=/dev/vda
+# IOWriteIOPSMax=/dev/vda

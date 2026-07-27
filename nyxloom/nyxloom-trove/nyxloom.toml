@@ -159,6 +159,22 @@ gap_audit_after_changed_lines = 0
 # the deep review.
 gap_audit_source_paths = ["nyxloom/src"]
 # Scope the gap-audit activity count to production source, excluding tests/docs.
+mutation_gate = true
+# 2026-07-27 (operator directive): ENABLED. Built by F017, parallelized by the
+# mutation fan-out package, and never once switched on for the project that
+# built it -- so the whole layer was dead weight. Affordable because it is
+# CHANGED-LINES-ONLY: _resolve_added_lines delegates to
+# coverage_gate._git_added_lines against the merge base, so cost scales with
+# diff size, not repo size. No codebase "healing" pass is needed before turning
+# it on; pre-existing untested code is simply never mutated.
+#
+# What it buys that coverage cannot: coverage proves a changed line EXECUTED,
+# never that its behaviour was ASSERTED. The `falsy-swap` operator added the
+# same day targets the exact bug class three separate defects took this session
+# -- an error path returning a value indistinguishable from a legitimate benign
+# result (None meaning both "never ran" and "git failed"; [] meaning both
+# "found nothing" and "could not look"). Those lines were at 100% coverage.
+# A surviving mutant is the only mechanical signal that catches them.
 max_attempts_per_task = 3
 merge_mode = "guarded-automatic"  # 2026-07-19: P48 shipped -- real git merge --no-ff
                                    # via a scratch worktree, escalates NEEDS_OPERATOR

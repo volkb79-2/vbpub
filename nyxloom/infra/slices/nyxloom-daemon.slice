@@ -1,0 +1,20 @@
+[Unit]
+Description=nyxloom daemon — the dispatcher; must survive misbehaving children
+Before=slices.target
+
+[Slice]
+# Highest weight INSIDE nyxloom.slice: the daemon is small and latency-
+# sensitive, and a dispatcher that lags stalls the whole factory.
+CPUWeight=150
+IOWeight=100
+
+# MemoryMin is the actual guarantee -- a PROTECTED RESERVATION that reclaim
+# will not take, even when sibling agent/gate slices are thrashing. CPU weights
+# do nothing for memory pressure, so this is the only mechanism that delivers
+# "the daemon keeps running when every agent misbehaves".
+#
+# OPERATOR MUST MEASURE, DO NOT GUESS (docs/plan-resource-governance.md D-G1):
+# run the daemon idle, then under a real dispatch wave, and read
+# memory.current + memory.stat anon at both points. Too low is useless; too
+# high starves everything else.
+# MemoryMin=

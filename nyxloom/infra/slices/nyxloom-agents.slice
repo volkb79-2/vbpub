@@ -1,0 +1,19 @@
+[Unit]
+Description=nyxloom agent sessions — collective cap; one child slice per session
+Before=slices.target
+
+[Slice]
+# Aggregate ceiling for ALL agent sessions at once. Each session additionally
+# gets its own leaf (nyxloom-agents-<task>.slice, created on demand by systemd
+# via docker --cgroup-parent), so one runaway agent is bounded by its own leaf
+# instead of consuming the whole agent budget and starving its siblings.
+CPUWeight=40
+IOWeight=40
+
+# Agent sessions are mostly network-wait on model APIs; the risk is a runaway
+# doing local work. OPERATOR MUST SET.
+# MemoryHigh=
+# MemoryMax=
+
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=60%

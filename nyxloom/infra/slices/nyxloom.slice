@@ -1,0 +1,25 @@
+[Unit]
+Description=nyxloom factory — parent budget for daemon + agents + gates
+Before=slices.target
+
+[Slice]
+# ONE ceiling for everything nyxloom does. cgroup v2 charges child usage to the
+# parent, so this bounds the whole factory regardless of how many agents or
+# gates run concurrently -- the single number that makes "N runaway agents"
+# survivable.
+#
+# CPUWeight is RELATIVE TO SIBLINGS of this slice (interactive.slice=200,
+# dev-workloads.slice=50, besteffort.slice=20 on this host). Weights bind ONLY
+# under contention: on an idle host this slice still reaches 100% of all cores.
+CPUWeight=50
+IOWeight=50
+
+# OPERATOR MUST SET from real host capacity. Deliberately left unset rather
+# than guessed -- a wrong ceiling either starves the factory or defeats the
+# purpose. Size it against total RAM minus prod (soulmask) minus interactive.
+# MemoryHigh=
+# MemoryMax=
+# MemorySwapMax=
+
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=60%
