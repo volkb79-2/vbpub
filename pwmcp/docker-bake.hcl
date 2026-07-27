@@ -6,16 +6,15 @@ variable "NAMESPACE" {
   default = "volkb79-2"
 }
 
-// PyPI playwright version — what `pip install playwright` yields.
-// :latest tracks this version (canonical consumer alias).
+// Coordinated Playwright version, available from npm, PyPI, and MCR.
+// Compatibility variable name retained for downstream tooling.
 variable "PLAYWRIGHT_VERSION_PYPI" {
   default = "1.61.0"
 }
 
-// npm playwright version — what `npm install playwright` yields.
-// :latest-npm tracks this version.
+// Compatibility alias for the coordinated version above.
 variable "PLAYWRIGHT_VERSION_NPM" {
-  default = "1.61.1"
+  default = "1.61.0"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -43,14 +42,14 @@ variable "LIGHTHOUSE_VERSION" {
   default = "13.4.0"
 }
 
-// pwmcp release tag for the PyPI-based build (e.g. 1.60.0-r1).
+// Compatibility alias for the coordinated pwmcp release (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.61.0-r8"
+  default = "1.61.0-r9"
 }
 
-// pwmcp release tag for the npm-based build (e.g. 1.61.0-r1).
+// Compatibility alias for the coordinated pwmcp release.
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.1-r3"
+  default = "1.61.0-r9"
 }
 
 variable "OCI_SOURCE" {
@@ -61,11 +60,9 @@ variable "OCI_DOCUMENTATION" {
   default = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
 }
 
-// pwmcp-pypi-latest: tracks the PyPI playwright version.
-// :latest alias always points to this build so that consumers running
-// `pip install playwright` (which resolves the PyPI version) get a matching server.
-// Consumer contract: pip install playwright==<X>  +  image: pwmcp:<X>  (or pwmcp:latest)
-target "pwmcp-pypi-latest" {
+// One coordinated build serves both Python and npm consumers.  The resolver only
+// selects a version published by npm, PyPI, and the official MCR base image.
+target "pwmcp-latest" {
   context    = "."
   dockerfile = "containers/pwmcp/Dockerfile"
   args = {
@@ -80,29 +77,10 @@ target "pwmcp-pypi-latest" {
     "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_PYPI}",
     "${REGISTRY}/${NAMESPACE}/pwmcp:${PLAYWRIGHT_VERSION_PYPI}",
     "${REGISTRY}/${NAMESPACE}/pwmcp:latest",
-  ]
-}
-
-// pwmcp-npm-latest: tracks the npm playwright version.
-// :latest-npm alias points to this build for consumers that pin the npm version explicitly.
-target "pwmcp-npm-latest" {
-  context    = "."
-  dockerfile = "containers/pwmcp/Dockerfile"
-  args = {
-    PLAYWRIGHT_VERSION          = "${PLAYWRIGHT_VERSION_NPM}"
-    PLAYWRIGHT_DISTRO           = "${PLAYWRIGHT_DISTRO}"
-    PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
-    CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
-    MCP_PROXY_VERSION           = "${MCP_PROXY_VERSION}"
-    LIGHTHOUSE_VERSION          = "${LIGHTHOUSE_VERSION}"
-  }
-  tags = [
-    "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_NPM}",
-    "${REGISTRY}/${NAMESPACE}/pwmcp:${PLAYWRIGHT_VERSION_NPM}",
     "${REGISTRY}/${NAMESPACE}/pwmcp:latest-npm",
   ]
 }
 
 group "all" {
-  targets = ["pwmcp-pypi-latest", "pwmcp-npm-latest"]
+  targets = ["pwmcp-latest"]
 }

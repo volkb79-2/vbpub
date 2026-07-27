@@ -202,6 +202,11 @@ environment:
 - the playwright JS package baked into the image
 - the version consumers must `pip install playwright==<version>`
 
+The release resolver selects the newest stable version jointly available from
+npm, PyPI, and Microsoft Container Registry for the configured distribution.
+That prevents an npm release from outrunning its matching official base image,
+and gives npm and Python consumers one compatible `pwmcp` image version.
+
 ### npm Package Pins
 
 The following npm packages are pinned via `docker-bake.hcl` ARGs (with matching defaults in the `Dockerfile`):

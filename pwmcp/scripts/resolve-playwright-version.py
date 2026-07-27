@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
-"""Resolve the latest Playwright version from npm AND PyPI and update pwmcp config files.
+"""Resolve the newest jointly publishable Playwright version and update pwmcp config files.
 
 Steps:
-  1. Fetch latest playwright version from npm registry (PLAYWRIGHT_VERSION_NPM).
-  2. Fetch latest playwright version from PyPI (PLAYWRIGHT_VERSION_PYPI).
-  3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*),
-     computed independently for npm and pypi versions.
-  4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag)
-     to track the PyPI version (the canonical consumer version).
-  5. Update docker-bake.hcl defaults (PLAYWRIGHT_VERSION_NPM, PLAYWRIGHT_VERSION_PYPI,
-     PWMCP_VERSION_NPM, PWMCP_VERSION_PYPI).
-  6. Write cmru.vars for downstream scripts (build-bundle.py, publish-bundle.py,
-     and GHCR visibility sync) — emits BOTH PLAYWRIGHT_VERSION_NPM and
-     PLAYWRIGHT_VERSION_PYPI; PLAYWRIGHT_VERSION is an alias for PLAYWRIGHT_VERSION_PYPI
-     for backwards compatibility.
+  1. Fetch all stable playwright versions from npm, PyPI, and Microsoft's official
+     Playwright image registry.
+  2. Select the highest version common to all three.  A package release is not
+     publishable until its matching ``mcr.microsoft.com/playwright`` base image
+     exists, and pwmcp's Python and npm consumers must agree on one version.
+  3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
+  4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
+  5. Update docker-bake.hcl defaults and write cmru.vars for downstream scripts.
 
 Outputs:
   pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
                      and build-push.py
   ciu.defaults.toml.j2 — playwright_version and image.tag updated in-place (PyPI version)
   ciu.toml.j2          — same (kept in sync with defaults)
-  docker-bake.hcl      — PLAYWRIGHT_VERSION_NPM, PLAYWRIGHT_VERSION_PYPI,
-                         PWMCP_VERSION_NPM, PWMCP_VERSION_PYPI defaults updated in-place
+  docker-bake.hcl      — common-version defaults updated in-place
 
 Consumer contract:
-  - :latest always tracks PLAYWRIGHT_VERSION_PYPI (what `pip install playwright` yields).
-  - :latest-npm tracks PLAYWRIGHT_VERSION_NPM.
+  - :latest and :latest-npm track the same newest version available from all
+    required upstreams.
   - Use `pip install playwright==<X>` + `image: pwmcp:<X>` for a guaranteed matching pair.
 """
 from __future__ import annotations
@@ -39,8 +34,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-NPM_PLAYWRIGHT_URL = "https://registry.npmjs.org/playwright/latest"
+NPM_PLAYWRIGHT_URL = "https://registry.npmjs.org/playwright"
 PYPI_PLAYWRIGHT_URL = "https://pypi.org/pypi/playwright/json"
+MCR_PLAYWRIGHT_TAGS_URL = "https://mcr.microsoft.com/v2/playwright/tags/list?n=10000"
 TIMEOUT_SECONDS = 20
 RETRIES = 3
 
@@ -93,20 +89,64 @@ def _fetch_json(url: str, label: str) -> dict:
     return {}  # unreachable
 
 
-def fetch_npm_latest_version() -> str:
+def _stable_version(value: str) -> tuple[int, int, int] | None:
+    """Return a sortable stable semver tuple, excluding prereleases."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value.strip())
+    return tuple(map(int, match.groups())) if match else None
+
+
+def _latest_version(versions: set[str], label: str) -> str:
+    stable = [version for version in versions if _stable_version(version)]
+    if not stable:
+        fail(f"{label} did not provide any stable Playwright versions")
+    return max(stable, key=lambda version: _stable_version(version))
+
+
+def fetch_npm_versions() -> set[str]:
     payload = _fetch_json(NPM_PLAYWRIGHT_URL, "npm")
-    version = str(payload.get("version") or "").strip()
-    if not version:
-        fail("npm response missing 'version' field")
-    return version
+    versions = payload.get("versions")
+    if not isinstance(versions, dict):
+        fail("npm response missing 'versions' object")
+    return {str(version) for version in versions if _stable_version(str(version))}
 
 
-def fetch_pypi_latest_version() -> str:
+def fetch_pypi_versions() -> set[str]:
     payload = _fetch_json(PYPI_PLAYWRIGHT_URL, "PyPI")
-    version = str((payload.get("info") or {}).get("version") or "").strip()
-    if not version:
-        fail("PyPI response missing 'info.version' field")
-    return version
+    releases = payload.get("releases")
+    if not isinstance(releases, dict):
+        fail("PyPI response missing 'releases' object")
+    # A release key with no files has been withdrawn and cannot be installed.
+    return {
+        str(version)
+        for version, files in releases.items()
+        if _stable_version(str(version)) and isinstance(files, list) and files
+    }
+
+
+def fetch_mcr_versions(distro: str) -> set[str]:
+    payload = _fetch_json(MCR_PLAYWRIGHT_TAGS_URL, "Microsoft Container Registry")
+    tags = payload.get("tags")
+    if not isinstance(tags, list):
+        fail("Microsoft Container Registry response missing 'tags' array")
+    pattern = re.compile(rf"^v(\d+\.\d+\.\d+)-{re.escape(distro)}$")
+    return {
+        match.group(1)
+        for tag in tags
+        if isinstance(tag, str) and (match := pattern.fullmatch(tag))
+    }
+
+
+def resolve_latest_common_version(
+    npm_versions: set[str], pypi_versions: set[str], mcr_versions: set[str],
+) -> str:
+    """Choose the newest stable version that every required upstream provides."""
+    common = npm_versions & pypi_versions & mcr_versions
+    if not common:
+        fail(
+            "No common stable Playwright version across npm, PyPI, and the "
+            "Microsoft Container Registry"
+        )
+    return _latest_version(common, "the upstream intersection")
 
 
 def list_git_tags(pattern: str) -> list[str]:
@@ -243,51 +283,50 @@ def read_current_distro() -> str:
 
 
 def main() -> None:
-    log("Fetching latest playwright version from npm...")
-    npm_version = fetch_npm_latest_version()
-    log(f"npm latest playwright: {npm_version}")
-
-    log("Fetching latest playwright version from PyPI...")
-    pypi_version = fetch_pypi_latest_version()
-    log(f"PyPI latest playwright: {pypi_version}")
-
-    release_n_npm = compute_release_number(npm_version)
-    pwmcp_version_npm = f"{npm_version}-r{release_n_npm}"
-    log(f"pwmcp npm release: pwmcp-v{pwmcp_version_npm}")
-
-    release_n_pypi = compute_release_number(pypi_version)
-    pwmcp_version_pypi = f"{pypi_version}-r{release_n_pypi}"
-    log(f"pwmcp pypi release: pwmcp-v{pwmcp_version_pypi}")
-
     distro = read_current_distro()
+    log("Fetching Playwright versions from npm, PyPI, and the Microsoft Container Registry...")
+    npm_versions = fetch_npm_versions()
+    pypi_versions = fetch_pypi_versions()
+    mcr_versions = fetch_mcr_versions(distro)
+    npm_latest = _latest_version(npm_versions, "npm")
+    pypi_latest = _latest_version(pypi_versions, "PyPI")
+    mcr_latest = _latest_version(mcr_versions, "the Microsoft Container Registry")
+    agreed_version = resolve_latest_common_version(npm_versions, pypi_versions, mcr_versions)
+    log(
+        f"upstream latest: npm={npm_latest} PyPI={pypi_latest} "
+        f"MCR/{distro}={mcr_latest}; agreed stable version: {agreed_version}"
+    )
 
-    # ciu.toml.j2 / ciu.defaults.toml.j2 track the PyPI version (canonical consumer version).
-    log(f"Updating {DEFAULTS_FILE.name} (PyPI version: {pypi_version})...")
-    update_toml_j2(DEFAULTS_FILE, pypi_version, pwmcp_version_pypi)
+    release_n = compute_release_number(agreed_version)
+    pwmcp_version = f"{agreed_version}-r{release_n}"
+    log(f"pwmcp release: pwmcp-v{pwmcp_version}")
+
+    log(f"Updating {DEFAULTS_FILE.name} (agreed version: {agreed_version})...")
+    update_toml_j2(DEFAULTS_FILE, agreed_version, pwmcp_version)
 
     if TOML_OVERRIDE_FILE.exists():
         log(f"Updating {TOML_OVERRIDE_FILE.name}...")
-        update_toml_j2(TOML_OVERRIDE_FILE, pypi_version, pwmcp_version_pypi)
+        update_toml_j2(TOML_OVERRIDE_FILE, agreed_version, pwmcp_version)
 
     log(f"Updating {BAKE_FILE.name}...")
-    update_bake_hcl(BAKE_FILE, npm_version, pypi_version, pwmcp_version_npm, pwmcp_version_pypi)
+    update_bake_hcl(BAKE_FILE, agreed_version, agreed_version, pwmcp_version, pwmcp_version)
 
     log(f"Updating {CONTRACT_FILE.name}...")
-    update_contract(CONTRACT_FILE, release=pwmcp_version_pypi, playwright_version=pypi_version)
+    update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")
     cdt_mcp_ver = _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION")
     mcp_proxy_ver = _read_bake_var("MCP_PROXY_VERSION")
     lh_ver = _read_bake_var("LIGHTHOUSE_VERSION")
-    write_release_vars(npm_version, pypi_version, distro, pwmcp_version_npm, pwmcp_version_pypi,
+    write_release_vars(agreed_version, agreed_version, distro, pwmcp_version, pwmcp_version,
                        pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver, lh_ver)
 
     log(
-        f"Done. PLAYWRIGHT_VERSION_NPM={npm_version}  PLAYWRIGHT_VERSION_PYPI={pypi_version}  "
-        f"PWMCP_VERSION_NPM={pwmcp_version_npm}  PWMCP_VERSION_PYPI={pwmcp_version_pypi}"
+        f"Done. PLAYWRIGHT_VERSION_NPM={agreed_version}  PLAYWRIGHT_VERSION_PYPI={agreed_version}  "
+        f"PWMCP_VERSION_NPM={pwmcp_version}  PWMCP_VERSION_PYPI={pwmcp_version}"
     )
-    log(f"Git tags to create after push: pwmcp-v{pwmcp_version_npm}  pwmcp-v{pwmcp_version_pypi}")
+    log(f"Git tag to create after push: pwmcp-v{pwmcp_version}")
 
 
 if __name__ == "__main__":
