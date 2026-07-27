@@ -88,6 +88,45 @@ def _carves(inp: ReconcileInput) -> list[CarveDispatch]:
     return [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
 
 
+def _seed_gap_audit_marker(head_sha: str | None = None,
+                           task_id: str = "carve-demo-1") -> None:
+    """Append the gap-audit TASK_CREATED marker the helper scans for. Used only
+    where the test's subject is the READER; the WRITER has its own end-to-end
+    test that drives the real dispatch instead of hand-building this payload."""
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+        state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+    )
+    payload: dict = {"statefile": tsf.to_dict(), "carve_kind": "gap-audit"}
+    if head_sha is not None:
+        payload["head_sha"] = head_sha
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.TASK_CREATED, payload=payload, task_id=task_id,
+    )
+
+
+def _scripted(monkeypatch, sequence):
+    seq = list(sequence)
+
+    def fake(inp):
+        return seq.pop(0) if seq else []
+
+    monkeypatch.setattr(reconcile, "plan_project", fake)
+
+
+def _dispatch_carve(monkeypatch, cfg, kind: str) -> str:
+    """Drive one real CarveDispatch of `kind` through run_pass, so the daemon's
+    own executor writes the TASK_CREATED payload."""
+    paths.routes_path().write_text(
+        (paths.routes_path().read_text(encoding="utf-8")
+         + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"),
+        encoding="utf-8")
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo", kind=kind)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+    return "carve-demo-1"
+
+
 # ==========================================================================
 # Oracles: Cadence, Ordering, Guards (Reconcile-level)
 # ==========================================================================
@@ -437,3 +476,138 @@ def test_oracle_9_carve_packet_authorizes_empty_carve(sample_project):
     # Explicit authorization
     assert ("empty" in body.lower() or "[]" in body or
             "carve NOTHING" in body or "EMPTY" in body)
+
+
+# ==========================================================================
+# Oracle 7 completion: the None-vs-0 discriminator and malformed git output
+# ==========================================================================
+
+def test_no_marker_returns_none_AND_none_fires(tmp_state, sample_project):
+    """The None/0 split is the single most load-bearing behaviour here, so it
+    is asserted as a PAIR -- the value AND what the trigger does with it.
+
+    None means "never carved", which item 17 reads as "do a first pass": the
+    knob being enabled is itself the request. 0 means "no measurable activity"
+    and must NOT fire. Collapsing the two (e.g. returning None on a git error)
+    would let a transient I/O failure authorize a real carver process, which is
+    why every degrade path in the helper returns 0 and only a genuinely absent
+    marker returns None."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    cfg = _cfg()
+    cfg.root = sample_project.root
+
+    # No gap-audit marker has ever been written for this project.
+    assert d._changed_lines_since_gap_audit("demo", cfg) is None
+
+    # ...and that None FIRES, while the 0 every degrade path returns does not.
+    assert [c.kind for c in _carves(_inp(cfg=_cfg(test_health_interval_days=0),
+                                         changed_lines_since_gap_audit=None))] == ["gap-audit"]
+    assert "gap-audit" not in [c.kind for c in _carves(
+        _inp(cfg=_cfg(test_health_interval_days=0), changed_lines_since_gap_audit=0))]
+
+
+def test_malformed_numstat_rows_are_skipped_not_fatal(tmp_state, sample_project, monkeypatch):
+    """A row whose added/deleted field is not an integer must be skipped while
+    well-formed rows alongside it still count.
+
+    git should never emit this, but the helper's contract is "never raise": an
+    unparseable row must not take the whole cadence down with it. Both fields
+    are parsed independently, so this fixture exercises each side separately --
+    a bad ADDED field with a good deleted count, and a good added count with a
+    bad DELETED field."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    _seed_gap_audit_marker(head_sha="abc123")
+
+    class _Result:
+        returncode = 0
+        # bad added (+2 deleted) | good added 3 (+bad deleted) | clean 4+1
+        stdout = "x\t2\tbad_added.py\n3\ty\tbad_deleted.py\n4\t1\tgood.py\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Result())
+
+    cfg = _cfg()
+    cfg.root = sample_project.root
+    assert d._changed_lines_since_gap_audit("demo", cfg) == 2 + 3 + 5
+
+
+# ==========================================================================
+# Oracle 8 completion: the checkpoint is written by PRODUCTION code
+# ==========================================================================
+
+@pytest.fixture()
+def _siblings(monkeypatch):
+    """Local twin of test_daemon.py's patch_siblings, trimmed to the seams a
+    carve dispatch touches (never added to conftest.py -- STANDING.md)."""
+    from nyxloom import adapters, notify, render, wrapper
+
+    monkeypatch.setattr(adapters, "probe", lambda route: (True, "ok"))
+    monkeypatch.setattr(
+        adapters, "build_dispatch",
+        lambda route, *, handoff_path, worktree, branch, task_id, gate_hint,
+        receipt_path, **_kw: (["fake-cli", "--task", task_id], "prompt"))
+
+    def fake_launch(spec):
+        Path(spec.attempt_dir).mkdir(parents=True, exist_ok=True)
+        return 4242
+
+    monkeypatch.setattr(wrapper, "launch_detached", fake_launch)
+    monkeypatch.setattr(render, "render_after_event", lambda registry: paths.www_dir())
+    monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+
+
+def test_head_sha_checkpoint_is_written_by_the_dispatch_END_TO_END(
+        tmp_state, sample_project, _siblings, monkeypatch):
+    """The cadence is only durable if the dispatch actually WRITES the sha the
+    helper reads back. Hand-constructing the payload in a test proves nothing
+    about the code that writes it -- so this drives a real gap-audit
+    CarveDispatch through run_pass and asserts the full round trip.
+
+    Mirrors test_test_health_carve.py's own END_TO_END marker test, extended
+    with the head_sha half that is unique to item 17. The negative is the
+    sibling kind: a test-health carve must NOT stamp head_sha, since only
+    gap-audit consumes it."""
+    expected = "deadbeefcafebabe0123456789abcdef01234567"
+    monkeypatch.setattr(daemon.Daemon, "_head_revision", lambda self, cfg: expected)
+
+    task_id = _dispatch_carve(monkeypatch, sample_project, "gap-audit")
+
+    created = next(e for e in storage.iter_events("demo")
+                   if e.type is EventType.TASK_CREATED and e.task_id == task_id)
+    assert created.payload["carve_kind"] == "gap-audit"
+    assert created.payload["head_sha"] == expected
+
+    # Round trip: the helper finds the marker the dispatch just wrote and uses
+    # that exact sha as the git diff base.
+    seen: dict[str, list[str]] = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "7\t3\tsrc/x.py\n"
+
+    def _capture(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", _capture)
+    cfg = _cfg()
+    cfg.root = sample_project.root
+    assert daemon.Daemon({"demo": sample_project.root})._changed_lines_since_gap_audit(
+        "demo", cfg) == 10
+    assert f"{expected}..HEAD" in seen["cmd"]
+
+
+def test_test_health_carve_does_not_stamp_head_sha_NEGATIVE(
+        tmp_state, sample_project, _siblings, monkeypatch):
+    """Negative for the branch above: head_sha is gap-audit-only. If the
+    stamping were unconditional, a test-health carve would silently reset the
+    gap-audit activity checkpoint and the audit would never accumulate enough
+    changed lines to fire."""
+    monkeypatch.setattr(daemon.Daemon, "_head_revision", lambda self, cfg: "f" * 40)
+
+    task_id = _dispatch_carve(monkeypatch, sample_project, "test-health")
+
+    created = next(e for e in storage.iter_events("demo")
+                   if e.type is EventType.TASK_CREATED and e.task_id == task_id)
+    assert created.payload["carve_kind"] == "test-health"
+    assert "head_sha" not in created.payload
