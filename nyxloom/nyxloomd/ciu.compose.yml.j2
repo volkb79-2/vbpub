@@ -39,9 +39,17 @@ name: nyxloom-nyxloomd
 
 services:
   nyxloomd:
+    # Context is the nyxloom PACKAGE ROOT (..), not this dir: the Dockerfile is
+    # multi-stage and its first stage builds the nyxloom wheel from src/ +
+    # pyproject.toml. Same Dockerfile + same NYXLOOM_VERSION arg that
+    # ../docker-bake.hcl uses, so a local `ciu up` build and a cmru release build
+    # produce the SAME image — one recipe, two drivers. NYXLOOM_VERSION defaults
+    # to 0.0.0-dev here; build-push.py injects the real git-tag version at release.
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: nyxloomd/Dockerfile
+      args:
+        NYXLOOM_VERSION: "{{ nyxloomd.version }}"
     image: {{ nyxloomd.image }}
     container_name: {{ nyxloomd.container_prefix }}-nyxloomd
     restart: unless-stopped

@@ -1,43 +1,12 @@
 [nyxloomd]
 name = "nyxloomd"
-image = "nyxloom-nyxloomd:local"
+image = "ghcr.io/volkb79-2/nyxloomd:0.0.0-dev"
+version = "0.0.0-dev"
 container_prefix = "nyxloom-prod"
 dashboard_port = 8942
 
-# S15 resource governance -- the mechanism ciu ACTUALLY implements. It injects
-# cgroup_parent/mem_limit/mem_reservation/blkio_config into every non-exempt
-# service, and only fills keys the compose author did not already set.
-#
-# 2026-07-27: this REPLACES a dead `cgroup_parent` key that lived in
-# [nyxloomd.runtime] below. Nothing read it -- not ciu (which has no
-# runtime.cgroup_parent handling at all) and not this stack's own compose
-# template (which consumes only runtime.run_as_uid/run_as_gid/docker_gid). It
-# never reached the rendered compose, so the daemon has been running at
-# docker's DEFAULT placement while the config read as if it were placed. A
-# dead config key is invisible to the slice-existence check too, because no
-# slice name ever reaches docker.
-#
-# cgroup_parent is set EXPLICITLY: ciu's default is besteffort.slice
-# (CPUWeight 20), which is the most deferential slice on this host and exactly
-# wrong for a latency-sensitive dispatcher. See infra/slices/ for the unit
-# templates -- and note the slice must EXIST before this means anything: a
-# named-but-missing slice is auto-created transiently with NO limits (verified
-# 2026-07-27), so `doctor` has to assert existence and fail closed.
-#
-# device is set EXPLICITLY: ciu's autodetect (`findmnt --target
-# /var/lib/docker`) silently fails under docker-outside-of-docker, which would
-# skip the blkio caps entirely. Same reason dstdns pins it.
-#
-# mem_reservation maps to compose's SOFT memory.low -- it does not replace the
-# slice unit's MemoryMin (a hard, unreclaimable reservation); they compose.
-[nyxloomd.governance]
-enabled = true
-cgroup_parent = "nyxloom-daemon.slice"
-mem_limit = "1g"
-mem_reservation = "256m"
-device = "/dev/vda"
-
 [nyxloomd.runtime]
+cgroup_parent = "nyxloom.slice"
 run_as_uid = 1003
 run_as_gid = 1003
 docker_gid = 994

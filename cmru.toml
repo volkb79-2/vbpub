@@ -86,12 +86,36 @@ CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration f
 # SEPARATE step-driven addition (nyxloom/build-push.py) added when that lands.
 [project.nyxloom]
 prefix    = "nyxloom-v"
-artifacts = ["wheel"]
+artifacts = ["wheel", "oci-image"]   # wheel → GH Release + latest.json; images → ghcr
 scm_dist  = "nyxloom"
 cwd       = "nyxloom"
 [project.nyxloom.version]
+# scm is legal here because the project is NOT oci-image-ONLY (cmru's guard fires
+# only for all-oci projects): one `nyxloom-vX.Y.Z` tag versions the wheel Release
+# AND both image tags — single-source versioning across all three artifacts.
 strategy = "scm"
 bump     = "conventional"
+# Explicit build/push steps own the OCI half (the mdt/pwmcp pattern): build-push.py
+# resolves NYXLOOM_VERSION from the git tag and bakes BOTH images (nyxloomd +
+# nyxloom-agent-cli) from the single docker-bake.hcl that `ciu` also builds locally
+# — one recipe, two drivers.
+#
+# CAUTION (cmru/src/cmru/cli.py:233, "an explicit [steps.<step>] wins"): declaring
+# ANY explicit build/push step suppresses the profile BUILT-INS for that step — for
+# the WHOLE project, both profiles. A bare image-only step here would therefore
+# silently stop building/publishing the WHEEL (no error; mdt's devcontainer build
+# would then find no nyxloom-latest Release). So each step invokes the built-in
+# wheel handler EXPLICITLY first, then the images. Keep both commands in each step.
+[project.nyxloom.steps.build]
+commands = [
+  { label = "nyxloom: build wheel (cmru built-in handler, invoked explicitly)", argv = ["python3", "cmru/src/cmru/handlers.py", "wheel-build", "--cwd", "nyxloom"], cwd = "." },
+  { label = "nyxloom: build OCI images (nyxloomd + agent-cli)", argv = ["python3", "build-push.py", "--build"], cwd = "nyxloom" },
+]
+[project.nyxloom.steps.push]
+commands = [
+  { label = "nyxloom: publish wheel (cmru built-in handler, invoked explicitly)", argv = ["python3", "cmru/src/cmru/handlers.py", "wheel-publish", "--prefix", "nyxloom", "--cwd", "nyxloom", "--notes-env", "NYXLOOM_RELEASE_NOTES"], cwd = "." },
+  { label = "nyxloom: push OCI images to ghcr", argv = ["python3", "build-push.py", "--push"], cwd = "nyxloom" },
+]
 [project.nyxloom.env]
 NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development. Installs the `nyxloom` CLI: project onboarding, handoff lint, gate verify, doctor, resync, and the reconciler daemon.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
 

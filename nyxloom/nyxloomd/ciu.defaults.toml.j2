@@ -6,7 +6,16 @@
 # image pull. network_mode: host so the dashboard binds the host loopback.
 [nyxloomd]
 name = "nyxloomd"
-image = "nyxloom-nyxloomd:local"
+# Shared tag convention with ../docker-bake.hcl: `ciu up` builds this tag LOCALLY
+# from the same multi-stage Dockerfile that cmru bakes + pushes for release, so the
+# local stack and the released image are the same artifact (one recipe, two
+# drivers). The image is now SELF-CONTAINED (the nyxloom wheel is installed into
+# /opt/nyxloom-venv), and the src bind-mount + PYTHONPATH in the compose is a DEV
+# OVERRIDE that shadows it — daemon code changes still need only a restart.
+image = "ghcr.io/volkb79-2/nyxloomd:0.0.0-dev"
+# setuptools-scm pretend-version baked into the wheel for a local build. Release
+# builds go through build-push.py, which injects the real `nyxloom-v*` git tag.
+version = "0.0.0-dev"
 container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}nyxloom{% endif %}"
 # Loopback-only dashboard port (host netns).
 dashboard_port = 8942
