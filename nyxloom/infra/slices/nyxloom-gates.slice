@@ -6,12 +6,18 @@ Before=slices.target
 # Lowest weight inside nyxloom.slice. A gate is `pytest -n auto` for minutes --
 # the dominant CPU consumer and the least latency-sensitive.
 #
-# MEASURED CAVEAT (2026-07-27): starving a gate does not merely slow it, it
-# manufactures FALSE REDS. Running the suite under besteffort.slice (CPUWeight
-# 20) produced two novel timing failures that vanished at weight 50. Those are
-# genuine test defects -- a correct test asserts on causality, not timing, and
-# a slow host only reveals the race it already had -- but until they are fixed,
-# weighting gates too low costs more in false failures than it saves in CPU.
+# RETRACTED CAVEAT (2026-07-27): an earlier comment here claimed starvation
+# "manufactures FALSE REDS" (two timing failures at CPUWeight 20 that vanished
+# at 50) and used that to argue against weighting gates low. Retracted -- see
+# README.md "Starvation does NOT justify raising a weight". Briefly: (a) a test
+# that fails on a slow machine is a TRUE red exposing a real race, never a false
+# one; (b) CPUWeight binds ONLY under contention, so 20-vs-50 could not have
+# changed CPU availability on an idle host -- the experiment was uncontrolled;
+# (c) re-measured with a HARD quota, the full suite passes at --cpus=2 AND at
+# --cpus=1 (12.5% of an 8-core host, 4 xdist workers on one core), both
+# PYTEST_EXIT:0. Weight gates for the HOST's priorities. If a test fails when
+# starved, fix the test with a deterministic oracle -- never raise this number
+# to make a suite pass.
 CPUWeight=25
 IOWeight=30
 

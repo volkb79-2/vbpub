@@ -689,3 +689,54 @@ survived because it explained the symptom perfectly.
   leave behind?"** before asking "what raced?". Global state that survives teardown is
   the more common cause, and unlike a race it reproduces deterministically once you
   know the pair.
+
+## L20 — Hardware speed must never decide a test's outcome; "the machine was slow" is a defect report, not an excuse
+
+**The failure shape.** A suite is observed failing on a throttled/loaded host and
+passing on a fast one. The conclusion recorded is that starving the runner
+"manufactures **false reds**", and the remedy adopted is to **give the tests more
+hardware** (raise a cgroup weight, widen a quota, pin more cores). Both halves are
+wrong, and the second is what makes it expensive: the real defect is now documented
+as an infrastructure preference, so nobody fixes it, and it fires later on slower
+hardware, under load, or in CI.
+
+**Why the framing is backwards.** A test that fails when the machine is slow is a
+**TRUE red**. The race was already in the test; slowness only *revealed* it. A
+correct test asserts on **causality** — this happened *because* that happened — and
+causality does not care how many cores are available. The moment a test's verdict
+depends on elapsed wall-clock, the suite has stopped measuring the code and started
+measuring the machine.
+
+**Why the evidence is usually unsound too.** These claims are typically backed by
+"weight 20 failed, weight 50 passed". But a cgroup **`CPUWeight` binds only under
+contention** — on an idle host a weight-1 cgroup still reaches 100% of every core.
+So the weight change cannot have altered CPU availability unless the host happened
+to be busy, which means the uncontrolled variable was **the other load**, not the
+setting under test. The observation ("two tests failed that time") can be perfectly
+real while the attribution is unfalsifiable. nyxloom's own slice README carried
+exactly this contradiction — it stated the only-under-contention rule two
+paragraphs above the caveat that depended on ignoring it — and it survived for
+months because nobody read the two together.
+
+**How to apply.**
+- **Measure with a hard quota, not a weight.** `docker run --cpus=N` (a real
+  `cfs_quota_us` cap) starves deterministically whether the host is idle or busy;
+  a weight does not. If you cannot reproduce a starvation failure under a hard
+  quota, you have not demonstrated one. (Re-measured this way, nyxloom's suite
+  passed at `--cpus=1` — 12.5% of an 8-core host, 4 xdist workers on one core —
+  which retired the caveat outright.)
+- **Never tune infrastructure to make a suite pass.** Weight gates for the
+  *host's* priorities. If a test fails when starved, the deliverable is a fixed
+  test, not a bigger budget.
+- **Fix it by removing the time dependence, not enlarging it.** A larger timeout is
+  the same defect with a lower firing rate. Anchor the assertion to a deterministic
+  event: `join()` the process/thread and *then* assert; wait on an explicit event;
+  or best, eliminate the wait by extracting a pure step function and calling it
+  directly from the main thread.
+- **Treat `deadline = now + N` followed by an assertion as a code smell** and grep
+  for it periodically — it is a proxy for "eventually" and is hardware-dependent by
+  construction. Passing today only means the budget is currently generous enough.
+- **When a doc says "measured", check what was held constant.** An uncontrolled
+  experiment yields a true observation and a false conclusion, and it is the
+  conclusion that gets written down as doctrine and reused as a reason not to fix
+  real defects.
