@@ -396,6 +396,37 @@ SELECTION by band (needs `review-1`/`review-2` routes built first).
     de-flaked this round (attribution was sufficient to safely merge P27-followon). Fix, when
     picked up: either pin the stub's split via an explicit deterministic mapping instead of
     `hash()`, or set `PYTHONHASHSEED=0` for this test via a fixture/marker.
+- **DRY standing instructions — ✅ DONE (merge `3a6e7541`, 2026-07-26).** Standing DRY
+  (non-duplication) instruction on every IMPLEMENTER/REVIEW_INDEPENDENT dispatch
+  (`routing-model-redesign.md` D-R2). Both budgeted, skip-if-tight appends; REVIEW_INDEPENDENT's
+  respects the same `-200` margin the doctrine manifest reserves (a real past incident, B4b,
+  documented in `test_review_independent_prompt_stays_under_argv_max_with_real_paths`'s own
+  docstring). Controller had to fix the implementer's own approach twice: an unconditional literal
+  append broke a real `argv_max=1000` route (1023>1000), and a follow-up attempt widened test
+  thresholds instead of fixing the underlying append pattern (masking the regression rather than
+  fixing it) — reverted, then correctly rebuilt as a budgeted append mirroring `review_focus`/
+  `review_depth`'s existing idiom.
+- **incapable REJECT_CLASS + tier-bump re-carve + escalated-review handoff — ✅ DONE (merge
+  `a7f8c111`, 2026-07-26).** New reviewer-facing class distinct from `architectural` (D-R3,
+  "refined 2026-07-26"): `architectural` = scope/design wrong, re-scope; `incapable` = scope fine,
+  model wasn't capable, bump tier. Threaded through `reconcile.py`'s triage table (distinguishable
+  transition notes, never collapsed), `daemon.py`'s rescope-dict builder + carve-prompt conditional
+  intro (byte-identical otherwise), and a new `escalation_note` bounded-append seeding the
+  escalated review with a terse, non-anchoring meta-note (via `source.ref` provenance — deliberately
+  not `depends_on`, which would deadlock dispatch on a superseded origin task). High-quality
+  self-contained implementation; merging it with the just-landed DRY package produced a real,
+  correctly-resolved `adapters.py` conflict (both append blocks at the same insertion point —
+  kept both, `escalation_note` before `DRY` per the existing priority-order convention) and
+  surfaced that `incapable`'s longer `REJECT_CLASS` text (a *permanent* unconditional addition,
+  unlike DRY's *optional* one) itself ate into the `real_paths` regression test's margin — the
+  implementer had already correctly re-anchored that test's threshold `1300→1400`; the sibling DRY
+  test needed the same update, done post-merge.
+  - **New watch-item, third occurrence:** `test_daemon.py::test_resume_attempt_emits_warning_
+    attempt_retry` failed identically 3/3 post-merge runs under `-n4` (log record captured in
+    stdout per the test's own capture, but absent from `_read_log_records`' re-read) — passes 3/3
+    in isolation, untouched by any file in this round's diffs. Same shared-global-state-under-load
+    signature as B26/B27 (PL7) — attributed as pre-existing, not a regression. Not de-flaked this
+    round.
 
 ## BATCH E — epic (design-first)
 - **C** — system→system lessons channel: a `LESSON_DISCOVERED` record → `nyxloom-trove/
