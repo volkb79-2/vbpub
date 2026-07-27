@@ -891,6 +891,14 @@ def test_main_all_killed_passes(monkeypatch, tmp_path, capsys):
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
     )
+    # This test writes calc.py to disk WITHOUT committing it (purely so
+    # generate_mutants/_run_is_killed have a real file to read/mutate) and
+    # fully mocks the git-diff layer -- it never intended to exercise real
+    # git status. _check_measurable has its own dedicated tests.
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
+    )
     src_dir = repo / "src" / "nyxloom"
     (src_dir / "calc.py").write_text(
         "def is_positive(x):\n    return x > 0\n"
@@ -946,6 +954,12 @@ def test_main_survivor_output(monkeypatch, tmp_path, capsys):
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
     )
+    # Uncommitted calc.py + fully-mocked git-diff layer, same rationale as
+    # test_main_all_killed_passes above.
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
+    )
     src_dir = repo / "src" / "nyxloom"
     (src_dir / "calc.py").write_text(
         "def is_positive(x):\n    return x > 0\n"
@@ -987,11 +1001,60 @@ def test_main_io_error_returns_2(monkeypatch, tmp_path, capsys):
     assert "mutation-gate ERROR" in capsys.readouterr().err
 
 
+def _make_no_measurement_repo(tmp_path):
+    """A real git repo shaped like `_make_small_repo`, but with an explicit
+    `main` branch (required since this test lets `_resolve_base` run for
+    REAL rather than mocking it away) and one extra commit on `feature` so
+    base(`main`) != HEAD -- isolating the dirty-tree condition below from the
+    base==HEAD one."""
+    repo = tmp_path / "repo"
+    src_dir = repo / "src" / "nyxloom"
+    src_dir.mkdir(parents=True)
+    (src_dir / "hello.py").write_text("def greet():\n    return 'hi'\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(repo), check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(repo), check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), check=True)
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=str(repo), check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=str(repo), check=True)
+    (repo / "README.md").write_text("docs\n")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "docs"], cwd=str(repo), check=True)
+    return repo
+
+
+def test_main_dirty_tree_refuses_with_exit_3_not_a_vacuous_pass(tmp_path, capsys):
+    """PACKAGE ORACLE: mutation_gate must refuse the SAME way coverage_gate
+    does. An uncommitted edit is invisible to a `base..HEAD` diff, so
+    `_git_added_lines` would legitimately report `{}` for it -- which, before
+    this guard, main() prints as "mutation OK: no changed source files to
+    mutate": a vacuous pass on exactly the defect this package closes. With
+    the reused `coverage_gate._check_measurable` guard, it must instead
+    refuse with exit 3, and never reach (or print) that vacuous message."""
+    repo = _make_no_measurement_repo(tmp_path)
+    (repo / "src" / "nyxloom" / "hello.py").write_text("def greet():\n    return 'bye'\n")
+    rc = mg.main(["--repo", str(repo), "--test", "true"])
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert "mutation-gate NO MEASUREMENT" in captured.err
+    assert "hello.py" in captured.err
+    assert "no changed source files to mutate" not in captured.out
+    assert "mutation OK" not in captured.out
+
+
 def test_main_empty_diff_is_clean_pass(monkeypatch, tmp_path, capsys):
     """No changed source files is a clean pass."""
     monkeypatch.setattr(
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
+    )
+    # `--repo` here is a bare tmp_path, not a git checkout (this test isolates
+    # main()'s "no targets" branch, not real git behavior) -- _check_measurable
+    # has its own dedicated tests, so stub it rather than have it fail on a
+    # non-repo directory.
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
     )
     monkeypatch.setattr(
         cg, "_git_added_lines",
@@ -1086,6 +1149,12 @@ def test_main_derived_test_missing_sibling_fails(monkeypatch, tmp_path, capsys):
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
     )
+    # Uncommitted calc.py + fully-mocked git-diff layer -- not testing real
+    # git status here (see test_main_all_killed_passes above).
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
+    )
     monkeypatch.setattr(
         cg, "_git_added_lines",
         lambda repo_arg, base, source: {
@@ -1112,6 +1181,12 @@ def test_main_explicit_test_overrides_derivation(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
+    )
+    # Uncommitted calc.py + fully-mocked git-diff layer -- not testing real
+    # git status here (see test_main_all_killed_passes above).
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
     )
     monkeypatch.setattr(
         cg, "_git_added_lines",
@@ -1148,6 +1223,12 @@ def test_main_derived_test_non_py_target_hits_missing_append(
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
     )
+    # Uncommitted data.json + fully-mocked git-diff layer -- not testing real
+    # git status here (see test_main_all_killed_passes above).
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
+    )
     monkeypatch.setattr(
         cg, "_git_added_lines",
         lambda repo_arg, base, source: {
@@ -1182,6 +1263,12 @@ def test_main_derived_test_multiple_modules_concatenates(
     monkeypatch.setattr(
         cg, "_resolve_base",
         lambda repo_arg, base: "HEAD",
+    )
+    # Uncommitted calc.py/test_calc.py + fully-mocked git-diff layer -- not
+    # testing real git status here (see test_main_all_killed_passes above).
+    monkeypatch.setattr(
+        cg, "_check_measurable",
+        lambda repo_arg, base_rev, source: None,
     )
     monkeypatch.setattr(
         cg, "_git_added_lines",
