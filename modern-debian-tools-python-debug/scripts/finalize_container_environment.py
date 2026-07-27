@@ -283,6 +283,156 @@ def verify_base_tools() -> None:
         ok(f"base-image tools verified ({len(expected)})")
 
 
+# ── docker socket relay repair ──────────────────────────────────────────────
+# WHY THIS EXISTS (diagnosed 2026-07-27)
+#
+# The `docker-outside-of-docker` devcontainer feature bind-mounts the host socket
+# to /var/run/docker-host.sock and then — whenever the host socket's GID already
+# exists as a group inside the container (the common case, so: nearly always) —
+# fronts it with a socat relay:
+#
+#   socat UNIX-LISTEN:/var/run/docker.sock,fork,... UNIX-CONNECT:/var/run/docker-host.sock
+#
+# started with NO `-t`. socat's default half-close timeout is 0.5 SECONDS.
+#
+# A non-interactive `docker run` hijacks the HTTP connection and shuts down its
+# write side immediately. socat sees EOF client→server and, half a second later,
+# tears down server→client as well. The container still runs to completion on the
+# daemon — which neither knows nor cares that the client left — but the CLI
+# receives only the first ~0.5s of output, and may report EXIT 0 for a container
+# that exited non-zero.
+#
+# The consequence is not "flaky output". It is that a FAILING containerised
+# command can become indistinguishable from a passing one. Any CI/gate/test
+# harness that runs `docker run` from inside an mdt devcontainer and reads its
+# exit code is liable to read a forged PASS. Measured: two red test-suite runs
+# both came back exit 0 with 25 bytes of output.
+#
+# Note the asymmetry, because it decides how you test for this: the TRUNCATION
+# is deterministic, the EXIT-CODE corruption is not. A hand sentinel against the
+# same broken relay had its output truncated while still returning the right
+# code. An always-wrong exit code would be caught by the first spot-check; an
+# intermittently-wrong one survives every spot-check and lies exactly when a
+# gate turns red. So judge on OUTPUT, never on the exit code alone.
+#
+# `docker version` and `docker logs` stay healthy throughout (plain
+# request/response, never hijacked), so neither is a valid check. A valid check
+# spans a real delay and looks at what came back:
+#
+#   docker run --rm <img> sh -c 'echo A; sleep 5; echo B; exit 7'
+#   # healthy → prints A AND B     poisoned → prints only A
+#
+# postCreate is the right (and sufficient) place to repair it:
+#   * first start  — the feature entrypoint runs before any lifecycle hook, so
+#     the live relay is always the unpatched one → we restart it here;
+#   * later `docker restart`s — the entrypoint re-reads the script we patched
+#     here, so it starts a correct socat and postCreate need not run again;
+#   * rebuild — the feature reinstalls its unpatched script, and postCreate runs
+#     again, repatching it.
+_DOCKER_INIT_SCRIPT = Path("/usr/local/share/docker-init.sh")
+_RELAY_HALF_CLOSE_TIMEOUT = 86400  # seconds; must exceed the longest gate run
+_RELAY_LISTEN = "UNIX-LISTEN:/var/run/docker.sock"
+
+
+def _sudo(*argv: str) -> int:
+    """Best-effort privileged run; returns the exit code (127 if unavailable)."""
+    try:
+        if os.geteuid() == 0:
+            return subprocess.run(argv, check=False).returncode
+        return subprocess.run(("sudo", "-n", *argv), check=False).returncode
+    except OSError:
+        return 127
+
+
+def _relay_pattern(with_timeout: bool) -> str:
+    """pgrep/pkill -f regex for the relay process.
+
+    The leading `[s]` is not decoration. `pkill -f` matches against the FULL
+    command line of every process — including the `sudo pkill -f <pattern>`
+    process running the kill, whose own argv contains the pattern verbatim. A
+    plain `socat …` pattern therefore makes pkill kill its own parent and die
+    with it, leaving the relay untouched and the caller none the wiser. Writing
+    the regex as `[s]ocat …` still matches the literal `socat …` in the target's
+    argv, but the killer's argv contains the characters `[s]ocat`, which that
+    regex does not match. (Learned the hard way: the first cut of this function
+    killed the shell that invoked it.)
+
+    The two variants are mutually exclusive: `socat UNIX-LISTEN` requires the
+    listen address immediately after the binary, so it cannot match
+    `socat -t 86400 UNIX-LISTEN…`.
+    """
+    return (f"[s]ocat -t {_RELAY_HALF_CLOSE_TIMEOUT} {_RELAY_LISTEN}"
+            if with_timeout else f"[s]ocat {_RELAY_LISTEN}")
+
+
+def _relay_running(with_timeout: bool) -> bool:
+    try:
+        return subprocess.run(("pgrep", "-f", _relay_pattern(with_timeout)),
+                              check=False, capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def repair_docker_socket_relay() -> None:
+    """Give the docker socket relay a sane half-close timeout. See the block
+    comment above — without it every `docker run` from this container reports a
+    forged exit 0. Best-effort and idempotent; never fails the finalize run,
+    because a broken transport only misleads when a verdict is being READ, and
+    that fail-closed assertion belongs in the harness that reads it."""
+    if shutil.which("socat") is None or not Path("/var/run/docker-host.sock").is_socket():
+        return  # relay not in use on this setup — nothing to repair
+
+    # 1. Patch the feature's init script so future container starts are correct.
+    try:
+        text = _DOCKER_INIT_SCRIPT.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    if text:
+        if f"socat -t {_RELAY_HALF_CLOSE_TIMEOUT} {_RELAY_LISTEN}" in text:
+            pass  # already patched
+        elif f"socat {_RELAY_LISTEN}" in text:
+            _sudo("cp", "-n", str(_DOCKER_INIT_SCRIPT),
+                  f"{_DOCKER_INIT_SCRIPT}.bak-pre-t-fix")
+            rc = _sudo("sed", "-i",
+                       f"s|socat {_RELAY_LISTEN}|socat -t {_RELAY_HALF_CLOSE_TIMEOUT} {_RELAY_LISTEN}|",
+                       str(_DOCKER_INIT_SCRIPT))
+            if rc == 0:
+                info(f"patched docker-init.sh: socat -t {_RELAY_HALF_CLOSE_TIMEOUT}")
+            else:
+                warn("could not patch docker-init.sh (no passwordless sudo?) — "
+                     "`docker run` exit codes from this container are UNRELIABLE")
+        else:
+            warn("docker-init.sh has an unrecognised socat line; not patching")
+
+    # 2. Restart the live relay, which the entrypoint already started without -t.
+    if _relay_running(with_timeout=True):
+        ok("docker socket relay already has a sane half-close timeout")
+        return
+    if not _relay_running(with_timeout=False):
+        return  # no relay to restart
+
+    user = os.environ.get("USER") or "vscode"
+    _sudo("pkill", "-f", _relay_pattern(with_timeout=False))
+    _sudo("rm", "-f", "/var/run/docker.sock")
+    _sudo("sh", "-c",
+          f"nohup setsid socat -t {_RELAY_HALF_CLOSE_TIMEOUT} "
+          f"{_RELAY_LISTEN},fork,mode=660,user={user},backlog=128 "
+          f"UNIX-CONNECT:/var/run/docker-host.sock "
+          f">>/tmp/vscr-docker-from-docker.log 2>&1 &")
+
+    for _ in range(10):
+        if Path("/var/run/docker.sock").is_socket() and _relay_running(with_timeout=True):
+            ok(f"docker socket relay restarted with -t {_RELAY_HALF_CLOSE_TIMEOUT} "
+               "(was 0.5s — truncating output and forging exit 0)")
+            return
+        try:
+            subprocess.run(("sleep", "0.5"), check=False)
+        except OSError:
+            break
+    warn("docker socket relay restart FAILED — /var/run/docker.sock may be "
+         "unusable; fall back to DOCKER_HOST=unix:///var/run/docker-host.sock")
+
+
 def run_generic_steps(envd: dict) -> None:
     info("generic mdt steps…")
     setup_shell_bootstrap()
@@ -290,6 +440,7 @@ def run_generic_steps(envd: dict) -> None:
     setup_tool_env_links()
     setup_editor_links()
     setup_vscode_settings(envd["env_type"])
+    repair_docker_socket_relay()
     verify_base_tools()
 
 

@@ -13,8 +13,25 @@ IOWeight=100
 # do nothing for memory pressure, so this is the only mechanism that delivers
 # "the daemon keeps running when every agent misbehaves".
 #
-# OPERATOR MUST MEASURE, DO NOT GUESS (docs/plan-resource-governance.md D-G1):
-# run the daemon idle, then under a real dispatch wave, and read
-# memory.current + memory.stat anon at both points. Too low is useless; too
-# high starves everything else.
-# MemoryMin=
+# CONSERVATIVE FLOOR, SET NOW; refine upward after measurement.
+#
+# Corrected 2026-07-27: an earlier draft left this unset on the grounds that
+# "a guessed MemoryMin is worse than none". That was wrong, and the asymmetry
+# is the reason:
+#   - too LOW  -> harmless. You simply protect less than you could. Strictly
+#                 better than no protection at all.
+#   - too HIGH -> harmful. memory.min is a RESERVATION: memory below it is
+#                 never reclaimed, so a value above real usage permanently
+#                 sterilises that memory from every sibling under pressure.
+# So the danger is only in OPTIMISTIC guesses. A deliberately low floor has
+# upside and no downside, and shipping nothing while waiting for a
+# measurement window leaves the daemon completely unprotected in the interim.
+#
+# 128M is chosen to sit at or below a Python daemon's realistic resident set
+# (interpreter + structlog + sqlite + state), and is negligible against a
+# multi-GB host budget, so overshoot cannot meaningfully sterilise anything.
+MemoryMin=128M
+#
+# TO REFINE (docs/plan-resource-governance.md D-G1): run the daemon idle, then
+# under a real dispatch wave, read memory.current + memory.stat anon at both
+# points, and raise this to the observed steady-state working set.
