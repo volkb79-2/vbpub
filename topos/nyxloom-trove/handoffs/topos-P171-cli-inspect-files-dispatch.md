@@ -7,10 +7,10 @@ tier: luna-low
 input_revision: "f376c53b"
 depends_on: [topos-P170-cli-compare-dispatch]
 session: resume:cli
-source: {kind: product-goal, ref: "global-coverage-healing"}
+source: {kind: product-goal, ref: "nyxloom-trove/3-roadmap.md"}
 scope:
-  touch: ["topos/tests/test_cli_inspect_files_dispatch.py", "topos/nyxloom-trove/handoffs/topos-P171-cli-inspect-files-dispatch.md"]
-  forbid: ["topos/src/topos/cli.py", "topos/nyxloom-trove/nyxloom.toml", "topos/tools/coverage_gate.py"]
+  touch: ["tests/test_cli_inspect_files_dispatch.py", "nyxloom-trove/handoffs/topos-P171-cli-inspect-files-dispatch.md"]
+  forbid: ["src/topos/cli.py", "nyxloom-trove/nyxloom.toml", "tools/coverage_gate.py"]
 oracles:
   - id: O1
     observable: "`topos inspect-files plan` resolves its target, forwards every gate flag to the plan boundary, renders valid plans as exact text or JSON, and rejects target/plan/disabled/unexpected outcomes with the declared nonzero status."
@@ -40,7 +40,9 @@ escalate_if:
 
 ## Work
 
-1. Add exactly one focused direct test module; do not modify production code
+1. In a fresh branch worktree based on `main`, add exactly one focused direct
+   test module. This is out of scope for production code changes: do not modify
+   `src/topos/cli.py`.
    or the existing broad `test_inspect_files.py` module.
 2. Build real result dataclass values with inert string fields (or use narrowly
    patched result functions) and monkeypatch only the resolver, parser, and
