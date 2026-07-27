@@ -147,3 +147,43 @@ def test_unknown_command_and_read_value_error_are_nonzero_without_boundary(monke
     monkeypatch.setattr("topos.inspect_files.reader.build_inspect_read", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad read")))
     assert _main_inspect_files(["read", "--kind", "cgroup-files", "--target", "target"]) == 2
     assert capsys.readouterr().err == "bad read\n"
+
+
+def test_defensive_unknown_command_branch_reachable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The final 'unknown inspect-files command' branch (cli.py:1519) is
+    unreachable through normal argparse flow (required subparsers reject
+    unknown commands at parse time with SystemExit).  Prove it is still
+    correct by monkeypatching the parser to return a structurally valid
+    but dispatch-unhandled command."""
+    from argparse import Namespace
+
+    monkeypatch.setattr(
+        "topos.cli._resolve_mutual_exclusive_target",
+        lambda *_: "resolved-target",
+    )
+    monkeypatch.setattr(
+        "topos.cli.parse_inspect_files_args",
+        lambda _argv: Namespace(
+            command="delete",
+            kind="cgroup-files",
+            target="target",
+            container=None,
+            inspect_files=False,
+            admin=False,
+            json=False,
+            max_bytes=65536,
+            max_lines=5000,
+        ),
+    )
+
+    assert (
+        _main_inspect_files(
+            ["delete", "--kind", "cgroup-files", "--target", "target"]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unknown inspect-files command" in captured.err
