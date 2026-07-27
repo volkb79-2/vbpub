@@ -38,17 +38,33 @@ INTERFACE CONTRACT (frozen):
   are 'task_id: <field-path>' strings, cap 50); write=True saves replayed
   over on-disk (the recovery path) AFTER creating .bak copies alongside.
 - doctor_all() -> dict[project_id, list[DoctorFinding]] over the registry.
+- doctor_host() -> list[DoctorFinding]. Host-scoped (project=None), added for
+  the two host-level hazards a per-project check cannot see (docs/
+  infra/agent-cli/README.md, infra/slices/README.md):
+    docker-transport-lying critical  transport_check.probe_default() reports
+                                      `lying` (canonical L18 defeat 4);
+                                      `unavailable` and `healthy` -> no finding.
+    cgroup-slice-missing   critical  a `--cgroup-parent=<slice>` named in any
+                                      registered project's gate argv does not
+                                      exist as a real systemd unit (fail-open
+                                      hazard: an unbounded transient slice).
+    cgroup-slice-unverified warning  the systemctl probe for a named slice
+                                      itself failed (never a silent skip).
+    cgroup-slice-unchecked info      no systemctl on this host at all (slice
+                                      checks skipped entirely; not an error).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from . import paths, storage, frontmatter, lint, decisions
+from . import paths, storage, frontmatter, lint, decisions, transport_check
 from .config import ProjectConfig, load_registry
 from .types import DoctorFinding, TaskStateFile, TaskState, AttemptState, TERMINAL_TASK_STATES, TERMINAL_ATTEMPT_STATES
 
@@ -446,3 +462,148 @@ def doctor_all() -> dict[str, list[DoctorFinding]]:
         except Exception:
             result[project_id] = []
     return result
+
+
+# ---------------------------------------------------------------------------
+# host-level checks (infra/agent-cli/README.md, infra/slices/README.md)
+
+# Matches `--cgroup-parent=<name>` and the space-separated `--cgroup-parent
+# <name>` form, anywhere inside a joined argv string (a gate's real docker
+# invocation is typically nested inside `bash -c "..."`, so this deliberately
+# scans the joined command text rather than positional argv parsing).
+_CGROUP_PARENT_RE = re.compile(r'--cgroup-parent(?:=|\s+)([^\s\'"]+)')
+
+
+def _cgroup_slices_in_argv(argv: list[str]) -> set[str]:
+    """Every distinct systemd `.slice` unit name a gate's argv names via
+    `--cgroup-parent`. Non-`.slice` values (unexpected, but tolerated) are
+    ignored -- only slice units are what `nyxloom doctor` can verify via
+    `systemctl show`."""
+    joined = ' '.join(argv)
+    return {name for name in _CGROUP_PARENT_RE.findall(joined) if name.endswith('.slice')}
+
+
+def _slice_load_state(slice_name: str, timeout_s: int = 10) -> str:
+    """The raw systemd `LoadState` for a slice unit, via `systemctl show`.
+
+    Raises RuntimeError on ANY probe failure (missing binary mid-race,
+    timeout, unparseable output) -- callers must turn that into a 'could not
+    verify' finding rather than silently treating a failed probe as
+    'exists'. A genuinely missing unit is NOT an error here: real systemd
+    always answers with `LoadState=not-found` for an unknown unit name (exit
+    0), so that case flows through normally and is judged by the caller.
+    """
+    try:
+        proc = subprocess.run(
+            ['systemctl', 'show', slice_name, '--property=LoadState'],
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f'systemctl show {slice_name} failed: {exc}') from exc
+    for line in proc.stdout.splitlines():
+        if line.startswith('LoadState='):
+            return line.split('=', 1)[1].strip()
+    raise RuntimeError(
+        f'systemctl show {slice_name} produced no LoadState= line '
+        f'(exit {proc.returncode}): {proc.stderr.strip()}'
+    )
+
+
+def doctor_host() -> list[DoctorFinding]:
+    """Host-scoped checks with no single owning project (project=None on
+    every finding). Two hazards, both "error path aliasing a benign result"
+    shapes (canonical L18, one layer down in infrastructure):
+
+    1. docker-transport: a lying attached-stream transport (canonical
+       reference/LESSONS.md L18 defeat 4) makes every containerised gate
+       verdict untrustworthy. `lying` -> critical. `unavailable` (no docker
+       CLI/daemon reachable here) is explicitly NOT a fault -- this host may
+       simply have no docker at all (e.g. the gate's own tester-unified
+       container) -- so it produces no finding at all, never info/error/
+       critical. `healthy` -> no finding.
+    2. cgroup-slice-missing: every `--cgroup-parent=<slice>` named in any
+       registered project's gate argv must exist as a real systemd unit, or
+       the container it bounds runs UNBOUNDED (systemd silently fabricates
+       an unlimited transient slice for an unknown name -- verified
+       2026-07-27, infra/slices/README.md). Missing -> critical. A probe
+       that itself fails (systemctl error/timeout) -> warning (never a
+       silent skip). No systemd on this host at all -> a single info
+       finding, and the per-slice probe is never attempted (a host with no
+       systemd cannot honor slice limits regardless of what a project's
+       gate argv asks for).
+    """
+    findings: list[DoctorFinding] = []
+
+    # 1. docker transport
+    probe = transport_check.probe_default()
+    if probe.lying:
+        findings.append(DoctorFinding(
+            kind='docker-transport-lying',
+            severity='critical',
+            message=probe.detail,
+            project=None,
+            refs=['reference/LESSONS.md#L18'],
+        ))
+    # 'unavailable' is deliberately silent (see docstring above); 'healthy'
+    # likewise produces no finding.
+
+    # 2. cgroup slice existence, across every registered project's gates
+    slice_owners: dict[str, list[str]] = {}
+    try:
+        registry = load_registry()
+    except Exception:
+        registry = {}
+    for project_id, root in registry.items():
+        try:
+            cfg = ProjectConfig.load(root)
+        except Exception:
+            continue
+        for gate_id, gate in cfg.gates.items():
+            for slice_name in _cgroup_slices_in_argv(gate.argv):
+                slice_owners.setdefault(slice_name, []).append(f'{project_id}:{gate_id}')
+
+    if slice_owners:
+        if shutil.which('systemctl') is None:
+            findings.append(DoctorFinding(
+                kind='cgroup-slice-unchecked',
+                severity='info',
+                message=(
+                    'no systemctl on this host: cannot verify that the cgroup '
+                    'slices configured gates dispatch into actually exist (a '
+                    'host with no systemd cannot honor --cgroup-parent limits '
+                    'at all)'
+                ),
+                project=None,
+                refs=sorted(slice_owners),
+            ))
+        else:
+            for slice_name in sorted(slice_owners):
+                owners = slice_owners[slice_name]
+                try:
+                    load_state = _slice_load_state(slice_name)
+                except RuntimeError as exc:
+                    findings.append(DoctorFinding(
+                        kind='cgroup-slice-unverified',
+                        severity='warning',
+                        message=f'could not verify cgroup slice {slice_name!r}: {exc}',
+                        project=None,
+                        refs=owners,
+                    ))
+                    continue
+                if load_state != 'loaded':
+                    findings.append(DoctorFinding(
+                        kind='cgroup-slice-missing',
+                        severity='critical',
+                        message=(
+                            f'cgroup slice {slice_name!r} does not exist '
+                            f'(LoadState={load_state!r}): a container dispatched '
+                            'with --cgroup-parent naming a missing slice runs '
+                            'UNBOUNDED -- systemd silently fabricates a '
+                            'transient slice with no limits (fail-open); this '
+                            'is fail-closed reporting of that hazard'
+                        ),
+                        project=None,
+                        refs=owners,
+                    ))
+
+    return findings
