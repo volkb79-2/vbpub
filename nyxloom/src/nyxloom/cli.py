@@ -90,9 +90,26 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               than a hand-padded placeholder. Prints the
                               recorded commit.
   pause <project> [task]      touch pause flag + PAUSE_SET event;
-  resume <project> [task]     remove + PAUSE_CLEARED. (Project-level pause
+  resume <project> [task] [--force]
+                              remove + PAUSE_CLEARED. (Project-level pause
                               writes the flag file; task-level also flows
                               into the statefile via the event projection.)
+                              PACKAGE RP03 2026-07-27: project-level resume
+                              (no task) first dry-runs the RP01 resync
+                              planner (reused, not reimplemented) and
+                              REFUSES if any task's ground truth has
+                              drifted from its believed state -- printing
+                              the drifted task_id(s)/evidence plus the
+                              exact repair command (`nyxloom resync
+                              <project>` / `--apply`). A refusal writes
+                              NOTHING (no unlink, no event) -- rerunning
+                              without --force refuses identically.
+                              --force resumes anyway and records
+                              `{"forced": true, ...}` on the PAUSE_CLEARED
+                              event. No drift -> resumes silently, exactly
+                              as before RP03. Task-level resume is
+                              DELIBERATELY NOT guarded (see cmd_resume's
+                              docstring for the argument).
   leases                      leases.holder_info for every mutex declared
                               by any registered project (project + host).
   digest <project> [--since SEQ]   prints notify.digest.
@@ -1073,8 +1090,83 @@ def cmd_pause(args) -> int:
     return 0
 
 
+def _pre_resume_drift_scan(project: str, cfg) -> list | None:
+    """PACKAGE RP03: the pre-resume safety check, wired to the SAME
+    ground-truth planner `resync` uses (`resync.resync_plan`, fed by its own
+    `gather_handoff_presence` / `gather_git_facts` I/O boundaries) -- this
+    is deliberately NOT a second drift-detection implementation, just a
+    programmatic (non-printing) dry-run of RP01's existing one.
+
+    Returns the list of `ProposedTransition` rows whose `proposed_action !=
+    ACTION_NONE` (a possibly-EMPTY list -- "ran clean, no drift"), or `None`
+    if the scan itself could not complete (a storage/git failure while
+    gathering ground truth). `None` vs `[]` is the load-bearing distinction
+    per the RP03 hard constraint: a scan that could not run must never be
+    read as "no drift found" by its caller -- that would manufacture false
+    confidence in the riskiest operation in the system. `cmd_resume` treats
+    both `None` and a non-empty list as "refuse by default", but reports
+    each with a DIFFERENT message (see there) so an operator (and a test)
+    can tell "verified clean" apart from "could not verify" apart from
+    "verified drifted"."""
+    from . import storage
+    from .resync import (
+        ACTION_NONE, gather_git_facts, gather_handoff_presence, resync_plan,
+    )
+
+    try:
+        states = storage.list_states(project)
+        frontmatters = gather_handoff_presence(cfg, states)
+        git_facts = gather_git_facts(str(cfg.root), cfg.default_branch, states)
+        plan = resync_plan(states, frontmatters, git_facts)
+    except Exception:
+        return None
+
+    return [p for p in plan if p.proposed_action != ACTION_NONE]
+
+
 def cmd_resume(args) -> int:
-    """resume <project> [task]"""
+    """resume <project> [task] [--force]
+
+    PACKAGE RP03 2026-07-27 (a pre-resume safety guard): resuming a
+    project is the single highest-consequence operator action in the
+    system -- the daemon immediately starts dispatching agents, spending
+    budget, and merging branches against whatever state it finds. A
+    project can sit paused for days, ample time for that state to drift
+    from git reality (a branch deleted, a worktree removed, an attempt
+    still recorded RUNNING whose process is long dead). Project-level
+    resume (no task given) therefore dry-runs the EXISTING resync planner
+    first (`_pre_resume_drift_scan` above -- reused, not reimplemented)
+    and REFUSES to resume when it reports drift, printing which task(s)
+    drifted and the exact repair command. `--force` overrides the refusal
+    and records that it did.
+
+    ATOMICITY: the scan runs and this function can return BEFORE either
+    the pause-flag unlink or the PAUSE_CLEARED append -- both happen
+    strictly AFTER a refusal would already have returned, so a refused
+    resume changes NOTHING (re-running without --force refuses
+    identically; see test_resume_guard.py's atomicity oracle).
+
+    DEGRADE SAFETY: `_pre_resume_drift_scan` returns `None` (never `[]`)
+    when the scan itself fails -- this function refuses on `None` exactly
+    like it refuses on a non-empty drift list (never treats "could not
+    verify" as "verified clean").
+
+    TASK-LEVEL RESUME IS DELIBERATELY NOT GUARDED. Two reasons: (1) blast
+    radius -- project-level resume flips the daemon from fully inert to
+    fully active across EVERY task at once (the "riskiest action"
+    scenario above); task-level resume only un-pauses the one task the
+    operator explicitly named, so the worst case is bounded to that one
+    task's next reconcile tick, not a project-wide dispatch storm. (2) the
+    reused planner's drift signal is a broader question than "is this
+    one task safe to resume" -- e.g. an operator-created task whose
+    handoff was never filed under the trove's active globs reads as an
+    "orphan" (NEEDS_OPERATOR) under `resync_plan` even though nothing
+    about resuming IT specifically is unsafe; scoping the SAME planner to
+    one task would false-block legitimate single-task operator actions
+    on exactly that shape of task (see the pre-existing `test_resume_task`
+    in test_cli.py, whose fixture is precisely this shape, and RP03's own
+    `test_resume_task_level_skips_the_drift_guard`).
+    """
     from . import paths, storage
     from .types import Actor, ActorKind, EventType
 
@@ -1083,7 +1175,7 @@ def cmd_resume(args) -> int:
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
 
     if hasattr(args, 'task') and args.task:
-        # Task-level resume
+        # Task-level resume -- deliberately unguarded, see docstring above.
         flag_path = paths.pause_flag(args.project, args.task)
         flag_path.unlink(missing_ok=True)
 
@@ -1097,19 +1189,68 @@ def cmd_resume(args) -> int:
             task_id=args.task,
             payload={},
         )
-    else:
-        # Project-level resume
-        flag_path = paths.pause_flag(args.project)
-        flag_path.unlink(missing_ok=True)
+        return 0
 
-        states = storage.list_states(args.project)
+    # Project-level resume: RP03 pre-resume drift guard.
+    force = getattr(args, "force", False)
+    drift = _pre_resume_drift_scan(args.project, cfg)
 
-        storage.append_event(
-            args.project,
-            actor=actor,
-            type=EventType.PAUSE_CLEARED,
-            payload={},
+    payload: dict = {}
+    if drift is None:
+        # The scan itself could not complete -- NEVER read as "no drift".
+        if not force:
+            print(
+                f"error: refusing to resume '{args.project}' -- could not "
+                f"verify its state first (the pre-resume drift scan "
+                f"itself failed). Inspect manually: nyxloom resync "
+                f"{args.project}; pass --force to resume without a "
+                f"completed scan once you've confirmed it's safe.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"--force: resuming '{args.project}' WITHOUT a completed "
+            f"pre-resume drift scan (the scan itself failed) -- operator "
+            f"override recorded.",
+            file=sys.stderr,
         )
+        payload = {"forced": True, "drift_scan": "failed"}
+    elif drift:
+        summary = "; ".join(
+            f"{p.task_id} ({p.proposed_action}: {p.evidence})" for p in drift
+        )
+        if not force:
+            print(
+                f"error: refusing to resume '{args.project}' -- drift "
+                f"detected in {len(drift)} task(s): {summary}",
+                file=sys.stderr,
+            )
+            print(
+                f"inspect: nyxloom resync {args.project}   "
+                f"repair: nyxloom resync {args.project} --apply",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"--force: resuming '{args.project}' despite detected drift "
+            f"in {len(drift)} task(s): {summary}",
+            file=sys.stderr,
+        )
+        payload = {"forced": True, "drift_tasks": [p.task_id for p in drift]}
+    # else: drift == [] -- verified clean, resume proceeds silently exactly
+    # as before RP03 (payload stays {}, nothing printed).
+
+    flag_path = paths.pause_flag(args.project)
+    flag_path.unlink(missing_ok=True)
+
+    states = storage.list_states(args.project)
+
+    storage.append_event(
+        args.project,
+        actor=actor,
+        type=EventType.PAUSE_CLEARED,
+        payload=payload,
+    )
 
     return 0
 
@@ -1650,6 +1791,13 @@ def main(argv: list[str] | None = None) -> int:
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("project", help="Project ID")
     resume_parser.add_argument("task", nargs="?", help="Task ID (optional)")
+    resume_parser.add_argument("--force", action="store_true",
+                                help="PACKAGE RP03: resume a project-level pause "
+                                     "even when the pre-resume drift scan finds "
+                                     "(or fails to complete) drift -- recorded on "
+                                     "the PAUSE_CLEARED event (operator override; "
+                                     "no effect on task-level resume, which is "
+                                     "unguarded).")
 
     # leases
     leases_parser = subparsers.add_parser("leases")
