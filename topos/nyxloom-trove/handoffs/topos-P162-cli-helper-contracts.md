@@ -20,7 +20,6 @@ oracles:
     observable: "Parsed entity, slice, and container filters become the Collector's tuple-or-None contract while the selected metrics mode is preserved."
     negative: "Repeatable CLI filters reach collection with the wrong shape, silently disappear, or confuse absence with an empty filter."
     gate: topos-suite
-  - id: O3
 gates: [topos-suite]
 escalate_if:
   - "an oracle needs a daemon connection, Collector run, or product-code change"
@@ -43,7 +42,7 @@ escalate_if:
    do not run a Collector, BPF probe, or daemon.
 2. Test that BPF needs its subcommand and that explicit roots/JSON are retained.
 3. Test all-present and all-absent filter conversion and the output types.
-5. Run the focused test module in `tester-unified`, self-review all oracles and
+4. Run the focused test module in `tester-unified`, self-review all oracles and
    scope, commit only the allowed files, and leave the branch unmerged.
 
 ## BLOCKED rule
