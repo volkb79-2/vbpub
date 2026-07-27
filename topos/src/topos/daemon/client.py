@@ -575,30 +575,36 @@ class DaemonClient:
         """Call the ``hello`` versioned op; returns protocol info and limits."""
         result = self._request_envelope("hello")
         pv = result.get("protocol_versions")
-        if not isinstance(pv, list):
+        if (
+            not isinstance(pv, list)
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in pv)
+        ):
             raise DaemonProtocolError(
                 f"daemon at {self.socket_path} returned invalid protocol_versions"
             )
         caps = result.get("capabilities")
-        if not isinstance(caps, list):
+        if not isinstance(caps, list) or any(not isinstance(value, str) for value in caps):
             raise DaemonProtocolError(
                 f"daemon at {self.socket_path} returned invalid capabilities"
             )
         identity = result.get("identity")
-        if not isinstance(identity, dict):
+        if (
+            not isinstance(identity, dict)
+            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in identity.items())
+        ):
             raise DaemonProtocolError(
                 f"daemon at {self.socket_path} returned invalid identity"
             )
         limits = result.get("limits")
-        if not isinstance(limits, dict):
+        if not isinstance(limits, dict) or any(not isinstance(key, str) for key in limits):
             raise DaemonProtocolError(
                 f"daemon at {self.socket_path} returned invalid limits"
             )
         return DaemonHello(
-            protocol_versions=tuple(int(v) for v in pv),
-            capabilities=tuple(str(c) for c in caps),
-            identity=dict(identity),  # type: ignore[arg-type]
-            limits=dict(limits),  # type: ignore[arg-type]
+            protocol_versions=tuple(pv),
+            capabilities=tuple(caps),
+            identity=dict(identity),
+            limits=dict(limits),
         )
 
     def request_current(self) -> DaemonCurrentResult:
