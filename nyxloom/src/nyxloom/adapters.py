@@ -256,7 +256,8 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    approved_amendments: list[str] | None = None,
                    review_focus: list[str] | None = None,
                    review_depth: str = "",
-                   escalation_note: str = "") -> tuple[list[str], str]:
+                   escalation_note: str = "",
+                   repair_allowed: bool = False) -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -329,6 +330,17 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     exists; it only names WHY a stronger tier ran. Defaults "" (every
     non-escalated dispatch, which is nearly all of them) -> byte-identical to
     the pre-D-R3 prompt.
+
+    DR8 (2026-07-27, routing-model-redesign.md D-R8, refined): `repair_allowed`,
+    when true, grants the independent reviewer a BOUNDED permission to fix a
+    small test/fixture-side gap it finds and commit that on the task's own
+    branch, instead of forcing a full carve/implement/review round-trip -- the
+    caller passes `cfg.policy.reviewer_repair` (this function makes no policy
+    decision, same "pure signal passed in" shape as escalation_note/
+    review_depth above). Only the REVIEW_INDEPENDENT branch consults it.
+    Defaults False -> this block is a complete no-op, so the prompt is
+    byte-identical to pre-DR8 for EVERY role -- the bound itself is enforced
+    mechanically AFTER the fact (daemon.py), never merely by this prompt text.
     """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
     if role is Role.CARVER:
@@ -654,6 +666,42 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # dispatching at all (same rationale as review_depth/review_focus
         # above; the reviewer still runs its base adversarial checks, just
         # without the context on why a stronger tier ran).
+
+    # DR8 (2026-07-27, routing-model-redesign.md D-R8, refined): the bounded
+    # repair permission -- an already-engaged independent reviewer MAY commit
+    # a small fix to this task's OWN test/fixture files (never production
+    # source) instead of forcing a full carve/implement/review round-trip.
+    # Appended AFTER escalation_note (task-specific content, above) and
+    # BEFORE the DRY note (generic standing instruction, below) -- the
+    # established priority convention this function already follows:
+    # task-specific content is appended before generic standing instructions,
+    # so generic content is the first to be dropped when the budget is tight.
+    # Uses the SAME argv_max - 200 margin the DRY note below reserves (that
+    # margin protects a real past incident -- see
+    # test_review_independent_prompt_stays_under_argv_max_with_real_paths)
+    # and the SAME "skip silently, never truncate" idiom the DRY note uses --
+    # a permission grant truncated mid-sentence could read as something it
+    # isn't, so this is a short fixed string that either fits whole or is
+    # omitted entirely (never the truncate-with-marker pattern prior_verdict/
+    # review_focus/review_depth/escalation_note use for variable-length
+    # prose). Defaults False (repair_allowed omitted) -> this block is a
+    # complete no-op, so the prompt is byte-identical to pre-DR8 for every
+    # role.
+    if role is Role.REVIEW_INDEPENDENT and repair_allowed:
+        note = (
+            "\nBounded repair: you MAY fix missed branches, absent fixtures "
+            "or missing assertions in this task's OWN test files, and commit "
+            "that on its branch. NEVER edit production source -- an "
+            "out-of-scope repair is auto-reverted and this review becomes a "
+            "REJECTION. If you repaired, write `VERDICT: APPROVED (repaired)` "
+            "and one line naming what you patched."
+        )
+        if len(prompt) + len(note) <= argv_max - 200:
+            prompt += note
+        # else: skip -- dispatching without the repair permission beats not
+        # dispatching at all (same rationale as the DRY note's own -200
+        # margin below); the reviewer still runs its base adversarial review
+        # and rejects as normal, just without the inline-fix permission.
 
     # D-R2 refinement (2026-07-26, routing-model-redesign.md): standing DRY
     # instruction on every dispatch of these two roles. Appended LAST (lowest

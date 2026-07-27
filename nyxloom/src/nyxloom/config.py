@@ -196,6 +196,27 @@ class Policy:
     # blind implementer re-dispatch. Raise it to absorb a flaky first failure
     # with a plain retry before spending a diagnosis.
     gate_diagnosis_after_failures: int = 1
+    # DR8 2026-07-27 (routing-model-redesign.md D-R8, refined; operator
+    # decision 2026-07-27): let an already-engaged independent reviewer fix a
+    # small test-side gap it finds (missed branch, absent fixture, missing
+    # assertion) inline instead of forcing a full carve/implement/review
+    # round-trip -- BOUNDED to `reviewer_repair_paths` and mechanically
+    # re-checked after the fact (daemon.py's EmitAttemptExit REVIEW_INDEPENDENT
+    # consumption), never merely prompted. Unlike this dataclass's other
+    # `*_interval_days`/`mutation_gate` opt-in-off knobs -- which default off
+    # because ENABLING them makes nyxloom spend budget the operator never
+    # asked for (a new carve dispatch, a background probe) -- reviewer_repair
+    # spends nothing extra: it is a permission INSIDE an already-dispatched
+    # review session, so the opt-in convention does not apply here.
+    # `pre_merge_gate: bool = True` above is the existing precedent for a
+    # safety/behaviour knob defaulting ON.
+    reviewer_repair: bool = True
+    # fnmatch globs matched against repo-root-relative POSIX paths; anything
+    # a repair touches that matches none of these is out of bounds (and the
+    # repair is reverted -- see daemon.py's _enforce_reviewer_repair).
+    reviewer_repair_paths: list[str] = field(default_factory=lambda: [
+        "*/tests/*", "tests/*", "*/conftest.py", "*/test_*.py",
+    ])
 
 
 @dataclass

@@ -323,6 +323,7 @@ running -- exactly the bug P37 exists to prevent recurring here.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import http.server
 import json
@@ -5605,6 +5606,243 @@ class Daemon:
             text = text[:max_chars].rstrip() + "\n[... review report truncated ...]"
         return text
 
+    def _task_branch_head_sha(self, cfg: ProjectConfig, task_id: str) -> str | None:
+        """DR8 (routing-model-redesign.md D-R8, refined): resolve feat/<task_id>'s
+        current HEAD sha, read-only -- the SAME `git rev-parse --verify` call
+        style _crosscheck_head_commit uses just above (never a write to the
+        branch). Called at LaunchReview dispatch time to record the pre-review
+        baseline (`pre_review_sha`) a repair's diff range is measured from.
+        Returns None if the branch does not exist or the resolve fails --
+        callers degrade to "no repair enforcement possible": a missing
+        baseline INVALIDATES an unverifiable repair (see
+        _enforce_reviewer_repair) rather than silently trusting it."""
+        branch = f"feat/{task_id}"
+        res = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--verify", branch],
+            capture_output=True, text=True,
+        )
+        if res.returncode != 0:
+            return None
+        sha = res.stdout.strip()
+        return sha or None
+
+    def _verdict_is_repaired(self, cfg: ProjectConfig, task_id: str) -> bool:
+        """DR8: True when the committed <task>-REVIEW.md's VERDICT line carries
+        the `(repaired)` marker adapters.py's REVIEW_INDEPENDENT bounded-repair
+        note asks the reviewer to stamp (`VERDICT: APPROVED (repaired)`) on a
+        self-repair. Mirrors _parse_reject_class's lookup -- reads the SAME
+        committed report text (_review_report_text) _parse_review_verdict
+        already bound "approved" against, no new git plumbing. Read-only."""
+        text = self._review_report_text(cfg, task_id)
+        if not text:
+            return False
+        return bool(re.search(
+            r"^\s*VERDICT:\s*APPROVED\b[^\S\n]*\(repaired\)",
+            text, re.IGNORECASE | re.MULTILINE,
+        ))
+
+    def _pre_review_sha(self, project: str, task_id: str, attempt_id: str) -> str | None:
+        """DR8: read back the pre-review baseline sha THIS review attempt's
+        ATTEMPT_CREATED event recorded for `task_id` (see LaunchReview's
+        per-member created_payload) -- everything committed on feat/<task_id>
+        strictly after this sha is the reviewer's own work, the diff range
+        _enforce_reviewer_repair inspects. Mirrors _scope_amendment_files'
+        direct event-log scan shape (ATTEMPT_CREATED's payload extension here
+        has no TaskStateFile projection field of its own). Returns None when
+        no ATTEMPT_CREATED for this exact (task_id, attempt_id) pair carries
+        the key -- an unresolved baseline (_task_branch_head_sha returned
+        None) or a pre-DR8/policy-off review."""
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return None
+        for ev in events:
+            if (ev.type is EventType.ATTEMPT_CREATED and ev.task_id == task_id
+                    and ev.attempt_id == attempt_id):
+                sha = ev.payload.get("pre_review_sha")
+                return sha if isinstance(sha, str) and sha else None
+        return None
+
+    def _reviewer_repair_touched_paths(self, cfg: ProjectConfig, task_id: str,
+                                       pre_sha: str) -> list[str]:
+        """DR8: `git diff --name-only <pre_sha>..feat/<task_id>` -- the repo-
+        root-relative paths the reviewer itself touched strictly after the
+        pre-review baseline. Read-only. Returns [] (vacuously in-bounds, see
+        _enforce_reviewer_repair) on a git failure or an empty diff -- both
+        mean "nothing attributable to the reviewer was found".
+
+        EXCLUDES the reviewer's own committed `<task>-REVIEW.md` (under
+        cfg.reports_dir): every review -- repaired or not -- commits this
+        file (the packet's REQUIRED OUTPUT CONTRACT), so it is orthogonal to
+        the repair bound, never something the reviewer needed `repair_
+        allowed` permission for. Without this exclusion EVERY `(repaired)`
+        verdict would trip the out-of-bounds check on its own required
+        artifact alone, making the whole permission a no-op. `git diff
+        --name-only` prints paths relative to the TRUE git top-level (proven
+        empirically -- `-C` does not re-root diff/show output the way it
+        re-roots a `git show <rev>:<path>` INPUT pathspec, unlike the `./`
+        trick _parse_review_verdict's own docstring documents), which can
+        differ from cfg.root (nyxloom self-hosts with cfg.root=<repo>/
+        nyxloom) -- matched by SUFFIX, not exact equality, so this is
+        correct whether or not cfg.root is the repo top-level."""
+        branch = f"feat/{task_id}"
+        res = subprocess.run(
+            ["git", "-C", str(cfg.root), "diff", "--name-only", f"{pre_sha}..{branch}"],
+            capture_output=True, text=True,
+        )
+        if res.returncode != 0:
+            return []
+        own_review_rel = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
+        touched = []
+        for p in res.stdout.splitlines():
+            p = p.strip()
+            if not p:
+                continue
+            if p == own_review_rel or p.endswith("/" + own_review_rel):
+                continue
+            touched.append(p)
+        return touched
+
+    def _reviewer_repair_offending_paths(self, cfg: ProjectConfig,
+                                         touched: list[str]) -> list[str]:
+        """DR8: pure (no git, no I/O) bound check -- the subset of `touched`
+        that matches NONE of `cfg.policy.reviewer_repair_paths` (fnmatch on
+        the repo-root-relative POSIX path, exactly as the glob-matching
+        oracle specifies). Empty return means EVERY touched path is in
+        bounds. Split out from _enforce_reviewer_repair so the matching rule
+        itself is directly testable without a real git repo."""
+        patterns = cfg.policy.reviewer_repair_paths
+        return [p for p in touched if not any(fnmatch.fnmatch(p, pat) for pat in patterns)]
+
+    def _revert_reviewer_repair(self, project: str, cfg: ProjectConfig,
+                                task_id: str, pre_sha: str) -> bool:
+        """DR8 (step 5): undo an OUT-OF-BOUNDS reviewer repair so no
+        unreviewed production edit survives on feat/<task_id> -- `git revert
+        --no-edit --no-merges <pre_sha>..<branch tip>` in a DETACHED scratch
+        worktree (mirrors _run_post_merge_gate_bg's own scratch-worktree
+        pattern; a revert needs a working tree, and a detached checkout never
+        collides with the branch's own live worktree at cfg.root/
+        cfg.worktree_root/branch), then CAS `update-ref` the branch onto the
+        revert commit -- the SAME style precedent as the post-merge
+        auto-revert above (log it, record an event -- here, the caller's
+        REVIEW_RECORDED payload -- never crash the pass on a git failure).
+        Returns False (and logs) on ANY git failure; the caller still forces
+        the REJECTED/fixable outcome regardless -- a failed revert must never
+        silently downgrade back to trusting the unverified repair.
+
+        `-c user.name=/-c user.email=` are passed explicitly on the revert
+        itself, not left to ambient global git config -- same reason
+        _execute_auto_merge's own `--no-ff` merge commit does (see its
+        docstring): a revert ALWAYS creates a commit, and an environment with
+        no global identity configured (observed live in the test-runner
+        container -- this exact gap, caught by its own gate run) fails with
+        "Please tell me who you are" otherwise, which the `revert-failed`
+        log/return-False path below would otherwise misreport as an ordinary
+        git failure rather than a fixable identity gap."""
+        branch = f"feat/{task_id}"
+        repo_root = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True).stdout.strip()
+        if not repo_root:
+            log.error("reviewer-repair-revert-failed", project=project, task=task_id,
+                      reason="repo-root-unresolved")
+            return False
+        tip_res = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--verify", branch],
+            capture_output=True, text=True)
+        tip = tip_res.stdout.strip()
+        if tip_res.returncode != 0 or not tip:
+            log.error("reviewer-repair-revert-failed", project=project, task=task_id,
+                      reason="branch-tip-unresolved")
+            return False
+        scratch = Path(repo_root) / ".worktrees" / f"repair-revert-{task_id}"
+        if scratch.exists():
+            subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                           capture_output=True, text=True)
+        add = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "--detach", str(scratch), tip],
+            capture_output=True, text=True)
+        if add.returncode != 0:
+            log.error("reviewer-repair-revert-failed", project=project, task=task_id,
+                      reason="worktree-add-failed", stderr=add.stderr[:200])
+            return False
+        ok = False
+        try:
+            rv = subprocess.run(
+                ["git", "-C", str(scratch),
+                 "-c", "user.name=nyxloomd", "-c", "user.email=nyxloomd@localhost",
+                 "revert", "--no-edit", "--no-merges", f"{pre_sha}..{tip}"],
+                capture_output=True, text=True)
+            if rv.returncode != 0:
+                log.error("reviewer-repair-revert-failed", project=project, task=task_id,
+                          reason="revert-failed", stderr=rv.stderr[:200])
+                subprocess.run(["git", "-C", str(scratch), "revert", "--abort"],
+                               capture_output=True, text=True)
+            else:
+                new_head = subprocess.run(
+                    ["git", "-C", str(scratch), "rev-parse", "HEAD"],
+                    capture_output=True, text=True).stdout.strip()
+                if new_head:
+                    cas = subprocess.run(
+                        ["git", "-C", repo_root, "update-ref",
+                         f"refs/heads/{branch}", new_head, tip],
+                        capture_output=True, text=True)
+                    if cas.returncode == 0:
+                        ok = True
+                        log.warning("reviewer-repair-reverted", project=project, task=task_id,
+                                   frm=tip, to=new_head)
+                    else:
+                        log.error("reviewer-repair-revert-failed", project=project, task=task_id,
+                                  reason="update-ref-cas-refused", stderr=cas.stderr[:200])
+        finally:
+            subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                           capture_output=True, text=True)
+        return ok
+
+    def _enforce_reviewer_repair(self, project: str, cfg: ProjectConfig,
+                                 task_id: str, attempt_id: str
+                                 ) -> tuple[str, dict[str, Any] | None]:
+        """DR8 (step 5): post-hoc bounded-repair enforcement for a member whose
+        committed verdict reads `VERDICT: APPROVED (repaired)`. Only called
+        when cfg.policy.reviewer_repair is on and the verdict text-scan
+        already read "approved" -- see the EmitAttemptExit REVIEW_INDEPENDENT
+        call site.
+
+        Returns ("approved", None) when the repair is IN BOUNDS, or the diff
+        is EMPTY (a mis-stamped verdict -- the reviewer wrote `(repaired)`
+        but committed nothing on the branch: not a violation, just noise) --
+        proceeds exactly like an ordinary APPROVED, no new verification layer
+        (the ordinary full gate rerun every commit already faces is what's
+        trusted here, per reconcile.py module contract item 13: no separate
+        verdict re-check belongs at merge time).
+
+        Returns ("rejected", details) when the repair is INVALIDATED --
+        `details["reason"]` is "missing_baseline" (pre_review_sha absent --
+        an unverifiable repair is never silently trusted) or "out_of_scope"
+        (`details["offending_paths"]` names what the reviewer touched outside
+        `reviewer_repair_paths`; `details["reverted"]` records whether the
+        revert itself succeeded). An out-of-scope repair is reverted HERE
+        (not by the caller) so the branch is clean the instant the
+        REJECTED/fixable outcome is recorded -- never a window where an
+        unreviewed production edit sits on a branch the caller has already
+        stamped MERGE_READY-eligible."""
+        pre_sha = self._pre_review_sha(project, task_id, attempt_id)
+        if not pre_sha:
+            log.warning("reviewer-repair-unverifiable", project=project, task=task_id,
+                       attempt=attempt_id, reason="missing-pre-review-sha")
+            return "rejected", {"reason": "missing_baseline"}
+        touched = self._reviewer_repair_touched_paths(cfg, task_id, pre_sha)
+        if not touched:
+            return "approved", None
+        offending = self._reviewer_repair_offending_paths(cfg, touched)
+        if not offending:
+            return "approved", None
+        reverted = self._revert_reviewer_repair(project, cfg, task_id, pre_sha)
+        log.warning("reviewer-repair-out-of-bounds", project=project, task=task_id,
+                   attempt=attempt_id, offending=offending, reverted=reverted)
+        return "rejected", {"reason": "out_of_scope", "offending_paths": offending,
+                            "reverted": reverted}
+
     def _rescope_context(self, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                          origin_task_id: str) -> dict:
         """B7 2026-07-20 (P75, D-060 carver re-scope entry; critique CRITIQUE.md:206).
@@ -6150,6 +6388,30 @@ class Daemon:
                         verdict = self._parse_review_verdict(
                             cfg, member, current_attempt_id=action.attempt_id,
                             is_first_review=not prior_reviews)
+                        # DR8 (routing-model-redesign.md D-R8, refined): a
+                        # `(repaired)` verdict is a PERMISSION, not a free
+                        # pass -- mechanically re-check its blast radius AFTER
+                        # the fact, here, before the reject_class text-scan
+                        # below even runs. Only when the policy is on (else
+                        # this whole path is inert, by design -- an operator
+                        # who never granted the permission gets the ordinary
+                        # pre-existing verdict handling regardless of what the
+                        # text says) and only on a verdict the text-scan
+                        # already read as "approved" (a genuine REJECTED
+                        # review has nothing to enforce here). This is a
+                        # daemon-recorded OVERRIDE that takes precedence over
+                        # the text scan below -- the same "documented path
+                        # first, then fall back" precedence _parse_review_
+                        # verdict/_parse_reject_class already use, just at
+                        # this call site rather than inside those two
+                        # general-purpose parsers (which other, non-repair
+                        # callers -- LaunchGateDiagnosis, _rescope_context --
+                        # also use and must not be affected).
+                        repair_details: dict[str, Any] | None = None
+                        if (cfg.policy.reviewer_repair and verdict == "approved"
+                                and self._verdict_is_repaired(cfg, member)):
+                            verdict, repair_details = self._enforce_reviewer_repair(
+                                project, cfg, member, action.attempt_id)
                         # B4b (D-060 triage Tier-2; D-066): on a genuine rejection
                         # the reviewer stamps a REJECT_CLASS line into the SAME
                         # committed report -- capture it in the event so
@@ -6159,9 +6421,24 @@ class Daemon:
                         # reconcile's mechanical attempt-budget fallback.
                         payload = {"result": verdict}
                         if verdict != "approved":
-                            reject_class = self._parse_reject_class(cfg, member)
-                            if reject_class:
-                                payload["reject_class"] = reject_class
+                            if repair_details is not None:
+                                # DR8: the invalidated-repair override IS the
+                                # class -- `fixable` (a real, local, low-
+                                # blast-radius gap the reviewer both
+                                # identified and knew how to fix; see D-R8's
+                                # rationale for why this routes to a targeted
+                                # retry, not a re-carve). Never falls through
+                                # to the text-scan below: the committed
+                                # REVIEW.md carries no REJECT_CLASS line (it
+                                # says APPROVED), so that scan would find
+                                # nothing anyway.
+                                payload["reject_class"] = "fixable"
+                                payload["repair_invalidated"] = True
+                                payload.update(repair_details)
+                            else:
+                                reject_class = self._parse_reject_class(cfg, member)
+                                if reject_class:
+                                    payload["reject_class"] = reject_class
                         events.append(self._append_ev(
                             project, cfg, states, EventType.REVIEW_RECORDED,
                             payload, task_id=member,
@@ -6170,9 +6447,11 @@ class Daemon:
                             events.append(self._transition(project, cfg, states, member,
                                                             TaskState.MERGE_READY, None))
                         else:
+                            note = f"review verdict: {verdict} (receipt: {result.value})"
+                            if repair_details is not None:
+                                note += f" -- reviewer repair invalidated: {repair_details.get('reason')}"
                             events.append(self._transition(project, cfg, states, member,
-                                                            TaskState.REVIEW_REJECTED,
-                                                            f"review verdict: {verdict} (receipt: {result.value})"))
+                                                            TaskState.REVIEW_REJECTED, note))
                 else:
                     # P56 2026-07-20 (M7). A non-DONE review receipt
                     # (LIMIT/ERROR/BLOCKED) is an INFRA failure of the review
@@ -6600,6 +6879,24 @@ class Daemon:
                     # (observability + the reuse oracle) -- the daemon-set marker,
                     # not something the agent reports.
                     created_payload["resumed_from"] = action.resume_session
+                # DR8 (routing-model-redesign.md D-R8, refined): the PRE-review
+                # baseline sha for this member's own feat/<t> branch -- the
+                # boundary "everything committed on the branch after this is
+                # the reviewer's" that _enforce_reviewer_repair diffs against.
+                # Only resolved when the policy is on (an unused git rev-parse
+                # per member is pointless when reviewer_repair is off, and the
+                # post-hoc path is inert either way -- see EmitAttemptExit).
+                # If the branch cannot be resolved, record nothing and log a
+                # warning -- a missing baseline degrades to "no repair
+                # enforcement possible", handled as an invalidation, never a
+                # silent trust, by _enforce_reviewer_repair.
+                if cfg.policy.reviewer_repair:
+                    pre_sha = self._task_branch_head_sha(cfg, t)
+                    if pre_sha:
+                        created_payload["pre_review_sha"] = pre_sha
+                    else:
+                        log.warning("reviewer-repair-baseline-unresolved",
+                                   project=project, task=t, attempt=attempt_id)
                 events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
                                                created_payload, task_id=t,
                                                attempt_id=attempt_id, wave_id=wave_id))
@@ -6669,6 +6966,7 @@ class Daemon:
                     approved_amendments=approved_amendments,
                     review_depth=review_depth,  # D-BATCHC: complexity/gate-rigor directive
                     escalation_note=escalation_note,  # D-R3: incapable-escalation meta-note
+                    repair_allowed=cfg.policy.reviewer_repair,  # DR8: bounded test-repair permission
                 )
             # P61 (A9): the review holds the UNION of its members' leases, so a
             # concurrent carve/dispatch cannot touch a task while it is under

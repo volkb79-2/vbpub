@@ -88,7 +88,9 @@
         "pre_merge_gate": {"type": "boolean"},
         "mutation_gate": {"type": "boolean"},
         "auto_revert_failed_merge": {"type": "boolean"},
-        "gate_diagnosis_after_failures": {"type": "integer", "minimum": 1}
+        "gate_diagnosis_after_failures": {"type": "integer", "minimum": 1},
+        "reviewer_repair": {"type": "boolean"},
+        "reviewer_repair_paths": {"type": "array", "items": {"type": "string"}}
       }
     },
     "notify": {
