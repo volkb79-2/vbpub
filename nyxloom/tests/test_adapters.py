@@ -2341,6 +2341,122 @@ def test_escalation_note_coexists_with_review_focus_and_review_depth():
             < prompt.index("higher-tier model"))
 
 
+# ============================================================================
+# DR8 (routing-model-redesign.md D-R8, refined): build_dispatch's
+# `repair_allowed` kwarg -- the BOUNDED test-repair PERMISSION on the
+# REVIEW_INDEPENDENT prompt. This file covers only the dispatch-side prompt
+# shaping (default-off byte-identity, the permission text, the argv_max-200
+# budget margin); the post-hoc MECHANICAL enforcement (the actual bound) is
+# tested in tests/test_reviewer_repair.py.
+# ============================================================================
+
+def test_repair_allowed_absent_prompt_is_byte_identical_for_review_and_implementer():
+    """Oracle 1: repair_allowed=False (the default) reproduces the EXACT
+    pre-DR8 prompt for BOTH roles build_dispatch shapes -- REVIEW_INDEPENDENT
+    (the only role the permission text can ever appear on) via the pinned
+    literal snapshot, and IMPLEMENTER (which never even reads the kwarg) via
+    explicit True/False parity."""
+    _argv, review_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT,
+    )
+    assert review_prompt == _PRE_D1_SIMPLE_REVIEW_PROMPT
+
+    _a2, review_prompt_explicit_false = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, repair_allowed=False,
+    )
+    assert review_prompt_explicit_false == _PRE_D1_SIMPLE_REVIEW_PROMPT
+
+    _a3, impl_prompt_default = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER,
+    )
+    _a4, impl_prompt_explicit_true = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, repair_allowed=True,
+    )
+    assert impl_prompt_default == impl_prompt_explicit_true
+    assert "Bounded repair" not in impl_prompt_default
+
+
+def test_repair_allowed_true_adds_permission_to_review_only():
+    """Oracle 2: repair_allowed=True on a REVIEW_INDEPENDENT dispatch adds the
+    bounded-repair text and the `(repaired)` vocabulary. NEGATIVE: the SAME
+    flag on an IMPLEMENTER dispatch adds nothing -- only the role that might
+    need to fix a small gap IT (the reviewer) finds gets this permission."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.REVIEW_INDEPENDENT, repair_allowed=True,
+    )
+    assert "Bounded repair" in prompt
+    assert "NEVER edit production source" in prompt
+    assert "(repaired)" in prompt
+    assert "auto-reverted" in prompt
+
+    _a2, impl_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, repair_allowed=True,
+    )
+    assert "Bounded repair" not in impl_prompt
+    assert "(repaired)" not in impl_prompt
+
+
+def test_repair_allowed_note_skipped_when_argv_max_too_tight():
+    """Oracle 3: a route whose remaining budget covers the base prompt plus
+    its own -200 margin, but not ALSO the much-longer repair note, drops the
+    note SILENTLY (never truncated mid-sentence -- a permission grant cut
+    off mid-way could read as something it isn't) while still producing a
+    valid, non-truncated prompt byte-identical to the no-repair dispatch."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    _b, base_prompt = adapters.build_dispatch(
+        _fake_route(), role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+
+    tight_route = RouteDef(route_id="tight-repair", cli="fake", model="m",
+                            argv_max=len(base_prompt) + 200)
+    _t, tight_base = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
+        repair_allowed=True, **kw)
+
+    assert "Bounded repair" not in prompt          # skipped, not truncated
+    assert len(prompt) <= tight_route.argv_max      # never raises AdapterError
+    assert prompt == tight_base                     # identical to the no-repair dispatch
+
+
+def test_review_independent_prompt_stays_under_argv_max_with_real_paths_and_repair_allowed():
+    """Companion to the pinned B4b regression guard above
+    (test_review_independent_prompt_stays_under_argv_max_with_real_paths):
+    with repair_allowed=True too, a realistic long-path reviewer prompt must
+    still resolve without raising -- the note either fits within its own
+    -200 margin or is silently skipped, same as any other optional block."""
+    long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
+    kw = dict(
+        handoff_path=f"nyxloom-trove/handoffs/{long_task}.md",
+        worktree=f"/workspaces/vbpub/.worktrees/flow-stages/nyxloom/.worktrees/feat/{long_task}",
+        branch=f"feat/{long_task}", task_id=long_task,
+        gate_hint="cd .. && MOCK_MODE=true pytest tests -q",
+        receipt_path="/state/attempts/att-0123456789abcdef/receipt.json",
+        role=Role.REVIEW_INDEPENDENT, attempt_id="att-0123456789abcdef",
+    )
+    _argv0, prompt_without = adapters.build_dispatch(_fake_route(), **kw)
+    _argv, prompt = adapters.build_dispatch(_fake_route(), repair_allowed=True, **kw)
+    assert len(prompt) <= 1500  # default argv_max, never raises AdapterError
+    # This realistic path is already tight enough that neither the doctrine
+    # manifest nor DRY fit (see the B4b regression guard above) -- the much
+    # longer repair note fits even less room, so it too is skipped here,
+    # leaving the prompt byte-identical to the no-repair dispatch.
+    assert prompt == prompt_without
+
+
 # ---------------------------------------------------------------------------
 # P05a (docs/plan-logging.md §5): adapters.py instrumentation -- a provider
 # call -> DEBUG; "a route probe failure/pause" is a named WARNING example.
