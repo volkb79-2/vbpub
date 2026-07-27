@@ -301,6 +301,36 @@ def test_gap_audit_respects_exhausted_budget():
 # Daemon helper: _changed_lines_since_gap_audit (oracles 7 and 8)
 # ==========================================================================
 
+def test_changed_lines_helper_never_run(tmp_state, sample_project):
+    """When no gap-audit carve has ever run, returns None (fire on first pass)."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    cfg = _cfg()
+    cfg.root = sample_project.root
+    result = d._changed_lines_since_gap_audit("demo", cfg)
+    assert result is None
+
+
+def test_changed_lines_helper_missing_head_sha(tmp_state, sample_project):
+    """When a gap-audit carve exists but head_sha is missing, returns 0 (fail-safe)."""
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    # Append a gap-audit carve marker WITHOUT head_sha (old carve format)
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="carve-demo-1", project="demo",
+        state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+    )
+    payload: dict = {"statefile": tsf.to_dict(), "carve_kind": "gap-audit"}  # No head_sha
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.TASK_CREATED, payload=payload, task_id="carve-demo-1",
+    )
+
+    cfg = _cfg()
+    cfg.root = sample_project.root
+    result = d._changed_lines_since_gap_audit("demo", cfg)
+    assert result == 0
+
+
 def test_changed_lines_helper_smoke(tmp_state, sample_project, monkeypatch):
     """Smoke test: _changed_lines_since_gap_audit successfully computes
     changed lines when a gap-audit carve marker exists with head_sha."""
