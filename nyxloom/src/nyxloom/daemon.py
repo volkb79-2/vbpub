@@ -584,6 +584,16 @@ class CarveSummary:
     headroom_estimate: int = 0
     headroom_rationale: str = ""
     outcome: str = "CANDIDATES_READY"
+    # F007 2026-07-27 (gap-engine wave 2, GAP2): the carver's BLIND per-task
+    # judgments from a gap-audit carve's verdict-audit section (see
+    # _verdict_audit_section_lines) -- {"task_id", "judgment", "rationale"}
+    # per sampled COMPLETED task. Empty for every pre-GAP2 report and every
+    # report from a project with verdict_audit_sample_size == 0 (the field
+    # is simply never populated), so to_dict()/from_dict() stay additive:
+    # existing exact-equality assertions on CarveSummary/CARVE_OUTCOME
+    # payloads are unaffected (_consume_carve_exit only adds the disputes
+    # key to the emitted event when this list is non-empty).
+    verdict_audit: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -592,6 +602,7 @@ class CarveSummary:
             "headroom_estimate": self.headroom_estimate,
             "headroom_rationale": self.headroom_rationale,
             "outcome": self.outcome,
+            "verdict_audit": [dict(v) for v in self.verdict_audit],
         }
 
     @classmethod
@@ -605,12 +616,22 @@ class CarveSummary:
             }
             for c in carved_raw if isinstance(c, dict)
         ]
+        verdict_audit_raw = d.get("verdict_audit") or []
+        verdict_audit = [
+            {
+                "task_id": str(v.get("task_id", "")),
+                "judgment": str(v.get("judgment", "")),
+                "rationale": str(v.get("rationale", "")),
+            }
+            for v in verdict_audit_raw if isinstance(v, dict)
+        ]
         return cls(
             carved=carved,
             review_reflection=str(d.get("review_reflection", "")),
             headroom_estimate=int(d.get("headroom_estimate", 0) or 0),
             headroom_rationale=str(d.get("headroom_rationale", "")),
             outcome=str(d.get("outcome", "CANDIDATES_READY")),
+            verdict_audit=verdict_audit,
         )
 
 
@@ -3674,6 +3695,19 @@ class Daemon:
             '  "outcome": one of ' + ", ".join(sorted(_CARVE_OUTCOMES)),
             "Also print this exact JSON as your final output line.",
         ])
+        # F007 2026-07-27 (GAP2): the verdict_audit contract field, ONLY when
+        # this pass's packet actually carries a "## Verdict audit" section
+        # (kind == 'gap-audit' and the sample-size knob is on) -- appended
+        # AFTER the shared tail above so every other kind, and a disabled
+        # verdict-audit, gets the EXACT pre-GAP2 contract text unchanged
+        # (oracle 6: byte-identical when off).
+        if kind == "gap-audit" and cfg.policy.verdict_audit_sample_size > 0:
+            lines.append(
+                '  "verdict_audit": [{"task_id": "<sampled task id>", "judgment": '
+                '"APPROVED|REJECTED", "rationale": "<one paragraph, your OWN blind '
+                'judgment>"}, ...] -- one entry for EVERY task listed under '
+                '"Verdict audit" above.'
+            )
         return "\n".join(lines) + "\n"
 
     def _carve_packet_body_lines(self, cfg: ProjectConfig, project: str, seq: int,
@@ -3794,6 +3828,20 @@ class Daemon:
                 "  alert from a gap-audit carve -- these numbers are for the record.)",
                 "",
             ])
+            # F007 2026-07-27 (GAP2, plan-gap-engine-and-reviewer-repair.md
+            # §GAP2): the verdict-audit extension -- OFF by default
+            # (verdict_audit_sample_size == 0), a complete no-op so the
+            # gap-audit packet stays byte-identical to pre-GAP2 output.
+            # Appended to the SAME 'gap-audit' branch rather than a sibling
+            # `kind` (see _verdict_audit_section_lines' own docstring for
+            # the reasoning) because it reuses the identical cadence trigger,
+            # carve authority, and REQUIRED OUTPUT CONTRACT envelope -- the
+            # two prompts share the dispatch mechanism, only the SOURCE
+            # section differs, exactly the axis _carve_packet_body_lines
+            # already branches on for every other mode.
+            sample_size = cfg.policy.verdict_audit_sample_size
+            if sample_size > 0:
+                lines.extend(self._verdict_audit_section_lines(cfg, states, sample_size))
         elif rescope is not None:
             origin_id = rescope.get("origin_task_id")
             input_rev = rescope.get("input_revision") or "(unknown)"
@@ -3942,6 +3990,161 @@ class Daemon:
                 "",
             ])
         return lines
+
+    def _sample_verdict_audit_tasks(self, states: dict[str, TaskStateFile],
+                                     sample_size: int) -> list[TaskStateFile]:
+        """F007 2026-07-27 (GAP2): the recently-COMPLETED tasks a verdict-audit
+        pass samples, most-recent-first (`since` descending), bounded to
+        `sample_size`. An idle/small project with fewer COMPLETED tasks than
+        the bound samples all of them -- this is a floor, not a target. When
+        the bound truncates, the DROPPED task ids are logged (never silently
+        discarded -- oracle 5): an operator reading the log can see exactly
+        which completed work this pass did NOT re-judge, rather than having
+        to infer it from an unbounded search of `states`."""
+        completed = sorted(
+            (tsf for tsf in states.values() if tsf.state is TaskState.COMPLETED),
+            key=lambda t: t.since, reverse=True,
+        )
+        sampled = completed[:sample_size]
+        dropped = [t.task_id for t in completed[sample_size:]]
+        if dropped:
+            log.info("verdict-audit-sample-truncated", dropped_count=len(dropped),
+                      dropped_ids=dropped, sample_size=sample_size)
+        return sampled
+
+    def _task_final_diff(self, cfg: ProjectConfig, tsf: TaskStateFile) -> str | None:
+        """F007 2026-07-27 (GAP2): the FINAL MERGED diff a completed task
+        introduced -- `git diff <merge_commit>^1 <merge_commit>`, i.e. exactly
+        what landed when feat/<task_id> merged (the merge commit's own parent
+        range, not a moving comparison against the CURRENT default branch tip,
+        which would pick up every unrelated change merged since). This is the
+        ONLY task-specific evidence the verdict-audit's blind judgment sees,
+        alongside the handoff's own oracles -- deliberately never the recorded
+        verdict, rationale, or REJECT_CLASS (see _verdict_audit_section_lines).
+
+        Returns None -- DISTINCT from a genuine empty-string diff (a real
+        no-op merge) -- when the diff cannot be resolved at all: no recorded
+        `merge_commit` (a COMPLETED task predating merge-commit tracking, or a
+        non-branch carve authority) or the git command itself fails (unknown
+        commit, shallow clone, corrupt object). The caller renders these two
+        cases with different, honest prose rather than treating an
+        unresolvable diff as if it were a boringly-empty one.
+
+        EXCLUDES `cfg.reports_dir` via a git pathspec magic exclude. A real
+        review commits `<task>-REVIEW.md` (VERDICT/REJECT_CLASS/rationale)
+        onto the SAME feat/<task_id> branch this diff is taken from (see
+        _review_report_text) -- without this exclusion the exact content
+        this whole extension exists to withhold would leak straight through
+        the diff itself, making 'blind' a fiction. No other path is
+        excluded: everything else the task actually changed is legitimate
+        evidence for the blind judgment."""
+        if not tsf.merge_commit:
+            return None
+        res = subprocess.run(
+            ["git", "-C", str(cfg.root), "diff", f"{tsf.merge_commit}^1", tsf.merge_commit,
+             "--", ".", f":(exclude){cfg.reports_dir}/*"],
+            capture_output=True, text=True,
+        )
+        if res.returncode != 0:
+            return None
+        return res.stdout
+
+    def _verdict_audit_section_lines(self, cfg: ProjectConfig,
+                                      states: dict[str, TaskStateFile],
+                                      sample_size: int) -> list[str]:
+        """F007 2026-07-27 (GAP2, plan-gap-engine-and-reviewer-repair.md
+        §GAP2): the BLIND verdict-audit section appended to a gap-audit carve
+        packet. Extends the EXISTING `kind == 'gap-audit'` branch (not a
+        sibling `kind`) -- both share the exact same cadence trigger, carve
+        authority, and REQUIRED OUTPUT CONTRACT tail, so there was no
+        separate dispatch mechanism worth standing up; only this SOURCE
+        section differs, the same axis every other carve mode already
+        branches on.
+
+        Samples recently-COMPLETED tasks (_sample_verdict_audit_tasks),
+        grouped by the handoff's `component` field (a task whose handoff is
+        missing/unparsable, or whose frontmatter omits `component`, still
+        audits -- grouped under '(uncategorized)', never crashing or being
+        dropped). For each task this embeds ONLY its oracles and its final
+        merged diff (_task_final_diff) -- it NEVER calls
+        _parse_review_verdict/_review_rationale/_parse_reject_class, so the
+        recorded verdict, the reviewer's prose, and the REJECT_CLASS are
+        structurally absent from this prompt text, not merely instructed
+        away (mirrors D-R3's escalation-note non-anchoring precedent:
+        adapters.py's REVIEW_INDEPENDENT branch proves the same property by
+        never being HANDED the prior findings in the first place)."""
+        lines = [
+            "## Verdict audit: judge these COMPLETED tasks BLIND",
+            "For EACH task below, form your OWN independent judgment of whether "
+            "it should be APPROVED or REJECTED, using ONLY the oracles and diff "
+            "shown -- you are not told what was actually decided at the time. "
+            "Report every judgment in the `verdict_audit` field of your JSON "
+            "output contract (see below). Do not carve a package for a task "
+            "purely because you would have rejected it; the daemon compares "
+            "your judgment against the record and decides what, if anything, "
+            "needs a follow-up.",
+            "",
+        ]
+        sampled = self._sample_verdict_audit_tasks(states, sample_size)
+        if not sampled:
+            lines.append("No COMPLETED tasks are available to sample this pass.")
+            lines.append("")
+            return lines
+        grouped: dict[str, list[tuple[TaskStateFile, Any]]] = {}
+        for tsf in sampled:
+            fm = self._frontmatter_for(cfg, tsf)
+            component = fm.component if (fm is not None and fm.component) else "(uncategorized)"
+            grouped.setdefault(component, []).append((tsf, fm))
+        for component in sorted(grouped):
+            lines.append(f"### Component: {component}")
+            for tsf, fm in grouped[component]:
+                lines.append(f"#### Task {tsf.task_id}")
+                if fm is not None and fm.oracles:
+                    lines.append("Oracles:")
+                    for o in fm.oracles:
+                        lines.append(f"- {o.id}: {o.observable} (negative: {o.negative})")
+                else:
+                    lines.append("Oracles: (handoff unavailable -- judge from the diff alone)")
+                diff = self._task_final_diff(cfg, tsf)
+                if diff is None:
+                    lines.append("Diff: (unavailable -- could not resolve the merged diff)")
+                elif diff == "":
+                    lines.append("Diff: (empty -- merge introduced no changes)")
+                else:
+                    lines.append("Diff:")
+                    lines.append("```diff")
+                    lines.append(diff)
+                    lines.append("```")
+                lines.append("")
+        return lines
+
+    def _verdict_audit_disputes(self, cfg: ProjectConfig,
+                                 judgments: list[dict[str, str]]) -> list[dict[str, str]]:
+        """F007 2026-07-27 (GAP2): THE COMPARISON -- daemon-side, never the
+        agent's. `judgments` is the carver's self-reported BLIND per-task
+        verdicts (CarveSummary.verdict_audit, built with no access to the
+        recorded verdict -- see _verdict_audit_section_lines). For each, this
+        reads the RECORDED verdict via _parse_review_verdict -- the SAME
+        helper the ordinary review-consumption path already trusts, which the
+        carver was never shown -- and compares. A mismatch is a DISPUTED carve
+        candidate naming the task; agreement contributes nothing (the common,
+        boring case). Malformed entries (no task_id, or a judgment that is
+        neither APPROVED nor REJECTED) are skipped rather than mis-flagged."""
+        disputes: list[dict[str, str]] = []
+        for j in judgments:
+            task_id = str(j.get("task_id", "")).strip()
+            blind = str(j.get("judgment", "")).strip().upper()
+            if not task_id or blind not in ("APPROVED", "REJECTED"):
+                continue
+            recorded = self._parse_review_verdict(cfg, task_id)
+            recorded_norm = "APPROVED" if recorded == "approved" else "REJECTED"
+            if blind != recorded_norm:
+                disputes.append({
+                    "task_id": task_id,
+                    "blind_judgment": blind,
+                    "recorded_verdict": recorded_norm,
+                })
+        return disputes
 
     def _build_carver_carve_prompt(self, cfg: ProjectConfig, project: str, task_id: str,
                                     seq: int, states: dict[str, TaskStateFile],
@@ -4331,10 +4534,26 @@ class Daemon:
                 json.dumps(persisted, sort_keys=True), encoding="utf-8")
 
             carved_ids = [c.get("id", "") for c in summary.carved]
+            outcome_payload: dict[str, Any] = {
+                "seq": seq, "carved_ids": carved_ids, "outcome": summary.outcome,
+                "headroom_estimate": summary.headroom_estimate,
+            }
+            # F007 2026-07-27 (GAP2): THE COMPARISON, daemon-side -- only when
+            # this report actually carries blind judgments (every pre-GAP2
+            # report, and every report from a project with the knob off,
+            # leaves summary.verdict_audit == [] -> this whole block is a
+            # no-op and outcome_payload is UNCHANGED, so the existing exact-
+            # equality CARVE_OUTCOME payload assertions are unaffected).
+            # DISPUTED entries become carve candidates through this SAME
+            # envelope -- the CARVE_OUTCOME event this pass already emits to
+            # report what came out of the carve -- rather than a second,
+            # independent dispatch mechanism.
+            if summary.verdict_audit:
+                disputes = self._verdict_audit_disputes(cfg, summary.verdict_audit)
+                if disputes:
+                    outcome_payload["verdict_audit_disputes"] = disputes
             events.append(self._append_ev(
-                project, cfg, states, EventType.CARVE_OUTCOME,
-                {"seq": seq, "carved_ids": carved_ids, "outcome": summary.outcome,
-                 "headroom_estimate": summary.headroom_estimate},
+                project, cfg, states, EventType.CARVE_OUTCOME, outcome_payload,
                 task_id=task_id, attempt_id=attempt_id))
 
             # D-065 (B63 2026-07-20): 'headroom-low' and 'roadmap-exhausted' are
