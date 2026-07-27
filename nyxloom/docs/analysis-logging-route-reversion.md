@@ -1,9 +1,29 @@
 # Analysis: a log record escaping nyxloom's configured route under xdist
 
-Status: **open, root cause NOT determined** · 2026-07-27
+Status: **RESOLVED 2026-07-27** · fix `8b7258e6` · canonical rule:
+`reference/LESSONS.md` **L19** · local record: `nyxloom-trove/LESSONS.md` **PL10**
 
-Do not re-derive what is below. Five hypotheses are already falsified, and the
-renderer evidence is proven, not inferred.
+> **The title is a misnomer, kept only so existing links resolve. There was no
+> route reversion.** structlog's configuration was never reverted: instrumenting
+> `_Configuration.__setattr__` recorded 619 and 543 `logger_factory` writes across
+> two full runs, **all** of them `_NyxloomLoggerFactory`, **zero** default.
+>
+> **Root cause.** `tests/test_carver_session_executor.py`'s two O6 tests did
+> `monkeypatch.setattr("nyxloom.daemon.log.warning", ...)`. `daemon.log` is a
+> structlog `BoundLoggerLazyProxy`, which defines no per-level methods — they are
+> synthesised by `__getattr__`, which re-binds against the live config on every
+> call. monkeypatch saved that *synthetic* bound method as the "old value" and, on
+> teardown, restored it with `setattr` — **materialising it as a permanent instance
+> attribute**. `log.warning` then bypassed `__getattr__` forever, using a logger
+> frozen to structlog's unconfigured default, for every later test in that worker.
+>
+> **§(b) below is DISPROVEN and must not be carried forward.** There is no
+> production impact: nothing reverts the config, and only a test ever monkeypatches
+> the proxy. `nyxloomd` was never at risk of losing file logging.
+>
+> The material below is preserved as the falsification record — it is accurate
+> about what was ruled out, and the renderer evidence was correct and load-bearing;
+> it simply pointed at the config when the answer was the object.
 
 ## Symptom
 
@@ -89,14 +109,29 @@ This does **not** weaken the oracle: the production behaviour under test is
 *emission*; persistence through a process-global transport is a different
 contract, tested elsewhere.
 
-### (b) Something reverts structlog to defaults — UNKNOWN, and possibly a production bug
+### (b) ~~Something reverts structlog to defaults~~ — **DISPROVEN 2026-07-27**
 
-No repository code path does this. Static analysis cannot name the caller.
-
-**Why this matters beyond the test:** if structlog's process-global
-configuration can revert in a long-running process, `nyxloomd` could silently
-lose file logging and emit to stdout instead. Fixing (a) alone would hide (b) —
-a symptom-guard, not a root-cause fix.
+> **This section was wrong.** Nothing reverts structlog. Kept only to record the
+> mistake, because it was a *plausible* reading that explained every symptom and
+> therefore survived a long time.
+>
+> Measured: `_Configuration.__setattr__` instrumentation logged 619 and 543
+> `logger_factory` writes over two full suites — every one `_NyxloomLoggerFactory`,
+> none default. A fingerprint captured at the exact moment of the escaping emission
+> showed the live config **entirely correct**: right factory, right processors, and
+> a handler open on precisely the `nyxloom.jsonl` the failing test then read.
+>
+> The real cause is a permanently materialised instance attribute on the logger
+> proxy (see the header, and canonical **L19**). It is confined to the test suite:
+> only a test monkeypatches the proxy, so **`nyxloomd` has no exposure**.
+>
+> The lesson to keep from this section is methodological, not technical: it
+> reasoned from a *correct* observation (the record used structlog's default
+> renderer, so it bypassed our chain) to a *wrong* conclusion (therefore the
+> configuration must have changed). The alternative — the configuration is fine and
+> is simply not being consulted — was never enumerated. When evidence shows a
+> subsystem's output is wrong, instrument the **object** that produced it, not only
+> the subsystem's state.
 
 **Experiment (needs docker; blocked at time of writing):** a session-start
 pytest plugin that wraps `structlog.configure` and `structlog.reset_defaults`,

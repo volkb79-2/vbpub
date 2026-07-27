@@ -626,3 +626,66 @@ the same escape hatch, one layer down), **L4** (read the real verdict in a separ
 step), **L7** (never accept the completion narrative — here the narrative was a green
 gate, the most credible artifact there is), **L1** (write the missing test; never
 re-widen the measurement).
+
+## L19 — Never patch an attribute ONTO an object that synthesises attributes via `__getattr__`; patch the namespace that owns it
+
+**Rule.** `monkeypatch.setattr(obj, name, value)` saves the old value with
+`getattr(obj, name)` and restores it on teardown with `setattr(obj, name, old)`. When
+`obj` produces `name` dynamically through `__getattr__`, that pair is not symmetric:
+`getattr` returns a **freshly synthesised** object that never lived in `obj.__dict__`,
+and the restoring `setattr` **materialises it as a permanent real instance
+attribute**. Ordinary attribute lookup now finds it first, `__getattr__` never runs
+again, and the object is pinned for the rest of the process to whatever state was
+current during the patching test. A temporary patch has become permanent global
+pollution — and teardown, the step meant to undo it, is what creates it.
+
+Patch the namespace that genuinely owns the name instead — usually the module:
+`monkeypatch.setattr(some_module, "log", spy)`. Module attributes are real
+`__dict__` entries, so save/restore is symmetric.
+
+**Why it is so hard to find.** Every local check says the system is healthy. In the
+instance below the victim's own assertions were about logging, so the investigation
+went straight to logging config — and the config was *correct*: the right factory,
+the right processors, a handler open on exactly the file the test then read, and the
+proxy re-binding correctly when asked. Nothing was broken; something was simply being
+bypassed. The damage is also invisible at the crime scene: the polluting test passes,
+and the failure surfaces in an unrelated test, in a different file, only when a
+runner happens to schedule them into the same process. Under `pytest-xdist` that is a
+per-run lottery, which reads as flakiness.
+
+**Evidence (nyxloom, 2026-07-27).** Two tests did
+`monkeypatch.setattr("pkg.daemon.log.warning", lambda ...)` where `daemon.log` is a
+structlog `BoundLoggerLazyProxy` — a class that deliberately defines **no** per-level
+methods, precisely so that `__getattr__` can re-bind against the live configuration
+on every call (that is the mechanism letting a later `configure()` reach modules that
+imported their logger at import time). After those tests, `proxy.__dict__["warning"]`
+existed, holding a bound method of a logger frozen to structlog's *unconfigured
+default* — so every later `log.warning` in that worker rendered with the default
+console renderer and printed to stdout instead of the configured JSON file.
+
+Six hypotheses were falsified first (handler-swap race, mid-run reconfiguration,
+memoised paths, `reset_defaults`, cross-worker interference, first-use logger
+caching — the last checked against the library source and disproven). What settled it
+was instrumenting the *object* rather than the subsystem: patch
+`BoundLoggerLazyProxy.__setattr__` to record every write with a stack, and the
+teardown frame appears directly — `monkeypatch.undo → setattr(proxy, 'warning',
+<bound method …>)`. Corroborating counters mattered as much: 619 and 543 recorded
+writes of the logger factory across two runs, **all** correct, **zero** default —
+which is what finally killed "something reverts the config", a theory that had
+survived because it explained the symptom perfectly.
+
+**How to apply.**
+- Suspect this shape whenever a patch target is a proxy, a lazy wrapper, a
+  `SimpleNamespace`-ish façade, an ORM row, a mock with a custom `__getattr__`, or
+  any object whose attribute you cannot find on its class. `hasattr(type(obj), name)`
+  being **False** while `getattr(obj, name)` succeeds is the tell.
+- Guard it **statically and with AST**, not at runtime and not with a regex. A
+  runtime assertion can only observe pollution a previously-run test left behind, so
+  it inherits the order- and worker-dependence that made the bug invisible. A regex
+  cannot separate code from the docstrings that must describe the anti-pattern — the
+  first cut of nyxloom's guard failed on the comment explaining it. Walking `Call`
+  nodes sees only executable patches.
+- When a test fails only in a full parallel suite, ask **"what did an earlier test
+  leave behind?"** before asking "what raced?". Global state that survives teardown is
+  the more common cause, and unlike a race it reproduces deterministically once you
+  know the pair.
