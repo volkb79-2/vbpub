@@ -1884,11 +1884,13 @@ class Daemon:
         gates spawning a real carver process, so an I/O error must never be the
         thing that authorizes spend. A missing head_sha is structurally an old
         carve (pre-item-17); returning 0 means "no measurable activity since then",
-        which is the safe answer when we cannot measure. Never raise; never crash.
+        which is the safe answer when we cannot measure. On degrade paths, logs a
+        warning so production can diagnose activity-counting issues.
         """
-        try:  # pragma: no cover (storage read failure is rare)
+        try:
             events = list(storage.iter_events(project))
-        except Exception:  # pragma: no cover
+        except Exception as e:
+            log.warning("gap_audit: cannot read event log", project=project, exc=e)
             return 0
         latest = None
         latest_sha = None
@@ -1901,12 +1903,12 @@ class Daemon:
             return None
         if not latest_sha:
             # Old carve without head_sha, or payload corruption.
+            log.warning("gap_audit: marker present but head_sha missing", project=project)
             return 0
-        try:  # pragma: no cover - git subprocess tested via integration
+        try:
             # git diff --numstat <sha>..HEAD [--] <paths...>
             # Returns lines with: <added>\t<deleted>\t<path>
             # Binary files show: -\t-\t<path>
-            import subprocess
             repo_root = str(cfg.root)
             pathspecs = cfg.policy.gap_audit_source_paths or []
             cmd = ["git", "diff", "--numstat", f"{latest_sha}..HEAD"]
@@ -1922,6 +1924,8 @@ class Daemon:
             )
             if result.returncode != 0:
                 # git diff failed (invalid sha, not a repo, etc.)
+                log.warning("gap_audit: git diff failed", project=project,
+                           head_sha=latest_sha[:8], returncode=result.returncode)
                 return 0
             total = 0
             for line in result.stdout.splitlines():
@@ -1940,9 +1944,11 @@ class Daemon:
                         except ValueError:
                             pass
             return total
-        except subprocess.TimeoutExpired:  # pragma: no cover
+        except subprocess.TimeoutExpired:
+            log.warning("gap_audit: git diff timeout", project=project, head_sha=latest_sha[:8])
             return 0
-        except Exception:  # pragma: no cover
+        except Exception as e:
+            log.warning("gap_audit: git diff error", project=project, exc=e)
             return 0
 
     @staticmethod
@@ -3738,8 +3744,8 @@ class Daemon:
                 "  from a test-health carve -- these numbers are for the record.)",
                 "",
             ])
-        elif kind == "gap-audit":  # pragma: no cover (tested via integration)
-            lines.extend([  # pragma: no cover
+        elif kind == "gap-audit":
+            lines.extend([
                 f"You are performing a periodic project-WIDE GAP-AUDIT review "
                 f"for project '{project}'. This is NOT a per-task job and NOT a "
                 "queue refill: evaluate whether features the project CLAIMS are "
@@ -4143,10 +4149,10 @@ class Daemon:
             created_payload["carve_kind"] = kind
         # F007: gap-audit carves also stamp head_sha so the next gap-audit trigger
         # can compute changed lines since this carve.
-        if kind == "gap-audit":  # pragma: no cover (tested via integration)
-            head_sha = self._head_revision(cfg)  # pragma: no cover
-            if head_sha:  # pragma: no cover
-                created_payload["head_sha"] = head_sha  # pragma: no cover
+        if kind == "gap-audit":
+            head_sha = self._head_revision(cfg)
+            if head_sha:
+                created_payload["head_sha"] = head_sha
         events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
                                        created_payload, task_id=task_id))
 
