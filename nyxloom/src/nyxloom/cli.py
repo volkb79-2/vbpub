@@ -924,12 +924,20 @@ def cmd_gate_verify(args) -> int:
     gate_runner's ONE isolation primitive.
 
     Verdicts (printed as `verdict: <NAME> -- ...`):
-      NO_GATE      -- project declares no gate at all.             exit 1
-      BROKEN       -- the gate rejects even known-good HEAD.       exit 1
-      LAUNDERS     -- every canary attempt PASSES.                 exit 1
-      INCONCLUSIVE -- no attempt was killed, but at least one never
-                      rendered a real verdict (timeout/exec-failure). exit 3
-      TRUSTWORTHY  -- passes good HEAD AND kills >=1 canary.        exit 0
+      NO_GATE            -- project declares no gate at all.        exit 1
+      TRANSPORT_UNTRUSTED-- the docker transport truncates output /
+                            forges exit codes (L18 defeat 4), so NO
+                            gate verdict here can be trusted.       exit 4
+      BROKEN             -- the gate rejects even known-good HEAD.  exit 1
+      LAUNDERS           -- every canary attempt PASSES.            exit 1
+      INCONCLUSIVE       -- no attempt was killed, but at least one never
+                            rendered a real verdict (timeout/exec-failure). exit 3
+      TRUSTWORTHY        -- passes good HEAD AND kills >=1 canary.  exit 0
+
+    A transport probe runs FIRST (transport_check.probe_default). A definitively
+    lying transport yields TRANSPORT_UNTRUSTED before any gate runs; an
+    "unavailable" probe (no docker / probe image missing) only prints a note and
+    proceeds, so it never manufactures a failure.
 
     PACKAGE GA2 (checklist item 7 "rigor declared"): when the selected gate
     declares `asserts=[...]`, the verdict above is followed by an `asserts:`
@@ -953,7 +961,7 @@ def cmd_gate_verify(args) -> int:
     """
     import subprocess
 
-    from . import gate_canary, gate_runner
+    from . import gate_canary, gate_runner, transport_check
 
     cfg = _cfg(args.project)
 
@@ -962,6 +970,25 @@ def cmd_gate_verify(args) -> int:
         print(f"verdict: NO_GATE -- {args.project} declares no verification gate "
               "(no [gates.*] with phase 'implementation' or 'post-merge')")
         return 1
+
+    # Transport preflight (L18 defeat 4). Every gate run below is carried over
+    # the docker transport; if that transport TRUNCATES output and forges exit
+    # codes, NO verdict computed here -- not even "good HEAD passes" -- can be
+    # trusted. A definitively-lying transport short-circuits to its own verdict
+    # BEFORE any gate runs. "unavailable" (no docker / probe image missing) is
+    # NOT a transport fault, so it only notes and proceeds -- an offline host
+    # never manufactures a failure.
+    probe = transport_check.probe_default()
+    if probe.lying:
+        print(f"verdict: TRANSPORT_UNTRUSTED -- {args.project}'s gate cannot be verified: "
+              f"{probe.detail}")
+        return 4
+    if probe.status == "unavailable":
+        # A skipped probe is NOT a verdict -- it goes to stderr so stdout (the
+        # verdict contract other tools/tests parse) is byte-unchanged when no
+        # docker/probe-image is present. Only a definitively lying transport
+        # emits a stdout verdict.
+        print(f"transport: probe skipped -- {probe.detail}", file=sys.stderr)
 
     head = subprocess.run(
         ["git", "-C", str(cfg.root), "rev-parse", "HEAD"],

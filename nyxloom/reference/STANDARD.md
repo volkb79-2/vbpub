@@ -157,7 +157,19 @@ beyond "a gate exists", a *meaningful* gate should:
   container/venv, NEVER the interactive cockpit (whose pins are not a ship signal;
   see each trove's `GUIDE.md` cockpit-vs-runner note);
 - **fail closed** — a wrapper's trailing `echo`/pipe must not mask the real exit
-  (read the verdict in a step *separate* from the run; canonical `LESSONS.md` L4);
+  (read the verdict in a step *separate* from the run; canonical `LESSONS.md` L4).
+  "Nothing masking the exit" includes the **transport** between the gate and
+  whoever reads it: a container gate reached over a truncating relay (e.g. a
+  `socat` docker-socket proxy started without `-t`) can drop output mid-run and
+  hand back a *forged* exit code, so a failing gate reads as passing — the same
+  L4/L18 aliasing, one layer down in the plumbing, and invisible to everything
+  *inside* the container. Two defenses: run container gates **detached**
+  (`docker run -d` → `docker wait` for the code → `docker logs` for the output,
+  never the attached/hijacked stream — this is what `gate_scaffold` emits); and
+  probe the transport before trusting a verdict — `nyxloom gate verify` runs a
+  sentinel first and reports **TRANSPORT_UNTRUSTED** (rather than a real gate
+  verdict) when the transport truncates, and `nyxloom doctor` fails closed on the
+  same signal;
 - ideally enforce a **completeness floor** (e.g. changed-line coverage) and run in
   **parallel** so the floor stays affordable.
 

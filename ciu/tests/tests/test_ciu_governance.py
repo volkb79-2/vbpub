@@ -63,6 +63,62 @@ class TestResolveConfig:
         with pytest.raises(ValueError, match=r"\[S15\.2\]"):
             gov.resolve_config({"enabled": True, "exempt_services": [1, 2]})
 
+    # -- D-G9 check 2 — unknown-key warning (forward-compat preserved) -----
+
+    def test_unknown_key_warns_but_does_not_raise(self, capsys) -> None:
+        """The typo case: a WARN is printed, but resolve_config still returns
+        normally (forward-compat, S15.2) — a hard reject would break a newer
+        stack config running against an older CIU."""
+        cfg = gov.resolve_config({"cgroup_parnet": "x.slice", "enabled": True})
+        assert cfg["enabled"] is True
+        out = capsys.readouterr().out
+        assert "[WARN]" in out
+        assert "[S15.2]" in out
+        assert "cgroup_parnet" in out
+
+    def test_unknown_key_value_still_passes_through(self, capsys) -> None:
+        """Unknown keys are NOT dropped — they pass through unchanged (S15.2)."""
+        cfg = gov.resolve_config({"cgroup_parnet": "x.slice", "enabled": True})
+        assert cfg["cgroup_parnet"] == "x.slice"
+        capsys.readouterr()
+
+    def test_only_known_keys_prints_no_warning(self, capsys) -> None:
+        gov.resolve_config({"enabled": True, "mem_limit": "2g"})
+        out = capsys.readouterr().out
+        assert "[WARN]" not in out
+
+    def test_none_raw_prints_no_warning(self, capsys) -> None:
+        gov.resolve_config(None)
+        out = capsys.readouterr().out
+        assert out == ""
+
+    def test_multiple_unknown_keys_all_named(self, capsys) -> None:
+        gov.resolve_config({"enabled": True, "cgroup_parnet": "x", "mem_limitt": "1g"})
+        out = capsys.readouterr().out
+        assert "cgroup_parnet" in out
+        assert "mem_limitt" in out
+
+    def test_strict_unknown_keys_raises_instead_of_warning(self, capsys) -> None:
+        """Opt-in only: strict_unknown_keys=True turns the WARN into a raise;
+        the module-level DEFAULT (no kwarg) stays permissive."""
+        with pytest.raises(ValueError, match=r"\[S15\.2\].*cgroup_parnet"):
+            gov.resolve_config(
+                {"cgroup_parnet": "x.slice", "enabled": True}, strict_unknown_keys=True
+            )
+        # The raise path must not ALSO print — no double-signaling the same fact.
+        out = capsys.readouterr().out
+        assert "[WARN]" not in out
+
+    def test_strict_unknown_keys_still_passes_with_known_keys_only(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "mem_limit": "2g"}, strict_unknown_keys=True)
+        assert cfg["mem_limit"] == "2g"
+
+    def test_non_bool_enabled_still_raises_with_strict_flag(self) -> None:
+        """Regression guard: the pre-existing enabled-type check is unaffected
+        by the new strict_unknown_keys parameter."""
+        with pytest.raises(ValueError, match=r"\[S15\.2\].*enabled"):
+            gov.resolve_config({"enabled": "false"}, strict_unknown_keys=True)
+
 
 # ---------------------------------------------------------------------------
 # S15.10 — resolve_stack_governance (global-default fallback)
@@ -385,6 +441,109 @@ class TestResolveDevice:
         device, note = gov.resolve_device("")
         assert device == ""
         assert "failed" in note
+
+
+# ---------------------------------------------------------------------------
+# D-G9 check 1 — check_slice_unit (systemd slice-existence probe)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckSliceUnit:
+    def test_no_systemctl_skips_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: None)
+        exists, note = gov.check_slice_unit("nyxloom-daemon.slice")
+        assert exists is None
+        assert "no systemctl" in note
+
+    def test_no_systemctl_never_calls_subprocess(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: None)
+
+        def fail_run(*a, **k):
+            raise AssertionError("subprocess.run must not be called when systemctl is absent")
+
+        monkeypatch.setattr(gov.subprocess, "run", fail_run)
+        gov.check_slice_unit("whatever.slice")  # must not raise
+
+    def test_loaded_slice_reports_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="LoadState=loaded\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        exists, note = gov.check_slice_unit("besteffort.slice")
+        assert exists is True
+        assert "loaded" in note
+
+    def test_not_found_slice_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="LoadState=not-found\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        exists, note = gov.check_slice_unit("nyxloom-daemon.slice")
+        assert exists is False
+        assert "not-found" in note
+        assert "not installed" in note
+
+    def test_masked_slice_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LoadState can be other non-'loaded' values too (e.g. 'masked')."""
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="LoadState=masked\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        exists, note = gov.check_slice_unit("disabled.slice")
+        assert exists is False
+        assert "masked" in note
+
+    def test_empty_output_reports_false_with_unknown_note(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        exists, note = gov.check_slice_unit("weird.slice")
+        assert exists is False
+        assert "unknown" in note
+
+    def test_subprocess_error_is_inconclusive_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            raise OSError("boom")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        exists, note = gov.check_slice_unit("nyxloom-daemon.slice")
+        assert exists is None
+        assert "boom" in note
+
+    def test_timeout_is_inconclusive_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        exists, note = gov.check_slice_unit("nyxloom-daemon.slice")
+        assert exists is None
+        assert "skipping" in note
+
+    def test_slice_name_passed_through_to_systemctl_argv(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+        captured = {}
+
+        def fake_run(cmd, **k):
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout="LoadState=loaded\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        gov.check_slice_unit("nyxloom-daemon.slice")
+        assert "nyxloom-daemon.slice" in captured["cmd"]
+        assert captured["cmd"][0] == "systemctl"
 
 
 # ---------------------------------------------------------------------------
