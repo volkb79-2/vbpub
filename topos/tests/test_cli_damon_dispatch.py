@@ -148,6 +148,7 @@ def test_paddr_start_maps_errors_without_starting_state(
     monkeypatch.setattr("topos.cli.load", lambda _path: SimpleNamespace(damon=DamonConfig()))
     if function == "plan_start_paddr_session":
         monkeypatch.setattr("topos.cli.plan_start_paddr_session", lambda **_kwargs: (_ for _ in ()).throw(error))
+        monkeypatch.setattr("topos.cli.start_planned_paddr_session", lambda *a, **kw: starts.append("UNEXPECTED"))
     else:
         monkeypatch.setattr("topos.cli.plan_start_paddr_session", lambda **_kwargs: plan)
         def fail_start(*_args: object, **_kwargs: object) -> object:
