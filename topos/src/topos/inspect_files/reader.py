@@ -206,6 +206,9 @@ def _confine_and_open(
         msg = f"cannot open allow_root {allow_root}: {exc}"
         raise ValueError(msg) from exc
 
+    # Keep cleanup valid even when relative-path validation rejects before
+    # descriptor traversal begins.
+    current_fd = root_fd
     try:
         # 2. Compute relative path and reject traversal.
         relative_str = os.path.relpath(str(resolved_path), str(allow_root))
@@ -214,8 +217,6 @@ def _confine_and_open(
             raise ValueError(msg)
 
         parts = Path(relative_str).parts
-        current_fd = root_fd
-
         # 3. Walk intermediate components.
         for part in parts[:-1]:
             if part in ("", ".", ".."):
