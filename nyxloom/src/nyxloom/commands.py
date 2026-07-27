@@ -52,7 +52,7 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from . import config, notify, paths, storage
+from . import config, notify, paths, resync, storage
 from .config import NotifyConfig, ProjectConfig
 from .log import get_logger
 from .types import Actor, ActorKind, EventType, TaskState
@@ -91,6 +91,36 @@ HELP_TEXT = "\n".join([
 _MODE_WORD_TO_MODE = {"agents": "drain-agents", "handoffs": "drain-handoffs"}
 
 DIGEST_MAX_CHARS = 1500
+
+
+def _pre_resume_drift_scan(project: str, cfg: ProjectConfig) -> list | None:
+    """The ntfy chat-ops resume guard's pre-flight -- mirrors
+    `cli._pre_resume_drift_scan` (PACKAGE RP03) EXACTLY: same shared
+    ground-truth planner (`resync.resync_plan`, fed by its own
+    `gather_handoff_presence` / `gather_git_facts` I/O boundaries), not a
+    second drift-detection implementation. Duplicated here (rather than
+    imported from cli.py) to avoid a commands.py -> cli.py import that
+    would risk a circular import (cli.py's own module wires up other
+    pieces of the package); the DETECTOR itself (`resync.resync_plan`) is
+    still the one shared implementation.
+
+    Returns the list of `ProposedTransition` rows whose `proposed_action
+    != ACTION_NONE` (a possibly-EMPTY list -- "ran clean, no drift"), or
+    `None` if the scan itself could not complete (a storage/git failure
+    while gathering ground truth). `None` vs `[]` is the same
+    load-bearing distinction RP03 established: a scan that could not run
+    must never be read as "no drift found" -- see `_cmd_resume` below,
+    which refuses on BOTH `None` and a non-empty list, with a DIFFERENT
+    message for each."""
+    try:
+        states = storage.list_states(project)
+        frontmatters = resync.gather_handoff_presence(cfg, states)
+        git_facts = resync.gather_git_facts(str(cfg.root), cfg.default_branch, states)
+        plan = resync.resync_plan(states, frontmatters, git_facts)
+    except Exception:
+        return None
+
+    return [p for p in plan if p.proposed_action != resync.ACTION_NONE]
 
 
 class CommandListener:
@@ -206,6 +236,56 @@ class CommandListener:
         return f"paused ({mode}): {project}"
 
     def _cmd_resume(self, project: str) -> str:
+        """resume <project> -- the SECOND resume surface (chat-ops), now
+        carrying the same RP03 pre-resume drift guard as `cli.cmd_resume`'s
+        project-level path (see `_pre_resume_drift_scan` above -- the
+        SHARED detector, not a reimplementation). There is no `--force`
+        available over ntfy, so a refusal here is unconditional: an
+        operator who hits it must go verify/repair via the CLI
+        (`nyxloom resync <project>` / `--apply`) -- intentional, since a
+        chat-ops override of the riskiest operator action in the system
+        with no audit-trail nuance (no forced-payload distinction like the
+        CLI's) would be worse than just requiring the CLI for that case.
+
+        A refusal writes NOTHING -- the scan runs and this method returns
+        the refusal string BEFORE either the pause-flag unlink or the
+        PAUSE_CLEARED append, so a repeated call refuses identically
+        (mirrors the CLI's own atomicity contract)."""
+        try:
+            cfg = ProjectConfig.load(self.registry[project])
+        except Exception:
+            log.warning("resume refused", project=project, reason="cfg-load-failed")
+            return (
+                f"error: refusing to resume '{project}' -- could not verify "
+                f"its state first (failed to load its project config). Use "
+                f"the CLI: nyxloom resync {project}"
+            )
+
+        drift = _pre_resume_drift_scan(project, cfg)
+
+        if drift is None:
+            # The scan itself could not complete -- NEVER read as "no
+            # drift" (the exact bug class RP03 exists to avoid).
+            log.warning("resume refused", project=project, reason="scan-failed")
+            return (
+                f"error: refusing to resume '{project}' -- could not verify "
+                f"its state first (the pre-resume drift scan itself "
+                f"failed). Inspect manually: nyxloom resync {project}"
+            )
+        if drift:
+            summary = "; ".join(
+                f"{p.task_id} ({p.proposed_action}: {p.evidence})" for p in drift
+            )
+            log.warning("resume refused", project=project, reason="drift",
+                        drifted=len(drift))
+            return (
+                f"error: refusing to resume '{project}' -- drift detected "
+                f"in {len(drift)} task(s): {summary}. Repair via the CLI: "
+                f"nyxloom resync {project} / nyxloom resync {project} --apply"
+            )[:DIGEST_MAX_CHARS]
+
+        # drift == [] -- verified clean, resume proceeds exactly as before
+        # this guard was added.
         flag_path = paths.pause_flag(project)
         flag_path.unlink(missing_ok=True)
         storage.append_event(

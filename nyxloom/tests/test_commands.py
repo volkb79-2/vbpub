@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import http.server
 import json
+import subprocess
 import threading
+from pathlib import Path
 
 from nyxloom import paths, storage
 from nyxloom.commands import (
@@ -117,6 +119,135 @@ def test_pause_unknown_mode_rejected_no_flag_no_event(tmp_state, sample_project)
     assert "unknown mode" in reply
     assert not flag.exists()
     assert not any(e.type is EventType.PAUSE_SET for e in storage.iter_events("demo"))
+
+
+# =========================================================================
+# Oracle 2b: the ntfy chat-ops resume guard -- mirrors `cli.cmd_resume`'s
+# project-level RP03 pre-resume drift check (test_resume_guard.py) on this,
+# the SECOND resume surface. There is no --force over ntfy: a refusal here
+# is unconditional. Fixture shape (`_make_merged_drift`) is the SAME one
+# test_resume_guard.py uses -- both surfaces sit on the identical shared
+# detector (`resync.resync_plan`), so the same drift fixture proves it.
+# =========================================================================
+
+def _run_git(root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=root, check=True, capture_output=True, text=True,
+    )
+
+
+def _make_merged_drift(root: Path, task_id: str, branch: str) -> None:
+    """A task believed MERGE_READY whose branch was ACTUALLY merged into
+    `main` (a real `git branch --merged` hit) while the project sat
+    paused -- the statefile just never caught up."""
+    _run_git(root, "checkout", "-b", branch)
+    (root / f"marker-{task_id}.txt").write_text("work\n")
+    _run_git(root, "add", "-A")
+    _run_git(root, "commit", "-qm", f"{task_id} work")
+    _run_git(root, "checkout", "main")
+    _run_git(root, "merge", "--no-ff", "-m", f"merge {task_id}", branch)
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id=task_id, project="demo",
+        state=TaskState.MERGE_READY, since=utc_now(),
+    ))
+
+
+def test_ntfy_resume_verified_clean_resumes(tmp_state, sample_project):
+    """No drift (no statefiles at all -> the shared planner's scan comes
+    back `[]`, verified clean) -- resume proceeds exactly as it did before
+    the guard existed: flag removed, PAUSE_CLEARED appended once with an
+    empty payload, 'resumed: ...' reply."""
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("resume demo", [])
+
+    assert reply == "resumed: demo"
+    assert not flag.exists()
+    events = list(storage.iter_events("demo"))
+    cleared = [e for e in events if e.type is EventType.PAUSE_CLEARED]
+    assert len(cleared) == 1
+    assert cleared[0].payload == {}
+
+
+def test_ntfy_resume_drift_refuses_and_writes_nothing(tmp_state, sample_project):
+    """A task believed MERGE_READY whose branch was actually merged (real
+    drift, the shared planner's `[ProposedTransition(...)]`) -> the guard
+    refuses. The reply names the drifted task id AND the repair command;
+    the pause flag is untouched and NO PAUSE_CLEARED event is appended --
+    a refusal writes nothing, not just 'prints something different'. A
+    second call (no --force exists over ntfy) refuses identically,
+    proving the first refusal changed nothing that would flip the
+    outcome."""
+    root = sample_project.root
+    _make_merged_drift(root, "demo-P60-drift", "feat/demo-P60-drift")
+
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("resume demo", [])
+
+    assert "demo-P60-drift" in reply
+    assert "nyxloom resync demo" in reply
+    assert flag.exists()
+    assert list(storage.iter_events("demo")) == []
+
+    reply2 = cl.handle_message("resume demo", [])
+    assert "demo-P60-drift" in reply2
+    assert flag.exists()
+    assert list(storage.iter_events("demo")) == []
+
+
+def test_ntfy_resume_scan_failure_refuses_distinguishably(
+    tmp_state, sample_project, monkeypatch,
+):
+    """The scan itself raising (e.g. the git subprocess call blows up while
+    gathering ground truth) must NEVER be read as 'no drift' -- refuses
+    with 'could not verify' wording DISTINCT from the drift-detected
+    reply above ('drift detected' must NOT appear), and writes nothing."""
+    def _boom(*a, **k):
+        raise RuntimeError("git subprocess exploded")
+    monkeypatch.setattr("nyxloom.resync.gather_git_facts", _boom)
+
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("resume demo", [])
+
+    assert "could not verify" in reply
+    assert "drift detected" not in reply
+    assert flag.exists()
+    assert list(storage.iter_events("demo")) == []
+
+
+def test_ntfy_resume_cfg_load_failure_refuses_without_crashing(
+    tmp_state, sample_project, monkeypatch,
+):
+    """A project config that fails to load (malformed project.toml, say)
+    must degrade to the same 'could not verify' refusal -- not raise out
+    of `handle_message` and crash the chat-ops dispatch loop. Writes
+    nothing, same as the other two refusal paths."""
+    def _boom(root):
+        raise RuntimeError("bad project.toml")
+    monkeypatch.setattr("nyxloom.commands.ProjectConfig.load", _boom)
+
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("resume demo", [])
+
+    assert "could not verify" in reply
+    assert flag.exists()
+    assert list(storage.iter_events("demo")) == []
 
 
 # =========================================================================
