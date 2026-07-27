@@ -44,11 +44,59 @@ is "the daemon keeps running even when every agent misbehaves". Weights only
 arbitrate CPU under contention; they do nothing for memory reclaim. A
 protected reservation is the only mechanism that survives sibling pressure.
 
-**Open — needs a measurement window.** The daemon's `memory.min` must be its
-real hot set, not a guess. `nyxloom-prod-nyxloomd` has been stopped for days;
-measuring means running it idle, then under a real dispatch wave, and reading
-`memory.current` + `memory.stat` anon at both points. **Do not ship a guessed
-`MemoryMin`** — too low is useless, too high starves everything else.
+**A conservative floor ships now; measurement refines it later.** (Corrected
+2026-07-27 — an earlier draft said "do not ship a guessed `MemoryMin`", which
+was wrong. The risk is not symmetric:
+
+- **too LOW → harmless.** You protect less than you could, but strictly more
+  than nothing.
+- **too HIGH → harmful.** `memory.min` is a *reservation*; a value above real
+  usage permanently sterilises that memory from every sibling under pressure.
+
+So only *optimistic* guesses are dangerous. `MemoryMin=128M` sits at or below
+a Python daemon's realistic resident set and is negligible against a multi-GB
+host budget, so it cannot meaningfully sterilise anything — and shipping
+nothing while waiting for a measurement window would leave the daemon
+completely unprotected in the meantime.)
+
+**Still to refine:** run the daemon idle, then under a real dispatch wave, read
+`memory.current` + `memory.stat` anon at both points, and raise `MemoryMin` to
+the observed steady-state working set.
+
+## D-G8 — Catching containers that name no slice, or a wrong one
+
+Two distinct failure modes, two mechanisms:
+
+| Failure | Mechanism |
+|---|---|
+| Container names **no** parent | `daemon.json` `"cgroup-parent": "dev-workloads.slice"` — the daemon-wide default (D-G7) |
+| Container names a **wrong/typo'd** parent | the default does NOT help: an explicit value wins, and a non-existent slice is auto-created transiently with no limits |
+
+For the second, the host-level catch-all is a **systemd drop-in on the scope
+name prefix**. Every container docker starts gets a transient unit named
+`docker-<id>.scope`, and systemd applies drop-ins from truncated-name
+directories, so:
+
+```
+/etc/systemd/system/docker-.scope.d/50-default-limits.conf
+[Scope]
+MemoryMax=<host-wide backstop>
+MemorySwapMax=<generous>
+```
+
+applies to **every** container scope regardless of which parent slice it named
+— including a typo'd one. That is a genuine floor under the whole estate.
+
+⚠️ **Needs one verification step on the host** (requires root, so it was not
+tested from the devcontainer): confirm the drop-in is actually picked up for
+transient docker scopes, e.g. `systemctl show docker-<id>.scope -p MemoryMax`
+on a running container after installing it. Do not assume — the whole reason
+this section exists is that the obvious-looking mechanism (naming a slice)
+fails open.
+
+Rejected: a host service that periodically scans for cgroups outside known
+slices and retro-applies limits. Reactive, races container startup, and adds a
+daemon whose own failure mode is silent.
 
 ## D-G2 — Who may do what (the root boundary)
 
