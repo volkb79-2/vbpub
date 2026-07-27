@@ -323,6 +323,38 @@ def test_oracle_7_generic_exception_returns_zero(tmp_state, sample_project, monk
     assert result == 0
 
 
+def test_oracle_7_with_pathspecs(tmp_state, sample_project, monkeypatch):
+    """Oracle 7: pathspecs are passed to git diff command."""
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="carve-demo-1", project="demo",
+        state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+    )
+    payload = {"statefile": tsf.to_dict(), "carve_kind": "gap-audit", "head_sha": "abc123"}
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.TASK_CREATED, payload=payload, task_id="carve-demo-1",
+    )
+
+    class MockResult:
+        returncode = 0
+        stdout = "3\t2\tsrc/main.py\n"
+
+    def mock_run(cmd, **kwargs):
+        # Verify pathspecs are appended
+        assert "--" in cmd
+        assert "src" in cmd
+        return MockResult()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    cfg = _cfg(gap_audit_source_paths=["src"])
+    cfg.root = sample_project.root
+    result = d._changed_lines_since_gap_audit("demo", cfg)
+    assert result == 5  # 3 + 2
+
+
 # ==========================================================================
 # Oracle 8: Checkpoint round-trip (head_sha written and read back)
 # ==========================================================================
