@@ -511,6 +511,7 @@ def cfg_daemon(tmp_state, sample_project, monkeypatch):
     finally:
         d.stop()
         t.join(timeout=5)
+        assert not t.is_alive(), "cfg_daemon fixture's daemon thread outlived teardown and may pollute global logging"
 
 
 def _post(base: str, path: str, body: dict) -> tuple[int, dict]:
@@ -602,3 +603,4 @@ def test_post_carve_ahead_target_int_key_via_existing_bounds_path(
     finally:
         d.stop()
         t.join(timeout=5)
+        assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"

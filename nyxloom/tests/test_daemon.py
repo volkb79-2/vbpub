@@ -3117,6 +3117,7 @@ def http_daemon(tmp_state, sample_project, monkeypatch):
     finally:
         d.stop()
         t.join(timeout=5)
+        assert not t.is_alive(), "http_daemon fixture's daemon thread outlived teardown and may pollute global logging"
 
 
 # --------------------------------------------------------------------------
@@ -3157,6 +3158,7 @@ def test_http_bind_overridable_to_bridge_address(tmp_state, sample_project, patc
     finally:
         d.stop()
         t.join(timeout=5)
+        assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
 
 def test_toml_http_bind_never_reaches_the_real_bind(
@@ -3188,6 +3190,7 @@ def test_toml_http_bind_never_reaches_the_real_bind(
     finally:
         d.stop()
         t.join(timeout=5)
+        assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
 
 def _read_log_records(log_dir: Path) -> list[dict]:
@@ -3265,6 +3268,7 @@ def test_nonloopback_bind_prints_unauthenticated_notice(
         time.sleep(0.02)
     d.stop()
     t.join(timeout=5)
+    assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
     assert _notice_emitted(), (
         "expected the daemon to emit an UNAUTHENTICATED http_bind=0.0.0.0 warning "
@@ -3293,6 +3297,7 @@ def test_loopback_bind_prints_no_notice_THE_NEGATIVE(
         time.sleep(0.05)
     d.stop()
     t.join(timeout=5)
+    assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
     assert d.http_bind == "127.0.0.1"
     warnings = [r for r in _read_log_records(log_dir) if r.get("level") == "warning"]
@@ -5634,6 +5639,7 @@ def test_logs_stream_level_filter_and_heartbeat(tmp_state, sample_project, monke
     reader_thread.join(timeout=10)
     d.stop()
     t.join(timeout=5)
+    assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
     msgs = [r.get("msg") for r in received["records"]]
     assert "o4-at-threshold" in msgs

@@ -112,6 +112,7 @@ def http_daemon(tmp_state, sample_project, monkeypatch):
     finally:
         d.stop()
         t.join(timeout=5)
+        assert not t.is_alive(), "http_daemon fixture's daemon thread outlived teardown and may pollute global logging"
 
 
 def test_post_intake_advances_turn_and_echoes_reply(http_daemon, monkeypatch):
