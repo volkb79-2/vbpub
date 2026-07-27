@@ -104,6 +104,21 @@ def test_scaffolded_gate_uses_the_detached_transport_safe_form():
     assert "docker run --rm" not in outer
 
 
+def test_scaffolded_gate_runs_in_the_batch_cgroup_slice():
+    """The scaffolded argv must place the gate container in the dedicated
+    gates slice: a gate is CPU/IO-heavy batch work that must not compete with
+    whatever else the host runs. A missing slice fails OPEN (systemd creates a
+    transient limitless one), so `nyxloom doctor` re-checks it exists; that
+    check only has something to check because the slice is named HERE."""
+    gate = gate_scaffold.render_gate_def()
+    outer = gate.argv[-1]
+    assert f"--cgroup-parent={gate_scaffold.GATE_SLICE}" in outer
+    assert gate_scaffold.GATE_SLICE == "nyxloom-gates.slice"
+    # the slice is host-provisioned, so it must be flagged for review, not
+    # silently assumed to exist on an arbitrary target host
+    assert gate_scaffold.ADJUST_MARKER in outer
+
+
 # ---------------------------------------------------------------------------
 # oracle 4: no-overwrite / idempotent
 

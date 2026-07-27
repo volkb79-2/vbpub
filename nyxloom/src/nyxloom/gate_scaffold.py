@@ -45,6 +45,12 @@ from .onboarding_gate import GateOffer
 # Dockerfile, the argv, and any test asserting on it never drift apart.
 ADJUST_MARKER = "nyxloom-scaffold: adjust"
 
+# The cgroup slice a scaffolded gate runs under. Gates are the estate's CPU/IO-heavy
+# batch tier, so they get the dedicated, lowest-weight, IO-capped slice rather than
+# docker's default placement (infra/slices/, docs/plan-resource-governance.md D-G1).
+# Kept as one constant so the argv and any test asserting on it never drift apart.
+GATE_SLICE = "nyxloom-gates.slice"
+
 _TROVE_NAME = "nyxloom-trove"
 _DEFAULT_GATE_ID = "scaffolded-pytest"
 _DEFAULT_TIMEOUT_SECONDS = 1800
@@ -130,17 +136,28 @@ def render_gate_def(
     # the output from a plain `docker logs` fetch (never a hijacked stream), so
     # a broken transport can only make this HANG, never lie. Do NOT "simplify"
     # this back to a single attached `docker run --rm`.
+    # `--cgroup-parent=<GATE_SLICE>`: a gate is a CPU- AND IO-heavy batch job that
+    # must not compete with whatever else the host runs (on this estate, production
+    # game servers). Naming a slice puts the whole container tree under that
+    # accounting; the slice carries the CPU weight and IO caps. A MISSING slice
+    # fails OPEN (systemd silently creates a transient, limitless one), which is why
+    # `nyxloom doctor` asserts every gate-argv slice exists as a real unit and fails
+    # closed otherwise (doctor.doctor_host). Carries an ADJUST_MARKER because the
+    # slice must actually be installed on the target host (infra/slices/README.md) --
+    # this scaffold cannot create it (that needs host root, by design).
     outer = (
-        'cid=$(docker run -d -v {worktree}:{worktree} scaffolded-pytest-gate:local '
+        f"cid=$(docker run -d --cgroup-parent={GATE_SLICE} "
+        '-v {worktree}:{worktree} scaffolded-pytest-gate:local '
         f"bash -c '{inner}'); "
         'code=$(docker wait "$cid"); '
         'docker logs "$cid"; '
         'docker rm "$cid" >/dev/null 2>&1 || true; '
         'exit "$code"  '
         f"# {ADJUST_MARKER} the image tag, the mount path, source dir "
-        '("src"), test dir ("tests"), and --source above are placeholders '
-        "for YOUR project's real layout -- build the scaffolded Dockerfile "
-        "and tag it to match before this argv can run."
+        '("src"), test dir ("tests"), --source, and the '
+        f"--cgroup-parent={GATE_SLICE} above are placeholders "
+        "for YOUR project's real layout/host -- build the scaffolded Dockerfile "
+        "and tag it to match, and install the slice, before this argv can run."
     )
     return GateDef(
         gate_id=gate_id,
