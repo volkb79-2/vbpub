@@ -306,6 +306,38 @@ INTERFACE CONTRACT (frozen). Semantics:
     in flight for the project, so this planner may harmlessly re-plan the
     same VerifyGate every pass until the daemon's drain step appends
     GATE_VERIFY_RECORDED and resets the cadence.
+17. GAP-AUDIT CARVE TRIGGER (F007 2026-07-27, gap-engine): a seldom-run,
+    project-WIDE sibling of item 9. Item 9 refills the queue from the
+    backlog/roadmap when it runs dry; this one evaluates whether features
+    the project CLAIMS are shipped are actually backed by code reality,
+    surfacing gaps as carve candidates. It fires when
+    policy.gap_audit_after_changed_lines > 0 (opt-in; 0 disables) AND
+    inp.changed_lines_since_gap_audit is None (never run -- enabling the
+    knob means "do a first pass") or >= that threshold (activity-counted,
+    NOT time-based), AND every guard item 9 itself honors (the SHARED
+    not-paused / not-carve-in-flight / budget_allows / frontier_route_available
+    set, plus the single-carve-authority carve_dispatch_planned flag) ->
+    CarveDispatch(kind='gap-audit'). Like items 9 and 15 it is purely a
+    WHEN decision: plan_project stays pure and never computes git diffs
+    itself; the daemon's carve packet tells the CARVER agent how to evaluate
+    the product-definition (and explicitly authorizes carving NOTHING when
+    every checked feature's acceptance criteria hold, so a periodic trigger
+    cannot manufacture busywork).
+
+    ORDERING (a real design call, not an accident): this trigger is evaluated
+    AFTER item 15's test-health but BEFORE item 9's headroom refill (same
+    rationale as item 15 -- item 9's condition holds on essentially every
+    pass of an actively-draining project, so a rare trigger placed after it
+    would lose the slot indefinitely and starve). Item 12's re-carve still
+    precedes both.
+
+    ACTIVITY-COUNTED CADENCE: UNLIKE test_health_interval_days and
+    gate_verify_interval_days, this does NOT fire on a calendar schedule.
+    It accumulates changed production lines (git diff --numstat) in the
+    scope defined by policy.gap_audit_source_paths since the last gap-audit
+    carve, and fires when accumulated changes exceed the threshold. An idle
+    project with zero code changes must not accrue carve budget on an
+    unchanged codebase -- the rationale is activity-scoped, not time-scoped.
 """
 
 from __future__ import annotations
@@ -810,6 +842,16 @@ class ReconcileInput:
     # daemon._days_since_gate_verify). This module stays pure: it never reads
     # a clock or an event log itself.
     days_since_gate_verify: float | None = None
+    # F007 2026-07-27 (gap-engine, module contract item 17): accumulated changed
+    # lines (added+deleted via git diff --numstat) since the most recent gap-audit
+    # carve, or None if the project has never had a gap-audit carve. The daemon
+    # derives it by scanning its own event log for the marker _execute_carve_dispatch
+    # stamps on a gap-audit carve's TASK_CREATED (see daemon._changed_lines_since_gap_audit),
+    # so the cadence is durable across daemon restarts, and this module stays pure
+    # (it never reads git or an event log itself; this value arrives as input).
+    # None deliberately means "fire" rather than "never fired": turning the knob on
+    # is itself the request for a first pass, identical to item 15/16.
+    changed_lines_since_gap_audit: int | None = None
     # F018 P2b-A1 (plan-long-running-carver.md §4.2): the persistent
     # strategic carver's durable session projection (carver_session.
     # project_session), or None. MASTER GATE -- None means "the long-
@@ -1958,6 +2000,27 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
                 CarveDispatch(project=inp.cfg.project_id, kind="test-health")
             )
             carve_dispatch_planned = True
+
+    # === Gap-audit carve (F007, module contract item 17, 2026-07-27) ===
+    # Evaluated BEFORE item 9's headroom refill DELIBERATELY: same rationale as
+    # item 15 (test-health). Item 9's condition (ready_count < carve_ahead_target)
+    # holds on essentially every pass of an actively-draining project, so a
+    # seldom-run trigger placed after it would lose the pass's single carve slot
+    # forever and its cadence would silently never fire.
+    gap_threshold = inp.cfg.policy.gap_audit_after_changed_lines
+    if (gap_threshold > 0
+            and not inp.project_paused
+            and not carve_in_flight
+            and not carve_dispatch_planned
+            and budget_allows
+            and frontier_route_available):
+        changed = inp.changed_lines_since_gap_audit
+        if changed is None or changed >= gap_threshold:
+            carve_actions.append(
+                CarveDispatch(project=inp.cfg.project_id, kind="gap-audit")
+            )
+            carve_dispatch_planned = True
+            trace.note("carve", None, "gap-audit")
 
     # P03 (D-L5): the shared guard is restructured into an if/elif chain
     # SOLELY to attribute a carve-skip breadcrumb to its actual reason

@@ -1079,6 +1079,7 @@ class Daemon:
             gate_diagnosis_attempts=gate_diagnosis_attempts,
             days_since_test_health_carve=self._days_since_test_health_carve(project),
             days_since_gate_verify=self._days_since_gate_verify(project),
+            changed_lines_since_gap_audit=self._changed_lines_since_gap_audit(project, cfg),
             carver_session=carver_session_snap,
             pending_carver_feeds=pending_carver_feeds,
             # no source events yet -- human-intake package (#17) will populate this
@@ -1861,6 +1862,94 @@ class Daemon:
             return max(0.0, (utc_now() - latest).total_seconds() / 86400.0)
         except Exception:
             return 0.0
+
+    def _changed_lines_since_gap_audit(self, project: str, cfg: ProjectConfig) -> int | None:
+        """F007 2026-07-27 (gap-engine, module contract item 17): accumulated
+        changed production lines (added+deleted via git diff --numstat) since the
+        most recent gap-audit carve, feeding ReconcileInput.changed_lines_since_gap_audit
+        so the activity-counted cadence is durable across daemon restarts. None =
+        never carved, which item 17 reads as "fire" -- enabling the knob is itself
+        the request for a first pass. Returns the sum of added+deleted lines across
+        all rows, excluding binary changes (which contribute 0).
+
+        Scans the WHOLE log (like _days_since_test_health_carve), not a recent
+        window: a window that scrolled past the last carve would report None =
+        never = FIRE -- turning a 2000-line threshold into a carve every pass on
+        any busy project. The marker is the structured `carve_kind` key
+        _execute_carve_dispatch stamps on the carve's own TASK_CREATED, with the
+        additional `head_sha` payload field recording the repo HEAD at that time
+        (see _execute_carve_dispatch's payload-writing code).
+
+        Fail-safe on a git failure or missing head_sha is 0 (NOT None): this value
+        gates spawning a real carver process, so an I/O error must never be the
+        thing that authorizes spend. A missing head_sha is structurally an old
+        carve (pre-item-17); returning 0 means "no measurable activity since then",
+        which is the safe answer when we cannot measure. On degrade paths, logs a
+        warning so production can diagnose activity-counting issues.
+        """
+        try:
+            events = list(storage.iter_events(project))
+        except Exception as e:
+            log.warning("gap_audit: cannot read event log", project=project, exc=e)
+            return 0
+        latest = None
+        latest_sha = None
+        for ev in events:
+            if ev.type is EventType.TASK_CREATED and ev.payload.get("carve_kind") == "gap-audit":
+                if latest is None or ev.timestamp > latest:
+                    latest = ev.timestamp
+                    latest_sha = ev.payload.get("head_sha")
+        if latest is None:
+            return None
+        if not latest_sha:
+            # Old carve without head_sha, or payload corruption.
+            log.warning("gap_audit: marker present but head_sha missing", project=project)
+            return 0
+        try:
+            # git diff --numstat <sha>..HEAD [--] <paths...>
+            # Returns lines with: <added>\t<deleted>\t<path>
+            # Binary files show: -\t-\t<path>
+            repo_root = str(cfg.root)
+            pathspecs = cfg.policy.gap_audit_source_paths or []
+            cmd = ["git", "diff", "--numstat", f"{latest_sha}..HEAD"]
+            if pathspecs:
+                cmd.append("--")
+                cmd.extend(pathspecs)
+            result = subprocess.run(
+                cmd,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                # git diff failed (invalid sha, not a repo, etc.)
+                log.warning("gap_audit: git diff failed", project=project,
+                           head_sha=latest_sha[:8], returncode=result.returncode)
+                return 0
+            total = 0
+            for line in result.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    added_str, deleted_str = parts[0], parts[1]
+                    # Binary files show "-" in both fields
+                    if added_str != "-":
+                        try:
+                            total += int(added_str)
+                        except ValueError:
+                            pass
+                    if deleted_str != "-":
+                        try:
+                            total += int(deleted_str)
+                        except ValueError:
+                            pass
+            return total
+        except subprocess.TimeoutExpired:
+            log.warning("gap_audit: git diff timeout", project=project, head_sha=latest_sha[:8])
+            return 0
+        except Exception as e:
+            log.warning("gap_audit: git diff error", project=project, exc=e)
+            return 0
 
     @staticmethod
     def _carve_kind(states: dict[str, TaskStateFile], task_id: str | None) -> str:
@@ -3655,6 +3744,55 @@ class Daemon:
                 "  from a test-health carve -- these numbers are for the record.)",
                 "",
             ])
+        elif kind == "gap-audit":
+            lines.extend([
+                f"You are performing a periodic project-WIDE GAP-AUDIT review "
+                f"for project '{project}'. This is NOT a per-task job and NOT a "
+                "queue refill: evaluate whether features the project CLAIMS are "
+                "shipped are actually backed by code reality, then carve handoff "
+                "package(s) for the gaps. Do NOT implement the fixes yourself -- "
+                "you carve packages for other agents to pick up later.",
+                "",
+                "## Carve source: the product-definition",
+                "Read the project's PRODUCT-DEFINITION document (below). AUDIT ONLY "
+                "features marked `status: shipped` -- planned/building features are "
+                "legitimately incomplete and auditing them manufactures busywork.",
+                "",
+                "For each shipped feature, examine each of its `acceptance` criteria "
+                "and verify it against the ACTUAL CODE. Explicitly: you do not have "
+                "a component→file map -- discovery is your job. Verify each criterion "
+                "as one of:",
+                "  - HOLDS: The code actually implements and tests this criterion.",
+                "  - PARTIAL: The code partially addresses it; more work needed.",
+                "  - ABSENT: The criterion is not found in the code.",
+                "",
+                "For EACH partial/absent criterion, carve a new package. Name the "
+                "feature id and restate the exact criterion text so a future "
+                "implementer knows exactly what's missing.",
+                "",
+                "## Carve NOTHING if every shipped feature's criteria hold",
+                "You are explicitly authorized to return an EMPTY `carved` list. A "
+                "periodic trigger that always produces packages manufactures "
+                "busywork and devalues every real finding. If every checked criterion "
+                "holds across all shipped features, report `\"carved\": []` with outcome "
+                "MILESTONE_COMPLETE and say so in review_reflection.",
+                "",
+                "## Product definition",
+                f"Read the trove and extract features: {cfg.product_definition}",
+                "",
+                "## Reporting notes specific to this pass",
+                '- Use `"source_kind": "gap"` for anything you carve here.',
+                "- Do NOT report outcome ROADMAP_EXHAUSTED. That outcome is a",
+                "  statement about the PRODUCT roadmap's runway, which this pass",
+                "  does not read; the daemon reads it back to throttle ordinary",
+                "  work carving. MILESTONE_COMPLETE is the correct 'no gaps found'",
+                "  answer for a gap-audit pass.",
+                "- headroom_estimate/headroom_rationale: report how many ADDITIONAL",
+                "  gaps you discovered but left un-carved (scope/risk/priority), and",
+                "  how you judged that. (The daemon does not raise a headroom-low",
+                "  alert from a gap-audit carve -- these numbers are for the record.)",
+                "",
+            ])
         elif rescope is not None:
             origin_id = rescope.get("origin_task_id")
             input_rev = rescope.get("input_revision") or "(unknown)"
@@ -4009,6 +4147,12 @@ class Daemon:
         created_payload: dict[str, Any] = {"statefile": tsf.to_dict()}
         if kind != "headroom":
             created_payload["carve_kind"] = kind
+        # F007: gap-audit carves also stamp head_sha so the next gap-audit trigger
+        # can compute changed lines since this carve.
+        if kind == "gap-audit":
+            head_sha = self._head_revision(cfg)
+            if head_sha:
+                created_payload["head_sha"] = head_sha
         events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
                                        created_payload, task_id=task_id))
 

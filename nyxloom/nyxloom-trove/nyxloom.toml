@@ -133,6 +133,22 @@ test_health_interval_days = 0
 # prevent. Restore to 14 together with carve_ahead_target after the deep
 # review. (Its first fire is immediate whenever enabled: a null age means
 # "never run", which item 15 reads as "do a first pass".)
+gap_audit_after_changed_lines = 0
+# F007 2026-07-27 (gap-engine, module contract item 17): activity-counted
+# threshold (in changed lines) for the periodic gap-audit carve trigger that
+# evaluates whether shipped features are actually backed by code. UNLIKE
+# test_health_interval_days above (time-based cadence), this fires when
+# accumulated changed production lines exceed the threshold since the last
+# gap-audit carve -- an idle project with zero code changes must not accrue
+# carve budget on an unchanged codebase.
+# The intended dogfood value is 2000 (audit every ~2K lines of change).
+# HELD AT 0 HERE, alongside carve_ahead_target=0 and test_health_interval_days=0,
+# for the same reason: item 17 is gated by its own cadence, NOT by
+# carve_ahead_target, so leaving it at 2000 would fire a brand-new carve the
+# moment the project unpauses. Restore to 2000 together with the others after
+# the deep review.
+gap_audit_source_paths = ["nyxloom/src"]
+# Scope the gap-audit activity count to production source, excluding tests/docs.
 max_attempts_per_task = 3
 merge_mode = "guarded-automatic"  # 2026-07-19: P48 shipped -- real git merge --no-ff
                                    # via a scratch worktree, escalates NEEDS_OPERATOR

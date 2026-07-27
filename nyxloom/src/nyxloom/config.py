@@ -168,6 +168,23 @@ class Policy:
     # nothing else in the daemon noticing, but a project must opt in before
     # nyxloom starts spending a background subprocess probe on it unasked).
     gate_verify_interval_days: int = 0
+    # F007 2026-07-27 (gap-engine, module contract item 17): activity-counted
+    # threshold (in changed LINES across gap_audit_source_paths) for the
+    # periodic gap-audit carve trigger. UNLIKE its neighbors (time-based cadences
+    # *_interval_days), this is activity-counted: the trigger fires when
+    # accumulated changed production lines exceed this threshold since the last
+    # gap-audit carve, because an idle project must not accrue carve budget on
+    # an unchanged codebase. 0 disables (the default: a project must opt in).
+    # See reconcile.py module contract item 17 (the trigger) and daemon's
+    # _changed_lines_since_gap_audit for the implementation.
+    gap_audit_after_changed_lines: int = 0
+    # F007 2026-07-27 (module contract item 17): a git pathspec (repo-root-
+    # relative) bounding which file changes count as activity for the gap-audit
+    # threshold. Example: ["src", "tests"] counts only production+test changes,
+    # ignoring docs or config rewrites. An EMPTY list (the default) deliberately
+    # counts the whole repo -- set it to your production source roots so a docs-
+    # only week will not trigger an audit with no code delta to find gaps in.
+    gap_audit_source_paths: list[str] = field(default_factory=list)
     # D-CORRECT-1 2026-07-17: deterministic pre-merge gate on the merged tree
     # in the scratch worktree, BEFORE the ref is published. True by default
     # (safety), settable per-project.
