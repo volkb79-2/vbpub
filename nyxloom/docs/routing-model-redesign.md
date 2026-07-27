@@ -228,6 +228,46 @@ reviewer records a self-repair in the same committed `<task>-REVIEW.md`, e.g.
 `VERDICT: APPROVED (repaired)` plus a short note of what was patched — mirrors
 the existing `REJECT_CLASS:` idiom rather than inventing a new artifact.
 
+**(refined 2026-07-27, operator decisions — these SUPERSEDE the scheduling-mode
+coupling in this section's opening paragraph)**
+
+1. **The serial/batch coupling is dropped.** It existed because the original,
+   unbounded D-R8 let a reviewer edit "even beyond its original task scope",
+   which genuinely could collide with concurrently-running work. The
+   2026-07-26 refinement above already confines a repair to *this task's own
+   test files on its own branch* — files no parallel task touches, by
+   worktree isolation and `scope.touch` construction. With the blast radius
+   bounded, reading `stages.effective_concurrency()` to gate the feature adds
+   a second config dimension and a hard-to-test code path guarding a risk
+   that no longer exists. One boolean, `policy.reviewer_repair`.
+2. **It defaults to `True`.** This deviates from the "new knobs default off"
+   convention (`test_health_interval_days`, `gate_verify_interval_days`,
+   `mutation_gate`) — deliberately. Every one of those comments gives the same
+   reason for defaulting off: *a project must opt in before nyxloom spends
+   carve budget / a background probe on it unasked.* The convention is about
+   **unrequested spend**. Reviewer-repair spends nothing extra: it is a
+   permission *inside an already-dispatched review session*. Different risk
+   profile, so the convention does not apply. `pre_merge_gate: bool = True` is
+   the existing precedent for a behaviour/safety knob defaulting on.
+3. **Invalidation reverts, it does not merely re-label.** The original text
+   ("an automatic reject of the repair itself") left a real hole: the
+   reviewer's out-of-bounds production commit would still be sitting on the
+   branch, where a later review or merge picks it up — which makes the
+   "mechanically enforced" guarantee false in practice. Enforcement is
+   therefore: `git revert` the reviewer's commits, THEN force the outcome to
+   `REJECTED` with `REJECT_CLASS: fixable`. `fixable` is the right class — the
+   implementation had a real, local, low-blast-radius gap that the reviewer
+   both found and knew how to fix, so a targeted retry (carrying the
+   reviewer's own prose via B4b's `prior_verdict`) is the correct route, not a
+   re-carve. Forcing it requires a daemon-recorded override that takes
+   precedence over `_parse_review_verdict` / `_parse_reject_class`'s text
+   scan, because the committed `<task>-REVIEW.md` still literally reads
+   `VERDICT: APPROVED (repaired)`.
+4. **The baseline is a recorded pre-review branch sha.** "What did the
+   reviewer change" is `<pre_review_sha>..<branch head>`, with the sha stamped
+   into the review-launch event. An absent baseline invalidates the repair
+   rather than trusting it — an unverifiable repair is not a verified one.
+
 ## D-R9 — `route doctor` verb (supporting)
 
 A CLI verb to (a) **validate** `routes.host.toml` syntax/content against the
