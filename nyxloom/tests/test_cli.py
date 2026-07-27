@@ -744,7 +744,31 @@ def test_version(capsys, monkeypatch):
     exit_code = cli.main(["version"])
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "0.1.0a0" in out
+    # The version is setuptools-scm-derived (no longer a hardcoded literal); the
+    # oracle is that `version` prints nyxloom.__version__ even with daemon broken.
+    import nyxloom
+
+    assert nyxloom.__version__ in out
+    assert out.strip()  # non-empty
+
+
+def test_resolve_version_from_installed_metadata(monkeypatch):
+    """_resolve_version returns the installed distribution's metadata version."""
+    import nyxloom
+
+    monkeypatch.setattr(nyxloom, "_dist_version", lambda name: "9.9.9")
+    assert nyxloom._resolve_version() == "9.9.9"
+
+
+def test_resolve_version_sentinel_when_not_installed(monkeypatch):
+    """No installed metadata (source checkout) → the sentinel, not a crash."""
+    import nyxloom
+
+    def _raise(name):
+        raise nyxloom.PackageNotFoundError(name)
+
+    monkeypatch.setattr(nyxloom, "_dist_version", _raise)
+    assert nyxloom._resolve_version() == "0.0.0+unknown"
 
 
 def test_unknown_subcommand(capsys):
