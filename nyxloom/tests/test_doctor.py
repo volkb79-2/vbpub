@@ -11,8 +11,9 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from nyxloom import paths, storage
-from nyxloom.doctor import doctor_project, rebuild, doctor_all
+from nyxloom import cli, paths, storage
+from nyxloom.doctor import doctor_project, rebuild, doctor_all, doctor_host, _cgroup_slices_in_argv
+from nyxloom.transport_check import TransportProbe
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, DoctorFinding, Event, EventType,
     Receipt, ReceiptResult, Route, Role, TaskState, TaskStateFile, Usage, Basis,
@@ -656,3 +657,241 @@ def test_doctor_all(sample_project):
         assert isinstance(result, dict)
         assert 'demo' in result
         assert isinstance(result['demo'], list)
+
+
+# ---------------------------------------------------------------------------
+# doctor_host: host-scoped checks (docker transport + cgroup slice existence)
+# infra/agent-cli/README.md + infra/slices/README.md. Every test mocks
+# transport_check.probe_default AND shutil.which/subprocess.run so this
+# suite never touches a real docker socket or real systemd unit -- it must
+# run identically on any host.
+
+def _set_gate_cgroup_parent(sample_project, slice_name: str) -> None:
+    """Rewrite the sample_project fixture's on-disk gate argv (normally
+    `["true"]`) to a docker invocation naming `--cgroup-parent=<slice_name>`,
+    so doctor_host()'s own registry scan (which reloads ProjectConfig fresh
+    from disk, exactly like doctor_all()) picks it up."""
+    toml_path = sample_project.root / '.nyxloom' / 'project.toml'
+    text = toml_path.read_text()
+    new_argv_line = (
+        'argv = ["bash", "-c", '
+        f'"docker run --rm --cgroup-parent={slice_name} alpine true"]'
+    )
+    assert 'argv = ["true"]' in text, 'fixture project.toml gate argv shape changed'
+    toml_path.write_text(text.replace('argv = ["true"]', new_argv_line))
+
+
+def _healthy_probe(**kw) -> TransportProbe:
+    return TransportProbe('healthy', 'test-default')
+
+
+# Oracle: transport lying -> exactly one critical finding
+def test_doctor_host_transport_lying_is_critical(sample_project, monkeypatch):
+    monkeypatch.setattr(
+        'nyxloom.doctor.transport_check.probe_default',
+        lambda **kw: TransportProbe('lying', 'truncated mid-stream'),
+    )
+    findings = doctor_host()
+    crit = [f for f in findings if f.kind == 'docker-transport-lying']
+    assert len(crit) == 1
+    assert crit[0].severity == 'critical'
+    assert crit[0].message == 'truncated mid-stream'
+    assert crit[0].project is None
+
+
+# Oracle: transport healthy -> no finding at all
+def test_doctor_host_transport_healthy_no_finding(sample_project, monkeypatch):
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    findings = doctor_host()
+    assert [f for f in findings if f.kind.startswith('docker-transport')] == []
+
+
+# Oracle: transport unavailable -> never critical (this doctor_host chooses
+# to emit no finding at all for 'unavailable' -- an offline/no-docker host,
+# e.g. the gate's own tester-unified container, must never manufacture a
+# finding merely because it has no docker to probe).
+def test_doctor_host_transport_unavailable_no_critical(sample_project, monkeypatch):
+    monkeypatch.setattr(
+        'nyxloom.doctor.transport_check.probe_default',
+        lambda **kw: TransportProbe('unavailable', "'docker' not found on PATH"),
+    )
+    findings = doctor_host()
+    assert not any(f.severity == 'critical' for f in findings)
+    assert [f for f in findings if f.kind.startswith('docker-transport')] == []
+
+
+# Oracle: --cgroup-parent=<name> and the space-separated form both extract,
+# restricted to .slice unit names.
+def test_cgroup_slices_in_argv_extracts_both_forms():
+    argv = [
+        'bash', '-c',
+        "docker run --cgroup-parent=dev-workloads.slice --rm image "
+        "&& docker run --cgroup-parent other-tool.slice --rm image2 "
+        "&& docker run --cgroup-parent=not-a-slice-name --rm image3",
+    ]
+    assert _cgroup_slices_in_argv(argv) == {'dev-workloads.slice', 'other-tool.slice'}
+
+
+# Oracle: a missing slice (systemctl reports not-found) -> critical finding
+# naming the slice AND the owning project:gate.
+def test_doctor_host_slice_missing_is_critical(sample_project, monkeypatch):
+    _set_gate_cgroup_parent(sample_project, 'ghost.slice')
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr('nyxloom.doctor.shutil.which', lambda name: '/usr/bin/systemctl')
+
+    def fake_run(argv, **kwargs):
+        assert argv[:2] == ['systemctl', 'show']
+        assert argv[2] == 'ghost.slice'
+        return subprocess.CompletedProcess(argv, 0, stdout='LoadState=not-found\n', stderr='')
+
+    monkeypatch.setattr('nyxloom.doctor.subprocess.run', fake_run)
+
+    findings = doctor_host()
+    crit = [f for f in findings if f.kind == 'cgroup-slice-missing']
+    assert len(crit) == 1
+    assert crit[0].severity == 'critical'
+    assert 'ghost.slice' in crit[0].message
+    assert crit[0].project is None
+    assert crit[0].refs == ['demo:pytest-q']
+
+
+# Oracle: an existing slice (LoadState=loaded) -> no finding.
+def test_doctor_host_slice_loaded_no_finding(sample_project, monkeypatch):
+    _set_gate_cgroup_parent(sample_project, 'dev-workloads.slice')
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr('nyxloom.doctor.shutil.which', lambda name: '/usr/bin/systemctl')
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout='LoadState=loaded\n', stderr='')
+
+    monkeypatch.setattr('nyxloom.doctor.subprocess.run', fake_run)
+
+    findings = doctor_host()
+    assert [f for f in findings if f.kind.startswith('cgroup-slice')] == []
+
+
+# Oracle: no systemctl on this host -> one info finding, and the per-slice
+# systemctl probe is NEVER attempted.
+def test_doctor_host_no_systemctl_emits_info_and_never_probes(sample_project, monkeypatch):
+    _set_gate_cgroup_parent(sample_project, 'ghost.slice')
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr('nyxloom.doctor.shutil.which', lambda name: None)
+
+    run_mock = MagicMock()
+    monkeypatch.setattr('nyxloom.doctor.subprocess.run', run_mock)
+
+    findings = doctor_host()
+    info = [f for f in findings if f.kind == 'cgroup-slice-unchecked']
+    assert len(info) == 1
+    assert info[0].severity == 'info'
+    assert 'ghost.slice' in info[0].refs
+    run_mock.assert_not_called()
+
+
+# Oracle: a subprocess error (timeout) probing a slice -> warning (not
+# critical, not silent).
+def test_doctor_host_slice_probe_error_is_warning(sample_project, monkeypatch):
+    _set_gate_cgroup_parent(sample_project, 'ghost.slice')
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr('nyxloom.doctor.shutil.which', lambda name: '/usr/bin/systemctl')
+
+    def fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=10)
+
+    monkeypatch.setattr('nyxloom.doctor.subprocess.run', fake_run)
+
+    findings = doctor_host()
+    warn = [f for f in findings if f.kind == 'cgroup-slice-unverified']
+    assert len(warn) == 1
+    assert warn[0].severity == 'warning'
+    assert not any(f.severity == 'critical' for f in findings)
+    assert warn[0].refs == ['demo:pytest-q']
+
+
+# Oracle: systemctl exits without ever printing a LoadState= line (malformed/
+# unexpected output, distinct from a raised exception) -> also a warning,
+# never treated as "exists".
+def test_doctor_host_slice_probe_malformed_output_is_warning(sample_project, monkeypatch):
+    _set_gate_cgroup_parent(sample_project, 'ghost.slice')
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr('nyxloom.doctor.shutil.which', lambda name: '/usr/bin/systemctl')
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout='', stderr='unit not loaded')
+
+    monkeypatch.setattr('nyxloom.doctor.subprocess.run', fake_run)
+
+    findings = doctor_host()
+    warn = [f for f in findings if f.kind == 'cgroup-slice-unverified']
+    assert len(warn) == 1
+    assert warn[0].severity == 'warning'
+    assert 'no LoadState=' in warn[0].message
+    assert not any(f.severity == 'critical' for f in findings)
+
+
+# Oracle: load_registry() itself failing must not crash doctor_host -- it
+# degrades to "no slices known" (empty registry), same resilience pattern as
+# doctor_all()'s own try/except around ProjectConfig.load.
+def test_doctor_host_registry_load_failure_does_not_crash(sample_project, monkeypatch):
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr(
+        'nyxloom.doctor.load_registry',
+        MagicMock(side_effect=RuntimeError('registry.toml unreadable')),
+    )
+    findings = doctor_host()
+    assert findings == []
+
+
+# Oracle: one project's ProjectConfig.load() failing (e.g. a malformed
+# nyxloom.toml) must not take down the slice scan for every OTHER registered
+# project -- it is skipped, not fatal.
+def test_doctor_host_project_config_load_failure_is_skipped(sample_project, monkeypatch):
+    monkeypatch.setattr('nyxloom.doctor.transport_check.probe_default', _healthy_probe)
+    monkeypatch.setattr(
+        'nyxloom.doctor.load_registry',
+        lambda: {'broken-project': Path('/does/not/exist')},
+    )
+    monkeypatch.setattr(
+        'nyxloom.doctor.ProjectConfig.load',
+        MagicMock(side_effect=RuntimeError('bad config')),
+    )
+    findings = doctor_host()
+    assert [f for f in findings if f.kind.startswith('cgroup-slice')] == []
+
+
+# ---------------------------------------------------------------------------
+# cmd_doctor wiring (cli.py): host findings fold into the same table + the
+# non-zero-exit-on-critical decision.
+
+def test_cmd_doctor_critical_host_finding_forces_nonzero_exit(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """A critical host finding (e.g. missing cgroup slice / lying transport)
+    must make `nyxloom doctor` exit non-zero, even with zero project-level
+    findings."""
+    monkeypatch.setattr('nyxloom.doctor.doctor_project', lambda cfg: [])
+    host_finding = DoctorFinding(
+        kind='cgroup-slice-missing',
+        severity='critical',
+        message='cgroup slice ghost.slice does not exist',
+        project=None,
+        refs=['demo:pytest-q'],
+    )
+    monkeypatch.setattr('nyxloom.doctor.doctor_host', lambda: [host_finding])
+
+    exit_code = cli.main(['doctor'])
+    out = capsys.readouterr().out
+    assert exit_code != 0
+    assert 'cgroup-slice-missing' in out
+    assert 'ghost.slice' in out
+
+
+def test_cmd_doctor_no_critical_findings_zero_exit(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """No project findings and no host findings -> `nyxloom doctor` exits 0."""
+    monkeypatch.setattr('nyxloom.doctor.doctor_project', lambda cfg: [])
+    monkeypatch.setattr('nyxloom.doctor.doctor_host', lambda: [])
+
+    exit_code = cli.main(['doctor'])
+    assert exit_code == 0

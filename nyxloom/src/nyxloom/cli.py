@@ -398,6 +398,11 @@ def cmd_doctor(args) -> int:
         findings = doctor.doctor_project(cfg)
         all_findings.extend(findings)
 
+    # Host-scoped checks (docker-transport lying, missing cgroup slices) --
+    # not owned by any single project, so run once regardless of --project
+    # and folded into the SAME findings table + exit-code decision below.
+    all_findings.extend(doctor.doctor_host())
+
     # If rebuild mode, show diffs
     if args.rebuild:
         for pid in projects:
