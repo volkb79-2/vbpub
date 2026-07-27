@@ -13,6 +13,7 @@ from topos.collect.dockerjoin import ContainerResolveError
 
 @pytest.fixture(autouse=True)
 def fake_config(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    FakeWriter.instances.clear()
     config = SimpleNamespace(interval=7.5)
     monkeypatch.setattr(cli, "load", lambda _path: config)
     return config
