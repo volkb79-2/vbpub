@@ -426,6 +426,56 @@ def test_walk_cgroup_ids(tmp_path: Path) -> None:
     assert "system.slice" in keys
 
 
+@pytest.mark.parametrize(
+    ("resolver_result", "message"),
+    [
+        ({True: "service"}, "invalid cgroup id"),
+        ({-1: "service"}, "invalid cgroup id"),
+        ({42: object()}, "invalid entity key"),
+    ],
+)
+def test_cgroup_map_rejects_invalid_resolver_contract(
+    tmp_path: Path, resolver_result: dict[object, object], message: str
+) -> None:
+    """The bridge refuses unsafe resolver output before publishing a snapshot."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner("[]"),
+        cgroup_id_resolver=lambda: resolver_result,  # type: ignore[return-value]
+    )
+
+    with pytest.raises(BpfSnapshotError, match=message):
+        bridge._build_cgroup_map()
+
+
+def test_cgroup_map_wraps_resolver_oserror(tmp_path: Path) -> None:
+    """A filesystem resolver failure becomes the bridge's typed public error."""
+    bpf_root = _make_bpf_root(tmp_path)
+
+    def unavailable() -> dict[int, str]:
+        raise OSError("cgroupfs unavailable")
+
+    bridge = BpfSnapshotBridge(
+        bpf_root, command_runner=_mock_runner("[]"), cgroup_id_resolver=unavailable
+    )
+
+    with pytest.raises(BpfSnapshotError, match="cgroup id resolution failed"):
+        bridge._build_cgroup_map()
+
+
+def test_cgroup_map_normalizes_integer_ids_to_snapshot_keys(tmp_path: Path) -> None:
+    """The serialized snapshot contract uses string cgroup-map keys."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner("[]"),
+        cgroup_id_resolver=lambda: {42: "system.slice/service.scope"},
+    )
+
+    assert bridge._build_cgroup_map() == {"42": "system.slice/service.scope"}
+
+
 # ---------------------------------------------------------------------------
 # Missing bpftool
 # ---------------------------------------------------------------------------
