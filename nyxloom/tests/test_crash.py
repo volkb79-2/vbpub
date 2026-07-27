@@ -117,40 +117,55 @@ def test_statefile_atomicity_under_concurrent_saves(tmp_state):
 # Oracle 8: flock release on SIGKILL
 
 
-def _acquire_and_hold(name: str) -> None:
+def _acquire_and_hold(name: str, acquired: "multiprocessing.Event") -> None:
     lease = leases.acquire(name, owner="child", purpose="drill")
     if lease is None:
         os._exit(1)
+    # Signal the parent CAUSALLY -- it must not have to infer acquisition by
+    # polling a side effect within some wall-clock budget (reference/LESSONS.md
+    # L20). The parent blocks on this event and wakes the instant it is set,
+    # however slow the machine is.
+    acquired.set()
     time.sleep(60)
 
 
 def test_flock_release_on_sigkill(tmp_state):
+    """Oracle: the kernel releases a flock when its holder is SIGKILLed.
+
+    That property is CAUSAL, so this test contains no wall-clock budget that
+    could decide its verdict (reference/LESSONS.md L20 -- hardware speed must
+    never determine a test's outcome). Two synchronization points replace the
+    two former `deadline = monotonic() + 3.0` polling loops:
+
+    1. acquisition -- the child SETS an event once it holds the lease; the
+       parent blocks on it. The generous timeout below is a failsafe against
+       hanging a suite forever, NOT a correctness budget: the assertion's
+       outcome is decided by the signal, and the wait returns the instant it
+       arrives, so a large value costs nothing on a fast machine.
+    2. release -- NO wait at all. Linux tears a process down in the order
+       exit_files() (closes fds, releasing flocks) THEN exit_notify() (parent
+       observes the exit), so once `p.join()` has returned the flock is ALREADY
+       released. Polling for it was superstition; asserting immediately after
+       join is deterministic.
+    """
     name = "drill"
 
-    p = multiprocessing.Process(target=_acquire_and_hold, args=(name,))
+    acquired = multiprocessing.Event()
+    p = multiprocessing.Process(target=_acquire_and_hold, args=(name, acquired))
     p.start()
     try:
-        deadline = time.monotonic() + 3.0
-        held = False
-        while time.monotonic() < deadline:
-            if leases.holder_info(name)[0]["held"]:
-                held = True
-                break
-            time.sleep(0.1)
-        assert held, "child never acquired the lease within 3s"
+        assert acquired.wait(timeout=60), "child never signalled that it acquired the lease"
+        assert leases.holder_info(name)[0]["held"], "lease must read as held once the child signalled"
 
         p.kill()  # SIGKILL
-        p.join(timeout=5)
+        p.join(timeout=60)
         assert not p.is_alive()
 
-        deadline = time.monotonic() + 3.0
-        free = False
-        while time.monotonic() < deadline:
-            if not leases.holder_info(name)[0]["held"]:
-                free = True
-                break
-            time.sleep(0.1)
-        assert free, "holder_info still reports held 3s after SIGKILL"
+        # join() returned => the child is reaped => its fds are already closed
+        # => the flock is already released. No polling, no deadline.
+        assert not leases.holder_info(name)[0]["held"], (
+            "holder_info must report free immediately once the killed holder is reaped"
+        )
 
         lease = leases.acquire(name, owner="parent", purpose="post-kill")
         assert lease is not None, "acquire must succeed once the kernel released the flock"
@@ -158,7 +173,7 @@ def test_flock_release_on_sigkill(tmp_state):
     finally:
         if p.is_alive():
             p.kill()
-            p.join(timeout=5)
+            p.join(timeout=60)
 
 
 # ---------------------------------------------------------------------------
