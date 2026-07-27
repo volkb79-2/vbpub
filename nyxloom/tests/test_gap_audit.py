@@ -283,6 +283,46 @@ def test_oracle_7_binary_rows_contribute_zero(tmp_state, sample_project, monkeyp
     assert result == 8  # 5 + 3, binary counts 0
 
 
+def test_oracle_7_storage_read_failure_returns_zero(monkeypatch):
+    """Oracle 7: Storage read failure returns 0 (fail-safe)."""
+    d = daemon.Daemon({"demo": Path("/tmp/test-demo")})
+
+    def mock_iter_events(project):
+        raise IOError("storage read error")
+
+    monkeypatch.setattr(storage, "iter_events", mock_iter_events)
+
+    cfg = _cfg()
+    cfg.root = Path("/tmp/test-demo")
+    result = d._changed_lines_since_gap_audit("demo", cfg)
+    assert result == 0
+
+
+def test_oracle_7_generic_exception_returns_zero(tmp_state, sample_project, monkeypatch):
+    """Oracle 7: Generic subprocess exception returns 0."""
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="carve-demo-1", project="demo",
+        state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+    )
+    payload = {"statefile": tsf.to_dict(), "carve_kind": "gap-audit", "head_sha": "abc123"}
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "test"),
+        type=EventType.TASK_CREATED, payload=payload, task_id="carve-demo-1",
+    )
+
+    def mock_run(*args, **kwargs):
+        raise RuntimeError("unexpected error")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    cfg = _cfg()
+    cfg.root = sample_project.root
+    result = d._changed_lines_since_gap_audit("demo", cfg)
+    assert result == 0
+
+
 # ==========================================================================
 # Oracle 8: Checkpoint round-trip (head_sha written and read back)
 # ==========================================================================
