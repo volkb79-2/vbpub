@@ -500,16 +500,55 @@ def test_pre_review_sha_returns_none_when_no_matching_attempt_created(tmp_state,
     assert d._pre_review_sha("demo", "t-other", "att-DIFFERENT") is None
 
 
-def test_reviewer_repair_touched_paths_empty_on_git_diff_failure(tmp_state, sample_project):
-    """_reviewer_repair_touched_paths' `res.returncode != 0` branch: an
-    unresolvable pre_sha makes `git diff` itself fail -- degrades to []
-    (vacuously in-bounds), never a crashed pass."""
+def test_reviewer_repair_touched_paths_none_on_git_diff_failure_NOT_EMPTY(
+        tmp_state, sample_project):
+    """`res.returncode != 0` returns None, NOT [] -- and the distinction is
+    the whole point, so it is asserted against its neighbour rather than on
+    its own.
+
+    "I found nothing" ([]) and "I could not look" (None) are opposites in a
+    bound check. Collapsing them fails OPEN: an unverifiable repair would be
+    read as an in-bounds one and approved, silently voiding the bound in
+    exactly the circumstance -- a broken or unreachable branch -- where it
+    matters most. This mirrors the fail-safe rule already stated for a
+    missing baseline in _enforce_reviewer_repair's own contract; the two
+    unverifiable cases must behave identically. Still never raises, never
+    crashes the pass."""
     cfg = sample_project
     task_id = "t-bad-diff"
     _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
     d = daemon.Daemon({"demo": cfg.root})
-    touched = d._reviewer_repair_touched_paths(cfg, task_id, "not-a-real-sha-deadbeef")
-    assert touched == []
+
+    # Could not look -> None.
+    assert d._reviewer_repair_touched_paths(
+        cfg, task_id, "not-a-real-sha-deadbeef") is None
+
+    # Looked, found nothing -> [] (the genuinely benign case it must not be
+    # confused with): diffing a real branch head against itself.
+    head = _branch_head(cfg.root, task_id)
+    assert d._reviewer_repair_touched_paths(cfg, task_id, head) == []
+
+
+def test_undeterminable_diff_rejects_like_a_missing_baseline(
+        tmp_state, sample_project, monkeypatch):
+    """The enforcement-level consequence of the split above: a failed diff
+    must land in the REJECTED path, never the empty-diff "approved" one.
+
+    Asserted at _enforce_reviewer_repair rather than only on the helper,
+    because a helper returning None is harmless until a caller's `if not
+    touched:` quietly treats it as "nothing touched" -- which is precisely
+    the bug this guards."""
+    cfg = sample_project
+    task_id = "t-undeterminable"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    d = daemon.Daemon({"demo": cfg.root})
+    baseline = _branch_head(cfg.root, task_id)
+    monkeypatch.setattr(d, "_pre_review_sha", lambda *a, **kw: baseline)
+    monkeypatch.setattr(d, "_reviewer_repair_touched_paths", lambda *a, **kw: None)
+
+    outcome, details = d._enforce_reviewer_repair("demo", cfg, task_id, "att-x")
+    assert outcome == "rejected"
+    assert details["reason"] == "undeterminable_diff"
 
 
 def test_reviewer_repair_touched_paths_skips_blank_diff_lines(tmp_state, sample_project, monkeypatch):

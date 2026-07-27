@@ -5664,12 +5664,18 @@ class Daemon:
         return None
 
     def _reviewer_repair_touched_paths(self, cfg: ProjectConfig, task_id: str,
-                                       pre_sha: str) -> list[str]:
+                                       pre_sha: str) -> list[str] | None:
         """DR8: `git diff --name-only <pre_sha>..feat/<task_id>` -- the repo-
         root-relative paths the reviewer itself touched strictly after the
-        pre-review baseline. Read-only. Returns [] (vacuously in-bounds, see
-        _enforce_reviewer_repair) on a git failure or an empty diff -- both
-        mean "nothing attributable to the reviewer was found".
+        pre-review baseline. Read-only.
+
+        `[]` (empty diff -- the reviewer committed nothing) and `None` (the
+        diff could not be taken at all) are DELIBERATELY DISTINCT, and
+        conflating them is a fail-OPEN: "I found nothing" and "I could not
+        look" are opposites in a bound check. `[]` is vacuously in-bounds;
+        `None` makes the repair unverifiable, which _enforce_reviewer_repair
+        treats exactly like a missing baseline -- rejected. An unverifiable
+        repair is not a verified one (D-R8 refined, 2026-07-27).
 
         EXCLUDES the reviewer's own committed `<task>-REVIEW.md` (under
         cfg.reports_dir): every review -- repaired or not -- commits this
@@ -5691,7 +5697,7 @@ class Daemon:
             capture_output=True, text=True,
         )
         if res.returncode != 0:
-            return []
+            return None  # could not look -- NOT the same as "found nothing"
         own_review_rel = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
         touched = []
         for p in res.stdout.splitlines():
@@ -5817,8 +5823,11 @@ class Daemon:
         verdict re-check belongs at merge time).
 
         Returns ("rejected", details) when the repair is INVALIDATED --
-        `details["reason"]` is "missing_baseline" (pre_review_sha absent --
-        an unverifiable repair is never silently trusted) or "out_of_scope"
+        `details["reason"]` is "missing_baseline" (pre_review_sha absent),
+        "undeterminable_diff" (the baseline exists but the diff against it
+        failed) -- both are the same rule, an unverifiable repair is never
+        silently trusted, and note they must NOT collapse into the empty-diff
+        "approved" path -- or "out_of_scope"
         (`details["offending_paths"]` names what the reviewer touched outside
         `reviewer_repair_paths`; `details["reverted"]` records whether the
         revert itself succeeded). An out-of-scope repair is reverted HERE
@@ -5832,6 +5841,15 @@ class Daemon:
                        attempt=attempt_id, reason="missing-pre-review-sha")
             return "rejected", {"reason": "missing_baseline"}
         touched = self._reviewer_repair_touched_paths(cfg, task_id, pre_sha)
+        if touched is None:
+            # The diff itself failed -- we cannot say WHAT the reviewer
+            # touched, so we cannot say it stayed in bounds. Same rule as the
+            # missing baseline above: unverifiable is not verified. Failing
+            # open here would silently void the bound in exactly the
+            # circumstance (a broken/mangled branch) where it matters most.
+            log.warning("reviewer-repair-unverifiable", project=project, task=task_id,
+                        attempt=attempt_id, reason="diff-failed")
+            return "rejected", {"reason": "undeterminable_diff"}
         if not touched:
             return "approved", None
         offending = self._reviewer_repair_offending_paths(cfg, touched)
