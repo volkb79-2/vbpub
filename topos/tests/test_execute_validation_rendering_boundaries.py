@@ -77,3 +77,36 @@ def test_set_property_executes_when_fresh_value_still_matches_preview(tmp_path: 
     assert called == [
         ("/usr/bin/systemctl", "set-property", "demo.service", "memory.high=1024")
     ]
+
+
+def test_set_property_refuses_when_stale_value_revalidation_cannot_read(tmp_path: Path) -> None:
+    """An unreadable stale-check source must never permit the systemd mutation."""
+    called: list[tuple[str, ...]] = []
+
+    def runner(argv: tuple[str, ...], *, timeout: float) -> ExecuteResult:
+        called.append(argv)
+        return _success_runner(argv, timeout=timeout)
+
+    def unreadable_current_value(unit: str) -> str:
+        raise OSError("systemctl unavailable")
+
+    result = execute_set_property(
+        "demo.service",
+        property_name="memory.high",
+        property_value="1024",
+        persistence="persistent",
+        planned_current_value="512",
+        current_value_reader=unreadable_current_value,
+        admin=True,
+        confirm="EXECUTE",
+        audit_path=tmp_path / "audit.jsonl",
+        root_check=lambda: True,
+        identity=lambda: AuditIdentity(0, "tester"),
+        clock=lambda: 10.0,
+        runner=runner,
+    )
+
+    assert result.outcome == "refusal"
+    assert result.action_outcome == "refusal"
+    assert "could not be read (OSError)" in result.stderr
+    assert called == []
