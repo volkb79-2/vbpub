@@ -1287,6 +1287,16 @@ def action_graph(
         provides = root_section.get("provides", [])
         if not (requires or provides):
             continue
+        # ``--graph`` is an inspection action, but it must not turn malformed
+        # provisioning declarations into a plausible-looking topology.  Keep
+        # its input contract identical to ``--check`` and the deploy preflight:
+        # an invalid typed ref is configuration failure (exit 2), not a graph
+        # edge to an invented/unprovided target.
+        try:
+            config_model.validate_stack_provisioning(stack_cfg, source=rel)
+        except ValueError as exc:
+            error(str(exc))
+            return 2
         stacks[rel] = {"requires": requires, "provides": provides}
 
     if not stacks:
