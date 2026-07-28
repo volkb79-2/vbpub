@@ -22,11 +22,11 @@ process output back to your terminal. It copies
 the optional `cmru.secret.toml` overlay into that worktree with mode `0600`; the
 copy is removed with a successful worktree and is never staged.
 
-Uncommitted edits outside the selected project do not block a release. Edits to
-the selected project's declared version paths, or to `cmru.py`, `cmru/`, or
-`cmru.toml`, do block it: otherwise the snapshot would silently release older
-inputs than the operator sees. This distinction is necessary because
-setuptools-scm treats *any* dirty file in its worktree as a dirty build.
+No uncommitted caller edit blocks or enters a release, including an edit under a
+selected project: the release source is the fetched `origin/main` commit, never
+the caller's worktree. The only local-source preflight is local `main` ahead of
+`origin/main`, because those committed changes are easy to mistake for published
+release inputs. This also avoids setuptools-scm's whole-worktree dirty behavior.
 
 Failure retains the worktree and prints its path and branch. Inspect and commit
 the correction there, then resume it explicitly:

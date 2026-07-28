@@ -20,17 +20,6 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
     )
 
 
-def test_release_input_paths_only_include_selected_product_and_control_plane():
-    configs = {
-        "alpha": _project("alpha", paths=["alpha", "shared"]),
-        "beta": _project("beta"),
-    }
-
-    assert cli._release_input_paths(configs, ["alpha", "beta"], "alpha") == [
-        "cmru.py", "cmru", "cmru.toml", "alpha", "shared",
-    ]
-
-
 def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_path):
     config = tmp_path / "nested" / "cmru.toml"
     config.parent.mkdir()
@@ -115,7 +104,6 @@ cwd = "alpha"
 
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
-    monkeypatch.setattr(transaction, "assert_paths_clean", lambda root, paths: calls.append((root, paths)))
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
@@ -128,7 +116,7 @@ cwd = "alpha"
         cli.main(["release", "--config", str(config), "--project", "alpha"])
 
     assert exc.value.code == 0
-    assert (tmp_path, ["cmru.py", "cmru", "cmru.toml", "alpha"]) in calls
+    assert not any(isinstance(call, tuple) for call in calls)
     assert ["--project", "alpha", "--config", "cmru.toml"] in calls
     assert "removed" in calls
 

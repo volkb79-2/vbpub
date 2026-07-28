@@ -58,20 +58,6 @@ class ReleaseWorkspace:
     base: str
 
 
-def assert_paths_clean(repo_root: Path, paths: Sequence[str]) -> None:
-    """Reject uncommitted or untracked inputs that would be omitted by snapshotting."""
-    normalized = [path for path in paths if path]
-    if not normalized:
-        return
-    dirty = _git(
-        repo_root, "status", "--porcelain", "--untracked-files=all", "--", *normalized,
-    )
-    if dirty:
-        raise RuntimeError(
-            "Release input paths are dirty; commit or stash them before release:\n" + dirty
-        )
-
-
 @contextmanager
 def release_lock(repo_root: Path) -> Iterator[None]:
     """Serialize local release transactions without relying on a mutable checkout."""

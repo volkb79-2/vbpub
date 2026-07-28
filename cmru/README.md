@@ -59,9 +59,10 @@ behind the remote is warned about but safe because the remote is authoritative. 
 because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
 
-cmru rejects dirty paths that are actually release inputs: the selected project (including
-declared shared version paths) and the cmru control plane. It allows unrelated paths. In the
-transaction worktree, cmru runs each changed project's required `run-tests` gate, then
+cmru ignores every uncommitted caller path, including a selected project's files: none can
+enter the remote snapshot. It instead rejects only committed local `main` changes not yet on
+`origin/main`, since those are easy to mistake for released source. In the transaction
+worktree, cmru runs each changed project's required `run-tests` gate, then
 fast-forwards `origin/main` from the validated branch before creating tags or publishing.
 If another writer advanced remote main, the release fails before publication. A failure keeps
 the branch/worktree for diagnosis; success removes both.
