@@ -19,6 +19,20 @@ import manifest_sections  # noqa: E402
 
 
 class OciToolStagingTests(unittest.TestCase):
+    def test_verified_artifact_cache_restores_bytes_without_network(self) -> None:
+        url = "https://example.invalid/releases/tool-1.2.3.tar.gz"
+        payload = b"verified artifact"
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp) / "cache"
+            destination = Path(temp) / "stage" / "tool.tar.gz"
+            source = Path(temp) / "source"
+            source.write_bytes(payload)
+            with mock.patch.object(staging, "_artifact_cache_dir", return_value=cache):
+                staging._store_cached_download(url, url, source)
+                self.assertEqual(staging._restore_cached_download(url, destination), url)
+
+            self.assertEqual(destination.read_bytes(), payload)
+
     def test_github_asset_digest_parser_is_strict(self) -> None:
         digest = "a" * 64
         payload = {"assets": [{"name": "regctl-linux-amd64", "digest": f"sha256:{digest}"}]}

@@ -339,6 +339,29 @@ Step and environment configuration is [`cmru.build.toml`](cmru.build.toml); the 
 matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds run on the resource-confined
 named builder selected by `BUILDX_BUILDER`, with limits defined in `cmru.build.toml`.
 
+### Release caches
+
+Release preparation is repeatable without repeatedly fetching unchanged tool archives.
+It resolves live discovery inputs first, then stages a clean per-build directory from a
+local artifact cache shared by all Git worktrees. Cache entries are keyed by source URL,
+carry a SHA-256 record, and are re-hashed before reuse; each tool's existing upstream
+checksum/digest validation still runs afterwards. Mutable discovery documents (`latest`
+responses and platform manifests) are deliberately never reused.
+
+The default artifact and BuildKit caches live under the repository's common Git directory,
+not a disposable cmru release worktree. Override them only for a deliberate isolated cache:
+
+```bash
+MDT_ARTIFACT_CACHE_DIR=/var/tmp/mdt-artifacts ./build-push.py --build
+MDT_BUILDKIT_CACHE_DIR=/var/tmp/mdt-buildkit ./build-push.py --build
+```
+
+The staging API is intentionally DRY: all tool download paths flow through the same
+`_download()` cache, atomic-write, retry, and digest-record machinery; individual tool
+adapters supply only their release URL(s), expected archive shape, and upstream integrity
+rule. Timestamped `metadata.json` is kept out of the tool-install Docker cache boundary,
+so an otherwise identical release can reuse the costly installation layers.
+
 ### Bake groups
 
 | Group | Contents |

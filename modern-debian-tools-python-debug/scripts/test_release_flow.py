@@ -62,6 +62,21 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn('actual_memory}" != "${expected_memory}', builder)
         self.assertIn('docker buildx rm "${BUILDER}"', builder)
 
+    def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
+        wrapper = (ROOT / "scripts/release-bake.sh").read_text()
+        self.assertIn('git rev-parse --git-common-dir', wrapper)
+        self.assertIn('type=local,src=${CACHE_DIR}', wrapper)
+        self.assertIn('type=local,dest=${CACHE_DIR},mode=max', wrapper)
+
+    def test_volatile_staging_metadata_does_not_invalidate_tool_install_layers(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn('COPY build/tool-artifacts-staging/downloads', dockerfile)
+        self.assertIn('COPY build/tool-artifacts-staging/tool-versions.env', dockerfile)
+        self.assertGreater(
+            dockerfile.find('COPY build/tool-artifacts-staging/metadata.json'),
+            dockerfile.find('COPY build/tool-artifacts-staging/downloads'),
+        )
+
     def test_active_repack_path_is_oci_native(self) -> None:
         bake = (ROOT / "scripts/release-bake.sh").read_text()
         repack = (ROOT / "scripts/release-repack.sh").read_text()

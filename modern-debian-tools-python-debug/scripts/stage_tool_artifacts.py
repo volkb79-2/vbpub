@@ -119,8 +119,67 @@ def _sha512(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _artifact_cache_dir() -> Path:
+    """Return a local cache shared by all worktrees of this repository."""
+    configured = os.getenv("MDT_ARTIFACT_CACHE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    result = subprocess.run(
+        ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = (PROJECT_ROOT / common).resolve()
+    return common / "mdt-artifact-cache"
+
+
+def _cache_entry(url: str) -> tuple[Path, Path]:
+    entry = _artifact_cache_dir() / "by-url" / hashlib.sha256(url.encode()).hexdigest()
+    return entry / "payload", entry / "metadata.json"
+
+
+def _cacheable_download(url: str, destination: Path) -> bool:
+    """Cache immutable release assets, never mutable discovery documents."""
+    return destination != STAGE_ROOT / "tmp-text-response" and "/latest" not in url and not url.endswith("linux_amd64.json")
+
+
+def _restore_cached_download(url: str, destination: Path) -> str | None:
+    payload, metadata_path = _cache_entry(url)
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        expected, final_url = str(metadata["sha256"]), str(metadata["final_url"])
+    except (OSError, KeyError, ValueError, TypeError):
+        return None
+    if not payload.is_file() or _sha256(payload) != expected:
+        return None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(payload, destination)
+    _log(f"Reusing verified cached artifact: {destination.name}")
+    return final_url
+
+
+def _store_cached_download(url: str, final_url: str, source: Path) -> None:
+    payload, metadata_path = _cache_entry(url)
+    payload.parent.mkdir(parents=True, exist_ok=True)
+    temporary = payload.with_suffix(".part")
+    shutil.copyfile(source, temporary)
+    temporary.replace(payload)
+    metadata_path.write_text(
+        json.dumps({"final_url": final_url, "sha256": _sha256(source)}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _download(url: str, destination: Path, *, headers: dict[str, str] | None = None) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    cacheable = _cacheable_download(url, destination)
+    if cacheable:
+        restored = _restore_cached_download(url, destination)
+        if restored is not None:
+            return restored
     last_exc: Exception | None = None
     request_headers = _request_headers(headers)
 
@@ -133,6 +192,8 @@ def _download(url: str, destination: Path, *, headers: dict[str, str] | None = N
                 with temp_path.open("wb") as handle:
                     shutil.copyfileobj(response, handle)
                 temp_path.replace(destination)
+                if cacheable:
+                    _store_cached_download(url, final_url, destination)
                 return final_url
         except urllib.error.HTTPError as exc:
             last_exc = exc
@@ -1549,6 +1610,7 @@ def stage_tool_artifacts(*, build_date: str) -> StagingResult:
     """
     _log("Preparing local tool artifact staging directory")
     if STAGE_ROOT.exists():
+        # Staging is disposable; the verified cache is deliberately outside it.
         shutil.rmtree(STAGE_ROOT)
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
