@@ -366,11 +366,7 @@ class ToposApp(App[None]):
             self._refresh_status(f"invalid jump input: '{stripped}' — use a finite frame number or epoch timestamp")
             return
         if '.' not in stripped:
-            try:
-                frame_num = int(parsed)
-            except (OverflowError, ValueError):
-                self._refresh_status(f"invalid jump input: '{stripped}' — use a frame number or epoch timestamp")
-                return
+            frame_num = int(parsed)
             if 1 <= frame_num <= self._replay_driver.total:
                 self._replay_paused = True
                 self._cancel_replay_timer()
