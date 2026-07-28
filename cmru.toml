@@ -57,7 +57,7 @@ bump     = "conventional"
 CIU_RELEASE_NOTES = "## CIU CLI wheel\nOrchestration health now resolves every active exact `container_name` from each rendered Compose stack; phase-entry `name` remains display-only. Ephemeral one-shot stacks can opt out with strict `health = false`. The suite coverage floor is ratcheted to 75%.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 [project.ciu.steps.run-tests]
 commands = [
-  { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
+  { label = "CIU: tester-unified coverage gate", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "ciu", "--", "/opt/tester-venv/bin/python", "run-ciu-tests.py"], cwd = "." },
 ]
 
 # ─── cmru — Python wheel (dogfood: zero step scripts, cmru built-in handlers) ──
@@ -75,6 +75,10 @@ strategy = "scm"
 bump     = "conventional"
 [project.cmru.env]
 CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos. The incomplete built-in OCI repack prototype now fails closed before auth/Docker work; standard Buildx load/push remains supported while the production-equivalence requirements are implemented.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
+[project.cmru.steps.run-tests]
+commands = [
+  { label = "cmru: tester-unified suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+]
 
 # ─── nyxloom — Python wheel (built-in handlers; dogfood-style, no step scripts) ─
 # Files-first daemon control plane. Ordered BEFORE modern-debian-tools-python-debug
@@ -95,6 +99,10 @@ cwd       = "nyxloom"
 # AND both image tags — single-source versioning across all three artifacts.
 strategy = "scm"
 bump     = "conventional"
+[project.nyxloom.steps.run-tests]
+commands = [
+  { label = "nyxloom: tester-unified parallel suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "nyxloom", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q"], cwd = "." },
+]
 # Explicit build/push steps own the OCI half (the mdt/pwmcp pattern): build-push.py
 # resolves NYXLOOM_VERSION from the git tag and bakes BOTH images (nyxloomd +
 # nyxloom-agent-cli) from the single docker-bake.hcl that `ciu` also builds locally
@@ -146,6 +154,10 @@ RELEASE_IMAGE_FLOW = "load"
 commands = [
   { label = "modern-debian-tools-python-debug: private build + extract manifests", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
 ]
+[project.modern-debian-tools-python-debug.steps.run-tests]
+commands = [
+  { label = "modern-debian-tools-python-debug: release-flow tests", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "modern-debian-tools-python-debug", "--", "/opt/tester-venv/bin/python", "-m", "unittest", "scripts.test_release_flow", "scripts.test_oci_tool_staging"], cwd = "." },
+]
 [project.modern-debian-tools-python-debug.steps.push]
 commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
@@ -166,6 +178,10 @@ commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "p
 [project.pwmcp.steps.prepare]
 commands = [
   { label = "pwmcp: resolve and pin publishable Playwright inputs", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },
+]
+[project.pwmcp.steps.run-tests]
+commands = [
+  { label = "pwmcp: resolver and build-contract tests", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "pwmcp", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
 ]
 [project.pwmcp.steps.build]
 commands = [
@@ -202,6 +218,10 @@ manifest_name      = "manifest.json"
 signature_name     = "manifest.json.minisig"
 [project.tls-edge.env]
 TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\nEdge proxy + TLS termination stack for the vbpub infra.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
+[project.tls-edge.steps.run-tests]
+commands = [
+  { label = "tls-edge: standalone render validation", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "tls-edge", "--", "/opt/tester-venv/bin/python", "scripts/render_standalone.py", "--check", "--defaults-only"], cwd = "." },
+]
 [project.tls-edge.steps.build]
 commands = [
   { label = "tls-edge: build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "tls-edge" },

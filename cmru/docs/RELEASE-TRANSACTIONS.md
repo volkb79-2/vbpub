@@ -61,7 +61,10 @@ clones. Publication cannot begin after either failure.
 
 Every releasable project must declare a meaningful `steps.run-tests` command.
 It must invoke the project’s real gate in `tester-unified`, not the developer
-container. cmru refuses to tag or publish a changed project with no such step.
+container. Use `cmru tester-gate --cwd <project> -- <command>` in the command
+declaration: it resolves the cockpit bind mount to Docker's host-visible path,
+mounts only the isolated release worktree at `/worktree`, and executes without
+a shell. cmru refuses to tag or publish a changed project with no such step.
 
 Use `steps.prepare` only for mechanical, deterministic release input changes.
 List every tracked output in `release.commit_generated`; cmru rejects an
@@ -74,19 +77,18 @@ script or an implicit GitHub Release API side effect.
 OCI projects must not push while gathering generated provenance. Build privately
 first, commit/promote declared provenance, then run the separate registry push.
 
-## vbpub gate-audit follow-up
+## vbpub gate adoption
 
-The transaction engine now fails closed, exposing existing configuration debt:
+The following release gates are now declared through `cmru tester-gate`:
 
 | Project | Current state | Required follow-up |
 |---|---|---|
-| ciu | Has `run-tests`, but it uses the cockpit interpreter. | Wrap its coverage command in the mounted `tester-unified` gate. |
-| cmru | No release `run-tests` step. | Add tester-unified pytest gate for `cmru/tests`. |
-| nyxloom | Has a real gate in its nyxloom trove, but cmru does not declare it. | Add that tester-unified coverage gate as cmru's release step. |
-| MDT | Has focused release-flow tests, not a declared release gate. | Define its tester-unified suite and keep private-build-before-push ordering. |
-| pwmcp | No declared release gate. | Create a deterministic tester-unified gate for resolver/build-contract behavior. |
-| tls-edge | No declared release gate. | Define the tarball/installer gate before enabling automated releases. |
+| ciu | Full pytest coverage floor | `run-ciu-tests.py` |
+| cmru | Full unit/contract suite | `pytest tests -q` |
+| nyxloom | Full unit/contract suite | `pytest tests -q` |
+| MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
+| pwmcp | Resolver and builder contracts | `pytest tests -q` |
+| tls-edge | Hermetic standalone render and config validation | `render_standalone.py --check --defaults-only` |
 
-Until these commands are supplied, a changed project fails before remote main,
-tags, or public artifacts change. That is intentional: a missing gate is not a
-passing gate.
+The release engine still rejects any future project with no gate before remote
+main, tags, or public artifacts change: a missing gate is not a passing gate.

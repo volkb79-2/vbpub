@@ -287,9 +287,10 @@ class TestRunCmdNoSystemExit:
         except subprocess.CalledProcessError:
             pass  # expected
 
-    def test_no_system_exit_command_not_found(self) -> None:
+    def test_no_system_exit_command_not_found(self, tmp_path: Path) -> None:
+        """Use an absent absolute path so ambient PATH entries cannot change errno."""
         with pytest.raises(FileNotFoundError):
-            run_cmd(["__ciu_nonexistent_binary_xyz__"])
+            run_cmd([str(tmp_path / "ciu-command-does-not-exist")])
         # Must not have raised SystemExit.
 
 

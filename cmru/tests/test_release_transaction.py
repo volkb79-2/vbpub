@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import cli, transaction
+from cmru import tester_gate
 
 
 def _project(name: str, *, paths: list[str] | None = None, steps=None):
@@ -143,6 +144,35 @@ def test_local_main_behind_is_reported_but_allowed(tmp_path, monkeypatch):
     monkeypatch.setattr(transaction, "local_main_divergence", lambda _root: (0, 3))
 
     assert transaction.assert_local_main_not_ahead(tmp_path) == 3
+
+
+def test_tester_gate_maps_the_deepest_cockpit_mount_to_docker_host_path(tmp_path):
+    repo = Path("/workspaces/vbpub/.worktrees/release")
+    mountinfo = (
+        "1 0 0:1 / / rw - overlay overlay rw\n"
+        "2 1 0:2 /home/vb/vbpub /workspaces/vbpub rw - ext4 /dev/vda rw\n"
+    )
+
+    assert tester_gate._physical_path(repo, mountinfo) == Path("/home/vb/vbpub/.worktrees/release")
+
+
+def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, tmp_path):
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
+
+    argv = tester_gate.build_docker_command(
+        tmp_path, "cmru", ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"],
+    )
+
+    assert argv == [
+        "docker", "run", "--rm", "--mount", "type=bind,src=/host/repo,dst=/worktree",
+        "--workdir", "/worktree/cmru", "tester-unified:local",
+        "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+    ]
+
+
+def test_tester_gate_rejects_paths_outside_the_worktree(tmp_path):
+    with pytest.raises(ValueError, match="relative path"):
+        tester_gate.build_docker_command(tmp_path, "../ciu", ["true"])
 
 
 def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):

@@ -1702,6 +1702,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         from cmru.runner import main as runner_main
         runner_main(rest)
 
+    elif verb == "tester-gate":
+        from cmru.tester_gate import main as tester_gate_main
+        tester_gate_main(rest)
+
     elif verb in ("build", "publish"):
         import argparse as _ap
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
