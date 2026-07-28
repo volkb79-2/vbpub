@@ -31,6 +31,7 @@ from ciu.config_model import (  # noqa: E402
     render_toml_template,
     scan_override_for_secrets,
     validate_stack_shape,
+    validate_stack_provisioning,
     write_rendered_toml,
 )
 
@@ -429,6 +430,54 @@ def test_render_global_chain_jinja2_context_uses_merged_config(tmp_path, monkeyp
     assert result["derived"]["y"] == 11
 
 
+def test_render_global_chain_merges_sparse_overrides_nearest_last(tmp_path, monkeypatch):
+    """S3.3: every layer's optional override deep-merges; leaf wins conflicts.
+
+    This is deliberately a complete root -> intermediate -> leaf chain rather
+    than isolated merge examples: a regression in either override processing
+    or directory ordering would change at least one observable value below.
+    """
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    service = tmp_path / "infra" / "api"
+    service.parent.mkdir()
+    service.mkdir()
+
+    _write_global_defaults(
+        tmp_path,
+        "[deploy]\nregion = \"root\"\nports = [8000, 8001]\n"
+        "[deploy.labels]\nowner = \"platform\"\ncolour = \"blue\"\n",
+    )
+    _write_global_overrides(
+        tmp_path,
+        "[deploy]\nregion = \"root-override\"\n"
+        "[deploy.labels]\ncolour = \"green\"\n",
+    )
+    _write_global_defaults(
+        service.parent,
+        "[deploy]\nports = [8100]\n"
+        "[deploy.labels]\nteam = \"infra\"\n",
+    )
+    _write_global_overrides(
+        service.parent,
+        "[deploy.labels]\nowner = \"operations\"\n",
+    )
+    _write_global_defaults(service, "[deploy]\nregion = \"leaf-default\"\n")
+    _write_global_overrides(service, "[deploy]\nregion = \"leaf-override\"\n")
+
+    result = render_global_chain(service, tmp_path)
+
+    assert result["deploy"] == {
+        "region": "leaf-override",
+        "ports": [8100],  # lists replace rather than concatenate
+        "labels": {
+            "owner": "operations",
+            "colour": "green",
+            "team": "infra",
+        },
+    }
+    assert parse_toml(tmp_path / "ciu.global.toml") == result
+
+
 # ---------------------------------------------------------------------------
 # render_stack (S3.1 + S3.4)
 # ---------------------------------------------------------------------------
@@ -599,6 +648,40 @@ def test_render_stack_env_expansion(tmp_path, monkeypatch):
     assert result["svc"]["host"] == "redis.internal"
 
 
+def test_render_stack_layered_override_preserves_state_not_secrets(tmp_path):
+    """S3.1a/S3.4: stack override sees global+defaults, but old secrets die."""
+    _write_stack_defaults(
+        tmp_path,
+        "[web]\nimage = \"demo\"\nports = [8080]\n"
+        "[web.runtime]\nhost = \"{{ deploy.host }}\"\ntimeout = 5\n",
+    )
+    _write_stack_overrides(
+        tmp_path,
+        "[web]\nports = [8443]\n"
+        "[web.runtime]\ntimeout = {{ web.runtime.timeout + deploy.timeout_delta }}\n",
+    )
+    # Simulate the only two persisted tables a prior render could contain.
+    (tmp_path / "ciu.toml").write_text(
+        "[state]\nlast_success = \"2026-07-28\"\n"
+        "[secrets]\nleaked = \"must-not-survive\"\n",
+        encoding="utf-8",
+    )
+
+    result = render_stack(
+        tmp_path,
+        {"deploy": {"host": "api.internal", "timeout_delta": 10}},
+    )
+
+    assert result["web"] == {
+        "image": "demo",
+        "ports": [8443],
+        "runtime": {"host": "api.internal", "timeout": 15},
+    }
+    assert result["state"] == {"last_success": "2026-07-28"}
+    assert "secrets" not in result
+    assert parse_toml(tmp_path / "ciu.toml") == result
+
+
 # ---------------------------------------------------------------------------
 # validate_stack_shape (S3.5 + S3.7)
 # ---------------------------------------------------------------------------
@@ -663,6 +746,46 @@ def test_validate_stack_shape_custom_root_not_in_reserved_ok():
     """A non-reserved root key like 'my_service' passes validation."""
     cfg = {"my_service": {"host": "localhost"}}
     assert validate_stack_shape(cfg) == "my_service"
+
+
+def test_validate_stack_provisioning_accepts_every_documented_ref_form():
+    """S13: the stack-root lists accept every documented typed reference."""
+    validate_stack_provisioning(
+        {
+            "app_config": {
+                "requires": [
+                    "vault:secret/db/postgres/password",
+                    "pg:role/app_user",
+                    "pg:db/appdb",
+                    "pg:schema/app_schema",
+                    "minio:user/worker-io",
+                    "consul:token/app",
+                    "stack:infra/db-init:healthy",
+                ],
+                "provides": ["stack:applications/app-config:healthy"],
+            }
+        },
+        source="applications/app-config",
+    )
+
+
+def test_validate_stack_provisioning_reports_source_and_mixed_provides_errors():
+    """S13 validation reports every malformed list item with its stack source."""
+    config = {
+        "app_config": {
+            "requires": ["pg:db/valid"],
+            "provides": ["stack:db-init:ready", 7, "unknown:thing/value"],
+        }
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="applications/app-config")
+
+    message = str(exc_info.value)
+    assert "applications/app-config" in message
+    assert "stack:db-init:ready" in message
+    assert "provides[1]" in message
+    assert "unknown:thing/value" in message
 
 
 # ---------------------------------------------------------------------------
