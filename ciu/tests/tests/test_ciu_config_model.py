@@ -31,6 +31,7 @@ from ciu.config_model import (  # noqa: E402
     render_toml_template,
     scan_override_for_secrets,
     validate_stack_shape,
+    validate_provisioning_ref,
     validate_stack_provisioning,
     write_rendered_toml,
 )
@@ -748,6 +749,21 @@ def test_validate_stack_shape_custom_root_not_in_reserved_ok():
     assert validate_stack_shape(cfg) == "my_service"
 
 
+@pytest.mark.parametrize(
+    ("config", "expected_type"),
+    [
+        ([], "list"),
+        ({"app_config": "not-a-table"}, "str"),
+        ({"app_config": []}, "list"),
+        ({"app_config": {}, "state": "not-a-table"}, "str"),
+    ],
+)
+def test_validate_stack_shape_rejects_non_table_config_sections(config, expected_type):
+    """S0/S3.4/S3.5: the config, root, and optional state are TOML tables."""
+    with pytest.raises(ValueError, match=rf"\[S3\.5\].*{expected_type}"):
+        validate_stack_shape(config)
+
+
 def test_validate_stack_provisioning_accepts_every_documented_ref_form():
     """S13: the stack-root lists accept every documented typed reference."""
     validate_stack_provisioning(
@@ -786,6 +802,34 @@ def test_validate_stack_provisioning_reports_source_and_mixed_provides_errors():
     assert "stack:db-init:ready" in message
     assert "provides[1]" in message
     assert "unknown:thing/value" in message
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "pg:role/app trailing",
+        "pg:role/app:extra",
+        "pg:role/app\nextra",
+        "minio:user/worker trailing",
+        "consul:token/app trailing",
+        "stack:infra/app:healthy trailing",
+    ],
+)
+def test_validate_provisioning_ref_rejects_suffix_or_whitespace(ref):
+    """S13.2 refs are complete identifiers, never a valid prefix plus junk."""
+    with pytest.raises(ValueError, match="does not match any valid pattern"):
+        validate_provisioning_ref(ref)
+
+
+def test_validate_stack_provisioning_reads_only_the_validated_root_table():
+    """S13.1 rejects top-level/service declarations instead of inspecting them."""
+    config = {
+        "app_config": {"app": {"requires": ["pg:role/app trailing"]}},
+        "requires": ["pg:db/also-not-root"],
+    }
+
+    with pytest.raises(ValueError, match=r"\[S3\.5\].*app_config, requires"):
+        validate_stack_provisioning(config, source="applications/app-config")
 
 
 # ---------------------------------------------------------------------------
