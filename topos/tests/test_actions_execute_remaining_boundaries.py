@@ -8,7 +8,17 @@ from pathlib import Path
 import pytest
 
 from topos.actions import execute
-from topos.actions.execute import AuditIdentity, ExecuteResult, execute_plan, execute_update
+from topos.actions.execute import (
+    AuditIdentity,
+    ExecuteResult,
+    _AuditError,
+    _ExecutionSpec,
+    _GateRefusal,
+    _execute_gated,
+    execute_plan,
+    execute_update,
+)
+from topos.actions.preview import build_preview
 
 
 def _success(argv: tuple[str, ...], *, timeout: float) -> ExecuteResult:
@@ -167,6 +177,42 @@ def test_revalidation_failure_is_audited_refusal_without_runner(
     assert result.stderr == "target changed before execution"
     assert called == []
     assert len((tmp_path / "audit.jsonl").read_text().splitlines()) == 2
+
+
+def test_post_gate_refusal_survives_audit_write_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale refusal stays fail-closed even when its post-audit write fails."""
+    plan = build_preview("docker-start", "demo")
+    called: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        execute,
+        "_write_execution_audit_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(_AuditError("disk unavailable")),
+    )
+
+    result = _execute_gated(
+        "docker-start",
+        "demo",
+        confirmation="EXECUTE",
+        admin=True,
+        confirm="EXECUTE",
+        audit_path=tmp_path / "audit.jsonl",
+        runner=lambda argv, *, timeout: called.append(argv) or _success(argv, timeout=timeout),
+        clock=lambda: 1.0,
+        identity=lambda: AuditIdentity(0, "tester"),
+        root_check=lambda: True,
+        timeout=1.0,
+        build_spec=lambda: _ExecutionSpec("docker-start", "demo", plan.argv, plan),
+        post_audit_gates=(lambda: _GateRefusal("plan is stale", outcome="stale"),),
+    )
+
+    assert (result.outcome, result.action_outcome, result.stderr) == (
+        "stale",
+        "refusal",
+        "plan is stale",
+    )
+    assert called == []
 
 
 def test_post_audit_close_failure_remains_a_typed_audit_failure(
