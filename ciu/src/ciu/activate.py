@@ -26,6 +26,7 @@ render-on-target path (S14.2) is untouched — ``--thin`` is a parallel branch.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 import tarfile
 import tempfile
@@ -165,7 +166,7 @@ def _push_scp(
     remote_dir_clean = remote_dir.rstrip("/")
     remote_tar = f"{remote_dir_clean}/{_REMOTE_TARBALL}"
     try:
-        rc = ssh_exec(host_cfg, [f"mkdir -p {remote_dir_clean}"],
+        rc = ssh_exec(host_cfg, [f"mkdir -p {shlex.quote(remote_dir_clean)}"],
                       config=config, repo_root=repo_root)
         if rc != 0:
             _err(f"[S14.6] Could not create remote bundle_dir '{remote_dir_clean}' (rc={rc}).")
@@ -175,7 +176,8 @@ def _push_scp(
             _err(f"[S14.6] scp of the bundle failed (rc={rc}).")
             return rc
         extract = (
-            f"tar xzf {remote_tar} -C {remote_dir_clean} && rm -f {remote_tar}"
+            f"tar xzf {shlex.quote(remote_tar)} -C {shlex.quote(remote_dir_clean)} "
+            f"&& rm -f {shlex.quote(remote_tar)}"
         )
         rc = ssh_exec(host_cfg, [extract], config=config, repo_root=repo_root)
         if rc != 0:
@@ -260,9 +262,9 @@ def run_activation(
     chain intact (same rule as the docker render-on-target path).
     """
     cmd = resolve_activation_command(host_cfg, verb)
-    remote = f"cd {bundle_dir} && {cmd}"
+    remote = f"cd {shlex.quote(bundle_dir)} && {cmd}"
     if remaining:
-        remote += " " + " ".join(remaining)
+        remote += " " + shlex.join(remaining)
     return ssh_exec(host_cfg, [remote], config=config, repo_root=repo_root)
 
 

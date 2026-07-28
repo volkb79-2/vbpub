@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -329,9 +330,7 @@ def main() -> None:
             from .hosts import get_host
             from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
-            remote_cmd_parts = ["ciu render"]
-            remote_cmd_parts.extend(remaining)
-            remote_cmd = " ".join(remote_cmd_parts)
+            remote_cmd = shlex.join(["ciu", "render", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
@@ -407,9 +406,10 @@ def main() -> None:
             if rc != 0:
                 raise SystemExit(rc)
             # Build remote ciu command
-            remote_cmd_parts = [f"cd {bundle_dir} && ciu env generate && ciu render && ciu up"]
-            remote_cmd_parts.extend(remaining)
-            remote_cmd = " ".join(remote_cmd_parts)
+            remote_cmd = (
+                f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && ciu render && "
+                + shlex.join(["ciu", "up", *remaining])
+            )
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
@@ -443,9 +443,7 @@ def main() -> None:
             from .hosts import get_host
             from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
-            remote_cmd_parts = ["ciu down"]
-            remote_cmd_parts.extend(remaining)
-            remote_cmd = " ".join(remote_cmd_parts)
+            remote_cmd = shlex.join(["ciu", "down", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
@@ -489,9 +487,7 @@ def main() -> None:
                     raise SystemExit(2)
                 raise SystemExit(rc)
             from .transport_ssh import ssh_exec
-            remote_cmd_parts = ["ciu health"]
-            remote_cmd_parts.extend(remaining)
-            remote_cmd = " ".join(remote_cmd_parts)
+            remote_cmd = shlex.join(["ciu", "health", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
