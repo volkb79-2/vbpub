@@ -10,6 +10,7 @@ import os
 import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -27,6 +28,7 @@ from ciu.transport_ssh import (
     ssh_exec,
     ssh_sync,
     _ssh_exec_subprocess,
+    _ssh_exec_paramiko,
 )
 from ciu import cli as cli_mod
 
@@ -297,6 +299,23 @@ class TestResolveKey:
         finally:
             prov_mod.resolve_vault_token = orig
 
+    def test_ask_vault_empty_key_error_does_not_disclose_token_or_key(self, tmp_path):
+        """A Vault lookup failure must be actionable without leaking credentials."""
+        host_cfg = {"ssh_key": "ASK_VAULT:secret/data/deploy-key"}
+        token = "s.this-must-never-appear"
+        key_material = "PRIVATE-KEY-MATERIAL-MUST-NOT-APPEAR"
+        client = MagicMock()
+        client.read.return_value = None
+        with patch("ciu.secrets.providers.resolve_vault_token", return_value=token), \
+             patch("ciu.secrets.providers.vault_addr_from_config", return_value="https://vault.invalid"), \
+             patch("ciu.secrets.providers.VaultKV2", return_value=client):
+            with pytest.raises(ValueError) as exc:
+                resolve_key(host_cfg, {}, tmp_path)
+        message = str(exc.value)
+        assert "no key material" in message
+        assert token not in message
+        assert key_material not in message
+
 
 # ===========================================================================
 # transport_ssh.py — _known_hosts_file
@@ -484,6 +503,106 @@ class TestSshExecSubprocess:
         monkeypatch.setattr(tssh_mod.subprocess, "run", fake_subprocess_run)
         rc = ssh_exec(host_cfg, ["false"], config={}, repo_root=tmp_path)
         assert rc == 42
+
+    def test_vault_key_and_known_hosts_are_removed_when_ssh_raises(self, tmp_path, monkeypatch):
+        """A local transport exception cannot leave Vault key material behind."""
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        monkeypatch.delenv("CIU_SSH_TRANSPORT", raising=False)
+        made = {}
+
+        def fake_resolve_key(host_cfg, config, repo_root):
+            fd, path = tempfile.mkstemp(prefix="ciu_ssh_key_", suffix=".pem")
+            os.close(fd)
+            made["key"] = path
+            return path
+
+        monkeypatch.setattr(tssh_mod, "resolve_key", fake_resolve_key)
+
+        def raise_local_failure(cmd, **kwargs):
+            known_hosts = next(arg.split("=", 1)[1] for arg in cmd
+                               if arg.startswith("UserKnownHostsFile="))
+            made["known_hosts"] = known_hosts
+            assert Path(made["key"]).exists()
+            assert Path(known_hosts).exists()
+            raise OSError("ssh executable unavailable")
+
+        monkeypatch.setattr(tssh_mod.subprocess, "run", raise_local_failure)
+        host_cfg = self._make_host_cfg(ssh_key="ASK_VAULT:secret/data/key")
+        with pytest.raises(OSError, match="executable unavailable"):
+            ssh_exec(host_cfg, ["true"], config={}, repo_root=tmp_path)
+        assert not Path(made["key"]).exists()
+        assert not Path(made["known_hosts"]).exists()
+
+
+class TestSshExecParamiko:
+    def test_paramiko_exec_pins_host_streams_output_and_closes_client(self, monkeypatch):
+        """The optional transport has the same pinning and exit-code contract."""
+        stdout = MagicMock()
+        stdout.__iter__.return_value = ["remote stdout\\n"]
+        stdout.channel.recv_exit_status.return_value = 17
+        stderr = MagicMock()
+        stderr.__iter__.return_value = ["remote stderr\\n"]
+        client = MagicMock()
+        client.exec_command.return_value = (MagicMock(), stdout, stderr)
+        paramiko = SimpleNamespace(
+            SSHClient=MagicMock(return_value=client),
+            RejectPolicy=MagicMock(return_value="reject-policy"),
+        )
+        monkeypatch.setitem(sys.modules, "paramiko", paramiko)
+        writes = []
+        monkeypatch.setattr(sys.stdout, "write", writes.append)
+        monkeypatch.setattr(sys.stderr, "write", writes.append)
+
+        rc = _ssh_exec_paramiko(
+            "host.example", "deploy", 2222, "/private/key",
+            "/tmp/pinned-known-hosts", ["docker", "ps"], interactive=False,
+        )
+
+        assert rc == 17
+        client.set_missing_host_key_policy.assert_called_once_with("reject-policy")
+        client.load_host_keys.assert_called_once_with("/tmp/pinned-known-hosts")
+        client.connect.assert_called_once_with(
+            hostname="host.example", port=2222, username="deploy", key_filename="/private/key",
+        )
+        client.exec_command.assert_called_once_with("docker ps")
+        client.close.assert_called_once()
+        assert writes == ["remote stdout\\n", "remote stderr\\n"]
+
+    def test_paramiko_client_is_closed_if_command_fails(self, monkeypatch):
+        client = MagicMock()
+        client.exec_command.side_effect = RuntimeError("remote command setup failed")
+        paramiko = SimpleNamespace(
+            SSHClient=MagicMock(return_value=client),
+            RejectPolicy=MagicMock(return_value=object()),
+        )
+        monkeypatch.setitem(sys.modules, "paramiko", paramiko)
+
+        with pytest.raises(RuntimeError, match="remote command setup failed"):
+            _ssh_exec_paramiko("host", "user", 22, "/key", None, ["true"], interactive=False)
+        client.load_host_keys.assert_not_called()
+        client.close.assert_called_once()
+
+    def test_requested_but_unavailable_paramiko_falls_back_to_subprocess(self, tmp_path, monkeypatch):
+        """The optional extra cannot make the default transport unavailable."""
+        monkeypatch.setenv("CIU_SSH_TRANSPORT", "paramiko")
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        called = []
+        monkeypatch.setattr(tssh_mod, "_ssh_exec_subprocess",
+                            lambda *args, **kwargs: (called.append((args, kwargs)), 9)[1])
+        real_import = __import__
+
+        def no_paramiko(name, *args, **kwargs):
+            if name == "paramiko":
+                raise ImportError("optional dependency unavailable")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", no_paramiko)
+        rc = ssh_exec({
+            "ssh_host": "host", "ssh_key": str(key_file), "known_host": "ssh-ed25519 AAAA",
+        }, ["true"], config={}, repo_root=tmp_path)
+        assert rc == 9
+        assert called
 
 
 # ===========================================================================
@@ -801,6 +920,38 @@ class TestCliSshVerb:
             assert captured_calls[0]["argv"] == []
         finally:
             tssh.ssh_exec = orig_exec
+
+    def test_ssh_admin_selects_admin_identity_before_transport(self, tmp_path, monkeypatch):
+        """--admin changes inventory selection, never a post-connect privilege hop."""
+        monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+        selected = []
+        sent = []
+
+        def fake_get_host(repo_root, name, *, admin=False):
+            selected.append((repo_root, name, admin))
+            return {"ssh_host": "host", "ssh_user": "root" if admin else "deploy",
+                    "ssh_key": "/root/key" if admin else "/deploy/key",
+                    "known_host": "ssh-ed25519 AAAA"}
+
+        def fake_ssh_exec(host_cfg, argv, *, config, repo_root, interactive=False, admin=False):
+            sent.append((host_cfg, argv, interactive, admin))
+            return 0
+
+        import ciu.hosts as hosts
+        import ciu.transport_ssh as tssh
+        monkeypatch.setattr(hosts, "get_host", fake_get_host)
+        monkeypatch.setattr(tssh, "ssh_exec", fake_ssh_exec)
+        monkeypatch.setattr(sys, "argv", ["ciu", "ssh", "myhost", "--admin", "--", "id"])
+
+        with pytest.raises(SystemExit) as exc:
+            cli_mod.main()
+        assert exc.value.code == 0
+        assert selected == [(tmp_path, "myhost", True)]
+        assert sent == [(
+            {"ssh_host": "host", "ssh_user": "root", "ssh_key": "/root/key",
+             "known_host": "ssh-ed25519 AAAA"},
+            ["id"], False, True,
+        )]
 
 
 # ===========================================================================
