@@ -183,6 +183,14 @@ class ReleaseFlowTests(unittest.TestCase):
         ]
         subprocess.run(["bash", "-n", *map(str, scripts)], check=True)
 
+    def test_load_flow_does_not_report_a_successful_build_as_failure(self) -> None:
+        """The load branch must leave the bake result as its exit status."""
+        wrapper = (ROOT / "scripts/release-bake.sh").read_text()
+        load_branch = wrapper.split("    load)", 1)[1].split("    push)", 1)[0]
+        self.assertIn('if [[ "${ACTION}" == "build" ]]; then', load_branch)
+        self.assertIn("else\n            registry_bake", load_branch)
+        self.assertNotIn('[[ "${ACTION}" == "push" ]] &&', load_branch)
+
     def test_oci_validator_rejects_file_with_descendants(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             layout = Path(temp)
