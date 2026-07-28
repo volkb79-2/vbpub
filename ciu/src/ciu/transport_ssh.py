@@ -247,8 +247,11 @@ def _ssh_exec_paramiko(
             return chan.recv_exit_status()
         else:
             # Paramiko accepts a shell command string, unlike subprocess.run.
-            # Preserve every caller argument as one remote-shell argument.
-            cmd_str = shlex.join(argv)
+            # CIU's remote dispatcher deliberately passes one pre-constructed
+            # shell program (``cd ... && ciu ...``) as a single argv element;
+            # retain that public contract.  Ordinary tokenized callers get
+            # shell-safe argument quoting.
+            cmd_str = argv[0] if len(argv) == 1 else shlex.join(argv)
             stdin, stdout, stderr = client.exec_command(cmd_str)
             import sys as _sys
             for line in stdout:

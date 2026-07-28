@@ -164,6 +164,29 @@ def test_paramiko_quotes_each_remote_argument_and_streams_output(monkeypatch: py
     client.close.assert_called_once()
 
 
+def test_paramiko_preserves_the_single_raw_remote_program_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dispatcher-provided ``cd … && ciu …`` programs remain executable remote shell syntax."""
+    stdout = MagicMock()
+    stdout.__iter__.return_value = []
+    stdout.channel.recv_exit_status.return_value = 0
+    stderr = MagicMock()
+    stderr.__iter__.return_value = []
+    client = MagicMock()
+    client.exec_command.return_value = (MagicMock(), stdout, stderr)
+    paramiko = SimpleNamespace(SSHClient=MagicMock(return_value=client), RejectPolicy=lambda: object())
+    monkeypatch.setitem(sys.modules, "paramiko", paramiko)
+
+    remote_program = "cd '/opt/selected stack' && ciu up --profile 'blue green'"
+    assert transport._ssh_exec_paramiko(
+        "host", "user", 22, "/key", None, [remote_program], interactive=False,
+    ) == 0
+
+    assert client.exec_command.call_args.args == (remote_program,)
+    client.close.assert_called_once()
+
+
 def test_paramiko_connect_failure_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A rejected pinned connection cannot leak a Paramiko client/socket."""
     client = MagicMock()
