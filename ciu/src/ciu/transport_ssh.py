@@ -13,6 +13,7 @@ Security rules (SPEC J §5):
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -218,13 +219,13 @@ def _ssh_exec_paramiko(
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
     if known_hosts_path:
         client.load_host_keys(known_hosts_path)
-    client.connect(
-        hostname=ssh_host,
-        port=ssh_port,
-        username=ssh_user,
-        key_filename=key_path,
-    )
     try:
+        client.connect(
+            hostname=ssh_host,
+            port=ssh_port,
+            username=ssh_user,
+            key_filename=key_path,
+        )
         if not argv:
             # Interactive shell: open a channel
             chan = client.invoke_shell()
@@ -245,7 +246,9 @@ def _ssh_exec_paramiko(
                     chan.send(data)
             return chan.recv_exit_status()
         else:
-            cmd_str = " ".join(argv)
+            # Paramiko accepts a shell command string, unlike subprocess.run.
+            # Preserve every caller argument as one remote-shell argument.
+            cmd_str = shlex.join(argv)
             stdin, stdout, stderr = client.exec_command(cmd_str)
             import sys as _sys
             for line in stdout:
@@ -305,14 +308,14 @@ def ssh_sync(
         vault_key_tmp = host_cfg.get("ssh_key", "").startswith("ASK_VAULT:")
         known_hosts_path = _known_hosts_file(host_cfg)
 
-        ssh_opts = [f"ssh -i {key_path} -p {ssh_port}"]
+        ssh_opts = ["ssh", "-i", key_path, "-p", ssh_port]
         if known_hosts_path:
-            ssh_opts += ["-o StrictHostKeyChecking=yes",
-                         f"-o UserKnownHostsFile={known_hosts_path}"]
+            ssh_opts += ["-o", "StrictHostKeyChecking=yes",
+                         "-o", f"UserKnownHostsFile={known_hosts_path}"]
         else:
-            ssh_opts += ["-o StrictHostKeyChecking=no", "-o UserKnownHostsFile=/dev/null"]
+            ssh_opts += ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
 
-        ssh_cmd = " ".join(ssh_opts)
+        ssh_cmd = shlex.join(ssh_opts)
         src = local_dir.rstrip("/") + "/"
         dst = f"{ssh_user}@{ssh_host}:{remote_dir}/"
 
