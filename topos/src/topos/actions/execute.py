@@ -1001,8 +1001,11 @@ def execute_set_property(
         reader = current_value_reader or _default_current_value_reader
         try:
             fresh_current_value = reader(unit)
-        except BaseException:
-            fresh_current_value = None
+        except BaseException as exc:
+            return _GateRefusal(
+                f"current memory.high value could not be read ({type(exc).__name__}); "
+                "preview again before execution"
+            )
         if (
             planned_current_value is not None
             and fresh_current_value is not None
