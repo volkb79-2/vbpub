@@ -80,6 +80,26 @@ def test_nested_key_value_fallback_rejects_missing_top_level_dimension() -> None
         BpfSnapshotBridge._parse_bpftool_output(json.dumps([row]))
 
 
+def test_partial_btf_key_falls_back_to_top_level_cgroup_id() -> None:
+    """A partially decoded key may safely use its documented top-level field."""
+    row = {
+        "key": {"direction": "ingress"},
+        "value": {"bytes": 12, "packets": 3},
+        "cgroup_id": 17,
+        "family": "ipv4",
+        "proto": "tcp",
+    }
+
+    decoded = BpfSnapshotBridge._parse_bpftool_output(json.dumps([row]))
+
+    assert decoded == [_row()]
+
+
+def test_fractional_json_number_is_not_silently_truncated() -> None:
+    """A non-integral JSON number is not a valid BPF integer dimension."""
+    assert bpf_snapshot._pop_int({"counter": 1.5}, "counter", 0) is None
+
+
 @pytest.mark.parametrize(
     "snapshot",
     [
@@ -172,6 +192,41 @@ def test_bridge_exposes_resolved_bpf_root_and_walker_skips_non_entities(
     assert ".internal" not in mapping.values()
 
 
+def test_walker_default_root_and_racing_child_are_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default root is used and a vanished cgroup child is ignored."""
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    raced_child = root / "vanished.scope"
+    raced_child.mkdir()
+
+    real_path = bpf_snapshot.Path
+    monkeypatch.setattr(bpf_snapshot, "Path", lambda _value: root)
+
+    class _RacingChild:
+        name = "vanished.scope"
+
+        def is_dir(self) -> bool:
+            return True
+
+        def stat(self) -> object:
+            raise OSError("removed while walking")
+
+    real_rglob = real_path.rglob
+
+    def rglob_with_race(path: Path, pattern: str) -> object:
+        if path == root:
+            return [_RacingChild()]
+        return real_rglob(path, pattern)
+
+    monkeypatch.setattr(real_path, "rglob", rglob_with_race)
+
+    mapping = _walk_cgroup_ids()
+
+    assert mapping == {root.stat().st_ino: ""}
+
+
 def test_bpftool_nonzero_without_stderr_keeps_typed_exit_context(tmp_path: Path) -> None:
     """An empty stderr must not erase the command's nonzero-exit diagnosis."""
     bridge = _bridge(tmp_path)
@@ -183,3 +238,16 @@ def test_bpftool_nonzero_without_stderr_keeps_typed_exit_context(tmp_path: Path)
 
     with pytest.raises(BpfSnapshotError, match=r"^bpftool exited 9$"):
         bridge._run_bpftool(tmp_path / "pins" / "counter-map")
+
+
+def test_default_subprocess_runner_keeps_exit_context_without_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native bpftool failure without stderr remains a typed failure."""
+    def failed(argv: list[str], **_kwargs: object) -> bytes:
+        raise subprocess.CalledProcessError(9, argv)
+
+    monkeypatch.setattr(subprocess, "check_output", failed)
+
+    with pytest.raises(BpfSnapshotError, match=r"^bpftool exited 9$"):
+        bpf_snapshot._subprocess_runner(["bpftool", "--json"])
