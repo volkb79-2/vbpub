@@ -433,6 +433,19 @@ class TestAutoSteadyWindow:
         frames[2].entities["quiet"].metrics["ram"] = _gauge(10)
         assert detect_steady_window(frames, stability_cov=0.05) is None
 
+    def test_near_equal_busiest_means_preserve_forward_order(self):
+        """Near-equal totals use the original forward-order tie decision."""
+        frames = [
+            _frame(100.0 + index * 5, {
+                "alpha": {"ram": _gauge(100.0)},
+                "beta": {"ram": _gauge(value)},
+            })
+            for index, value in enumerate((100.0, 100.0, 100.0000000001))
+        ]
+        expected = _reference_detect_steady_window(frames)
+        assert expected == WindowRange(100.0, 110.0)
+        assert detect_steady_window(frames) == expected
+
     @pytest.mark.parametrize(
         ("gauge", "cov", "min_frames"),
         [
@@ -891,6 +904,18 @@ class TestComputeProfile:
         assert profiles[0].gauges["ram"]["p50"] == 100.0
         # Rate with no prior frame → no rate samples → absent from rates
         assert "rf_z_per_s" not in profiles[0].rates
+
+    def test_rate_only_profile_records_rate_samples(self):
+        """A rate-only entity remains reportable with its derived-rate count."""
+        frames = [
+            _frame(100.0, {"e1": {"rf_z_per_s": _rate_live(10.0)}}),
+            _frame(105.0, {"e1": {"rf_z_per_s": _rate_live(20.0)}}),
+        ]
+        profiles = compute_profile(frames)
+        assert len(profiles) == 1
+        assert profiles[0].gauges == {}
+        assert profiles[0].sample_count == 2
+        assert profiles[0].rates["rf_z_per_s"] == {"p50": 10.0, "p95": 20.0, "max": 20.0}
 
     def test_warm_vs_cold_rate_parity(self):
         """Cold recording (all v=None, raw populated) and warm recording (live v) produce same rate samples.
