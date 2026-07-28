@@ -780,7 +780,7 @@ def compute_profile(
             if isinstance(samples_obj, _GaugeSamples):
                 gauges[metric_name] = _compute_metric_result(samples_obj.values)
                 total_samples = max(total_samples, len(samples_obj.values))
-            elif isinstance(samples_obj, _RateSamples):
+            else:
                 rates[metric_name] = _compute_metric_result(samples_obj.values)
                 total_samples = max(total_samples, len(samples_obj.values))
 
