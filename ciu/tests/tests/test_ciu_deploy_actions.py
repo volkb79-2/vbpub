@@ -461,6 +461,130 @@ def test_deploy_all_success_returns_0(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Deploy: post-phase health failures (S7.3 / S7.7)
+# ---------------------------------------------------------------------------
+
+
+def _health_two_phase_profile() -> Profile:
+    """A deliberately small phase graph for deploy/health ordering tests."""
+    return Profile(
+        name=None,
+        phase_keys=None,
+        config=_config_with_phases(
+            {
+                "phase_1": {
+                    "services": [
+                        {"path": "infra/cache", "name": "cache", "enabled": True}
+                    ]
+                },
+                "phase_2": {
+                    "services": [
+                        {"path": "applications/api", "name": "api", "enabled": True}
+                    ]
+                },
+            }
+        ),
+    )
+
+
+def _unhealthy_summary(name: str) -> dict[str, list[str]]:
+    return {
+        "healthy": [],
+        "pending": [],
+        "unhealthy": [name],
+        "no_healthcheck": [],
+        "not_found": [],
+    }
+
+
+def test_deploy_health_failure_stops_later_phase_after_reporting_summary(monkeypatch, tmp_path, capsys):
+    """S7.7 failure is a phase failure: gate it after phase 1, never start phase 2."""
+    profile = _health_two_phase_profile()
+    events: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_run(stack_dir, **_kwargs):
+        events.append(("deploy", (stack_dir.name,)))
+        return True
+
+    def fake_targets(_root, _profile, entries):
+        names = tuple(f"project-prod-{entry['name']}" for entry in entries)
+        events.append(("targets", names))
+        return list(names)
+
+    def fake_gate(names, **_kwargs):
+        events.append(("health", tuple(names)))
+        return False, _unhealthy_summary(names[0])
+
+    monkeypatch.setattr(deploy, "_run_stack", fake_run)
+    monkeypatch.setattr(deploy, "resolve_selection_health_containers", fake_targets)
+    monkeypatch.setattr(deploy, "run_container_health_gate", fake_gate)
+
+    rc = deploy.action_deploy(
+        tmp_path, profile, deploy.build_selection(profile),
+        dry_run=False, ignore_errors=False, health_after_phase=True,
+        update_cert_permission=False,
+    )
+
+    assert rc == 1
+    # The externally meaningful sequence is start -> resolve identities ->
+    # inspect health.  API is never started after cache's phase fails.
+    assert events == [
+        ("deploy", ("cache",)),
+        ("targets", ("project-prod-cache",)),
+        ("health", ("project-prod-cache",)),
+    ]
+    output = capsys.readouterr().out
+    assert "unhealthy: project-prod-cache" in output
+    assert "health gate FAILED for phase phase_1" in output
+    assert "SKIP phase phase_2" in output
+
+
+def test_deploy_ignore_errors_continues_after_health_failure_but_returns_1(monkeypatch, tmp_path):
+    """`--ignore-errors` continues at the next phase, without laundering failure."""
+    profile = _health_two_phase_profile()
+    events: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_run(stack_dir, **_kwargs):
+        events.append(("deploy", (stack_dir.name,)))
+        return True
+
+    def fake_targets(_root, _profile, entries):
+        names = tuple(f"project-prod-{entry['name']}" for entry in entries)
+        events.append(("targets", names))
+        return list(names)
+
+    gate_results = iter([False, True])
+
+    def fake_gate(names, **_kwargs):
+        events.append(("health", tuple(names)))
+        passed = next(gate_results)
+        return passed, (
+            {"healthy": list(names), "pending": [], "unhealthy": [], "no_healthcheck": [], "not_found": []}
+            if passed else _unhealthy_summary(names[0])
+        )
+
+    monkeypatch.setattr(deploy, "_run_stack", fake_run)
+    monkeypatch.setattr(deploy, "resolve_selection_health_containers", fake_targets)
+    monkeypatch.setattr(deploy, "run_container_health_gate", fake_gate)
+
+    rc = deploy.action_deploy(
+        tmp_path, profile, deploy.build_selection(profile),
+        dry_run=False, ignore_errors=True, health_after_phase=True,
+        update_cert_permission=False,
+    )
+
+    assert rc == 1
+    assert events == [
+        ("deploy", ("cache",)),
+        ("targets", ("project-prod-cache",)),
+        ("health", ("project-prod-cache",)),
+        ("deploy", ("api",)),
+        ("targets", ("project-prod-api",)),
+        ("health", ("project-prod-api",)),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Deploy: profile env_overrides + compose_profiles reach the engine (S7.4)
 # ---------------------------------------------------------------------------
 
@@ -519,6 +643,50 @@ def test_profile_env_overrides_and_compose_profiles_reach_engine(monkeypatch, tm
 
 def _vault_topology() -> dict:
     return {"topology": {"services": {"vault": {"internal_host": "vault", "internal_port": 8200}}}}
+
+
+def test_main_runs_vault_preflight_before_any_deploy_action(monkeypatch, tmp_path):
+    """A missing Vault credential is a pre-action configuration failure (S7.6).
+
+    This drives the public ``main`` boundary rather than calling
+    :func:`vault_preflight` alone.  It proves a failed preflight cannot be
+    accidentally moved behind an engine/deploy action in a future refactor.
+    """
+    profile = Profile(
+        name=None,
+        phase_keys=None,
+        config={"deploy": {"project_name": "p", "environment_tag": "t", "phases": {}}},
+    )
+    selection = [{
+        "phase_num": 1,
+        "phase_key": "phase_1",
+        "path": "applications/app",
+        "name": "app",
+        "service": {"path": "applications/app", "name": "app", "enabled": True},
+    }]
+    events: list[str] = []
+
+    monkeypatch.setattr(deploy, "bootstrap_workspace_env", lambda **_kw: None)
+    monkeypatch.setattr(deploy, "enforce_standalone_root", lambda _cwd: None)
+    monkeypatch.setattr(deploy, "resolve_repo_root", lambda _root: tmp_path)
+    monkeypatch.setattr(deploy, "load_global_config", lambda _root: profile.config)
+    monkeypatch.setattr(deploy, "resolve_profiles", lambda _config, _names: profile)
+    monkeypatch.setattr(deploy, "build_selection", lambda _profile, _phases: selection)
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {})
+
+    def fail_vault(*_args):
+        events.append("vault")
+        raise ValueError("[S7.6] no Vault token")
+
+    monkeypatch.setattr(deploy, "vault_preflight", fail_vault)
+    monkeypatch.setattr(
+        deploy,
+        "action_deploy",
+        lambda *_args, **_kwargs: pytest.fail("deploy must not run after failed Vault preflight"),
+    )
+
+    assert deploy.main(["--deploy"]) == 2
+    assert events == ["vault"]
 
 
 def test_vault_preflight_aborts_without_token(monkeypatch, tmp_path):
