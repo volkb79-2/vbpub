@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 
+import topos.inspect_files.reader as reader
 from topos.inspect_files.reader import (
     InspectFilesReadError,
     _bounded_read,
@@ -25,6 +27,30 @@ def test_confined_open_rejects_a_path_outside_the_allowlisted_tmp_root(
 
     with pytest.raises(ValueError, match="not under"):
         _confine_and_open(outside, allow_root)
+
+
+def test_confined_open_closes_its_raw_descriptor_when_buffer_creation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed fdopen cannot leak the regular-file descriptor it was given."""
+    allow_root = tmp_path / "allowed"
+    allow_root.mkdir()
+    payload = allow_root / "payload.log"
+    payload.write_text("private data\n", encoding="utf-8")
+    opened_fds: list[int] = []
+
+    def fail_fdopen(fd: int, mode: str):
+        opened_fds.append(fd)
+        raise OSError("forced buffer construction failure")
+
+    monkeypatch.setattr(reader.os, "fdopen", fail_fdopen)
+
+    with pytest.raises(OSError, match="forced buffer construction failure"):
+        _confine_and_open(payload, allow_root)
+
+    assert opened_fds
+    with pytest.raises(OSError):
+        os.fstat(opened_fds[0])
 
 
 def test_bounded_read_detects_more_source_after_an_exact_byte_cap(

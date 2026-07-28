@@ -125,6 +125,37 @@ def test_rate_only_group_profiles_derived_counter_samples() -> None:
     assert profiles[0].rates == {"io_r_bps": {"p50": 12.0, "p95": 12.0, "max": 12.0}}
 
 
+def test_profile_keeps_rate_and_gauge_metrics_when_rate_is_encountered_first() -> None:
+    """Mixed profiles classify each metric by semantic, not iteration position."""
+    frames = [
+        _frame(
+            100.0,
+            {
+                "worker.scope": {
+                    "io_r_bps": _derived_counter(100),
+                    "ram": MetricValue(512.0, "exact"),
+                },
+            },
+        ),
+        _frame(
+            105.0,
+            {
+                "worker.scope": {
+                    "io_r_bps": _derived_counter(160),
+                    "ram": MetricValue(768.0, "exact"),
+                },
+            },
+        ),
+    ]
+
+    profiles = compute_profile(frames)
+
+    assert len(profiles) == 1
+    assert profiles[0].sample_count == 2
+    assert profiles[0].gauges["ram"] == {"p50": 512.0, "p95": 768.0, "max": 768.0}
+    assert profiles[0].rates["io_r_bps"] == {"p50": 12.0, "p95": 12.0, "max": 12.0}
+
+
 def test_empty_reader_result_is_rejected_not_serialized_as_a_clean_report(monkeypatch: pytest.MonkeyPatch) -> None:
     """A completed report requires at least one decoded frame, independent of I/O."""
     class EmptyReader:
