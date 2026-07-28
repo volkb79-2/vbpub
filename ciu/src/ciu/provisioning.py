@@ -45,23 +45,26 @@ def parse_ref(ref: str) -> ProvisioningRef:
 
     Raises ValueError with clear message on malformed refs.
     """
-    m = _VAULT_RE.match(ref)
+    # A provisioning ref is an identifier, not a prefix.  ``match`` combined
+    # with ``$`` accepts a final newline, which lets malformed rendered input
+    # bypass this parser even though configuration validation rejects it.
+    m = _VAULT_RE.fullmatch(ref)
     if m:
         return ProvisioningRef(kind='vault', subkind='secret', selector=m.group(1))
 
-    m = _PG_RE.match(ref)
+    m = _PG_RE.fullmatch(ref)
     if m:
         return ProvisioningRef(kind='pg', subkind=m.group(1), selector=m.group(2))
 
-    m = _MINIO_RE.match(ref)
+    m = _MINIO_RE.fullmatch(ref)
     if m:
         return ProvisioningRef(kind='minio', subkind='user', selector=m.group(1))
 
-    m = _CONSUL_RE.match(ref)
+    m = _CONSUL_RE.fullmatch(ref)
     if m:
         return ProvisioningRef(kind='consul', subkind='token', selector=m.group(1))
 
-    m = _STACK_RE.match(ref)
+    m = _STACK_RE.fullmatch(ref)
     if m:
         return ProvisioningRef(kind='stack', subkind='', selector=m.group(1))
 
