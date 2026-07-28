@@ -3,7 +3,7 @@ log_dir = "logs"
 release_config = "../cmru.toml"
 
 [env]
-RELEASE_IMAGE_FLOW = "push"
+RELEASE_IMAGE_FLOW = "load"
 IMAGE_COMPRESSION = "zstd"
 IMAGE_COMPRESSION_LEVEL = "3"
 IMAGE_FORCE_COMPRESSION = "true"

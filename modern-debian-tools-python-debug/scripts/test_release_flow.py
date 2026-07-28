@@ -23,10 +23,10 @@ class ReleaseFlowTests(unittest.TestCase):
         cls.config = tomllib.loads((ROOT / "cmru.build.toml").read_text())
         cls.env = cls.config["env"]
 
-    def test_direct_push_is_the_safe_release_default(self) -> None:
-        self.assertEqual(self.env["RELEASE_IMAGE_FLOW"], "push")
+    def test_private_build_then_source_first_push_is_the_release_default(self) -> None:
+        self.assertEqual(self.env["RELEASE_IMAGE_FLOW"], "load")
         source = (ROOT / "build-push.py").read_text()
-        self.assertIn('or "push"', source)
+        self.assertIn('or "load"', source)
         self.assertIn("if explicit_build_date:", source)
         self.assertIn("build_date = explicit_build_date", source)
 

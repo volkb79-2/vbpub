@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cmru.release.sh — the one-shot: detect changed → tag → push → build → publish
+# cmru.release.sh — isolated one-shot: snapshot → gate → tag → build → publish
 #
 # This repo builds & releases its products with **cmru** (Configurable Multi Release
 # Utility). This file is a thin, discoverable shim → it just runs `cmru release`.

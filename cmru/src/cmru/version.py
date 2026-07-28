@@ -13,6 +13,7 @@ Strategies (S12.5):
   scm     — tag HEAD directly; setuptools_scm reads it (no extra commit)
   file    — write file (e.g. VERSION), commit, then tag
   counter — increment the R-suffix: <base>-r<N> (pwmcp pattern)
+  external:VAR — read a version derived by a prepare step from <cwd>/cmru.vars
 
 Dev builds (untagged state, S12.6):
   X.Y.Z.devN+g<hash>  — returned by setuptools_scm when no tag matches;
@@ -137,6 +138,22 @@ def _next_counter_version(repo_root: Path, prefix: str, base_version: str) -> st
         if m:
             max_n = max(max_n, int(m.group(1)))
     return f"{base_version}-r{max_n + 1}"
+
+
+def _external_version(project_cwd: Path, variable: str) -> str:
+    """Read a prepare-step version from the transaction-local ``cmru.vars`` file."""
+    vars_file = project_cwd / "cmru.vars"
+    if not vars_file.exists():
+        raise RuntimeError(
+            f"external version {variable!r} requires {vars_file}; run the project's prepare step"
+        )
+    for line in vars_file.read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == variable:
+            result = value.strip()
+            if result:
+                return result
+    raise RuntimeError(f"{vars_file} does not define required version variable {variable!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +311,11 @@ def status_cmd(
             print(f"  {name:<38} {(last_tag or '(none)'):<30} {'deleg.':<8} (self-versioned at build)")
             continue
 
+        if strategy.startswith("external:"):
+            variable = strategy.split(":", 1)[1] or "VERSION"
+            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'prepare':<8} (derived by {variable})")
+            continue
+
         if not getattr(proj, "mint_tag", True):
             # oci-image / version='none': published to a registry (ghcr), no git tag.
             note = "(registry publish — ghcr, no tag)"
@@ -367,7 +389,14 @@ def release_cmd(
             print(f"[INFO] {name}: {why} — cmru mints no tag; build/publish steps own publishing.")
             continue
 
-        if set_version:
+        if strategy.startswith("external:"):
+            variable = strategy.split(":", 1)[1].strip()
+            if not variable:
+                print(f"[ERROR] external version strategy requires a variable for project {name}", file=sys.stderr)
+                sys.exit(2)
+            next_ver = _external_version(project_cwd, variable)
+            eff_bump = "external"
+        elif set_version:
             next_ver = set_version
             eff_bump = "set"
         elif bump_override:
@@ -391,7 +420,7 @@ def release_cmd(
 
         print(f"[INFO] {name}: {last_tag or '(first release)'} → {prefix}{next_ver} ({eff_bump})")
 
-        if strategy == "scm":
+        if strategy == "scm" or strategy.startswith("external:"):
             tag = _apply_strategy_scm(repo_root, prefix, next_ver, dry_run=dry_run)
         elif strategy.startswith("file:"):
             vf = strategy[len("file:"):]
