@@ -396,15 +396,21 @@ def _decode_bpftool_entry(item: dict[str, Any], index: int) -> dict[str, Any]:
 
     # Try decoded fields from key
     if isinstance(key_obj, dict):
-        entry["cgroup_id"] = _pop_int(key_obj, "cgroup_id", index)
-        entry["direction"] = _pop_str(key_obj, "direction", index)
-        entry["family"] = _pop_str(key_obj, "family", index) or "other"
-        entry["proto"] = _pop_str(key_obj, "proto", index) or "other"
+        if "cgroup_id" in key_obj:
+            entry["cgroup_id"] = _pop_int(key_obj, "cgroup_id", index)
+        if "direction" in key_obj:
+            entry["direction"] = _pop_str(key_obj, "direction", index)
+        if "family" in key_obj:
+            entry["family"] = _pop_str(key_obj, "family", index) or "other"
+        if "proto" in key_obj:
+            entry["proto"] = _pop_str(key_obj, "proto", index) or "other"
 
     # Try decoded fields from value
     if isinstance(val_obj, dict):
-        entry["bytes"] = _pop_nonneg_int(val_obj, "bytes", index)
-        entry["packets"] = _pop_nonneg_int(val_obj, "packets", index)
+        if "bytes" in val_obj:
+            entry["bytes"] = _pop_nonneg_int(val_obj, "bytes", index)
+        if "packets" in val_obj:
+            entry["packets"] = _pop_nonneg_int(val_obj, "packets", index)
 
     # Fallback: if the entry has top-level decoded fields (e.g. from a
     # structured dump format), read them directly.
