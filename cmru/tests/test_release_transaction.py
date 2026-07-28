@@ -175,7 +175,7 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
     assert transaction.run_child(workspace, ["--project", "alpha"]) == 17
-    assert observed["command"][-3:] == ["release", "--project", "alpha"]
+    assert observed["command"][-4:] == ["release", "--_transaction-child", "--project", "alpha"]
     assert observed["cwd"] == workspace.path
     assert observed["env"][transaction.CHILD_ENV] == "1"
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch

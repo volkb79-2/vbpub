@@ -173,5 +173,8 @@ def run_child(workspace: ReleaseWorkspace, release_args: Sequence[str]) -> int:
     env[CHILD_ENV] = "1"
     env[BRANCH_ENV] = workspace.branch
     env[BASE_ENV] = workspace.base
-    command = [sys.executable, str(workspace.path / "cmru.py"), "release", *release_args]
+    command = [
+        sys.executable, str(workspace.path / "cmru.py"), "release",
+        "--_transaction-child", *release_args,
+    ]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode
