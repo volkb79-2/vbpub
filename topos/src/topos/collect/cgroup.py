@@ -185,9 +185,8 @@ def read_io_max_caps(path: Path) -> tuple[dict[str, int | None], MetricSource]:
                 value = int(raw)
             except ValueError:
                 continue
-            if value is not None:
-                s = sums.get(key)
-                sums[key] = value if s is None else s + value
+            s = sums.get(key)
+            sums[key] = value if s is None else s + value
     return sums, "exact"
 
 
