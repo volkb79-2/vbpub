@@ -41,8 +41,7 @@ working tree. It acquires a repository-local exclusive lock, fetches `origin/mai
 local-only commits on local `main` that the remote snapshot would omit (and warns if local
 `main` is behind), then creates
 an ephemeral `cmru/release/<id>` worktree at that exact remote commit, and re-execs there.
-Unrelated caller edits are therefore safe; cmru rejects only dirty selected-project inputs
-and dirty release-control inputs (`cmru.py`, `cmru/`, `cmru.toml`) that a snapshot would omit.
+All caller working-tree edits are ignored: they cannot enter the immutable remote snapshot.
 Before any tag or public artifact it MUST run every changed project's declared `run-tests`
 gate in its real gate environment, then fast-forward `origin/main` from the validated branch.
 A non-fast-forward remote update aborts before publication. Failure retains and reports the

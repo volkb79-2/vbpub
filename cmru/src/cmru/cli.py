@@ -1500,27 +1500,6 @@ def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"
         log_info(f"{name}: no 'push' step — skipping")
 
 
-def _release_input_paths(
-    configs: Mapping[str, "ProjectConfig"],
-    project_order: List[str],
-    project_filter: Optional[str],
-) -> List[str]:
-    """Paths whose dirty caller state must never be silently omitted by a snapshot.
-
-    The release control plane is always an input.  Product inputs use the same
-    declared path set as change detection, so a selected project's shared version
-    inputs are protected too while unrelated products remain free to be edited.
-    """
-    names = [project_filter] if project_filter else list(project_order)
-    paths = ["cmru.py", "cmru", "cmru.toml"]
-    for name in names:
-        project = configs.get(name)
-        if project is None:
-            continue
-        paths.extend(project.paths or [project.cwd or name])
-    return list(dict.fromkeys(paths))
-
-
 def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorkspace:
     """Recover transaction provenance in the re-execed child process."""
     workspace = transaction.ReleaseWorkspace(
@@ -1779,9 +1758,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             return
 
         # The normal command is a launcher, never a publisher from the caller's
-        # checkout.  It is safe to have unrelated work in that checkout: only the
-        # selected products plus cmru's control-plane inputs must be clean, because
-        # those are the inputs the immutable snapshot would otherwise omit.
+        # checkout.  It is safe to have any uncommitted work in that checkout:
+        # origin/main is the only release source.  Local-only *commits* remain a
+        # fail-closed condition because they are likely intended release inputs.
         if not vargs._transaction_child:
             try:
                 child_args = _child_release_args(rest, cfg_path, repo_root)
@@ -1789,10 +1768,6 @@ def main(argv: Optional[List[str]] = None) -> None:
                     if getattr(vargs, "resume", None):
                         workspace = transaction.resume_workspace(repo_root, Path(vargs.resume))
                     else:
-                        transaction.assert_paths_clean(
-                            repo_root,
-                            _release_input_paths(configs, project_order, vargs.project),
-                        )
                         base = transaction.fetch_origin_main(repo_root)
                         behind = transaction.assert_local_main_not_ahead(repo_root)
                         if behind:
