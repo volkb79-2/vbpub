@@ -1228,3 +1228,35 @@ Related: [[PL7]] (green-in-isolation / red-under-load is a shared-global-state
 smell — this is the strongest instance of that rule yet: the smell was right, and
 the shared state was an attribute on an object, not a config), [[PL8]] (same
 session, the measurement-vs-verdict rule).
+
+---
+
+## PL11 — Reviewer liveness is evidence progress, not a lease or a running PID
+
+`scope: product` · `upstream: proposed`
+
+P173 Topos review exposed a costly false-liveness signal. A DeepSeek Pro review
+process held a Reasonix session lease for more than ten minutes. A superficial
+monitor saw only the lease/meta files, no worktree write, no gate container, and
+low CPU, so it looked stalled. After interruption the buffered event artifacts
+appeared: the reviewer had produced hundreds of kilobytes of transcript, but it
+was largely delivery-runtime orchestration — todo/sign-off bookkeeping, required
+capability routing, evidence-format retries, and auxiliary review/security legs.
+It had reached a possible test omission but not a correction or a ship verdict.
+A fresh retry replayed the same broad setup from scratch.
+
+The watchdog therefore needs four independent signals: transcript/event-byte
+growth, worktree diff/commit activity, actual gate activity, and a structured
+"concrete finding or correction" heartbeat. A running process or lease alone is
+not progress; event growth alone is not useful progress either. For a bounded
+review leg, set a wall-clock and orchestration-turn budget. If the reviewer has
+not emitted a finding, correction, or verified ship verdict inside that budget,
+persist a compact controller summary of the inspected files and residual finding,
+interrupt with typed `review-no-concrete-progress`, and restart only from that
+summary — never from the full original prompt/transcript.
+
+Dispatch profiles should also avoid automatically expanding a narrow review into
+init/capability/security subagent workflows unless the handoff asks for them or a
+specific risk trigger fires. The independent reviewer is valuable for local causal
+test corrections; it should not spend most of its budget proving it is allowed to
+read a small diff. B29 tracks the product work.

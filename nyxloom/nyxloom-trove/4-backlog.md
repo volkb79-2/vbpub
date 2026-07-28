@@ -179,6 +179,13 @@ items:
   type: feature
   component: gate
   context_estimate: large
+- id: B29
+  title: 'review-leg progress watchdog: persist/measure transcript event growth, worktree writes, gate activity, and concrete findings, detect repetitive work/loops, detect orchestration turns without a finding or patch: escalate to AI to investigate logs and determine the next suitable action (restart/adapt handoff prompt/switch model or tier/...), consider session resume with giving hints how to proceed based on analyzed history.  
+  Suppress delivery-profile subagents/capability bookkeeping for bounded review legs unless the handoff explicitly requests them. Emit a typed stalled-review reason and dashboard trace. see also PL11 for originating case, this is generalized towards nyxloom operation.'
+  type: feature
+  component: review
+  context_estimate: medium
+  folds_into: F005
 ---
 
 # nyxloom — backlog
