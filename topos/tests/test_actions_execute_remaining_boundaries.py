@@ -114,6 +114,145 @@ def test_drain_allows_a_process_without_captured_pipes(monkeypatch: pytest.Monke
     assert execute._drain_process(Process(), 1.0) == (b"", b"", False)
 
 
+def test_drain_discards_output_after_the_bounded_capture_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A noisy child is still drained after its bounded diagnostic capture fills."""
+
+    class Process:
+        stdout = _Stream()
+        stderr = None
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, *, timeout: float) -> int:
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("an exited process must not be killed")
+
+    class Selector:
+        def __init__(self) -> None:
+            self.registered = True
+
+        def get_map(self) -> dict[int, object]:
+            return {1: object()} if self.registered else {}
+
+        def register(self, *_args: object) -> None:
+            pass
+
+        def unregister(self, _stream: object) -> None:
+            self.registered = False
+
+        def select(self, _timeout: float) -> list[object]:
+            return [
+                (
+                    type(
+                        "Event",
+                        (), {"fileobj": Process.stdout, "data": "stdout"},
+                    )(),
+                    0,
+                )
+            ]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(execute.selectors, "DefaultSelector", Selector)
+    chunks = iter((b"x" * execute._MAX_OUTPUT_BYTES, b"discarded", b""))
+    monkeypatch.setattr(execute.os, "read", lambda *_args: next(chunks))
+
+    assert execute._drain_process(Process(), 1.0) == (
+        b"x" * execute._MAX_OUTPUT_BYTES,
+        b"",
+        False,
+    )
+
+
+def test_drain_reaps_a_running_child_when_selector_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected selector error kills and reaps a still-running child."""
+
+    class Process:
+        stdout = _Stream()
+        stderr = None
+        killed = False
+        waited = False
+
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, *, timeout: float) -> int:
+            self.waited = True
+            return 137
+
+    class Selector:
+        def get_map(self) -> dict[int, object]:
+            return {1: object()}
+
+        def register(self, *_args: object) -> None:
+            pass
+
+        def select(self, _timeout: float) -> list[object]:
+            raise RuntimeError("selector failed")
+
+        def close(self) -> None:
+            pass
+
+    process = Process()
+    monkeypatch.setattr(execute.selectors, "DefaultSelector", Selector)
+
+    with pytest.raises(RuntimeError, match="selector failed"):
+        execute._drain_process(process, 1.0)
+    assert (process.killed, process.waited) == (True, True)
+
+
+def test_drain_reaps_an_exited_child_when_selector_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selector cleanup reaps an already-exited child without sending a signal."""
+
+    class Process:
+        stdout = _Stream()
+        stderr = None
+        waited = False
+
+        def poll(self) -> int:
+            return 1
+
+        def kill(self) -> None:
+            raise AssertionError("an exited process must not be killed")
+
+        def wait(self, *, timeout: float) -> int:
+            self.waited = True
+            return 1
+
+    class Selector:
+        def get_map(self) -> dict[int, object]:
+            return {1: object()}
+
+        def register(self, *_args: object) -> None:
+            pass
+
+        def select(self, _timeout: float) -> list[object]:
+            raise RuntimeError("selector failed")
+
+        def close(self) -> None:
+            pass
+
+    process = Process()
+    monkeypatch.setattr(execute.selectors, "DefaultSelector", Selector)
+
+    with pytest.raises(RuntimeError, match="selector failed"):
+        execute._drain_process(process, 1.0)
+    assert process.waited is True
+
+
 def test_preview_build_failure_refuses_before_audit_or_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -129,6 +268,39 @@ def test_preview_build_failure_refuses_before_audit_or_runner(
 
     assert result.outcome == result.action_outcome == "refusal"
     assert result.stderr == "catalog unavailable"
+    assert called == []
+    assert not (tmp_path / "audit.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    "failure", [TypeError("bad plan"), ValueError("bad plan"), KeyError("plan")]
+)
+def test_invalid_execution_spec_refuses_before_audit_or_runner(
+    tmp_path: Path, failure: BaseException
+) -> None:
+    """A malformed action specification cannot create an audit trail or run a command."""
+    called: list[tuple[str, ...]] = []
+
+    def build_spec() -> _ExecutionSpec:
+        raise failure
+
+    result = _execute_gated(
+        "docker-start",
+        "demo",
+        confirmation="EXECUTE",
+        admin=True,
+        confirm="EXECUTE",
+        audit_path=tmp_path / "audit.jsonl",
+        runner=lambda argv, *, timeout: called.append(argv) or _success(argv, timeout=timeout),
+        clock=lambda: 1.0,
+        identity=lambda: AuditIdentity(0, "tester"),
+        root_check=lambda: True,
+        timeout=1.0,
+        build_spec=build_spec,
+    )
+
+    assert result.outcome == result.action_outcome == "refusal"
+    assert result.stderr == str(failure)
     assert called == []
     assert not (tmp_path / "audit.jsonl").exists()
 
