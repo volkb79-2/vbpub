@@ -48,6 +48,8 @@ def classify(inspect_state: dict | None) -> str:
         return "unhealthy"
 
     status = health.get("Status", "")
+    if not isinstance(status, str):
+        return "unhealthy"
     return _CLASSIFY_MAP.get(status, "unhealthy")
 
 

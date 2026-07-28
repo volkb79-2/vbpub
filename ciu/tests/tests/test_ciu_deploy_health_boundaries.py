@@ -107,6 +107,7 @@ def test_health_gate_timeout_preserves_pending_summary(monkeypatch):
         ([], "not-found"),
         ({"Health": "starting"}, "unhealthy"),
         ({"Health": []}, "unhealthy"),
+        ({"Health": {"Status": []}}, "unhealthy"),
     ],
 )
 def test_malformed_docker_health_data_fails_closed(state, expected):
