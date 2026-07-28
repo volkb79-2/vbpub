@@ -148,8 +148,10 @@ def parse_dev_profile(stack_config: dict, root_key: str) -> DevProfile:
             f"[S5a] [{root_key}.dev] requires either `image` (a base image) or "
             "`build` (a {context, dockerfile, target} table)"
         )
-    if image is not None and not isinstance(image, str):
-        raise ValueError(f"[S5a] [{root_key}.dev].image must be a string")
+    if image is not None and (not isinstance(image, str) or not image.strip()):
+        raise ValueError(
+            f"[S5a] [{root_key}.dev].image must be a non-empty string"
+        )
     if build is not None and not isinstance(build, dict):
         raise ValueError(
             f"[S5a] [{root_key}.dev].build must be a table {{context, dockerfile, target}}"

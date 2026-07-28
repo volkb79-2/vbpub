@@ -667,7 +667,7 @@ def _check_tls_access() -> None:
                 "alpine:latest",
                 "sh",
                 "-c",
-                f"test -r '{path}'",
+                f"test -r {shlex.quote(path)}",
             ],
             capture_output=True,
             text=True,
