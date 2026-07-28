@@ -13,6 +13,9 @@ def test_cli_module_help_exits_successfully(
 ) -> None:
     """``python -m topos.cli --help`` dispatches through the module entrypoint."""
     monkeypatch.setattr(sys, "argv", ["topos.cli", "--help"])
+    # Other test imports may have loaded the module; a fresh module execution is
+    # what ``python -m`` performs and avoids testing runpy's warning path.
+    monkeypatch.delitem(sys.modules, "topos.cli", raising=False)
 
     with pytest.raises(SystemExit) as raised:
         runpy.run_module("topos.cli", run_name="__main__")
