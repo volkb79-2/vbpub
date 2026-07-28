@@ -773,6 +773,11 @@ def resolve_selection_health_containers(
                 f"[S7.7] Cannot read Compose model for stack '{entry['path']}': {exc}"
             ) from exc
 
+        if not isinstance(compose, dict):
+            raise ValueError(
+                f"[S7.7] Compose model for stack '{entry['path']}' must be a mapping."
+            )
+
         services = compose.get("services")
         if not isinstance(services, dict) or not services:
             raise ValueError(

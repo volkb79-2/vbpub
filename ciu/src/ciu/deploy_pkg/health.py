@@ -33,13 +33,19 @@ def classify(inspect_state: dict | None) -> str:
         'no-healthcheck' — container has no healthcheck configured
         'not-found'      — inspect_state is None (container not found)
     """
-    if inspect_state is None:
+    if not isinstance(inspect_state, dict):
         return "not-found"
 
     health = inspect_state.get("Health")
     if health is None:
         # No Health key → no healthcheck defined
         return "no-healthcheck"
+
+    # A malformed inspect response is not evidence that a container is ready.
+    # Treat it as unhealthy so the gate fails closed rather than raising while
+    # an orchestration action is in progress.
+    if not isinstance(health, dict):
+        return "unhealthy"
 
     status = health.get("Status", "")
     return _CLASSIFY_MAP.get(status, "unhealthy")
