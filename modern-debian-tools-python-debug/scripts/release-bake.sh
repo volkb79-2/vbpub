@@ -57,8 +57,14 @@ bash scripts/ensure-release-builder.sh
 
 case "${FLOW}" in
     load)
-        [[ "${ACTION}" == "build" ]] && run_low_priority docker buildx bake -f docker-bake.hcl all --load
-        [[ "${ACTION}" == "push" ]] && registry_bake
+        # Do not use a short-circuit test as the branch's final command:
+        # with `set -e`, a successful build action would otherwise return the
+        # false status of `[[ "$ACTION" == push ]]` to the caller.
+        if [[ "${ACTION}" == "build" ]]; then
+            run_low_priority docker buildx bake -f docker-bake.hcl all --load
+        else
+            registry_bake
+        fi
         ;;
     push)
         if [[ "${ACTION}" == "build" ]]; then
