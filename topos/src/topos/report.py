@@ -117,12 +117,9 @@ def parse_assert_spec(spec: str) -> Assertion:
     op = m.group("op")
     value_str = m.group("value")
 
-    try:
-        value = float(value_str)
-    except ValueError:
-        raise ValueError(
-            f"invalid --assert value {value_str!r} — not a number"
-        )
+    # `_ASSERT_PATTERN` admits only decimal literals accepted by `float()`.
+    # An out-of-range literal becomes infinity and is rejected below.
+    value = float(value_str)
 
     if math.isnan(value) or math.isinf(value):
         raise ValueError(
@@ -307,7 +304,7 @@ class WindowRange:
     start_ts: float
     end_ts: float  # inclusive
 
-_WINDOW_PATTERN = re.compile(r"^last:(\d+)s$|^all$")
+_WINDOW_PATTERN = re.compile(r"^last:(\d+)s$")
 
 DEFAULT_STABILITY_GAUGE = "ram"
 DEFAULT_STABILITY_COV = 0.05
@@ -327,8 +324,6 @@ def parse_window_spec(spec: str, last_frame_ts: float) -> WindowRange | None:
         return None
     m = _WINDOW_PATTERN.match(spec)
     if m is None:
-        raise ValueError(f"invalid window spec {spec!r} — expected 'all' or 'last:Ns'")
-    if not m.group(1):
         raise ValueError(f"invalid window spec {spec!r} — expected 'all' or 'last:Ns'")
     seconds = int(m.group(1))
     if seconds <= 0:
