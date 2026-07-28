@@ -65,8 +65,8 @@ class ReleaseFlowTests(unittest.TestCase):
     def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
         self.assertIn('git rev-parse --git-common-dir', wrapper)
-        self.assertIn('type=local,src=${CACHE_DIR}', wrapper)
-        self.assertIn('type=local,dest=${CACHE_DIR},mode=max', wrapper)
+        self.assertIn('*.cache-from=type=local,src=${CACHE_DIR}', wrapper)
+        self.assertIn('*.cache-to=type=local,dest=${CACHE_DIR},mode=max', wrapper)
 
     def test_volatile_staging_metadata_does_not_invalidate_tool_install_layers(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
