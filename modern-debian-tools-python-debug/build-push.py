@@ -384,9 +384,10 @@ _MANIFEST_PATH = "/usr/local/share/modern-debian-tools-python-debug/manifest.md"
 def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
     """Extract canonical manifests from freshly built images.
 
-    In repack mode, the release worker exports only the manifest from the
-    repacked OCI layout. Other modes use the governed builder to export it from
-    the published registry image without loading it into dockerd's image store.
+    Repack mode reads the bounded repacked OCI layout.  The source-first
+    ``load`` flow reads the just-loaded local image before the source commit and
+    registry publication; registry flows read the published image through the
+    governed builder.
     """
     username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME", "volkb79-2")
     repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO", "vbpub")
@@ -442,6 +443,47 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
                 )
                 failed.append(name)
                 continue
+        elif release_flow == "load":
+            # The release's private build intentionally precedes both source
+            # promotion and image publication.  `docker-image://` therefore
+            # cannot resolve this coordinate yet; read the freshly `--load`ed
+            # image from dockerd without starting it.
+            container_id = ""
+            try:
+                container_id = subprocess.run(
+                    ["docker", "create", first_tag],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                if not container_id:
+                    raise OSError(f"docker create returned no container ID for {first_tag}")
+                with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
+                    destination = Path(temp_dir) / "manifest.md"
+                    subprocess.run(
+                        ["docker", "cp", f"{container_id}:{_MANIFEST_PATH}", str(destination)],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    manifest_content = destination.read_text(encoding="utf-8")
+            except (subprocess.CalledProcessError, OSError) as exc:
+                sys.stderr.write(
+                    f"[WARN] Failed to extract local manifest from {first_tag}: {exc}\n"
+                )
+                failed.append(name)
+                continue
+            finally:
+                if container_id:
+                    subprocess.run(
+                        ["docker", "rm", "-f", container_id],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
         else:
             try:
                 with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
