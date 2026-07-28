@@ -1405,6 +1405,16 @@ def action_clean(
             stack_dir = (repo_root / rel).resolve()
             if not stack_dir.is_dir():
                 continue
+            # A shipped stack deliberately has no rendered CIU configuration
+            # (S8.5/S8.6): ``run_shipped`` consumes its maintainer-owned
+            # docker-compose.yml directly.  Step 1's project-container
+            # removal and Step 3's project-volume removal already clean its
+            # runtime state; routing it through reset_service would index a
+            # non-existent rendered config and turn an otherwise successful
+            # clean into a false failure.
+            if phases_pkg.service_shipped(entry["service"]):
+                info(f"Skipping CIU-native reset for shipped stack: {rel}")
+                continue
             merged = config_model.deep_merge(config, rendered[rel])
             try:
                 engine.reset_service(merged, stack_dir, assume_yes=True, repo_root=repo_root)
