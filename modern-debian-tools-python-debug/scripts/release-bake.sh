@@ -63,8 +63,8 @@ fi
 CACHE_DIR="${MDT_BUILDKIT_CACHE_DIR:-${COMMON_GIT_DIR}/mdt-buildkit-cache}"
 mkdir -p "${CACHE_DIR}"
 CACHE_ARGS=(
-    --cache-from "type=local,src=${CACHE_DIR}"
-    --cache-to "type=local,dest=${CACHE_DIR},mode=max"
+    --set "*.cache-from=type=local,src=${CACHE_DIR}"
+    --set "*.cache-to=type=local,dest=${CACHE_DIR},mode=max"
 )
 
 case "${FLOW}" in
