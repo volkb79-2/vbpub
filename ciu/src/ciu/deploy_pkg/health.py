@@ -302,8 +302,19 @@ def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[
     except Exception:
         return {}
 
+    if not isinstance(compose, dict):
+        raise ValueError(f"[S7.7] rendered Compose root must be a mapping: {compose_path}")
+    services = compose.get("services", {})
+    if not isinstance(services, dict):
+        raise ValueError(f"[S7.7] rendered Compose services must be a mapping: {compose_path}")
+
     result: dict[str, tuple[str, list[str]]] = {}
-    for svc_name, svc in (compose or {}).get("services", {}).items():
+    for svc_name, svc in services.items():
+        if not isinstance(svc, dict):
+            raise ValueError(
+                f"[S7.7] rendered Compose service {svc_name!r} must be a mapping: "
+                f"{compose_path}"
+            )
         hc = svc.get("healthcheck", {})
         test = hc.get("test", [])
         image = svc.get("image", "")
