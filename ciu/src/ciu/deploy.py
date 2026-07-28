@@ -266,20 +266,30 @@ def build_selection(
     # extra stacks' requires up-front, which can never pass when one profile
     # stack provides what a later one requires (e.g. db-core → db-init on a
     # greenfield up). Profile stack ORDER is therefore meaningful.
-    for idx, stack_path in enumerate(profile.extra_stacks):
+    selected_paths = {entry["path"] for entry in selection}
+    extra_index = 0
+    for stack_path in profile.extra_stacks:
+        # A profile stack supplements the numbered phases; it must not cause
+        # the same stack to run twice when a selected phase already owns it.
+        # Profile composition deduplicates across profiles, but retain this
+        # defensive boundary for manually-constructed Profile values too.
+        if stack_path in selected_paths:
+            continue
         selection.append(
             {
                 # Large increasing ints (not a shared float('inf')): they sort
                 # after every numbered phase AND stay strictly ordered among
                 # themselves, so the S7.6 vault-ordering check ("vault in an
                 # EARLIER phase") works inside a stacks-only profile too.
-                "phase_num": 1_000_000 + idx,
-                "phase_key": f"{EXTRA_STACKS_KEY}:{idx}",
+                "phase_num": 1_000_000 + extra_index,
+                "phase_key": f"{EXTRA_STACKS_KEY}:{extra_index}",
                 "path": stack_path,
                 "name": Path(stack_path).name,
                 "service": {"path": stack_path, "name": Path(stack_path).name, "enabled": True},
             }
         )
+        selected_paths.add(stack_path)
+        extra_index += 1
     return selection
 
 

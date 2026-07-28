@@ -349,6 +349,60 @@ def test_deploy_profiles_and_phases_match_spec(monkeypatch) -> None:
     assert workers_topo["internal_host"] == "ciudemo-dev-vault"
 
 
+def test_shipped_profiles_filter_flags_and_deduplicate_extra_stacks(monkeypatch) -> None:
+    """Exercise selection composition from the committed demo profiles."""
+    _set_env_defaults()
+    _bootstrap(monkeypatch)
+    global_config = deploy.load_global_config(TEST_REPO)
+
+    core = profiles_pkg.resolve_profiles(global_config, ["core_infra"], env={})
+    phase_two = deploy.build_selection(core, cli_phases={"phase_2"})
+    assert [entry["path"] for entry in phase_two] == [
+        "infra/redis-core", "infra/db-core",
+    ]
+
+    disabled_config = config_model.deep_merge(
+        global_config, {"deploy": {"control": {"enable_app": False}}}
+    )
+    all_profile = profiles_pkg.resolve_profiles(disabled_config, ["all"], env={})
+    assert "applications/app-config" not in [
+        entry["path"] for entry in deploy.build_selection(all_profile)
+    ]
+
+    unknown_flag_config = config_model.deep_merge(
+        global_config,
+        {
+            "deploy": {
+                "phases": {
+                    "phase_3": {
+                        "services": [
+                            {
+                                "path": "applications/app-config",
+                                "name": "app-config",
+                                "enabled": "not_a_declared_control_flag",
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+    )
+    unknown_flag_profile = profiles_pkg.resolve_profiles(
+        unknown_flag_config, ["all"], env={}
+    )
+    with pytest.raises(ValueError, match="not_a_declared_control_flag"):
+        deploy.build_selection(unknown_flag_profile)
+
+    # worker-io declares infra/redis-core as an extra stack; core/db already
+    # select it in phase_2. It is selected exactly once, in numeric phase order.
+    combined = profiles_pkg.resolve_profiles(
+        global_config, ["core", "db", "worker-io"], env={}
+    )
+    assert [entry["path"] for entry in deploy.build_selection(combined)] == [
+        "infra/vault", "infra/redis-core", "infra/db-core",
+    ]
+
+
 WORKERS_STACK = TEST_REPO / "applications" / "workers"
 
 

@@ -145,7 +145,23 @@ def iter_enabled_services(
     for phase_num, phase_key, phase_data in ordered_phases(phases_cfg):
         if phase_filter is not None and phase_key not in phase_filter:
             continue
-        for svc in phase_data.get("services", []):
+        if not isinstance(phase_data, dict):
+            raise ValueError(
+                f"[S7.1] Phase '{phase_key}' must be a table containing a "
+                "'services' list."
+            )
+        services = phase_data.get("services", [])
+        if not isinstance(services, list):
+            raise ValueError(
+                f"[S7.2] Phase '{phase_key}' field 'services' must be a list "
+                "of service tables."
+            )
+        for index, svc in enumerate(services):
+            if not isinstance(svc, dict):
+                raise ValueError(
+                    f"[S7.2] Phase '{phase_key}' service #{index + 1} must be "
+                    "a table."
+                )
             if not service_enabled(svc, control):
                 continue
             # Validate the orthogonal health-participation toggle during
@@ -155,6 +171,11 @@ def iter_enabled_services(
             path = svc.get("path", "")
             if not path:
                 continue
+            if not isinstance(path, str):
+                raise ValueError(
+                    f"[S7.2] Phase '{phase_key}' service #{index + 1} field "
+                    f"'path' must be a string; got {type(path).__name__}."
+                )
             yield phase_num, phase_key, svc
 
 

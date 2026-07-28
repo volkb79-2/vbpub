@@ -364,6 +364,21 @@ class TestIterEnabledServices:
         assert len(results) == 1
         assert results[0][2]["path"] == "infra/real"
 
+    @pytest.mark.parametrize(
+        ("phases", "expected", "spec_id"),
+        [
+            ({"phase_1": "not-a-table"}, "Phase 'phase_1'.*table", "[S7.1]"),
+            ({"phase_1": {"services": "infra/not-a-list"}}, "services.*list", "[S7.2]"),
+            ({"phase_1": {"services": ["infra/not-a-table"]}}, "service #1.*table", "[S7.2]"),
+            ({"phase_1": {"services": [{"path": 42}]}}, "path.*string", "[S7.2]"),
+        ],
+    )
+    def test_malformed_service_declarations_raise_actionable_error(self, phases, expected, spec_id):
+        """Bad TOML shapes fail as configuration errors, never AttributeError."""
+        with pytest.raises(ValueError, match=expected) as exc_info:
+            list(iter_enabled_services(phases, control={}))
+        assert spec_id in str(exc_info.value)
+
     def test_skips_services_with_missing_path_key(self):
         phases = {
             "phase_1": {"services": [
