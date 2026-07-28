@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import topos.daemon.http_gateway as gateway_module
 from topos.daemon.api import Sensitivity
 from topos.daemon.client import DaemonConnectError, DaemonProtocolError, DaemonResponseError
 from topos.daemon.http_gateway import (
@@ -162,3 +163,23 @@ def test_unauthenticated_and_duplicate_forwarded_identity_are_refused_before_dis
 def test_gateway_accepts_only_normalized_sensitivity_values() -> None:
     auth = GatewayAuthConfig({"operator": "public"})
     assert auth.principals == {"operator": Sensitivity.PUBLIC}
+
+
+def test_malformed_proxy_peer_address_cannot_authenticate_a_forwarded_identity() -> None:
+    """A malformed peer value is untrusted, rather than escaping the handler."""
+    auth = GatewayAuthConfig({"operator": "operational"})
+    assert gateway_module._principal_for_peer("not-an-ip", ["operator"], auth) is None
+
+
+def test_listener_bind_oserror_is_a_typed_startup_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bind failure must not leak the operating-system error through startup."""
+
+    def refuse_bind(*_args: object, **_kwargs: object) -> object:
+        raise OSError("private bind detail")
+
+    monkeypatch.setattr(gateway_module, "_GatewayHttpServer", refuse_bind)
+    with pytest.raises(GatewayStartupError, match="could not bind HTTP listener") as raised:
+        VersionedReadHttpGateway(SimpleNamespace(), GatewayConfig())
+    assert "private bind detail" not in str(raised.value)
