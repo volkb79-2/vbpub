@@ -18,6 +18,7 @@ from topos.daemon.bpf_snapshot import (
     BpfSnapshotBridge,
     BpfSnapshotError,
     _decode_bpftool_entry,
+    _pop_int,
     _walk_cgroup_ids,
 )
 
@@ -127,6 +128,20 @@ def test_decode_bpftool_entry_default_family_proto() -> None:
     entry = _decode_bpftool_entry(item, 0)
     assert entry["family"] == "other"
     assert entry["proto"] == "other"
+
+
+def test_decode_bpftool_entry_rejects_nonintegral_json_number() -> None:
+    """A decoded JSON number cannot silently truncate an identifier."""
+    item = {
+        "cgroup_id": 30001.5,
+        "direction": "ingress",
+        "bytes": 100,
+        "packets": 5,
+    }
+
+    with pytest.raises(BpfSnapshotError, match="cgroup_id"):
+        _decode_bpftool_entry(item, 0)
+    assert _pop_int({"cgroup_id": 30001.5}, "cgroup_id", 0) is None
 
 
 def test_decode_bpftool_entry_rejects_negative_counters() -> None:

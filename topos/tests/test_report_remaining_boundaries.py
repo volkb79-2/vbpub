@@ -16,6 +16,7 @@ from topos.report import (
     _population_cov,
     compute_profile,
     compute_report_with_selection,
+    detect_steady_window,
     select_report_window,
 )
 
@@ -56,6 +57,17 @@ def test_non_numeric_gauge_value_is_not_accepted_as_a_measurement() -> None:
 def test_zero_mean_with_spread_is_not_a_stable_series() -> None:
     """A nonconstant zero-mean series has infinite, not zero, CoV."""
     assert _population_cov([-1.0, 1.0]) == math.inf
+
+
+def test_nonfinite_final_sample_disqualifies_an_entity_from_every_trailing_window() -> None:
+    """A final NaN cannot be rescued by otherwise stable earlier samples."""
+    frames = [
+        _frame(100.0, {"worker.scope": {"ram": MetricValue(100.0, "exact")}}),
+        _frame(105.0, {"worker.scope": {"ram": MetricValue(100.0, "exact")}}),
+        _frame(110.0, {"worker.scope": {"ram": MetricValue(math.nan, "exact")}}),
+    ]
+
+    assert detect_steady_window(frames) is None
 
 
 def test_manual_window_resolves_against_the_last_frame_timestamp() -> None:

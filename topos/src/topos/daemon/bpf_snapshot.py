@@ -394,23 +394,21 @@ def _decode_bpftool_entry(item: dict[str, Any], index: int) -> dict[str, Any]:
     key_obj = item.get("key") if isinstance(item.get("key"), dict) else item
     val_obj = item.get("value") if isinstance(item.get("value"), dict) else item
 
-    # Try decoded fields from key
-    if isinstance(key_obj, dict):
-        if "cgroup_id" in key_obj:
-            entry["cgroup_id"] = _pop_int(key_obj, "cgroup_id", index)
-        if "direction" in key_obj:
-            entry["direction"] = _pop_str(key_obj, "direction", index)
-        if "family" in key_obj:
-            entry["family"] = _pop_str(key_obj, "family", index) or "other"
-        if "proto" in key_obj:
-            entry["proto"] = _pop_str(key_obj, "proto", index) or "other"
+    # ``key_obj`` is either the decoded key mapping or ``item``, both mappings.
+    if "cgroup_id" in key_obj:
+        entry["cgroup_id"] = _pop_int(key_obj, "cgroup_id", index)
+    if "direction" in key_obj:
+        entry["direction"] = _pop_str(key_obj, "direction", index)
+    if "family" in key_obj:
+        entry["family"] = _pop_str(key_obj, "family", index) or "other"
+    if "proto" in key_obj:
+        entry["proto"] = _pop_str(key_obj, "proto", index) or "other"
 
-    # Try decoded fields from value
-    if isinstance(val_obj, dict):
-        if "bytes" in val_obj:
-            entry["bytes"] = _pop_nonneg_int(val_obj, "bytes", index)
-        if "packets" in val_obj:
-            entry["packets"] = _pop_nonneg_int(val_obj, "packets", index)
+    # ``val_obj`` is either the decoded value mapping or ``item``, both mappings.
+    if "bytes" in val_obj:
+        entry["bytes"] = _pop_nonneg_int(val_obj, "bytes", index)
+    if "packets" in val_obj:
+        entry["packets"] = _pop_nonneg_int(val_obj, "packets", index)
 
     # Fallback: if the entry has top-level decoded fields (e.g. from a
     # structured dump format), read them directly.
