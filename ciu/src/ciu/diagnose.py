@@ -46,7 +46,9 @@ def _inspect(project: str | None) -> list[dict[str, Any]]:
     if inspected.returncode:
         raise RuntimeError(inspected.stderr.strip() or "docker inspect failed")
     value = json.loads(inspected.stdout)
-    return value if isinstance(value, list) else []
+    if not isinstance(value, list):
+        raise ValueError("docker inspect returned a non-list JSON payload")
+    return value
 
 
 def collect(*, project: str | None = None, log_lines: int = 100) -> list[Finding]:
