@@ -427,8 +427,9 @@ class ToposApp(App[None]):
         self._snapshot_entity_key = self.selected_key
         self._snapshot_frame = self.current_frame
         previous_frames = list(self._recent_frames)
-        if previous_frames and previous_frames[-1] is self._snapshot_frame:
-            previous_frames = previous_frames[:-1]
+        # ``_apply_frame`` always appends the current frame before exposing it
+        # through ``current_frame``.  Snapshots retain only earlier frames.
+        previous_frames = previous_frames[:-1]
         self._snapshot_previous_frames = previous_frames
         self._snapshot_in_progress = True
         self._refresh_status(f"snapshot running: {self._snapshot_entity_key}")
