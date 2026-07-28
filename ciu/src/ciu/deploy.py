@@ -1412,7 +1412,7 @@ def action_clean(
             # runtime state; routing it through reset_service would index a
             # non-existent rendered config and turn an otherwise successful
             # clean into a false failure.
-            if phases_pkg.service_shipped(entry["service"]):
+            if phases_pkg.service_shipped(entry.get("service", {})):
                 info(f"Skipping CIU-native reset for shipped stack: {rel}")
                 continue
             merged = config_model.deep_merge(config, rendered[rel])
