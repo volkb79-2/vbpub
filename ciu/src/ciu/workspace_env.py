@@ -360,6 +360,20 @@ def _detect_governance_read_iops() -> tuple[str, str]:
 _MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 
 
+def _unescape_mountinfo_path(value: str) -> str:
+    """Decode the pathname escapes mandated by ``proc(5)`` mountinfo.
+
+    The mount table separates fields on spaces, so its path fields encode a
+    literal space, tab, newline, and backslash as octal escapes.  Treating the
+    encoded spelling as a ``Path`` makes a bind mount below a directory with a
+    space invisible to the longest-prefix lookup, and CIU then falls back to a
+    potentially unrelated devcontainer label.  Decode exactly one mountinfo
+    escape level; a literal ``\\040`` in a path must not be decoded twice.
+    """
+    escapes = {"040": " ", "011": "\t", "012": "\n", "134": "\\"}
+    return re.sub(r"\\(040|011|012|134)", lambda match: escapes[match.group(1)], value)
+
+
 def _parse_mountinfo(text: str) -> list[tuple[Path, Path]]:
     """Parse ``/proc/self/mountinfo`` into ``(mount_point, mount_root)`` pairs.
 
@@ -389,7 +403,8 @@ def _parse_mountinfo(text: str) -> list[tuple[Path, Path]]:
         fields = left.split()
         if len(fields) < 5:
             continue
-        mount_root, mount_point = fields[3], fields[4]
+        mount_root = _unescape_mountinfo_path(fields[3])
+        mount_point = _unescape_mountinfo_path(fields[4])
         if mount_point == "/":
             continue
         entries.append((Path(mount_point), Path(mount_root)))
