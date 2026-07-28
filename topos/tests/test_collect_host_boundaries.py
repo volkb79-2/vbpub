@@ -67,6 +67,14 @@ def test_card_node_without_device_and_empty_gpu_detail_are_not_measurements(tmp_
     assert _gpu_detail(sys) is None
 
 
+def test_empty_drm_directory_has_no_gpu_detail(tmp_path: Path) -> None:
+    """The readable DRM tree measures no cards, so host metadata stays absent."""
+    sys = tmp_path / "sys"
+    (sys / "class" / "drm").mkdir(parents=True)
+
+    assert _gpu_detail(sys) is None
+
+
 def test_truncated_proc_net_row_is_dropped(tmp_path: Path) -> None:
     """A row with an interface name but fewer than 16 kernel counters is unusable."""
     proc = tmp_path / "proc"
