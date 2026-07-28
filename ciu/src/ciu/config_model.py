@@ -169,30 +169,6 @@ def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
             "and source ciu.env before running CIU."
         )
 
-    # Check for leftover tokens only in the non-comment portions (the comment
-    # portions were never touched, so run the check line-by-line as well).
-    for line in expanded.splitlines(keepends=True):
-        eol = ""
-        stripped = line
-        if stripped.endswith("\r\n"):
-            eol = "\r\n"
-            stripped = stripped[:-2]
-        elif stripped.endswith("\n"):
-            eol = "\n"
-            stripped = stripped[:-1]
-        elif stripped.endswith("\r"):
-            eol = "\r"
-            stripped = stripped[:-1]
-
-        value_part, _comment_part = _split_toml_line_at_comment(stripped)
-        leftover = ENV_VAR_PATTERN.search(value_part)
-        if leftover:
-            raise ValueError(
-                f"[ERROR] Unresolved environment placeholders remain in {source}: "
-                f"{leftover.group(0)}\n"
-                "[ERROR] Ensure all required values are set in ciu.env."
-            )
-
     return expanded
 
 
