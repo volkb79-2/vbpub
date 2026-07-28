@@ -501,10 +501,16 @@ def _detect_physical_repo_root(repo_root: Path) -> Path:
             text=True,
             check=False,
         )
-        for line in result.stdout.splitlines():
-            candidate = line.strip()
-            if candidate:
-                return Path(candidate).resolve()
+        # A failed ``docker ps`` cannot establish a physical-root identity.
+        # Docker may still put diagnostics (or incomplete template output) on
+        # stdout when its daemon/socket is unavailable; treating that as a
+        # bind-mount source would make a transient daemon failure select an
+        # unrelated repository path.
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                candidate = line.strip()
+                if candidate:
+                    return Path(candidate).resolve()
     except FileNotFoundError:
         pass
 
@@ -533,9 +539,12 @@ def _detect_host_mdt_tmp() -> str:
                 text=True,
                 check=False,
             )
-            src = result.stdout.strip()
-            if src:
-                return src
+            # An inspect failure has no trustworthy mount value, even if a
+            # wrapper happened to emit text on stdout.
+            if result.returncode == 0:
+                src = result.stdout.strip()
+                if src:
+                    return src
         except FileNotFoundError:
             pass
     return ""
