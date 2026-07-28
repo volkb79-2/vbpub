@@ -80,6 +80,13 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("repacked=docker-image://", source)
         self.assertNotIn('["docker", "run", "--rm", first_tag', source)
 
+    def test_private_load_manifest_extraction_reads_the_loaded_image(self) -> None:
+        source = (ROOT / "build-push.py").read_text()
+        self.assertIn('elif release_flow == "load":', source)
+        self.assertIn('["docker", "create", first_tag]', source)
+        self.assertIn('["docker", "cp", f"{container_id}:{_MANIFEST_PATH}"', source)
+        self.assertIn('["docker", "rm", "-f", container_id]', source)
+
     def test_volatile_oci_labels_follow_filesystem_work(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertGreater(
