@@ -12,29 +12,29 @@ orchestration see [CIU-DEPLOY.md](CIU-DEPLOY.md). Normative contract:
 ```bash
 # 1. Bootstrap the workspace env (once per machine / on reset)
 cd test-repo
-ciu --generate-env
+ciu env generate
 source ciu.env
 
 # 2. Render TOML only (preflight / debugging)
-ciu -d infra/redis-core --render-toml
+ciu render
 
 # 3. Dry-run — full pipeline except `docker compose up` [S8.3 steps 1–15]
-ciu -d infra/redis-core --dry-run
+ciu up --dir infra/redis-core --dry-run
 
 # 4. Start the stack
-ciu -d infra/redis-core
+ciu up --dir infra/redis-core
 
 # 5. Inspect the secrets table (names, directives, store paths — never values)
-ciu -d infra/redis-core secrets list       # [S4.25]
+ciu secrets list -d infra/redis-core       # [S4.25]
 
 # 6. Rotate a local secret (deletes its store file)
-ciu -d infra/redis-core secrets reset --name redis_password   # [S4.25]
+ciu secrets reset -d infra/redis-core --name redis_password   # [S4.25]
 
 # 7. Full reset — containers + volumes + rendered files (keeps secrets)
-ciu -d infra/redis-core --reset            # [S6.4]
+ciu clean -y                               # [S6.4; active profile]
 
 # 8. Reset everything including secret store files
-ciu -d infra/redis-core --reset --secrets  # [S4.25, S6.4]
+ciu secrets reset -d infra/redis-core -y   # [S4.25; after `ciu clean`]
 ```
 
 ---
@@ -57,48 +57,25 @@ common verbs are:
 | `ciu bake` · `ciu dev <stack>` | build prod image · run the dev loop (S5a) |
 | `ciu secrets list\|reset` | inspect / delete secret store files |
 
-`ciu <verb> -h` prints that verb's own options. The remainder of this section
-documents the **single-stack engine flags** (the `ciu -d <stack> …` form, which
-`ciu up --dir`/`ciu render`/`ciu clean` wrap) — useful when driving one stack
-directly.
+`ciu <verb> -h` prints that verb's own options. The public dispatcher does not
+accept a flat `ciu -d <stack> …` form: use `ciu up --dir <stack>` for a
+single-stack engine run. `ciu render` renders the global chain and stacks
+selected by the active/explicit profile; it deliberately has no `--dir` flag.
 
-### Stack selection
+### Common public options
 
-| Flag | Meaning |
+| Command | Relevant options |
 |---|---|
-| `-d PATH` / `--dir PATH` | Stack directory (default: cwd) |
-| `--define-root PATH` | Override repo root; disables walk-up [S1.1] |
-| `--root-folder PATH` | Alias for `--define-root` |
+| `ciu env generate` | `--define-root PATH` (alias: `--root-folder`) |
+| `ciu render` | `--profile NAME`, `--define-root PATH` |
+| `ciu up` | `--profile NAME` **or** `--dir PATH`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors` |
+| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors` |
+| `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
 
-### Run modes
-
-| Flag | Stops after |
-|---|---|
-| `--render-toml` | Step 3 — TOML render only [S8.3] |
-| `--dry-run` | Step 15 — overlay written, compose skipped [S8.3] |
-| `--print-context` | After merge — prints redacted JSON [S4.23] |
-| `--generate-env` | Regenerates `ciu.env` then continues [S2.8] |
-| `--shipped` | Run a pre-shipped `docker-compose.yml` through CIU [S8.6] (see Dual shipping) |
-
-### Skips / cleanup
-
-| Flag | Effect |
-|---|---|
-| `--reset` | `compose down -v`, remove `vol-*`, rendered files [S6.4] |
-| `--reset --secrets` | Also deletes secret store files [S4.25] |
-| `--skip-hostdir-check` | Skip hostdir creation (cleanup mode) |
-| `--skip-hooks` | Skip all hook points |
-| `--skip-secrets` | Skip secret resolution + overlay (compose fails if secrets consumed) |
-| `-y` / `--yes` | Non-interactive; absent prompts abort instead of asking |
-| `-f NAME` | Compose template filename (default: `ciu.compose.yml.j2`) |
-
-### Secrets subcommand
-
-```
-ciu -d <stack> secrets list            # print table: name / directive / store path / exists
-ciu -d <stack> secrets reset           # interactive confirmation unless -y
-ciu -d <stack> secrets reset --name X  # single secret
-```
+For a single-stack dry run use `ciu up --dir <stack> --dry-run`. The
+single-stack-only engine switches such as `--render-toml`, `--reset`,
+`--generate-env`, `--skip-hooks`, and `--skip-secrets` are not public `ciu`
+verb options. Use the verbs above instead.
 
 ### Exit codes [S10.3]
 
@@ -150,10 +127,10 @@ Two ways to run the shipped file:
 
 ```bash
 docker compose up -d              # plain — no CIU involvement at all
-ciu --shipped -d <stack>         # through CIU: adds the wiring below
+ciu up --dir <stack> --shipped    # through CIU: adds the wiring below
 ```
 
-`ciu --shipped` is a passthrough that **skips** the stack config requirement and
+`ciu up --dir <stack> --shipped` is a passthrough that **skips** the stack config requirement and
 all secret / overlay / configfile steps, but still:
 
 - loads `ciu.env` so the compose file's `${VAR}` interpolation resolves the same
@@ -163,7 +140,7 @@ all secret / overlay / configfile steps, but still:
 - then `docker compose -f docker-compose.yml up -d` (override the filename with
   `-f`). `--dry-run` stops before the compose up.
 
-In `ciu-deploy`, set `shipped = true` on a service in
+For profile-based `ciu up`, set `shipped = true` on a service in
 `[deploy.phases.*].services` to route that stack through its
 `docker-compose.yml`; it still participates in phase ordering and the health
 gate (see [CIU-DEPLOY.md](CIU-DEPLOY.md)).
@@ -221,7 +198,7 @@ service. `ciu dev` is the local loop only — it is not part of the
 
 ## 17-Step Pipeline [S8.3]
 
-The table below is the execution order for each `ciu -d <stack>` run.
+The table below is the execution order for a single-stack `ciu up --dir <stack>` run.
 `--render-toml` stops after step 3; `--dry-run` stops before step 16.
 
 | Step | What happens | Spec |
@@ -531,7 +508,7 @@ def run(config: dict, ctx) -> dict:
 not project configuration [S2.7]. Generate it once:
 
 ```bash
-ciu --generate-env
+ciu env generate
 source ciu.env
 ```
 

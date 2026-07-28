@@ -1,8 +1,8 @@
-# CIU-DEPLOY — Multi-Stack Orchestrator Guide
+# CIU — Multi-Stack Orchestrator Guide
 
-`ciu-deploy` sequences multiple stacks across deployment phases, driven by
+`ciu up` sequences multiple stacks across deployment phases, driven by
 `[deploy.phases.*]` and `[deploy.profiles.*]` in `ciu.global.toml`. Each stack
-is started by delegating to `ciu`; `ciu-deploy` does no rendering itself.
+is started by the public `ciu` dispatcher.
 Normative contract: [SPEC.md](SPEC.md).
 
 ---
@@ -11,45 +11,45 @@ Normative contract: [SPEC.md](SPEC.md).
 
 ```bash
 # Bootstrap workspace (once per machine)
-ciu-deploy --generate-env
+ciu env generate
 source ciu.env
 
 # Render all stack TOMLs (fresh workspace preflight)
-ciu-deploy --render-toml
+ciu render
 
 # Deploy all phases (default: no --profile = all enabled phases)
-ciu-deploy --deploy
+ciu up
 
 # Deploy a specific host profile
-ciu-deploy --profile core_infra --deploy
+ciu up --profile core_infra
 
 # Full restart
-ciu-deploy --stop --clean --deploy
+ciu clean -y && ciu up
 
 # Build images then deploy
-ciu-deploy --build --deploy
+ciu bake && ciu up
 
 # Health check after deploy
-ciu-deploy --healthcheck
+ciu health
 ```
 
 ---
 
 ## Actions Table
 
-Actions execute in the order given on the CLI. When no actions are specified,
-`--deploy` is the default.
+The dispatcher exposes one action per verb. `ciu up` is the deployment verb;
+compose selection is controlled by `--profile` or `--dir` as documented in
+`ciu up --help`.
 
 | Action | What it does | Exit on failure |
 |---|---|---|
-| `--render-toml` | Calls `ciu --render-toml` for each selected stack | Stops remaining stacks in that phase and all later phases [S7.3] |
-| `--stop` | Stops containers by anchored label filter [S7.8]; preserves volumes | Logs, continues |
-| `--clean` | `compose down -v` + removes `vol-*` dirs + rendered files | Logs, continues |
-| `--build` | `docker buildx bake all --load` | Stops deploy |
-| `--build-no-cache` | Same, with `--no-cache` | Stops deploy |
-| `--deploy` | Starts stacks in phase/numeric order via `ciu` [S7.1] | Phase failed: skips rest of phase + later phases; exit 1 [S7.3] |
-| `--healthcheck` | Polls health gate after deploy [S7.7] | exit 1 if gate does not pass |
-| `--print-context` | Prints redacted global config JSON | — |
+| `ciu render` | Renders the global chain and selected stack TOMLs | exit 1 on render/validation failure |
+| `ciu down` | Stops containers by anchored label filter [S7.8]; preserves volumes | exit 1 on failure |
+| `ciu clean` | `compose down -v` + removes `vol-*` dirs + rendered files | exit 1 on survivors/failure |
+| `ciu bake` | `docker buildx bake all --load` | exit 1 on build failure |
+| `ciu bake --no-cache` | Same, with `--no-cache` | exit 1 on build failure |
+| `ciu up` | Starts stacks in phase/numeric order [S7.1] | Phase failed: skips rest of phase + later phases; exit 1 [S7.3] |
+| `ciu health` | Polls health gate after deploy [S7.7] | exit 1 if gate does not pass |
 
 `--ignore-errors` continues on any phase failure but final exit code is still
 1 [S7.3]. `--phases 1,2` restricts execution to named phase numbers.
@@ -62,7 +62,7 @@ These are two **distinct concepts** and must not be confused:
 
 | Concept | Configured in | Selects | CLI / env |
 |---|---|---|---|
-| **Host profile** | `[deploy.profiles.<name>]` | Which **stacks** run on this host | `--profile <name>` or `CIU_HOST_PROFILE` in `ciu.env` |
+| **Host profile** | `[deploy.profiles.<name>]` | Which **stacks** run on this host | `--profile <name>` or `CIU_SERVICES_PROFILE` in `ciu.env` |
 | **Compose profile** | `compose_profiles = [...]` under a host profile entry | Which **services** inside a stack are activated | Sets `COMPOSE_PROFILES` env for that stack |
 
 Host profiles from `test-repo/ciu.global.defaults.toml.j2`:
@@ -99,7 +99,7 @@ compose_profiles = ["monitoring", "debug"]   # → COMPOSE_PROFILES=monitoring,d
 ## Multi-Host Workflow [S7.5a]
 
 Each host carries a clone of the project, its own `ciu.env` (machine identity),
-and sets `CIU_HOST_PROFILE` in `ciu.env` to control which stacks run.
+and sets `CIU_SERVICES_PROFILE` in `ciu.env` to control which stacks run.
 
 **Order matters**: the admin executes manually, starting with the host that
 provides the shared services (Vault, databases) before the hosts that consume them.
@@ -110,20 +110,20 @@ provides the shared services (Vault, databases) before the hosts that consume th
 
 ```bash
 # ciu.env on Host A:
-# CIU_HOST_PROFILE=core_infra
+# CIU_SERVICES_PROFILE=core_infra
 
-ciu --generate-env           # detects Host A's identity
-ciu-deploy --deploy          # runs phase_1 (Vault) + phase_2 (data)
+ciu env generate             # detects Host A's identity
+ciu up                       # runs phase_1 (Vault) + phase_2 (data)
 ```
 
 **Host B** — worker tier (after Host A is healthy):
 
 ```bash
 # ciu.env on Host B:
-# CIU_HOST_PROFILE=workers
+# CIU_SERVICES_PROFILE=workers
 
-ciu --generate-env           # detects Host B's identity
-ciu-deploy --deploy
+ciu env generate             # detects Host B's identity
+ciu up
 # workers profile topology_overrides points Vault at Host A's external address
 # CIU validates Vault reachability BEFORE starting anything [S7.6]
 ```
@@ -202,7 +202,7 @@ services = [
 
 This lets a fleet mix CIU-managed stacks and plain `docker-compose.yml` stacks
 in the same phased deployment. See [CIU.md](CIU.md#dual-shipping-s85s86) for the
-single-stack `ciu --shipped` equivalent.
+single-stack `ciu up --dir <stack> --shipped` equivalent.
 
 ---
 
@@ -221,7 +221,7 @@ anything [S7.6].
 The preflight reads rendered `ciu.toml` files. In a fresh workspace, render first:
 
 ```bash
-ciu-deploy --render-toml    # then run --deploy
+ciu render                  # then run `ciu up`
 ```
 
 ---

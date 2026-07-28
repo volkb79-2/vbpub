@@ -24,7 +24,7 @@ Key removals (greenfield — no aliases, no fallbacks):
 
 Key additions: secrets-as-files, generated overlay, `ASK_FILE`, `#field` Vault
 selector, `expose_env` / `mode` / `uid` inline options, configfile mounts +
-`secret()`, host profiles + `topology_overrides` + `CIU_HOST_PROFILE`, numeric
+`secret()`, host profiles + `topology_overrides` + `CIU_SERVICES_PROFILE`, numeric
 phases, three hook points with structured-only returns, hostdir inline options
 + helper-container provisioning, `ciu secrets` subcommands, exit-code contract,
 leak scan, native-host parity.
@@ -50,7 +50,7 @@ sourced it now use `ciu.env`.
 
 **Dual shipping (optional, S8.5–S8.6):** because CIU now renders to
 `ciu.compose.yml`, the name `docker-compose.yml` is freed for a hand-written
-compose you MAY commit for a plain `docker compose up` / `ciu --shipped` path.
+compose you MAY commit for a plain `docker compose up` / `ciu up --dir <stack> --shipped` path.
 You don't have to add one — but if a stack already had a hand-edited compose you
 wanted to keep runnable as-is, commit it as `docker-compose.yml` and mark its
 deploy service `shipped = true`.
@@ -64,16 +64,16 @@ The fastest path from v1 to v2 is to let the validator tell you what to fix:
 pip install ciu==2.x
 
 # 2. Render TOML per stack — every [S-xx] error identifies an exact fix
-ciu -d <stack> --render-toml
+ciu render
 
 # 3. After fixing stack config, validate the orchestrator
-ciu-deploy --render-toml --profile <profile>
+ciu render --profile <profile>
 
 # 4. Dry-run (full pipeline, no containers)
-ciu -d <stack> --dry-run
+ciu up --dir <stack> --dry-run
 
 # 5. Live
-ciu -d <stack>
+ciu up --dir <stack>
 ```
 
 Each validation error in step 2 references a spec ID; look it up in SPEC.md to
@@ -98,10 +98,10 @@ understand the contract and use the section in this guide that matches it.
 
 ## §1 Pre-flight
 
-- [ ] Upgrade wheel to ciu 2.x on a **branch**; run `ciu --render-toml` per
-  stack — the v2 validator [S11] lists every violation with its spec ID.
+- [ ] Upgrade wheel to ciu 2.x on a **branch**; run `ciu render` for the
+  relevant profile — the v2 validator [S11] lists every violation with its spec ID.
 - [ ] Add `**/.ciu/` to `.gitignore` [S1.7 aborts otherwise].
-- [ ] Regenerate `ciu.env` (`ciu --generate-env`); note `PUBLIC_*` keys are
+- [ ] Regenerate `ciu.env` (`ciu env generate`); note `PUBLIC_*` keys are
   now required only when `require_fqdn`/`require_certs` is enabled [S2.3].
 
 ---
@@ -192,7 +192,7 @@ infra = ["phase_1", "phase_2"]    phases = ["phase_1", "phase_2"]
 
 `[deploy.groups]` and `--groups` are **removed** (greenfield, S7.5) — the
 validator rejects them with a pointer to profiles. Per host, set
-`CIU_HOST_PROFILE` in that host's `ciu.env` and order the runs manually
+`CIU_SERVICES_PROFILE` in that host's `ciu.env` and order the runs manually
 (core infra host first — S7.5a). Phase keys must be `phase_<int>` strings;
 numeric ordering is now guaranteed [S7.1]. `enabled` expressions become
 `[deploy.control]` flag names [S7.2].
@@ -240,7 +240,7 @@ numeric ordering is now guaranteed [S7.1]. `enabled` expressions become
 - Initial content previously copied by init containers: use hostdir
   `seed = "<dir>"` (first creation only, S6.6).
 - `post-create.sh` / `env-workspace-setup-generate.sh`: replace their
-  detection/generation/TLS-probe logic with a single `ciu --generate-env`
+  detection/generation/TLS-probe logic with a single `ciu env generate`
   call [S2.8]; keep only aliases/SSH/IDE concerns.
 
 ---
@@ -265,8 +265,8 @@ app keeps its env interface with secrets via `*_FILE` / wrapper / `expose_env`.
 
 ## §9 Verification Checklist (Per Stack)
 
-- [ ] `ciu -d <stack> --dry-run` passes validation, leak scan included.
-- [ ] `ciu -d <stack>` twice → `diff` of `.ciu/secrets/` is empty
+- [ ] `ciu up --dir <stack> --dry-run` passes validation, leak scan included.
+- [ ] `ciu up --dir <stack>` twice → `diff` of `.ciu/secrets/` is empty
   (idempotency, S4.11) and `ciu.compose.yml` contains no secret value.
 - [ ] `docker exec <c> cat /run/secrets/<name>` matches the store file.
-- [ ] `ciu-deploy --profile <name> --healthcheck` honest (`starting` ≠ pass) [S7.7].
+- [ ] `ciu health --profile <name>` honest (`starting` ≠ pass) [S7.7].

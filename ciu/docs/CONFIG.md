@@ -66,14 +66,14 @@ generated."
 |---|---|---|
 | `ciu.global.defaults.toml.j2` | Committed (repo-root marker, S1.1) | Canonical global defaults; used as-is if no override exists |
 | `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
-| `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by `ciu-deploy` |
-| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu --generate-env` |
+| `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
+| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate` |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
 | `<stack>/ciu.toml.j2` | **Committed, OPTIONAL** | Stack sparse override; **not auto-created** (S3.1a, CIU-8) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `<stack>/ciu.toml` | Gitignored, rendered | Runtime stack config; `[state]` preserved across re-renders |
 | `<stack>/ciu.compose.yml.j2` | Committed | CIU compose template (Jinja2) |
 | `<stack>/ciu.compose.yml` | Gitignored, rendered | Runtime compose file (what CIU runs) |
-| `<stack>/docker-compose.yml` | **Committed, OPTIONAL** | Hand-written compose for the plain / `ciu --shipped` path; CIU never writes it (S8.5) |
+| `<stack>/docker-compose.yml` | **Committed, OPTIONAL** | Hand-written compose for the plain / `ciu up --dir <stack> --shipped` path; CIU never writes it (S8.5) |
 | `<stack>/.ciu/ciu.compose.overlay.yml` | Gitignored, generated | Overlay: secret-file sources + configfile bind-mounts |
 | `<stack>/.ciu/secrets/<name>` | Gitignored, generated | Materialized secret files, mode `0440` (S4.9) |
 | `<stack>/.ciu/rendered/<svc>/<cfg>` | Gitignored, generated | Rendered configfiles (S5) |
@@ -331,7 +331,7 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 | `PUBLIC_FQDN` | Conditional (S2.3) | config → detected IP → `localhost` |
 | `PUBLIC_TLS_CRT_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 | `PUBLIC_TLS_KEY_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
-| `CIU_HOST_PROFILE` | No | Set by operator; used as default profile by `ciu-deploy` [S7.5] |
+| `CIU_SERVICES_PROFILE` | No | Comma-separated ordered profile list; default selection for `ciu up` [S7.5] |
 
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
 integers with `is None` / `== ""` checks — `0` is a valid value [S2.5].

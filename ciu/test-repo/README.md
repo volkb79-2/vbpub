@@ -17,7 +17,7 @@ demonstrates. Read the templates alongside [`docs/SPEC.md`](../docs/SPEC.md).
 | `infra/db-core` | `db_core` | `postgres:16-alpine` | the `*_FILE` convention (`POSTGRES_PASSWORD_FILE`, **S4.17**) — no wrapper; fixed-UID hostdir `{uid=70, mode="0770"}` (**S6.7a**); `GEN_TO_VAULT` |
 | `applications/app-config` | `app_config` | `python:3.12-alpine` | **own app**: all four non-Vault directives — `GEN_LOCAL`, `ASK_EXTERNAL`, `GEN_EPHEMERAL`, `ASK_FILE` (**S4.2**); configfile mount + `secret()` (**S5**); `pre_compose` hook `apply_to_config` (**S9.4**); env-as-pointer boundary (**S5.5**); runs its **full** pipeline under `--dry-run` with no Vault |
 | `applications/workers` | `workers` | `python:3.12-alpine` | **replicated service**: `instances = 2` → compose keys `worker-1`/`worker-2`; ONE base configfile section `[workers.worker.configfile.main]` **fans out** to both instances (**S5.3 / CIU-2**) instead of one section per replica; `secret()` in the configfile is the S4.20 configfile consumption channel; carries a `[workers.dev]` dev-loop profile (**S5a / CIU-5**) |
-| `shipped-example` | — | `alpine:3` | **dual shipping** (**S8.5/S8.6**): a hand-written, committed `docker-compose.yml` with **no** CIU config; run it plainly or via `ciu --shipped` |
+| `shipped-example` | — | `alpine:3` | **dual shipping** (**S8.5/S8.6**): a hand-written, committed `docker-compose.yml` with **no** CIU config; run it plainly or via `ciu up --dir shipped-example --shipped` |
 
 Global config (`ciu.global.defaults.toml.j2`) demonstrates: phases in numeric
 order (**S7.1**), the `enabled = "enable_app"` string control flag (**S7.2** +
@@ -44,27 +44,27 @@ services inside a stack** are activated. They are distinct concepts.
 export CIUDEMO_LICENSE=demo            # or: export CIU_SECRET_LICENSE=demo
 
 # 1. Bootstrap the machine-identity env file (ciu.env) — single entry point (S2.8).
-ciu --generate-env
+ciu env generate
 
 # 2. Bring up the shared backbone (Vault, then Redis + Postgres) — host A.
-ciu-deploy --deploy --profile core_infra
+ciu up --profile core_infra
 
 # 3. Bring up the application tier — host B in a multi-host setup (S7.5a).
-ciu-deploy --deploy --profile workers
+ciu up --profile workers
 
 #    Single host? Just use the `all` profile instead of steps 2+3:
-#    ciu-deploy --deploy --profile all
+#    ciu up --profile all
 
 # 4. Inspect a stack's secrets (names/locators/store paths only — never values, S4.25).
 ciu secrets list -d applications/app-config
 
 # 5. Tear down (containers, volumes, rendered artifacts).
-ciu-deploy --clean -y
+ciu clean -y
 #    Reset a single stack incl. its [state] and (optionally) secret files:
-#    ciu --reset --secrets -y -d infra/vault
+#    ciu secrets reset -d infra/vault -y
 ```
 
-`ciu-deploy --render-toml --profile all` renders every stack's `ciu.toml`
+`ciu render --profile all` renders every stack's `ciu.toml`
 without starting anything (**S8.3** step 3) — handy for reviewing the merged
 config.
 
@@ -98,13 +98,13 @@ needed. See SPEC S13 for the full grammar and probe semantics.
 
 ```sh
 docker compose -f shipped-example/docker-compose.yml up -d   # no CIU at all
-ciu --shipped -d shipped-example                             # through CIU
+ciu up --dir shipped-example --shipped                       # through CIU
 ```
 
-`ciu --shipped` still loads `ciu.env`, ensures the network, and runs the DooD
+`ciu up --dir shipped-example --shipped` still loads `ciu.env`, ensures the network, and runs the DooD
 preflight before `docker compose up` — so `${DOCKER_NETWORK_INTERNAL}` in the
 shipped file resolves to the same machine-identity value the CIU path uses. In
-`ciu-deploy`, a service entry with `shipped = true` routes that stack through
+profile-based `ciu up`, a service entry with `shipped = true` routes that stack through
 its `docker-compose.yml` while still honoring phases and the health gate.
 
 ### Notes

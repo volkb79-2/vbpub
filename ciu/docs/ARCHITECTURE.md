@@ -26,7 +26,7 @@ For contributors. Normative contract: [SPEC.md](SPEC.md). Work-packet history:
 | `deploy_pkg/health.py` | Health gate; `starting`/pending classification; anchored filter | `classify`, `evaluate_gate`, `wait_for_gate`, `anchored_name_filter` | S7.7–S7.8 | `test_ciu_deploy_pkg.py` |
 | `deploy_pkg/registry.py` | Docker registry credential verification | `check_registry_auth` | S7.9 | `test_ciu_deploy_pkg.py` |
 | `deploy_pkg/http_util.py` | HTTP helpers for health/selftest endpoints | — | — | — |
-| `cli.py` / `cli_utils.py` | Argument parsers for `ciu` and `ciu-deploy`; exit-code mapping | `parse_arguments` (engine), `main` | S10.1–S10.3 | `test_ciu_cli_parser.py` |
+| `cli.py` / `cli_utils.py` | Public-verb dispatcher and CLI helpers; exit-code mapping | `main` | S10.1–S10.3 | `test_ciu_cli_parser.py` |
 
 **Deleted modules** (no longer exist): `hooks/local_secrets_hook.py` (superseded by GEN_LOCAL directives), `hooks/examples/post_compose_minio_example.py` (too v1-specific), `tools/test_config_structure.py` (v1 file conventions), the `tools/` package (no remaining content after deletion).
 

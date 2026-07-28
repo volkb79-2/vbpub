@@ -47,7 +47,7 @@ requirements are marked *(withdrawn)*.
 - **CIU compose** — the stack author's compose template `ciu.compose.yml.j2`
   and its gitignored rendered output `ciu.compose.yml` (the file CIU runs).
 - **Shipped compose** — an OPTIONAL, maintainer-authored, committed
-  `docker-compose.yml` for a plain `docker compose up` / `ciu --shipped` path.
+  `docker-compose.yml` for a plain `docker compose up` / `ciu up --dir <stack> --shipped` path.
   CIU runs it but NEVER renders or overwrites it (S8.5).
 - **DooD** — docker-outside-of-docker: the CIU process runs in a container
   (devcontainer) while the Docker daemon runs on the host.
@@ -137,7 +137,7 @@ requirements are marked *(withdrawn)*.
   | `ENV_TYPE` | `devcontainer` \| `native` \| `github-actions` (v1's `bare-metal` and post-create's `local` unify as `native`) |
   | `PUBLIC_IP`/`PUBLIC_FQDN`/`PUBLIC_TLS_*` | config → ipify → reverse DNS → `localhost` fallback (S2.3 gates whether required) |
 
-- **S2.8** `ciu --generate-env` is the **single bootstrap entry point** and
+- **S2.8** `ciu env generate` is the **single bootstrap entry point** and
   MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network
   need not pre-exist the devcontainer — attachment is dynamic via the host
@@ -367,8 +367,8 @@ requirements are marked *(withdrawn)*.
 
 - **S4.25** `ciu secrets list` prints name, directive kind, provider locator,
   store path, exists/missing — never values. `ciu secrets reset [--name X]`
-  deletes store files after confirmation (`-y` skips). `ciu --reset` keeps
-  secret files unless `--secrets` is also given.
+  deletes store files after confirmation (`-y` skips). `ciu clean` does not
+  delete secret files; use `ciu secrets reset` explicitly when that is intended.
 - **S4.26** Per-stack runs serialize on an exclusive lock
   `<stack>/.ciu/lock`; the project secret store uses
   `<repo-root>/.ciu/lock` for `GEN_LOCAL` writes.
@@ -559,7 +559,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   Decision rule: need to inspect/back up files from the host → (a);
   otherwise prefer (b).
 
-## S7 — Orchestration (`ciu-deploy`)
+## S7 — Orchestration (`ciu up`)
 
 ### Phases
 
@@ -592,7 +592,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   deep-merged over `topology.*` while the profile is active (cross-host
   addressing: host B's profile points `topology.services.vault` at host A's
   external address).
-- **S7.5** CLI: `ciu-deploy --profile <name>` (repeatable; comma form also
+- **S7.5** CLI: `ciu up --profile <name>` (repeatable; comma form also
   accepted: `--profile core,db`); default from `CIU_SERVICES_PROFILE` in
   `ciu.env` (comma-separated ordered list, e.g. `core,db,worker-io`).
   `CIU_HOST_PROFILE` is **retired** (not aliased): if set, CIU MUST emit a
@@ -744,12 +744,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   root (rendered from `ciu.compose.yml.j2`, gitignored). A maintainer MAY
   additionally commit a hand-written `docker-compose.yml` in the same stack
   directory for a plain `docker compose up` path; CIU MUST NOT render to,
-  rename, or otherwise overwrite that file. `--reset` (S6.4) removes
+  rename, or otherwise overwrite that file. `ciu clean` (S6.4) removes
   `ciu.compose.yml` and the overlay but MUST NOT remove a hand-written
   `docker-compose.yml`. This lets a project offer two deploy paths
   side-by-side: the CIU-managed path (`ciu.compose.yml` + overlay, with
   secrets/configfiles/hostdirs) and the plain path (`docker-compose.yml`).
-- **S8.6** *Shipped-compose passthrough.* `ciu --shipped` runs a maintainer's
+- **S8.6** *Shipped-compose passthrough.* `ciu up --dir <stack> --shipped` runs a maintainer's
   pre-shipped compose (default `docker-compose.yml`; override with `-f`)
   **through** CIU without requiring a stack config (`ciu.defaults.toml.j2`)
   and without the secret / overlay / configfile steps. It MUST still:
@@ -758,7 +758,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (S1.5), then `docker compose -f <file> up -d` with the same cwd/project
   convention as the native path. The compose process env is S8.2 minus
   `expose_env` secrets (none are resolved). `--dry-run` stops before the
-  compose up. `ciu-deploy` exposes the same path per service via a boolean
+  compose up. Profile-based `ciu up` exposes the same path per service via a boolean
   `shipped` key in `[deploy.phases.*].services` (default `false`; non-bool =
   abort, S7.2); a `shipped` service participates in phases and the health
   gate exactly like a native stack.
@@ -818,26 +818,22 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 
 ## S10 — CLI surface (delta to v1)
 
-- **S10.1** `ciu`: unchanged flags `-d/-f/-y/--dry-run/--print-context/
-  --render-toml/--define-root/--root-folder/--skip-hostdir-check/
-  --skip-hooks/--skip-secrets/--generate-env/--update-cert-permission/
-  --version/--reset`; new `--secrets` (with `--reset`, S4.25), new
-  `--shipped` (S8.6 — run the pre-shipped `docker-compose.yml`; `-f`
-  overrides the file name), and subcommand `ciu secrets list|reset` (S4.25).
-  `--skip-secrets` skips materialization and overlay generation (compose will
-  fail if the template consumes secrets — cleanup-mode only). `-f` defaults to
-  `ciu.compose.yml.j2`; the rendered output is `ciu.compose.yml` (S8.5).
-- **S10.2** `ciu-deploy`: new `--profile <name>` (S7.5); `--groups` removed
-  (S7.5, greenfield); per-service `shipped = true` (S8.6) routes a stack
-  through its pre-shipped `docker-compose.yml`; all other v1 actions retained.
+- **S10.1** `ciu` exposes only the verb dispatcher documented by `ciu --help`:
+  `env`, `render`, `profiles`, `up`, `down`, `clean`, `health`, `diagnose`,
+  `bake`, `dev`, `secrets`, `check`, `graph`, `ssh`, and `iops-baseline`.
+  Single-stack execution is `ciu up --dir PATH`; profile-based orchestration is
+  `ciu up --profile NAME`; environment generation is `ciu env generate`.
+  Flat engine flags are not a public `ciu` surface.
+- **S10.2** Profile selection is `ciu up --profile <name>` (S7.5); `--groups`
+  does not exist (S7.5, greenfield). Per-service `shipped = true` (S8.6)
+  routes a stack through its pre-shipped `docker-compose.yml`.
 - **S10.3** Exit codes: `0` success · `1` runtime failure (compose, health,
   hooks, vault I/O) · `2` configuration/validation error (S3/S4/S7 static
   checks, argparse) · `3` environment/bootstrap error (S1/S2: missing env
   keys, DooD preflight, dependencies).
 - **S10.4** v3 flat verb CLI (`ciu <verb> …`): each verb's `-h`/`--help` MUST
-  print that verb's **own** synopsis and options, never the legacy `ciu-deploy`
-  argparse surface (which still exposes withdrawn flags such as
-  `--deploy`/`--stop`). Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
+  print that verb's **own** synopsis and options, never a withdrawn flat
+  argparse surface. Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
   `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
   `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9).
   The global modifier `--host <name>`
@@ -1314,7 +1310,7 @@ slice level even though the compose file "looks" governed. This is a
 degradation, not a failure — `composefile.generate_overlay` still has no way
 to detect a missing systemd unit from inside a container-facing overlay
 generator (no host access there); **S15.12 closes this gap at deploy time
-instead**, where `ciu-deploy` *does* have host access, before any container
+instead**, where profile-based `ciu up` *does* have host access, before any container
 starts. `mem_limit`/`mem_reservation`/`blkio_config` are per-container (not
 slice-dependent) and always apply regardless.
 
@@ -1426,7 +1422,7 @@ Closes the S15.8 gap: for every selected stack whose resolved governance
 table is `enabled = true` **and** whose effective `cgroup_parent` is a
 `*.slice` name **other than** the CIU-shipped default
 (`GOVERNANCE_DEFAULTS["cgroup_parent"]`, normally `besteffort.slice` — CIU's
-own setup tooling's responsibility, not re-verified here), `ciu-deploy`
+own setup tooling's responsibility, not re-verified here), `ciu up`
 probes the target host's systemd for that unit **before any deploy phase
 starts** (`deploy.governance_slice_preflight`, alongside `vault_preflight` /
 `provisioning_preflight` / `registry_preflight`):
@@ -1661,15 +1657,15 @@ hook env-update returns + per-point hook function names,
 Added: secrets-as-files + generated overlay, `ASK_FILE`, `#field` Vault
 selector, inline-table secret options (`expose_env`/`mode`/`uid`),
 configfile mounts + `secret()`, host profiles + `topology_overrides` +
-`CIU_HOST_PROFILE`, numeric phases, three hook points
+`CIU_SERVICES_PROFILE`, numeric phases, three hook points
 (`pre_secrets`/`pre_compose`/`post_compose`) with structured-only returns,
 hostdir inline options (`uid`/`gid`/`mode`/`seed`) + helper-container
 provisioning (S6.5), `ciu secrets` subcommands, exit-code contract,
-leak scan, native-host parity (S1.9), `--generate-env` as the single
+leak scan, native-host parity (S1.9), `ciu env generate` as the single
 bootstrap (S2.8), unified `ciu.`-prefixed file naming (`ciu.global.*`,
 `ciu.compose.yml[.j2]`, `ciu.env`, `.ciu/ciu.compose.overlay.yml`),
 dual shipping — `ciu.compose.yml` alongside an optional committed
-`docker-compose.yml` + `ciu --shipped` / per-service `shipped` (S8.5–S8.6),
+`docker-compose.yml` + `ciu up --dir <stack> --shipped` / per-service `shipped` (S8.5–S8.6),
 **4.2**: declarative `requires`/`provides` provisioning graph (S13) with
 `pg:schema/<name>` kind, configurable `consul:token` Vault path, one-shot
 `stack:<name>:healthy` support, per-phase live probing, `ciu check` / `ciu
