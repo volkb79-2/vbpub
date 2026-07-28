@@ -176,7 +176,10 @@ RUN set -euo pipefail; \
 ENV NPM_CONFIG_PREFIX="/home/vscode/.local"
 ENV PATH="/home/vscode/.local/bin:${PATH}"
 
-COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
+# metadata.json is timestamped and only used by manifest generation later in
+# this Dockerfile. Keep it out of the tool-install cache boundary.
+COPY build/tool-artifacts-staging/downloads /tmp/tool-artifacts-staging/downloads
+COPY build/tool-artifacts-staging/tool-versions.env /tmp/tool-artifacts-staging/tool-versions.env
 
 # Neovim and NvChad are shipped from upstream GitHub releases/tags.
 RUN set -euo pipefail; \

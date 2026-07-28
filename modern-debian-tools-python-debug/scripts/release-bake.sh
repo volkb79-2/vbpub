@@ -45,7 +45,7 @@ registry_bake() {
             bake_args+=(--set "${target}.attest+=type=sbom")
         fi
     done
-    run_low_priority "${bake_args[@]}"
+    run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
 }
 
 if [[ "${ACTION}" != "build" && "${ACTION}" != "push" ]]; then
@@ -55,13 +55,25 @@ fi
 
 bash scripts/ensure-release-builder.sh
 
+# The common Git directory is shared by disposable cmru release worktrees.
+COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
+if [[ "${COMMON_GIT_DIR}" != /* ]]; then
+    COMMON_GIT_DIR="$(pwd)/${COMMON_GIT_DIR}"
+fi
+CACHE_DIR="${MDT_BUILDKIT_CACHE_DIR:-${COMMON_GIT_DIR}/mdt-buildkit-cache}"
+mkdir -p "${CACHE_DIR}"
+CACHE_ARGS=(
+    --cache-from "type=local,src=${CACHE_DIR}"
+    --cache-to "type=local,dest=${CACHE_DIR},mode=max"
+)
+
 case "${FLOW}" in
     load)
         # Do not use a short-circuit test as the branch's final command:
         # with `set -e`, a successful build action would otherwise return the
         # false status of `[[ "$ACTION" == push ]]` to the caller.
         if [[ "${ACTION}" == "build" ]]; then
-            run_low_priority docker buildx bake -f docker-bake.hcl all --load
+            run_low_priority docker buildx bake -f docker-bake.hcl all --load "${CACHE_ARGS[@]}"
         else
             registry_bake
         fi
@@ -97,7 +109,7 @@ case "${FLOW}" in
         done
 
         echo "[INFO] [repack] governed OCI-layout bake start $(ts)"
-        run_low_priority "${bake_args[@]}"
+        run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
         echo "[INFO] [repack] governed OCI-layout bake end $(ts)"
 
         for target in "${targets[@]}"; do
