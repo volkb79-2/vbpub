@@ -239,9 +239,6 @@ def _confine_and_open(
             dir_fd=current_fd,
         )
 
-        # Track whether the fd is still owned by this function so we
-        # never double-close (the except handler runs on ValueError too).
-        fd_owned = True
         try:
             # 5. fstat and require regular file.
             st = os.fstat(fd)
@@ -255,12 +252,11 @@ def _confine_and_open(
             # 6. Wrap in a buffered reader — transfer ownership only after
             # the wrapper was actually constructed.  ``os.fdopen`` can fail,
             # in which case this function must still close the raw descriptor.
-            buffered = os.fdopen(fd, "rb")
-            fd_owned = False
-            return buffered
+            return os.fdopen(fd, "rb")
         except (ValueError, OSError):
-            if fd_owned:
-                os.close(fd)
+            # The raw descriptor is still owned here: a successful fdopen()
+            # returns immediately and transfers its ownership to the buffer.
+            os.close(fd)
             raise
 
     finally:
