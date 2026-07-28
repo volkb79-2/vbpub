@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cmru.version import (
+    _external_version,
     _latest_tag_for_prefix,
     _next_counter_version,
     bump_version,
@@ -109,6 +110,19 @@ class TestNextCounterVersion(unittest.TestCase):
         with _TempRepo() as repo:
             _tag(repo, "pwmcp-v1.0.0-r3")
             self.assertEqual(_next_counter_version(repo, "pwmcp-v", "2.0.0"), "2.0.0-r1")
+
+
+class TestExternalVersion(unittest.TestCase):
+    def test_reads_version_emitted_by_prepare_step(self):
+        with tempfile.TemporaryDirectory(prefix="cmru_external_") as raw:
+            project = Path(raw)
+            (project / "cmru.vars").write_text("OTHER=x\nPWMCP_VERSION=1.61.2-r3\n")
+            self.assertEqual(_external_version(project, "PWMCP_VERSION"), "1.61.2-r3")
+
+    def test_missing_variable_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="cmru_external_") as raw:
+            with self.assertRaisesRegex(RuntimeError, "PWMCP_VERSION"):
+                _external_version(Path(raw), "PWMCP_VERSION")
 
 
 # ---------------------------------------------------------------------------

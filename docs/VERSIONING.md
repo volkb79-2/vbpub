@@ -34,19 +34,12 @@ change bumps ciu's MAJOR. ciu is seeded at `v2.0.0` to match SPEC `2.0.0`.
 ## Cutting a release
 
 ```bash
-# 1. Be on a clean tree at the commit you want to release.
-git status --porcelain            # must be empty
-
-# 2. Tag the distribution(s) you are releasing.
-git tag -a ciu-v2.1.0 -m "ciu 2.1.0"
-git push origin ciu-v2.1.0
-
-# 3. Build + publish via cmru (sees the tag → clean SemVer wheel).
-#    Or just `./cmru.release.sh --project ciu` to do steps 2+3 in one shot.
-./cmru.build.sh --project ciu && ./cmru.publish.sh --project ciu
+# Release directly from the ordinary checkout. cmru snapshots origin/main into
+# an isolated worktree, gates it, then tags/builds/publishes there.
+./cmru.release.sh --project ciu
 ```
 
-The orchestrator (cmru `resolve_versions_from_git`) detects HEAD is exactly on
+The orchestrator (cmru `resolve_versions_from_git`) detects the isolated release HEAD is exactly on
 `ciu-v2.1.0`, exports `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CIU=2.1.0`, and the build produces
 `ciu-2.1.0-py3-none-any.whl`.
 
@@ -90,9 +83,10 @@ sha256sum /tmp/b1/ciu-*.whl /tmp/b2/ciu-*.whl   # the two hashes MUST match
 
 ## Rules & edge cases
 
-- **Build releases from a clean tree.** Any modified file anywhere makes setuptools-scm append
-  `+d<date>` / `.dirty` to *every* package (it inspects the whole worktree), which is
-  non-reproducible. CI should refuse to release a dirty tree.
+- **cmru builds releases from a clean isolated tree.** Any modified file anywhere makes
+  setuptools-scm append `+d<date>` / `.dirty` to every package. The caller may have unrelated
+  edits; cmru snapshots only committed `origin/main` and rejects dirty release inputs, so the
+  build remains reproducible without forcing developers to stash unrelated work.
 - **`+local` segments** (`2.1.0.dev3+g<sha>`) are fine for GitHub Releases; PyPI would reject
   them (we don't publish to PyPI). Release tags sanitize `+`→`-`.
 - **Docker images** carry `org.opencontainers.image.revision` (HEAD sha) and `.created`

@@ -36,7 +36,7 @@ So a **wheel** (`ciu`, `cmru`) gets a semver tag + GitHub Release + `latest.json
 
 ```bash
 cmru status                       # preview changed projects + next versions (read-only)
-cmru release                      # one-shot: clean-gate → tag → push → build → publish
+cmru release                      # isolated: prepare → gate → integrate → tag → build → publish
 cmru release --dry-run            # show tags only, no writes
 cmru release --project ciu        # one project
 cmru build   --project <name>     # run the project's build step
@@ -46,11 +46,33 @@ cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
 
-`release` is idempotent: it detects changed projects, tags the tag-minting ones, then builds+publishes each by its profile (wheel → Release; oci-image → ghcr + manifest commit; delegated → the project self-versions).
+`release` is idempotent: it detects changed projects, tags the tag-minting ones, then builds+publishes each by its profile (wheel → Release; oci-image → ghcr + provenance commit).
 
 ## Reproducibility & the commit model
 
-Before building, cmru requires the project's tracked source to be **clean** — commit first so the artifact maps to a committed state (and a wheel gets a clean `X.Y.Z` from setuptools-scm). cmru auto-commits **only** the declared `commit_generated` outputs (mechanical, e.g. OCI manifests) — never your hand-edited source.
+## Isolated release transactions
+
+Run `cmru release` from your ordinary checkout—even if unrelated work is in progress.
+cmru fetches `origin/main`, rejects local-only `main` commits that the snapshot would omit,
+and creates a temporary `cmru/release/<id>` worktree at that exact commit. A local `main`
+behind the remote is warned about but safe because the remote is authoritative. This matters
+because setuptools-scm sees the
+whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
+
+cmru rejects dirty paths that are actually release inputs: the selected project (including
+declared shared version paths) and the cmru control plane. It allows unrelated paths. In the
+transaction worktree, cmru runs each changed project's required `run-tests` gate, then
+fast-forwards `origin/main` from the validated branch before creating tags or publishing.
+If another writer advanced remote main, the release fails before publication. A failure keeps
+the branch/worktree for diagnosis; success removes both.
+
+`steps.prepare` is for deterministic source preparation, such as resolving an upstream
+version. It may change only paths declared in `release.commit_generated`; cmru commits those
+mechanical outputs before the gate. Use `version.strategy = "external:VAR"` when prepare
+writes a derived version into `<project>/cmru.vars`: cmru reads it and owns the annotated tag.
+Never use a build or publish step to make an unreviewed source commit.
+See [the release-transaction guide](docs/RELEASE-TRANSACTIONS.md) for recovery,
+project-author requirements, and the current gate-adoption audit.
 
 ## Config & secrets
 

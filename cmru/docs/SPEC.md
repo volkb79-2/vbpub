@@ -15,7 +15,7 @@ touches is named `cmru.*` so the association is unambiguous.
 
 ```
 cmru status                 # 1. preview: what changed + the next version (read-only)
-cmru release                # 2. the one-shot: detect → tag → push tag → build → publish
+cmru release                # 2. isolated transaction: prepare → gate → integrate → tag → build → publish
    ├─ cmru build            #    (same two steps, split out: artifact only)
    └─ cmru publish          #    (upload artifact + .sha256 to the release)
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
@@ -35,6 +35,18 @@ than minting a new one.
 
 **S-CLI.3** Verbs that write to the host (`release`, `build`, `publish`, `run`) MUST be
 clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
+
+**S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
+working tree. It acquires a repository-local exclusive lock, fetches `origin/main`, rejects
+local-only commits on local `main` that the remote snapshot would omit (and warns if local
+`main` is behind), then creates
+an ephemeral `cmru/release/<id>` worktree at that exact remote commit, and re-execs there.
+Unrelated caller edits are therefore safe; cmru rejects only dirty selected-project inputs
+and dirty release-control inputs (`cmru.py`, `cmru/`, `cmru.toml`) that a snapshot would omit.
+Before any tag or public artifact it MUST run every changed project's declared `run-tests`
+gate in its real gate environment, then fast-forward `origin/main` from the validated branch.
+A non-fast-forward remote update aborts before publication. Failure retains and reports the
+worktree/branch; success removes both. The secret overlay is copied mode `0600`, never committed.
 
 ### File conventions (all `cmru.`-prefixed)
 
@@ -122,9 +134,10 @@ A `cmru release` is governed by **two independent axes**, so the same versioning
 very different publishing:
 
 **S-REL.1 — Versioning** (`[project.X.version].strategy`): `scm` | `counter` | `file:PATH`
-| `delegated` | `none`. Determines the version string and whether cmru owns a git tag.
+| `external:VAR` | `delegated` | `none`. Determines the version string and whether cmru owns a git tag.
 `none` = no version/tag at all (identity is the artifact's own tag, e.g. an OCI image
-tag / BUILD_DATE); `delegated` = the project's own scripts mint the tag.
+tag / BUILD_DATE); `external:VAR` reads `VAR` from transaction-local `cmru.vars` written by
+`steps.prepare`, then cmru mints the tag. `delegated` is retained only for legacy project-owned flows.
 
 **S-REL.2 — Publish profile** (`[project.X].artifacts`): a list of artifact profiles. Each
 profile expands to a capability set; a project may list **several** (their capabilities
@@ -151,25 +164,23 @@ wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, wri
 `oci-image`, by cmru's built-in handler — see S14). cmru never hardcodes a project's file
 paths.
 
-**S-REL.4a — delegated publication is source-first and fail-closed.** After the delegated
-build step, cmru commits any tracked changes confined to the project subtree and performs
-`git push origin HEAD` before the publish step, even when the build made no new diff. A
-non-fast-forward or any other source-push failure MUST abort publication so the remote host
-cannot create an immutable release tag from a tree different from the one that was built.
+**S-REL.4a — Prepared source is source-first and fail-closed.** A `steps.prepare` command
+MAY derive a version or regenerate mechanical source inputs. Every tracked output MUST be
+declared in `release.commit_generated`; cmru rejects undeclared writes, commits only declared
+paths, gates that commit, fast-forwards remote main, and only then tags/builds/publishes.
+Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
 
 **S-REL.4b — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
 the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
-build outputs cmru must `git add`+commit after `build` (e.g. mdt's
-`package-manifests-versioned`). An `oci-image`-only project paired with a tagging strategy
+mechanical tracked outputs cmru may commit. Prepare outputs commit before the gate; private
+OCI-build provenance commits and promotes before the registry push. An `oci-image`-only project paired with a tagging strategy
 (`scm`/`counter`/`file`) is a config error (exit 2) — OCI images are not git-tagged.
 
-**S-REL.5 — Reproducibility / commit model.** Before building, cmru requires the project's
-tracked source to be clean (commit first → the artifact maps to a committed state; wheels
-get a clean `X.Y.Z` from setuptools-scm). cmru auto-commits **only** the declared
-`commit_generated` outputs (mechanical), never hand-edited source. OCI flow: clean-gate →
-build (resolver regenerates manifests pre-build, bake embeds them) → commit
-`commit_generated` → push commit → push images. Wheel flow: clean-gate → tag at HEAD →
-build → push tag → (project step) Release + asset + `latest.json`.
+**S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
+cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
+declared mechanical outputs, never hand-edited source. OCI flow: private build → commit and
+promote generated provenance → registry push. Wheel flow: prepare → gate → promote → tag at
+HEAD → build → push tag → Release + asset + `latest.json`.
 
 **S-REL.6 — Multi-variant releases (per-interpreter artifact matrix).** A `bundle` or
 `tarball` project MAY declare N named **variants** so that ONE release tag publishes one
@@ -233,12 +244,18 @@ scm_dist    = "<name>"            # optional: python dist name (for wheel type)
 cwd         = "<name>/"           # required: build working directory
 
 [project.<name>.version]
-strategy = "scm"                  # required: scm | file:PATH | counter
+strategy = "scm"                  # scm | file:PATH | counter | external:VAR | none
 paths    = ["<name>/"]            # paths to watch for changes (change detection)
 bump     = "conventional"         # conventional | patch
 
 [project.<name>.steps.<step>]
 # See S3 for the runner contract fields.
+
+[project.<name>.steps.prepare]     # optional: derive version / mechanical source inputs
+# outputs MUST be allowlisted below; it runs before the required run-tests gate.
+
+[project.<name>.release]
+commit_generated = ["generated-input.json"]  # project-relative, mechanical only
 
 [project.<name>.publish]
 source      = "dist/*.whl"        # glob for artifact file(s)
@@ -667,10 +684,13 @@ class ReleaseHost:
 | `scm` | Tag HEAD; setuptools_scm reads it | No extra commit |
 | `file:<PATH>` | Write version to file, commit, then tag | Yes (one bump commit) |
 | `counter` | Find latest `-r<N>` suffix, increment; tag HEAD | No extra commit |
+| `external:VAR` | Read VAR from `<cwd>/cmru.vars` after prepare; tag HEAD | Prepare commit, if changed |
 
 **S12.6** Dev builds: when HEAD is untagged, the version MUST be `X.Y.Z.devN+g<hash>`. These MUST NOT produce a `<prefix>-v` tag or immutable release.
 
-**S12.7** `cmru release` MUST refuse to run on a dirty working tree.
+**S12.7** `cmru release` MUST use the isolated transaction in S-CLI.5. It rejects dirty
+release inputs, not unrelated caller paths; the child worktree itself MUST remain clean
+except for declared generated paths at their permitted lifecycle point.
 
 **S12.8** Commit/tag ordering: for `file` strategy — write VERSION, stage, commit, then tag. For `scm`/`counter` — tag HEAD directly. In all cases: tag first, then build, then publish.
 
