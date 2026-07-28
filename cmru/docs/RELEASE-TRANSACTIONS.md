@@ -22,6 +22,9 @@ process output back to your terminal. It copies
 the optional `cmru.secret.toml` overlay into that worktree with mode `0600`; the
 copy is removed with a successful worktree and is never staged.
 
+The re-execed child inherits the parent transaction lock; it does not try to
+acquire a second lock against its own release.
+
 No uncommitted caller edit blocks or enters a release, including an edit under a
 selected project: the release source is the fetched `origin/main` commit, never
 the caller's worktree. The only local-source preflight is local `main` ahead of
