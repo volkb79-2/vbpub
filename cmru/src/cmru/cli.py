@@ -711,8 +711,13 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
             os.environ.setdefault(key, value_str)
 
 
-def _git(repo_root: Path, *args: str) -> Optional[str]:
-    """Run ``git <args>`` under *repo_root*; return stripped stdout or None."""
+def _git(repo_root: Path, *args: str) -> str:
+    """Run ``git <args>`` under *repo_root* and return stripped stdout.
+
+    An empty stdout is a successful and meaningful result for several Git
+    queries (for example a clean ``git diff --name-only``).  Preserve it as an
+    empty string rather than conflating it with a failed invocation.
+    """
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_root), *args],
@@ -720,10 +725,12 @@ def _git(repo_root: Path, *args: str) -> Optional[str]:
             text=True,
             check=False,
         )
-    except FileNotFoundError:
-        return None
-    out = result.stdout.strip()
-    return out if (result.returncode == 0 and out) else None
+    except FileNotFoundError as exc:
+        raise RuntimeError("git executable is unavailable") from exc
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"git {' '.join(args)} failed ({result.returncode}): {detail}")
+    return result.stdout.strip()
 
 
 def resolve_versions_from_git(

@@ -78,6 +78,14 @@ def test_prepare_rejects_undeclared_write(tmp_path, monkeypatch):
         cli._commit_prepared_generated(tmp_path, project)
 
 
+def test_worktree_changed_paths_accepts_clean_git_queries(tmp_path):
+    """A clean diff has empty stdout, not an absent Git result."""
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    assert cli._worktree_changed_paths(tmp_path) == []
+
+
 def test_parent_release_launches_isolated_child_and_never_runs_in_caller(
     tmp_path, monkeypatch
 ):
