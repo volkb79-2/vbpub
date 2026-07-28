@@ -143,7 +143,11 @@ def _cache_entry(url: str) -> tuple[Path, Path]:
 
 def _cacheable_download(url: str, destination: Path) -> bool:
     """Cache immutable release assets, never mutable discovery documents."""
-    return destination != STAGE_ROOT / "tmp-text-response" and "/latest" not in url and not url.endswith("linux_amd64.json")
+    return (
+        destination not in {STAGE_ROOT / "tmp-text-response", STAGE_ROOT / "tmp-json-response"}
+        and "/latest" not in url
+        and not url.endswith("linux_amd64.json")
+    )
 
 
 def _restore_cached_download(url: str, destination: Path) -> str | None:

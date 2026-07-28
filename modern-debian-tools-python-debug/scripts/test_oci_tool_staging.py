@@ -19,6 +19,20 @@ import manifest_sections  # noqa: E402
 
 
 class OciToolStagingTests(unittest.TestCase):
+    def test_live_discovery_payloads_are_never_artifact_cache_entries(self) -> None:
+        self.assertFalse(
+            staging._cacheable_download(
+                "https://api.github.com/repos/example/tool/releases/latest",
+                staging.STAGE_ROOT / "tmp-json-response",
+            )
+        )
+        self.assertFalse(
+            staging._cacheable_download(
+                "https://example.invalid/latest",
+                staging.STAGE_ROOT / "tmp-text-response",
+            )
+        )
+
     def test_verified_artifact_cache_restores_bytes_without_network(self) -> None:
         url = "https://example.invalid/releases/tool-1.2.3.tar.gz"
         payload = b"verified artifact"
