@@ -1808,8 +1808,6 @@ def _main_daemon(argv: list[str]) -> int:
                     case PaddrLifecycleOutcome.ADOPTED:
                         health_registry.record_success("paddr_lifecycle", detail="paddr session adopted")
                         print("Daemon-owned paddr session adopted", flush=True)
-                    case PaddrLifecycleOutcome.DISABLED:
-                        pass  # not reached since we check paddr_enabled above
             except Exception as exc:
                 health_registry.record_failure(
                     "paddr_lifecycle",
