@@ -535,6 +535,12 @@ def validate_stack_shape(stack_config: dict) -> str:
     S3.7: the root key must not be in RESERVED_GLOBAL_NAMESPACES.
     Violation raises ValueError with "[S3.7]" and a renaming suggestion.
     """
+    if not isinstance(stack_config, dict):
+        raise ValueError(
+            "[S3.5] Stack config must be a TOML table, "
+            f"got {type(stack_config).__name__}."
+        )
+
     non_reserved = [k for k in stack_config if k not in _STACK_RESERVED]
 
     if len(non_reserved) == 0:
@@ -552,6 +558,22 @@ def validate_stack_shape(stack_config: dict) -> str:
 
     root_key = non_reserved[0]
 
+    # S0 defines the root as a top-level TOML table.  Do not let a scalar or
+    # list masquerade as a stack root merely because it is the only key.
+    if not isinstance(stack_config[root_key], dict):
+        raise ValueError(
+            f"[S3.5] Stack root key '{root_key}' must be a TOML table, "
+            f"got {type(stack_config[root_key]).__name__}."
+        )
+
+    # S3.4 likewise defines [state] as a table.  Its presence must not hide a
+    # malformed scalar/list from the shape validator.
+    if "state" in stack_config and not isinstance(stack_config["state"], dict):
+        raise ValueError(
+            "[S3.5] Reserved top-level key 'state' must be a TOML table, "
+            f"got {type(stack_config['state']).__name__}."
+        )
+
     if root_key in RESERVED_GLOBAL_NAMESPACES:
         raise ValueError(
             f"[S3.7] Stack root key '{root_key}' collides with a reserved global "
@@ -567,11 +589,11 @@ def validate_stack_shape(stack_config: dict) -> str:
 
 VALID_REF_KINDS = frozenset({"vault", "pg", "minio", "consul", "stack"})
 _REF_RE = re.compile(
-    r"^(vault):secret/(.+)"                       # vault:secret/<path>
-    r"|^(pg):(role|db|schema)/([a-zA-Z0-9_-]+)"   # pg:role/<n>, pg:db/<n>, or pg:schema/<n>
-    r"|^(minio):user/([a-zA-Z0-9_-]+)"            # minio:user/<name>
-    r"|^(consul):token/([a-zA-Z0-9_-]+)"        # consul:token/<svc>
-    r"|^(stack):([a-zA-Z0-9_/-]+):healthy$"     # stack:<name>:healthy
+    r"(?:vault:secret/(.+)"                       # vault:secret/<path>
+    r"|pg:(?:role|db|schema)/[a-zA-Z0-9_-]+"      # pg:role/<n>, pg:db/<n>, or pg:schema/<n>
+    r"|minio:user/[a-zA-Z0-9_-]+"                 # minio:user/<name>
+    r"|consul:token/[a-zA-Z0-9_-]+"               # consul:token/<svc>
+    r"|stack:[a-zA-Z0-9_/-]+:healthy)"            # stack:<name>:healthy
 )
 
 
@@ -580,7 +602,11 @@ def validate_provisioning_ref(ref: str) -> None:
 
     Raises ValueError with a clear message if malformed.
     """
-    if not _REF_RE.match(ref):
+    # fullmatch is deliberate: a provisioning ref is an identifier, not a
+    # prefix.  ``match`` previously accepted e.g. ``pg:role/app trailing``;
+    # the later provisioning parser then rejected it, producing an avoidable
+    # late failure after the supposed validation pass.
+    if not _REF_RE.fullmatch(ref):
         if ":" not in ref:
             raise ValueError(
                 f"[ERROR] Malformed provisioning ref {ref!r}: missing kind prefix "
@@ -610,17 +636,14 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
     Source is used in error messages.
     """
     violations: list[str] = []
+    root_key = validate_stack_shape(stack_config)
+    root_section = stack_config[root_key]
+
     for field in ("requires", "provides"):
-        # Look in root key section - find the non-state top-level key
-        # We check both at top-level and inside any root key
-        val = stack_config.get(field)
-        # Also check inside any root-key sub-table
-        for key, sub in stack_config.items():
-            if key != "state" and isinstance(sub, dict):
-                sub_val = sub.get(field)
-                if sub_val is not None:
-                    val = sub_val
-                    break
+        # S13.1: declarations live only in the single validated root table.
+        # Looking through arbitrary nested tables could validate a service's
+        # accidental declaration while silently ignoring the root declaration.
+        val = root_section.get(field)
 
         if val is None:
             continue
