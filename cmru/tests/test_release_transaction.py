@@ -116,7 +116,9 @@ cwd = "alpha"
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(transaction, "assert_paths_clean", lambda root, paths: calls.append((root, paths)))
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root: workspace)
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
@@ -128,6 +130,19 @@ cwd = "alpha"
     assert (tmp_path, ["cmru.py", "cmru", "cmru.toml", "alpha"]) in calls
     assert ["--project", "alpha", "--config", "cmru.toml"] in calls
     assert "removed" in calls
+
+
+def test_local_main_ahead_aborts_before_creating_workspace(tmp_path, monkeypatch):
+    monkeypatch.setattr(transaction, "local_main_divergence", lambda _root: (2, 0))
+
+    with pytest.raises(RuntimeError, match="Local main is 2 commit\\(s\\) ahead"):
+        transaction.assert_local_main_not_ahead(tmp_path)
+
+
+def test_local_main_behind_is_reported_but_allowed(tmp_path, monkeypatch):
+    monkeypatch.setattr(transaction, "local_main_divergence", lambda _root: (0, 3))
+
+    assert transaction.assert_local_main_not_ahead(tmp_path) == 3
 
 
 def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):

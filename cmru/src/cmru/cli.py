@@ -1707,8 +1707,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
         parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
         parser.add_argument("--config", help="Path to release.toml")
-        parser.add_argument("--resume", metavar="WORKTREE",
-                            help="Resume a retained failed release worktree")
         # Back-compat: `cmru build --config C --step S` still hits the raw runner.
         if verb == "build" and ("--step" in rest):
             from cmru.runner import main as runner_main
@@ -1748,6 +1746,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--no-build", action="store_true",
                             help="release: tag + push only; skip build/publish")
         parser.add_argument("--config", help="Path to release.toml")
+        parser.add_argument("--resume", metavar="WORKTREE",
+                            help="Resume a retained failed release worktree")
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         vargs = parser.parse_args(rest)
 
@@ -1789,7 +1789,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                             repo_root,
                             _release_input_paths(configs, project_order, vargs.project),
                         )
-                        workspace = transaction.create_workspace(repo_root)
+                        base = transaction.fetch_origin_main(repo_root)
+                        behind = transaction.assert_local_main_not_ahead(repo_root)
+                        if behind:
+                            log_warn(
+                                f"Local main is {behind} commit(s) behind origin/main; "
+                                f"release uses fetched origin/main {base[:12]}."
+                            )
+                        workspace = transaction.create_workspace(repo_root, base=base)
                     transaction.copy_secret_overlay(repo_root, workspace)
                     log_info(
                         f"Release transaction {workspace.branch}: "

@@ -88,10 +88,45 @@ def release_lock(repo_root: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def create_workspace(repo_root: Path) -> ReleaseWorkspace:
-    """Fetch and snapshot the authoritative remote main branch in a new worktree."""
+def fetch_origin_main(repo_root: Path) -> str:
+    """Fetch and return the exact remote commit authoritative for a new release."""
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
-    base = _git(repo_root, "rev-parse", "origin/main")
+    return _git(repo_root, "rev-parse", "origin/main")
+
+
+def local_main_divergence(repo_root: Path) -> tuple[int, int]:
+    """Return commits ``(ahead, behind)`` for local main relative to origin/main."""
+    try:
+        counts = _git(repo_root, "rev-list", "--left-right", "--count", "main...origin/main")
+        ahead, behind = counts.split()
+        return int(ahead), int(behind)
+    except (RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            "Cannot compare local main with origin/main; fetch/repair the local main ref "
+            "before starting a release."
+        ) from exc
+
+
+def assert_local_main_not_ahead(repo_root: Path) -> int:
+    """Reject commits local-only commits that an origin/main snapshot would omit.
+
+    A behind local checkout is harmless because ``origin/main`` is deliberately
+    authoritative; the caller receives that count so it can be reported.
+    """
+    ahead, behind = local_main_divergence(repo_root)
+    if ahead:
+        raise RuntimeError(
+            f"Local main is {ahead} commit(s) ahead of origin/main. "
+            "Push those commits (or explicitly base the intended change on origin/main) "
+            "before release; an isolated release snapshots origin/main and would omit them."
+        )
+    return behind
+
+
+def create_workspace(repo_root: Path, *, base: str | None = None) -> ReleaseWorkspace:
+    """Create a worktree at one already-fetched authoritative remote commit."""
+    if base is None:
+        base = fetch_origin_main(repo_root)
     token = uuid.uuid4().hex[:12]
     branch = f"cmru/release/{token}"
     parent = repo_root / ".worktrees"

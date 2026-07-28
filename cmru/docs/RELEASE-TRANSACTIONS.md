@@ -13,8 +13,12 @@ Use the ordinary entry point:
 ./cmru.release.sh --project <project>
 ```
 
-cmru obtains a local release lock, fetches `origin/main`, creates the release
-worktree, and streams the child process output back to your terminal. It copies
+cmru obtains a local release lock, fetches `origin/main`, and compares it with
+local `main` before creating the release worktree. Local-only `main` commits are
+a fail-closed error: the snapshot would omit them, so push them first. A local
+`main` that is behind is reported but safe—the fetched remote commit is
+authoritative. cmru then creates the release worktree and streams the child
+process output back to your terminal. It copies
 the optional `cmru.secret.toml` overlay into that worktree with mode `0600`; the
 copy is removed with a successful worktree and is never staged.
 
@@ -38,7 +42,7 @@ transaction removes the ephemeral branch/worktree.
 
 ```text
 caller checkout
-    │  lock + fetch origin/main + validate release inputs
+    │  lock + fetch origin/main + reject local-only main commits + validate release inputs
     ▼
 cmru/release/<id> at immutable origin/main commit
     │  optional prepare → commit declared mechanical outputs

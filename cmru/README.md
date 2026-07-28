@@ -53,8 +53,10 @@ cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ## Isolated release transactions
 
 Run `cmru release` from your ordinary checkout—even if unrelated work is in progress.
-cmru fetches `origin/main`, creates a temporary `cmru/release/<id>` worktree at that exact
-commit, and releases only from that snapshot. This matters because setuptools-scm sees the
+cmru fetches `origin/main`, rejects local-only `main` commits that the snapshot would omit,
+and creates a temporary `cmru/release/<id>` worktree at that exact commit. A local `main`
+behind the remote is warned about but safe because the remote is authoritative. This matters
+because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
 
 cmru rejects dirty paths that are actually release inputs: the selected project (including

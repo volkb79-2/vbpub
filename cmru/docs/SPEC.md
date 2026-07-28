@@ -37,7 +37,9 @@ than minting a new one.
 clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
-working tree. It acquires a repository-local exclusive lock, fetches `origin/main`, creates
+working tree. It acquires a repository-local exclusive lock, fetches `origin/main`, rejects
+local-only commits on local `main` that the remote snapshot would omit (and warns if local
+`main` is behind), then creates
 an ephemeral `cmru/release/<id>` worktree at that exact remote commit, and re-execs there.
 Unrelated caller edits are therefore safe; cmru rejects only dirty selected-project inputs
 and dirty release-control inputs (`cmru.py`, `cmru/`, `cmru.toml`) that a snapshot would omit.
