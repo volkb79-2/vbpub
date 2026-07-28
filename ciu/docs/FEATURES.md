@@ -79,9 +79,9 @@ here only as a migration map; use the public verb in all scripts and docs.
 | Legacy | v3 verb |
 |---|---|
 | `ciu -d <stack>` | `ciu up --dir <stack>` |
-| `ciu -d <stack> --render-toml` | `ciu render` (profile selection; no `--dir`) |
+| `ciu -d <stack> --render-toml` | `ciu up --dir <stack> --render-toml` (single stack); `ciu render` for a profile selection |
 | `ciu -d <stack> --dry-run` | `ciu up --dir <stack> --dry-run` |
-| `ciu -d <stack> --reset` | `ciu clean` |
+| `ciu -d <stack> --reset` | `ciu up --dir <stack> --reset` (single stack); `ciu clean` for a profile selection |
 | `ciu -d <stack> --shipped` | `ciu up --dir <stack> --shipped` |
 | `ciu --generate-env` | `ciu env generate` |
 

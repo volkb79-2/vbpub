@@ -64,7 +64,7 @@ The fastest path from v1 to v2 is to let the validator tell you what to fix:
 pip install ciu==2.x
 
 # 2. Render TOML per stack — every [S-xx] error identifies an exact fix
-ciu render
+ciu up --dir <stack> --render-toml
 
 # 3. After fixing stack config, validate the orchestrator
 ciu render --profile <profile>

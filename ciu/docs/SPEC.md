@@ -821,9 +821,11 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 - **S10.1** `ciu` exposes only the verb dispatcher documented by `ciu --help`:
   `env`, `render`, `profiles`, `up`, `down`, `clean`, `health`, `diagnose`,
   `bake`, `dev`, `secrets`, `check`, `graph`, `ssh`, and `iops-baseline`.
-  Single-stack execution is `ciu up --dir PATH`; profile-based orchestration is
-  `ciu up --profile NAME`; environment generation is `ciu env generate`.
-  Flat engine flags are not a public `ciu` surface.
+  Single-stack execution is `ciu up --dir PATH`; this public form forwards the
+  remaining single-stack engine flags (for example `--render-toml`, `--reset`,
+  and `--print-context`). Profile-based orchestration is `ciu up --profile
+  NAME`; environment generation is `ciu env generate`. Flat `ciu -d …` forms
+  are not a public surface.
 - **S10.2** Profile selection is `ciu up --profile <name>` (S7.5); `--groups`
   does not exist (S7.5, greenfield). Per-service `shipped = true` (S8.6)
   routes a stack through its pre-shipped `docker-compose.yml`.

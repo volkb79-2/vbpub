@@ -16,7 +16,7 @@ ciu env generate
 source ciu.env
 
 # 2. Render TOML only (preflight / debugging)
-ciu render
+ciu up --dir infra/redis-core --render-toml
 
 # 3. Dry-run — full pipeline except `docker compose up` [S8.3 steps 1–15]
 ciu up --dir infra/redis-core --dry-run
@@ -31,10 +31,10 @@ ciu secrets list -d infra/redis-core       # [S4.25]
 ciu secrets reset -d infra/redis-core --name redis_password   # [S4.25]
 
 # 7. Full reset — containers + volumes + rendered files (keeps secrets)
-ciu clean -y                               # [S6.4; active profile]
+ciu up --dir infra/redis-core --reset -y   # [S6.4; one stack]
 
 # 8. Reset everything including secret store files
-ciu secrets reset -d infra/redis-core -y   # [S4.25; after `ciu clean`]
+ciu secrets reset -d infra/redis-core -y   # [S4.25; after the reset]
 ```
 
 ---
@@ -72,10 +72,12 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 | `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors` |
 | `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
 
-For a single-stack dry run use `ciu up --dir <stack> --dry-run`. The
-single-stack-only engine switches such as `--render-toml`, `--reset`,
-`--generate-env`, `--skip-hooks`, and `--skip-secrets` are not public `ciu`
-verb options. Use the verbs above instead.
+For a single-stack dry run use `ciu up --dir <stack> --dry-run`. With that
+public `up --dir` form, CIU forwards the remaining single-stack engine flags,
+including `--render-toml`, `--reset`, `--print-context`, `--skip-hooks`, and
+`--skip-secrets`. They are **not** accepted as a flat `ciu -d <stack> …`
+command. Prefer `ciu env generate` over the older combined `--generate-env`
+engine flag.
 
 ### Exit codes [S10.3]
 

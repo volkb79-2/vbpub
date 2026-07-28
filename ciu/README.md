@@ -48,7 +48,7 @@ lacks (see [docs/CIU.md](docs/CIU.md)).
 6. **Multi-stack / multi-host orchestration.** `ciu up` runs stacks in numeric phase order, gates on health (`starting` ≠ healthy, S7.7), and supports host profiles with `topology_overrides` for cross-host addressing (S7.4/S7.5a).
 7. **Fail-fast before anything starts.** A static validation catalog (S11) and a typed exit-code contract (S10.3) catch errors pre-launch; a vault-backed stack aborts if no token resolves (S7.6).
 8. **App config as mounted files, with composite secrets.** Configfile mounts (S5) render a full app config — including DSNs that embed credentials via `secret()` (S5.4) — and mount it read-only, replacing sprawling `APP__*` env blocks.
-9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `--reset` tears down containers, volumes, and rendered outputs, scoped to the stack dir (S6.4).
+9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection.
 
 ## When *not* to use `ciu`
 
