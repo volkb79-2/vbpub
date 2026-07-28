@@ -18,15 +18,15 @@ registry = ["ghcr.io"]       # OCI registries to push images to (S11.3)
 [orchestration]
 # Only projects listed here are auto-tagged/released by `status`/`release` (S-CLI.2).
 # empyrion-translation stays on-demand (date-tagged game asset, not in this set).
-project_order    = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-default_projects = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+project_order    = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
+default_projects = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
 default_steps    = ["run-tests", "build", "push", "validate"]
 execution_mode   = "project-first"
 
 [orchestration.step_project_order]
-run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
-build     = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-push      = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp", "topos"]
+build     = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
+push      = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
 validate  = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
 
 [cleanup]
@@ -225,6 +225,25 @@ commands = [
 [project.tls-edge.steps.build]
 commands = [
   { label = "tls-edge: build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "tls-edge" },
+]
+
+# ─── topos — Python wheel + host systemd daemon templates ────────────────────
+# The package is a wheel.  Its optional root daemon is deployed through the
+# packaged systemd unit/tmpfiles/slice templates, not a privileged OCI image.
+[project.topos]
+prefix    = "topos-v"
+artifacts = ["wheel"]
+scm_dist  = "topos"
+cwd       = "topos"
+[project.topos.version]
+strategy = "scm"
+bump     = "conventional"
+[project.topos.env]
+CMRU_RELEASE_NOTES = "## topos wheel\nHost pressure inspector and cgroup forensics console. This is a pre-1.0 operator release: see `topos/docs/RELEASE-READINESS.md` for explicit live-host certification gaps and non-claims. The optional root daemon is deployed with the packaged systemd service/tmpfiles/slice templates; no privileged container image is published.\n\n**Install**\n```bash\npipx install topos-*.whl\n```"
+CMRU_TESTER_CGROUP_PARENT = "nyxloom-gates.slice"
+[project.topos.steps.run-tests]
+commands = [
+  { label = "topos: tester-unified parallel suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=topos/src:topos; /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto"], cwd = "." },
 ]
 
 # ─── empyrion-translation — game asset (delegated; NOT in project_order) ────────
