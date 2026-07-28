@@ -252,9 +252,12 @@ def _confine_and_open(
                 )
                 raise ValueError(msg)
 
-            # 6. Wrap in a buffered reader — transfer ownership.
+            # 6. Wrap in a buffered reader — transfer ownership only after
+            # the wrapper was actually constructed.  ``os.fdopen`` can fail,
+            # in which case this function must still close the raw descriptor.
+            buffered = os.fdopen(fd, "rb")
             fd_owned = False
-            return os.fdopen(fd, "rb")
+            return buffered
         except (ValueError, OSError):
             if fd_owned:
                 os.close(fd)
