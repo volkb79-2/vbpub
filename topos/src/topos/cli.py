@@ -1903,6 +1903,7 @@ def _main_daemon(argv: list[str]) -> int:
             if collector_stopped:
                 health_registry.mark_stopped("collector", detail="collector stopped")
             server.server_close()
+        return 0
     if args.command == "preflight":
         try:
             report = preflight_daemon_deployment(args.socket, group_name=args.group)
