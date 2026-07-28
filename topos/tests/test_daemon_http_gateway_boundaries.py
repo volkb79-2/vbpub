@@ -171,6 +171,13 @@ def test_malformed_proxy_peer_address_cannot_authenticate_a_forwarded_identity()
     assert gateway_module._principal_for_peer("not-an-ip", ["operator"], auth) is None
 
 
+def test_unconfigured_proxy_principal_cannot_authenticate() -> None:
+    """A loopback peer still needs an explicitly configured principal ceiling."""
+    auth = GatewayAuthConfig({"operator": "operational"})
+
+    assert gateway_module._principal_for_peer("127.0.0.1", ["unknown"], auth) is None
+
+
 def test_listener_bind_oserror_is_a_typed_startup_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
