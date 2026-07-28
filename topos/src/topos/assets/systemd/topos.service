@@ -7,10 +7,18 @@ Type=simple
 User=root
 Group=topos
 UMask=0007
+Slice=topos.slice
 RuntimeDirectory=topos
 RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/env topos daemon serve --socket /run/topos/topos.sock
 Restart=on-failure
+RestartSec=5s
+
+# The daemon needs host cgroup, Docker, BPF and optional DAMON access, so it is
+# intentionally a host service rather than a privileged container.  Its own
+# slice bounds a leak without imposing a CPU quota on incident collection.
+NoNewPrivileges=true
+PrivateTmp=true
 
 # Create the topos group and add approved users before enabling this unit.
 # The daemon remains read-only; clients attach over the group-readable socket.

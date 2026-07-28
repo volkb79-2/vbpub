@@ -158,6 +158,8 @@ def test_systemd_templates_are_packaged() -> None:
     tmpfiles = (root / "assets/systemd/topos.tmpfiles").read_text()
     assert "topos daemon serve --socket /run/topos/topos.sock" in service
     assert "d /run/topos 0750 root topos -" in tmpfiles
+    slice_unit = (root / "assets/systemd/topos.slice").read_text()
+    assert "MemoryMax=512M" in slice_unit
 
 
 # ── Install plan (P25) tests ─────────────────────────────────────────────────
@@ -169,6 +171,7 @@ def test_install_plan_deterministic_defaults() -> None:
         DEFAULT_DAEMON_GROUP,
         DEFAULT_DAEMON_SOCKET,
         DEFAULT_SERVICE_DEST,
+        DEFAULT_SLICE_DEST,
         DEFAULT_TMPFILES_DEST,
         build_install_plan,
         install_plan_to_jsonable,
@@ -181,6 +184,7 @@ def test_install_plan_deterministic_defaults() -> None:
     assert plan1.socket_path == DEFAULT_DAEMON_SOCKET
     assert plan1.group_name == DEFAULT_DAEMON_GROUP
     assert plan1.service_dest == DEFAULT_SERVICE_DEST
+    assert plan1.slice_dest == DEFAULT_SLICE_DEST
     assert plan1.tmpfiles_dest == DEFAULT_TMPFILES_DEST
 
     j1 = json.dumps(install_plan_to_jsonable(plan1), sort_keys=True)
@@ -189,7 +193,7 @@ def test_install_plan_deterministic_defaults() -> None:
 
     text = render_install_plan_text(plan1)
     assert "Step 1" in text
-    assert "Step 7" in text
+    assert "Step 8" in text
     assert "PLAN only" in text
     assert "groupadd" in text
     assert "systemctl" in text
@@ -205,18 +209,21 @@ def test_install_plan_custom_args() -> None:
         socket_path="/tmp/custom/topos.sock",
         group_name="custom-group",
         service_dest="/opt/systemd/system/topos.service",
+        slice_dest="/opt/systemd/system/topos.slice",
         tmpfiles_dest="/opt/tmpfiles.d/topos.conf",
     )
 
     assert plan.socket_path == Path("/tmp/custom/topos.sock")
     assert plan.group_name == "custom-group"
     assert plan.service_dest == Path("/opt/systemd/system/topos.service")
+    assert plan.slice_dest == Path("/opt/systemd/system/topos.slice")
     assert plan.tmpfiles_dest == Path("/opt/tmpfiles.d/topos.conf")
 
     j = install_plan_to_jsonable(plan)
     assert j["socket_path"] == "/tmp/custom/topos.sock"
     assert j["group"] == "custom-group"
     assert j["service_dest"] == "/opt/systemd/system/topos.service"
+    assert j["slice_dest"] == "/opt/systemd/system/topos.slice"
     assert j["tmpfiles_dest"] == "/opt/tmpfiles.d/topos.conf"
     assert j["plan"] == "install"
     assert "Group=custom-group" in plan.service_content
@@ -234,15 +241,17 @@ def test_install_plan_contains_correct_template_content() -> None:
     assert "topos daemon serve --socket /run/topos/topos.sock" in plan.service_content
     assert "d /run/topos 0750 root topos -" in plan.tmpfiles_content
     assert "topos.service" in plan.service_asset
+    assert "topos.slice" in plan.slice_asset
+    assert "MemoryMax=512M" in plan.slice_content
     assert "topos.tmpfiles" in plan.tmpfiles_asset
 
 
 def test_install_plan_steps_reference_every_phase() -> None:
-    """All 7 installation steps are present and non-empty."""
+    """All 8 installation steps are present and non-empty."""
     from topos.daemon.deploy import build_install_plan
 
     plan = build_install_plan()
-    assert len(plan.steps) == 7
+    assert len(plan.steps) == 8
 
     descriptions = {s.order: s.description for s in plan.steps}
     assert 1 in descriptions
@@ -273,7 +282,7 @@ def test_install_plan_cli_json(tmp_path: Path) -> None:
     payload = json.loads(proc.stdout)
     assert payload["plan"] == "install"
     assert payload["group"] == "topos"
-    assert len(payload["steps"]) == 7
+    assert len(payload["steps"]) == 8
     assert "groupadd" in payload["steps"][0]["command"]
 
 
@@ -294,7 +303,7 @@ def test_install_plan_cli_text(tmp_path: Path) -> None:
     assert proc.stderr == ""
     assert "topos daemon install plan" in proc.stdout
     assert "Step 1" in proc.stdout
-    assert "Step 7" in proc.stdout
+    assert "Step 8" in proc.stdout
     assert "PLAN only" in proc.stdout or "read-only" in proc.stdout
 
 
@@ -311,7 +320,7 @@ def test_install_plan_does_not_mutate_host(monkeypatch) -> None:
     # Should not throw — build_install_plan is pure content assembly.
     plan = build_install_plan()
     assert plan is not None
-    assert len(plan.steps) == 7
+    assert len(plan.steps) == 8
     # JSON round-trip should work without host interaction.
     from topos.daemon.deploy import install_plan_to_jsonable
     j = json.dumps(install_plan_to_jsonable(plan), sort_keys=True)

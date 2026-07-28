@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "topos"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Host pressure inspector and cgroup forensics collector"
 requires-python = ">=3.11"
 dependencies = ["textual>=8.2.8"]
@@ -29,5 +29,11 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^topos-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "topos-v*"]
+fallback_version = "0.1.0"
+
 [tool.setuptools.package-data]
-topos = ["assets/systemd/topos.service", "assets/systemd/topos.tmpfiles"]
+topos = ["assets/systemd/topos.service", "assets/systemd/topos.tmpfiles", "assets/systemd/topos.slice"]

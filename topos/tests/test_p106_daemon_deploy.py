@@ -429,10 +429,13 @@ def test_render_install_plan_text_with_warning_only_step_is_complete() -> None:
         socket_path=Path("/run/topos.sock"),
         group_name="ops",
         service_dest=Path("/etc/topos.service"),
+        slice_dest=Path("/etc/topos.slice"),
         tmpfiles_dest=Path("/etc/topos.conf"),
         service_asset="service.asset",
+        slice_asset="slice.asset",
         tmpfiles_asset="tmpfiles.asset",
         service_content="service",
+        slice_content="slice",
         tmpfiles_content="tmpfiles",
         steps=(
             InstallPlanStep(
@@ -452,6 +455,7 @@ def test_render_install_plan_text_with_warning_only_step_is_complete() -> None:
             "socket path : /run/topos.sock",
             "daemon group : ops",
             "service unit : /etc/topos.service",
+            "resource slice: /etc/topos.slice",
             "tmpfiles conf: /etc/topos.conf",
             "",
             "--- plan steps (read-only; no host mutation) ---",

@@ -13,8 +13,10 @@ from pathlib import Path
 DEFAULT_DAEMON_SOCKET = Path("/run/topos/topos.sock")
 DEFAULT_DAEMON_GROUP = "topos"
 DEFAULT_SERVICE_DEST = Path("/etc/systemd/system/topos.service")
+DEFAULT_SLICE_DEST = Path("/etc/systemd/system/topos.slice")
 DEFAULT_TMPFILES_DEST = Path("/etc/tmpfiles.d/topos.conf")
 SERVICE_ASSET = "assets/systemd/topos.service"
+SLICE_ASSET = "assets/systemd/topos.slice"
 TMPFILES_ASSET = "assets/systemd/topos.tmpfiles"
 
 
@@ -368,10 +370,13 @@ class DaemonInstallPlan:
     socket_path: Path
     group_name: str
     service_dest: Path
+    slice_dest: Path
     tmpfiles_dest: Path
     service_asset: str
+    slice_asset: str
     tmpfiles_asset: str
     service_content: str
+    slice_content: str
     tmpfiles_content: str
     steps: tuple[InstallPlanStep, ...]
     warnings: tuple[str, ...]
@@ -388,16 +393,18 @@ def build_install_plan(
     socket_path: Path | str = DEFAULT_DAEMON_SOCKET,
     group_name: str = DEFAULT_DAEMON_GROUP,
     service_dest: Path | str = DEFAULT_SERVICE_DEST,
+    slice_dest: Path | str = DEFAULT_SLICE_DEST,
     tmpfiles_dest: Path | str = DEFAULT_TMPFILES_DEST,
 ) -> DaemonInstallPlan:
     """Build a non-mutating install plan for the packaged daemon templates.
 
     The plan describes ordered operator steps, referencing the packaged
-    systemd service and tmpfiles templates.  No host state is inspected or
-    modified.
+    systemd service, resource slice, and tmpfiles templates.  No host state is
+    inspected or modified.
     """
     socket_path = Path(socket_path)
     service_dest = Path(service_dest)
+    slice_dest = Path(slice_dest)
     tmpfiles_dest = Path(tmpfiles_dest)
 
     service_content = _render_service_content(
@@ -405,6 +412,7 @@ def build_install_plan(
         socket_path=socket_path,
         group_name=group_name,
     )
+    slice_content = _read_asset(SLICE_ASSET)
     tmpfiles_content = _render_tmpfiles_content(
         _read_asset(TMPFILES_ASSET),
         runtime_dir=socket_path.parent,
@@ -435,6 +443,15 @@ def build_install_plan(
         InstallPlanStep(
             order=3,
             description=(
+                f"Install the systemd resource slice to {slice_dest} "
+                "(bounds the daemon's CPU, memory, and task count)"
+            ),
+            command=_install_heredoc_command(slice_content, slice_dest),
+            warning="Review the resource limits for this host before copying.",
+        ),
+        InstallPlanStep(
+            order=4,
+            description=(
                 f"Install the tmpfiles configuration to {tmpfiles_dest} "
                 f"(ensures {socket_path.parent} is created with 0750 root:{group_name})"
             ),
@@ -442,7 +459,7 @@ def build_install_plan(
             warning="Review the rendered tmpfiles content before copying.",
         ),
         InstallPlanStep(
-            order=4,
+            order=5,
             description=(
                 f"Install the systemd service unit to {service_dest}"
             ),
@@ -450,12 +467,12 @@ def build_install_plan(
             warning="Review the rendered service unit before enabling; verify ExecStart and socket path.",
         ),
         InstallPlanStep(
-            order=5,
+            order=6,
             description="Reload systemd so it picks up the new service unit",
             command="systemctl daemon-reload",
         ),
         InstallPlanStep(
-            order=6,
+            order=7,
             description="Enable and start the topos daemon service",
             command="systemctl enable --now topos.service",
             warning=(
@@ -464,7 +481,7 @@ def build_install_plan(
             ),
         ),
         InstallPlanStep(
-            order=7,
+            order=8,
             description=(
                 "Verify the deployment with the read-only preflight command "
                 "from a non-root client account"
@@ -487,10 +504,13 @@ def build_install_plan(
         socket_path=socket_path,
         group_name=group_name,
         service_dest=service_dest,
+        slice_dest=slice_dest,
         tmpfiles_dest=tmpfiles_dest,
         service_asset=SERVICE_ASSET,
+        slice_asset=SLICE_ASSET,
         tmpfiles_asset=TMPFILES_ASSET,
         service_content=service_content,
+        slice_content=slice_content,
         tmpfiles_content=tmpfiles_content,
         steps=steps,
         warnings=warnings,
@@ -505,6 +525,9 @@ def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
         "service_asset": plan.service_asset,
         "service_content": plan.service_content,
         "service_dest": str(plan.service_dest),
+        "slice_asset": plan.slice_asset,
+        "slice_content": plan.slice_content,
+        "slice_dest": str(plan.slice_dest),
         "socket_path": str(plan.socket_path),
         "steps": [
             {
@@ -548,6 +571,7 @@ def render_install_plan_text(plan: DaemonInstallPlan) -> str:
         f"socket path : {plan.socket_path}",
         f"daemon group : {plan.group_name}",
         f"service unit : {plan.service_dest}",
+        f"resource slice: {plan.slice_dest}",
         f"tmpfiles conf: {plan.tmpfiles_dest}",
         "",
         "--- plan steps (read-only; no host mutation) ---",

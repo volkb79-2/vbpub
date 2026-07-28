@@ -1,0 +1,12 @@
+[Unit]
+Description=Resource envelope for the topos host-inspection daemon
+
+[Slice]
+# Protect the host from an accidental unbounded frame/history leak while still
+# allowing a short diagnostic burst.  CPU remains weight-based: observability
+# should yield to production workloads but must remain responsive under pressure.
+CPUWeight=50
+MemoryHigh=256M
+MemoryMax=512M
+MemorySwapMax=1G
+TasksMax=512

@@ -63,6 +63,24 @@ topos action preview --kind docker-kill --target my-container --admin --signal T
 topos action preview --kind docker-update --target my-container --admin --memory 512M --json
 ```
 
+## Distribution and daemon deployment
+
+Topos is distributed as a Python wheel.  The daemon is deliberately a root
+systemd service, not a container image: it observes the host cgroup hierarchy,
+Docker metadata, optional BPF state, and optional DAMON sysfs control.  Putting
+those powers in a privileged container would add an image boundary without
+meaningfully reducing host authority.  The installed `topos.service`,
+`topos.tmpfiles`, and `topos.slice` templates instead create a group-readable
+Unix socket for clients and bound the daemon to 256 MiB `MemoryHigh`, 512 MiB
+`MemoryMax`, 1 GiB swap, 512 tasks, and low CPU weight.
+
+Without a daemon, the client still works in direct mode: `topos --once`, the
+live TUI, record/replay, report, query, and rootless readable metrics collect
+locally. `--attach`, `topos daemon current/status/health`, and the MCP frontend
+need the daemon socket and fail with a typed daemon-unavailable error rather
+than silently switching data sources. Privileged DAMON/actions remain gated by
+root/admin confirmation in either mode.
+
 Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
 override the active UI column profile for one run, and `--record FILE` to record
 the live TUI stream to JSONL while you inspect it. For unattended (headless)
