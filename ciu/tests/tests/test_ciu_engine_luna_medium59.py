@@ -31,7 +31,7 @@ def test_invalid_entry_ownership_overrides_fall_back_to_configured_defaults(tmp_
     )
 
     assert (tmp_path / "vol-api-data").is_dir()
-    assert seen == [(tmp_path / "vol-api-data").resolve(), 1001, 1002]
+    assert seen == [((tmp_path / "vol-api-data").resolve(), 1001, 1002)]
 
 
 def test_missing_seed_directory_fails_closed_with_typed_error(tmp_path):
