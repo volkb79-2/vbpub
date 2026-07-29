@@ -662,12 +662,6 @@ def _compose_service_blocks(compose_yaml_text: str | None) -> dict[str, Mapping[
         for name, block in services.items()
     }
 
-
-def _compose_service_names(compose_yaml_text: str | None) -> set[str]:
-    """Return service keys from a rendered compose document, if available."""
-    return set(_compose_service_blocks(compose_yaml_text))
-
-
 def _configfile_mount_services(base_service: str, compose_services: set[str]) -> list[str]:
     """Resolve one configfile service selector to concrete compose services.
 
