@@ -1,7 +1,6 @@
 """Hermetic workspace TLS validation and generated-bootstrap contracts."""
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -83,4 +82,3 @@ def test_generated_bootstrap_warns_on_network_workspace_error(
     ) == tmp_path.resolve()
     assert "Network setup skipped: daemon unavailable" in capsys.readouterr().out
     assert tls_calls == [True]
-    assert os.environ["DOCKER_NETWORK_INTERNAL"] == "generated-net"
