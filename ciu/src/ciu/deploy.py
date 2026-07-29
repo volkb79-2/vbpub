@@ -476,10 +476,7 @@ def provisioning_preflight(
             continue
         stack_cfg = rendered[rel]
         # requires/provides live inside the root key table
-        try:
-            root_key = config_model.validate_stack_shape(stack_cfg)
-        except ValueError:
-            continue
+        root_key = config_model.validate_stack_shape(stack_cfg)
         root_section = stack_cfg.get(root_key, {})
         requires = root_section.get("requires", [])
         provides = root_section.get("provides", [])
