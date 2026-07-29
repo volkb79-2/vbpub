@@ -131,7 +131,12 @@ def parse_workspace_env(path: Path) -> Dict[str, str]:
         lexer = shlex.shlex(line, posix=True)
         lexer.whitespace_split = True
         lexer.commenters = "#"
-        tokens = list(lexer)
+        try:
+            tokens = list(lexer)
+        except ValueError as exc:
+            raise WorkspaceEnvError(
+                f"Invalid {ENV_FILE_NAME} entry: {raw_line!r}"
+            ) from exc
         if not tokens:
             continue
         if len(tokens) != 1 or "=" not in tokens[0]:
