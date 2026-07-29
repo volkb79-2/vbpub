@@ -60,10 +60,6 @@ def _log_warn(message: str) -> None:
     print(f"[WARN] {message}", flush=True)
 
 
-def _log_error(message: str) -> None:
-    print(f"[ERROR] {message}", flush=True)
-
-
 def resolve_env_root(start_dir: Path, define_root: Optional[Path], defaults_filename: str) -> Path:
     """Resolve the workspace env root directory.
 
