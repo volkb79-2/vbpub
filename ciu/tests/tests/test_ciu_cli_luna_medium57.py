@@ -2,6 +2,7 @@
 
 import runpy
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -28,14 +29,20 @@ def test_unknown_verb_help_falls_back_to_top_level_usage(capsys):
     out = capsys.readouterr().out
     assert "CIU" in out
     assert "Container Infrastructure Utility" in out
-    assert f"ciu {get_cli_version()}" in out
+    assert f"CIU {get_cli_version()}" in out
 
 
 def test_module_entry_version_matches_main(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["ciu", "--version"])
 
-    with pytest.raises(SystemExit) as exc:
-        runpy.run_module("ciu.cli", run_name="__main__")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"'ciu\.cli' found in sys\.modules",
+            category=RuntimeWarning,
+        )
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_module("ciu.cli", run_name="__main__")
 
     assert exc.value.code == 0
     assert capsys.readouterr().out.strip() == f"ciu {get_cli_version()}"
