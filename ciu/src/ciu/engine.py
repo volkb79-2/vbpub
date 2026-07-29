@@ -599,11 +599,8 @@ def create_hostdirs(
             raw_path = value
 
         if not raw_path:
-            if not service_name:
-                raise ValueError(
-                    "[ERROR] hostdir section found without service name. "
-                    "Add 'name' to the parent section so CIU can generate hostdir paths."
-                )
+            # `_scan_section` rejects this combination before reaching the
+            # resolver; the service name is therefore present for auto paths.
             path = stack_dir / f"vol-{service_name}-{purpose}"
         else:
             path = Path(raw_path)
@@ -612,8 +609,6 @@ def create_hostdirs(
         return path.resolve(), uid, gid, mode, seed_rel
 
     def _scan_section(section: dict) -> None:
-        if not isinstance(section, dict):
-            return
         hostdir = section.get("hostdir")
         if isinstance(hostdir, dict):
             service_name = section.get("name")
@@ -627,7 +622,10 @@ def create_hostdirs(
                 )
             for purpose, value in hostdir.items():
                 if not isinstance(value, (str, dict)):
-                    continue
+                    raise ValueError(
+                        f"[S6.1] hostdir '{purpose}' must be a path string or inline table, "
+                        f"got {type(value).__name__}"
+                    )
                 path, uid, gid, mode, seed_rel = _resolve_entry(purpose, value, service_name)
                 _create_dir(path, uid, gid, mode, seed_rel)
                 # S6.2: rewrite to absolute physical path string for templates.
