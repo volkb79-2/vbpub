@@ -326,9 +326,19 @@ def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[
             if not test or test[0] == "NONE":
                 continue
             elif test[0] == "CMD" and len(test) >= 2:
+                if not isinstance(test[1], str):
+                    raise ValueError(
+                        f"[S7.7] rendered Compose healthcheck command for "
+                        f"service {svc_name!r} must be a string: {compose_path}"
+                    )
                 basename = test[1].rsplit("/", 1)[-1]
                 tools = [basename] if basename not in _SHELL_KEYWORDS else []
             elif test[0] == "CMD-SHELL" and len(test) >= 2:
+                if not isinstance(test[1], str):
+                    raise ValueError(
+                        f"[S7.7] rendered Compose healthcheck command for "
+                        f"service {svc_name!r} must be a string: {compose_path}"
+                    )
                 tools = _parse_cmd_shell_tools(test[1])
             else:
                 continue
