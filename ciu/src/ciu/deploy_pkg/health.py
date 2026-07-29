@@ -294,9 +294,9 @@ def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[
     """Parse a rendered compose file and return {service: (image, [tools])}.
 
     Only services with CMD or CMD-SHELL healthchecks and a resolved image are
-    included. An unreadable or malformed rendered Compose file is an S7.7
-    authoring error: treating it as an empty model would falsely green-light
-    the healthcheck preflight.
+    included. An unreadable or malformed rendered Compose file, including a
+    truthy scalar healthcheck test, is an S7.7 authoring error: treating it as
+    an empty model would falsely green-light the healthcheck preflight.
     """
     try:
         import yaml  # PyYAML — already a CIU dependency
@@ -350,7 +350,10 @@ def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[
                     f"uses unsupported healthcheck mode {test[0]!r}: {compose_path}"
                 )
         else:
-            continue
+            raise ValueError(
+                f"[S7.7] rendered Compose healthcheck for service {svc_name!r} "
+                f"must use a string or list test: {compose_path}"
+            )
         if tools:
             result[svc_name] = (image, tools)
     return result
