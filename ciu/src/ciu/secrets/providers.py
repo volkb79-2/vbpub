@@ -59,7 +59,8 @@ def vault_addr_from_config(config: dict[str, Any]) -> str:
     ------
     VaultError : when host or port is missing/empty.
     """
-    services = config.get("topology", {}).get("services", {})
+    topology = config.get("topology", {})
+    services = topology.get("services", {}) if isinstance(topology, dict) else {}
     vault_service = services.get("vault", {}) if isinstance(services, dict) else {}
     host = vault_service.get("internal_host") if isinstance(vault_service, dict) else None
     port = vault_service.get("internal_port") if isinstance(vault_service, dict) else None
