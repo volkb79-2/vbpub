@@ -404,6 +404,8 @@ def _parse_mountinfo(text: str) -> list[tuple[Path, Path]]:
         line = line.strip()
         if not line:
             continue
+        if " - " not in line:
+            continue
         left = line.split(" - ", 1)[0]
         fields = left.split()
         if len(fields) < 5:
