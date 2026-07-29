@@ -1,0 +1,29 @@
+# /etc/systemd/system/soulmask_tmpfs-ZSwapMax0.slice
+#
+# Child of soulmask_tmpfs.slice (MemoryMin=400M, at cgroup root).
+[Unit]
+Description=Soulmask unified tmpfs — incompressible content (pak files)
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
+
+[Slice]
+# Pages for incompressible content ([incompressible] section of
+# soulmask-tmpfs-paths.conf) are charged here during tmpfs population.
+# Independent memory accounting from Soulmask's game cgroups.
+
+# Very small guaranteed floor — only the truly hot pak regions need
+# uncompressed RAM. Start at 150M and calibrate up from a vmtouch
+# measurement (MEASUREMENTS.md M2; observed 2026-07-07 under moderate
+# pressure: 738M resident of 1.67G).
+# NOTE: this floor is only effective if the parent soulmask_tmpfs.slice
+# carries MemoryMin >= this value (it does: 400M >= 150M).
+MemoryMin=150M
+
+# Pak data is zstd-INCOMPRESSIBLE (measured 1.006× — paks are pre-compressed
+# by UE4). Storing pak pages in zswap burns CPU and frees no RAM, so bypass
+# zswap entirely: cold pak → disk swap directly. Hot pak → RAM (floor above
+# + access frequency).
+MemoryZSwapMax=0
+
+# Moot while MemoryZSwapMax=0 (nothing enters zswap), kept for clarity: if
+# the bypass is ever lifted, cold pak in zswap may still drain to disk.
+MemoryZSwapWriteback=yes

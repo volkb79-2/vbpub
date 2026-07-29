@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Soulmask cgroup memory monitor — zswap pressure, pak slice, disk swap.
+"""Soulmask cgroup memory monitor — zswap pressure, tmpfs slices, disk swap.
 
 WHY THIS EXISTS — splitting refault sources
 --------------------------------------------
@@ -56,7 +56,8 @@ import textwrap
 import time
 from datetime import datetime
 
-PAK_CG = "/sys/fs/cgroup/soulmask.slice/soulmask-paks.slice"
+TMPFS0_CG = "/sys/fs/cgroup/soulmask_tmpfs.slice/soulmask_tmpfs-ZSwapMax0.slice"  # incompressible (pak, MemoryZSwapMax=0)
+TMPFS1_CG = "/sys/fs/cgroup/soulmask_tmpfs.slice/soulmask_tmpfs-ZSwapMax1.slice"  # compressible (binaries, Steam, libs, zswap-eligible)
 PROC_ROOT = "/proc"
 LEGEND_WIDTH = 160
 
@@ -78,22 +79,22 @@ GAME cgroup (each selected Soulmask WSServer-Linux-Shipping container):
                                        these is "free" for the kernel but
                                        re-reading them always costs a real
                                        disk read — watch rf_f/s.
-  z_pool   memory.zswap.current       compressed bytes currently held in
+  zpool    memory.zswap.current       compressed bytes currently held in
                                        the zswap pool.
-  z_ratio  zswapped / z_pool          uncompressed-equivalent bytes divided
+  ratio    zswapped / zpool          uncompressed-equivalent bytes divided
                                        by compressed bytes. `2.74x` means
                                        2.74 original bytes per compressed
                                        byte. `—` means the pool is empty.
-  rf_z/s   Δzswpin / Δt               zswap refaults/s: pages decompressed
+  rfz/s    Δzswpin / Δt               zswap refaults/s: pages decompressed
                                        FROM ZSWAP (RAM-speed, microseconds/
                                        page). Rises during area loads and
                                        decays — normal and healthy.
-  rf_d/s   Δ(workingset_refault_anon
+  rfd/s    Δ(workingset_refault_anon
              − zswpin) / Δt           disk refaults/s: anon pages faulted
                                        back in from the REAL swap device
                                        (milliseconds/page). Sustained >0 is
                                        the column that predicts in-game lag.
-  rf_f/s   Δworkingset_refault_file
+  rff/s    Δworkingset_refault_file
              / Δt                     file-cache refaults/s: pages evicted
                                        from page cache and re-read from
                                        their backing file. EVERY file
@@ -111,8 +112,8 @@ GAME cgroup (each selected Soulmask WSServer-Linux-Shipping container):
 
   KSM       /proc/<pid>/ksm_stat for the WSServer process:
             KSM = opt-in/mergeable status (`on`, `any`, `vma`, `off`),
-            k_merge = pages currently in KSM merging, k_zero = pages mapped
-            to the kernel zero page, k_profit = approximate process profit.
+            merge = pages currently in KSM merging, zero = pages mapped
+            to the kernel zero page, profit = approximate process profit.
             The startup inventory also prints rmap items, full merge state,
             host-wide KSM profit/scans, and `cow_ksm`/`ksm_swpin_copy` event
             counters. KSM merges anonymous pages only; it never deduplicates
@@ -134,20 +135,34 @@ GAME cgroup (each selected Soulmask WSServer-Linux-Shipping container):
             or the field is unavailable, or permission/process-exit timing
             prevented a read. A numeric `0` is a successful read of zero.
 
-PAK cgroup (soulmask-paks.slice — pak/DLC file ramdisk; may be absent):
+TMPFS ZSwapMax0 slice (soulmask_tmpfs-ZSwapMax0.slice — incompressible
+pak/IO-store files, MemoryZSwapMax=0; may be absent):
 
-  p_RAM    pak memory.current         pak pages resident in RAM (ramdisk
-                                       shmem + evictable source file cache).
-  p_z      pak memory.zswap.current   pak bytes compressed in zswap.
-  p_disk   pak memory.swap.current −
+  T0_RAM    memory.current            tmpfs pages resident in RAM (shmem).
+  T0_z      memory.zswap.current      bytes compressed in zswap (should be
+                                       ~0 — MemoryZSwapMax=0 bypasses zswap).
+  T0_disk   memory.swap.current −
            memory.stat 'zswapped' −
-           memory.stat 'swapcached'   pak pages actually on the real disk,
+           memory.stat 'swapcached'   pages actually on the real disk,
                                        clamped >= 0. >0 means zswap was
-                                       full or writeback was on when these
-                                       pages were evicted.
-  p_rfz/s  Δzswpin / Δt (pak)         pak zswap refaults/s.
-  p_rfd/s  Δ(workingset_refault_anon
-             − zswpin) / Δt (pak)     pak disk refaults/s.
+                                       full or bypassed when these pages
+                                       were evicted.
+  T0_rfz/s  Δzswpin / Δt              zswap refaults/s (~0 on this slice).
+  T0_rfd/s  Δ(workingset_refault_anon
+             − zswpin) / Δt           disk refaults/s.
+
+TMPFS ZSwapMax1 slice (soulmask_tmpfs-ZSwapMax1.slice — compressible
+binaries, Steam runtime, libraries, steamcmd; zswap-eligible; may be absent):
+
+  T1_RAM    memory.current            tmpfs pages resident in RAM (shmem).
+  T1_z      memory.zswap.current      bytes compressed in zswap.
+  T1_disk   memory.swap.current −
+           memory.stat 'zswapped' −
+           memory.stat 'swapcached'   pages actually on the real disk,
+                                       clamped >= 0.
+  T1_rfz/s  Δzswpin / Δt              zswap refaults/s.
+  T1_rfd/s  Δ(workingset_refault_anon
+             − zswpin) / Δt           disk refaults/s.
 
 SYSTEM-WIDE:
 
@@ -226,7 +241,7 @@ Applied cgroup controls (GAME min/low/high/max, CPU weight, BFQ I/O weight):
 Row layout and math
 ===================
   Each row is: time | S1 GAME + S1 KSM | S2 GAME + S2 KSM | shared KSM |
-  shared PAK | disk_sw. With -c/--container there may be only one server
+  TMPFS0 | TMPFS1 | disk_sw. With -c/--container there may be only one server
   block. `—` is an intentionally unavailable rate (first sample, counter
   reset, or absent PAK), whereas `?` is an unavailable state/value read.
 
@@ -271,15 +286,19 @@ Rates and resets:
     silently — it will never print a bogus negative or huge rate.
 """
 
-GAME_COLUMNS = (("ram", "RAM", 6), ("anon", "anon", 6), ("file", "file", 6),
-                ("zpool", "z_pool", 7), ("zeq", "z_ratio", 7), ("rfz", "rf_z/s", 8),
-                ("rfd", "rf_d/s", 8), ("rff", "rf_f/s", 8))
-KSM_COLUMNS = (("ksm", "KSM", 5), ("kmerge", "k_merge", 8),
-               ("kzero", "k_zero", 7), ("kprofit", "k_profit", 9))
-KSM_HOST_COLUMNS = (("kfull", "ΔK_full/s", 10), ("kcow", "K_cow/s", 8),
-                    ("kswp", "K_swp/s", 8))
-PAK_COLUMNS = (("pram", "p_RAM", 6), ("pz", "p_z", 6), ("pdisk", "p_disk", 7),
-               ("prfz", "p_rfz/s", 8), ("prfd", "p_rfd/s", 8))
+GAME_COLUMNS = (("ram", "RAM", 5), ("anon", "anon", 5), ("file", "file", 5),
+                ("zpool", "zpool", 6), ("zeq", "ratio", 6), ("rfz", "rfz/s", 7),
+                ("rfd", "rfd/s", 7), ("rff", "rff/s", 7))
+KSM_COLUMNS = (("ksm", "KSM", 4), ("kmerge", "merge", 6),
+               ("kzero", "zero", 5), ("kprofit", "profit", 7))
+KSM_HOST_COLUMNS = (("kfull", "Kfull/s", 8), ("kcow", "Kcow/s", 7),
+                    ("kswp", "Kswp/s", 7))
+TMPFS0_COLUMNS = (("t0ram", "T0_RAM", 6), ("t0z", "T0_z", 6),
+                  ("t0disk", "T0_disk", 7), ("t0rfz", "T0_rfz/s", 8),
+                  ("t0rfd", "T0_rfd/s", 8))
+TMPFS1_COLUMNS = (("t1ram", "T1_RAM", 6), ("t1z", "T1_z", 6),
+                  ("t1disk", "T1_disk", 7), ("t1rfz", "T1_rfz/s", 8),
+                  ("t1rfd", "T1_rfd/s", 8))
 CONTROL_COLUMNS = (("min", "memory.min"), ("low", "memory.low"),
                    ("high", "memory.high"), ("max", "memory.max"),
                    ("cpu", "cpu.weight"), ("bfq", "io.bfq.weight"),
@@ -819,6 +838,7 @@ def find_game_cgroups(selector=None, poll_s: float = 2) -> list:
                     "slice": server_slice_path(cg),
                 })
         if servers:
+            servers = sort_servers(servers)
             if waited:
                 note("found Soulmask server(s): " + ", ".join(
                     f"{s['uuid']} ({s['slice']})" for s in servers))
@@ -828,6 +848,41 @@ def find_game_cgroups(selector=None, poll_s: float = 2) -> list:
                  "Ctrl-C to abort")
             waited = True
         time.sleep(poll_s)
+
+
+def _container_cmdline(pid: int | None) -> str:
+    """Return the WSServer process command line from /proc/<pid>/cmdline."""
+    if pid is None:
+        return ""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+def server_role(server: dict) -> tuple[str, str]:
+    """Return (role, label) for a WSServer container.
+    role is 'main', 'client', or 'standalone'. Label is e.g. 'MAIN', 'CLIENT', ''.
+    Reads the actual game process cmdline from /proc/<pid>/cmdline."""
+    cmdline = _container_cmdline(server.get("pid"))
+    if "-mainserverport" in cmdline:
+        return ("main", "MAIN")
+    if "-clientserverconnect" in cmdline:
+        return ("client", "CLIENT")
+    return ("standalone", "")
+
+def sort_servers(servers: list) -> list:
+    """Re-order servers so main comes first, then client, then others.
+    This ensures server1 = main in the table output."""
+    def sort_key(s):
+        role, _ = server_role(s)
+        return {"main": 0, "client": 1}.get(role, 2)
+    servers.sort(key=sort_key)
+    for s in servers:
+        _, label = server_role(s)
+        if label:
+            s["role_label"] = label
+    return servers
 
 
 # ─── rate tracking (handles counter resets on container restart) ─────────────
@@ -932,15 +987,16 @@ def sample_game(cg_path: str, controls_path: str | None = None, pid=None) -> dic
     }
 
 
-def sample_pak():
-    if not os.path.isdir(PAK_CG):
+def sample_tmpfs(cg_path):
+    """Read memory stats for a tmpfs cgroup slice. Returns None if absent."""
+    if not os.path.isdir(cg_path):
         return None
     try:
-        stat = read_stat(os.path.join(PAK_CG, "memory.stat"))
-        ram = read_int(os.path.join(PAK_CG, "memory.current"))
-        zpool = read_int(os.path.join(PAK_CG, "memory.zswap.current"))
-        swap_cur = read_int(os.path.join(PAK_CG, "memory.swap.current"))
-        band = read_band(PAK_CG)
+        stat = read_stat(os.path.join(cg_path, "memory.stat"))
+        ram = read_int(os.path.join(cg_path, "memory.current"))
+        zpool = read_int(os.path.join(cg_path, "memory.zswap.current"))
+        swap_cur = read_int(os.path.join(cg_path, "memory.swap.current"))
+        band = read_band(cg_path)
     except FileNotFoundError:
         return None
     zeq = stat.get("zswapped", 0)
@@ -1007,6 +1063,21 @@ def _column_group(columns, prefix=""):
     )
 
 
+def _group_width(columns, prefix=""):
+    """Total character width of a column group, including inter-column spaces."""
+    if not columns:
+        return 0
+    return sum(max(w, len(prefix + label)) for _, label, w in columns) + len(columns) - 1
+
+
+def _pad_center(text: str, width: int) -> str:
+    """Center text in a field of given width."""
+    if len(text) >= width:
+        return text[:width]
+    left = (width - len(text)) // 2
+    return " " * left + text + " " * (width - len(text) - left)
+
+
 def table_format(server_count: int, wide: bool) -> str:
     game_columns = GAME_COLUMNS if wide else tuple(c for c in GAME_COLUMNS if c[0] != "file")
     groups = ["{ts:<8}"]
@@ -1014,27 +1085,110 @@ def table_format(server_count: int, wide: bool) -> str:
         groups.append(_column_group(game_columns, f"s{index + 1}_"))
         groups.append(_column_group(KSM_COLUMNS, f"s{index + 1}_"))
     groups.append(_column_group(KSM_HOST_COLUMNS))
-    groups.append(_column_group(PAK_COLUMNS))
+    groups.append(_column_group(TMPFS0_COLUMNS))
+    groups.append(_column_group(TMPFS1_COLUMNS))
     groups.append("{disk_sw}")
     return " | ".join(groups)
 
 
-def header_lines(server_count: int, wide: bool):
-    names = {"ts": "time"}
+def header_lines(server_count: int, wide: bool, servers=None):
+    """Return (row1, row2, dash) for a two-row table header.
+    Row1: group labels with cgroup config values.
+    Row2: short column names."""
     game_columns = GAME_COLUMNS if wide else tuple(c for c in GAME_COLUMNS if c[0] != "file")
+    SEP = " | "
+
+    # ── build group info: (label_row1, label_row2_fmt, width) ──────────────
+    group_info = []  # list of (row1_text, row2_names_dict, total_width)
+    group_info.append(("time", {"ts": "time"}, 8))
+
     for index in range(server_count):
+        server = servers[index] if servers and index < len(servers) else None
+        controls = server["controls"] if server else {}
+        role_label = server.get("role_label", "") if server else ""
+        role_str = f" ({role_label})" if role_label else ""
+
+        # Compact control summary
+        def cv(k):
+            return fmt_control_value(k, controls.get(k, "?"))
+        ctrl_str = (f"min={cv('min')} low={cv('low')} high={cv('high')} "
+                    f"max={cv('max')} cpu={cv('cpu')} io={cv('bfq')}")
+
+        # Game columns
+        gw = _group_width(game_columns, f"s{index + 1}_")
+        game_r2 = {}
         for key, label, _ in game_columns:
-            names[f"s{index + 1}_{key}"] = f"S{index + 1}_{label}"
+            game_r2[f"s{index + 1}_{key}"] = label
+        group_info.append((f"S{index + 1}{role_str}: {ctrl_str}", game_r2, gw))
+
+        # KSM columns (under same server label in row1, but separate group)
+        kw = _group_width(KSM_COLUMNS, f"s{index + 1}_")
+        ksm_r2 = {}
         for key, label, _ in KSM_COLUMNS:
-            names[f"s{index + 1}_{key}"] = f"S{index + 1}_{label}"
+            ksm_r2[f"s{index + 1}_{key}"] = label
+        group_info.append(("", ksm_r2, kw))  # row1 label handled by game entry above
+
+    # KSM host group
+    ksm_host_w = _group_width(KSM_HOST_COLUMNS)
+    ksm_r2 = {}
     for key, label, _ in KSM_HOST_COLUMNS:
-        names[key] = label
-    for key, label, _ in PAK_COLUMNS:
-        names[key] = label
-    names["disk_sw"] = "disk_sw"
-    fmt = table_format(server_count, wide)
-    head = fmt.format(**names)
-    return head, "-" * len(head)
+        ksm_r2[key] = label
+    group_info.append(("KSM host", ksm_r2, ksm_host_w))
+
+    # TMPFS0 group
+    t0_band = read_band(TMPFS0_CG) if os.path.isdir(TMPFS0_CG) else {}
+    t0_label = f"T0 (pak) min={fmt_band_value(t0_band.get('min','?'))}"
+    t0w = _group_width(TMPFS0_COLUMNS)
+    t0_r2 = {key: label for key, label, _ in TMPFS0_COLUMNS}
+    group_info.append((t0_label, t0_r2, t0w))
+
+    # TMPFS1 group
+    t1_band = read_band(TMPFS1_CG) if os.path.isdir(TMPFS1_CG) else {}
+    t1_label = f"T1 (cmpr) min={fmt_band_value(t1_band.get('min','?'))}"
+    t1w = _group_width(TMPFS1_COLUMNS)
+    t1_r2 = {key: label for key, label, _ in TMPFS1_COLUMNS}
+    group_info.append((t1_label, t1_r2, t1w))
+
+    # disk_sw
+    group_info.append(("swap", {"disk_sw": "disk_sw"}, 7))
+
+    # ── build row1 and row2 format strings ──────────────────────────────────
+    row1_parts = []
+    row2_parts = []
+    gi = 0
+    for r1_text, r2_dict, width in group_info:
+        row1_parts.append(_pad_center(r1_text, width))
+        # row2: use the SAME _column_group calls as table_format so column
+        # widths match the data rows exactly (prefix length affects widths)
+        if gi == 0:
+            row2_parts.append(f"{'time':<8}")
+        elif 1 <= gi <= server_count * 2:
+            si = (gi - 1) // 2 + 1
+            is_game = (gi - 1) % 2 == 0
+            if is_game:
+                fmt_str = _column_group(game_columns, f"s{si}_")
+                short = {f"s{si}_{key}": label for key, label, _ in game_columns}
+            else:
+                fmt_str = _column_group(KSM_COLUMNS, f"s{si}_")
+                short = {f"s{si}_{key}": label for key, label, _ in KSM_COLUMNS}
+            row2_parts.append(fmt_str.format(**short))
+        elif gi == server_count * 2 + 1:
+            fmt_str = _column_group(KSM_HOST_COLUMNS)
+            row2_parts.append(fmt_str.format(**{key: label for key, label, _ in KSM_HOST_COLUMNS}))
+        elif gi == server_count * 2 + 2:
+            fmt_str = _column_group(TMPFS0_COLUMNS)
+            row2_parts.append(fmt_str.format(**{key: label for key, label, _ in TMPFS0_COLUMNS}))
+        elif gi == server_count * 2 + 3:
+            fmt_str = _column_group(TMPFS1_COLUMNS)
+            row2_parts.append(fmt_str.format(**{key: label for key, label, _ in TMPFS1_COLUMNS}))
+        else:
+            row2_parts.append("disk_sw")
+        gi += 1
+
+    row1 = " | ".join(row1_parts)
+    row2 = " | ".join(row2_parts)
+    dash = "-" * max(len(row1), len(row2))
+    return row1, row2, dash
 
 
 def print_server_inventory(servers, output):
@@ -1042,7 +1196,9 @@ def print_server_inventory(servers, output):
         controls = server["controls"]
         print(f"  SERVER {index}: UUID {server['uuid']}", file=output)
         print(f"    container: {server['cid']} ({server['name']})", file=output)
-        print(f"    slice:     {server['slice']}", file=output)
+        role_label = server.get("role_label", "")
+        role_str = f" ({role_label})" if role_label else ""
+        print(f"    slice:     {server['slice']}{role_str}", file=output)
         print(f"    applied:   {controls_str(controls)}", file=output)
         print(f"    KSM:       {ksm_process_str(server['ksm'])}", file=output)
 
@@ -1092,13 +1248,24 @@ def print_startup_legend(output):
 def print_intro(args, servers, global_ksm):
     print(f"Soulmask memory monitor — Ctrl-C to stop   (interval: {args.interval:g}s)")
     print()
+    wings_cg = "/sys/fs/cgroup/wings.slice"
+    if os.path.isdir(wings_cg):
+        w_band = read_band(wings_cg)
+        print(f"  wings.slice   {band_str(w_band)}")
+    print()
     print_server_inventory(servers, sys.stdout)
     print_ksm_inventory(servers, global_ksm, sys.stdout)
-    if os.path.isdir(PAK_CG):
-        p_band = read_band(PAK_CG)
-        print(f"  PAK   {band_str(p_band)}  {writeback_label(p_band['writeback'])}")
-    else:
-        print("  PAK   (pak slice not present)")
+    parent_cg = "/sys/fs/cgroup/soulmask_tmpfs.slice"
+    if os.path.isdir(parent_cg):
+        p_band = read_band(parent_cg)
+        print(f"  TMPFS parent (soulmask_tmpfs.slice)   min={fmt_band_value(p_band['min'])}")
+    for label, cg_path in [("  ZSwapMax0 (pak)", TMPFS0_CG),
+                              ("  ZSwapMax1 (compressible)", TMPFS1_CG)]:
+        if os.path.isdir(cg_path):
+            t_band = read_band(cg_path)
+            print(f"  {label}   {band_str(t_band)}  {writeback_label(t_band['writeback'])}")
+        else:
+            print(f"  {label}   (slice not present)")
     print()
     if args.legend:
         print_startup_legend(sys.stdout)
@@ -1107,8 +1274,9 @@ def print_intro(args, servers, global_ksm):
     print("  printed on stderr only when they drift." +
           ("" if args.wide else "  ('file' column: --wide or --json.)"))
     print()
-    head, dash = header_lines(len(servers), args.wide)
-    print(head)
+    row1, row2, dash = header_lines(len(servers), args.wide, servers)
+    print(row1)
+    print(row2)
     print(dash)
 
 
@@ -1132,7 +1300,7 @@ def server_json(server, g, rf_z, rf_d, rf_f):
     }
 
 
-def table_row(servers, global_ksm, pak, p_rf_z, p_rf_d, disk_sw, disk_sw_degraded, wide):
+def table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmpfs1_rf_z, tmpfs1_rf_d, disk_sw, disk_sw_degraded, wide):
     values = {"ts": now_hms()}
     game_columns = GAME_COLUMNS if wide else tuple(c for c in GAME_COLUMNS if c[0] != "file")
     for index, server in enumerate(servers, start=1):
@@ -1164,12 +1332,25 @@ def table_row(servers, global_ksm, pak, p_rf_z, p_rf_d, disk_sw, disk_sw_degrade
         "kcow": fmt_rate(global_ksm.get("cow_ksm_per_s")),
         "kswp": fmt_rate(global_ksm.get("ksm_swpin_copy_per_s")),
     })
+    for tmpfs_key, t_data, t_rf_z, t_rf_d in [
+            ("t0", tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d),
+            ("t1", tmpfs1, tmpfs1_rf_z, tmpfs1_rf_d),
+    ]:
+        if t_data is not None:
+            values.update({
+                f"{tmpfs_key}ram": fmt_mb(t_data["ram"]),
+                f"{tmpfs_key}z": fmt_mb(t_data["zpool"]),
+                f"{tmpfs_key}disk": fmt_mb(t_data["disk"]),
+                f"{tmpfs_key}rfz": fmt_rate(t_rf_z),
+                f"{tmpfs_key}rfd": fmt_rate(t_rf_d),
+            })
+        else:
+            values.update({
+                f"{tmpfs_key}ram": DASH, f"{tmpfs_key}z": DASH,
+                f"{tmpfs_key}disk": DASH, f"{tmpfs_key}rfz": DASH,
+                f"{tmpfs_key}rfd": DASH,
+            })
     values.update({
-        "pram": fmt_mb(pak["ram"]) if pak else DASH,
-        "pz": fmt_mb(pak["zpool"]) if pak else DASH,
-        "pdisk": fmt_mb(pak["disk"]) if pak else DASH,
-        "prfz": fmt_rate(p_rf_z) if pak else DASH,
-        "prfd": fmt_rate(p_rf_d) if pak else DASH,
         "disk_sw": fmt_mb(disk_sw) + ("*" if disk_sw_degraded else ""),
     })
     return table_format(len(servers), wide).format(**values)
@@ -1182,9 +1363,12 @@ def run(args):
     for server in servers:
         server["tracker"] = RateTracker(["wra", "zswpin", "wrf"])
     ksm_rate_tracker = NumericCounterRateTracker(KSM_RATE_COUNTERS)
-    pak_tracker = RateTracker(["wra", "zswpin"])
-    pak_was_present = False
-    last_pak_band = None
+    tmpfs0_tracker = RateTracker(["wra", "zswpin"])
+    tmpfs1_tracker = RateTracker(["wra", "zswpin"])
+    tmpfs0_was_present = False
+    tmpfs1_was_present = False
+    last_tmpfs0_band = None
+    last_tmpfs1_band = None
     row_i = 0
     header_needed = False
 
@@ -1222,35 +1406,54 @@ def run(args):
         global_ksm = read_ksm_global()
         global_ksm = add_ksm_rates(
             global_ksm, ksm_rate_tracker.update(ts, global_ksm))
-        p = sample_pak()
-        if p is None:
-            pak_tracker.reset()
-            pak_was_present = False
-            p_rf_z = p_rf_d = None
+        tmpfs0 = sample_tmpfs(TMPFS0_CG)
+        if tmpfs0 is None:
+            tmpfs0_tracker.reset()
+            tmpfs0_was_present = False
+            tmpfs0_rf_z = tmpfs0_rf_d = None
         else:
-            if not pak_was_present:
-                pak_tracker.reset()
-            pak_was_present = True
-            p_rates = pak_tracker.update(ts, {"wra": p["wra"], "zswpin": p["zswpin"]})
-            p_rf_z, p_rf_d = split_rates(p_rates)
+            if not tmpfs0_was_present:
+                tmpfs0_tracker.reset()
+            tmpfs0_was_present = True
+            t0_rates = tmpfs0_tracker.update(ts, {"wra": tmpfs0["wra"], "zswpin": tmpfs0["zswpin"]})
+            tmpfs0_rf_z, tmpfs0_rf_d = split_rates(t0_rates)
+
+        tmpfs1 = sample_tmpfs(TMPFS1_CG)
+        if tmpfs1 is None:
+            tmpfs1_tracker.reset()
+            tmpfs1_was_present = False
+            tmpfs1_rf_z = tmpfs1_rf_d = None
+        else:
+            if not tmpfs1_was_present:
+                tmpfs1_tracker.reset()
+            tmpfs1_was_present = True
+            t1_rates = tmpfs1_tracker.update(ts, {"wra": tmpfs1["wra"], "zswpin": tmpfs1["zswpin"]})
+            tmpfs1_rf_z, tmpfs1_rf_d = split_rates(t1_rates)
 
         disk_sw, disk_sw_degraded = disk_swap_bytes()
 
         if not args.json:
-            if p is not None:
-                if last_pak_band is not None and last_pak_band != p["band"]:
-                    note(f"PAK band changed: {band_str(last_pak_band)}  ->  {band_str(p['band'])}")
-                last_pak_band = p["band"]
+            if tmpfs0 is not None:
+                if last_tmpfs0_band is not None and last_tmpfs0_band != tmpfs0["band"]:
+                    note(f"T0 band changed: {band_str(last_tmpfs0_band)}  ->  {band_str(tmpfs0['band'])}")
+                last_tmpfs0_band = tmpfs0["band"]
             else:
-                last_pak_band = None
+                last_tmpfs0_band = None
+            if tmpfs1 is not None:
+                if last_tmpfs1_band is not None and last_tmpfs1_band != tmpfs1["band"]:
+                    note(f"T1 band changed: {band_str(last_tmpfs1_band)}  ->  {band_str(tmpfs1['band'])}")
+                last_tmpfs1_band = tmpfs1["band"]
+            else:
+                last_tmpfs1_band = None
 
-            if header_needed or (row_i and row_i % 20 == 0):
-                head, dash = header_lines(len(servers), args.wide)
-                print(head)
+            if header_needed or (row_i and row_i % 40 == 0):
+                row1, row2, dash = header_lines(len(servers), args.wide, servers)
+                print(row1)
+                print(row2)
                 print(dash)
                 header_needed = False
 
-            print(table_row(servers, global_ksm, p, p_rf_z, p_rf_d, disk_sw, disk_sw_degraded,
+            print(table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmpfs1_rf_z, tmpfs1_rf_d, disk_sw, disk_sw_degraded,
                             args.wide), flush=True)
         else:
             games = [server_json(server, server["sample"], server["rates"]["rfz"],
@@ -1262,12 +1465,21 @@ def run(args):
                 "interval_s": args.interval,
                 "games": games,
                 "ksm_global": global_ksm,
-                "pak": None if p is None else {
-                    "cgroup": PAK_CG,
-                    "ram_bytes": p["ram"], "zpool_bytes": p["zpool"], "disk_bytes": p["disk"],
-                    "rf_z_per_s": p_rf_z, "rf_d_per_s": p_rf_d,
-                    "memory_min": p["band"]["min"], "memory_high": p["band"]["high"],
-                    "zswap_writeback": p["band"]["writeback"],
+                "tmpfs_zswapmax0": None if tmpfs0 is None else {
+                    "cgroup": TMPFS0_CG,
+                    "ram_bytes": tmpfs0["ram"], "zpool_bytes": tmpfs0["zpool"],
+                    "disk_bytes": tmpfs0["disk"],
+                    "rf_z_per_s": tmpfs0_rf_z, "rf_d_per_s": tmpfs0_rf_d,
+                    "memory_min": tmpfs0["band"]["min"], "memory_high": tmpfs0["band"]["high"],
+                    "zswap_writeback": tmpfs0["band"]["writeback"],
+                },
+                "tmpfs_zswapmax1": None if tmpfs1 is None else {
+                    "cgroup": TMPFS1_CG,
+                    "ram_bytes": tmpfs1["ram"], "zpool_bytes": tmpfs1["zpool"],
+                    "disk_bytes": tmpfs1["disk"],
+                    "rf_z_per_s": tmpfs1_rf_z, "rf_d_per_s": tmpfs1_rf_d,
+                    "memory_min": tmpfs1["band"]["min"], "memory_high": tmpfs1["band"]["high"],
+                    "zswap_writeback": tmpfs1["band"]["writeback"],
                 },
                 "disk_sw_bytes": disk_sw,
                 "disk_sw_estimated": disk_sw_degraded,
@@ -1299,7 +1511,7 @@ def parse_args(argv=None):
 
     p = argparse.ArgumentParser(
         prog="soulmask-zswap-monitor.py",
-        description="Soulmask cgroup memory monitor — zswap pressure, pak slice, disk swap.",
+        description="Soulmask cgroup memory monitor — zswap pressure, tmpfs slices, disk swap.",
         formatter_class=WideRawDescriptionHelpFormatter,
     )
     p.add_argument("interval", nargs="?", default=5.0, type=_interval_type,

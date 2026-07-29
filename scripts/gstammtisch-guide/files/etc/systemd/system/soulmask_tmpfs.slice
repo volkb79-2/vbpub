@@ -1,0 +1,19 @@
+# /etc/systemd/system/soulmask_tmpfs.slice
+#
+# Root-level parent slice for soulmask_tmpfs-ZSwapMax0.slice and
+# soulmask_tmpfs-ZSwapMax1.slice.
+#
+# Must carry MemoryMin >= the sum of its children's floors (150M + 250M =
+# 400M) so the kernel honours the per-child guarantees. 400M is the minimum;
+# headroom is harmless (unused floor costs no RAM).
+[Unit]
+Description=Soulmask unified tmpfs ramdisk — parent slice
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
+
+[Slice]
+MemoryMin=400M
+
+# MemoryZSwapMax and writeback are set on the child slices. This parent
+# exists to provide a named cgroup subtree — both children live under
+# soulmask_tmpfs.slice in the cgroup hierarchy, individually visible in
+# systemd-cgls / systemctl status, and individually accountable.

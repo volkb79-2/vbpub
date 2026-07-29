@@ -13,7 +13,7 @@
 # Config layout (see /etc/gstammtisch/instance-defaults.env and
 # /etc/gstammtisch/instances.d/<uuid>.env — SOULMASK.md "Multi-instance
 # operations"):
-#   instance-defaults.env   — SOULMASK_MIN/LOW/HIGH/WRITEBACK, ROLE, PAK_RAMDISK
+#   instance-defaults.env   — SOULMASK_MIN/LOW/HIGH/WRITEBACK, ROLE, TMPFS
 #   instances.d/<uuid>.env  — per-instance overrides (one file per server)
 
 GSTAMMTISCH_ETC="${GSTAMMTISCH_ETC:-/etc/gstammtisch}"
@@ -76,7 +76,7 @@ soulmask_cgroup_of() {
 # not per-instance) still honour ambient env overrides in setup-cgroups.sh.
 soulmask_load_instance_env() {
   local uuid="$1"
-  unset SOULMASK_MIN SOULMASK_LOW SOULMASK_HIGH SOULMASK_WRITEBACK ROLE PAK_RAMDISK STATIC_RAMDISK
+  unset SOULMASK_MIN SOULMASK_LOW SOULMASK_HIGH SOULMASK_WRITEBACK ROLE TMPFS PAK_RAMDISK STATIC_RAMDISK
   # shellcheck disable=SC1091
   [ -f "$GSTAMMTISCH_ETC/instance-defaults.env" ] && . "$GSTAMMTISCH_ETC/instance-defaults.env"
   # shellcheck disable=SC1091
@@ -88,11 +88,15 @@ soulmask_load_instance_env() {
   SOULMASK_HIGH="${SOULMASK_HIGH:-7G}"
   SOULMASK_WRITEBACK="${SOULMASK_WRITEBACK:-1}"
   ROLE="${ROLE:-standalone}"
+  # TMPFS: opt into the unified shared read-only tmpfs ramdisk
+  # (soulmask_tmpfs.service — Engine, WS/Binaries, WS/Content/Paks, Steam,
+  # steamclient, steamcmd, steamapps — see
+  # /etc/gstammtisch/soulmask_tmpfs-paths.conf for the exact list).
+  # Replaces the legacy PAK_RAMDISK + STATIC_RAMDISK (2026-07-29 — see
+  # SOULMASK-TMPFS.md).
+  TMPFS="${TMPFS:-0}"
+  # Legacy keys kept for migration compatibility — ignored by new scripts.
   PAK_RAMDISK="${PAK_RAMDISK:-0}"
-  # STATIC_RAMDISK: opt into the generalized read-only install-content
-  # ramdisk (soulmask-static-ramdisk.service — Engine/Binaries/bundled Steam
-  # libs, NOT the pak, which stays on the separate, pre-existing
-  # soulmask-pak-ramdisk.service / PAK_RAMDISK). See SOULMASK.md.
   STATIC_RAMDISK="${STATIC_RAMDISK:-0}"
 }
 

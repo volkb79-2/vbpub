@@ -1,0 +1,33 @@
+# /etc/systemd/system/soulmask_tmpfs.service
+[Unit]
+Description=Soulmask unified read-only tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance)
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
+# Must run before Docker so containers mount the tmpfs-backed paths.
+Before=docker.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+# Start in the compressible slice (ZSwapMax1, child of soulmask_tmpfs.slice
+# at cgroup root); the setup script moves itself to
+# soulmask_tmpfs-ZSwapMax0.slice for the incompressible copy phase, then
+# back, so each content type's pages are charged to the correct slice.
+Slice=soulmask_tmpfs-ZSwapMax1.slice
+Type=oneshot
+RemainAfterExit=yes
+# Enumerates /etc/gstammtisch/instances.d/*.env for TMPFS=1 instances, reads
+# /etc/gstammtisch/soulmask_tmpfs-paths.conf for what to share, copies from
+# the ROLE=main instance into ONE shared tmpfs, remounts it read-only, then
+# bind-mounts every path into every opted-in instance's volume.
+ExecStart=/usr/local/sbin/soulmask_tmpfs-setup.sh
+# Teardown: unmount every bind target recorded in the setup script's state
+# file, then the shared tmpfs itself.
+ExecStop=/usr/local/sbin/soulmask_tmpfs-teardown.sh
+# Generous: copies ~2.5G across many paths on cold disk (pak ~1.7G +
+# binaries/libs ~500M + steamcmd ~200M + Steam runtime ~200M = ~2.6G).
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
