@@ -88,7 +88,10 @@ def get_rendered_config_name(defaults_name: str) -> str:
         >>> get_rendered_config_name('ciu.global.defaults.toml.j2')
         'ciu.global.toml'
     """
-    return defaults_name.replace('.defaults.toml.j2', '.toml')
+    suffix = '.defaults.toml.j2'
+    if "/" in defaults_name or "\\" in defaults_name or not defaults_name.endswith(suffix):
+        return defaults_name
+    return defaults_name.removesuffix(suffix) + '.toml'
 
 
 def get_defaults_template_name(rendered_name: str) -> str:
@@ -100,7 +103,10 @@ def get_defaults_template_name(rendered_name: str) -> str:
         >>> get_defaults_template_name('ciu.global.toml')
         'ciu.global.defaults.toml.j2'
     """
-    return rendered_name.replace('.toml', '.defaults.toml.j2')
+    suffix = '.toml'
+    if "/" in rendered_name or "\\" in rendered_name or not rendered_name.endswith(suffix):
+        return rendered_name
+    return rendered_name.removesuffix(suffix) + '.defaults.toml.j2'
 
 
 def is_config_file(filename: str) -> bool:
