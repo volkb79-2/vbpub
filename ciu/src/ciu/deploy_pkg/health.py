@@ -294,13 +294,17 @@ def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[
     """Parse a rendered compose file and return {service: (image, [tools])}.
 
     Only services with CMD or CMD-SHELL healthchecks and a resolved image are
-    included. Returns an empty dict when the file cannot be parsed.
+    included. An unreadable or malformed rendered Compose file is an S7.7
+    authoring error: treating it as an empty model would falsely green-light
+    the healthcheck preflight.
     """
     try:
         import yaml  # PyYAML — already a CIU dependency
         compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise ValueError(
+            f"[S7.7] Cannot parse rendered Compose model: {compose_path}: {exc}"
+        ) from exc
 
     if not isinstance(compose, dict):
         raise ValueError(f"[S7.7] rendered Compose root must be a mapping: {compose_path}")
