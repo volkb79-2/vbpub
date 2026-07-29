@@ -237,9 +237,6 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
                     f"[S4.2] Directive '{verb}' requires a non-empty locator "
                     f"('{verb}:<path>') for {ctx}"
                 )
-        else:
-            locator = None
-            vault_field = None
 
     # --- Extract inline-table options ---
     expose_env: str | None = options.get("expose_env", None)
