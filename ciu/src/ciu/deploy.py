@@ -1278,8 +1278,9 @@ def action_graph(
         stack_cfg = rendered[rel]
         try:
             root_key = config_model.validate_stack_shape(stack_cfg)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            error(str(exc))
+            return 2
         root_section = stack_cfg.get(root_key, {})
         requires = root_section.get("requires", [])
         provides = root_section.get("provides", [])
