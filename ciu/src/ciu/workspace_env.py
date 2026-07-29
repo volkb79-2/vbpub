@@ -280,7 +280,7 @@ def _detect_public_fqdn(repo_root: Path, require_fqdn: bool) -> Dict[str, str]:
                 with ciu_global.open("rb") as f:
                     config = tomllib.load(f)
                 public_fqdn = config.get("infrastructure", {}).get("public_fqdn", "")
-            except (tomllib.TOMLDecodeError, OSError, KeyError) as exc:
+            except (tomllib.TOMLDecodeError, OSError, KeyError, AttributeError) as exc:
                 _log_warn(f"Could not parse {ciu_global}: {exc}")
                 public_fqdn = ""
 
