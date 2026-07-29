@@ -148,6 +148,44 @@ def _host_bind_source(container_path: Path) -> str:
     return f"{mount_root}/{rel}" if rel else mount_root
 
 
+def _git_common_dir(cwd_parent: Path) -> Optional[Path]:
+    """The actual git storage directory backing this checkout.
+
+    For an ordinary checkout this is `<repo>/.git`, already covered by mounting
+    `cwd_parent` alone. For a release worktree it lives OUTSIDE the worktree
+    entirely — the worktree's own `.git` is just a file containing an absolute
+    pointer there (`gitdir: <repo_root>/.git/worktrees/<name>`) — so a container
+    with only the worktree bind-mounted cannot resolve the repository at all:
+    `git`/`setuptools_scm` fail closed-ish by silently falling back to
+    `pyproject.toml`'s `fallback_version` rather than erroring loudly, which is
+    how a wrong version can end up baked into a wheel undetected.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"], cwd=str(cwd_parent),
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    raw = Path(result.stdout.strip())
+    return raw if raw.is_absolute() else (cwd_parent / raw).resolve()
+
+
+def _wheel_builder_git_mount_args(cwd_parent: Path) -> list[str]:
+    """Extra `-v` args so the wheel-builder container can resolve git history —
+    see `_git_common_dir`. Omitted (not just harmless-duplicate) when the common
+    git dir is already inside `cwd_parent`, since that's already mounted."""
+    common_dir = _git_common_dir(cwd_parent)
+    if common_dir is None:
+        return []
+    try:
+        common_dir.relative_to(cwd_parent)
+        return []  # already covered by the cwd_parent mount
+    except ValueError:
+        pass
+    host_common_dir = _host_bind_source(common_dir)
+    return ["-v", f"{host_common_dir}:{common_dir}"]
+
+
 def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
     _check_build_prerequisites()
@@ -168,6 +206,7 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
             [
                 "docker", "run", "--rm",
                 "-v", f"{host_parent}:{cwd.parent}",
+                *_wheel_builder_git_mount_args(cwd.parent),
                 "-w", str(cwd.parent),
                 image,
                 "/opt/wheel-builder-venv/bin/python", "-m", "build",

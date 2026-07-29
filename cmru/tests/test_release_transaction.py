@@ -1,7 +1,10 @@
 """Behavioural contract tests for isolated, source-first release transactions."""
 from __future__ import annotations
 
-from contextlib import nullcontext
+import shutil
+import subprocess
+import tempfile
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +12,74 @@ import pytest
 
 from cmru import cli, transaction
 from cmru import tester_gate
+
+
+# ---------------------------------------------------------------------------
+# Real-repo harness for promotion_landed / revert_promotion / sync_local_main —
+# these have real git ref/revert/fast-forward semantics not worth mocking.
+# ---------------------------------------------------------------------------
+
+def _git(*args, cwd, check=True):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"git {args} failed:\n{r.stderr}")
+    return r.stdout.strip()
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", cwd=path)
+    # Set the branch name HEAD will point to before the first commit, so the
+    # test is independent of the local git's init.defaultBranch config.
+    _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=path)
+    _git("config", "user.email", "test@cmru.test", cwd=path)
+    _git("config", "user.name", "cmru test", cwd=path)
+
+
+class _OriginAndClone:
+    """A bare ``origin`` remote plus a ``repo_root`` clone with an initial commit
+    on ``main``, pushed. :meth:`clone_workspace` mints additional clones standing
+    in for release worktrees (they share the same origin, not the real worktree
+    mechanism, but that is all these functions actually depend on)."""
+
+    def __enter__(self) -> "_OriginAndClone":
+        self.tmp = Path(tempfile.mkdtemp(prefix="cmru_txn_test_"))
+        seed = self.tmp / "seed"
+        _init_repo(seed)
+        (seed / "README.md").write_text("init\n")
+        _git("add", "README.md", cwd=seed)
+        _git("commit", "-q", "-m", "chore: initial commit", cwd=seed)
+
+        self.origin = self.tmp / "origin.git"
+        _git("clone", "-q", "--bare", str(seed), str(self.origin), cwd=self.tmp)
+
+        self.repo_root = self.tmp / "repo"
+        _git("clone", "-q", str(self.origin), str(self.repo_root), cwd=self.tmp)
+        _git("config", "user.email", "test@cmru.test", cwd=self.repo_root)
+        _git("config", "user.name", "cmru test", cwd=self.repo_root)
+        return self
+
+    def clone_workspace(self, branch: str, *, path_name: str = "workspace") -> Path:
+        path = self.tmp / path_name
+        _git("clone", "-q", str(self.origin), str(path), cwd=self.tmp)
+        _git("config", "user.email", "test@cmru.test", cwd=path)
+        _git("config", "user.name", "cmru test", cwd=path)
+        _git("checkout", "-q", "-b", branch, cwd=path)
+        return path
+
+    def add_worktree(self, branch: str, *, path_name: str = "workspace") -> Path:
+        """A REAL ``git worktree`` of repo_root, matching what
+        transaction.create_workspace() does in production — required for
+        anything that calls ``git worktree ...``/``git branch ...`` against
+        repo_root (list_retained_workspaces, remove_workspace). clone_workspace()
+        makes an independent clone instead, which is fine for push/fetch-only
+        tests but not for those."""
+        path = self.tmp / path_name
+        _git("worktree", "add", "-q", "-b", branch, str(path), "main", cwd=self.repo_root)
+        return path
+
+    def __exit__(self, *_exc) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 def _project(name: str, *, paths: list[str] | None = None, steps=None):
@@ -119,6 +190,8 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
 
     with pytest.raises(SystemExit) as exc:
         cli.main(["release", "--config", str(config), "--project", "alpha"])
@@ -126,7 +199,273 @@ cwd = "alpha"
     assert exc.value.code == 0
     assert not any(isinstance(call, tuple) for call in calls)
     assert ["--project", "alpha", "--config", "cmru.toml"] in calls
+    assert "backup-removed" in calls
+    assert "synced" in calls
     assert "removed" in calls
+
+
+def test_parent_reverts_promotion_and_syncs_local_main_on_child_failure(tmp_path, monkeypatch):
+    config = tmp_path / "cmru.toml"
+    config.write_text(
+        """
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[orchestration]
+project_order = ["alpha"]
+[project.alpha]
+prefix = "alpha-v"
+cwd = "alpha"
+""",
+        encoding="utf-8",
+    )
+    project = _project("alpha")
+    loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
+    calls: list[object] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: calls.append("secret"))
+    # Child fails (e.g. build/publish) after it already promoted origin/main.
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 1)
+    monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: calls.append("checked-promotion") or True)
+    monkeypatch.setattr(transaction, "revert_promotion", lambda _w: calls.append("reverted") or True)
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
+    remove_calls: list[object] = []
+    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: remove_calls.append("removed"))
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["release", "--config", str(config), "--project", "alpha"])
+
+    assert exc.value.code == 1
+    assert calls.index("checked-promotion") < calls.index("reverted") < calls.index("synced")
+    # A failed release retains the worktree/branch for inspection — cleanup must not run.
+    assert remove_calls == []
+
+
+def test_parent_skips_revert_when_promotion_never_landed(tmp_path, monkeypatch):
+    config = tmp_path / "cmru.toml"
+    config.write_text(
+        """
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[orchestration]
+project_order = ["alpha"]
+[project.alpha]
+prefix = "alpha-v"
+cwd = "alpha"
+""",
+        encoding="utf-8",
+    )
+    project = _project("alpha")
+    loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
+    calls: list[object] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    # Child fails before ever reaching promote_workspace (e.g. gates failed).
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 1)
+    monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: False)
+    monkeypatch.setattr(transaction, "revert_promotion", lambda _w: calls.append("reverted") or True)
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["release", "--config", str(config), "--project", "alpha"])
+
+    assert exc.value.code == 1
+    assert "reverted" not in calls   # nothing to revert — promotion never landed
+    assert "synced" in calls         # local main is still resynced regardless
+
+
+def test_resume_and_abandon_are_mutually_exclusive(tmp_path):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--config", str(config),
+            "--resume", str(tmp_path / "retained"), "--abandon", "all-previous",
+        ])
+
+    assert exc.value.code == 2
+
+
+def test_abandon_all_previous_scopes_to_the_requested_project_then_proceeds(tmp_path, monkeypatch):
+    config = tmp_path / "cmru.toml"
+    config.write_text(
+        """
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[orchestration]
+project_order = ["alpha", "beta"]
+default_projects = ["alpha", "beta"]
+[project.alpha]
+prefix = "alpha-v"
+cwd = "alpha"
+[project.beta]
+prefix = "beta-v"
+cwd = "beta"
+""",
+        encoding="utf-8",
+    )
+    projects = {"alpha": _project("alpha"), "beta": _project("beta")}
+    loaded = (tmp_path, projects, ["alpha", "beta"], ["alpha", "beta"], [], "project-first", {},
+              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
+    calls: list[object] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(
+        transaction, "abandon_previous",
+        lambda _root, scope: calls.append(("abandon_previous", list(scope))) or ["cmru/release/old"],
+    )
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--config", str(config), "--project", "alpha", "--abandon", "all-previous",
+        ])
+
+    assert exc.value.code == 0
+    # --project alpha narrows the abandon scope to alpha only, not the full default set.
+    assert ("abandon_previous", ["alpha"]) in calls
+    # Abandoning didn't stop the run — a fresh release still proceeded afterward.
+    assert "ran-child" in calls
+    assert calls.index(("abandon_previous", ["alpha"])) < calls.index("ran-child")
+
+
+def test_abandon_all_previous_defaults_to_full_orchestrated_set_without_project_filter(
+    tmp_path, monkeypatch,
+):
+    config = tmp_path / "cmru.toml"
+    config.write_text(
+        """
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[orchestration]
+project_order = ["alpha", "beta"]
+default_projects = ["alpha", "beta"]
+[project.alpha]
+prefix = "alpha-v"
+cwd = "alpha"
+[project.beta]
+prefix = "beta-v"
+cwd = "beta"
+""",
+        encoding="utf-8",
+    )
+    projects = {"alpha": _project("alpha"), "beta": _project("beta")}
+    loaded = (tmp_path, projects, ["alpha", "beta"], ["alpha", "beta"], [], "project-first", {},
+              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
+    calls: list[object] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(
+        transaction, "abandon_previous",
+        lambda _root, scope: calls.append(("abandon_previous", list(scope))) or [],
+    )
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 0)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["release", "--config", str(config), "--abandon", "all-previous"])
+
+    assert exc.value.code == 0
+    assert ("abandon_previous", ["alpha", "beta"]) in calls
+
+
+def test_abandon_specific_worktree_then_proceeds_with_fresh_release(tmp_path, monkeypatch):
+    config = tmp_path / "cmru.toml"
+    config.write_text(
+        """
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[orchestration]
+project_order = ["alpha"]
+[project.alpha]
+prefix = "alpha-v"
+cwd = "alpha"
+""",
+        encoding="utf-8",
+    )
+    project = _project("alpha")
+    loaded = (tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+              SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    stale_workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "stale", "cmru/release/stale", "b" * 40)
+    fresh_workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "fresh", "cmru/release/fresh", "a" * 40)
+    calls: list[object] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(
+        transaction, "resume_workspace",
+        lambda _root, path: calls.append(("resume_workspace", path)) or stale_workspace,
+    )
+    monkeypatch.setattr(
+        transaction, "abandon_workspace",
+        lambda _root, w: calls.append(("abandon_workspace", w.branch)),
+    )
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: fresh_workspace)
+    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "run_child", lambda ws, args: calls.append(("ran", ws.branch)) or 0)
+    monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
+    monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--config", str(config), "--abandon", str(tmp_path / "stale"),
+        ])
+
+    assert exc.value.code == 0
+    assert ("resume_workspace", tmp_path / "stale") in calls
+    assert ("abandon_workspace", "cmru/release/stale") in calls
+    # A fresh workspace was created and run — abandoning didn't resume the stale one.
+    assert ("ran", "cmru/release/fresh") in calls
 
 
 def test_local_main_ahead_aborts_before_creating_workspace(tmp_path, monkeypatch):
@@ -171,6 +510,148 @@ def test_tester_gate_rejects_paths_outside_the_worktree(tmp_path):
         tester_gate.build_docker_command(tmp_path, "../ciu", ["true"])
 
 
+def test_tester_gate_no_sidecar_by_default_adds_no_docker_wiring(monkeypatch, tmp_path):
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
+
+    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"])
+
+    assert "--network" not in argv
+    assert not any("DOCKER_HOST" in part for part in argv)
+
+
+def test_tester_gate_sidecar_name_attaches_network_and_docker_host(monkeypatch, tmp_path):
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
+
+    argv = tester_gate.build_docker_command(
+        tmp_path, "modern-debian-tools-python-debug", ["true"], sidecar_name="cmru-tester-dind-abc123",
+    )
+
+    assert "--network" in argv
+    assert "container:cmru-tester-dind-abc123" in argv
+    assert "-e" in argv
+    assert "DOCKER_HOST=tcp://localhost:2375" in argv
+
+
+def test_dind_sidecar_starts_polls_readiness_yields_name_then_tears_down(monkeypatch):
+    calls: list[list[str]] = []
+    ready_after = 2
+    probe_count = {"n": 0}
+
+    def fake_run(argv, **_kw):
+        calls.append(argv)
+        if argv[:2] == ["docker", "run"]:
+            return SimpleNamespace(returncode=0, stdout="containerid\n")
+        if argv[:2] == ["docker", "exec"]:
+            probe_count["n"] += 1
+            ready = probe_count["n"] >= ready_after
+            return SimpleNamespace(returncode=0 if ready else 1, stdout="29.6.2\n" if ready else "")
+        if argv[:2] == ["docker", "stop"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        raise AssertionError(f"unexpected call: {argv}")
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(tester_gate.time, "sleep", lambda _s: None)
+
+    with tester_gate.dind_sidecar() as name:
+        assert name.startswith("cmru-tester-dind-")
+        used_name = name
+
+    start_call = next(c for c in calls if c[:2] == ["docker", "run"])
+    assert "--privileged" in start_call
+    assert used_name in start_call
+    assert probe_count["n"] >= ready_after  # readiness was actually polled, not assumed
+    stop_call = next(c for c in calls if c[:2] == ["docker", "stop"])
+    assert used_name in stop_call
+
+
+def test_dind_sidecar_tears_down_even_when_the_body_raises(monkeypatch):
+    stopped = []
+
+    def fake_run(argv, **_kw):
+        if argv[:2] == ["docker", "run"]:
+            return SimpleNamespace(returncode=0, stdout="containerid\n")
+        if argv[:2] == ["docker", "exec"]:
+            return SimpleNamespace(returncode=0, stdout="29.6.2\n")
+        if argv[:2] == ["docker", "stop"]:
+            stopped.append(argv)
+            return SimpleNamespace(returncode=0, stdout="")
+        raise AssertionError(f"unexpected call: {argv}")
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with tester_gate.dind_sidecar() as _name:
+            raise RuntimeError("boom")
+
+    assert len(stopped) == 1
+
+
+def test_dind_sidecar_raises_if_never_ready_within_timeout(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(tester_gate.time, "monotonic", lambda: clock["t"])
+
+    def fake_sleep(seconds):
+        clock["t"] += seconds
+
+    monkeypatch.setattr(tester_gate.time, "sleep", fake_sleep)
+
+    def fake_run(argv, **_kw):
+        if argv[:2] == ["docker", "run"]:
+            return SimpleNamespace(returncode=0, stdout="containerid\n")
+        if argv[:2] == ["docker", "exec"]:
+            return SimpleNamespace(returncode=1, stdout="")  # never ready
+        if argv[:2] == ["docker", "stop"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        raise AssertionError(f"unexpected call: {argv}")
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        with tester_gate.dind_sidecar(ready_timeout=2.0):
+            pass  # pragma: no cover — never reached
+
+
+def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *args, **kwargs: captured.update(kwargs) or ["true"],
+    )
+    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+
+    @contextmanager
+    def fake_sidecar():
+        yield "cmru-tester-dind-fixedname"
+
+    monkeypatch.setattr(tester_gate, "dind_sidecar", fake_sidecar)
+
+    with pytest.raises(SystemExit):
+        tester_gate.main(["--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "true"])
+
+    assert captured["sidecar_name"] == "cmru-tester-dind-fixedname"
+
+
+def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *args, **kwargs: captured.update(kwargs) or ["true"],
+    )
+    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+
+    def fail_if_called():
+        raise AssertionError("dind_sidecar() must not run when --enable-docker is absent")
+
+    monkeypatch.setattr(tester_gate, "dind_sidecar", fail_if_called)
+
+    with pytest.raises(SystemExit):
+        tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+    assert captured.get("sidecar_name") is None
+
+
 def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "b" * 40)
     observed = {}
@@ -207,3 +688,285 @@ def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="not a worktree"):
         transaction.resume_workspace(tmp_path, retained)
+
+
+def test_push_backup_branch_pushes_under_its_own_name(tmp_path, monkeypatch):
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
+    calls = []
+    monkeypatch.setattr(transaction.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+
+    transaction.push_backup_branch(workspace)
+
+    assert calls[0][0] == ["git", "push", "origin", "HEAD:refs/heads/cmru/release/x"]
+    assert calls[0][1]["cwd"] == workspace.path
+    assert calls[0][1]["check"] is True
+
+
+def test_remove_backup_branch_deletes_remote_branch_best_effort(tmp_path, monkeypatch):
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
+    calls = []
+    monkeypatch.setattr(
+        transaction.subprocess, "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=1),
+    )
+
+    transaction.remove_backup_branch(workspace)  # must not raise even though the mock "fails"
+
+    assert calls[0][0] == ["git", "push", "origin", "--delete", "cmru/release/x"]
+    assert calls[0][1]["check"] is False
+
+
+def test_promotion_landed_false_before_promote_true_after():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/abc123")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        (workspace_path / "generated.txt").write_text("prepared\n")
+        _git("add", "generated.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: prepare release inputs", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/abc123", base,
+        )
+
+        assert transaction.promotion_landed(h.repo_root, workspace) is False
+
+        transaction.promote_workspace(workspace)
+
+        assert transaction.promotion_landed(h.repo_root, workspace) is True
+
+
+def test_promotion_landed_false_when_origin_advanced_past_release():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/moved")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/moved", base)
+        transaction.promote_workspace(workspace)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "z.txt").write_text("z\n")
+        _git("add", "z.txt", cwd=other)
+        _git("commit", "-q", "-m", "someone else's release", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert transaction.promotion_landed(h.repo_root, workspace) is False
+
+
+def test_revert_promotion_restores_content_and_pushes_a_revert_commit():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/def456")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        (workspace_path / "generated.txt").write_text("prepared\n")
+        _git("add", "generated.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: prepare release inputs", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/def456", base,
+        )
+        transaction.promote_workspace(workspace)
+
+        assert transaction.revert_promotion(workspace) is True
+
+        origin_main = _git("rev-parse", "main", cwd=h.origin)
+        show = subprocess.run(
+            ["git", "show", f"{origin_main}:generated.txt"],
+            cwd=h.origin, capture_output=True, text=True,
+        )
+        assert show.returncode != 0  # generated.txt no longer exists at origin/main's tip
+
+
+def test_revert_promotion_is_a_noop_when_nothing_was_promoted():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/noop")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/noop", base)
+
+        assert transaction.revert_promotion(workspace) is True
+
+
+def test_revert_promotion_fails_closed_when_origin_advanced_past_it():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/conflict")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        (workspace_path / "shared.txt").write_text("prepared\n")
+        _git("add", "shared.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: prepare release inputs", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(
+            h.repo_root, workspace_path, "cmru/release/conflict", base,
+        )
+        transaction.promote_workspace(workspace)
+
+        # Someone else pushes on top before the revert lands.
+        other = h.clone_workspace("scratch2", path_name="other2")
+        (other / "shared.txt").write_text("someone else's edit\n")
+        _git("add", "shared.txt", cwd=other)
+        _git("commit", "-q", "-m", "unrelated edit", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert transaction.revert_promotion(workspace) is False
+        # Local revert (successful or aborted) must never leave a dirty working tree.
+        assert _git("status", "--porcelain", cwd=workspace_path) == ""
+
+
+def test_sync_local_main_fast_forwards_when_main_is_checked_out():
+    with _OriginAndClone() as h:
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "new.txt").write_text("x\n")
+        _git("add", "new.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert _git("branch", "--show-current", cwd=h.repo_root) == "main"
+        assert transaction.sync_local_main(h.repo_root) is True
+        assert _git("rev-parse", "main", cwd=h.repo_root) == _git("rev-parse", "main", cwd=h.origin)
+
+
+def test_sync_local_main_updates_ref_when_main_is_not_checked_out():
+    with _OriginAndClone() as h:
+        _git("checkout", "-q", "-b", "other-branch", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "new.txt").write_text("y\n")
+        _git("add", "new.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert transaction.sync_local_main(h.repo_root) is True
+        assert _git("rev-parse", "main", cwd=h.repo_root) == _git("rev-parse", "main", cwd=h.origin)
+
+
+def test_sync_local_main_rebases_local_only_commits_instead_of_failing():
+    """A release only ever commits declared, mechanical generated paths (S-REL.4a),
+    so local commits made while it built essentially never touch the same files —
+    a rebase should replay them on top cleanly rather than refusing outright."""
+    with _OriginAndClone() as h:
+        (h.repo_root / "local-work.txt").write_text("local work in progress\n")
+        _git("add", "local-work.txt", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "wip: local work while release built", cwd=h.repo_root)
+        local_commit_before = _git("rev-parse", "HEAD", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "release-generated.txt").write_text("generated by the release\n")
+        _git("add", "release-generated.txt", cwd=other)
+        _git("commit", "-q", "-m", "chore(alpha): prepare release inputs", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert transaction.sync_local_main(h.repo_root) is True
+        assert (h.repo_root / "local-work.txt").exists()
+        assert (h.repo_root / "release-generated.txt").exists()
+        # History stays linear — no merge commit — but the local commit WAS
+        # rewritten (replayed on the new base): same message/content, new hash.
+        log = _git("log", "--format=%H %s", cwd=h.repo_root).splitlines()
+        assert local_commit_before not in [line.split(" ", 1)[0] for line in log]
+        assert any(line.endswith("wip: local work while release built") for line in log)
+        parents = _git("log", "-1", "--format=%P", cwd=h.repo_root).split()
+        assert len(parents) == 1  # a rebase, not a merge commit
+        # Local main is legitimately ahead of origin/main now (the developer's
+        # own unpushed work) — exactly as assert_local_main_not_ahead would
+        # expect until the developer pushes it themselves.
+        ahead, _behind = transaction.local_main_divergence(h.repo_root)
+        assert ahead >= 1
+
+
+def test_sync_local_main_aborts_cleanly_on_real_conflict():
+    with _OriginAndClone() as h:
+        (h.repo_root / "README.md").write_text("local edit\n")
+        _git("add", "README.md", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "local edit to README", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "README.md").write_text("conflicting release edit\n")
+        _git("add", "README.md", cwd=other)
+        _git("commit", "-q", "-m", "conflicting release edit", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert transaction.sync_local_main(h.repo_root) is False
+        assert _git("status", "--porcelain", cwd=h.repo_root) == ""  # rebase --abort ran
+        assert (h.repo_root / "README.md").read_text() == "local edit\n"  # untouched
+
+
+def test_sync_local_main_does_not_force_move_a_diverged_non_current_main():
+    with _OriginAndClone() as h:
+        _git("branch", "extra-main-commit", cwd=h.repo_root)
+        _git("checkout", "-q", "extra-main-commit", cwd=h.repo_root)
+        (h.repo_root / "x.txt").write_text("x\n")
+        _git("add", "x.txt", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "commit landed on main via another ref", cwd=h.repo_root)
+        _git("branch", "-f", "main", "extra-main-commit", cwd=h.repo_root)
+        _git("checkout", "-q", "-b", "other-branch", "extra-main-commit", cwd=h.repo_root)
+        stale_main = _git("rev-parse", "main", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "y.txt").write_text("y\n")
+        _git("add", "y.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        assert transaction.sync_local_main(h.repo_root) is False
+        assert _git("rev-parse", "main", cwd=h.repo_root) == stale_main
+
+
+# ---------------------------------------------------------------------------
+# --abandon: scope-marked cleanup of retained release worktrees
+# ---------------------------------------------------------------------------
+
+def test_write_and_read_release_scope_round_trips():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/scope1")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/scope1", base)
+
+        assert transaction.read_release_scope(h.repo_root, workspace) is None
+
+        transaction.write_release_scope(h.repo_root, workspace, ["ciu", "cmru"])
+
+        assert transaction.read_release_scope(h.repo_root, workspace) == ["ciu", "cmru"]
+
+
+def test_list_retained_workspaces_finds_release_worktrees_only():
+    with _OriginAndClone() as h:
+        h.add_worktree("cmru/release/abc", path_name="release-a")
+        h.add_worktree("not-a-release-branch", path_name="unrelated")
+
+        found = {w.branch for w in transaction.list_retained_workspaces(h.repo_root)}
+
+        assert found == {"cmru/release/abc"}
+
+
+def test_abandon_workspace_removes_worktree_branch_backup_and_scope():
+    with _OriginAndClone() as h:
+        workspace_path = h.add_worktree("cmru/release/def")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/def", base)
+        transaction.write_release_scope(h.repo_root, workspace, ["ciu"])
+        transaction.push_backup_branch(workspace)  # origin now also has cmru/release/def
+
+        transaction.abandon_workspace(h.repo_root, workspace)
+
+        assert not workspace_path.exists()
+        assert "cmru/release/def" not in _git("branch", "--list", cwd=h.repo_root)
+        remote_branches = _git("ls-remote", "--heads", "origin", cwd=h.repo_root)
+        assert "cmru/release/def" not in remote_branches
+        assert transaction.read_release_scope(h.repo_root, workspace) is None
+
+
+def test_abandon_previous_only_abandons_overlapping_scope():
+    with _OriginAndClone() as h:
+        ciu_path = h.add_worktree("cmru/release/ciu-attempt", path_name="ciu-attempt")
+        ciu_ws = transaction.ReleaseWorkspace(
+            h.repo_root, ciu_path, "cmru/release/ciu-attempt", _git("rev-parse", "HEAD", cwd=ciu_path),
+        )
+        transaction.write_release_scope(h.repo_root, ciu_ws, ["ciu"])
+
+        pwmcp_path = h.add_worktree("cmru/release/pwmcp-attempt", path_name="pwmcp-attempt")
+        pwmcp_ws = transaction.ReleaseWorkspace(
+            h.repo_root, pwmcp_path, "cmru/release/pwmcp-attempt",
+            _git("rev-parse", "HEAD", cwd=pwmcp_path),
+        )
+        transaction.write_release_scope(h.repo_root, pwmcp_ws, ["pwmcp"])
+
+        unscoped_path = h.add_worktree("cmru/release/unscoped-attempt", path_name="unscoped-attempt")
+
+        abandoned = transaction.abandon_previous(h.repo_root, ["ciu"])
+
+        assert abandoned == ["cmru/release/ciu-attempt"]
+        assert not ciu_path.exists()
+        assert pwmcp_path.exists()       # different scope — left alone
+        assert unscoped_path.exists()    # no recorded scope — left alone

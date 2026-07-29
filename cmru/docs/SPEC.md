@@ -43,9 +43,76 @@ local-only commits on local `main` that the remote snapshot would omit (and warn
 an ephemeral `cmru/release/<id>` worktree at that exact remote commit, and re-execs there.
 All caller working-tree edits are ignored: they cannot enter the immutable remote snapshot.
 Before any tag or public artifact it MUST run every changed project's declared `run-tests`
-gate in its real gate environment, then fast-forward `origin/main` from the validated branch.
-A non-fast-forward remote update aborts before publication. Failure retains and reports the
-worktree/branch; success removes both. The secret overlay is copied mode `0600`, never committed.
+gate in its real gate environment, push the validated branch to origin under its own name
+(durability: a crashed machine or lost worktree still leaves an inspectable, resumable copy
+on origin — `main` itself is untouched by this push), then fast-forward `origin/main` from
+that branch. A non-fast-forward remote update aborts before publication.
+
+On success: the origin backup branch and the local worktree/branch are removed, and the
+caller's local `main` is synced with `origin/main`: a fast-forward when local main hasn't
+moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another terminal
+while the release built) — rebase, not merge, to stay consistent with the rest of this
+pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
+`revert_promotion`'s push, the "local main not ahead" precondition below); no other step here
+ever produces a merge commit. Safe to replay because a release only ever commits declared,
+mechanical generated paths (S-REL.4a), never hand-edited source, so local commits essentially
+never touch the same files. The rebase is aborted, leaving local main untouched, only on a
+genuine content conflict.
+
+```
+Before the release:
+  origin/main:     ──●(base)
+  local main:      ──●(base)                          [repo_root's own checkout — untouched]
+  release branch:  (does not exist yet)
+
+The release runs entirely inside an ISOLATED WORKTREE — a separate checkout on
+its own cmru/release/<id> branch. repo_root's own `main` is never checked out,
+never touched, during any of this:
+  release branch:  ──●(base)──●(R1: mechanical prep commit)
+                                │
+                      push_backup_branch → origin gets a copy of this branch (durability)
+                                │
+                      promote_workspace → git push origin HEAD:refs/heads/main
+                                ▼
+  origin/main:     ──●(base)──●(R1)                    ← origin/main just advanced
+  local main:      ──●(base)                           ← still here; nothing touched it
+
+Meanwhile, if the caller committed their own work locally while the release built:
+  local main:      ──●(base)──●(D1)──●(D2)             [unrelated local work]
+
+sync_local_main rebases local main onto the new origin/main tip:
+  local main:      ──●(base)──●(R1)──●(D1')──●(D2')    ← D1/D2 replayed (new hashes), linear
+```
+
+Deleting the release branch on success (both locally and its origin backup) is cleanup of a
+now-redundant ref — R1 is already permanently part of `origin/main`'s history, so the branch's
+job is done. That deletion does nothing to `local main` by itself; `sync_local_main` is the
+only step that touches it.
+
+On failure: the local worktree/branch and its origin backup are retained for inspection —
+`release` never resumes one automatically; the caller explicitly chooses `--resume <path>` to
+continue that exact attempt, or lets the next `release` invocation start fresh instead (the
+normal/default case: gates must re-validate against a fresh snapshot rather than a debugged,
+possibly hand-edited one — see S-REL.4a). If `origin/main` had already been promoted before the
+failing step (tag/build/publish failed *after* the fast-forward), cmru attempts an automatic
+revert: a plain `git revert` commit pushed on top of `origin/main` — never a force-push or
+history rewrite — restoring it to its pre-release state. The revert is skipped, requiring
+manual cleanup, if it does not apply cleanly or if `origin/main` has advanced past the release
+since promotion (a concurrent push landed on top). Local `main` is synced with `origin/main`
+(fast-forward or rebase, as above) regardless of outcome.
+
+**`--abandon <path>|all-previous`** discards a retained attempt instead of resuming it, then
+proceeds with a normal fresh release in the same invocation: its origin backup branch, local
+worktree/branch, and scope marker are removed (never touching `origin/main` — a retained
+attempt's gates ran, if at all, before promote, so there is nothing there to undo). `all-previous`
+abandons every retained worktree whose recorded project scope overlaps this run's — `--project X`
+narrows that to just `X`; otherwise it's the full `orchestration.default_projects`. Worktrees
+retained before this feature existed (no recorded scope) are left for an explicit `--abandon
+<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru.release.sh` passes
+`--abandon all-previous` by default unless the caller already passed `--resume` or `--abandon`
+themselves, so routine use always starts clean without extra flags.
+
+The secret overlay is copied mode `0600`, never committed.
 
 ### File conventions (all `cmru.`-prefixed)
 
@@ -177,9 +244,12 @@ OCI-build provenance commits and promotes before the registry push. An `oci-imag
 
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
-declared mechanical outputs, never hand-edited source. OCI flow: private build → commit and
-promote generated provenance → registry push. Wheel flow: prepare → gate → promote → tag at
-HEAD → build → push tag → Release + asset + `latest.json`.
+declared mechanical outputs, never hand-edited source. OCI flow: private build → commit →
+backup-push → promote generated provenance → registry push. Wheel flow: prepare → gate →
+backup-push → promote → tag at HEAD → build → push tag → Release + asset + `latest.json`.
+`backup-push` (S-CLI.5) is a durability step only — it pushes the validated branch to origin
+under its own name, never touching `main`; the fast-forward of `main` remains a separate,
+subsequent step.
 
 **S-REL.6 — Multi-variant releases (per-interpreter artifact matrix).** A `bundle` or
 `tarball` project MAY declare N named **variants** so that ONE release tag publishes one
@@ -589,6 +659,16 @@ cmru uses a four-value exit code scheme identical to CIU S10.3:
 **S9.2** OCI image labels `org.opencontainers.image.created` etc. MUST be sourced from HEAD commit metadata, not `date`.
 
 **S9.3** For the `scm` versioning strategy, the clean version string (no `.dev`) is only emitted on an annotated tag. Untagged builds MUST produce a dev suffix.
+
+**S9.3a** When `CMRU_WHEEL_BUILDER_IMAGE` is set, `cmd_wheel_build` (`cmru/src/cmru/handlers.py`)
+MUST bind-mount the checkout's git common directory into the builder container, not only the
+project subtree. A release worktree's own `.git` is a file pointing to an *absolute path
+outside that subtree* (`gitdir: <repo_root>/.git/worktrees/<name>`); mounting only the subtree
+makes that pointer unresolvable, and `setuptools_scm` fails **silently** — it does not error,
+it falls back to `pyproject.toml`'s `fallback_version` and bakes that wrong, static version
+into the published wheel. `_wheel_builder_git_mount_args` supplies this mount and is a no-op
+(nothing extra to mount) for an ordinary non-worktree checkout, where the common dir is already
+covered by the existing subtree mount.
 
 **S9.4** Given the same source commit and toolchain pin, two independent builds MUST produce byte-identical artifacts (deterministic build contract). For the `bundle` profile specifically:
 

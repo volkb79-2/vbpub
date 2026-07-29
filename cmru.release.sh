@@ -19,4 +19,21 @@ repo_dir="$(dirname "$(readlink -f "$0")")"
 # rather than needing anything pre-installed in the host interpreter.
 python_bin="${CMRU_PYTHON:-python3}"
 
-exec "$python_bin" -u "$repo_dir/cmru.py" release "$@"
+# Releases always start fresh (S-CLI.1/S-CLI.5): default to sweeping any previous
+# failed attempt(s) in scope before this one begins, unless the caller already
+# asked to --resume one explicitly or passed their own --abandon.
+args=("$@")
+has_resume_or_abandon=false
+for arg in "${args[@]}"; do
+    case "${arg}" in
+        --resume|--resume=*|--abandon|--abandon=*)
+            has_resume_or_abandon=true
+            break
+            ;;
+    esac
+done
+if ! ${has_resume_or_abandon}; then
+    args=(--abandon all-previous "${args[@]}")
+fi
+
+exec "$python_bin" -u "$repo_dir/cmru.py" release "${args[@]}"

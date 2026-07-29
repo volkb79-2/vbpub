@@ -12,6 +12,80 @@
 
 ## Landed
 
+### FIX-01 — Containerized wheel build lost git history in a release worktree — *shipped*
+**Status:** landed (code + tests + spec in lockstep). **Root cause of the original
+`ciu-v2.0.0`/`cmru-v0.2.0` orphan-tag mystery** (see git history around 2026-07-28/29) —
+superseding the earlier "concurrent stale process" theory, which was wrong.
+**SPEC:** `S9.3a`.
+**Why:** `cmd_wheel_build` (`cmru/src/cmru/handlers.py`), when `CMRU_WHEEL_BUILDER_IMAGE`
+is set, bind-mounted only the project's worktree subtree into the builder container. A
+release worktree's `.git` is a *file* pointing to an absolute path OUTSIDE that subtree
+(`gitdir: <repo_root>/.git/worktrees/<name>`) — reproduced directly:
+`git rev-parse --show-toplevel` inside such a container fails with `fatal: not a git
+repository ... Stopping at filesystem boundary`. `setuptools_scm` does not error on
+this — it silently falls back to `pyproject.toml`'s `fallback_version` (`"2.0.0"` for
+ciu, `"0.2.0"` for cmru — exactly the orphan tag versions found earlier), and that wrong,
+static version gets baked into the wheel and published as if it were real.
+**Fix:** `_wheel_builder_git_mount_args()` additionally bind-mounts the checkout's real
+git common directory (`git rev-parse --git-common-dir`, translated to its host path the
+same way the existing subtree mount already is) at its own absolute path inside the
+container — a no-op for an ordinary non-worktree checkout, where that directory is
+already covered by the existing mount. Verified empirically: `git describe --tags`
+inside the container went from failing closed-ish (silent `fallback_version`) to
+correctly reporting `ciu-v4.9.0-156-gb57a4fc1`.
+
+### FEAT-02 — mdt `load` flow: single-build, digest-verified OCI publish — *shipped*
+**Status:** landed (code + tests + spec doc in lockstep). Delegated script only —
+does **not** enable the built-in OCI handler; see `KI-02`.
+**Why:** `RELEASE_IMAGE_FLOW=load` (mdt's default) built the image privately once
+(`--load`) to extract the manifest, then built it **again, independently**
+(`registry_bake()`, `type=registry`) at push time. Nothing compared the two, so the
+manifest committed to `package-manifests-versioned/` documented a different build
+than what actually reached GHCR — a silent build-on-push fallback, exactly what
+`S14.3.6` forbids for the (still-unbuilt) built-in handler, just not yet enforced
+for this delegated script.
+**Fix:** `oci_layout_bake()` (`modern-debian-tools-python-debug/scripts/release-bake.sh`)
+builds once to a local OCI layout (`type=oci,dest=...`) per bake target.
+`extract_manifests()` reads the manifest straight out of that layout via
+`regctl image get-file ocidir://<dir>:<tag> <path>` — no daemon load, no second
+build. `_push_oci_layouts()` (`build-push.py`) pushes each target's layout directly
+via `crane push <dir> <tag>` and asserts the registry-reported digest
+(`crane digest`) equals the pre-push local digest (`regctl manifest digest
+ocidir://...`); a mismatch fails the release closed instead of publishing silently.
+Validated end-to-end against a real local `registry:2` container (not mocked) in
+`modern-debian-tools-python-debug/scripts/test_oci_layout_push.py`. The download-level
+artifact cache (`stage_tool_artifacts.py`) is unaffected — it already never caches a
+`/latest` URL and always re-resolves "latest" live before deciding whether to reuse a
+version-pinned download; this change only removes the redundant *second BuildKit
+invocation*, it doesn't touch that cache.
+**Resolved gap:** `test_oci_layout_push.py` is now wired into mdt's `run-tests` gate
+(`cmru.toml`) and runs for real there. `cmru/src/cmru/tester_gate.py`'s
+`tester-gate --enable-docker` gives that gate container its own ephemeral, fully
+isolated nested Docker daemon (`dind_sidecar()` — a `docker:dind` sidecar,
+`--privileged`, polled for readiness via `docker exec <sidecar> docker version`
+before use) rather than the HOST's real daemon: the gate container attaches to the
+sidecar's network namespace (`--network container:<sidecar>`) and points its Docker
+CLI at it (`DOCKER_HOST=tcp://localhost:2375`). Chosen over the simpler host-socket
+bind-mount alternative specifically to avoid giving a sandboxed test gate
+root-equivalent host access — everything the gate does lives inside the disposable
+sidecar and disappears when it stops (`docker stop`, `--rm`). Deliberately opt-in per
+project step, not a default: only mdt's `run-tests` step passes it — every other
+project's gate is unaffected. `tester-unified`'s image ships
+`docker`/`buildx`/`crane`/`regctl`/`jq` (inherited from its
+`modern-debian-tools-python-debug-vsc-devcontainer` base image); the sidecar image
+(`docker:dind`) supplies `dockerd`/`containerd`/`runc` itself — none of that is in
+`tester-unified`'s own image, nor needs to be.
+
+Validated end-to-end, including registry networking (the nested daemon's own bridge
+network — `test_oci_layout_push.py`'s `registry:2` fixture is reachable at plain
+`127.0.0.1:<published-port>` from the gate container, no gateway-IP fallback needed,
+since it shares netns with the sidecar) and `docker buildx create --driver
+docker-container` + `--output type=oci` working inside the nested daemon. Also
+rebuilt `tester-unified:local` (a stale local cache — built before crane/regctl
+landed in the base image — had neither; `docker build -f tester-unified/Dockerfile
+-t tester-unified:local .` from repo root picks up the current base), then ran all
+30 mdt gate tests for real, in-container, through the sidecar.
+
 ### FEAT-01 — Multi-variant `bundle`/`tarball` publish + variant-selecting installer — *shipped*
 **Status:** landed (code + tests + spec in lockstep).
 **SPEC:** `S-REL.6`, `S1.6`, `S2` (`[[project.<name>.variants]]`), `S5.3` (latest.json
@@ -45,6 +119,11 @@ non-repack OCI builds and pushes are unaffected.
 governed builder resources and concurrency; structural plus runtime validation; final
 registry digest verification; and ideally a single-build flow. See `S14.3` for the
 normative definition of done.
+**Related:** `FEAT-02` validates the single-build + digest-verification mechanism
+(`type=oci` layout build → `crane push` the layout directly → `crane digest`/`regctl
+manifest digest` equality check) end-to-end against a real registry, for mdt's
+*delegated* script. The same mechanism is a candidate building block for eventually
+closing this item for the built-in handler — it is not itself that closure.
 
 ### KI-01 — GHCR package visibility cannot be set via API (platform limitation) — *worked around*
 **Status:** worked around (cmru no longer fails the release); full automation is upstream-blocked.

@@ -13,6 +13,7 @@ concurrent remote update fails closed before tags or publication.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -160,11 +161,198 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
     )
 
 
+def _release_token(workspace: ReleaseWorkspace) -> str:
+    return workspace.branch.rsplit("/", 1)[-1]
+
+
+def _scope_dir(repo_root: Path) -> Path:
+    return _common_git_dir(repo_root) / "cmru-release-scopes"
+
+
+def write_release_scope(repo_root: Path, workspace: ReleaseWorkspace, project_names: Sequence[str]) -> None:
+    """Record which projects a release attempt targets, in the shared common git
+    dir (never inside the worktree — S-REL.4a's undeclared-write guard must never
+    see it). A later ``--abandon all-previous`` scopes cleanup by this record."""
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.json").write_text(
+        json.dumps(sorted(project_names)), encoding="utf-8",
+    )
+
+
+def read_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> list[str] | None:
+    """The recorded project scope for a retained worktree, or None if it predates
+    this feature (an older retained worktree) — callers should treat None
+    conservatively (not auto-abandon it)."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
+
+
+def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
+    """Every ``cmru/release/*`` worktree still on disk — i.e. retained after a
+    failed (never-resumed) release attempt."""
+    raw = _git(repo_root, "worktree", "list", "--porcelain")
+    workspaces: list[ReleaseWorkspace] = []
+    for block in raw.split("\n\n"):
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            key, _, value = line.partition(" ")
+            if value:
+                fields[key] = value
+        wt_path, branch_ref = fields.get("worktree"), fields.get("branch")
+        if not wt_path or not branch_ref:
+            continue
+        branch = branch_ref[len("refs/heads/"):] if branch_ref.startswith("refs/heads/") else branch_ref
+        if not branch.startswith("cmru/release/"):
+            continue
+        path = Path(wt_path)
+        base = _git(path, "rev-parse", "HEAD", check=False) or ""
+        workspaces.append(ReleaseWorkspace(repo_root, path, branch, base))
+    return workspaces
+
+
+def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Fully discard a retained, never-promoted release attempt: its origin backup
+    branch, local worktree/branch, and scope marker. Unlike remove_workspace() (the
+    success path) this never touches origin/main — a failed release's gates ran
+    before promote, so there is nothing there to undo."""
+    remove_backup_branch(workspace)
+    remove_workspace(workspace)
+    _forget_release_scope(repo_root, workspace)
+
+
+def abandon_previous(repo_root: Path, current_projects: Sequence[str]) -> list[str]:
+    """Abandon every retained release worktree whose recorded scope overlaps
+    ``current_projects`` (S-CLI.1: releases always start fresh, never resume by
+    default). Worktrees with no recorded scope are left alone — the caller can
+    still target them explicitly via ``--abandon <path>``. Returns the branch
+    names abandoned."""
+    current = set(current_projects)
+    abandoned: list[str] = []
+    for workspace in list_retained_workspaces(repo_root):
+        scope = read_release_scope(repo_root, workspace)
+        if scope is None or not (current & set(scope)):
+            continue
+        abandon_workspace(repo_root, workspace)
+        abandoned.append(workspace.branch)
+    return abandoned
+
+
 def promote_workspace(workspace: ReleaseWorkspace) -> None:
     """Fast-forward remote main from the prepared branch, or fail before publication."""
     subprocess.run(
         ["git", "push", "origin", "HEAD:refs/heads/main"], cwd=workspace.path, check=True,
     )
+
+
+def push_backup_branch(workspace: ReleaseWorkspace) -> None:
+    """Push the validated, gated branch to origin under its own name, before promotion.
+
+    Purely additive durability: a crashed machine or lost worktree after this point
+    still leaves an inspectable, resumable copy of the prepared release on origin —
+    ``main`` itself is untouched by this push.
+    """
+    subprocess.run(
+        ["git", "push", "origin", f"HEAD:refs/heads/{workspace.branch}"],
+        cwd=workspace.path, check=True,
+    )
+
+
+def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
+    """Delete the durability backup branch from origin after a fully successful release.
+
+    Best-effort: a release that already succeeded should not fail cleanup over a
+    missing/already-gone remote branch.
+    """
+    subprocess.run(
+        ["git", "push", "origin", "--delete", workspace.branch],
+        cwd=workspace.path, check=False,
+    )
+
+
+def promotion_landed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True if ``origin/main`` still sits exactly at this workspace's branch tip.
+
+    Used after a failed release to distinguish "promote_workspace() ran, then a
+    later step (tag/build/publish) failed" from "the failure happened before
+    promotion" or "origin/main has since moved past this release entirely" — the
+    latter two are not safe to auto-revert.
+    """
+    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
+    origin_main = _git(repo_root, "rev-parse", "origin/main")
+    branch_tip = _git(workspace.path, "rev-parse", workspace.branch)
+    return origin_main == branch_tip
+
+
+def revert_promotion(workspace: ReleaseWorkspace) -> bool:
+    """Best-effort: undo this release's commits on ``origin/main`` by pushing a revert.
+
+    Caller MUST have already confirmed :func:`promotion_landed` — this never rewrites
+    history (no force-push), it only adds a new revert commit on top, so it is safe
+    to attempt even if the precondition was checked slightly earlier. Returns False
+    (leaving origin/main as-is) when there is nothing to revert, the revert does not
+    apply cleanly, or the push is rejected (e.g. someone pushed to main meanwhile) —
+    all of which require manual cleanup.
+    """
+    branch_tip = _git(workspace.path, "rev-parse", workspace.branch)
+    if workspace.base == branch_tip:
+        return True  # nothing was promoted beyond origin's prior state
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", "--no-commit", f"{workspace.base}..{workspace.branch}"],
+        cwd=workspace.path,
+    )
+    if result.returncode != 0:
+        subprocess.run(["git", "revert", "--abort"], cwd=workspace.path, check=False)
+        return False
+    subprocess.run(
+        ["git", "commit", "-m", f"revert: undo failed release {workspace.branch}"],
+        cwd=workspace.path, check=True,
+    )
+    push = subprocess.run(["git", "push", "origin", "HEAD:refs/heads/main"], cwd=workspace.path)
+    return push.returncode == 0
+
+
+def sync_local_main(repo_root: Path) -> bool:
+    """Bring the caller's local ``main`` up to date with ``origin/main``.
+
+    Rebase, not merge — consistent with the rest of this pipeline, which is
+    fast-forward-only end to end (promote_workspace's push, revert_promotion's
+    push, assert_local_main_not_ahead's precondition): no other step here ever
+    produces a merge commit, so local main shouldn't be the one exception. A
+    release only ever commits declared, mechanical generated paths (S-REL.4a) —
+    never hand-edited source — so local commits added while the release built
+    (e.g. ongoing work in another terminal) essentially never touch the same
+    files, and replay conflict-free. ``git rebase`` degenerates to a plain
+    fast-forward when local main hasn't moved at all (the common case). It is
+    only aborted (returning False, leaving local main untouched) on a genuine
+    content conflict, which is a signal of unusual overlap worth a human's
+    attention. Rewrites local main's own commits onto the new base — safe here
+    because they are, by construction, commits the release process never saw
+    and the developer has not necessarily pushed anywhere yet.
+    """
+    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
+    current = _git(repo_root, "branch", "--show-current", check=False)
+    if current == "main":
+        result = subprocess.run(["git", "rebase", "origin/main"], cwd=repo_root)
+        if result.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], cwd=repo_root, check=False)
+        return result.returncode == 0
+    local_main = _git(repo_root, "rev-parse", "main", check=False)
+    if local_main:
+        merge_base = _git(repo_root, "merge-base", "main", "origin/main", check=False)
+        if merge_base != local_main:
+            return False  # local main has commits of its own — do not force-move it
+    result = subprocess.run(["git", "branch", "-f", "main", "origin/main"], cwd=repo_root)
+    return result.returncode == 0
 
 
 def run_child(workspace: ReleaseWorkspace, release_args: Sequence[str]) -> int:

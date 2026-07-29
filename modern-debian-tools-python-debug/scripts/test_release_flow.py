@@ -95,12 +95,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("repacked=docker-image://", source)
         self.assertNotIn('["docker", "run", "--rm", first_tag', source)
 
-    def test_private_load_manifest_extraction_reads_the_loaded_image(self) -> None:
+    def test_private_load_manifest_extraction_reads_the_built_oci_layout(self) -> None:
+        """The `load` flow builds once (oci_layout_bake) and reads the manifest
+        straight out of that layout — no daemon load, no second build."""
         source = (ROOT / "build-push.py").read_text()
         self.assertIn('elif release_flow == "load":', source)
-        self.assertIn('["docker", "create", first_tag]', source)
-        self.assertIn('["docker", "cp", f"{container_id}:{_MANIFEST_PATH}"', source)
-        self.assertIn('["docker", "rm", "-f", container_id]', source)
+        self.assertIn('"regctl", "image", "get-file"', source)
+        self.assertIn('f"ocidir://{layout_dir}:{ref_name}"', source)
+        self.assertNotIn('["docker", "create"', source)
+        self.assertNotIn('["docker", "cp"', source)
 
     def test_volatile_oci_labels_follow_filesystem_work(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
@@ -206,11 +209,15 @@ class ReleaseFlowTests(unittest.TestCase):
         subprocess.run(["bash", "-n", *map(str, scripts)], check=True)
 
     def test_load_flow_does_not_report_a_successful_build_as_failure(self) -> None:
-        """The load branch must leave the bake result as its exit status."""
+        """The load branch's build action must leave oci_layout_bake's exit status
+        as the branch's own, and its push action must not silently rebuild
+        (registry_bake) — that double-build is exactly what the OCI-layout
+        single-build + digest-verified crane push replaces."""
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
         load_branch = wrapper.split("    load)", 1)[1].split("    push)", 1)[0]
         self.assertIn('if [[ "${ACTION}" == "build" ]]; then', load_branch)
-        self.assertIn("else\n            registry_bake", load_branch)
+        self.assertIn("oci_layout_bake", load_branch)
+        self.assertNotIn("registry_bake", load_branch)
         self.assertNotIn('[[ "${ACTION}" == "push" ]] &&', load_branch)
 
     def test_oci_validator_rejects_file_with_descendants(self) -> None:

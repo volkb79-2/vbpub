@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
 sys.path.insert(0, str(REPO_ROOT / "cmru" / "src"))
 
+from cmru import exit_codes  # noqa: E402
 from cmru.ghcr import GitHubPackages  # noqa: E402
 from cmru.runner import run_step  # noqa: E402
 
@@ -312,6 +314,8 @@ def do_build(ignore_new_releases: bool) -> None:
         raise SystemExit(
             f"[ERROR] RELEASE_IMAGE_FLOW must be 'load', 'push', or 'repack', got: {release_image_flow!r}"
         )
+    if release_image_flow == "load":
+        _require_crane_regctl()
 
     # Compute BUILD_DATE first (resolver depends on it). An explicit coordinate
     # is authoritative so a failed release can be retried without inventing a
@@ -381,6 +385,108 @@ def do_build(ignore_new_releases: bool) -> None:
 _MANIFEST_PATH = "/usr/local/share/modern-debian-tools-python-debug/manifest.md"
 
 
+def _require_crane_regctl() -> None:
+    """Fail closed with an actionable message before the load-flow build/push
+    reaches a confusing 'command not found' deep in a subprocess (S8 exit 3)."""
+    missing = [tool for tool in ("crane", "regctl") if shutil.which(tool) is None]
+    if missing:
+        sys.stderr.write(
+            f"[ERROR] RELEASE_IMAGE_FLOW=load requires {' and '.join(missing)} on PATH "
+            "for the digest-verified OCI-layout build/push (build once, push exactly "
+            "that artifact, verify the registry digest matches).\n"
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+
+def _oci_layout_dir() -> Path:
+    """The directory release-bake.sh's oci_layout_bake() wrote per-target layouts to."""
+    raw = os.environ.get("MDT_OCI_LAYOUT_DIR") or _read_cmru_env_default("MDT_OCI_LAYOUT_DIR") or "build/oci-layouts"
+    path = Path(raw)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _tag_component(image_ref: str) -> str:
+    """The bare tag off a full image reference, tolerating a registry host:port.
+
+    ``ghcr.io/owner/name:tag`` -> ``tag``; a colon before the last ``/`` (a
+    registry port) is not mistaken for the tag separator.
+    """
+    last_segment = image_ref.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        raise ValueError(f"image reference has no tag: {image_ref!r}")
+    return last_segment.rsplit(":", 1)[-1]
+
+
+def _safe_target_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+def _enumerate_bake_targets() -> tuple[dict, list[str]]:
+    """Return (target_specs, ordered_target_names) for the 'all' bake group."""
+    result = subprocess.run(
+        ["docker", "buildx", "bake", "-f", str(ROOT / "docker-bake.hcl"), "all", "--print"],
+        cwd=str(ROOT), capture_output=True, text=True, check=True,
+    )
+    bake = json.loads(result.stdout)
+    names = ((bake.get("group") or {}).get("all") or {}).get("targets") or []
+    return (bake.get("target") or {}), list(names)
+
+
+def _push_oci_layouts(env_vars: dict[str, str]) -> None:
+    """Push each target's OCI layout built by oci_layout_bake(), verifying that
+    the registry ends up reporting the exact digest that was built and
+    manifest-extracted (S9.4 / S14.3.5's "same checksum" guarantee, applied to
+    the load flow's delegated script rather than the not-yet-built S14 handler).
+    """
+    _require_crane_regctl()
+    layout_root = _oci_layout_dir()
+    targets, target_names = _enumerate_bake_targets()
+    if not target_names:
+        raise SystemExit("[ERROR] Bake group 'all' contains no targets.")
+
+    pushed: list[str] = []
+    for name in target_names:
+        spec = targets.get(name) or {}
+        tags = [str(t) for t in (spec.get("tags") or [])]
+        if not tags:
+            continue
+
+        layout_dir = layout_root / _safe_target_name(name)
+        index_path = layout_dir / "index.json"
+        if not index_path.exists():
+            raise SystemExit(
+                f"[ERROR] Missing built OCI layout for target '{name}' at {layout_dir}; "
+                "run `./build-push.py --build` first."
+            )
+        ref_name = _tag_component(tags[0])
+        layout_ref = f"ocidir://{layout_dir}:{ref_name}"
+
+        local_digest = subprocess.run(
+            ["regctl", "manifest", "digest", layout_ref],
+            cwd=str(ROOT), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        for tag in tags:
+            sys.stderr.write(f"[INFO] Pushing {layout_dir.name} -> {tag}\n")
+            subprocess.run(["crane", "push", str(layout_dir), tag], cwd=str(ROOT), check=True)
+            remote_digest = subprocess.run(
+                ["crane", "digest", tag], cwd=str(ROOT), capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            if remote_digest != local_digest:
+                raise SystemExit(
+                    f"[ERROR] Checksum drift for {tag}: built {local_digest}, "
+                    f"registry now reports {remote_digest}. A direct layout push should "
+                    "never produce a different digest — investigate before retrying; "
+                    "do not blindly re-push."
+                )
+            sys.stderr.write(f"[INFO] Verified identical checksum for {tag}: {remote_digest}\n")
+            pushed.append(tag)
+
+    if not pushed:
+        raise SystemExit("[ERROR] No tags were pushed — nothing to publish.")
+    sys.stderr.write(f"[INFO] Pushed {len(pushed)} tag(s), all digest-verified against the build.\n")
+
+
 def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
     """Extract canonical manifests from freshly built images.
 
@@ -445,45 +551,34 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
                 continue
         elif release_flow == "load":
             # The release's private build intentionally precedes both source
-            # promotion and image publication.  `docker-image://` therefore
-            # cannot resolve this coordinate yet; read the freshly `--load`ed
-            # image from dockerd without starting it.
-            container_id = ""
+            # promotion and image publication, so nothing has been pushed to a
+            # registry yet. oci_layout_bake() (release-bake.sh) already built
+            # this target once to a local OCI layout — read the manifest
+            # straight out of that layout (no daemon, no second build); the
+            # exact same layout is what _push_oci_layouts() later publishes.
+            _require_crane_regctl()
+            layout_dir = _oci_layout_dir() / _safe_target_name(name)
             try:
-                container_id = subprocess.run(
-                    ["docker", "create", first_tag],
-                    cwd=str(ROOT),
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-                if not container_id:
-                    raise OSError(f"docker create returned no container ID for {first_tag}")
+                ref_name = _tag_component(first_tag)
                 with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
                     destination = Path(temp_dir) / "manifest.md"
                     subprocess.run(
-                        ["docker", "cp", f"{container_id}:{_MANIFEST_PATH}", str(destination)],
+                        [
+                            "regctl", "image", "get-file",
+                            f"ocidir://{layout_dir}:{ref_name}", _MANIFEST_PATH, str(destination),
+                        ],
                         cwd=str(ROOT),
                         capture_output=True,
                         text=True,
                         check=True,
                     )
                     manifest_content = destination.read_text(encoding="utf-8")
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except (subprocess.CalledProcessError, OSError, ValueError) as exc:
                 sys.stderr.write(
-                    f"[WARN] Failed to extract local manifest from {first_tag}: {exc}\n"
+                    f"[WARN] Failed to extract local manifest from {layout_dir}: {exc}\n"
                 )
                 failed.append(name)
                 continue
-            finally:
-                if container_id:
-                    subprocess.run(
-                        ["docker", "rm", "-f", container_id],
-                        cwd=str(ROOT),
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
         else:
             try:
                 with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
@@ -575,12 +670,17 @@ def do_push() -> None:
     sys.stderr.write(
         f"[INFO] Step 2/3: Running release push flow (RELEASE_IMAGE_FLOW={release_image_flow}) ...\n"
     )
-    config_path = ROOT / "cmru.build.toml"
-    try:
-        run_step(config_path, "push-images", None)
-    except subprocess.CalledProcessError as exc:
-        sys.stderr.write(f"[ERROR] Push failed. Exit code: {exc.returncode}\n")
-        raise SystemExit(exc.returncode) from None
+    if release_image_flow == "load":
+        # Digest-verified crane push of the OCI layout oci_layout_bake() already
+        # built — not a bash step, so the double-build it replaces cannot come back.
+        _push_oci_layouts(env_vars)
+    else:
+        config_path = ROOT / "cmru.build.toml"
+        try:
+            run_step(config_path, "push-images", None)
+        except subprocess.CalledProcessError as exc:
+            sys.stderr.write(f"[ERROR] Push failed. Exit code: {exc.returncode}\n")
+            raise SystemExit(exc.returncode) from None
 
     sys.stderr.write("[INFO] Step 3/3: Syncing GHCR package visibility ...\n")
     # PHP 8.5 is a TAG variant of the base families now, not a separate package name —

@@ -181,6 +181,7 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
+    monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _cwd_parent: [])
     calls = []
     monkeypatch.setattr(
         handlers.subprocess, "run",
@@ -194,6 +195,81 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     assert argv[argv.index("-w") + 1] == str(project.parent)
     assert "wheel-builder:local" in argv
     assert argv[-1] == str(project)
+
+
+def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, monkeypatch):
+    """The regression this guards: a wheel built inside the isolated release
+    worktree's container, with only the worktree bind-mounted, cannot resolve
+    git history at all (worktree .git is a pointer OUTSIDE that subtree) — so
+    setuptools_scm silently falls back to pyproject.toml's fallback_version
+    and a WRONG version gets baked into the published wheel undetected."""
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
+    monkeypatch.setattr(
+        handlers, "_wheel_builder_git_mount_args",
+        lambda cwd_parent: ["-v", f"/host/common-git-dir:{tmp_path / '.gitcommon'}"],
+    )
+    calls = []
+    monkeypatch.setattr(
+        handlers.subprocess, "run",
+        lambda argv, **kw: calls.append((argv, kw)),
+    )
+    handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
+    argv, _kw = calls[0]
+    assert f"-v" in argv
+    assert f"/host/common-git-dir:{tmp_path / '.gitcommon'}" in argv
+
+
+def test_git_common_dir_returns_none_outside_a_repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        handlers.subprocess, "run",
+        lambda *_a, **_kw: argparse.Namespace(returncode=128, stdout=""),
+    )
+    assert handlers._git_common_dir(tmp_path) is None
+
+
+def test_git_common_dir_resolves_relative_output_against_cwd_parent(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        handlers.subprocess, "run",
+        lambda *_a, **_kw: argparse.Namespace(returncode=0, stdout=".git\n"),
+    )
+    assert handlers._git_common_dir(tmp_path) == (tmp_path / ".git").resolve()
+
+
+def test_git_common_dir_passes_through_an_already_absolute_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        handlers.subprocess, "run",
+        lambda *_a, **_kw: argparse.Namespace(returncode=0, stdout="/elsewhere/.git\n"),
+    )
+    assert handlers._git_common_dir(tmp_path) == Path("/elsewhere/.git")
+
+
+def test_wheel_builder_git_mount_args_empty_when_common_dir_is_inside_cwd_parent(tmp_path, monkeypatch):
+    """An ordinary (non-worktree) checkout: the common git dir is already covered
+    by the existing cwd_parent mount — no second mount needed."""
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _p: tmp_path / ".git")
+    assert handlers._wheel_builder_git_mount_args(tmp_path) == []
+
+
+def test_wheel_builder_git_mount_args_mounts_when_common_dir_is_outside_cwd_parent(tmp_path, monkeypatch):
+    """A release worktree: the common git dir lives in a completely different
+    directory — it must be bind-mounted separately, at its own absolute path,
+    so the worktree's .git pointer file resolves correctly inside the container."""
+    common_dir = tmp_path / "elsewhere" / ".git"
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _p: common_dir)
+    monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
+
+    worktree = tmp_path / "worktree"
+    assert handlers._wheel_builder_git_mount_args(worktree) == [
+        "-v", f"/host{common_dir}:{common_dir}",
+    ]
+
+
+def test_wheel_builder_git_mount_args_empty_when_git_common_dir_unresolvable(tmp_path, monkeypatch):
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _p: None)
+    assert handlers._wheel_builder_git_mount_args(tmp_path) == []
 
 
 # ─── built-in step synthesis (cmru.cli) ──────────────────────────────────────

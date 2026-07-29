@@ -155,8 +155,15 @@ commands = [
   { label = "modern-debian-tools-python-debug: private build + extract manifests", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
 ]
 [project.modern-debian-tools-python-debug.steps.run-tests]
+# --enable-docker: ONLY this project's gate gets an isolated, nested Docker
+# daemon (docker:dind sidecar — see cmru/src/cmru/tester_gate.py's dind_sidecar()).
+# test_oci_layout_push.py needs it (real docker buildx + crane + regctl + a
+# throwaway registry:2 container) to validate the checksum-identical OCI publish
+# path (FEAT-02, cmru/KNOWN_ISSUES_TODO_BACKLOG.md). Never the HOST's own Docker
+# daemon — the sidecar is fully disposable and isolated. No other project's
+# run-tests step passes this flag.
 commands = [
-  { label = "modern-debian-tools-python-debug: release-flow tests", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "modern-debian-tools-python-debug", "--", "/opt/tester-venv/bin/python", "-m", "unittest", "scripts.test_release_flow", "scripts.test_oci_tool_staging"], cwd = "." },
+  { label = "modern-debian-tools-python-debug: release-flow tests", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "/opt/tester-venv/bin/python", "-m", "unittest", "scripts.test_release_flow", "scripts.test_oci_tool_staging", "scripts.test_oci_layout_push"], cwd = "." },
 ]
 [project.modern-debian-tools-python-debug.steps.push]
 commands = [

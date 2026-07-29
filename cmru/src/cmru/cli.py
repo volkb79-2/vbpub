@@ -1538,6 +1538,11 @@ def _child_release_args(rest: List[str], config_path: Path, repo_root: Path) -> 
             continue
         if value.startswith("--resume="):
             continue
+        if value == "--abandon":
+            skip_next = True
+            continue
+        if value.startswith("--abandon="):
+            continue
         result.append(value)
     try:
         relative = config_path.resolve().relative_to(repo_root.resolve())
@@ -1738,11 +1743,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--config", help="Path to release.toml")
         parser.add_argument("--resume", metavar="WORKTREE",
                             help="Resume a retained failed release worktree")
+        parser.add_argument("--abandon", metavar="WORKTREE|all-previous",
+                            help="Discard a retained failed release worktree (or all "
+                                 "previous ones whose scope overlaps this run's "
+                                 "projects), then proceed with a fresh release")
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         vargs = parser.parse_args(rest)
+        if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
+            log_error("--resume and --abandon are mutually exclusive.")
+            _sys.exit(2)
 
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+        default_projects = _rest[0]
         github_config, env_config = _rest[-2], _rest[-1]
         apply_release_env(github_config, env_config)
 
@@ -1772,6 +1785,20 @@ def main(argv: Optional[List[str]] = None) -> None:
             try:
                 child_args = _child_release_args(rest, cfg_path, repo_root)
                 with transaction.release_lock(repo_root):
+                    if getattr(vargs, "abandon", None):
+                        if vargs.abandon == "all-previous":
+                            scope = [vargs.project] if vargs.project else default_projects
+                            abandoned = transaction.abandon_previous(repo_root, scope)
+                            if abandoned:
+                                for branch in abandoned:
+                                    log_info(f"Abandoned previous release attempt: {branch}")
+                            else:
+                                log_info("No previous release attempts to abandon.")
+                        else:
+                            target = transaction.resume_workspace(repo_root, Path(vargs.abandon))
+                            transaction.abandon_workspace(repo_root, target)
+                            log_info(f"Abandoned release attempt: {target.branch}")
+
                     if getattr(vargs, "resume", None):
                         workspace = transaction.resume_workspace(repo_root, Path(vargs.resume))
                     else:
@@ -1790,9 +1817,31 @@ def main(argv: Optional[List[str]] = None) -> None:
                     )
                     rc = transaction.run_child(workspace, child_args)
                     if rc == 0:
+                        transaction.remove_backup_branch(workspace)
                         transaction.remove_workspace(workspace)
+                        if transaction.sync_local_main(repo_root):
+                            log_info("Local main synced with origin/main.")
+                        else:
+                            log_warn(
+                                "Could not sync local main automatically (a rebase "
+                                "conflict); resolve manually — `git rebase origin/main`."
+                            )
                         log_info("Release transaction complete; isolated worktree removed.")
                     else:
+                        if transaction.promotion_landed(repo_root, workspace):
+                            log_error(
+                                "Release failed after origin/main was already promoted; "
+                                "attempting automatic revert..."
+                            )
+                            if transaction.revert_promotion(workspace):
+                                log_info("origin/main reverted to its pre-release state.")
+                            else:
+                                log_error(
+                                    "Automatic revert did not apply cleanly (origin/main may "
+                                    "have advanced, or the revert conflicted) — manual cleanup "
+                                    f"required: inspect branch {workspace.branch}."
+                                )
+                        transaction.sync_local_main(repo_root)
                         log_error(
                             f"Release transaction failed; retained {workspace.path} "
                             f"on branch {workspace.branch} for inspection/resume."
@@ -1819,9 +1868,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         # the transaction before it can create tags or publish anything.
         if not vargs.dry_run:
             release_names = [name for name in project_order if name in changed_names]
+            workspace = _transaction_workspace_from_env(repo_root)
+            transaction.write_release_scope(repo_root, workspace, release_names)
             _prepare_release_projects(repo_root, configs, release_names)
             _run_release_gates(repo_root, configs, release_names)
-            workspace = _transaction_workspace_from_env(repo_root)
+            transaction.push_backup_branch(workspace)
+            log_info(f"Backed up validated release branch {workspace.branch} to origin (durability).")
             transaction.promote_workspace(workspace)
             log_info(f"Promoted validated release branch {workspace.branch} to origin/main")
 
