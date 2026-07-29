@@ -268,10 +268,7 @@ def probe_ref(
         return _probe_minio(ref, parsed, config, docker_exec_fn=docker_exec_fn)
     elif parsed.kind == 'consul':
         return _probe_consul(ref, parsed, config, repo_root, vault_client=vault_client)
-    elif parsed.kind == 'stack':
-        return _probe_stack(ref, parsed, config, docker_exec_fn=docker_exec_fn)
-    else:
-        return ProbeResult(ref=ref, satisfied=False, reason=f"Unknown kind: {parsed.kind}")
+    return _probe_stack(ref, parsed, config, docker_exec_fn=docker_exec_fn)
 
 
 def _probe_vault(ref, parsed, config, repo_root, *, vault_client=None) -> ProbeResult:
