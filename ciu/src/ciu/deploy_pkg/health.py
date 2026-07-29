@@ -345,7 +345,10 @@ def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[
                     )
                 tools = _parse_cmd_shell_tools(test[1])
             else:
-                continue
+                raise ValueError(
+                    f"[S7.7] rendered Compose healthcheck for service {svc_name!r} "
+                    f"uses unsupported healthcheck mode {test[0]!r}: {compose_path}"
+                )
         else:
             continue
         if tools:
