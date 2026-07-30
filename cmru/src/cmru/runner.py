@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -376,6 +377,11 @@ def maybe_login_multi(login: Optional[dict], registries: Optional[list]) -> None
 
 
 TAIL_LINES_ON_FAILURE = 40
+ERROR_LINES_ON_FAILURE = 20
+# Matches this codebase's own "[ERROR] ..." convention (wherever it appears in a line,
+# e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
+# top-level "ERROR: target ... failed to solve" summary line.
+_ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:")
 
 
 def run_command(
@@ -391,8 +397,11 @@ def run_command(
     When ``quiet`` is set (build/push steps whose subprocess is itself very
     noisy, e.g. `docker buildx bake`), individual lines are not echoed live —
     only written to the log file — so the top-level release output stays
-    readable. On failure the last few lines are still surfaced immediately so
-    the user isn't left guessing without opening the log.
+    readable. On failure, lines that look like actual errors are surfaced
+    immediately; a raw tail is shown as a fallback when nothing matched (a
+    failing `docker buildx bake` re-echoes the whole compiled RUN script after
+    its real error, so a blind tail often shows that script instead of the
+    error that caused it).
     """
     location = f" (full output: {log_path})" if (quiet and log_path) else ""
     log_info(f"Running: {' '.join(argv)}{location}")
@@ -406,16 +415,27 @@ def run_command(
     )
     assert process.stdout is not None
     tail: deque[str] = deque(maxlen=TAIL_LINES_ON_FAILURE) if quiet else deque(maxlen=0)
+    # First-seen, not last-seen: docker buildx bake always ends with a generic
+    # "ERROR: failed to solve: ..." summary line, so a last-N policy would let
+    # that crowd out an earlier, actually-informative "[ERROR] ..." line once a
+    # failure produces more than ERROR_LINES_ON_FAILURE matches.
+    error_lines: list[str] = []
     for line in process.stdout:
         log_handle.write(line)
         if quiet:
             tail.append(line)
+            if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
+                error_lines.append(line)
         else:
             print(line, end="")
     exit_code = process.wait()
     if exit_code != 0:
+        if quiet and error_lines:
+            sys.stderr.write(f"[ERROR] {len(error_lines)} error-looking line(s) from the output:\n")
+            sys.stderr.write("".join(error_lines))
         if quiet and tail:
-            sys.stderr.write(f"[ERROR] Last {len(tail)} line(s) of output:\n")
+            context_note = " (context)" if error_lines else ""
+            sys.stderr.write(f"[ERROR] Last {len(tail)} line(s) of output{context_note}:\n")
             sys.stderr.write("".join(tail))
         raise subprocess.CalledProcessError(exit_code, argv)
 

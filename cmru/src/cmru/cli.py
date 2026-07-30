@@ -1507,6 +1507,105 @@ def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"
         log_info(f"{name}: no 'push' step — skipping")
 
 
+def _version_strategy(proj: "ProjectConfig") -> str:
+    return proj.version.strategy if getattr(proj, "version", None) else "scm"
+
+
+def _release_projects_sequentially(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    workspace: transaction.ReleaseWorkspace,
+    release_names: List[str],
+    *,
+    no_build: bool = False,
+    minor: bool = False,
+    major: bool = False,
+    set_version: Optional[str] = None,
+) -> List[str]:
+    """Release every named project one after another (build all projects after
+    another): each project's own prepare → gate → promote → tag → build → publish
+    cycle completes in full before the next project starts. This is what lets a
+    later project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel)
+    brand-new release within this SAME run, instead of always trailing one
+    `cmru release` behind.
+
+    Progress is checkpointed after each project's full success
+    (:func:`transaction.write_release_progress`) so that if a LATER project fails,
+    the caller's revert only undoes that project's promoted changes — an earlier,
+    already-succeeded, already-published project is left alone.
+
+    Returns the "{name} (...)" labels actually built/published (empty entries for
+    projects released with ``no_build=True`` are omitted).
+    """
+    from cmru.version import release_cmd
+
+    # Seed the checkpoint at this run's own starting point. Without this, a
+    # --resume reusing the same branch token would read a *previous* attempt's
+    # (older, now-invalid) checkpoint and could revert past the operator's own
+    # fix commit on --resume. read_release_progress() returning "the run's base"
+    # is exactly equivalent to "nothing has fully succeeded yet in this run".
+    transaction.write_release_progress(repo_root, workspace, workspace.base)
+
+    released: List[str] = []
+    for name in release_names:
+        project = configs[name]
+        log_info(f"=== {name}: releasing ===")
+
+        _prepare_release_projects(repo_root, configs, [name])
+        _run_release_gates(repo_root, configs, [name])
+
+        transaction.promote_workspace(workspace)
+        log_info(f"{name}: promoted to origin/main")
+        # Keep the durability backup current as the run progresses — otherwise
+        # it forever holds only the pre-run base and a crash mid-run has nothing
+        # of this run's work to recover from.
+        transaction.push_backup_branch(workspace)
+
+        strategy = _version_strategy(project)
+        if strategy == "delegated":
+            if not no_build:
+                log_info(f"Building + publishing {name} (delegated versioning)")
+                _run_delegated_project(repo_root, configs, name)
+                released.append(f"{name} (delegated)")
+            else:
+                log_info(f"{name}: --no-build — skipped delegated build/publish")
+        elif not getattr(project, "mint_tag", True):
+            if not no_build:
+                log_info(f"Building + pushing {name} (oci-image — registry, no tag)")
+                _run_registry_project(repo_root, configs, name)
+                released.append(f"{name} (image)")
+            else:
+                log_info(f"{name}: --no-build — skipped build/push")
+        else:
+            release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
+            # A file:-strategy tag commits a version bump *after* the promote
+            # above — push it now so it lands on origin/main this cycle, not
+            # deferred to whichever project (if any) happens to promote next.
+            # A no-op (nothing new to push) for scm/counter strategies.
+            transaction.promote_workspace(workspace)
+            tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
+            if tag:
+                _push_tags(repo_root, [tag])
+                if not no_build:
+                    log_info(f"Building + publishing {name} ({tag})")
+                    _run_project_steps(repo_root, configs, [name], ["build", "push"])
+                    released.append(f"{name} ({tag})")
+                else:
+                    log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
+            elif not no_build:
+                raise RuntimeError(
+                    f"{name}: gate passed and it was in this run's changed-project scope, "
+                    "but no tag ended up on HEAD (mint_tag strategy produced nothing to "
+                    "build/publish) — this should not happen; investigate before retrying"
+                )
+
+        # This project's whole cycle succeeded — checkpoint it so a LATER
+        # project's failure can only revert what comes after this point.
+        transaction.write_release_progress(repo_root, workspace, _git(repo_root, "rev-parse", "HEAD"))
+
+    return released
+
+
 def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorkspace:
     """Recover transaction provenance in the re-execed child process."""
     workspace = transaction.ReleaseWorkspace(
@@ -1572,18 +1671,43 @@ def _run_release_gates(
         run_project_step(project, "run-tests", repo_root, log_dir)
 
 
-def _worktree_changed_paths(repo_root: Path) -> List[str]:
-    """Return every non-ignored path changed in the transaction worktree."""
+def _worktree_changed_paths(repo_root: Path, *, paths: Optional[List[str]] = None) -> List[str]:
+    """Return every non-ignored changed path (tracked diff + staged + untracked),
+    optionally scoped to ``paths`` — otherwise repo-wide."""
+    scope = list(paths) if paths else []
     commands = (
         ("diff", "--name-only"),
         ("diff", "--cached", "--name-only"),
         ("ls-files", "--others", "--exclude-standard"),
     )
-    paths: list[str] = []
+    changed: list[str] = []
     for command in commands:
-        out = _git(repo_root, *command)
-        paths.extend(line for line in out.splitlines() if line)
-    return list(dict.fromkeys(paths))
+        args = (*command, "--", *scope) if scope else command
+        out = _git(repo_root, *args)
+        changed.extend(line for line in out.splitlines() if line)
+    return list(dict.fromkeys(changed))
+
+
+def _uncommitted_release_paths(
+    repo_root: Path, ordered: Mapping[str, "ProjectConfig"], names: Iterable[str],
+) -> dict[str, List[str]]:
+    """Map project name -> its uncommitted (tracked/staged/untracked) file paths,
+    for every named project that currently has any. Empty when the scope is clean.
+
+    This runs in the CALLER's own checkout, before an isolated worktree is even
+    created — origin/main is the only release source, so local uncommitted work
+    would otherwise be silently left out with no signal (see the note in
+    ``main()``'s release verb handler)."""
+    dirty: dict[str, List[str]] = {}
+    for name in names:
+        project = ordered.get(name)
+        if project is None:
+            continue
+        paths = getattr(project, "paths", None) or [getattr(project, "cwd", None) or name]
+        changed = _worktree_changed_paths(repo_root, paths=paths)
+        if changed:
+            dirty[name] = changed
+    return dirty
 
 
 def _is_declared_generated(path: str, declared: List[str]) -> bool:
@@ -1747,6 +1871,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                             help="Discard a retained failed release worktree (or all "
                                  "previous ones whose scope overlaps this run's "
                                  "projects), then proceed with a fresh release")
+        parser.add_argument("--allow-uncommitted", action="store_true",
+                            help="release: proceed even though a released project's path has "
+                                 "local uncommitted changes (which origin/main won't include)")
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         vargs = parser.parse_args(rest)
         if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
@@ -1777,17 +1904,24 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
             return
 
+        if vargs.project and vargs.project not in ordered:
+            log_error(f"Unknown or non-orchestrated project: {vargs.project}")
+            _sys.exit(2)
+
         # The normal command is a launcher, never a publisher from the caller's
-        # checkout.  It is safe to have any uncommitted work in that checkout:
-        # origin/main is the only release source.  Local-only *commits* remain a
-        # fail-closed condition because they are likely intended release inputs.
+        # checkout: origin/main is the only release source, built in an isolated
+        # worktree. Local-only *commits* are a fail-closed condition (they are
+        # likely intended release inputs — see assert_local_main_not_ahead below).
+        # Uncommitted work is fail-closed too, but only when it touches a released
+        # project's own path (--allow-uncommitted overrides): otherwise it would be
+        # silently left out with no warning, since the build never looks at it.
         if not vargs._transaction_child:
             try:
                 child_args = _child_release_args(rest, cfg_path, repo_root)
                 with transaction.release_lock(repo_root):
+                    scope = [vargs.project] if vargs.project else default_projects
                     if getattr(vargs, "abandon", None):
                         if vargs.abandon == "all-previous":
-                            scope = [vargs.project] if vargs.project else default_projects
                             abandoned = transaction.abandon_previous(repo_root, scope)
                             if abandoned:
                                 for branch in abandoned:
@@ -1798,6 +1932,26 @@ def main(argv: Optional[List[str]] = None) -> None:
                             target = transaction.resume_workspace(repo_root, Path(vargs.abandon))
                             transaction.abandon_workspace(repo_root, target)
                             log_info(f"Abandoned release attempt: {target.branch}")
+
+                    # Not --dry-run: a preview has no publish step to protect, and "I have
+                    # local edits I haven't committed yet" is exactly when you'd run one.
+                    if not vargs.dry_run and not vargs.allow_uncommitted:
+                        # release actually iterates `ordered` (== project_order), which is
+                        # independently configurable from default_projects (used for the
+                        # --abandon scope above) — check what will really run, not a
+                        # possibly-narrower-or-wider default.
+                        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
+                        dirty = _uncommitted_release_paths(repo_root, ordered, release_scope)
+                        if dirty:
+                            for name, files in dirty.items():
+                                log_error(f"{name}: uncommitted changes — {', '.join(files)}")
+                            log_error(
+                                "Uncommitted local changes touch the project path(s) above. "
+                                "origin/main is the only release source, so this run would "
+                                "silently leave them out. Commit (and push) them first, or "
+                                "pass --allow-uncommitted to release without them."
+                            )
+                            _sys.exit(2)
 
                     if getattr(vargs, "resume", None):
                         workspace = transaction.resume_workspace(repo_root, Path(vargs.resume))
@@ -1819,6 +1973,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     if rc == 0:
                         transaction.remove_backup_branch(workspace)
                         transaction.remove_workspace(workspace)
+                        transaction.forget_release_scope(repo_root, workspace)
                         if transaction.sync_local_main(repo_root):
                             log_info("Local main synced with origin/main.")
                         else:
@@ -1829,12 +1984,29 @@ def main(argv: Optional[List[str]] = None) -> None:
                         log_info("Release transaction complete; isolated worktree removed.")
                     else:
                         if transaction.promotion_landed(repo_root, workspace):
+                            # Projects release one after another (each project's own
+                            # prepare/gate/promote/tag/build/publish finishes before the next
+                            # starts — S-REL). checkpoint is the source commit as of the last
+                            # project to fully finish (may equal workspace.base, e.g. when
+                            # every earlier project in this run had no prepare-step commit of
+                            # its own — their tags/artifacts are unaffected either way, only
+                            # source-tree commits are ever reverted). Reverting from checkpoint
+                            # rather than workspace.base leaves any earlier project's own
+                            # promoted commit alone.
+                            checkpoint = transaction.read_release_progress(repo_root, workspace)
                             log_error(
                                 "Release failed after origin/main was already promoted; "
-                                "attempting automatic revert..."
+                                "attempting automatic revert of the in-flight project's "
+                                "changes..."
                             )
-                            if transaction.revert_promotion(workspace):
-                                log_info("origin/main reverted to its pre-release state.")
+                            revert = transaction.revert_promotion(workspace, from_sha=checkpoint)
+                            if revert.ok and revert.reverted:
+                                log_info("origin/main reverted to its last-known-good state.")
+                            elif revert.ok:
+                                log_info(
+                                    "Nothing to revert on origin/main — the in-flight project "
+                                    "never got as far as its own promotion."
+                                )
                             else:
                                 log_error(
                                     "Automatic revert did not apply cleanly (origin/main may "
@@ -1854,91 +2026,64 @@ def main(argv: Optional[List[str]] = None) -> None:
         # --- release: detect → tag → push → build → publish -------------------
         from cmru.version import release_cmd, detect_changed_projects
 
-        def _strategy(proj) -> str:
-            return proj.version.strategy if getattr(proj, "version", None) else "scm"
-
         changed = detect_changed_projects(repo_root, ordered)
         if vargs.project:
             changed = [c for c in changed if c[0] == vargs.project]
         changed_names = {c[0] for c in changed}
 
-        # A tag or public artifact is permitted only after every changed product's
-        # real gate passed inside the isolated snapshot.  Once gates pass, advance
-        # remote main from this exact branch.  A concurrent remote update rejects
-        # the transaction before it can create tags or publish anything.
-        if not vargs.dry_run:
-            release_names = [name for name in project_order if name in changed_names]
-            workspace = _transaction_workspace_from_env(repo_root)
-            transaction.write_release_scope(repo_root, workspace, release_names)
-            _prepare_release_projects(repo_root, configs, release_names)
-            _run_release_gates(repo_root, configs, release_names)
-            transaction.push_backup_branch(workspace)
-            log_info(f"Backed up validated release branch {workspace.branch} to origin (durability).")
-            transaction.promote_workspace(workspace)
-            log_info(f"Promoted validated release branch {workspace.branch} to origin/main")
+        release_names = [name for name in project_order if name in changed_names]
+        skipped_names = [name for name in project_order if name not in changed_names]
+        if release_names:
+            log_info(
+                f"Release plan: {len(release_names)}/{len(project_order)} project(s) changed "
+                f"— releasing in order: {', '.join(release_names)}"
+            )
+        else:
+            log_info("Release plan: no changed projects detected; nothing to release.")
+        if skipped_names:
+            log_info(f"Unchanged, skipping: {', '.join(skipped_names)}")
 
-        # Tag the non-delegated changed projects (clean-tree guard lives in release_cmd).
-        created = release_cmd(
-            repo_root, ordered,
-            project_filter=vargs.project,
-            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            dry_run=vargs.dry_run,
-        )
         if vargs.dry_run:
+            # Preview only: show what would be tagged for every changed project, no
+            # commits/gates/promotion/tags — nothing here has side effects.
+            release_cmd(
+                repo_root, ordered,
+                project_filter=vargs.project,
+                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                dry_run=True,
+            )
             log_info("[DRY RUN] No tags pushed, nothing built/published.")
             return
 
-        # What to build/publish:
-        #   tagged  = non-delegated projects whose HEAD now carries their tag
-        #             (covers just-created tags AND a half-finished prior release)
-        #   delegated = delegated-versioned projects that changed (self-version at build)
-        #   tagged    = mint_tag projects whose HEAD now carries their <prefix><semver>
-        #   delegated = delegated-versioned projects (self-version at build, own the tag)
-        #   registry  = oci-image / version='none' projects (push images, no tag)
-        tagged: dict[str, str] = {}
-        delegated: list[str] = []
-        registry: list[str] = []
-        for name, proj in ordered.items():
-            if vargs.project and name != vargs.project:
-                continue
-            if _strategy(proj) == "delegated":
-                if name in changed_names:
-                    delegated.append(name)
-                continue
-            if not getattr(proj, "mint_tag", True):
-                if name in changed_names:
-                    registry.append(name)
-                continue
-            tag = _tag_on_head(repo_root, proj.prefix or f"{name}-v")
-            if tag:
-                tagged[name] = tag
-
-        if not tagged and not delegated and not registry:
-            log_info("Nothing to release (no changed/tagged projects).")
+        if not release_names:
+            log_info("Nothing to release (no changed projects).")
             return
 
-        _push_tags(repo_root, list(tagged.values()))
+        # Build all projects after another (S-REL): each project's own
+        # prepare → gate → promote → tag → build → publish cycle runs to completion
+        # before the next project starts. This is what lets a later project (e.g. an
+        # OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
+        # within this SAME `cmru release` run, instead of always trailing one run
+        # behind. Each project's promotion is independent: if project N fails, the
+        # already-published projects before it are left alone (see
+        # transaction.write_release_progress / the parent's scoped-revert handling).
+        workspace = _transaction_workspace_from_env(repo_root)
+        transaction.write_release_scope(repo_root, workspace, release_names)
+        transaction.push_backup_branch(workspace)
+        log_info(f"Backed up release branch {workspace.branch} to origin (durability).")
 
-        if vargs.no_build:
-            log_info(f"--no-build: tagged + pushed {', '.join(tagged.values())}; skipped build/publish.")
-            return
+        released = _release_projects_sequentially(
+            repo_root, configs, workspace, release_names,
+            no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
+            set_version=vargs.set_version,
+        )
 
-        # Build + publish in project_order. Each release kind has its own driver.
-        released: list[str] = []
-        for name in project_order:
-            if name in tagged:
-                log_info(f"Building + publishing {name} ({tagged[name]})")
-                _run_project_steps(repo_root, configs, [name], ["build", "push"])
-                released.append(f"{name} ({tagged[name]})")
-            elif name in delegated:
-                log_info(f"Building + publishing {name} (delegated versioning)")
-                _run_delegated_project(repo_root, configs, name)
-                released.append(f"{name} (delegated)")
-            elif name in registry:
-                log_info(f"Building + pushing {name} (oci-image — registry, no tag)")
-                _run_registry_project(repo_root, configs, name)
-                released.append(f"{name} (image)")
-        log_info(f"Released: {', '.join(released)}")
+        if released:
+            log_info(f"Released: {', '.join(released)}")
+        elif vargs.no_build:
+            log_info("Tagged only (--no-build); nothing built or published.")
+        else:
+            log_info("Nothing built or published (see per-project log above for why).")
 
     elif verb == "cleanup":
         import argparse as _ap

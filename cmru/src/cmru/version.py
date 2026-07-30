@@ -37,6 +37,9 @@ def _git(repo_root: Path, *args: str) -> str:
         ["git", *args], cwd=repo_root,
         capture_output=True, text=True,
     )
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"git {' '.join(args)} failed ({result.returncode}): {detail}")
     return result.stdout.strip()
 
 

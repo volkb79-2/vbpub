@@ -508,6 +508,20 @@ def fetch_url_bytes(url: str, *, timeout: int = 20) -> bytes:
         return response.read()
 
 
+def _url_exists(url: str, *, timeout: int = 15) -> bool:
+    """HEAD-check a download URL. A definitive 404 is treated as "gone"; a network
+    hiccup is NOT (returns True) so a transient blip doesn't force an unnecessary
+    fallback resolution."""
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return 200 <= response.status < 400
+    except urllib.error.HTTPError as exc:
+        return exc.code not in (404, 410)
+    except urllib.error.URLError:
+        return True
+
+
 def resolve_ciu_wheel_via_latest_json(owner: str, repo: str) -> tuple[str, str, str, str, str]:
     """Resolve CIU wheel coordinates from the ciu-latest/latest.json pointer file.
 
@@ -551,6 +565,19 @@ def resolve_ciu_wheel_via_latest_json(owner: str, repo: str) -> tuple[str, str, 
         print(
             "[WARN] ciu-latest/latest.json is missing required fields "
             "(version/tag/asset/url); falling back to ciu-v* scan",
+            file=sys.stderr,
+        )
+        return "", "", "", "", ""
+
+    # The pointer is a THIN redirect refreshed only when a ciu release fully completes
+    # (cmru.release.publish_versioned). An interrupted/failed release can leave it
+    # aimed at a tag/asset that was never actually published (or has since been
+    # removed) — confirm the asset is real before trusting it, rather than silently
+    # handing back a dangling reference.
+    if not _url_exists(wheel_url):
+        print(
+            f"[WARN] ciu-latest/latest.json points at {wheel_url}, which does not exist "
+            "(stale pointer from an incomplete/aborted release); falling back to ciu-v* scan",
             file=sys.stderr,
         )
         return "", "", "", "", ""

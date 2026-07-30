@@ -193,8 +193,43 @@ def read_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> list[str
         return None
 
 
-def _forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Remove this workspace's scope + progress-checkpoint marker files. Callers:
+    abandon_workspace() (a discarded attempt) and a successful release (its scope
+    marker is otherwise never cleaned up — see remove_workspace())."""
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
+    _forget_release_progress(repo_root, workspace)
+
+
+def write_release_progress(repo_root: Path, workspace: ReleaseWorkspace, sha: str) -> None:
+    """Record the commit SHA as of the last *fully completed* project in a
+    per-project release run (build-all-projects-after-another: S-REL — each
+    project's prepare/gate/promote/tag/build/publish cycle finishes before the
+    next project's starts). On a later failure, the parent uses this instead of
+    the transaction's original base commit so it only reverts the in-flight
+    project's promoted changes, never an earlier project's already-published
+    release."""
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.progress").write_text(sha, encoding="utf-8")
+
+
+def read_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> str | None:
+    """The last-fully-completed-project checkpoint for a workspace, or None if no
+    project has completed yet (or this predates the feature) — callers should
+    fall back to ``workspace.base`` (revert everything) in that case."""
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.progress"
+    if not path.exists():
+        return None
+    try:
+        sha = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return sha or None
+
+
+def _forget_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.progress").unlink(missing_ok=True)
 
 
 def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
@@ -227,7 +262,7 @@ def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     before promote, so there is nothing there to undo."""
     remove_backup_branch(workspace)
     remove_workspace(workspace)
-    _forget_release_scope(repo_root, workspace)
+    forget_release_scope(repo_root, workspace)
 
 
 def abandon_previous(repo_root: Path, current_projects: Sequence[str]) -> list[str]:
@@ -293,32 +328,51 @@ def promotion_landed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
     return origin_main == branch_tip
 
 
-def revert_promotion(workspace: ReleaseWorkspace) -> bool:
+@dataclass(frozen=True)
+class RevertResult:
+    ok: bool          # False ⇒ needs manual cleanup (didn't apply cleanly / push rejected)
+    reverted: bool    # True ⇒ a revert commit was actually pushed; False ⇒ nothing needed it
+
+
+def revert_promotion(workspace: ReleaseWorkspace, *, from_sha: str | None = None) -> RevertResult:
     """Best-effort: undo this release's commits on ``origin/main`` by pushing a revert.
+
+    ``from_sha`` scopes the revert to ``(from_sha, branch tip]`` instead of the whole
+    transaction (``workspace.base``) — pass the last-fully-completed-project checkpoint
+    (:func:`read_release_progress`) in a per-project release run so a later project's
+    failure only undoes its own promoted changes, never an earlier project's already
+    -published release. Defaults to ``workspace.base`` (revert everything promoted this
+    transaction) when omitted, preserving the whole-transaction behavior.
 
     Caller MUST have already confirmed :func:`promotion_landed` — this never rewrites
     history (no force-push), it only adds a new revert commit on top, so it is safe
-    to attempt even if the precondition was checked slightly earlier. Returns False
-    (leaving origin/main as-is) when there is nothing to revert, the revert does not
-    apply cleanly, or the push is rejected (e.g. someone pushed to main meanwhile) —
-    all of which require manual cleanup.
+    to attempt even if the precondition was checked slightly earlier.
+
+    ``RevertResult.ok`` is False (manual cleanup required) when the revert does not
+    apply cleanly or the push is rejected (e.g. someone pushed to main meanwhile).
+    ``RevertResult.reverted`` distinguishes "there was nothing to revert" (ok=True,
+    reverted=False — e.g. the failing project never got as far as its own promote)
+    from "a revert commit was actually pushed" (ok=True, reverted=True) — callers
+    that log "reverted" should check ``.reverted``, not just ``.ok``, or they'll
+    claim a revert happened when nothing was there to undo.
     """
+    base = from_sha if from_sha is not None else workspace.base
     branch_tip = _git(workspace.path, "rev-parse", workspace.branch)
-    if workspace.base == branch_tip:
-        return True  # nothing was promoted beyond origin's prior state
+    if base == branch_tip:
+        return RevertResult(ok=True, reverted=False)
     result = subprocess.run(
-        ["git", "revert", "--no-edit", "--no-commit", f"{workspace.base}..{workspace.branch}"],
+        ["git", "revert", "--no-edit", "--no-commit", f"{base}..{branch_tip}"],
         cwd=workspace.path,
     )
     if result.returncode != 0:
         subprocess.run(["git", "revert", "--abort"], cwd=workspace.path, check=False)
-        return False
+        return RevertResult(ok=False, reverted=False)
     subprocess.run(
         ["git", "commit", "-m", f"revert: undo failed release {workspace.branch}"],
         cwd=workspace.path, check=True,
     )
     push = subprocess.run(["git", "push", "origin", "HEAD:refs/heads/main"], cwd=workspace.path)
-    return push.returncode == 0
+    return RevertResult(ok=push.returncode == 0, reverted=push.returncode == 0)
 
 
 def sync_local_main(repo_root: Path) -> bool:

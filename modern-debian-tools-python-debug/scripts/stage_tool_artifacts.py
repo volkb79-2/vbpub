@@ -1380,7 +1380,10 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     hadolint_base_url = f"https://github.com/hadolint/hadolint/releases/download/v{hadolint_ver}"
     hadolint_bin_url = f"{hadolint_base_url}/{hadolint_bin_name}"
 
-    hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}-checksums.sha256"
+    # Local filename is stable regardless of which upstream layout backs it — the
+    # Dockerfile's install step (require_file "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}.sha256")
+    # hardcodes this name, same contract every other staged tool follows.
+    hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}.sha256"
     hadolint_sha256_url = f"{hadolint_base_url}/checksums.sha256"
     hadolint_checksum_final_url = _download(hadolint_sha256_url, hadolint_sha256_path, not_found_ok=True)
     if hadolint_checksum_final_url is None:
@@ -1388,7 +1391,6 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
             f"No combined checksums.sha256 for hadolint v{hadolint_ver}; "
             "falling back to per-asset sidecar checksum"
         )
-        hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}.sha256"
         hadolint_sha256_url = f"{hadolint_base_url}/{hadolint_bin_name}.sha256"
         _download(hadolint_sha256_url, hadolint_sha256_path)
 

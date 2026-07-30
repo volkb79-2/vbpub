@@ -37,16 +37,30 @@ than minting a new one.
 clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
-working tree. It acquires a repository-local exclusive lock, fetches `origin/main`, rejects
-local-only commits on local `main` that the remote snapshot would omit (and warns if local
-`main` is behind), then creates
-an ephemeral `cmru/release/<id>` worktree at that exact remote commit, and re-execs there.
-All caller working-tree edits are ignored: they cannot enter the immutable remote snapshot.
-Before any tag or public artifact it MUST run every changed project's declared `run-tests`
-gate in its real gate environment, push the validated branch to origin under its own name
-(durability: a crashed machine or lost worktree still leaves an inspectable, resumable copy
-on origin — `main` itself is untouched by this push), then fast-forward `origin/main` from
-that branch. A non-fast-forward remote update aborts before publication.
+working tree. It acquires a repository-local exclusive lock, rejects local-only commits on
+local `main` that the remote snapshot would omit (and warns if local `main` is behind), and
+rejects any uncommitted change (tracked or untracked) under a project's own path for every
+project in this run's scope (`--project <name>`, else every orchestrated project — the same
+`project_order`-derived set `release` itself iterates, not the possibly-different
+`orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
+there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
+no override for local-only commits. It then fetches `origin/main`, creates an ephemeral
+`cmru/release/<id>` worktree at that exact remote commit, and re-execs there. All caller
+working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
+are still ignored: they cannot enter the immutable remote snapshot regardless.
+
+**S-CLI.5a — Projects release one after another, not in a shared batch.** Inside the worktree,
+every changed project (`orchestration.project_order`, filtered to what actually changed) runs
+its own full cycle — prepare → gate → promote → tag → build → publish — to completion before
+the next project's cycle begins. Before any given project's tag or public artifact, cmru MUST
+run that project's declared `run-tests` gate in its real gate environment, then fast-forward
+`origin/main` from the worktree's current `HEAD` (a non-fast-forward remote update aborts
+before that project's publication). The origin backup branch (durability: a crashed machine or
+lost worktree still leaves an inspectable, resumable copy on origin) is pushed once up front
+and refreshed again after each project's own promote, so it stays current with this run's
+progress rather than forever holding only the pre-run base. This ordering is what lets a later
+project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
+within the same `cmru release` run, instead of always trailing one run behind.
 
 On success: the origin backup branch and the local worktree/branch are removed, and the
 caller's local `main` is synced with `origin/main`: a fast-forward when local main hasn't
@@ -67,39 +81,64 @@ Before the release:
 
 The release runs entirely inside an ISOLATED WORKTREE — a separate checkout on
 its own cmru/release/<id> branch. repo_root's own `main` is never checked out,
-never touched, during any of this:
-  release branch:  ──●(base)──●(R1: mechanical prep commit)
-                                │
-                      push_backup_branch → origin gets a copy of this branch (durability)
+never touched, during any of this. push_backup_branch runs once, up front
+(origin gets a copy of this branch for durability, before any project starts).
+Each changed project then promotes SEPARATELY, one after another (S-CLI.5a) —
+shown here for two projects, "alpha" then "beta":
+
+  release branch:  ──●(base)──●(A1: alpha's prep/tag commit, if any)
                                 │
                       promote_workspace → git push origin HEAD:refs/heads/main
                                 ▼
-  origin/main:     ──●(base)──●(R1)                    ← origin/main just advanced
-  local main:      ──●(base)                           ← still here; nothing touched it
+  origin/main:     ──●(base)──●(A1)          ← alpha fully tagged/built/published here;
+                                                checkpoint records A1 as the last full success
+
+  release branch:  ──●(base)──●(A1)──●(B1: beta's prep commit, if any)
+                                       │
+                           promote_workspace → git push origin HEAD:refs/heads/main
+                                       ▼
+  origin/main:     ──●(base)──●(A1)──●(B1)   ← beta fully tagged/built/published here;
+                                                checkpoint advances to B1
+  local main:      ──●(base)                 ← still here; nothing touched it
 
 Meanwhile, if the caller committed their own work locally while the release built:
   local main:      ──●(base)──●(D1)──●(D2)             [unrelated local work]
 
-sync_local_main rebases local main onto the new origin/main tip:
-  local main:      ──●(base)──●(R1)──●(D1')──●(D2')    ← D1/D2 replayed (new hashes), linear
+sync_local_main rebases local main onto the new origin/main tip, once, after every
+project in this run has finished:
+  local main:      ──●(base)──●(A1)──●(B1)──●(D1')──●(D2')    ← D1/D2 replayed (new hashes), linear
 ```
 
 Deleting the release branch on success (both locally and its origin backup) is cleanup of a
-now-redundant ref — R1 is already permanently part of `origin/main`'s history, so the branch's
-job is done. That deletion does nothing to `local main` by itself; `sync_local_main` is the
-only step that touches it.
+now-redundant ref — A1/B1 are already permanently part of `origin/main`'s history, so the
+branch's job is done. That deletion does nothing to `local main` by itself; `sync_local_main`
+is the only step that touches it.
 
 On failure: the local worktree/branch and its origin backup are retained for inspection —
 `release` never resumes one automatically; the caller explicitly chooses `--resume <path>` to
 continue that exact attempt, or lets the next `release` invocation start fresh instead (the
 normal/default case: gates must re-validate against a fresh snapshot rather than a debugged,
-possibly hand-edited one — see S-REL.4a). If `origin/main` had already been promoted before the
-failing step (tag/build/publish failed *after* the fast-forward), cmru attempts an automatic
-revert: a plain `git revert` commit pushed on top of `origin/main` — never a force-push or
-history rewrite — restoring it to its pre-release state. The revert is skipped, requiring
-manual cleanup, if it does not apply cleanly or if `origin/main` has advanced past the release
-since promotion (a concurrent push landed on top). Local `main` is synced with `origin/main`
-(fast-forward or rebase, as above) regardless of outcome.
+possibly hand-edited one — see S-REL.4a). Because projects release one after another
+(S-CLI.5a), a failing project's own promotion — if it landed before the failure — is reverted
+*without disturbing any earlier project in the same run that already fully released*: cmru
+tracks a checkpoint (the commit as of the last project to fully succeed, written after each
+project's complete cycle, and seeded to this run's own `base` before the loop starts — so a
+`--resume` reusing the same branch/token never reads a stale checkpoint left over from an
+earlier, different attempt on that token) and reverts only `(checkpoint, origin/main]`, never
+the whole transaction's `(base, origin/main]` range. If the failing project is the first one in
+the run and never got as far as its own promote, the checkpoint equals `base` and this degrades
+to "nothing to revert" — the classic all-or-nothing case. (The checkpoint tracks source-tree
+commits only: a project with no `prepare` step commits nothing of its own, so the checkpoint can
+still equal `base` even after that project's tag and published artifact are real — those are
+untouched regardless, since a source-tree `git revert` never touches tags/Releases/registry
+pushes.) The revert itself is always a plain
+`git revert` commit pushed on top of `origin/main` — never a force-push or history rewrite. It
+is skipped, requiring manual cleanup, if it does not apply cleanly or if `origin/main` has
+advanced past the release since promotion (a concurrent push landed on top). Local `main` is
+synced with `origin/main` (fast-forward or rebase, as above) regardless of outcome.
+On a later `release` invocation (fresh or via `--resume`), each already-fully-released project
+in the failed attempt shows as unchanged (S12.2 is tag-based) and is skipped automatically —
+only the reverted project and anything after it in `project_order` are attempted again.
 
 **`--abandon <path>|all-previous`** discards a retained attempt instead of resuming it, then
 proceeds with a normal fresh release in the same invocation: its origin backup branch, local
