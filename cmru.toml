@@ -18,15 +18,15 @@ registry = ["ghcr.io"]       # OCI registries to push images to (S11.3)
 [orchestration]
 # Only projects listed here are auto-tagged/released by `status`/`release` (S-CLI.2).
 # empyrion-translation stays on-demand (date-tagged game asset, not in this set).
-project_order    = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
-default_projects = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
+project_order    = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+default_projects = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
 default_steps    = ["run-tests", "build", "push", "validate"]
 execution_mode   = "project-first"
 
 [orchestration.step_project_order]
-run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp", "topos"]
-build     = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
-push      = ["ciu", "cmru", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "topos"]
+run-tests = ["ciu", "topos", "modern-debian-tools-python-debug", "pwmcp"]
+build     = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+push      = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
 validate  = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
 
 [cleanup]

@@ -61,3 +61,4 @@ jinja2                # templating (also a CIU dependency)
 tomli_w               # write TOML (also a CIU dependency)
 click                 # build quick CLIs
 rich                  # pretty terminal output / tables
+textual               # TUI framework (topos wheel dep: `topos --attach` interactive UI)

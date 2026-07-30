@@ -202,7 +202,14 @@ def run_commands(commands: Iterable[Command], project_env: Optional[Mapping[str,
 
 
 def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
-    """Convert orchestrator Command objects to a StepConfig for the unified runner."""
+    """Convert orchestrator Command objects to a StepConfig for the unified runner.
+
+    ``run-tests`` defaults to quiet (log file + pointer, no live line-by-line
+    echo) regardless of how a project declares its command — a real gate run
+    (tester-unified, coverage reports, etc.) is exactly the kind of noisy
+    subprocess `quiet` exists for, same as a `docker buildx bake`; no per-project
+    opt-in should be needed to get a readable top-level release log.
+    """
     return StepConfig(
         name=step_name,
         commands=[
@@ -217,6 +224,7 @@ def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
         login=None,
         step_env={},
         env_command=None,
+        quiet=(step_name == "run-tests"),
     )
 
 
@@ -763,7 +771,18 @@ def resolve_versions_from_git(
         if not project.prefix or not project.scm_dist:
             continue
         prefix_tag = f"{project.prefix}"
-        exact = _git(repo_root, "describe", "--tags", "--exact-match", "--match", f"{prefix_tag}*")
+        # git describe --exact-match legitimately exits non-zero (128) whenever HEAD
+        # isn't exactly on one of THIS project's tags — the normal case for every
+        # scm_dist project except whichever one is currently being tagged/built (with
+        # multiple projects releasing one after another in the same worktree, S-CLI.5a,
+        # that's most of them most of the time). Not a `_git()` failure to raise on.
+        probe = subprocess.run(
+            ["git", "-C", str(repo_root), "describe", "--tags", "--exact-match", "--match", f"{prefix_tag}*"],
+            capture_output=True, text=True,
+        )
+        if probe.returncode != 0:
+            continue
+        exact = probe.stdout.strip()
         if not exact:
             continue
         semver = exact[len(prefix_tag):]

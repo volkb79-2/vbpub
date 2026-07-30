@@ -1,6 +1,7 @@
 """Behavioural contract tests for isolated, source-first release transactions."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -113,6 +114,18 @@ def test_child_args_removes_parent_only_resume_option(tmp_path):
 def test_required_gate_rejects_project_without_run_tests(tmp_path):
     with pytest.raises(RuntimeError, match="no release gate"):
         cli._run_release_gates(tmp_path, {"alpha": _project("alpha")}, ["alpha"])
+
+
+def test_build_step_config_defaults_run_tests_to_quiet_but_not_other_steps():
+    """No per-project opt-in should be needed to get a readable top-level release
+    log out of a real test-gate run (coverage reports, hundreds of test IDs, ...) —
+    same treatment `quiet` already gives a noisy `docker buildx bake`."""
+    command = cli.Command(label="t", argv=["true"], cwd=".")
+
+    assert cli._build_step_config("run-tests", [command]).quiet is True
+    assert cli._build_step_config("prepare", [command]).quiet is False
+    assert cli._build_step_config("build", [command]).quiet is False
+    assert cli._build_step_config("push", [command]).quiet is False
 
 
 def test_required_gate_runs_declared_command(tmp_path, monkeypatch):
@@ -1149,6 +1162,33 @@ def _seq_project(name, *, prefix=None, mint_tag=True, strategy="scm", steps=None
         env={},
         commit_generated=commit_generated,
     )
+
+
+def test_resolve_versions_from_git_skips_projects_not_exactly_tagged_on_head():
+    """git describe --exact-match legitimately exits non-zero for any project whose
+    tag isn't on the current commit. With projects releasing one after another
+    (S-CLI.5a), that's the normal case for every scm_dist project except whichever
+    one is currently being tagged/built — must not raise (regression: it did, the
+    first time this ran for real against multiple scm_dist projects in one run)."""
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/multi-scm")
+        _git("tag", "-a", "alpha-v1.0.0", "-m", "alpha 1.0.0", cwd=workspace_path)
+
+        alpha = SimpleNamespace(prefix="alpha-v", scm_dist="alpha")
+        beta = SimpleNamespace(prefix="beta-v", scm_dist="beta")  # never tagged at all
+        env_alpha, env_beta = (
+            "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ALPHA",
+            "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_BETA",
+        )
+        os.environ.pop(env_alpha, None)
+        os.environ.pop(env_beta, None)
+        try:
+            cli.resolve_versions_from_git(workspace_path, {"alpha": alpha, "beta": beta})
+            assert os.environ.get(env_alpha) == "1.0.0"
+            assert env_beta not in os.environ
+        finally:
+            os.environ.pop(env_alpha, None)
+            os.environ.pop(env_beta, None)
 
 
 def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_fresh_tag():
