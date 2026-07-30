@@ -45,19 +45,27 @@ oci_layout_bake() {
     }
 
     output="type=oci,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
-    bake_args=(docker buildx bake -f docker-bake.hcl all)
+    # One target per bake invocation, not the whole "all" group in one shot: the
+    # group's targets share large swaths of identical layer content (same base,
+    # same staged-tool RUN steps), and baking them together makes BuildKit write
+    # the same content-addressed layer from two concurrent solves into the same
+    # governed builder's content store at once. Under host memory/IO pressure the
+    # loser's write blocks on the winner's lock long enough to trip the builder's
+    # health check and get killed mid-write ("ref layer-... locked for Ns...
+    # unavailable" -> "context canceled" -> EOF). Serializing avoids the race, and
+    # the second target's shared layers hit the local cache-from dir for free.
     for target in "${targets[@]}"; do
         safe="${target//[^A-Za-z0-9._-]/_}"
+        bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
         bake_args+=(--set "${target}.output=${output},dest=${OCI_LAYOUT_DIR}/${safe}.tar")
         bake_args+=(--set "${target}.attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}")
         if [[ "${IMAGE_SBOM}" == "true" ]]; then
             bake_args+=(--set "${target}.attest+=type=sbom")
         fi
+        echo "[INFO] [oci-layout] governed single-build bake start (${target}) $(ts)"
+        run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
+        echo "[INFO] [oci-layout] governed single-build bake end (${target}) $(ts)"
     done
-
-    echo "[INFO] [oci-layout] governed single-build bake start $(ts)"
-    run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
-    echo "[INFO] [oci-layout] governed single-build bake end $(ts)"
 
     for target in "${targets[@]}"; do
         safe="${target//[^A-Za-z0-9._-]/_}"
@@ -90,15 +98,17 @@ registry_bake() {
     }
 
     output="type=registry,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
-    bake_args=(docker buildx bake -f docker-bake.hcl all)
+    # See oci_layout_bake(): one target per invocation to avoid concurrent-solve
+    # content-store lock races on layers shared between the group's targets.
     for target in "${targets[@]}"; do
+        bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
         bake_args+=(--set "${target}.output=${output}")
         bake_args+=(--set "${target}.attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}")
         if [[ "${IMAGE_SBOM}" == "true" ]]; then
             bake_args+=(--set "${target}.attest+=type=sbom")
         fi
+        run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
     done
-    run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
 }
 
 if [[ "${ACTION}" != "build" && "${ACTION}" != "push" ]]; then
@@ -157,14 +167,15 @@ case "${FLOW}" in
             exit 1
         }
 
-        bake_args=(docker buildx bake -f docker-bake.hcl all)
+        # See oci_layout_bake(): one target per invocation to avoid concurrent-solve
+        # content-store lock races on layers shared between the group's targets.
+        echo "[INFO] [repack] governed OCI-layout bake start $(ts)"
         for target in "${targets[@]}"; do
             safe="${target//[^A-Za-z0-9._-]/_}"
+            bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
             bake_args+=(--set "${target}.output=type=oci,dest=${REPACK_WORK_DIR}/src-${safe}.tar")
+            run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
         done
-
-        echo "[INFO] [repack] governed OCI-layout bake start $(ts)"
-        run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
         echo "[INFO] [repack] governed OCI-layout bake end $(ts)"
 
         for target in "${targets[@]}"; do
