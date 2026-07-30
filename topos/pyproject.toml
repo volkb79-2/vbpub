@@ -11,7 +11,7 @@ dependencies = ["textual>=8.2.8"]
 
 [project.optional-dependencies]
 zstandard = ["zstandard>=0.22"]
-mcp = ["mcp>=1.28.0"]
+mcp = ["mcp>=1.28.0,<2.0.0"]  # mcp 2.0.0 renamed mcp.server.fastmcp.FastMCP -> mcp.server.mcpserver.MCPServer
 dev = [
     "topos[zstandard]",
     "topos[mcp]",
