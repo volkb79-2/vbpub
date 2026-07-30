@@ -177,7 +177,19 @@ def _store_cached_download(url: str, final_url: str, source: Path) -> None:
     )
 
 
-def _download(url: str, destination: Path, *, headers: dict[str, str] | None = None) -> str:
+def _download(
+    url: str,
+    destination: Path,
+    *,
+    headers: dict[str, str] | None = None,
+    not_found_ok: bool = False,
+) -> str | None:
+    """Download `url` to `destination`, returning the final (post-redirect) URL.
+
+    If `not_found_ok` is set and the server returns HTTP 404, returns None instead
+    of raising — for optional companion assets (e.g. checksum files) that upstream
+    projects sometimes rename or drop between releases.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
     cacheable = _cacheable_download(url, destination)
     if cacheable:
@@ -200,6 +212,8 @@ def _download(url: str, destination: Path, *, headers: dict[str, str] | None = N
                     _store_cached_download(url, final_url, destination)
                 return final_url
         except urllib.error.HTTPError as exc:
+            if exc.code == 404 and not_found_ok:
+                return None
             last_exc = exc
             is_retryable = exc.code in TRANSIENT_HTTP_CODES
             if is_retryable and attempt < DEFAULT_RETRIES:
@@ -1351,23 +1365,35 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     )
 
     # hadolint — Dockerfile linter (hadolint/hadolint).
-    # Asset: hadolint-Linux-x86_64 (static binary, no archive) + hadolint-Linux-x86_64.sha256.
-    # The .sha256 file refers to the asset as "hadolint-linux-x86_64" (lowercase).
+    # Asset: hadolint-linux-x86_64 (static binary, no archive).
     # No version number in the asset filename (the release tag is the version anchor).
-    # Arch mapping: x86_64 → Linux-x86_64, aarch64 → Linux-arm64.
+    # Arch mapping: x86_64 → linux-x86_64, aarch64 → linux-arm64.
+    #
+    # Checksum layout changed as of v2.15.0 (2026-07-30): releases up to v2.14.0 published
+    # a per-asset "<name>.sha256" sidecar; v2.15.0+ instead publishes one combined
+    # "checksums.sha256" covering every platform. Try the combined file first (what
+    # "latest" now serves) and fall back to the old sidecar so a pinned older
+    # HADOLINT_VERSION still resolves.
     hadolint_ver = resolved["HADOLINT_VER"]
-    hadolint_bin_name = "hadolint-Linux-x86_64"  # staging always runs on the build host (amd64)
+    hadolint_bin_name = "hadolint-linux-x86_64"  # staging always runs on the build host (amd64)
     hadolint_bin_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}"
-    hadolint_sha256_name = "hadolint-Linux-x86_64.sha256"
-    hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}.sha256"
     hadolint_base_url = f"https://github.com/hadolint/hadolint/releases/download/v{hadolint_ver}"
     hadolint_bin_url = f"{hadolint_base_url}/{hadolint_bin_name}"
-    hadolint_sha256_url = f"{hadolint_base_url}/{hadolint_sha256_name}"
-    _download(hadolint_sha256_url, hadolint_sha256_path)
+
+    hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}-checksums.sha256"
+    hadolint_sha256_url = f"{hadolint_base_url}/checksums.sha256"
+    hadolint_checksum_final_url = _download(hadolint_sha256_url, hadolint_sha256_path, not_found_ok=True)
+    if hadolint_checksum_final_url is None:
+        _log(
+            f"No combined checksums.sha256 for hadolint v{hadolint_ver}; "
+            "falling back to per-asset sidecar checksum"
+        )
+        hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}.sha256"
+        hadolint_sha256_url = f"{hadolint_base_url}/{hadolint_bin_name}.sha256"
+        _download(hadolint_sha256_url, hadolint_sha256_path)
+
     hadolint_bin_final_url = _download(hadolint_bin_url, hadolint_bin_path)
-    # The .sha256 file format is "<hex>  hadolint-Linux-x86_64" — extract hash and reform
-    # the check against our locally saved (renamed) path.
-    hadolint_expected_sha = _parse_hashicorp_sha256(hadolint_sha256_path, "hadolint-linux-x86_64")
+    hadolint_expected_sha = _parse_hashicorp_sha256(hadolint_sha256_path, hadolint_bin_name)
     hadolint_actual_sha = _sha256(hadolint_bin_path)
     if hadolint_expected_sha != hadolint_actual_sha:
         raise StageError(
@@ -1382,7 +1408,7 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         final_url=hadolint_bin_final_url,
         path=hadolint_bin_path,
         kind="binary",
-        verification="sha256 from hadolint-Linux-x86_64.sha256",
+        verification="sha256 from checksums.sha256 (or per-asset sidecar fallback)",
     )
     _record_artifact(
         records,

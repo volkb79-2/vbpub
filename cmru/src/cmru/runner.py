@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,7 @@ class StepConfig:
     step_env: Mapping[str, str]
     env_command: Optional[list[str]]
     registries: list = None  # [targets].registry for multi-push (S11); None = single-registry compat
+    quiet: bool = False  # suppress live line-by-line stdout tee; log file only + tail-on-failure
 
 
 def log_info(message: str) -> None:
@@ -280,6 +282,8 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
     if env_command is not None and not isinstance(env_command, list):
         raise ValueError(f"steps.{step_name}.env_command must be a list")
 
+    quiet = bool(step.get("quiet", False))
+
     return StepConfig(
         name=step_name,
         commands=commands,
@@ -291,6 +295,7 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
         login=login,
         step_env=step_env,
         env_command=[str(item) for item in env_command] if env_command else None,
+        quiet=quiet,
     )
 
 
@@ -370,8 +375,27 @@ def maybe_login_multi(login: Optional[dict], registries: Optional[list]) -> None
         _docker_login(reg, username, token)
 
 
-def run_command(argv: list[str], cwd: Path, log_handle) -> None:
-    log_info(f"Running: {' '.join(argv)}")
+TAIL_LINES_ON_FAILURE = 40
+
+
+def run_command(
+    argv: list[str],
+    cwd: Path,
+    log_handle,
+    *,
+    quiet: bool = False,
+    log_path: Optional[Path] = None,
+) -> None:
+    """Run argv, streaming its combined stdout/stderr into log_handle.
+
+    When ``quiet`` is set (build/push steps whose subprocess is itself very
+    noisy, e.g. `docker buildx bake`), individual lines are not echoed live —
+    only written to the log file — so the top-level release output stays
+    readable. On failure the last few lines are still surfaced immediately so
+    the user isn't left guessing without opening the log.
+    """
+    location = f" (full output: {log_path})" if (quiet and log_path) else ""
+    log_info(f"Running: {' '.join(argv)}{location}")
     process = subprocess.Popen(
         argv,
         cwd=str(cwd),
@@ -381,11 +405,18 @@ def run_command(argv: list[str], cwd: Path, log_handle) -> None:
         bufsize=1,
     )
     assert process.stdout is not None
+    tail: deque[str] = deque(maxlen=TAIL_LINES_ON_FAILURE) if quiet else deque(maxlen=0)
     for line in process.stdout:
-        print(line, end="")
         log_handle.write(line)
+        if quiet:
+            tail.append(line)
+        else:
+            print(line, end="")
     exit_code = process.wait()
     if exit_code != 0:
+        if quiet and tail:
+            sys.stderr.write(f"[ERROR] Last {len(tail)} line(s) of output:\n")
+            sys.stderr.write("".join(tail))
         raise subprocess.CalledProcessError(exit_code, argv)
 
 
@@ -430,7 +461,10 @@ def execute_step(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     log_file = log_dir / f"{step.name}-{timestamp}.log"
-    log_info(f"Logging to {log_file}")
+    if step.quiet:
+        log_info(f"Logging to {log_file} (full output kept quiet here; check that file for detail)")
+    else:
+        log_info(f"Logging to {log_file}")
 
     with log_file.open("a", encoding="utf-8") as handle:
         for command in step.commands:
@@ -459,7 +493,7 @@ def execute_step(
                 effective_argv.append("--no-cache")
 
             log_info(label)
-            run_command(effective_argv, cwd, handle)
+            run_command(effective_argv, cwd, handle, quiet=step.quiet, log_path=log_file)
 
 
 def run_step(build_config_path: Path, step_name: str, release_config_path: Optional[Path]) -> None:

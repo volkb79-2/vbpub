@@ -110,10 +110,10 @@ GAME cgroup (each selected Soulmask WSServer-Linux-Shipping container):
                                        confirms swappiness=100 is the
                                        right trade for this host.
 
-  KSM       /proc/<pid>/ksm_stat for the WSServer process:
-            KSM = opt-in/mergeable status (`on`, `any`, `vma`, `off`),
-            merge = pages currently in KSM merging, zero = pages mapped
-            to the kernel zero page, profit = approximate process profit.
+  KSM status is printed in the row1 server info (e.g. "KSM:m=51285z=8297+174M").
+  merge    ksm_merging_pages         pages currently merged by KSM.
+  zero     ksm_zero_pages            pages mapped to the kernel zero page.
+  profit   ksm_process_profit        approximate process memory saved.
             The startup inventory also prints rmap items, full merge state,
             host-wide KSM profit/scans, and `cow_ksm`/`ksm_swpin_copy` event
             counters. KSM merges anonymous pages only; it never deduplicates
@@ -289,7 +289,7 @@ Rates and resets:
 GAME_COLUMNS = (("ram", "RAM", 5), ("anon", "anon", 5), ("file", "file", 5),
                 ("zpool", "zpool", 6), ("zeq", "ratio", 6), ("rfz", "rfz/s", 7),
                 ("rfd", "rfd/s", 7), ("rff", "rff/s", 7))
-KSM_COLUMNS = (("ksm", "KSM", 4), ("kmerge", "merge", 6),
+KSM_COLUMNS = (("kmerge", "merge", 6),
                ("kzero", "zero", 5), ("kprofit", "profit", 7))
 KSM_HOST_COLUMNS = (("kfull", "Kfull/s", 8), ("kcow", "Kcow/s", 7),
                     ("kswp", "Kswp/s", 7))
@@ -1082,8 +1082,8 @@ def table_format(server_count: int, wide: bool) -> str:
     game_columns = GAME_COLUMNS if wide else tuple(c for c in GAME_COLUMNS if c[0] != "file")
     groups = ["{ts:<8}"]
     for index in range(server_count):
-        groups.append(_column_group(game_columns, f"s{index + 1}_"))
-        groups.append(_column_group(KSM_COLUMNS, f"s{index + 1}_"))
+        # Combine game + KSM columns into one group (no separator)
+        groups.append(_column_group(game_columns, f"s{index + 1}_") + " " + _column_group(KSM_COLUMNS, f"s{index + 1}_"))
     groups.append(_column_group(KSM_HOST_COLUMNS))
     groups.append(_column_group(TMPFS0_COLUMNS))
     groups.append(_column_group(TMPFS1_COLUMNS))
@@ -1093,14 +1093,39 @@ def table_format(server_count: int, wide: bool) -> str:
 
 def header_lines(server_count: int, wide: bool, servers=None):
     """Return (row1, row2, dash) for a two-row table header.
-    Row1: group labels with cgroup config values.
+    Row1: group labels with cgroup config values + KSM status.
     Row2: short column names."""
     game_columns = GAME_COLUMNS if wide else tuple(c for c in GAME_COLUMNS if c[0] != "file")
     SEP = " | "
 
-    # ── build group info: (label_row1, label_row2_fmt, width) ──────────────
-    group_info = []  # list of (row1_text, row2_names_dict, total_width)
-    group_info.append(("time", {"ts": "time"}, 8))
+    def _ksm_status_str(server):
+        if server is None:
+            return ""
+        ksm = server.get("ksm") or {}
+        # Build abbreviated KSM status: merge_pages/zero_pages +/-profit
+        k_merge = ksm.get("ksm_merging_pages") or 0
+        k_zero = ksm.get("ksm_zero_pages") or 0
+        k_profit = ksm.get("ksm_process_profit")
+        try:
+            k_profit_int = int(k_profit)
+            profit_str = f"+{_fmt_bytes(k_profit_int)}" if k_profit_int >= 0 else f"{_fmt_bytes(k_profit_int)}"
+        except (ValueError, TypeError):
+            profit_str = ""
+        return f"KSM:m={k_merge}z={k_zero}{profit_str}"
+
+    def _fmt_bytes(b):
+        """Format bytes as human readable."""
+        if b is None: return "?"
+        b = int(b)
+        if abs(b) >= 1073741824: return f"{b/1073741824:.0f}G"
+        if abs(b) >= 1048576: return f"{b/1048576:.0f}M"
+        if abs(b) >= 1024: return f"{b/1024:.0f}K"
+        return str(b)
+
+    # ── build group info: (row1_text, [(columns, prefix), ...], total_width, row2_fmt_str) ──
+    group_info = []  # each entry: (row1_label, [(col_defs_tuple, prefix), ...], width, row2_fmt)
+    # time
+    group_info.append(("time", [((("ts", "time", 8),), "")], 8, "{ts:<8}"))
 
     for index in range(server_count):
         server = servers[index] if servers and index < len(servers) else None
@@ -1108,82 +1133,55 @@ def header_lines(server_count: int, wide: bool, servers=None):
         role_label = server.get("role_label", "") if server else ""
         role_str = f" ({role_label})" if role_label else ""
 
-        # Compact control summary
         def cv(k):
             return fmt_control_value(k, controls.get(k, "?"))
+        ksm_str = _ksm_status_str(server)
         ctrl_str = (f"min={cv('min')} low={cv('low')} high={cv('high')} "
-                    f"max={cv('max')} cpu={cv('cpu')} io={cv('bfq')}")
+                    f"max={cv('max')} cpu={cv('cpu')} io={cv('bfq')} {ksm_str}")
+        label = f"S{index + 1}{role_str}: {ctrl_str}".strip()
 
-        # Game columns
+        # Combined game + KSM columns
         gw = _group_width(game_columns, f"s{index + 1}_")
-        game_r2 = {}
-        for key, label, _ in game_columns:
-            game_r2[f"s{index + 1}_{key}"] = label
-        group_info.append((f"S{index + 1}{role_str}: {ctrl_str}", game_r2, gw))
-
-        # KSM columns (under same server label in row1, but separate group)
         kw = _group_width(KSM_COLUMNS, f"s{index + 1}_")
-        ksm_r2 = {}
-        for key, label, _ in KSM_COLUMNS:
-            ksm_r2[f"s{index + 1}_{key}"] = label
-        group_info.append(("", ksm_r2, kw))  # row1 label handled by game entry above
+        total_w = gw + 1 + kw  # 1 space between game and KSM
+        row2_fmt = _column_group(game_columns, f"s{index + 1}_") + " " + _column_group(KSM_COLUMNS, f"s{index + 1}_")
+        group_info.append((label,
+            [(game_columns, f"s{index + 1}_"), (KSM_COLUMNS, f"s{index + 1}_")],
+            total_w, row2_fmt))
 
     # KSM host group
-    ksm_host_w = _group_width(KSM_HOST_COLUMNS)
-    ksm_r2 = {}
-    for key, label, _ in KSM_HOST_COLUMNS:
-        ksm_r2[key] = label
-    group_info.append(("KSM host", ksm_r2, ksm_host_w))
+    khw = _group_width(KSM_HOST_COLUMNS)
+    kh_fmt = _column_group(KSM_HOST_COLUMNS)
+    group_info.append(("KSM host", [(KSM_HOST_COLUMNS, "")], khw, kh_fmt))
 
     # TMPFS0 group
     t0_band = read_band(TMPFS0_CG) if os.path.isdir(TMPFS0_CG) else {}
     t0_label = f"T0 (pak) min={fmt_band_value(t0_band.get('min','?'))}"
     t0w = _group_width(TMPFS0_COLUMNS)
-    t0_r2 = {key: label for key, label, _ in TMPFS0_COLUMNS}
-    group_info.append((t0_label, t0_r2, t0w))
+    t0_fmt = _column_group(TMPFS0_COLUMNS)
+    group_info.append((t0_label, [(TMPFS0_COLUMNS, "")], t0w, t0_fmt))
 
     # TMPFS1 group
     t1_band = read_band(TMPFS1_CG) if os.path.isdir(TMPFS1_CG) else {}
     t1_label = f"T1 (cmpr) min={fmt_band_value(t1_band.get('min','?'))}"
     t1w = _group_width(TMPFS1_COLUMNS)
-    t1_r2 = {key: label for key, label, _ in TMPFS1_COLUMNS}
-    group_info.append((t1_label, t1_r2, t1w))
+    t1_fmt = _column_group(TMPFS1_COLUMNS)
+    group_info.append((t1_label, [(TMPFS1_COLUMNS, "")], t1w, t1_fmt))
 
     # disk_sw
-    group_info.append(("swap", {"disk_sw": "disk_sw"}, 7))
+    group_info.append(("swap", [((("disk_sw", "disk_sw", 7),), "")], 7, "{disk_sw:<7}"))
 
-    # ── build row1 and row2 format strings ──────────────────────────────────
+    # ── build row1 and row2 ────────────────────────────────────────────────
     row1_parts = []
     row2_parts = []
-    gi = 0
-    for r1_text, r2_dict, width in group_info:
+    for r1_text, sub_groups, width, r2_fmt in group_info:
         row1_parts.append(_pad_center(r1_text, width))
-        # row2: use the SAME _column_group calls as table_format so column
-        # widths match the data rows exactly (prefix length affects widths)
-        if gi == 0:
-            row2_parts.append(f"{'time':<8}")
-        elif 1 <= gi <= server_count * 2:
-            si = (gi - 1) // 2 + 1
-            is_game = (gi - 1) % 2 == 0
-            if is_game:
-                fmt_str = _column_group(game_columns, f"s{si}_")
-                short = {f"s{si}_{key}": label for key, label, _ in game_columns}
-            else:
-                fmt_str = _column_group(KSM_COLUMNS, f"s{si}_")
-                short = {f"s{si}_{key}": label for key, label, _ in KSM_COLUMNS}
-            row2_parts.append(fmt_str.format(**short))
-        elif gi == server_count * 2 + 1:
-            fmt_str = _column_group(KSM_HOST_COLUMNS)
-            row2_parts.append(fmt_str.format(**{key: label for key, label, _ in KSM_HOST_COLUMNS}))
-        elif gi == server_count * 2 + 2:
-            fmt_str = _column_group(TMPFS0_COLUMNS)
-            row2_parts.append(fmt_str.format(**{key: label for key, label, _ in TMPFS0_COLUMNS}))
-        elif gi == server_count * 2 + 3:
-            fmt_str = _column_group(TMPFS1_COLUMNS)
-            row2_parts.append(fmt_str.format(**{key: label for key, label, _ in TMPFS1_COLUMNS}))
-        else:
-            row2_parts.append("disk_sw")
-        gi += 1
+        # Build r2 dict from all sub-groups
+        r2 = {}
+        for cols, prefix in sub_groups:
+            for key, label, _ in cols:
+                r2[f"{prefix}{key}"] = label
+        row2_parts.append(r2_fmt.format(**r2))
 
     row1 = " | ".join(row1_parts)
     row2 = " | ".join(row2_parts)
@@ -1322,7 +1320,6 @@ def table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmp
             values[f"s{index}_{key}"] = value
         ksm = g["ksm"]
         values.update({
-            f"s{index}_ksm": ksm_status(ksm),
             f"s{index}_kmerge": fmt_pages(ksm.get("ksm_merging_pages")),
             f"s{index}_kzero": fmt_pages(ksm.get("ksm_zero_pages")),
             f"s{index}_kprofit": fmt_signed_bytes(ksm.get("ksm_process_profit")),

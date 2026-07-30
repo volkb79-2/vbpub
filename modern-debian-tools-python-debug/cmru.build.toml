@@ -113,11 +113,13 @@ bake_set_vars = [
   "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON",
   "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN",
 ]
+quiet = true
 commands = [
   { label = "modern-debian-tools-python-debug: build images", argv = ["bash", "scripts/release-bake.sh", "build"], cwd = "." },
 ]
 
 [steps.push-images]
+quiet = true
 bake_set_prefix = "base.args."
 bake_set_vars = [
   "AWSCLI_VERSION",

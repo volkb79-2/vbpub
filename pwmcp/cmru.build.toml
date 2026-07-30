@@ -3,11 +3,13 @@ log_dir = "logs"
 release_config = "../cmru.toml"
 
 [steps.build-images]
+quiet = true
 commands = [
   { label = "pwmcp: build unified image", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
 ]
 
 [steps.push-images]
+quiet = true
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 
 commands = [

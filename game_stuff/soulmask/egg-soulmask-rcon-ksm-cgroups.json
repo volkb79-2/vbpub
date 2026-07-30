@@ -13,7 +13,7 @@
         "SteamCMD": "ghcr.io/ptero-eggs/steamcmd:debian"
     },
     "file_denylist": [],
-    "startup": "LD_PRELOAD=/home/container/ksm-optin.so /home/container/WS/Binaries/Linux/WSServer-Linux-Shipping {{MAP_TYPE}} -server -SteamServerName=\"{{SERVER_NAME}}\" -PSW={{SERVER_PASSWORD}} -saving={{SAVE_TIME}} -Port={{PORT_SERVER}} -QueryPort={{QUERY_PORT}} -EchoPort={{ECHO_PORT}} -forcepassthrough -adminpsw={{ADMIN_PASSWORD}} -MaxPlayers={{MAX_PLAYERS}} -gamedistindex={{REGION}} -backup={{BACKUP_TIME}} -log -UTF8Output -MULTIHOME=0.0.0.0 -rconport={{RCON_PORT}} -rconpsw={{RCON_PASSWORD}} $( [ -z \"{{SERVER_ID}}\" ] || printf %s \"-serverid={{SERVER_ID}}\" ) $( [ -z \"{{MAIN_SERVER_PORT}}\" ] || printf %s \"-mainserverport={{MAIN_SERVER_PORT}}\" ) $( [ -z \"{{CLIENT_SERVER_CONNECT}}\" ] || printf %s \"-clientserverconnect={{CLIENT_SERVER_CONNECT}}\" ) -mod=\\\"{{MOD_ID}}\\\"",
+    "startup": "if [ ! -f /home/container/WS/Content/Paks/WS-LinuxServer.pak ] || [ -w /home/container/WS/Content/Paks/WS-LinuxServer.pak ]; then /home/container/steamcmd/steamcmd.sh +force_install_dir /home/container +login anonymous +app_update 3017300 validate +quit; else echo \"[startup] Paks is read-only (ramdisk active) -- skipping steamcmd update\"; fi; LD_PRELOAD=/home/container/ksm-optin.so /home/container/WS/Binaries/Linux/WSServer-Linux-Shipping {{MAP_TYPE}} -server -SteamServerName=\"{{SERVER_NAME}}\" -PSW={{SERVER_PASSWORD}} -saving={{SAVE_TIME}} -Port={{PORT_SERVER}} -QueryPort={{QUERY_PORT}} -EchoPort={{ECHO_PORT}} -forcepassthrough -adminpsw={{ADMIN_PASSWORD}} -MaxPlayers={{MAX_PLAYERS}} -gamedistindex={{REGION}} -backup={{BACKUP_TIME}} -log -UTF8Output -MULTIHOME=0.0.0.0 -rconport={{RCON_PORT}} -rconpsw={{RCON_PASSWORD}} $( [ -z \"{{SERVER_ID}}\" ] || printf %s \"-serverid={{SERVER_ID}}\" ) $( [ -z \"{{MAIN_SERVER_PORT}}\" ] || printf %s \"-mainserverport={{MAIN_SERVER_PORT}}\" ) $( [ -z \"{{CLIENT_SERVER_CONNECT}}\" ] || printf %s \"-clientserverconnect={{CLIENT_SERVER_CONNECT}}\" ) -mod=\\\"{{MOD_ID}}\\\"",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": \"Create Dungeon Successed\"\r\n}",
@@ -22,7 +22,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\n# steamcmd Base Installation Script\r\n#\r\n# Server Files: /mnt/server\r\n# Image to install with is 'ghcr.io/ptero-eggs/installers:debian'\r\n\r\n\r\n# Install packages. Default packages below are not required if using our existing install image thus speeding up the install process.\r\n#apt -y update\r\n#apt -y --no-install-recommends install curl lib32gcc-s1 ca-certificates\r\n\r\n## just in case someone removed the defaults.\r\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\r\n    echo -e \"steam user is not set.\\n\"\r\n    echo -e \"Using anonymous user.\\n\"\r\n    STEAM_USER=anonymous\r\n    STEAM_PASS=\"\"\r\n    STEAM_AUTH=\"\"\r\nelse\r\n    echo -e \"user set to ${STEAM_USER}\"\r\nfi\r\n\r\n## download and install steamcmd\r\ncd /tmp\r\nmkdir -p /mnt/server/steamcmd\r\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\r\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\r\nmkdir -p /mnt/server/steamapps # Fix steamcmd disk write error when this folder is missing\r\ncd /mnt/server/steamcmd\r\n\r\n# SteamCMD fails otherwise for some reason, even running as root.\r\n# This is changed at the end of the install process anyways.\r\nchown -R root:root /mnt\r\nexport HOME=/mnt/server\r\n\r\n## install game using steamcmd\r\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ \"${WINDOWS_INSTALL}\" == \"1\" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update ${SRCDS_APPID} +app_update 1007 $( [[ -z ${SRCDS_BETAID} ]] || printf %s \"-beta ${SRCDS_BETAID}\" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s \"-betapassword ${SRCDS_BETAPASS}\" ) ${INSTALL_FLAGS} validate +quit ## other flags may be needed depending on install. looking at you cs 1.6\r\n\r\n## set up 32 bit libraries\r\nmkdir -p /mnt/server/.steam/sdk32\r\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so\r\n\r\n## set up 64 bit libraries\r\nmkdir -p /mnt/server/.steam/sdk64\r\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so\r\n\r\n## add below your custom commands if needed\r\n## Maybe this path is just needed?\r\nmkdir -p /mnt/server/WS/Saved/Config/LinuxServer\r\n\r\n## install end\r\necho \"-----------------------------------------\"\r\necho \"Installation completed...\"\r\necho \"-----------------------------------------\"",
+            "script": "#!/bin/bash\r\n# steamcmd Base Installation Script\r\n#\r\n# Server Files: /mnt/server\r\n# Image to install with is 'ghcr.io/ptero-eggs/installers:debian'\r\n\r\n\r\n# Install packages. Default packages below are not required if using our existing install image thus speeding up the install process.\r\n#apt -y update\r\n#apt -y --no-install-recommends install curl lib32gcc-s1 ca-certificates\r\n\r\n## just in case someone removed the defaults.\r\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\r\n    echo -e \"steam user is not set.\\n\"\r\n    echo -e \"Using anonymous user.\\n\"\r\n    STEAM_USER=anonymous\r\n    STEAM_PASS=\"\"\r\n    STEAM_AUTH=\"\"\r\nelse\r\n    echo -e \"user set to ${STEAM_USER}\"\r\nfi\r\n\r\n## download and install steamcmd\r\ncd /tmp\r\nmkdir -p /mnt/server/steamcmd\r\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\r\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\r\nmkdir -p /mnt/server/steamapps # Fix steamcmd disk write error when this folder is missing\r\ncd /mnt/server/steamcmd\r\n\r\n# SteamCMD fails otherwise for some reason, even running as root.\r\n# This is changed at the end of the install process anyways.\r\nchown -R root:root /mnt\r\nexport HOME=/mnt/server\r\n\r\n## install game using steamcmd\r\n# If the Paks directory is on a read-only filesystem (unified ramdisk active),\r\n# skip steamcmd update -- writes would fail with EROFS and cause a lengthy\n# (initial install still runs: the file does not exist yet, so steamcmd proceeds).\r\n# timeout before the game starts anyway. The ramdisk was populated from the\r\n# ROLE=main instance during the last manual update; content is already current.\r\nif [ ! -f /mnt/server/WS/Content/Paks/WS-LinuxServer.pak ] || [ -w /mnt/server/WS/Content/Paks/WS-LinuxServer.pak ]; then\r\n  ./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ \"${WINDOWS_INSTALL}\" == \"1\" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update ${SRCDS_APPID} +app_update 1007 $( [[ -z ${SRCDS_BETAID} ]] || printf %s \"-beta ${SRCDS_BETAID}\" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s \"-betapassword ${SRCDS_BETAPASS}\" ) ${INSTALL_FLAGS} validate +quit ## other flags may be needed depending on install. looking at you cs 1.6\r\nelse\r\n  echo \"[install] Paks is read-only (ramdisk active) -- skipping steamcmd update\"\r\nfi\r\n\r\n## set up 32 bit libraries\r\nmkdir -p /mnt/server/.steam/sdk32\r\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so\r\n\r\n## set up 64 bit libraries\r\nmkdir -p /mnt/server/.steam/sdk64\r\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so\r\n\r\n## add below your custom commands if needed\r\n## Maybe this path is just needed?\r\nmkdir -p /mnt/server/WS/Saved/Config/LinuxServer\r\n\r\n## install end\r\necho \"-----------------------------------------\"\r\necho \"Installation completed...\"\r\necho \"-----------------------------------------\"",
             "container": "ghcr.io/ptero-eggs/installers:debian",
             "entrypoint": "bash"
         }
@@ -229,7 +229,7 @@
             "field_type": "text"
         },
         {
-            "name": "01 \u00b7 Cgroup Parent (placement override)",
+            "name": "01 · Cgroup Parent (placement override)",
             "description": "Admin-only OVERRIDE -- normally LEAVE EMPTY.\n\nWith docker.per_server_slices.enabled, Wings already derives wings-<32-hex-uuid>.slice for every server, so this variable is only for exceptions. Set a wings-*.slice name to pin this server to a specific, hand-managed slice (it then receives ONLY the explicit WINGS_CG_* values below, never the node-wide defaults). Set it to exactly the node-wide docker.cgroup_parent value to opt this server out of per-server slices entirely.\n\nPanel-supplied values are not trusted: a value outside the allowed namespace (or the docker.allowed_cgroup_parents allow-list) is rejected with a logged warning and Wings falls back to the derived slice.\n\nPlacement is fixed at container-create time, so a change here only takes effect on the next container (re)creation -- panel Stop then Start, not Restart.",
             "env_variable": "WINGS_CGROUP_PARENT",
             "default_value": "",
@@ -239,7 +239,7 @@
             "field_type": "text"
         },
         {
-            "name": "02 \u00b7 Cgroup STARTUP Memory Min",
+            "name": "02 · Cgroup STARTUP Memory Min",
             "description": "memory.min while the world is loading. A higher floor here protects the assets being streamed in from other tiers' pressure, at the moment the server is hungriest and least tolerant of reclaim.\n\nFORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count -- e.g. 6G, 6144M, 6442450944. NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.10+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
             "env_variable": "WINGS_CG_STARTUP_MEMORY_MIN",
             "default_value": "",
@@ -249,7 +249,7 @@
             "field_type": "text"
         },
         {
-            "name": "03 \u00b7 Cgroup STARTUP Memory Low",
+            "name": "03 · Cgroup STARTUP Memory Low",
             "description": "memory.low while the world is loading. Rarely needed -- set the STARTUP floor and ceiling first.\n\nFORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count -- e.g. 9G, 9216M, 9663676416. NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.10+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
             "env_variable": "WINGS_CG_STARTUP_MEMORY_LOW",
             "default_value": "",
@@ -259,7 +259,7 @@
             "field_type": "text"
         },
         {
-            "name": "04 \u00b7 Cgroup STARTUP Memory High",
+            "name": "04 · Cgroup STARTUP Memory High",
             "description": "THE ONE THAT MATTERS. memory.high while the world is loading. Set it generously -- 64G on a 16G host simply means \"no ceiling yet\".\n\nFORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count -- e.g. 15G, 15360M, 16106127360. NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead.\n\nA steady-state ceiling is actively destructive during startup. The load-time peak is routinely several times the settled working set, and a cgroup is NOT protected from reclaim it inflicts on itself: exceeding your own memory.high reclaims straight through your own memory.min floor. Nothing faults those pages back except the workload, so the server stays pinned far below a floor that is applied, effective and verified -- until it is restarted.\n\nIf you set WINGS_CG_MEMORY_HIGH at all, set this one too.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.10+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
             "env_variable": "WINGS_CG_STARTUP_MEMORY_HIGH",
             "default_value": "20G",
@@ -269,7 +269,7 @@
             "field_type": "text"
         },
         {
-            "name": "05 \u00b7 Cgroup STARTUP Memory Max",
+            "name": "05 · Cgroup STARTUP Memory Max",
             "description": "memory.max while the world is loading. Take care: this is the OOM boundary, and startup is when the server needs the most headroom. Almost always leave empty.\n\nFORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count -- e.g. 20G, 20480M, 21474836480. NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.10+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
             "env_variable": "WINGS_CG_STARTUP_MEMORY_MAX",
             "default_value": "",
@@ -279,7 +279,7 @@
             "field_type": "text"
         },
         {
-            "name": "06 \u00b7 Cgroup Steady Trigger (console match)",
+            "name": "06 · Cgroup Steady Trigger (console match)",
             "rules": "nullable|string|max:255",
             "description": "The console line that ends the STARTUP phase and applies the STEADY band.\n\nWHAT HAPPENS IF THIS IS EMPTY: it falls back to the egg's own startup \"done\" matcher (\"Create Dungeon Successed\" on this egg) -- the same string the Panel uses to flip the server to Running. For a world-streaming game that string can fire before loading has actually settled, which is precisely the mistake the STARTUP band exists to prevent; measured 2026-07-20 on this production instance it happened to land safely (~17s after Steam registration, ~2.5min after the load-time memory peak), but that timing is a property of the save, not a guarantee, and silently breaks again if the base egg's done string is ever changed.\n\nDEFAULT SHIPPED HERE avoids depending on that coincidence: it matches Steam server-list registration directly (\"[SERVER_LIST] registe server soulmask session succeed.\"), a heartbeat that repeats every ~2 minutes once the world is truly joinable -- the honest \"fully up\" signal, independent of the base egg's own done string.\n\nPrefix with \"regex:\" for a regular expression (same convention the Panel uses for startup.done); anything else is matched as a literal substring, so log punctuation cannot accidentally act as a metacharacter. See scripts/gstammtisch-guide/SOULMASK-STARTUP-MARKERS.md for the measured timeline this default is based on. Requires patched Wings 0007 (image cgroup.10+).",
             "env_variable": "WINGS_CG_STEADY_MATCH",
@@ -289,7 +289,7 @@
             "field_type": "text"
         },
         {
-            "name": "07 \u00b7 Cgroup Startup Grace (timeout)",
+            "name": "07 · Cgroup Startup Grace (timeout)",
             "rules": "nullable|string|max:16",
             "description": "How long the STARTUP band may hold before the STEADY band is applied regardless -- the backstop for a trigger that never fires (a game that changed its log format, a save that fails to load, a typo in WINGS_CG_STEADY_MATCH).\n\nGo duration syntax: 15m, 30m, 90s, 1h. \"0\" disables the timer entirely, leaving the console trigger as the only way out of the startup band -- only sensible if you are certain the trigger fires.\n\nHow long a world takes to load is a property of the game and the save, not of the node, which is why this is per server. Empty = the node default in docker.per_server_slices.startup_grace (15m unless changed). Requires patched Wings 0007 (image cgroup.10+).",
             "env_variable": "WINGS_CG_STARTUP_GRACE",
@@ -299,7 +299,7 @@
             "field_type": "text"
         },
         {
-            "name": "08 \u00b7 Cgroup Phase Events (activity log)",
+            "name": "08 · Cgroup Phase Events (activity log)",
             "description": "Admin-only, informational only -- drives NO cgroup behaviour. A newline-separated list of name=match entries; the first console line matching each is recorded to the Panel activity log (event server:cgroups.phase), surfacing a game's long, opaque startup to operators. match is a substring, or a regex with a regex: prefix. Requires patched Wings 0007 (image cgroup.10+). Empty = nothing recorded. The default set marks Soulmask's steam self-update and world-load; steam-update-done matches BOTH 'already up to date' (no patch) and 'fully installed' (patched). See scripts/gstammtisch-guide/SOULMASK-STARTUP-MARKERS.md.",
             "env_variable": "WINGS_CG_PHASE_EVENTS",
             "default_value": "steam-update-started=Checking for available updates\nsteam-update-done=regex:Success! App '3017300' (already up to date|fully installed)\nworld-load-begin=LogLoad: LoadMap:",
@@ -309,7 +309,7 @@
             "field_type": "text"
         },
         {
-            "name": "09 \u00b7 Cgroup STEADY Memory Min",
+            "name": "09 · Cgroup STEADY Memory Min",
             "description": "Admin-only: memory.min -- the GUARANTEED, never-reclaimed floor for this server's slice. FORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count, e.g. 6G, 6144M, 6442450944 -- NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead. Empty = the node default (docker.per_server_slices.defaults.memory_min).\n\nWhat it does: while this server is using less than this much memory, the kernel will not reclaim its pages under host-wide pressure -- it takes memory from unprotected cgroups instead, and would sooner OOM than break the floor.\n\nTwo things it does NOT do, both of which cause real confusion:\n1. It is not a reservation and it never pulls pages back. If the server has already been pushed into swap, raising the floor does not restore anything -- those pages return only as the workload faults them in again.\n2. It does NOT protect the server from its own WINGS_CG_MEMORY_HIGH. Reclaim triggered by a cgroup's own ceiling ignores the floor completely, which is the one way a server ends up pinned BELOW a floor that is correctly applied and fully effective.\n\nCapped by the parent slice: a floor larger than the node slice's own MemoryMin is arithmetically dead. Wings enforces this at apply time via docker.per_server_slices.memory_min_budget (clamp / refuse / distribute) and logs any reduction.",
             "env_variable": "WINGS_CG_MEMORY_MIN",
             "default_value": "6G",
@@ -319,7 +319,7 @@
             "field_type": "text"
         },
         {
-            "name": "10 \u00b7 Cgroup STEADY Memory Low",
+            "name": "10 · Cgroup STEADY Memory Low",
             "description": "Admin-only: memory.low -- best-effort protection above the memory.min floor. FORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count, e.g. 12G, 12288M, 12884901888 -- NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead. Empty = the node default.\n\nUnlike memory.min this is a hint, not a guarantee: the kernel reclaims unprotected cgroups first and only takes from here when it finds nothing else, rather than refusing outright.\n\nOnly meaningful BELOW this server's own memory.high -- a cgroup is never allowed to hold more than its ceiling, so any memory.low above it is decorative. With high=7G, setting low=12G behaves exactly like low=7G.",
             "env_variable": "WINGS_CG_MEMORY_LOW",
             "default_value": "7G",
@@ -329,7 +329,7 @@
             "field_type": "text"
         },
         {
-            "name": "11 \u00b7 Cgroup STEADY Memory High",
+            "name": "11 · Cgroup STEADY Memory High",
             "description": "Admin-only: memory.high -- a THROTTLE, not a hard limit. FORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count, e.g. 7G, 7168M, 7516192768 -- NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead. Empty = the node default. Above this the kernel continuously reclaims the server back down (into zswap, then disk swap); allocations still succeed, the server just gets slow.\n\nREAD THIS BEFORE SETTING IT. Reclaim driven by memory.high IGNORES memory.min. This is the only mechanism that can push a server below its own guaranteed floor, and the damage does not heal: nothing faults those pages back except the workload itself, so the server can sit permanently below its floor until it is restarted. A ceiling and a floor are not independent knobs -- a ceiling set too low destroys the floor.\n\nTherefore size this against the LOAD-TIME PEAK, not the steady working set. A game server streaming in a world routinely peaks at several times what it settles at afterwards. If the peak is much higher than steady state, do not lower this value -- set WINGS_CG_STARTUP_MEMORY_HIGH instead, which applies a roomier ceiling only while the server is starting.\n\nSymptoms of a ceiling that is too low: high resident memory early, then a server pinned well under its floor with a large swap footprint, many memory.high events in memory.events, and steady refaults. Leaving this empty is a perfectly reasonable production choice -- WINGS_CG_MEMORY_MAX is the emergency backstop.",
             "env_variable": "WINGS_CG_MEMORY_HIGH",
             "default_value": "7G",
@@ -339,7 +339,7 @@
             "field_type": "text"
         },
         {
-            "name": "12 \u00b7 Cgroup STEADY Memory Max",
+            "name": "12 · Cgroup STEADY Memory Max",
             "description": "Admin-only: memory.max -- the hard wall for this server's slice. The kernel reclaims first and then OOM-kills inside the cgroup. FORMAT: a whole number suffixed G/M/K (binary: G=1024^3, M=1024^2, K=1024 bytes) or a raw byte count, e.g. 20G, 20480M, 21474836480 -- NO DECIMALS: \"5.5G\" is rejected by Wings' parser, and because each property applies independently, the rejection is silent from the Panel's point of view -- only a warning in Wings' own log, while every other value in the same request still takes effect. Use 5632M for 5.5 GiB instead. Empty = the node default.\n\nUsually leave this empty or set it only as a generous emergency backstop. The panel's own memory limit already caps the game container; a slice-level max additionally caps the installer container and every future container of this server.\n\nA value above the host's physical RAM can never be reached and does nothing.",
             "env_variable": "WINGS_CG_MEMORY_MAX",
             "default_value": "20G",
@@ -349,7 +349,7 @@
             "field_type": "text"
         },
         {
-            "name": "13 \u00b7 Cgroup CPU Weight",
+            "name": "13 · Cgroup CPU Weight",
             "description": "Admin-only: cpu.weight (1-10000, default sibling weight is 100) for this server's slice. Overrides the node default. Empty = node default. Weights are relative to SIBLINGS only, and compose down the tree: this server's share of the host is (this / sum of siblings inside wings.slice) x (wings.slice's CPUWeight / sum of the root slices). They are also work-conserving -- a weight never caps anything, it only decides who yields when everyone wants the CPU at once. CPU is the exact axis: systemd passes cpu.weight through unscaled, so 1000 vs a sibling's 100 really is 10:1 (unlike IO -- see the two IO variables).",
             "env_variable": "WINGS_CG_CPU_WEIGHT",
             "default_value": "",
@@ -359,7 +359,7 @@
             "field_type": "text"
         },
         {
-            "name": "14 \u00b7 Cgroup IO Weight (BFQ scale, preferred)",
+            "name": "14 · Cgroup IO Weight (BFQ scale, preferred)",
             "description": "Admin-only, PREFER THIS ON BFQ NODES: the IO weight on BFQ's own 1-1000 scale (default sibling weight is 100) for this server's slice -- i.e. the number the scheduler actually uses, which you can read back at /sys/fs/cgroup/wings.slice/wings-<uuid32>.slice/io.bfq.weight. Requires patched Wings 0005 (image cgroup.4+); Wings converts it to the equivalent systemd IOWeight (100 + 11 x (bfq - 100)) and logs both, e.g. IOWeight=5940(io.bfq.weight=540). Mutually exclusive with WINGS_CG_IO_WEIGHT: if both are set, NEITHER is applied and Wings logs the conflict. Empty = node default (docker.per_server_slices.defaults.io_bfq_weight). See wings-cgroups/CGROUP-SEMANTICS.md Rule 7.",
             "env_variable": "WINGS_CG_IO_BFQ_WEIGHT",
             "default_value": "",
@@ -369,7 +369,7 @@
             "field_type": "text"
         },
         {
-            "name": "15 \u00b7 Cgroup IO Weight (systemd scale, legacy)",
+            "name": "15 · Cgroup IO Weight (systemd scale, legacy)",
             "description": "Admin-only, LEGACY SCALE -- prefer WINGS_CG_IO_BFQ_WEIGHT: systemd's IOWeight (1-10000) for this server's slice. Overrides the node default. Empty = node default. CAUTION: on a BFQ node this number is NOT what you get. BFQ schedules on io.bfq.weight (1-1000) and never reads io.weight (that file belongs to iocost, inert unless io.cost.* is configured), and systemd compresses 100-10000 into 100-1000 on the way -- so 1000 buys 1.8:1 against a default sibling, not 10:1, and 4950 buys 5.4:1. Mutually exclusive with WINGS_CG_IO_BFQ_WEIGHT. Check the scheduler with: cat /sys/block/vda/queue/scheduler.",
             "env_variable": "WINGS_CG_IO_WEIGHT",
             "default_value": "",
