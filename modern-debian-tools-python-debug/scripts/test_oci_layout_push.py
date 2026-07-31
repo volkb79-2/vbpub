@@ -62,6 +62,10 @@ class OciLayoutPushTests(unittest.TestCase):
         inspected = json.loads(_docker("inspect", cls.registry_name).stdout)
         port = inspected[0]["NetworkSettings"]["Ports"]["5000/tcp"][0]["HostPort"]
         cls.registry = cls._reachable_registry_host(port)
+        # crane auto-falls-back to plain HTTP for IP-literal/localhost registry
+        # addresses; regctl (used for the OCI-layout-scoped push, see
+        # _push_oci_layouts) requires this configured explicitly per registry.
+        subprocess.run(["regctl", "registry", "set", cls.registry, "--tls", "disabled"], check=True)
 
         cls.builder_name = "mdt-oci-push-test-builder"
         _docker("buildx", "rm", cls.builder_name, check=False)
@@ -110,6 +114,29 @@ class OciLayoutPushTests(unittest.TestCase):
         target_dir = layout_root / self.build_push._safe_target_name(target)
         shutil.copytree(layout_dir, target_dir)
 
+    def _build_multi_tag_oci_layout(self, name: str, tags: list[str]) -> Path:
+        """Like _build_oci_layout, but with >1 `-t` so buildx's OCI export writes
+        one index.json entry per tag — reproducing what a bake target with
+        multiple `tags` (e.g. a dated tag plus a floating "-latest" alias)
+        actually produces."""
+        src = self.work / f"{name}-src"
+        src.mkdir()
+        (src / "Dockerfile").write_text("FROM alpine:3.20\nRUN echo hi > /marker.txt\n")
+        tar_path = self.work / f"{name}.tar"
+        tag_args = []
+        for tag in tags:
+            tag_args += ["-t", tag]
+        _docker(
+            "buildx", "build", "--builder", self.builder_name,
+            "--output", f"type=oci,dest={tar_path}",
+            *tag_args, str(src),
+        )
+        layout_dir = self.work / f"{name}-layout"
+        layout_dir.mkdir()
+        subprocess.run(["tar", "-xf", str(tar_path), "-C", str(layout_dir)], check=True)
+        tar_path.unlink()
+        return layout_dir
+
     def test_tag_component_handles_registry_port(self):
         bp = self.build_push
         self.assertEqual(bp._tag_component("ghcr.io/owner/name:v1.2.3"), "v1.2.3")
@@ -139,6 +166,41 @@ class OciLayoutPushTests(unittest.TestCase):
             ["crane", "digest", ref], capture_output=True, text=True, check=True,
         ).stdout.strip()
         self.assertEqual(actual, expected)
+
+    def test_push_oci_layouts_handles_multi_tag_targets(self):
+        """A bake target with a dated tag plus a floating "-latest" alias makes
+        buildx write 2 same-digest index.json entries into one target's OCI
+        layout. A bare `crane push <dir> <tag>` can't disambiguate those and
+        fails closed with "layout contains 2 entries, consider --index" —
+        this must push and verify both tags individually instead."""
+        bp = self.build_push
+        dated_ref = f"{self.registry}/proto-multi:20260731"
+        latest_ref = f"{self.registry}/proto-multi:latest"
+        layout_dir = self._build_multi_tag_oci_layout("proto-multi", [dated_ref, latest_ref])
+
+        index = json.loads((layout_dir / "index.json").read_text())
+        self.assertEqual(len(index["manifests"]), 2)
+
+        layout_root = self.work / "layouts-multi"
+        layout_root.mkdir()
+        self._stage_as_target(layout_dir, "multi", layout_root)
+
+        with unittest.mock.patch.object(bp, "_oci_layout_dir", lambda: layout_root), \
+             unittest.mock.patch.object(
+                 bp, "_enumerate_bake_targets",
+                 lambda: ({"multi": {"tags": [dated_ref, latest_ref]}}, ["multi"]),
+             ):
+            bp._push_oci_layouts({})
+
+        expected = subprocess.run(
+            ["regctl", "manifest", "digest", f"ocidir://{layout_dir}:20260731"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        for ref in (dated_ref, latest_ref):
+            actual = subprocess.run(
+                ["crane", "digest", ref], capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            self.assertEqual(actual, expected)
 
     def test_push_oci_layouts_reads_manifest_file_from_the_layout(self):
         """The same layout _push_oci_layouts() publishes must be independently

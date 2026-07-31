@@ -468,7 +468,18 @@ def _push_oci_layouts(env_vars: dict[str, str]) -> None:
 
         for tag in tags:
             sys.stderr.write(f"[INFO] Pushing {layout_dir.name} -> {tag}\n")
-            subprocess.run(["crane", "push", str(layout_dir), tag], cwd=str(ROOT), check=True)
+            # A target's OCI layout holds one index entry per configured tag
+            # (all sharing the same digest, one per `org.opencontainers.image.ref.name`)
+            # — `crane push <dir> <tag>` can't disambiguate once a target has more
+            # than one tag ("layout contains N entries, consider --index") and
+            # --index would push them as a manifest-list instead of retagging the
+            # same image. `ocidir://<dir>:<ref>` scopes the source to one entry;
+            # regctl handles that addressing, crane doesn't.
+            tag_ref_name = _tag_component(tag)
+            subprocess.run(
+                ["regctl", "image", "copy", f"ocidir://{layout_dir}:{tag_ref_name}", tag],
+                cwd=str(ROOT), check=True,
+            )
             remote_digest = subprocess.run(
                 ["crane", "digest", tag], cwd=str(ROOT), capture_output=True, text=True, check=True,
             ).stdout.strip()
