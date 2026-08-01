@@ -16,7 +16,10 @@ reducing quality to one coverage percentage.
 | Isolated, fail-closed gate | The declared command ran at the intended commit and its real exit propagates. | Cockpit-only greens, masked exits, wrong checkout. | Useful behavioral tests. | Every merge. |
 | Build, import, schema, static checks | The program parses/builds and meets stated mechanical constraints. | Syntax, imports, many type/API/config errors. | Runtime behavior or valid requirements. | Every merge. |
 | Deterministic unit/component tests | Named behavior holds for controlled inputs/dependencies. | Local regressions and edge cases. | Integration wiring or completeness. | Every merge. |
+| API, schema, and message-envelope contracts | Public requests/responses and inter-service messages validate against the declared contract. | Client/server, queue, and version drift. | A complete user workflow. | Every merge for stable contracts. |
 | Real fixture / contract integration | A real public boundary works with controlled infrastructure or a fixture repo. | Mocking the component claimed to be tested; protocol/config drift. | All deployment/environment failure. | Critical paths every merge; broader nightly. |
+| Independent-channel round trip | A UI/API mutation is confirmed through a second source of truth (DB read model, API, mock backend, or mail sink). | UI-only smoke/feedback tests that never prove persisted effects. | Every cross-service failure mode. | Security and data-changing workflows. |
+| Stateful journey | A resettable, serialized multi-step operator/user workflow reaches each expected state. | Bugs visible only after lifecycle history crosses several boundaries. | Isolated test independence; run it only in its own lane. | E2E/release lane. |
 | Global line **and branch** coverage | The declared source tree was exercised. | Historic blind spots and accidental regressions. | Meaningful assertions or right logic. | Every merge when affordable. |
 | Changed-line coverage | Every changed executable line ran; changed exclusions fail. | Untested new guard/branch. | Assertion strength. | Every implementation gate. |
 | Serial/parallel coverage parity | Parallel and serial collection credit the same executed lines. | Dropped worker/fork coverage and coverage plumbing lies. | Ordinary flakiness. | Gate introduction/runner change; periodically. |
@@ -28,6 +31,7 @@ reducing quality to one coverage percentage.
 | Coverage-guided fuzzing | Adversarial inputs do not crash, hang, or violate a checked invariant. | Parsers, serialization, input validation, DoS. | Product semantics without an oracle. | Continuous/off-host. |
 | Differential/metamorphic testing | Implementations or stated transformations agree. | Output errors with no simple expected-value oracle. | Both sides sharing one wrong assumption. | Targeted high-risk domains. |
 | Fixed shuffled order, repetition, stress | Tests remain stable across schedules/seeds. | Order dependence, races, global leaks, clock/network coupling. | Production performance under all loads. | Scheduled; after concurrency changes. |
+| Accessibility, performance, and observability checks | Stated UX budgets/accessibility rules and emitted traces, logs, metrics, or correlations remain present. | Silent nonfunctional and diagnosability regressions. | General correctness or production-scale capacity. | Critical checks per merge; load/soak scheduled. |
 | Dependency/SBOM/vulnerability/license scan | Resolved dependencies meet policy at scan-database revision. | Known vulnerable/prohibited/untracked inputs. | Unknown vulnerabilities or app flaws. | Dependency changes and scheduled refresh. |
 
 ## Mutation testing
@@ -127,8 +131,9 @@ mutation score can preserve a wrong specification.
    serial/xdist parity.
 3. Run `nyxloom gate verify` at adoption and on a cadence; run `nyxloom doctor`
    after image, Docker transport, or cgroup changes.
-4. Add real fixtures on critical public boundaries and fail-before/pass-after
-   evidence for bugs.
+4. Add API/message contracts, real fixtures, and independent-channel round trips
+   on critical public boundaries; use resettable serialized journeys for
+   lifecycle workflows. Add fail-before/pass-after evidence for bugs.
 5. Pilot changed-line mutation on one small risk-bearing module. Add bounded job
    control before enabling it broadly.
 6. Add properties/state machines where crisp invariants exist; fuzz untrusted
