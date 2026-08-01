@@ -69,6 +69,17 @@ def test_network_creation_failure_preserves_daemon_diagnostic(
         workspace_env._ensure_network_exists("ciu-network")
 
 
+def test_network_creation_succeeds_after_absent_network_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent shared network is created successfully before deployment continues."""
+    monkeypatch.setattr(workspace_env, "_docker_available", lambda: True)
+    responses = iter([_result(returncode=1), _result(returncode=0)])
+    monkeypatch.setattr(workspace_env.subprocess, "run", lambda *_args, **_kwargs: next(responses))
+
+    assert workspace_env._ensure_network_exists("ciu-network") is None
+
+
 def test_ensure_workspace_network_without_auto_connect_only_ensures_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
