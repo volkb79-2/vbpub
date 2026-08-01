@@ -46,11 +46,13 @@ find "$checkout" -type d -exec chmod a+rwx {} +
 image_tag="tester-unified:mutation-audit-${sha:0:12}"
 docker build -f "$checkout/tester-unified/Dockerfile" -t "$image_tag" "$checkout"
 
-docker_args=(docker run --rm --cgroup-parent=nyxloom-gates.slice -v "$checkout:/audit" -v "$report_dir:/reports" -w /audit)
+# The base tester image owns /audit as a tmpfs mount; use a neutral target so
+# the bind is not hidden by that inherited mount.
+docker_args=(docker run --rm --cgroup-parent=nyxloom-gates.slice -v "$checkout:/remote-audit" -v "$report_dir:/reports" -w /remote-audit)
 if [[ -n "$allow_infra" ]]; then
   docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
 fi
-container_args=("${docker_args[@]}" "$image_tag" /opt/tester-venv/bin/python nyxloom/tools/remote_mutation_audit.py --manifest "/audit/$manifest_rel" --report-dir /reports)
+container_args=("${docker_args[@]}" "$image_tag" /opt/tester-venv/bin/python nyxloom/tools/remote_mutation_audit.py --manifest "/remote-audit/$manifest_rel" --report-dir /reports)
 [[ -n "$max_mutants" ]] && container_args+=(--max-mutants "$max_mutants")
 [[ -n "$allow_infra" ]] && container_args+=(--allow-infra)
 "${container_args[@]}"
