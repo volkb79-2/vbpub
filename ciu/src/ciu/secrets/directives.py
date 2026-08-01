@@ -212,31 +212,29 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
         locator: str | None = None
         vault_field: str | None = None
     else:
-        # --- Directives that require a non-empty locator ---
-        if verb in _REQUIRES_LOCATOR:
-            # Extract optional #field from payload (ASK_VAULT only)
-            vault_field = None
-            if "#" in payload:
-                locator_part, vault_field = payload.split("#", 1)
-                if verb not in _VAULT_FIELD_DIRECTIVES:
-                    raise ValueError(
-                        f"[S4.2] '#field' selector is only valid for ASK_VAULT, "
-                        f"not '{verb}' for {ctx}"
-                    )
-                if not vault_field:
-                    raise ValueError(
-                        f"[S4.2] Empty '#field' selector in directive for {ctx}"
-                    )
-                locator = locator_part
-            else:
-                locator = payload
-                vault_field = None
-
-            if not locator:
+        # GEN_EPHEMERAL is handled above; every remaining directive requires a
+        # non-empty locator.
+        vault_field = None
+        if "#" in payload:
+            locator_part, vault_field = payload.split("#", 1)
+            if verb not in _VAULT_FIELD_DIRECTIVES:
                 raise ValueError(
-                    f"[S4.2] Directive '{verb}' requires a non-empty locator "
-                    f"('{verb}:<path>') for {ctx}"
+                    f"[S4.2] '#field' selector is only valid for ASK_VAULT, "
+                    f"not '{verb}' for {ctx}"
                 )
+            if not vault_field:
+                raise ValueError(
+                    f"[S4.2] Empty '#field' selector in directive for {ctx}"
+                )
+            locator = locator_part
+        else:
+            locator = payload
+
+        if not locator:
+            raise ValueError(
+                f"[S4.2] Directive '{verb}' requires a non-empty locator "
+                f"('{verb}:<path>') for {ctx}"
+            )
 
     # --- Extract inline-table options ---
     expose_env: str | None = options.get("expose_env", None)

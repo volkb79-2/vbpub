@@ -1,6 +1,7 @@
 """Focused behavioral coverage for the final small CIU branch contracts."""
 from __future__ import annotations
 
+import importlib
 import json
 import runpy
 import stat
@@ -24,6 +25,20 @@ def test_module_entrypoint_calls_cli_main(monkeypatch: pytest.MonkeyPatch) -> No
     runpy.run_module("ciu.__main__", run_name="__main__")
 
     assert called == [True]
+
+
+def test_importing_module_entrypoint_does_not_call_cli_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Importing CIU is side-effect-free; only ``python -m ciu`` invokes main."""
+    called: list[bool] = []
+    monkeypatch.delitem(sys.modules, "ciu.__main__", raising=False)
+    monkeypatch.setattr(cli, "main", lambda: called.append(True))
+
+    module = importlib.import_module("ciu.__main__")
+
+    assert called == []
+    assert module.main is cli.main
+    # Keep the later runpy entrypoint test independent of this import test.
+    sys.modules.pop("ciu.__main__", None)
 
 
 def test_activation_without_remaining_arguments_has_no_trailing_space(
@@ -88,6 +103,14 @@ def test_pick_test_dir_falls_back_without_writing_var_tmp(
     monkeypatch.setattr(Path, "mkdir", refuse_mkdir)
 
     assert governance._pick_test_dir(tmp_path / "blocked" / "result.env") == Path("/var/tmp")
+
+
+def test_pick_test_dir_falls_back_when_existing_parent_is_not_writable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(governance.os, "access", lambda *_args: False)
+
+    assert governance._pick_test_dir(tmp_path / "result.env") == Path("/var/tmp")
 
 
 def test_acyclic_graph_scans_subsequent_roots_without_cycle_error() -> None:

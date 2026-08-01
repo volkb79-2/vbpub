@@ -152,19 +152,14 @@ def lint_graph(
         color[node] = BLACK
         return None
 
-    reported_cycles: set[str] = set()
     for node in list(stacks.keys()):
         if color[node] == WHITE:
             cycle = dfs(node, [])
             if cycle is not None:
-                # Normalize cycle representation to avoid duplicate reports
-                cycle_key = "->".join(sorted(cycle))
-                if cycle_key not in reported_cycles:
-                    reported_cycles.add(cycle_key)
-                    cycle_str = " -> ".join(cycle)
-                    errors.append(
-                        f"[ERROR] Dependency cycle detected: {cycle_str}"
-                    )
+                # ``dfs`` marks every node on its returning path BLACK, so no
+                # later root can rediscover this same cycle.
+                cycle_str = " -> ".join(cycle)
+                errors.append(f"[ERROR] Dependency cycle detected: {cycle_str}")
 
     return errors
 
