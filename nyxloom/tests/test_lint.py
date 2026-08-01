@@ -1368,6 +1368,23 @@ class TestCmdLintResolvesOwnProject:
         assert exit_code == 0
 
 
+def test_cmd_lint_all_fails_closed_on_invalid_project_config(
+    tmp_path, tmp_state, monkeypatch, capsys
+):
+    root = tmp_path / "broken-project"
+    (root / "nyxloom-trove").mkdir(parents=True)
+    config_path = root / "nyxloom-trove" / "nyxloom.toml"
+    config_path.write_text("this is not = valid toml\n", encoding="utf-8")
+    monkeypatch.setattr("nyxloom.config.load_registry", lambda: {"broken": root})
+
+    exit_code = cli.main(["lint"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert str(config_path) in output
+    assert "L0 error project config could not be loaded" in output
+
+
 class TestCmdLintUnresolvedPath:
     """O3: a path with no owning project gets a typed diagnostic naming the
     path and a non-zero exit -- never lints against an arbitrary project's

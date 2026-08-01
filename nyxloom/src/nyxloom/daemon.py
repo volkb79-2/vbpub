@@ -1001,10 +1001,10 @@ class Daemon:
 
         pause_mode = self._pause_mode(project)
         project_paused = pause_mode != "run"
-        try:
-            decisions_open = decisions.open_ids(cfg)
-        except Exception:
-            decisions_open = set()
+        # A corrupt or unreadable decisions inbox is not evidence that every
+        # decision has been resolved.  Let run_pass record TICK_ERROR and stop
+        # this pass instead of silently releasing all decision holds.
+        decisions_open = decisions.open_ids(cfg)
         merged_branches = self._merged_branches(cfg, states)
         head_revision = self._head_revision(cfg)
         triage_class = self._triage_classes(project, states)
@@ -1339,8 +1339,16 @@ class Daemon:
             try:
                 info = leases.holder_info(lease_name, capacity=mdef.capacity)
                 out[lease_name] = any(not slot["held"] for slot in info)
-            except Exception:
-                out[lease_name] = True
+            except Exception as exc:
+                # A failed exclusivity probe is not evidence that the shared
+                # resource is free.  Fail closed and leave the task queued;
+                # the next reconcile pass can retry the read safely.
+                out[lease_name] = False
+                log.warning(
+                    "lease availability probe failed",
+                    lease=lease_name,
+                    error=repr(exc)[:200],
+                )
         return out
 
     def _provider_ok(self, routes: config.Routes) -> dict[str, bool]:

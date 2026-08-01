@@ -1368,7 +1368,7 @@ def test_review_independent_prompt_requires_reject_class():
         role=Role.REVIEW_INDEPENDENT,
     )
     assert "REJECT_CLASS" in prompt
-    for cls in ("fixable", "architectural", "incapable", "product"):
+    for cls in ("fixable", "architectural", "incapable", "product", "transient"):
         assert cls in prompt, f"reviewer prompt must define the {cls!r} class"
     assert "REJECTED" in prompt
 
@@ -1392,6 +1392,26 @@ def test_review_independent_reject_class_distinguishes_incapable_from_architectu
         role=Role.IMPLEMENTER,
     )
     assert "REJECT_CLASS" not in impl_prompt
+
+
+def test_review_resume_prompt_preserves_full_reject_taxonomy():
+    """A warm reviewer retains every routing signal from a cold review.
+
+    Session reuse is a cost optimization, not permission to collapse
+    incapable/transient findings into the mechanical same-tier retry fallback.
+    """
+    prompt = adapters.review_resume_prompt(
+        packet_path="packet.md",
+        attempt_id="att-review-2",
+        gate_hint="tester-unified",
+    )
+
+    assert (
+        "REJECT_CLASS: <fixable|architectural|incapable|product|transient>"
+        in prompt
+    )
+    assert "incapable=scope fine" in prompt
+    assert "transient=flaky/infra failure" in prompt
 
 
 def test_review_independent_prompt_stays_under_argv_max_with_real_paths():
@@ -1785,10 +1805,10 @@ _PRE_D1_SIMPLE_REVIEW_PROMPT = (
     "change. The daemon reads your verdict from that committed file, NOT "
     "from the receipt.\n"
     "If REJECTED, also add `REJECT_CLASS: <fixable|architectural|incapable|"
-    "product>` (fixable=local defect; architectural=scope/design wrong, "
-    "re-carve; incapable=scope fine but the model wasn't capable -- "
-    "structural, not a one-off defect -- bump tier; product=human "
-    "decision). Omit on APPROVED.\n"
+    "product|transient>` (fixable=local defect; architectural=scope/design "
+    "wrong, re-carve; incapable=scope fine but the model wasn't capable -- "
+    "bump tier; product=human decision; transient=flaky/infra failure). Omit "
+    "on APPROVED.\n"
     "Doctrine: `reference/AUTHORING.md` + `reference/DOCTRINE.md`; then any "
     "same-named `nyxloom-trove/` sibling for project overrides.\n"
     "DRY: reject duplicated production logic; never fix it yourself."

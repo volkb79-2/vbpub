@@ -371,8 +371,19 @@ def cmd_lint(args) -> int:
                 cfg = config.ProjectConfig.load(root)
                 findings_dict = lint.lint_project(cfg)
                 all_findings.update(findings_dict)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Lint is a ship gate.  A project whose config cannot be
+                # loaded is an error, not an empty set of findings.
+                key = str(root / "nyxloom-trove" / "nyxloom.toml")
+                all_findings[key] = [lint.LintFinding(
+                    rule="L0",
+                    severity="error",
+                    message=(
+                        "project config could not be loaded: "
+                        f"{type(exc).__name__}: {str(exc)[:300]}"
+                    ),
+                    path=key,
+                )]
 
     # Print findings
     has_error = False

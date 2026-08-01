@@ -2875,6 +2875,30 @@ def test_input_building(tmp_state, sample_project, monkeypatch):
 # --------------------------------------------------------------------------
 # P15 2026-07-15: factory-state pause MODE reading (Daemon._pause_mode)
 
+
+def test_lease_probe_failure_fails_closed(tmp_state, sample_project, monkeypatch):
+    """An unreadable lease must park work, never authorize a collision."""
+    def fail_probe(*_args, **_kwargs):
+        raise OSError("lease directory unreadable")
+
+    monkeypatch.setattr(daemon.leases, "holder_info", fail_probe)
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    assert d._leases_free(sample_project) == {"demo.stack": False}
+
+
+def test_decision_inbox_failure_aborts_snapshot(tmp_state, sample_project, monkeypatch):
+    """Unreadable decision truth cannot be interpreted as no open holds."""
+    def fail_read(_cfg):
+        raise OSError("decisions inbox unreadable")
+
+    monkeypatch.setattr(decisions, "open_ids", fail_read)
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    with pytest.raises(OSError, match="decisions inbox unreadable"):
+        d._build_input("demo", sample_project, storage.list_states("demo"))
+
+
 def test_pause_mode_absent_flag_is_run(tmp_state, sample_project):
     assert not paths.pause_flag("demo").exists()
     d = daemon.Daemon({"demo": sample_project.root})

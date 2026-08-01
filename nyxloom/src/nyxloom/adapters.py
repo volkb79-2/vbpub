@@ -247,6 +247,15 @@ def compute_review_depth_directive(tier: str | None, scope_touch: list[str] | No
     return " ".join(reasons)
 
 
+_REJECT_CLASS_INSTRUCTION = (
+    "If REJECTED, also add `REJECT_CLASS: "
+    "<fixable|architectural|incapable|product|transient>` "
+    "(fixable=local defect; architectural=scope/design wrong, re-carve; "
+    "incapable=scope fine but the model wasn't capable -- bump tier; "
+    "product=human decision; transient=flaky/infra failure). Omit on APPROVED."
+)
+
+
 def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    branch: str, task_id: str, gate_hint: str,
                    receipt_path: str, role: Role = Role.IMPLEMENTER,
@@ -433,11 +442,7 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             # re-carve at a HIGHER tier, scope held constant. Kept terse: this
             # prompt is close to argv_max with real paths (see
             # test_review_independent_prompt_stays_under_argv_max_with_real_paths).
-            "\nIf REJECTED, also add `REJECT_CLASS: <fixable|architectural|incapable|"
-            "product>` (fixable=local defect; architectural=scope/design wrong, "
-            "re-carve; incapable=scope fine but the model wasn't capable -- "
-            "structural, not a one-off defect -- bump tier; product=human "
-            "decision). Omit on APPROVED."
+            f"\n{_REJECT_CLASS_INSTRUCTION}"
         )
         # B21 2026-07-23 (D-R16 §3): the scope-amendment note (if any) is
         # appended LATER, after argv_max is known -- this prompt is already
@@ -878,8 +883,8 @@ def review_resume_prompt(*, packet_path: str, attempt_id: str,
         f"{attempt_id})` suffix is REQUIRED and must be copied EXACTLY -- the "
         "daemon binds your verdict to THIS review by that id and ignores any "
         "verdict missing it or carrying a different id (a stale verdict from an "
-        "earlier review of the same task in this warm session). If REJECTED, also "
-        "add `REJECT_CLASS: <fixable|architectural|product>`. Finally, if ANY "
+        "earlier review of the same task in this warm session). "
+        f"{_REJECT_CLASS_INSTRUCTION} Finally, if ANY "
         "task is rejected, make your FINAL output line exactly `BLOCKED: rejected "
         f"-- <task ids and one-line reasons>`.{spine_line}"
     )
