@@ -1,0 +1,46 @@
+[project]
+id = "ciu"
+default_branch = "main"
+
+trove = "nyxloom-trove"
+
+handoff_globs   = ["nyxloom-trove/handoffs/*.md"]
+reports_dir     = "nyxloom-trove/reports"
+decisions_inbox = "nyxloom-trove/decisions.md"
+archive_dir     = "nyxloom-trove/archive"
+archive_keep_visible = 10
+agent_logs      = "nyxloom-trove/agent-logs"
+
+worktree_root = "../.worktrees"
+
+[refs]
+readme = "README.md"
+spec = "docs/SPEC.md"
+architecture = "docs/ARCHITECTURE.md"
+configuration = "docs/CONFIG.md"
+docs_dir = "docs"
+
+# CIU's implementation gate is intentionally not the interactive cockpit.  The
+# tester-unified image derives its dependency closure from ciu[ssh,test], then
+# executes the bound worktree under pytest-cov + xdist.  `pytest-cov` (rather
+# than `coverage run`) is necessary: xdist workers are separate processes.
+# The second command rejects every changed executable CIU source line that the
+# coverage JSON marks missing; both shell layers fail closed.
+[gates.tester-unified]
+argv = ["bash", "-c", "set -euo pipefail && docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && export PYTHONPATH=src && /opt/tester-venv/bin/python run-ciu-tests.py && PYTHONPATH=../nyxloom/src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --repo . --base main --coverage-json coverage.json --source src/ciu'"]
+phase = "implementation"
+asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
+timeout_seconds = 1800
+environment = "tester-unified"
+
+[policy]
+max_active_tasks = 3
+ready_queue_target = 5
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+reconcile_interval_seconds = 30
+gate_verify_interval_days = 14
+http_port = 8942
+
+[notify]

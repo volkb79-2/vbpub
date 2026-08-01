@@ -88,6 +88,22 @@ def test_bootstrap_env_init_reloads_generated_network_then_probes_tls(
     assert events == [("generate", None), ("network", "generated-net"), ("tls", None)]
 
 
+def test_bootstrap_env_init_preserves_explicit_caller_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generated defaults never override an operator-selected network."""
+    env_path = tmp_path / "ciu.env"
+    env_path.write_text('DOCKER_NETWORK_INTERNAL="generated-net"\n', encoding="utf-8")
+    events: list[str] = []
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "caller-net")
+    monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
+    monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
+    monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
+
+    assert workspace_env.bootstrap_env_init(tmp_path) == env_path
+    assert events == ["caller-net"]
+
+
 def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
