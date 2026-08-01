@@ -4,12 +4,14 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import deploy  # noqa: E402
+from ciu import engine  # noqa: E402
 from ciu.deploy_pkg.profiles import Profile  # noqa: E402
 
 
@@ -41,6 +43,20 @@ def test_unsupported_duration_value_uses_default_and_warns(capsys: pytest.Captur
     warning = capsys.readouterr().out
     assert "could not parse duration" in warning
     assert "using 17s" in warning
+
+
+def test_git_hash_reports_clean_and_dirty_repository_state(monkeypatch) -> None:
+    """Version metadata exposes the short revision and honest dirty suffix."""
+    responses = iter((
+        SimpleNamespace(stdout="abc12345\n"),
+        SimpleNamespace(stdout="\n"),
+        SimpleNamespace(stdout="abc12345\n"),
+        SimpleNamespace(stdout=" M ciu/src/ciu/deploy.py\n"),
+    ))
+    monkeypatch.setattr(engine.procutil, "run_cmd", lambda *_args, **_kwargs: next(responses))
+
+    assert engine.get_git_hash() == "abc12345"
+    assert engine.get_git_hash() == "abc12345-dirty"
 
 
 def test_vault_preflight_keeps_earliest_secret_phase(monkeypatch, tmp_path: Path) -> None:
