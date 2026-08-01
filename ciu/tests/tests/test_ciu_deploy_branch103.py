@@ -124,18 +124,16 @@ def test_deploy_ignore_errors_records_preflight_failure_and_continues(
     assert "infra/first" in capsys.readouterr().out
 
 
-def test_health_failure_records_started_stack_not_in_deployed_list(
+def test_health_failure_reclassifies_started_stack_as_failed(
     monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     profile = _profile({"phase_1": {"services": [{"path": "applications/api", "enabled": True}]}})
     selection = [_entry("applications/api", 1)]
     monkeypatch.setattr(deploy, "_run_stack", lambda *_args, **_kwargs: True)
 
-    def move_started_entry(_root, _profile, entries):
-        entries[0]["path"] = "applications/orphaned"
-        return ["ciu-test-api"]
-
-    monkeypatch.setattr(deploy, "resolve_selection_health_containers", move_started_entry)
+    monkeypatch.setattr(
+        deploy, "resolve_selection_health_containers", lambda *_args: ["ciu-test-api"]
+    )
     monkeypatch.setattr(
         deploy, "run_container_health_gate",
         lambda *_args, **_kwargs: (False, {"healthy": [], "pending": [], "unhealthy": ["ciu-test-api"], "no_healthcheck": [], "not_found": []}),
@@ -145,7 +143,9 @@ def test_health_failure_records_started_stack_not_in_deployed_list(
         tmp_path, profile, selection, dry_run=False, ignore_errors=False,
         health_after_phase=True, update_cert_permission=False,
     ) == 1
-    assert "applications/orphaned" in capsys.readouterr().out
+    summary = capsys.readouterr().out
+    assert "applications/api" in summary
+    assert "FAILED" in summary
 
 
 def test_clean_rm_success_proceeds_to_stack_reset(monkeypatch, tmp_path: Path) -> None:

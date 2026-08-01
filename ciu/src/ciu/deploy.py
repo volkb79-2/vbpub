@@ -999,8 +999,10 @@ def action_deploy(
                 had_failure = True
                 phase_failed = True
                 for e in started_in_phase:
-                    if e["path"] in deployed:
-                        deployed.remove(e["path"])
+                    # Every started entry is appended to ``deployed`` together
+                    # in the successful-start path above; preserve that
+                    # invariant instead of silently masking a broken plan.
+                    deployed.remove(e["path"])
                     failed.append(e["path"])
                 if not ignore_errors:
                     stop_remaining = True
