@@ -25,3 +25,12 @@ teardown = []
 snapshot_create = []
 snapshot_restore = []
 snapshot_destroy = []
+
+# Optional host-ZFS acceleration.  Use only a dedicated test dataset.  The
+# audited manifest requests a dataset, but the operator independently authorizes
+# its parent with --zfs-allowed-prefix.  The fixed safety property
+# nyxloom:mutation-audit=on must exist on the dataset.  ZFS forces jobs=1.
+[zfs]
+enabled = false
+dataset = "tank/nyxloom-audits/example"
+container_mount = "/mutation-state"

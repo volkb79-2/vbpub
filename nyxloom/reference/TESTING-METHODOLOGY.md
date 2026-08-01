@@ -21,6 +21,8 @@ reducing quality to one coverage percentage.
 | Independent-channel round trip | A UI/API mutation is confirmed through a second source of truth (DB read model, API, mock backend, or mail sink). | UI-only smoke/feedback tests that never prove persisted effects. | Every cross-service failure mode. | Security and data-changing workflows. |
 | Stateful journey | A resettable, serialized multi-step operator/user workflow reaches each expected state. | Bugs visible only after lifecycle history crosses several boundaries. | Isolated test independence; run it only in its own lane. | E2E/release lane. |
 | Global line **and branch** coverage | The declared source tree was exercised. | Historic blind spots and accidental regressions. | Meaningful assertions or right logic. | Every merge when affordable. |
+| Decision-table, boundary-value, and equivalence-partition tests | Declared input classes, edges, and rule combinations have explicit examples. | Off-by-one, missing validation class, and contradictory business rules. | Unknown classes or state history outside the table. | Validators, policy, configuration, finance. |
+| MC/DC or condition coverage | Each atomic condition is shown to independently affect a decision. | Masked conditions in dense safety/security decisions. | End-to-end correctness; MC/DC is much costlier than branch coverage. | Selected high-assurance decision logic. |
 | Changed-line coverage | Every changed executable line ran; changed exclusions fail. | Untested new guard/branch. | Assertion strength. | Every implementation gate. |
 | Serial/parallel coverage parity | Parallel and serial collection credit the same executed lines. | Dropped worker/fork coverage and coverage plumbing lies. | Ordinary flakiness. | Gate introduction/runner change; periodically. |
 | `nyxloom gate verify` canaries | Good code passes; import-break and uncovered-line canaries fail. | A green but nondiscriminating/LAUNDERS gate. | Correct product behavior. | Adoption, scheduled, and after gate transport/image changes. |
@@ -37,9 +39,15 @@ reducing quality to one coverage percentage.
 | Symbolic/concolic execution and model checking | Paths or finite-state invariants are explored/proved within stated bounds. | Deep boundary combinations and protocol-state errors. | Unbounded program correctness or valid requirements. | Small critical algorithms/protocols. |
 | Formal specification/proof | A mathematical model or implementation satisfies stated theorems/invariants. | Classes of design/implementation errors inside the formal boundary. | Correct assumptions, environment, or product desirability. | Cryptography, safety/security protocols, high-assurance core. |
 | Fixed shuffled order, repetition, stress | Tests remain stable across schedules/seeds. | Order dependence, races, global leaks, clock/network coupling. | Production performance under all loads. | Scheduled; after concurrency changes. |
+| Deterministic simulation / virtual time | Long histories, retries, clocks, and faults can be explored reproducibly without wall-clock sleeps. | Slow/flaky timing tests and rare lifecycle sequences. | Fidelity beyond the simulator's explicit model. | Schedulers, leases, distributed protocols. |
+| Soak, load, and resource-leak testing | Stated throughput/latency bounds hold and resources remain bounded over time. | Gradual leaks, queue growth, contention, and saturation collapse. | Functional correctness outside checked invariants. | Dedicated performance host; release/scheduled. |
+| Upgrade, migration, rollback, and backup-restore drills | Persisted state and service compatibility survive supported transitions and recovery procedures. | Green fresh installs that fail on real historic state. | Every unsupported version path or disaster. | Release qualification and scheduled recovery drills. |
 | Accessibility, performance, and observability checks | Stated UX budgets/accessibility rules and emitted traces, logs, metrics, or correlations remain present. | Silent nonfunctional and diagnosability regressions. | General correctness or production-scale capacity. | Critical checks per merge; load/soak scheduled. |
 | Visual regression / golden-master comparison | Rendered UI, generated artifact, or legacy-compatible output matches an approved baseline with reviewed differences. | Accidental presentation/serialization compatibility drift. | Whether the baseline was desirable; avoid blind snapshot approval. | Stable presentation and compatibility surfaces. |
 | Dependency/SBOM/vulnerability/license scan | Resolved dependencies meet policy at scan-database revision. | Known vulnerable/prohibited/untracked inputs. | Unknown vulnerabilities or app flaws. | Dependency changes and scheduled refresh. |
+| SAST/secret/IaC/container-policy scan | Source and deployable artifacts avoid catalogued dangerous patterns and policy violations. | Common injection, credential, permission, and deployment errors. | Exploitability or safe runtime behavior. | Every merge/image build. |
+| DAST/protocol and adversarial security testing | A running isolated target rejects tested attacks at its real boundary. | Wiring-dependent auth, injection, traversal, and protocol flaws. | Complete security; requires threat-led test selection. | Security lane and release qualification. |
+| Reproducible-build/provenance verification | Rebuilding declared inputs yields the expected artifact and traceable dependency/toolchain identity. | Unrecorded inputs, build drift, and some supply-chain substitution. | Source correctness or compromise inside trusted inputs. | Release artifacts and toolchain changes. |
 
 ## Mutation testing
 
@@ -118,6 +126,28 @@ keeps reports outside the disposable checkout and the worker emits `events.jsonl
 per-mutant stdout/stderr, and `summary.json` even when a baseline, mutant, or
 teardown fails.
 
+The launcher records the exact commit, manifest SHA-256, and built tester image
+ID in `host.json`, and the worker repeats those values in every summary. Large
+audits can be split deterministically with `--shard-index/--shard-count`; each
+mutant keeps its stable whole-tree ordinal. `--start-at` resumes from a known
+ordinal and `--max-mutants` bounds a pilot. A shard or resumed suffix is evidence
+only for that declared selection, never an implicit whole-project pass. Selecting
+zero supported mutants is `INCONCLUSIVE_NO_MUTANTS`, not green. Reports include
+baseline, per-mutant, and total durations plus the non-secret test argv/source
+configuration needed for cost comparisons.
+
+For replayable evidence, pass a content-addressed tester reference through
+`--tester-image registry/name@sha256:...`. Without it, the launcher builds the
+audited commit's Dockerfile and records the resulting local image ID; this is
+useful audit evidence, but a mutable base tag may prevent an identical future
+rebuild and must not be presented as reproducible.
+
+Docker-socket access is separate from lifecycle authorization:
+`--allow-infra` permits trusted argv hooks, while `--allow-docker-socket` is an
+additional explicit capability. The default launcher grants neither a Docker
+socket nor a privileged container. A cgroup parent is optional and explicit via
+`--cgroup-parent` or `MUTATION_AUDIT_CGROUP_PARENT`.
+
 For stateful test infrastructure, prefer a unique Compose project and disposable
 named volumes per audit. When cold setup is material, a trusted hook may create a
 copy-on-write volume/filesystem snapshot after seeding and restore it before and
@@ -126,6 +156,40 @@ checkpoint-restore of a live container is **not** a default: open sockets,
 external services, kernel/version coupling, mounted volumes, and secret state are
 not reliably captured. Use it only after a project-specific reproducibility
 proof; immutable images plus seeded volume snapshots are the portable baseline.
+
+### Host ZFS lifecycle
+
+The reference supports ZFS without exposing host authority to the tester. Add an
+enabled `[zfs]` table to the consumer manifest with a dedicated `dataset` and its
+absolute `container_mount`. On the host, opt that dataset in once:
+
+```console
+zfs set nyxloom:mutation-audit=on tank/nyxloom-audits/my-project
+```
+
+Then launch directly on that Docker/ZFS host with both lifecycle consent and an
+operator-owned allowlist:
+
+```console
+./tools/remote-mutation-audit.sh --allow-infra \
+  --zfs-allowed-prefix tank/nyxloom-audits --zfs-sudo
+```
+
+Omit `--zfs-sudo` when the audit account has narrowly delegated ZFS permissions.
+The manifest cannot choose the allowlist, alter the fixed safety property, or
+provide an arbitrary privilege command. The dataset must be a child of the
+authorized prefix, must not be `/`, and must carry the opt-in property. The host
+broker exposes only snapshot-create, rollback, destroy, and status over a Unix
+socket authenticated by a per-run capability token; the tester never receives
+`/dev/zfs`, host root, or `sudo`.
+
+ZFS mode requires `jobs=1`. The worker runs `[infra].reset` to quiesce services,
+rolls back the dedicated dataset, then runs `[infra].snapshot_restore` to resume
+them, before and after each mutant. On normal completion it restores the seed
+snapshot and destroys it. If the process is killed before safe quiescence, the
+snapshot is deliberately retained as a recovery point and named in
+`zfs-events.jsonl`; an operator must quiesce, restore, and destroy it. Never point
+this mechanism at production data or a dataset shared with another audit.
 
 ## Do tests test the right thing?
 
