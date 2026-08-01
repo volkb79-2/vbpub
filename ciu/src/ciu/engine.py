@@ -780,16 +780,15 @@ def reset_service(
         )
         if result.returncode == 0 and result.stdout.strip():
             names = [n.strip() for n in result.stdout.strip().splitlines() if n.strip()]
-            if names:
-                print(f"[INFO]     Found {len(names)} orphaned containers", flush=True)
-                for name in names:
-                    rm = procutil.run_cmd(["docker", "rm", "-f", name], check=False)
-                    if rm.returncode == 0:
-                        print(f"[INFO]       Removed: {name}", flush=True)
-                    else:
-                        print(f"[WARN]       Failed to remove {name}: {rm.stderr}", flush=True)
-            else:
-                print("[INFO]   No orphaned containers found", flush=True)
+            # `stdout.strip()` is truthy above, so its non-blank splitlines
+            # necessarily yield at least one name.
+            print(f"[INFO]     Found {len(names)} orphaned containers", flush=True)
+            for name in names:
+                rm = procutil.run_cmd(["docker", "rm", "-f", name], check=False)
+                if rm.returncode == 0:
+                    print(f"[INFO]       Removed: {name}", flush=True)
+                else:
+                    print(f"[WARN]       Failed to remove {name}: {rm.stderr}", flush=True)
         else:
             print("[INFO]   No orphaned containers found", flush=True)
     except FileNotFoundError as e:
