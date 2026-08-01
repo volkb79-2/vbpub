@@ -1,0 +1,22 @@
+# Trusted configuration for the remote whole-project mutation audit.
+# It deliberately uses a serial pytest process per mutant.  The audit worker
+# parallelizes isolated worktrees itself; do not add pytest-xdist here.
+[audit]
+project = "ciu"
+project_root = "ciu"
+source_roots = ["src/ciu"]
+test_argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x"]
+test_env = { PYTHONPATH = "src" }
+jobs = 6
+timeout_seconds = 600
+
+# CIU's full test suite is self-contained: no live compose stack is started.
+# A future live audit may add trusted argv hooks here.  Hooks are never run
+# unless the remote operator also passes --allow-infra.
+[infra]
+setup = []
+reset = []
+teardown = []
+snapshot_create = []
+snapshot_restore = []
+snapshot_destroy = []

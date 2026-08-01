@@ -1,0 +1,18 @@
+# Topos tests intentionally run from the vbpub repository root because several
+# CLI subprocesses use repo-root-relative paths.
+[audit]
+project = "topos"
+project_root = "."
+source_roots = ["topos/src/topos"]
+test_argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "topos/tests", "-q", "-x"]
+test_env = { PYTHONPATH = "topos/src:topos" }
+jobs = 6
+timeout_seconds = 600
+
+[infra]
+setup = []
+reset = []
+teardown = []
+snapshot_create = []
+snapshot_restore = []
+snapshot_destroy = []

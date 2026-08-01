@@ -28,10 +28,17 @@ reducing quality to one coverage percentage.
 | Changed-line mutation | Supported mutations of changed logic are killed. | Hollow assertions on new decision logic. | Correctness outside the mutator catalogue; equivalent mutants. | High-risk pre-merge or review-gated. |
 | Whole-project mutation | A recorded population of legacy mutations is killed/survives. | Historic weak assertions and decision logic. | Specification correctness; score is not quality %. | Scheduled audit/release qualification. |
 | Property/state-machine testing | Invariants hold over generated values/sequences. | Combinatorial and state-transition cases. | That chosen invariants reflect intent. | Pure/stateful cores. |
+| Model-based testing | An implementation conforms to an executable abstract model over generated action sequences. | Lifecycle/state-machine omissions where examples miss transitions. | That the abstract model is itself correct. | Stateful protocols, workflows, and storage engines. |
+| Combinatorial interaction testing | Every selected pairwise/t-wise configuration interaction is exercised. | Configuration matrices too large for exhaustive testing. | Higher-order interactions outside the chosen strength. | Configuration, feature flags, deployment matrices. |
 | Coverage-guided fuzzing | Adversarial inputs do not crash, hang, or violate a checked invariant. | Parsers, serialization, input validation, DoS. | Product semantics without an oracle. | Continuous/off-host. |
 | Differential/metamorphic testing | Implementations or stated transformations agree. | Output errors with no simple expected-value oracle. | Both sides sharing one wrong assumption. | Targeted high-risk domains. |
+| Fault injection / chaos / recovery drill | The system restores stated invariants after dependency, process, network, clock, or storage faults. | Happy-path-only distributed tests and untested recovery. | Every real incident sequence or capacity limit. | Isolated integration/nightly; production only under explicit safety policy. |
+| Schedule exploration / concurrency testing | A bounded set of interleavings preserves concurrency invariants. | Rare ordering, race, and cancellation defects. | All possible schedules without a formal model. | Concurrent stateful cores and queues. |
+| Symbolic/concolic execution and model checking | Paths or finite-state invariants are explored/proved within stated bounds. | Deep boundary combinations and protocol-state errors. | Unbounded program correctness or valid requirements. | Small critical algorithms/protocols. |
+| Formal specification/proof | A mathematical model or implementation satisfies stated theorems/invariants. | Classes of design/implementation errors inside the formal boundary. | Correct assumptions, environment, or product desirability. | Cryptography, safety/security protocols, high-assurance core. |
 | Fixed shuffled order, repetition, stress | Tests remain stable across schedules/seeds. | Order dependence, races, global leaks, clock/network coupling. | Production performance under all loads. | Scheduled; after concurrency changes. |
 | Accessibility, performance, and observability checks | Stated UX budgets/accessibility rules and emitted traces, logs, metrics, or correlations remain present. | Silent nonfunctional and diagnosability regressions. | General correctness or production-scale capacity. | Critical checks per merge; load/soak scheduled. |
+| Visual regression / golden-master comparison | Rendered UI, generated artifact, or legacy-compatible output matches an approved baseline with reviewed differences. | Accidental presentation/serialization compatibility drift. | Whether the baseline was desirable; avoid blind snapshot approval. | Stable presentation and compatibility surfaces. |
 | Dependency/SBOM/vulnerability/license scan | Resolved dependencies meet policy at scan-database revision. | Known vulnerable/prohibited/untracked inputs. | Unknown vulnerabilities or app flaws. | Dependency changes and scheduled refresh. |
 
 ## Mutation testing
@@ -103,6 +110,22 @@ structured artifacts. Lost transport, timeout, missing artifact, or stale result
 must fail closed. A job nyxloom can wait for and verify may block a merge; a
 fire-and-forget job is an audit, not a gate.
 
+`tools/remote-mutation-audit-host.sh` is the reference host launcher. Consumer
+manifests name source roots, a serial per-mutant test argv, and optional trusted
+infrastructure hooks; CIU and Topos provide examples. The launcher keeps reports
+outside the disposable checkout and the worker emits `events.jsonl`, per-mutant
+stdout/stderr, and `summary.json` even when some mutants fail or infrastructure
+breaks.
+
+For stateful test infrastructure, prefer a unique Compose project and disposable
+named volumes per audit. When cold setup is material, a trusted hook may create a
+copy-on-write volume/filesystem snapshot after seeding and restore it before and
+after each mutant; it must also destroy that snapshot in `finally`. Docker/CRIU
+checkpoint-restore of a live container is **not** a default: open sockets,
+external services, kernel/version coupling, mounted volumes, and secret state are
+not reliably captured. Use it only after a project-specific reproducibility
+proof; immutable images plus seeded volume snapshots are the portable baseline.
+
 ## Do tests test the right thing?
 
 Not fully mechanically. The strongest practical approach is independent,
@@ -136,8 +159,10 @@ mutation score can preserve a wrong specification.
    lifecycle workflows. Add fail-before/pass-after evidence for bugs.
 5. Pilot changed-line mutation on one small risk-bearing module. Add bounded job
    control before enabling it broadly.
-6. Add properties/state machines where crisp invariants exist; fuzz untrusted
-   structured input and promote minimized findings to regressions.
+6. Add properties/model-based state machines where crisp invariants exist;
+   use pairwise/t-wise matrices for configuration space, fault injection for
+   recovery contracts, and fuzzing for untrusted structured input. Promote
+   minimized findings to regressions.
 7. Run sampled whole-project mutation, shuffled-order/repetition, dependency
    scans, and fuzzing asynchronously on a remote/batch worker. Promote only
    measured, valuable checks into release requirements.
