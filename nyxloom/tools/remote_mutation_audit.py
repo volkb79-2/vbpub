@@ -218,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     env.update(cfg.test_env)
     sha = _run(("git", "rev-parse", "HEAD"), repo, env, 30).stdout.strip()
     _record(events, {"kind": "run", "project": cfg.project, "commit": sha, "started_at": _now(), "manifest": str(args.manifest)})
+    counts = {outcome: 0 for outcome in ("KILLED", "SURVIVED", "TIMEOUT", "ERROR")}
+    mutant_count = 0
+    baseline_outcome = "NOT_RUN"
+    return_code = 2
     try:
         if args.allow_infra:
             _hook(cfg.setup, cwd=project, env=env, label="setup")
@@ -226,30 +230,43 @@ def main(argv: list[str] | None = None) -> int:
         (logs / "baseline.stdout.log").write_text(baseline.stdout, encoding="utf-8")
         (logs / "baseline.stderr.log").write_text(baseline.stderr, encoding="utf-8")
         if baseline.returncode:
+            baseline_outcome = "BASELINE_BROKEN"
             _record(events, {"kind": "baseline", "outcome": "BASELINE_BROKEN", "exit_code": baseline.returncode, "finished_at": _now()})
-            return 3
-        _record(events, {"kind": "baseline", "outcome": "PASS", "finished_at": _now()})
-        jobs = _source_jobs(repo, cfg, args.max_mutants)
-        _record(events, {"kind": "inventory", "mutants": len(jobs), "finished_at": _now()})
-        results: list[dict[str, Any]] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.jobs) as pool:
-            futures = [pool.submit(_run_one, repo, cfg, path, mutant, n, logs, args.allow_infra) for n, (path, mutant) in enumerate(jobs, 1)]
-            for future in futures:
-                result = future.result()
-                results.append(result)
-                _record(events, result)
-        counts = {outcome: sum(r["outcome"] == outcome for r in results) for outcome in ("KILLED", "SURVIVED", "TIMEOUT", "ERROR")}
-        summary = {"project": cfg.project, "commit": sha, "mutants": len(results), "counts": counts, "finished_at": _now()}
-        (args.report_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return 2 if counts["ERROR"] or counts["TIMEOUT"] else (1 if counts["SURVIVED"] else 0)
+            return_code = 3
+        else:
+            baseline_outcome = "PASS"
+            _record(events, {"kind": "baseline", "outcome": "PASS", "finished_at": _now()})
+            jobs = _source_jobs(repo, cfg, args.max_mutants)
+            _record(events, {"kind": "inventory", "mutants": len(jobs), "finished_at": _now()})
+            results: list[dict[str, Any]] = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=cfg.jobs) as pool:
+                futures = [pool.submit(_run_one, repo, cfg, path, mutant, n, logs, args.allow_infra) for n, (path, mutant) in enumerate(jobs, 1)]
+                for future in futures:
+                    result = future.result()
+                    results.append(result)
+                    _record(events, result)
+            mutant_count = len(results)
+            counts = {outcome: sum(r["outcome"] == outcome for r in results) for outcome in counts}
+            return_code = 2 if counts["ERROR"] or counts["TIMEOUT"] else (1 if counts["SURVIVED"] else 0)
+    except Exception as exc:
+        counts["ERROR"] += 1
+        _record(events, {"kind": "runner", "outcome": "ERROR", "error": str(exc), "finished_at": _now()})
     finally:
         if args.allow_infra:
             try:
                 _hook(cfg.snapshot_destroy, cwd=project, env=env, label="snapshot_destroy")
                 _hook(cfg.teardown, cwd=project, env=env, label="teardown")
             except Exception as exc:
+                counts["ERROR"] += 1
+                return_code = 2
                 _record(events, {"kind": "teardown", "outcome": "ERROR", "error": str(exc), "finished_at": _now()})
+        summary = {
+            "project": cfg.project, "commit": sha, "baseline": baseline_outcome,
+            "mutants": mutant_count, "counts": counts, "finished_at": _now(),
+        }
+        (args.report_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         events.close()
+    return return_code
 
 
 if __name__ == "__main__":

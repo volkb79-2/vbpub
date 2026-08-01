@@ -110,12 +110,13 @@ structured artifacts. Lost transport, timeout, missing artifact, or stale result
 must fail closed. A job nyxloom can wait for and verify may block a merge; a
 fire-and-forget job is an audit, not a gate.
 
-`tools/remote-mutation-audit-host.sh` is the reference host launcher. Consumer
-manifests name source roots, a serial per-mutant test argv, and optional trusted
-infrastructure hooks; CIU and Topos provide examples. The launcher keeps reports
-outside the disposable checkout and the worker emits `events.jsonl`, per-mutant
-stdout/stderr, and `summary.json` even when some mutants fail or infrastructure
-breaks.
+`tools/remote-mutation-audit-host.sh` is the reference host launcher and
+`tools/remote-mutation-audit.example.toml` is its consumer-manifest template.
+Consumer manifests name source roots, a serial per-mutant test argv, and optional
+trusted infrastructure hooks; CIU and Topos provide live examples. The launcher
+keeps reports outside the disposable checkout and the worker emits `events.jsonl`,
+per-mutant stdout/stderr, and `summary.json` even when a baseline, mutant, or
+teardown fails.
 
 For stateful test infrastructure, prefer a unique Compose project and disposable
 named volumes per audit. When cold setup is material, a trusted hook may create a

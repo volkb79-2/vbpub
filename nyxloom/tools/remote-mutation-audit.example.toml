@@ -1,0 +1,27 @@
+# Trusted, commit-versioned configuration for remote_mutation_audit.py.
+# Copy into a consumer project and replace the values; all commands are argv,
+# never shell snippets.  The test command runs from project_root once for the
+# baseline and once for every disposable mutant worktree.
+
+[audit]
+project = "example"
+project_root = "."
+source_roots = ["src/example"]
+test_argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x"]
+test_env = { PYTHONPATH = "src" }
+# Mutants run concurrently only when they mutate source alone.  Use a bounded
+# value that the remote runner has provisioned, rather than pytest-xdist here.
+jobs = 4
+timeout_seconds = 600
+
+[infra]
+# Hooks are trusted project argv and run only with launcher --allow-infra.
+# Give every Compose/volume resource a unique audit-run name.  If reset or
+# snapshot_restore is non-empty, jobs must be 1 so mutable state cannot cross
+# from one mutant to another.  Leave all hooks empty for pure/offline tests.
+setup = []
+reset = []
+teardown = []
+snapshot_create = []
+snapshot_restore = []
+snapshot_destroy = []
