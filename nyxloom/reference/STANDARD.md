@@ -180,6 +180,10 @@ mandates no image, no test framework, no coverage tool — only the interface ab
 The completeness/parallelism *ideas* generalise (`cargo llvm-cov`, `nyc`, `-j`); the
 tools do not.
 
+For a broader, risk-based catalogue of deterministic and asynchronous evidence
+(mutation, property testing, fuzzing, remote workers, and their limits), see
+[`TESTING-METHODOLOGY.md`](TESTING-METHODOLOGY.md).
+
 **Gate rigor is a first-class, per-project fact.** A weak gate shifts the
 correctness burden onto the reviewer, so a project SHOULD declare what its gate
 actually asserts (the `asserts=[tests-pass|changed-line-coverage|mutation|
