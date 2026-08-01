@@ -138,7 +138,7 @@ def test_generated_workspace_bootstrap_without_network_probes_tls_and_validates(
 
     assert workspace_env.bootstrap_workspace_env(
         start_dir=tmp_path,
-        define_root=None,
+        define_root=tmp_path,
         defaults_filename="ciu.global.defaults.toml.j2",
         generate_env=True,
         update_cert_permission=False,
