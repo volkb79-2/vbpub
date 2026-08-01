@@ -41,7 +41,7 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
       "/src/topos[dev]" \
       "/src/nyxloom[test]" \
       "build" \
- && /opt/tester-venv/bin/python -c "import build, pytest, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')"
+ && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')"
 
 # The container runs as uid 1003 (to match the host-owned bind mounts), which
 # the base image has no /etc/passwd entry for and no writable HOME. Provide

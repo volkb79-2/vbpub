@@ -22,6 +22,8 @@ def test_malformed_global_config_and_unreachable_ip_lookup_fall_back_to_localhos
     )
     monkeypatch.delenv("PUBLIC_FQDN", raising=False)
     monkeypatch.delenv("PUBLIC_IP", raising=False)
+    monkeypatch.delenv("PUBLIC_TLS_CRT_PEM", raising=False)
+    monkeypatch.delenv("PUBLIC_TLS_KEY_PEM", raising=False)
     monkeypatch.setattr(
         workspace_env.urllib.request,
         "urlopen",
@@ -60,6 +62,8 @@ def test_reverse_dns_failure_is_safe_optional_fallback_and_required_error(
     """A missing reverse-DNS name falls back only when FQDN is optional."""
     monkeypatch.delenv("PUBLIC_FQDN", raising=False)
     monkeypatch.delenv("PUBLIC_IP", raising=False)
+    monkeypatch.delenv("PUBLIC_TLS_CRT_PEM", raising=False)
+    monkeypatch.delenv("PUBLIC_TLS_KEY_PEM", raising=False)
     monkeypatch.setattr(
         workspace_env.urllib.request,
         "urlopen",

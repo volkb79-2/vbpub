@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Run CIU test suite with a coverage gate.
+"""Run CIU's isolated, parallel, 100%-coverage release gate.
 
-`python run-ciu-tests.py` runs the full suite, prints per-module coverage with the
-missing line ranges, and FAILS if total line coverage drops below the floor below.
-This is the single command that re-verifies "are the tests still covering the code"
-in CI and locally. Ratchet `--cov-fail-under` upward as coverage improves (current
-floor reflects the measured baseline; the weak spots are cli.py and the deploy.py
-orchestration paths — raise those, then raise the floor).
-
-Pass extra pytest args through: `python run-ciu-tests.py -k provisioning -q`.
+Coverage is collected by pytest-cov rather than ``coverage run`` so xdist worker
+processes are included.  The nyxloom implementation gate adds its changed-line
+floor after this complete-suite command; this helper remains usable by releases.
 """
 from __future__ import annotations
 
@@ -18,10 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-# Total-line-coverage floor. Ratcheted 2026-07-15 after the Compose-derived
-# orchestration-health work: 914 tests measured 75.55%. Keep a small margin for
-# platform-specific branches; raise it as cli.py / deploy.py coverage improves.
-COV_FAIL_UNDER = "75"
+COV_FAIL_UNDER = "100"
 
 
 def main() -> None:
@@ -29,7 +21,10 @@ def main() -> None:
     cmd = [
         sys.executable, "-m", "pytest", "tests",
         "--cov=ciu",
+        "-n", "auto",
+        "--cov-branch",
         "--cov-report=term-missing",
+        "--cov-report=json:coverage.json",
         f"--cov-fail-under={COV_FAIL_UNDER}",
         *argv,
     ]
