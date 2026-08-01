@@ -354,6 +354,10 @@ Concerns:
 - `requires-python >=3.11` is broader than the only authoritative 3.14 gate. Either test the
   supported minimum or declare 3.14.
 - Runtime dependency ranges and a `latest` base image weaken the reproducibility claim.
+- The self-host trove is not currently lint-green: six warnings and one blocking L7 error.
+  The error is in the old P42 handoff, whose `scope.forbid` references nonexistent
+  `nyxloom-trove/STANDARD.md`. Completed artifacts remaining in the live handoff glob make
+  historical drift an active ship-gate failure; archive or migrate them deliberately.
 
 Recommended layers:
 
@@ -491,6 +495,18 @@ mechanical check before an AI audit. This makes “intent versus reality” incr
 5. Changed lint-all to emit `L0 error` and exit non-zero when a registered project's config
    cannot load, rather than silently ignoring the project.
 6. Added focused regression tests for each behavior.
+
+Verification evidence:
+
+- Full `tester-unified` pytest phase: passed, with the one pre-existing strict xfail for the
+  orphan `DRAFT` state.
+- Changed-line coverage for commit `d18aa9d3` versus its direct parent: 8/8 changed
+  executable lines, 100% against the 100% floor.
+- The configured `--base main` coverage invocation correctly returned NO MEASUREMENT after
+  the direct-main commit because `main == HEAD`; the same suite coverage was therefore
+  evaluated against `HEAD^`, the direct commit's actual ancestor.
+- Project lint: 7 existing findings (6 warnings, 1 error); no finding is caused by this
+  report or the code changes.
 
 ## Interview questions for the operator
 
