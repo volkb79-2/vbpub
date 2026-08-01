@@ -187,6 +187,39 @@ def test_interrupted_native_compose_preserves_output_and_skips_post_hooks(
     assert result["stdout"] == "partial output\n"
 
 
+def test_successful_native_compose_preserves_output_and_runs_post_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A normal compose result continues past the interrupted-only branch."""
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    (stack / "compose.yml").write_text("services: {}\n", encoding="utf-8")
+    merged = {"demo": {"hooks": {"post_compose": ["record"]}}, "ciu": {}, "deploy": {}}
+    _stub_native_pipeline(monkeypatch, merged)
+    monkeypatch.setattr(
+        engine,
+        "execute_docker_compose_with_logs",
+        lambda *_args, **_kwargs: {"status": "success", "stdout": "started\n"},
+    )
+    observed: list[str] = []
+    monkeypatch.setattr(
+        engine.hooks_runner,
+        "run_hooks",
+        lambda _hooks, point, *_args: observed.append(point),
+    )
+
+    result = engine.main_execution(
+        stack,
+        compose_file="compose.yml",
+        define_root=tmp_path,
+        skip_hostdir_check=True,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"] == "started\n"
+    assert observed == ["post_compose"]
+
+
 def test_secret_reset_yes_calls_reset_secrets_and_returns_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
