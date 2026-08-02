@@ -38,6 +38,27 @@ signatures EXACTLY as written. If a frozen file or the contract seems wrong,
 insufficient, or impossible: STOP — do not improvise, do not work around —
 write `BLOCKED: <reason>` in your REPORT and final message, and exit.
 
+### Core-redesign wave exception (CR-00 through CR-16)
+
+The operator-approved core-redesign program in
+`reports/CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02-AMENDMENT.md` supersedes
+the frozen-file list only for a package whose explicit contract names one of
+those files. This is a package-scoped ownership grant, not a general unfreeze:
+
+- CR-01 may change the declared document/lint surfaces it audits.
+- CR-03 and CR-07 may change `types.py` and their explicitly named schemas.
+- CR-04 may change `storage.py`, `storage_sqlite.py`, and their explicitly
+  named schemas and command surfaces.
+- Other CR packages may change a normally frozen file only when their written
+  contract names the exact file and explains why the package acceptance cannot
+  be met without it.
+
+Files owned by another active package remain frozen. An agent that discovers a
+new frozen-file need must request a bounded contract amendment; it must not
+infer ownership from this exception. Existing live state and nonterminal tasks
+must be preserved through backup plus versioned upcasting. No CR package is
+authorized to delete or silently reset live state.
+
 ## Cross-package dependencies
 
 Other packages are being implemented in parallel; their modules may still
