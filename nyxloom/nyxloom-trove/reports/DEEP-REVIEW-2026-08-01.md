@@ -26,8 +26,11 @@ The other central issue is change cost. Existing stage lists are configurable, b
 runtime remains a declarative shell around two very large imperative functions. Adding a
 new stage or outcome still requires coordinated edits across the state graph, stage
 registry, planner, executor, storage projection, rendering, schemas, prompts, and tests.
-The deliberate refusal to build an arbitrary workflow DSL is sound; the implementation
-still needs a thinner code-backed rule/handler engine.
+The refusal to execute arbitrary user-authored workflow code is sound. The broader D-060
+rejection of a workflow language is too categorical, however. A small, versioned,
+schema-validated declarative workflow definition compiled to a fixed trusted kernel would
+make the system easier to change without allowing projects to bypass its invariants. The
+implementation also needs a thinner code-backed rule/handler engine.
 
 Overall assessment: preserve the invariants and simplify the mechanism. Prioritize
 capability escalation, stale-premise admission, fail-closed audits, authoritative-doc
@@ -42,7 +45,7 @@ cleanup, and decomposition before expanding the UI/runtime surface.
 | Failure visibility | Mixed | Rich events/traces exist, but broad exception fallbacks and text/regex classification can erase causes. |
 | Incapability escalation | Weak today | Reviewer-mediated `incapable` exists, but implementer `BLOCKED` and repeated errors do not form a dependable tier ladder. |
 | Cost effectiveness | Promising, incomplete | Wave batching, session reuse, cheap-first ordering, and diff-scoped gates help; route selection is still “first healthy.” |
-| Workflow flexibility | Moderate for knobs, weak for behavior | Existing stages can be composed safely; new stage kinds/outcomes remain cross-cutting changes. |
+| Workflow flexibility | Moderate for knobs, weak for behavior | Existing stages can be composed safely; the registry does not drive runtime behavior and new kinds/outcomes remain cross-cutting changes. |
 | DRY | Mixed | Several good shared helpers exist, but policy/control semantics are repeated across prompts, planner branches, executor branches, docs, and projections. |
 | Maintainability | Weakening | `daemon.py` is 8,300 lines; `_execute` is about 1,060 lines; `plan_project` is about 1,160 lines. |
 | Reusability | Moderate | Project configs, gates, adapters, and stages are reusable; host assumptions and dual stores increase integration cost. |
@@ -95,7 +98,12 @@ documents; the learning loop is right, while its storage needs consolidation.
 
 ## Highest-risk gaps
 
-### P0 — Capability escalation does not close the cheap-model loop
+`P0` is the priority/severity class: address before expanding autonomous operation. It is
+not a unique reference. Risks use stable `RISK-NNN` identifiers because an ordinal such as
+`P0.1` becomes misleading when priority changes or findings are reordered. Delivery packages
+use separate `DR-NN` IDs and cite the risk they mitigate.
+
+### RISK-001 [P0] — Capability escalation does not close the cheap-model loop
 
 Current behavior:
 
@@ -122,21 +130,35 @@ Recommended design:
 - Keep raw agent markers as evidence, never sole authority. Combine them with deterministic
   signals: repeated same-route failures, no meaningful worktree progress, repeated oracle
   misses, or a stronger diagnosis verdict.
-- Track `requested_tier` and `effective_tier` separately. Promotion should append a typed
-  event and dispatch the same handoff on the next band; it should not rewrite the handoff.
+- Track `requested_tier` and `effective_tier` separately. Here, a **tier** is the complete
+  role-plus-complexity key such as `implement-1`; its numeric suffix is the **capability
+  band**. Promotion should append a typed event and dispatch the same handoff from
+  `implement-1` to `implement-2`; it should not rewrite the handoff.
 - Bypass a new carver turn when scope is sound. A carver is appropriate for architectural
   or stale-premise re-scoping, not for a mechanical tier bump.
-- Use a bounded ladder: same-session transient resume; next route in band; next band;
-  independent diagnosis; human. Every step needs an explicit cap and reason.
+- Use a bounded ladder: same-session transient resume; another eligible route within the
+  same tier; promote to the next capability band; independent diagnosis; human. Every step
+  needs an explicit cap and reason. Avoid bare "band" language in user-facing receipts.
 - Record predicted band versus minimum band that succeeded, first-pass acceptance, total
   accepted-task cost, retries, and escalation cause. Use this local evidence to calibrate
   future carving; benchmarks should seed priors, not dictate routing.
 
-Acceptance proof: a fake band-1 agent that emits a capability-shaped failure must reach a
-band-2 route with the same scope and no human/carver turn; an environment/contract failure
-must not be mispromoted; the ladder must terminate at a human decision after its cap.
+Acceptance proof: configure `implement-1` with a fake cheap route that returns a typed
+`capability_suspected` result. The next attempt must execute the unchanged handoff through
+an eligible `implement-2` route without asking a human or re-running the carver. A fake
+environment or missing-contract failure must not be promoted, and the bounded ladder must
+terminate in an actionable human decision when no eligible tier remains.
 
-### P0 — Carved premises can be stale at first dispatch
+Add a bounded capability preflight to implementation prompts, but do not ask whether the
+model merely "feels capable." Model self-confidence is weak evidence and can produce both
+overconfident waste and unnecessary refusals. Ask it to proceed unless it can name a
+mechanical unmet condition: missing required context, unavailable tool/access, impossible
+oracle, context-window overflow, or a concrete capability mismatch. A decline must emit a
+small schema such as `CAPABILITY_BLOCKED {reason_code, needed, evidence}` before editing,
+with no long reflection. Treat this as one routing signal, validate it against observable
+facts and route history, and cap repeated declines.
+
+### RISK-002 [P0] — Carved premises can be stale at first dispatch
 
 `input_revision` is checked during rejection triage and proposal admission, but an ordinary
 queued handoff is not revalidated against current `main` immediately before a fresh
@@ -149,7 +171,7 @@ Before every fresh attempt, prove that the handoff revision is still an ancestor
 main and that declared context hashes, if present, still match. Route stale work to the
 carver with a typed drift report. Do not restore carve-ahead until this is green.
 
-### P0 — Declared product references are not authoritative in practice
+### RISK-003 [P0] — Declared product references are not authoritative in practice
 
 The `[refs]` docs are declared as material nyxloom reads, but several are old draft/pilot
 documents:
@@ -165,13 +187,18 @@ documents:
 This is not cosmetic. Carvers and reviewers are explicitly told to read declared refs; stale
 references inject contradictory product truth and waste limited-model context.
 
-Recommendation: establish one authority per concern. Mark historical docs `superseded` and
-remove them from `[refs]`, or update them to current architecture. Add schema metadata such
-as `lifecycle = current|superseded|historical` and lint that `[refs]` may name only current
+Recommendation: establish one authority per concern. A `superseded` document was once
+authoritative and has a named successor; a `historical` document is retained as a snapshot,
+experiment, or provenance record and need not have a one-to-one successor. Both should be
+removed from `[refs]` and normal agent context. Physically move them to `docs/archive/`
+(preserving Git history), add `superseded_by` when applicable, and leave a tombstone only
+where stable external links require one. Reserve `legacy-workflow-origin/` for pre-nyxloom
+provenance rather than mixing it with product documentation. Add schema metadata such as
+`lifecycle = current|superseded|historical` and lint that `[refs]` may name only current
 documents. Add contradiction checks for a small set of machine-known facts: state backend,
 trove path, merge mode, active milestones, and daemon mode.
 
-### P0 — Fail-open exception handling remains a systemic risk
+### RISK-004 [P0] — Fail-open exception handling remains a systemic risk
 
 The review counted 84 `except Exception` sites in `daemon.py`. Many protect optional
 observability and are appropriate; others derive facts used to authorize work. Before this
@@ -192,8 +219,46 @@ throws.
 
 ### The state machine is safe but not easy to change
 
-The “stages as data, no arbitrary flow language” decision is good. Arbitrary user-defined
-states and conditional expressions would make the invariant surface unreviewable.
+DSL means **domain-specific language**: a deliberately small notation for describing one
+domain. For nyxloom it could be versioned TOML/YAML that declares stages, transitions,
+guards, retry/escalation policy, prompt-template IDs, and evidence requirements. It need not
+be a general programming language and it must not permit arbitrary Python, shell, imports,
+or unregistered state mutation.
+
+D-060 correctly rejects arbitrary user-defined executable behavior, but it conflates that
+with every declarative workflow definition. The current boundary is too restrictive for the
+product goal. A safe middle path is a **declarative workflow manifest compiled to a fixed,
+typed kernel of registered handlers**:
+
+```yaml
+schema: nyxloom.workflow/v1
+start: queued
+steps:
+  implement:
+    action: dispatch_agent        # registered handler, never arbitrary code
+    prompt: implement/v2
+    tier: implement-1
+    outcomes:
+      completed: self_review
+      capability_suspected: escalate_implement
+      contract_missing: human_decision
+  escalate_implement:
+    action: promote_tier
+    max_band: 3
+    next: implement
+```
+
+The compiler would resolve names, type-check outcomes and guards, prove graph closure and a
+bounded path to wait/terminal states, apply mandatory admission/review/gate constraints,
+and emit an immutable execution plan with a digest. A project could reorder safe primitives,
+tune policy, select prompts, and opt into registered stages; only nyxloom code could add a
+new effectful handler or weaken an invariant.
+
+This does not make complexity disappear. It adds a schema, compiler, version migration,
+diagnostics, and replay compatibility. Its value is concentrating complexity once instead
+of repeating it in planner branches, executor branches, renderers, prompts, and docs. The
+manifest should therefore start internal and version-controlled; expose project/user edits
+only after static validation, shadow replay, and clear error messages are proven.
 
 Current flexibility is narrower than the config suggests:
 
@@ -210,21 +275,28 @@ Current flexibility is narrower than the config suggests:
 workflow is still encoded in `plan_project` and `Daemon._execute`. This is a declarative
 description beside an imperative engine, not yet a compiled workflow.
 
-Recommended target without a DSL:
+Recommended target:
 
 1. Keep `TaskState`, legal transition graph, event append, storage projection, and admission
    hard-coded as the trusted kernel.
 2. Define code-backed `StageHandler`/`ActionHandler` records containing stage metadata,
    a pure planning function, an effect handler, evidence schema, and retry policy.
-3. Compile the configured pipeline at load into an immutable execution plan and validate
-   ownership/closure once.
+3. Define `nyxloom.workflow/v1`, compile it at load into an immutable execution plan, and
+   validate ownership, transition legality, graph closure, termination bounds, prompt IDs,
+   and mandatory safety stages.
 4. Dispatch actions through a handler map instead of the giant `isinstance` chain.
 5. Split effectors by bounded concern: attempts, reviews, carver, gates, merge, and operator
    control. Keep `Daemon` as orchestration only.
 6. Generate the state legend and supported-action matrix from the same registry so UI and
    runtime cannot drift.
+7. Persist `workflow_digest`, `prompt_digest`, matched guard, selected transition, and
+   handler version on every attempt so old runs remain explainable after config changes.
+8. Allow project overlays only on explicitly declared policy fields; require a code change
+   and invariant tests for new handlers, state mutation kinds, or safety exemptions.
 
-This preserves the fixed invariant kernel while making new code-backed stages local changes.
+This preserves the fixed invariant kernel while making workflow changes local, inspectable,
+replayable, and eventually project-tunable. It should replace—not sit beside—the current
+pipeline registry once parity is proven.
 
 ### Monolith metrics
 
@@ -319,6 +391,33 @@ rule can force an expensive model even when a same-capability model with indepen
 and a stronger test gate has better expected value. Make strict dominance a high-risk policy,
 not necessarily a universal invariant; validate it empirically with escape-rate data.
 
+### Local small-model sidecar
+
+A quantized CPU model is plausible as an advisory sidecar and could reduce paid diagnosis
+and summarization calls. It is not zero-cost: it consumes RAM, CPU time, electricity, startup
+latency, model storage, and operational attention. Call it **zero marginal API cost**.
+
+Good bounded uses:
+
+- extract typed fields from noisy agent/CLI output after deterministic adapters fail;
+- summarize prior attempts into an evidence-linked context packet;
+- classify an unknown failure into candidate `FailureKind` values;
+- cluster recurring failure fingerprints and propose a known remedy;
+- rank already-eligible routes or flag that the deterministic selector has low confidence.
+
+Do not let it authorize transitions, waive gates, merge, rewrite scope, or invent evidence.
+The deterministic daemon must validate its JSON schema and every cited event/artifact, fall
+back cleanly when it is unavailable, and record model/version, prompt digest, input hashes,
+output, latency, and confidence. Prefer regex/typed adapter extraction first and invoke the
+model only for the unclassified tail. Evaluate it offline on historical events with a
+confusion matrix, especially false `capability_suspected` promotions and lost blocker facts,
+before enabling live advice.
+
+Run it out of process behind a narrow local API so daemon correctness and availability do
+not depend on model runtime health. A 1B–8B quantized model is a reasonable experiment range;
+choose the smallest model that meets a held-out extraction/classification suite on the
+actual host. Summaries must retain links to raw evidence and should never replace it.
+
 ## Storage and event sourcing
 
 The event-first design is appropriate. The file backend has a known append-then-projection
@@ -390,18 +489,41 @@ The gap engine should compare criteria and evidence, not infer a whole feature f
 status field. Evidence should expire when its referenced path/test disappears or when a
 declared invariant changes.
 
+## External systems worth comparing
+
+These systems occupy different layers; none is an obvious drop-in replacement for nyxloom's
+evidence-bound, multi-project reconciliation core.
+
+| System | What it is | Relationship to nyxloom | What to borrow or test |
+| --- | --- | --- | --- |
+| [Factory Factory](https://github.com/purplefish-ai/factory-factory) | Local UI/workspace manager for parallel Claude/Codex worktrees, issue-to-PR flow, and a PR repair “ratchet.” | Closest contender for operator UX and worktree/PR progression; more complementary than equivalent to nyxloom's trove, gates, event replay, and capability policy. It is unrelated to Factory.ai. | Evaluate its workspace UI, ACP integration, resumable sessions, and repair-station UX; do not assume git worktrees are a security sandbox. |
+| [Ferrox Factory](https://cgcone.com/plugins) (`ferrox-core`) | Public registry describes it as a meta-prompting, context-engineering, spec-driven skill/plugin system. | Appears to address authoring/context quality above an agent, not durable orchestration below it. Public evidence is too thin for a deeper architecture claim. | Inspect its actual source/license and compare spec lifecycle, prompt modularity, receipts, and context selection before considering reuse. |
+| [GitHub Agentic Workflows](https://github.com/github/gh-aw) | Natural-language Markdown workflows compiled to GitHub Actions with schema checks, pinned dependencies, sandbox/network controls, safe outputs, and cost controls. | Strongest reference for “editable definition compiled to a guarded runtime”; a contender for GitHub-scoped scheduled/event automation, not the whole local nyxloom control plane. | Borrow source-to-lockfile compilation, static diagnostics, safe-output separation, workflow digests, and audit/cost tooling. |
+| [LangGraph](https://github.com/langchain-ai/langgraph) | General durable, stateful agent-workflow framework with human-in-the-loop support. | A possible orchestration substrate, but adopting it would duplicate or transfer ownership of nyxloom's strategic event/state semantics. | Prototype only if maintaining durable waits/replay becomes commodity burden; compare crash recovery and event explainability first. |
+| [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk) | Typed agent/actions/tools/workspaces with local or isolated remote execution. | A contender for agent runtime/adapters and sandbox plumbing, not necessarily for product doctrine, carving, review, or merge policy. | Compare typed action/observation contracts, provider abstraction, context condensation, workspace isolation, and stuck detection. |
+| [Factory.ai](https://factory.ai/product/software-factory) | Commercial model-independent full-SDLC platform with routing, governance, quality gates, and outcome analytics. | Strategic product benchmark, distinct from Factory Factory; replacement evaluation depends on sovereignty, audit access, price, and vendor control. | Borrow outcome metrics such as cost per accepted/merged change and autonomy ratio; require evidence for any performance claim. |
+
+“AVIL gating system” could not be identified from the name alone in the repository or public
+sources. Do not evaluate or adopt it until the operator supplies the exact link/name; it may
+be a typo for “Anvil” or a private/internal system.
+
+Run a bounded comparison spike rather than a migration: execute the same two representative
+handoffs through nyxloom and any serious contender, then compare accepted outcome cost,
+human turns, crash recovery, failure attribution, route escalation, gate independence,
+workflow edit effort, evidence retention, sandbox strength, and ownership of durable state.
+
 ## Recommended delivery order
 
 ### Now — before unfreezing autonomous carving
 
-1. **DR-01 Capability ladder.** Implement typed failure kinds, effective-tier promotion,
-   route-history avoidance, caps, and behavioral matrix tests.
-2. **DR-02 Stale-premise admission (B12).** Revalidate at every fresh dispatch effect
+1. **DR-01 Capability ladder (RISK-001).** Implement typed failure kinds, effective-tier
+   promotion, route-history avoidance, caps, and behavioral matrix tests.
+2. **DR-02 Stale-premise admission (RISK-002/B12).** Revalidate at every fresh dispatch effect
    boundary; keep carve-ahead at zero until proven.
-3. **DR-03 Fail-open audit.** Classify all broad exception handlers as authoritative or
+3. **DR-03 Fail-open audit (RISK-004).** Classify all broad exception handlers as authoritative or
    advisory; fault-test every authoritative snapshot input.
-4. **DR-04 Product truth cleanup.** Reconcile/remove stale `[refs]`; make current/superseded
-   lifecycle lintable.
+4. **DR-04 Product truth cleanup (RISK-003).** Reconcile/archive stale `[refs]`; make
+   current/superseded/historical lifecycle lintable.
 5. **DR-05 Route selection seam.** Replace every first-route loop with one pure selector,
    initially preserving current ordering exactly.
 
@@ -411,8 +533,9 @@ declared invariant changes.
    effectors out of `Daemon._execute`, with parity tests.
 7. **DR-07 Planner rule extraction.** Split `plan_project` into ordered pure rules operating
    on a shared plan context; keep ordering explicit and property-tested.
-8. **DR-08 Compile stages to handlers.** Make registry metadata drive planning/execution
-   dispatch and generate supported-state matrices.
+8. **DR-08 Workflow compiler v1.** Make a versioned declarative manifest compile to the
+   registered planning/effect handlers; generate supported-state matrices and persist the
+   compiled workflow digest. Preserve current pipelines exactly as built-in manifests.
 9. **DR-09 Runtime store convergence.** Shadow SQLite, compare projections, switch default,
    keep JSONL export, then remove the dual live backend.
 10. **DR-10 Durable provider/route health.** Rehydrate disable/pause state from events with
@@ -432,6 +555,11 @@ declared invariant changes.
 15. **DR-15 Human control and explanations.** Surface why a route/action was selected, which
     alternatives were filtered, failure fingerprint, escalation ladder position, and what
     exact user decision can unblock it.
+16. **DR-16 Local advisory-model experiment.** Benchmark deterministic-first extraction plus
+   a CPU sidecar on historical failures/summaries; ship only if it reduces paid cost without
+   unacceptable classification or evidence-loss errors.
+17. **DR-17 Contender comparison spike.** Compare two real handoffs against Factory Factory,
+   GitHub Agentic Workflows, or OpenHands at the relevant layer before adopting components.
 
 ## Out-of-the-box opportunities
 
@@ -510,26 +638,70 @@ Verification evidence:
 
 ## Interview questions for the operator
 
-1. Should a task that says `BLOCKED` ever auto-promote, or do you want only a stronger
-   independent diagnosis to authorize capability escalation? Recommended: typed blockers
-   auto-route obvious provider/scope/decision cases; repeated unexplained agent failures get
-   one bounded stronger diagnosis, then deterministic promotion.
-2. Is “reviewer strictly more capable than implementer” a non-negotiable safety invariant,
-   or may policy choose an equally capable but independent reviewer when the gate is strong
-   and measured escape risk is low? Recommended: risk-based policy, strict dominance for
-   high-risk/weak-gate tasks.
-3. How often do you expect projects to add genuinely new stage kinds or states, versus only
-   composing the current stage menu? This determines whether handler extraction is enough or
-   a versioned plugin API is justified.
-4. Are you comfortable making SQLite the only live runtime store after a shadow migration,
-   with JSONL as export/audit format? Recommended: yes; files-first should describe human
-   product artifacts, not force a non-atomic runtime database.
-5. Which optimization is primary: lowest token/API cost, maximum use of prepaid plans,
-   shortest wall-clock, or minimum human interruptions? The selector can optimize a weighted
-   objective, but one must be the tie-break authority.
-6. May nyxloom learn per-project routing policy from historical outcomes automatically, or
-   should it only recommend changes for operator approval? Recommended: learn scores
-   automatically, require approval for policy/band threshold changes until calibrated.
-7. Do you want the next phase to harden the current trustworthy core before F010-F015 UI and
-   runtime expansion? Recommended: finish DR-01 through DR-10 first; otherwise new surfaces
-   will bind more code to the current monolith and incomplete escalation model.
+1. **What evidence may authorize an automatic capability promotion?** Today `BLOCKED` means
+   contract-blocked, while reviewer `incapable` is late and subjective. Decide whether a
+   typed agent preflight decline may promote immediately, whether promotion requires repeated
+   no-progress attempts, or whether a stronger diagnosis must confirm it. **Recommendation:**
+   mechanically route provider/contract/scope/decision failures; allow one explicit
+   capability decline or two same-fingerprint no-progress failures to trigger a bounded
+   independent diagnosis, then promote the unchanged handoff automatically.
+2. **Should an agent be allowed to decline before spending an implementation attempt?** A
+   free-form “do you feel capable?” prompt is poorly calibrated, but a mechanical preflight
+   can save tokens when context, tools, access, or required capabilities are concretely
+   absent. **Recommendation:** accept only a schema-validated early decline with a reason
+   code and evidence; cap it to a small token/time budget and treat it as evidence rather
+   than truth.
+3. **Is strict reviewer capability dominance universal or risk-dependent?** Always choosing
+   a stronger reviewer is simple and conservative but can erase cheap-model savings where
+   an independent peer plus a rigorous gate is enough. **Recommendation:** require strict
+   dominance for security-sensitive, broad, novel, or weak-gate changes; permit an equally
+   rated independent reviewer for low-risk work only after escape-rate evidence supports it.
+4. **How editable should `nyxloom.workflow/v1` be?** The useful middle ground ranges from
+   nyxloom-owned built-in manifests, through repository-owned composition/policy overlays,
+   to third-party handler plugins. Each step increases flexibility and the invariant surface.
+   **Recommendation:** first compile built-in manifests for parity; then allow projects to
+   edit topology, registered prompt IDs, retries, tiers, and safe guards. Keep new effectful
+   handlers, states, and safety exemptions as reviewed nyxloom code until a plugin security
+   model exists.
+5. **Which real workflow variations do you expect in the next year?** Name two or three
+   concrete flows that the current seven-stage menu cannot express—for example security
+   review, deploy preview, two independent reviewers, manual approval, or repair loops. This
+   determines the minimum DSL vocabulary and prevents building a generic engine speculatively.
+   **Recommendation:** design v1 against those examples plus the existing presets, not BPMN.
+6. **May prompt templates and decision criteria be project-owned?** Editable prompts improve
+   domain fit but can silently weaken evidence and gates. **Recommendation:** version prompt
+   templates separately, allow project overrides only for declared sections, compile
+   mandatory contract/receipt/safety clauses around them, and persist the final prompt digest.
+7. **Are you comfortable making SQLite the sole live runtime store after shadow migration?**
+   Keeping file and SQLite backends live doubles semantic work and weakens atomicity; human
+   product artifacts can remain files. **Recommendation:** use SQLite WAL for runtime events
+   and projections, retain JSONL as a deterministic export/recovery artifact, and prove
+   replay equivalence before switching.
+8. **What is the selector's primary optimization objective?** Lowest paid token cost,
+   maximum prepaid-plan use, wall-clock latency, acceptance probability, and minimum human
+   interruption can conflict. **Recommendation:** minimize expected cost per accepted change
+   subject to reliability/risk constraints; use human interruption and wall-clock as explicit
+   penalties, and prepaid use only as a cost input—not the definition of success.
+9. **How much routing policy may nyxloom learn automatically?** Historical outcomes can tune
+   model reliability and minimum-sufficient-tier estimates, but automatic threshold changes
+   could create a feedback loop. **Recommendation:** update observational scores and
+   confidence automatically; require operator approval for band thresholds, hard exclusions,
+   and new exploration policy until counterfactual replay is mature.
+10. **What archive contract do you want for stale documents?** Moving both `superseded` and
+    `historical` material out of active paths reduces context pollution, but stable links and
+    decision lineage may matter. **Recommendation:** move both to `docs/archive/`, require
+    `superseded_by` only for replaced authorities, exclude the archive from default search
+    packets, and maintain tombstones/link maps only for externally referenced paths.
+11. **What hardware and privacy boundary can a local advisory model use?** CPU model size,
+    acceptable daemon-host RAM/latency, licensing, and whether source/events may enter a local
+    model determine feasibility. **Recommendation:** start with a replaceable out-of-process
+    sidecar and a 1B–8B quantized candidate; test only extraction/classification/summarization
+    on historical data, with deterministic fallback and no transition authority.
+12. **Do you want to adopt components or only borrow patterns from contenders?** Factory
+    Factory, GitHub Agentic Workflows, OpenHands, LangGraph, and Factory.ai overlap different
+    layers. **Recommendation:** preserve nyxloom's evidence/routing moat, but run DR-17 before
+    rebuilding commodity ACP workspace UX, workflow compilation, or isolated agent runtime.
+13. **Should the next phase harden the control core before UI/runtime expansion?** F010–F015
+    will otherwise bind more surfaces to the monolith and incomplete escalation model.
+    **Recommendation:** complete DR-01 through DR-10 first, while allowing small read-only UI
+    work that consumes generated state/action metadata rather than adding new daemon policy.
