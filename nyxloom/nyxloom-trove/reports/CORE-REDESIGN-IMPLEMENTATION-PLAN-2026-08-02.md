@@ -1,8 +1,11 @@
 # nyxloom core redesign implementation plan
 
-Date: 2026-08-02  
-Status: proposed for external review  
-Source assessment: `DEEP-REVIEW-2026-08-01.md`  
+Date: 2026-08-02
+
+Status: proposed for external review
+
+Source assessment: `DEEP-REVIEW-2026-08-01.md`
+
 Scope: DR-01 through DR-15. DR-16 and DR-17 are explicitly excluded.
 
 ## 1. Objective
