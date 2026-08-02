@@ -6,6 +6,35 @@ Source assessment: [`DEEP-REVIEW-2026-08-02-AMENDMENT.md`](DEEP-REVIEW-2026-08-0
 
 Status: proposed for operator approval
 
+## Implementation progress
+
+This section is the live program ledger. Update it whenever program changes land
+on `main`; architecture text below remains the contract. A package is `done`
+only after implementation, an independent capable review-and-fix pass, and the
+authoritative `tester-unified` gate. Commit IDs and gate evidence are recorded
+here so external reviewers can distinguish planned work from shipped work.
+
+Last updated: 2026-08-02
+
+| Item | State | Evidence / notes |
+| --- | --- | --- |
+| Program preparation | in progress | `e9bf702f` adds a package-scoped exception to the obsolete frozen-file list; it does not generally unfreeze core files. |
+| CR-00 | implementing | Isolated branch `cr/nyxloom-cr00`; Sonnet implementation followed by independent Opus review-and-fix. |
+| CR-15 | implementing | Isolated branch `cr/nyxloom-cr15`; Opus security implementation followed by a fresh independent Opus review-and-fix. |
+| CR-01 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
+
+Program operating decisions:
+
+- Keep the nyxloom daemon stopped through the core migration unless a later
+  ledger entry records a deliberate compatibility decision.
+- Preserve all live and nonterminal project tasks through backups and versioned
+  upcasting. Greenfield architecture does not authorize a live-state reset.
+- Free or otherwise untrusted routes remain disabled until CR-13a is gated.
+- Implementation agents do not run the long gate. The controller runs it from
+  each committed package branch, and no package merges on cockpit-only evidence.
+- Reviewers may improve and commit the implementation as they see fit while
+  preserving the package contract; review is not limited to comments.
+
 ## What this document is
 
 The parent plan is a good plan: the layering is right, the compile-time rejection conditions
