@@ -473,7 +473,7 @@ role eligibility, never a permanent provider mapping:
 | 2 | Localized routine work with clear tests | economy models |
 | 3 | Normal multi-file implementation/review | mainstream workhorse models |
 | 4 | Cross-component, ambiguous, or high-risk work | strong models/high reasoning |
-| 5 | Frontier architecture, recovery, and final escalation | frontier models/maximum reasoning |
+| 5 | Frontier architecture, recovery, and final escalation | frontier models/xhigh reasoning |
 
 Each role has its own eligibility thresholds, so a model may qualify for `implement-2` but
 not `review-2`. An explicit typed capability decline immediately promotes the unchanged task
@@ -780,10 +780,11 @@ Verification evidence:
    for ambiguous/repeated failures or terminal escalation, with the typed outcome/action
    table defined above.
 2. **Band count:** plan for five role-specific bands spanning self-hosted/free small models
-   through frontier maximum-reasoning routes. Band definitions remain configurable and are
+   through frontier xhigh-reasoning routes. Band definitions remain configurable and are
    calibrated by observed task-archetype outcomes.
 3. **Review policy:** risk-dependent. `implement-1 -> review-1` is normal provided the
-   `review-1` route is independently capable of the review job. Test modifications affect
+   `review-1` route is independently capable of the review job and should usually be smarter 
+   than the implementer. Test modifications affect
    risk because they can weaken or falsify the oracle; route review by touched artifact,
    gate rigor, scope, and risk, not by a universal `review = implementation + 1` formula.
 4. **Optimization objective:** minimize expected total cost per accepted correct change,
