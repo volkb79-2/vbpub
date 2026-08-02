@@ -25,8 +25,10 @@ INTERFACE CONTRACT (frozen):
        On success append LEASE_ACQUIRED per lease (task-scoped).
     3. Append ATTEMPT_STARTED: attempt.state=RUNNING, pid/pgid of the CLI
        child (see 4), log_path set.
-    4. Spawn the CLI: subprocess.Popen(spec.argv, cwd=spec.cwd, env=merged
-       env, stdout=log fd (append, line-buffered), stderr=STDOUT,
+    4. Spawn the CLI: subprocess.Popen(spec.argv, cwd=spec.cwd,
+       env=child_env(spec.env_overrides) -- the daemon environment MINUS
+       DAEMON_ONLY_ENV, plus this attempt's overrides (2026-08-02, RISK-006),
+       stdout=log fd (append, line-buffered), stderr=STDOUT,
        start_new_session=True). Write child pid to <attempt_dir>/child.pid.
     5. After launch, try adapters.capture_session(route via spec.route_def
        raw dict -> RouteDef, log_path=spec.log_path) once after a 5s delay;
@@ -110,6 +112,37 @@ from .types import (
 log = get_logger("wrapper")  # P05a (docs/plan-logging.md §5)
 
 SESSION_CAPTURE_DELAY = 5.0
+
+# 2026-08-02 (review amendment RISK-006): daemon-only secrets that must NEVER
+# reach a dispatched agent CLI. The wrapper hands the child `os.environ.copy()`
+# -- i.e. the whole daemon environment -- so without this filter every route,
+# INCLUDING the opt-in free/untrusted OpenRouter tier, inherited them.
+#
+#   AA_API_KEY      benchmark ingest, consumed by the daemon itself.
+#                   nyxloomd/secrets.env.example already documents it as
+#                   "NOT forwarded to any CLI" -- the code contradicted the doc.
+#   NTFY_TOKEN      the operator-notification PUBLISHER identity. An agent
+#                   holding it can forge operator-facing notifications.
+#   NTFY_CMD_TOKEN  the feedback/command-channel reader identity, the transport
+#                   the operator answers decisions on -- the sharpest edge: the
+#                   north-star rule is that a human owns direction, and this
+#                   token is part of how that answer travels.
+#
+# A route that genuinely needs one of these can still receive it explicitly via
+# `spec.env_overrides`, which is applied AFTER the strip and is set per dispatch.
+# This is a stopgap for the blast radius, not containment: an agent still shares
+# the daemon's namespace, mounts and docker socket. Real least-privilege is the
+# per-use CLI-container package (D-R7); see the 2026-08-02 amendment reports.
+DAEMON_ONLY_ENV = ("AA_API_KEY", "NTFY_TOKEN", "NTFY_CMD_TOKEN")
+
+
+def child_env(env_overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment a dispatched CLI receives: the daemon's, minus
+    DAEMON_ONLY_ENV, plus this attempt's explicit overrides (which win, so an
+    override can deliberately re-supply a stripped name)."""
+    env = {k: v for k, v in os.environ.items() if k not in DAEMON_ONLY_ENV}
+    env.update(env_overrides or {})
+    return env
 
 
 @dataclass
@@ -288,8 +321,7 @@ def wrapper_main(spec_path: str) -> int:
             # Step 4: Spawn CLI
             log_path = Path(spec.log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            env = os.environ.copy()
-            env.update(spec.env_overrides)
+            env = child_env(spec.env_overrides)
 
             with log_path.open("ab") as log_fd:
                 child = subprocess.Popen(

@@ -1,16 +1,32 @@
 # Standing package contracts — nyxloom implementation waves
 
 Inherited by EVERY handoff in this directory. Read once, follow exactly.
-Today's date: 2026-07-15 (use it; wrong dates are review-rejected).
+Use TODAY'S ACTUAL DATE — the one your carve packet states, not a date copied
+from this file. (Wrong dates are review-rejected. Until 2026-08-02 this line
+hardcoded "2026-07-15" and instructed every handoff to use it, so it had been
+mandating a wrong date for 18 days; a date pinned in an inherited contract is
+wrong by construction.)
 
 ## Environment
 
 - Work dir: `/workspaces/vbpub/nyxloom`. Never leave it.
-- Python: `/workspaces/vbpub/.venv/bin/python` (3.13; PyYAML, jsonschema,
-  hypothesis, pytest installed — install NOTHING).
-- Gate (the only accepted evidence):
-  `cd /workspaces/vbpub/nyxloom && /workspaces/vbpub/.venv/bin/python -m pytest tests/<your test files> -q`
-  Run it; paste the tail of its real output into your REPORT.
+- Python (DIAGNOSTIC only): the interpreter on `PATH` (currently 3.14; PyYAML,
+  jsonschema, hypothesis, pytest installed — install NOTHING). Corrected
+  2026-08-02: this line named `/workspaces/vbpub/.venv/bin/python` at "3.13",
+  a path that does not exist.
+- **Gate — the only accepted evidence** is the project's real declared gate,
+  `[gates.tester-unified]` in `nyxloom-trove/nyxloom.toml`: pytest under
+  `-n auto` with coverage inside the `tester-unified` container, followed by
+  the changed-line coverage floor. Run it; paste the tail of its real output
+  into your REPORT.
+  Corrected 2026-08-02: this line used to name a cockpit venv `pytest` command
+  as "the only accepted evidence", contradicting both `nyxloom.toml` and the
+  project's own rule that cockpit runs are diagnostic and are never release
+  evidence. A cockpit run is still useful for your inner loop — it is just not
+  proof, and a REPORT that offers only a cockpit tail is incomplete.
+  NOTE: the coverage phase diffs committed `HEAD`, so it reports NO MEASUREMENT
+  (and fails) while your work is uncommitted. That is the gate failing closed,
+  not a coverage failure; say so explicitly rather than presenting it as green.
 
 ## Frozen files — read, NEVER modify
 

@@ -1314,3 +1314,81 @@ class TestP05aLogging:
         assert exits[0]["project"] == project
         assert exits[0]["task"] == task_id
         assert exits[0]["attempt"] == attempt_id
+
+
+class TestDaemonOnlySecretsAreNotInherited:
+    """2026-08-02 review amendment (RISK-006). The wrapper used to hand the
+    child `os.environ.copy()` -- the WHOLE daemon environment -- so every
+    dispatched CLI, including the opt-in free/untrusted OpenRouter tier,
+    inherited the daemon's own secrets. nyxloomd/secrets.env.example already
+    claimed AA_API_KEY was "NOT forwarded to any CLI"; the code disagreed.
+
+    The oracle is the environment the CLI ACTUALLY RECEIVES: the fake CLI
+    dumps its own environ into the attempt log and the assertions read it
+    back. Asserting on child_env()'s return value alone would prove only that
+    a helper exists, not that Popen was given it.
+    """
+
+    def _run_with_env(self, tmp_state, tmp_path, mock_adapters, monkeypatch,
+                      env_overrides=None):
+        project, task_id, attempt_id = "demo", "demo-P01-sample", "att-1"
+        seed(project, task_id, attempt_id)
+
+        # A CLI that reports its own environment, one NAME=VALUE per line.
+        script = tmp_path / "dump_env.sh"
+        script.write_text("#!/bin/sh\nenv\n")
+        script.chmod(0o755)
+
+        monkeypatch.setenv("AA_API_KEY", "aa-secret-value")
+        monkeypatch.setenv("NTFY_TOKEN", "ntfy-publisher-secret")
+        monkeypatch.setenv("NTFY_CMD_TOKEN", "ntfy-command-secret")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "provider-key-the-cli-needs")
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        log_path = attempt_dir / "wrapper.log"
+        spec = WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id,
+            argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir),
+            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            env_overrides=env_overrides or {},
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        assert wrapper_main(str(spec_path)) == 0
+        return log_path.read_text(encoding="utf-8")
+
+    def test_daemon_only_secrets_absent_from_child_environment(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        env_text = self._run_with_env(tmp_state, tmp_path, mock_adapters, monkeypatch)
+
+        # The three stripped names, and — the point of the exercise — their
+        # VALUES, which must not have reached the child under any name.
+        assert "AA_API_KEY=" not in env_text
+        assert "NTFY_TOKEN=" not in env_text
+        assert "NTFY_CMD_TOKEN=" not in env_text
+        assert "aa-secret-value" not in env_text
+        assert "ntfy-publisher-secret" not in env_text
+        assert "ntfy-command-secret" not in env_text
+
+    def test_provider_key_the_cli_needs_is_still_inherited(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """Fail-safe in the other direction: strip too much and every
+        OpenRouter/DeepSeek route stops authenticating. Only the daemon-only
+        names go."""
+        env_text = self._run_with_env(tmp_state, tmp_path, mock_adapters, monkeypatch)
+        assert "OPENROUTER_API_KEY=provider-key-the-cli-needs" in env_text
+
+    def test_env_override_can_deliberately_resupply_a_stripped_name(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """The strip is a default, not a prohibition: a dispatch that has a
+        reason to pass one of these names does so explicitly per attempt, and
+        the override wins because it is applied after the strip."""
+        env_text = self._run_with_env(
+            tmp_state, tmp_path, mock_adapters, monkeypatch,
+            env_overrides={"NTFY_TOKEN": "deliberately-passed"})
+        assert "NTFY_TOKEN=deliberately-passed" in env_text
+        assert "ntfy-publisher-secret" not in env_text

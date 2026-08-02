@@ -398,3 +398,128 @@ def test_last_activity_dash_when_no_log(sample_project, tmp_state):
     # _format_age(None) == "-" (plain ASCII hyphen -- distinct from the
     # em-dash '—' this page uses elsewhere for other missing fields).
     assert "<td>-</td>" in task_content
+
+
+# ==========================================================================
+# 2026-08-02 review amendment (RISK-005): the mutating HTTP surface is
+# UNAUTHENTICATED and the deployed bind is 0.0.0.0 on the ciu bridge, so a
+# browser that can reach the dashboard could previously be made to pause a
+# project, rewrite policy, or answer a human decision from any other site.
+# daemon.Daemon._reject_cross_site closes the drive-by half of that.
+#
+# Every oracle below asserts the ARTIFACT, not just the status code: a
+# refused request must leave project.toml byte-identical and append no
+# CONFIG_CHANGED event. A 403 that still mutated would be worthless.
+# ==========================================================================
+
+def _post_headers(base: str, path: str, body: dict,
+                  headers: dict[str, str]) -> tuple[int, dict]:
+    """_post's sibling with caller-controlled headers (no implicit
+    Content-Type), for exercising the cross-site refusals."""
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(f"{base}{path}", data=data, method="POST",
+                                 headers=headers)
+    try:
+        resp = urllib.request.urlopen(req, timeout=5)
+        return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def _config_changed_count(project: str = "demo") -> int:
+    return sum(1 for e in storage.iter_events(project)
+               if e.type is EventType.CONFIG_CHANGED)
+
+
+@pytest.mark.parametrize("headers,why", [
+    ({}, "no content-type at all"),
+    # The form-CSRF vector: a cross-site <form> can only produce these three
+    # encodings, so none of them may reach a mutation handler.
+    ({"Content-Type": "text/plain"}, "text/plain form post"),
+    ({"Content-Type": "application/x-www-form-urlencoded"}, "urlencoded form post"),
+    ({"Content-Type": "multipart/form-data; boundary=x"}, "multipart form post"),
+])
+def test_mutation_refused_without_json_content_type(cfg_daemon, sample_project,
+                                                    headers, why):
+    d = cfg_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    before_toml = _project_toml_text(sample_project)
+    before_events = _config_changed_count()
+
+    status, resp = _post_headers(
+        base, "/api/config/policy",
+        {"project": "demo", "key": "max_active_tasks", "value": 5}, headers)
+
+    assert status == 403, why
+    assert "content-type" in resp["error"]
+    assert _project_toml_text(sample_project) == before_toml, why
+    assert _config_changed_count() == before_events, why
+
+
+def test_mutation_refused_from_cross_site_origin(cfg_daemon, sample_project):
+    """Correct Content-Type but a foreign Origin -- the fetch()-from-another-
+    site vector. Browsers set Origin on cross-site POSTs; the server compares
+    it against Host."""
+    d = cfg_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    before_toml = _project_toml_text(sample_project)
+    before_events = _config_changed_count()
+
+    status, resp = _post_headers(
+        base, "/api/config/policy",
+        {"project": "demo", "key": "max_active_tasks", "value": 5},
+        {"Content-Type": "application/json", "Origin": "http://evil.example"})
+
+    assert status == 403
+    assert resp["error"] == "cross-site origin"
+    assert _project_toml_text(sample_project) == before_toml
+    assert _config_changed_count() == before_events
+
+
+def test_decision_reply_refused_from_cross_site_origin(cfg_daemon):
+    """The sharpest edge of RISK-005: /api/decision/reply is how a HUMAN
+    answers an escalation. A cross-site caller must not reach it -- and must
+    be refused BEFORE any lookup, so an attacker cannot even probe which
+    decision ids exist (a valid id 404s, an invalid one would too)."""
+    d = cfg_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    status, resp = _post_headers(
+        base, "/api/decision/reply", {"decision_id": "dec-1", "text": "approved"},
+        {"Content-Type": "application/json", "Origin": "http://evil.example"})
+
+    assert status == 403
+    assert resp["error"] == "cross-site origin"
+
+
+def test_same_origin_browser_post_still_mutates(cfg_daemon, sample_project):
+    """The guard must not break the dashboard itself: render.py's fetch()
+    calls send Content-Type: application/json, and the browser adds a
+    same-origin Origin. That combination still applies the edit."""
+    d = cfg_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    host = f"127.0.0.1:{d.http_port}"
+
+    status, _resp = _post_headers(
+        base, "/api/config/policy",
+        {"project": "demo", "key": "max_active_tasks", "value": 5},
+        {"Content-Type": "application/json", "Origin": f"http://{host}"})
+
+    assert status == 200
+    assert "max_active_tasks = 5" in _project_toml_text(sample_project)
+
+
+def test_non_browser_client_without_origin_still_mutates(cfg_daemon, sample_project):
+    """curl and the CLI send no Origin header at all. Absent Origin is not
+    evidence of a cross-site request, so it must not be refused -- otherwise
+    this guard would silently break every scripted operator workflow."""
+    d = cfg_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    status, _resp = _post_headers(
+        base, "/api/config/policy",
+        {"project": "demo", "key": "ready_queue_target", "value": 7},
+        {"Content-Type": "application/json"})
+
+    assert status == 200
+    assert "ready_queue_target = 7" in _project_toml_text(sample_project)

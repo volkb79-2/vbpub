@@ -152,8 +152,12 @@ INTERFACE CONTRACT (frozen):
         "default"} — the daemon's current effective log level and which
         D-L3 precedence layer supplied it (see `resolve_level`).
   P15 2026-07-15 (spec amendment, user directive): CONFIG mutations are now
-  allowed through audited loopback endpoints (workflow-STATE mutations
-  remain CLI-only). All three are POST, JSON in/out, 400 on validation
+  allowed through audited HTTP endpoints (workflow-STATE mutations
+  remain CLI-only). 2026-08-02: "loopback" struck from that sentence -- the
+  deployed bind is 0.0.0.0 (P38), these endpoints are UNAUTHENTICATED, and
+  `Daemon._reject_cross_site` is CSRF hardening only. Read `_start_http`'s
+  bind-time warning and `_reject_cross_site` for the real posture.
+  All three are POST, JSON in/out, 400 on validation
   failure with NO write performed, 404 for an unknown project/tier, 405 for
   GET on these paths:
     POST /api/config/policy {project, key, value} -> config.
@@ -494,7 +498,10 @@ def resolve_level(registry: dict[str, Path] | None = None) -> tuple[str, str]:
 # P18 2026-07-16: /api/decision/reply joins this POST-only set (not a config
 # mutation, but the same GET->405 guard applies).
 # P30 2026-07-16: /api/intake joins it too -- the ONE sanctioned write path
-# into intake_chat.advance_intake, loopback-only like the rest of this surface.
+# into intake_chat.advance_intake. (2026-08-02: the words "loopback-only like
+# the rest of this surface" were struck here -- untrue since P38 deployed
+# NYXLOOM_HTTP_BIND=0.0.0.0. Every path in this set is an UNAUTHENTICATED
+# mutation; _reject_cross_site is CSRF hardening, not authentication.)
 # P02 2026-07-21: /api/config/log-level joins it too (D-L3 runtime control).
 _CONFIG_POST_PATHS = frozenset({
     "/api/config/policy", "/api/config/pause", "/api/config/tier",
@@ -7726,9 +7733,51 @@ class Daemon:
             return None
         return body if isinstance(body, dict) else None
 
+    @staticmethod
+    def _reject_cross_site(handler: http.server.BaseHTTPRequestHandler) -> str | None:
+        """None when this POST may proceed; otherwise the refusal reason.
+
+        2026-08-02 (review amendment RISK-005). Every mutating endpoint on this
+        server is UNAUTHENTICATED, and the deployed bind is 0.0.0.0 on the ciu
+        bridge -- so a browser that can reach the dashboard is, by itself,
+        enough to pause a project, rewrite policy, or ANSWER A HUMAN DECISION.
+        Two cheap, standards-based checks close the drive-by half of that:
+
+        - Require Content-Type: application/json. A cross-site <form> can only
+          send urlencoded/multipart/text-plain, so requiring a type it cannot
+          produce blocks form-based CSRF without any token. Every dashboard
+          fetch() already sets this header (render.py), so nothing legitimate
+          changes.
+        - Require a same-origin Origin when the header is present. Browsers
+          send Origin on cross-site POSTs; non-browser clients (curl, the CLI)
+          send none and are unaffected. Same-origin is host-compared, so
+          reaching the dashboard as nyxloomd:8942 or localhost:8942 both work.
+
+        This is CSRF hardening, NOT authentication: anything that can open a
+        socket to this port still holds full control-plane authority. Real
+        operator identity is the control-plane-auth package (CR-15); see the
+        2026-08-02 amendment reports."""
+        ctype = (handler.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return "content-type must be application/json"
+        origin = handler.headers.get("Origin")
+        if origin:
+            host = (handler.headers.get("Host") or "").strip().lower()
+            try:
+                origin_host = urllib.parse.urlparse(origin).netloc.strip().lower()
+            except ValueError:
+                return "malformed origin"
+            if not host or origin_host != host:
+                return "cross-site origin"
+        return None
+
     def _handle_post(self, handler: http.server.BaseHTTPRequestHandler) -> None:
         parsed = urllib.parse.urlparse(handler.path)
         path = parsed.path
+        refusal = self._reject_cross_site(handler)
+        if refusal is not None:
+            self._send_json(handler, 403, json.dumps({"error": refusal}).encode("utf-8"))
+            return
         body = self._read_json_body(handler)
         if body is None:
             self._send_json(handler, 400, b'{"error":"malformed json body"}')
@@ -7833,13 +7882,17 @@ class Daemon:
         the ONE sanctioned write path into intake_chat.advance_intake().
         Body is untrusted operator input: passed through as plain text (no
         shell, no eval, no dynamic dispatch); advance_intake itself redacts
-        the agent's reply before it is stored or returned here. Loopback-only,
-        same as every other route on this server.
+        the agent's reply before it is stored or returned here.
 
         `text` is free-form (it only ever becomes prompt/transcript text, and
         render.py escapes it), but `intake_id` names a file and is echoed into
         intake.html's JS, so it must match _INTAKE_ID_RE; omit it to open a
-        fresh conversation and let the server mint one."""
+        fresh conversation and let the server mint one.
+
+        2026-08-02: the preceding sentence used to end "Loopback-only, same as
+        every other route on this server" -- untrue since P38 moved the deployed
+        bind to 0.0.0.0 on the ciu bridge. See _reject_cross_site for what
+        actually guards this endpoint (CSRF only; it is not authenticated)."""
         project = body.get("project")
         text = body.get("text")
         intake_id = body.get("intake_id")
@@ -7876,8 +7929,9 @@ class Daemon:
     def _post_finding_promote(self, handler, body: dict) -> None:
         """FN-6: promote a finding to an interactive intake conversation. The
         finding's typed content seeds a NEW intake (new_id('intake')); everything
-        downstream is the existing intake pipeline. Loopback-only, same surface as
-        /api/intake. `finding_id`/`project` are validated against real records; the
+        downstream is the existing intake pipeline. Same surface as /api/intake
+        (NOT loopback-only since P38 -- see _reject_cross_site).
+        `finding_id`/`project` are validated against real records; the
         minted intake_id (not any client value) names the file."""
         from . import findings as findings_mod
         project = body.get("project")

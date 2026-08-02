@@ -22,6 +22,16 @@ services:
       - no-new-privileges:true
     environment:
       TZ: "UTC"
+      # 2026-08-02 OUTAGE FIX: server.yml is a ciu Jinja TEMPLATE — its
+      # `base-url: "https://{{ ntfy.public_host }}"` is only substituted on the
+      # ciu deploy path (configfile overlay). This plain-compose path binds the
+      # template VERBATIM, so ntfy rejected the literal "{" in the host name and
+      # crash-looped ("base-url must be a valid URL"). Env wins over the YAML
+      # file in ntfy's config precedence, so supplying the value here makes the
+      # plain path self-sufficient and independent of the render step. Keep this
+      # in sync with ciu.toml `public_host` and nyxloomd/.env `NTFY_URL`.
+      # Follow-up: consolidate on ONE deploy path (see the amendment reports).
+      NTFY_BASE_URL: "https://nyxloom.gstammtisch.dchive.de"
     volumes:
       - /home/vb/volkb79-2/vbpub/nyxloom/ntfy/server.yml:/etc/ntfy/server.yml:ro
       - ntfy-data:/var/lib/ntfy
