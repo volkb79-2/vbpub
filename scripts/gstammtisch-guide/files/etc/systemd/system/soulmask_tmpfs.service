@@ -1,6 +1,6 @@
 # /etc/systemd/system/soulmask_tmpfs.service
 [Unit]
-Description=Soulmask unified read-only tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance)
+Description=Soulmask unified tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance)
 Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
 # Must run before Docker so containers mount the tmpfs-backed paths.
 Before=docker.service
@@ -15,14 +15,28 @@ DefaultDependencies=no
 Slice=soulmask_tmpfs-ZSwapMax1.slice
 Type=oneshot
 RemainAfterExit=yes
+# Accepted tradeoff since 2026-07-31: read-only tmpfs is incompatible with
+# Wings' unconditional pre-boot chown (EROFS) whenever the ROLE=main
+# instance is also TMPFS=1 (bind-mounted onto its own directory). Leaving
+# this read-write avoids that entirely; steamcmd/game writes land directly
+# in shared RAM instead of being blocked. Mitigated, not eliminated, by
+# this tmpfs's headroom (5G vs ~2.3G payload) — see SOULMASK-TMPFS.md and
+# soulmask_tmpfs-setup.sh's own comment on READONLY.
+Environment=SOULMASK_TMPFS_READONLY=0
 # Enumerates /etc/gstammtisch/instances.d/*.env for TMPFS=1 instances, reads
 # /etc/gstammtisch/soulmask_tmpfs-paths.conf for what to share, copies from
 # the ROLE=main instance into ONE shared tmpfs, remounts it read-only, then
 # bind-mounts every path into every opted-in instance's volume.
 ExecStart=/usr/local/sbin/soulmask_tmpfs-setup.sh
+# Belt-and-suspenders alongside the wings docker-compose.yml propagation fix
+# (rslave on its /var/lib/pterodactyl bind, applied 2026-07-31): restart
+# wings on every toggle so it can never again carry ghost copies of bind
+# mounts the host has since changed. See soulmask_tmpfs-restart-wings.sh.
+ExecStartPost=/usr/local/sbin/soulmask_tmpfs-restart-wings.sh
 # Teardown: unmount every bind target recorded in the setup script's state
 # file, then the shared tmpfs itself.
 ExecStop=/usr/local/sbin/soulmask_tmpfs-teardown.sh
+ExecStopPost=/usr/local/sbin/soulmask_tmpfs-restart-wings.sh
 # Generous: copies ~2.5G across many paths on cold disk (pak ~1.7G +
 # binaries/libs ~500M + steamcmd ~200M + Steam runtime ~200M = ~2.6G).
 TimeoutStartSec=180

@@ -57,6 +57,14 @@ fi
 
 RAMDISK="/mnt/soulmask_tmpfs"
 TMPFS_SIZE="${SOULMASK_TMPFS_SIZE:-5G}"   # ~2.6G payload (2026-07-29) + generous headroom
+# 1 = remount read-only after population, blocking all writes.
+# 0 (default) = leave read-write. Needed because Wings' pre-boot chown walk
+# (Lchownat, unconditional, no already-correct-owner skip) fails EROFS on
+# any instance bind-mounted onto its OWN directory (e.g. ROLE=main also
+# TMPFS=1) while read-only -- discovered 2026-07-31. See SOULMASK-TMPFS.md
+# for the tradeoff this accepts (steamcmd's own update writes aren't
+# guaranteed atomic; mitigated by tmpfs headroom, not eliminated).
+READONLY="${SOULMASK_TMPFS_READONLY:-0}"
 STATE_FILE="/run/soulmask_tmpfs.state"
 INSTANCES_DIR="${GSTAMMTISCH_ETC:-/etc/gstammtisch}/instances.d"
 PATHS_FILE="${GSTAMMTISCH_ETC:-/etc/gstammtisch}/soulmask_tmpfs-paths.conf"
@@ -291,10 +299,14 @@ if [ $DRY_RUN -eq 0 ]; then
   fi
 fi
 
-# --- remount read-only --------------------------------------------------------
+# --- remount read-only (unless SOULMASK_TMPFS_READONLY=0) ---------------------
 if [ $DRY_RUN -eq 0 ]; then
-  log "remounting tmpfs read-only"
-  run mount -o remount,ro "$RAMDISK"
+  if [ "$READONLY" = "1" ]; then
+    log "remounting tmpfs read-only"
+    run mount -o remount,ro "$RAMDISK"
+  else
+    log "SOULMASK_TMPFS_READONLY=0 — leaving tmpfs read-write (accepted tradeoff, see SOULMASK-TMPFS.md)"
+  fi
 fi
 
 # --- bind-mount into every opted-in instance ----------------------------------
@@ -334,6 +346,7 @@ if [ $DRY_RUN -eq 0 ]; then
     echo "# soulmask_tmpfs state (generated $(date -Is)) — do not edit"
     echo "RAMDISK=$RAMDISK"
     echo "TMPFS_SIZE=$TMPFS_SIZE"
+    echo "READONLY=$READONLY"
     echo "SOURCE_UUID=$SOURCE_UUID"
     for t in "${BOUND[@]}"; do echo "TARGET=$t"; done
   } > "$STATE_FILE"

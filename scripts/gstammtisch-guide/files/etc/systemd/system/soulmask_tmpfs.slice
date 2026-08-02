@@ -3,15 +3,21 @@
 # Root-level parent slice for soulmask_tmpfs-ZSwapMax0.slice and
 # soulmask_tmpfs-ZSwapMax1.slice.
 #
-# Must carry MemoryMin >= the sum of its children's floors (150M + 250M =
-# 400M) so the kernel honours the per-child guarantees. 400M is the minimum;
-# headroom is harmless (unused floor costs no RAM).
+# Kernel rule: a child's MemoryMin is only effective if EVERY ancestor slice
+# also carries MemoryMin >= that child's own value (cgroup v2 propagates
+# protection down the hierarchy). The functional minimum here is therefore
+# just the larger of the two children (ZSwapMax0=150M, ZSwapMax1=30M as of
+# 2026-07-31 — see that file's own comment for why ZSwapMax1 dropped from
+# its original 250M estimate). 800M carries generous headroom well beyond
+# that minimum on purpose: unused floor costs no RAM, so a larger guard band
+# here is free insurance against a child's floor being raised later without
+# remembering to revisit this file too.
 [Unit]
 Description=Soulmask unified tmpfs ramdisk — parent slice
 Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
 
 [Slice]
-MemoryMin=400M
+MemoryMin=800M
 
 # MemoryZSwapMax and writeback are set on the child slices. This parent
 # exists to provide a named cgroup subtree — both children live under

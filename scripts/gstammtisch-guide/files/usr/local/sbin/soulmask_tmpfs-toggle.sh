@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the Soulmask unified read-only tmpfs ramdisk.
+# Manage the Soulmask unified tmpfs ramdisk.
 #
 # The ramdisk only takes effect at container start — the game mmap's files
 # at startup and the mmap stays bound to the original inode for its
@@ -7,10 +7,46 @@
 # then do a clean stop + start of the Soulmask instances via Wings for the
 # change to apply.
 #
-# The tmpfs is read-only during normal operation. Game updates MUST go
-# through the manual procedure:
-#   stop all containers → --stop → start main server → update
-#   → stop main server → --start → start all containers
+# What `--start` actually does (delegates to soulmask_tmpfs-setup.sh):
+#   1. Create a fresh, empty tmpfs at /mnt/soulmask_tmpfs (RAM-backed, sized
+#      SOULMASK_TMPFS_SIZE, default 5G).
+#   2. Move into the incompressible cgroup slice (soulmask_tmpfs-ZSwapMax0),
+#      then `cp -a` WS/Content/Paks in from the ROLE=main instance's own
+#      disk volume — a genuine copy, brand-new inodes on the tmpfs.
+#   3. Move into the compressible slice (soulmask_tmpfs-ZSwapMax1), then
+#      `cp -a` the remaining paths (Engine, WS/Binaries, linux64, Steam
+#      runtime, steamclient.so, steamcmd, ...) the same way. Moving between
+#      slices first means the kernel charges each content type's pages to
+#      the cgroup that's actually meant to hold them.
+#   4. chown the tmpfs copies to the container UID/GID, then (unless
+#      SOULMASK_TMPFS_READONLY=0) remount the tmpfs read-only so any write
+#      by steamcmd or the game fails cleanly with EROFS instead of
+#      partially landing — see SOULMASK-TMPFS.md for the read-only vs
+#      read-write tradeoff and why this host currently runs read-write.
+#   5. For every TMPFS=1 instance (this can include the ROLE=main instance
+#      itself), `mount --bind` each populated tmpfs path onto the matching
+#      path inside that instance's own volume directory. This is the whole
+#      mechanism: a bind mount creates no new data, it just makes the
+#      target path resolve to the SAME underlying inode as the tmpfs
+#      source. The Linux page cache is keyed by inode, not by path, so once
+#      two instances' bind-mounted paths point at the same inode, a page
+#      faulted in by one instance is directly reused by the other — one
+#      copy in RAM instead of one per instance.
+#   6. Write /run/soulmask_tmpfs.state (every bind target + the read-only
+#      intent) so a later --stop/teardown knows exactly what to undo.
+#
+# Read-only vs read-write (SOULMASK_TMPFS_READONLY, default 1 = read-only):
+#   Read-only blocks ALL writes cleanly, but Wings' pre-boot chown walk
+#   (Lchownat on every file, unconditionally, no already-correct-owner
+#   skip) then fails EROFS on any instance that's bind-mounted onto its
+#   OWN directory (e.g. a ROLE=main instance that's also TMPFS=1) --
+#   discovered 2026-07-31. With SOULMASK_TMPFS_READONLY=0 the tmpfs stays
+#   writable, so steamcmd/game writes go straight to shared RAM instead of
+#   partially landing on disk (the original 2026-07-29 corruption was
+#   steamcmd deleting the old file before the new one finished writing --
+#   not a lack of atomic rename -- so this trades that residual risk for a
+#   much larger headroom margin (5G tmpfs, ~2.3G payload) than the 3G/1.4G-
+#   free setup that caused it, rather than eliminating the risk outright.
 #
 # Usage:
 #   soulmask_tmpfs-toggle.sh              # show status + validate
@@ -64,9 +100,15 @@ _show_status() {
 
   # ── tmpfs mount ──
   if mountpoint -q "$RAMDISK" 2>/dev/null; then
-    local ro=""
+    local ro="" expect_ro="1"
+    if [ -f "$STATE_FILE" ]; then
+      expect_ro=$(grep '^READONLY=' "$STATE_FILE" 2>/dev/null | cut -d= -f2)
+      [ -n "$expect_ro" ] || expect_ro="1"
+    fi
     if findmnt -no OPTIONS "$RAMDISK" 2>/dev/null | grep -q '\<ro\>'; then
       ro="READ-ONLY"
+    elif [ "$expect_ro" = "0" ]; then
+      ro="READ-WRITE (accepted — SOULMASK_TMPFS_READONLY=0)"
     else
       ro="READ-WRITE ⚠"
     fi
@@ -158,9 +200,20 @@ _show_status() {
       err "  service is active but $RAMDISK is not mounted"
       issues=$((issues + 1))
     fi
-    # Check ro
-    if ! findmnt -no OPTIONS "$RAMDISK" 2>/dev/null | grep -q '\<ro\>'; then
-      warn "  tmpfs is mounted but NOT read-only — steam updates may corrupt state!"
+    # Check ro (only expected if READONLY=1 was recorded at setup time —
+    # SOULMASK_TMPFS_READONLY=0 is a deliberate, accepted tradeoff, not a bug)
+    local expect_ro="1"
+    if [ -f "$STATE_FILE" ]; then
+      expect_ro=$(grep '^READONLY=' "$STATE_FILE" 2>/dev/null | cut -d= -f2)
+      [ -n "$expect_ro" ] || expect_ro="1"
+    fi
+    if [ "$expect_ro" = "1" ]; then
+      if ! findmnt -no OPTIONS "$RAMDISK" 2>/dev/null | grep -q '\<ro\>'; then
+        warn "  tmpfs is mounted but NOT read-only — steam updates may corrupt state!"
+        issues=$((issues + 1))
+      fi
+    elif findmnt -no OPTIONS "$RAMDISK" 2>/dev/null | grep -q '\<ro\>'; then
+      warn "  tmpfs is read-only but READONLY=0 was configured — unexpected"
       issues=$((issues + 1))
     fi
     # Check state file
@@ -281,20 +334,27 @@ case "$ACTION" in
   --help|-h)
     echo "Usage: $(basename "$0") [--start|--stop|--help]"
     echo ""
-    echo "Manage the Soulmask unified read-only tmpfs ramdisk."
+    echo "Manage the Soulmask unified tmpfs ramdisk."
     echo ""
     echo "With no arguments, shows current status and validates the setup."
     echo ""
     echo "Commands:"
     echo "  --start   Activate the ramdisk (idempotent). Populates tmpfs from"
-    echo "            the ROLE=main instance's volume, remounts read-only,"
-    echo "            bind-mounts into all TMPFS=1 instances."
+    echo "            the ROLE=main instance's volume, remounts read-only"
+    echo "            (unless SOULMASK_TMPFS_READONLY=0), bind-mounts into"
+    echo "            all TMPFS=1 instances."
     echo "  --stop    Deactivate the ramdisk. REFUSES if any Soulmask container"
     echo "            is still running — stop them via Wings first."
     echo "  --help    Show this message."
     echo ""
-    echo "The tmpfs is READ-ONLY during normal operation. Game updates are blocked."
-    echo "Manual update procedure:"
+    echo "READ-ONLY (default, SOULMASK_TMPFS_READONLY=1): blocks all writes"
+    echo "cleanly. Game updates require the manual procedure below."
+    echo "READ-WRITE (SOULMASK_TMPFS_READONLY=0): steamcmd/game writes land"
+    echo "directly in shared RAM; no manual procedure needed, at the cost of"
+    echo "the space-exhaustion risk the read-only mode exists to avoid (see"
+    echo "SOULMASK-TMPFS.md — mitigated but not eliminated by tmpfs headroom)."
+    echo ""
+    echo "Manual update procedure (READ-ONLY mode only):"
     echo "  1. Stop all containers (Wings panel)"
     echo "  2. $(basename "$0") --stop"
     echo "  3. Start ROLE=main server → steamcmd auto-updates on disk"

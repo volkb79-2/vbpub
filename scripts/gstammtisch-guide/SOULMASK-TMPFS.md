@@ -93,10 +93,11 @@ state persistence, teardown. Every fix or improvement had to be applied twice.
 | Instance opt-in | `PAK_RAMDISK=1` + `STATIC_RAMDISK=1` | `TMPFS=1` |
 | State file | `/run/soulmask-pak-ramdisk.state` + `/run/soulmask-static-ramdisk.state` | `/run/soulmask_tmpfs.state` |
 
-### Read-only enforcement
+### Read-only enforcement (default; currently disabled on this host — see below)
 
 After populating the tmpfs and setting container-user ownership, the setup
-script **remounts the tmpfs read-only** at the VFS level:
+script **remounts the tmpfs read-only** at the VFS level, unless
+`SOULMASK_TMPFS_READONLY=0`:
 
 ```bash
 mount -o remount,ro /mnt/soulmask_tmpfs
@@ -105,6 +106,41 @@ mount -o remount,ro /mnt/soulmask_tmpfs
 Any write attempt by steamcmd or the game produces an immediate `EROFS`
 (Read-only file system) error — **no partial writes, no silent corruption**.
 The failure is clean, deterministic, and visible in the container log.
+
+**Conflict with Wings, discovered 2026-07-31:** Wings' pre-boot chown walk
+(`server/filesystem.Chown`) calls `Lchownat` unconditionally on every file —
+there is no "already correct owner, skip" check. A `chown` syscall on a
+truly read-only mount always fails `EROFS`, even when the requested
+owner already matches (the kernel doesn't special-case a no-op chown). So
+**any instance that is both `ROLE=main` and `TMPFS=1`** — i.e. bind-mounted
+onto its *own* directory, which is required for it to share pages with
+other instances — can never be (re)started via Wings while the tmpfs is
+read-only. This is not a staleness/propagation bug; it reproduces even with
+a perfectly fresh, correctly-propagated tmpfs.
+
+**Current accepted tradeoff:** rather than waiting on a Wings patch (skip
+`Lchownat` when uid/gid already match — a valid fix, not yet built), this
+host runs the tmpfs **read-write** (`SOULMASK_TMPFS_READONLY=0`, set via
+`Environment=` in `soulmask_tmpfs.service`). This reintroduces the residual
+risk the read-only mode exists to prevent: the actual 2026-07-29 corruption
+happened because steamcmd deletes the old file *before* the new one
+finishes writing (not a lack of atomic `rename()` — steamcmd's own update
+mechanics simply aren't safely atomic under space pressure), so a large
+enough update could still exhaust tmpfs space mid-write. This is **mitigated,
+not eliminated**, by running a much larger headroom margin than the setup
+that failed (5G tmpfs vs. ~2.3G payload, vs. the original 3G tmpfs with only
+1.4G free). A fully robust fix (stage each update in an isolated tmpfs
+generation, verify, then atomically swap each bind target via a stacked
+`mount --bind`, leaving already-running instances on their old,
+already-mmap'd generation) was scoped but not built — revisit if this
+becomes a live problem, or once the Wings patch lands and read-only can be
+restored without breaking `ROLE=main` + `TMPFS=1` instances.
+
+To restore read-only enforcement: remove (or set to `1`)
+`SOULMASK_TMPFS_READONLY` in `soulmask_tmpfs.service`, `daemon-reload`, and
+re-run `--stop`/`--start` — but only once the Wings patch is deployed,
+otherwise `ROLE=main` instances that are also `TMPFS=1` will hit the EROFS
+chown failure again.
 
 ### Full coverage — nothing reaches disk
 
@@ -255,7 +291,10 @@ soulmask_tmpfs-toggle.sh status
 ### "FATAL: no instance has ROLE=main"
 Exactly one instance must have `ROLE=main` in its
 `/etc/gstammtisch/instances.d/<uuid>.env`. This is the authoritative source
-for tmpfs population.
+for tmpfs population. Note this check only considers `TMPFS=1` instances —
+an instance with `ROLE=main` but `TMPFS=0` does not count, and setup fails
+with this error even though a ROLE=main line clearly exists in some env
+file. (Hit 2026-07-31 when `b87c0a5b` was temporarily set `TMPFS=0`.)
 
 ### "FATAL: multiple instances have ROLE=main"
 Only one instance may be ROLE=main. Check all instance configs.
@@ -266,8 +305,19 @@ The combined content is larger than the tmpfs. Raise `SOULMASK_TMPFS_SIZE`
 the service.
 
 ### Container sees "Read-only file system" errors
-This is **by design**. Steam/game updates are blocked. Use the manual update
-procedure.
+Two different causes, depending on *when* and *what* is writing:
+
+- **Steam/game writing during normal read-only operation**: by design.
+  Steam/game updates are blocked. Use the manual update procedure.
+- **Wings' pre-boot chown failing** (`failed to chown root server directory
+  during pre-boot process: ... lchownat <path>: read-only file system`,
+  logged by Wings itself, not the game): this is the ROLE=main +
+  self-bind-mount conflict described in "Read-only enforcement" above, not
+  a stale/leftover mount — it reproduces even with a perfectly fresh,
+  correctly-torn-down-and-repopulated tmpfs. Confirm the tmpfs is actually
+  read-write (`soulmask_tmpfs-toggle.sh` status line) before assuming this;
+  this host currently runs `SOULMASK_TMPFS_READONLY=0` specifically to
+  avoid this failure.
 
 ### Legacy mounts still present after migration
 The teardown script has a legacy cleanup path. Run:
