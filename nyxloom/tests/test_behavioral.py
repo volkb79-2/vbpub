@@ -221,16 +221,76 @@ def fake_cli(tmp_path, monkeypatch) -> FakeScript:
     return FakeScript(script_path)
 
 
+@pytest.fixture()
+def sync_dispatch(monkeypatch):
+    """Deterministic stand-in for wrapper.launch_detached's real double
+    os.fork() (wrapper.py's launch_detached), adapted from the identical
+    seam `test_transient_throttle_resumes_same_attempt_end_to_end` (this
+    file) built to de-flake B25: os.fork() under load on Python 3.14 in the
+    tester-unified image is a known fragility (see that test's docstring
+    and tester-unified/Dockerfile's note) -- the only real-fork primitive
+    in this codebase. A loaded xdist worker makes the forked wrapper's
+    wall-clock completion (fork + Popen + log classification + receipt
+    write) arbitrarily slow, which no timeout value fixes -- it only trades
+    flaky-fast for flaky-slow (AUTHORING.md Sec 3b: "if shrinking the number
+    could flip the result, it is an oracle"). Removing the wait entirely
+    (the doctrine's preferred fix) requires removing the fork it waits on.
+
+    `_sync_launch` writes spec.json -- EXACTLY what launch_detached does
+    before it forks -- and records it instead of forking, so the daemon's
+    own dispatch-time event (ATTEMPT_PREFLIGHTED/ATTEMPT_CREATED) commits
+    first, matching production ordering. The returned `_tick_sync` helper
+    then runs `wrapper_main` in-process, synchronously, right after
+    `run_pass` returns for that same pass -- the wrapper body still does
+    everything for real (real leases, a real subprocess spawn of the fake
+    CLI, real log classification, real receipt/event writes; see
+    test_wrapper.py's identical in-process `wrapper_main(spec_path)`
+    pattern) -- so by the time `_tick_sync` returns, the receipt is already
+    on disk. No polling, no timeout, and no larger iteration budget is
+    involved anywhere in this synchronization."""
+    from nyxloom import wrapper as wrapper_mod
+
+    monkeypatch.setattr(wrapper_mod, "SESSION_CAPTURE_DELAY", 0)
+
+    pending_specs: list[Path] = []
+
+    def _sync_launch(spec) -> int:
+        attempt_dir = Path(spec.attempt_dir)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+        pending_specs.append(spec_path)
+        return 4242 + len(pending_specs)
+
+    monkeypatch.setattr(wrapper_mod, "launch_detached", _sync_launch)
+
+    def _tick_sync(d: daemon.Daemon, project: str) -> None:
+        d.run_pass(project)
+        while pending_specs:
+            wrapper_mod.wrapper_main(str(pending_specs.pop(0)))
+
+    return _tick_sync
+
+
 # ---------------------------------------------------------------------------
 # driving helpers
 
-def _wait(predicate, timeout: float = 10.0, step: float = 0.05) -> bool:
+def _wait_for_sync_point(predicate, timeout: float = 60.0, step: float = 0.05) -> None:
+    """Wait for an external test synchronization point, never a result.
+
+    The detached wrapper communicates completion by atomically publishing its
+    receipt.  A following reconcile pass is not valid until that receipt is
+    present: proceeding after a timed-out poll races the next pass against the
+    previous attempt and makes the fixed pass-count tests machine-speed
+    dependent.  The timeout is only a generous hung-process failsafe; the
+    lifecycle assertions below decide the test's result.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
-            return True
+            return
         time.sleep(step)
-    return False
+    raise RuntimeError("detached wrapper did not publish its receipt")
 
 
 def _any_receipt_pending(project: str) -> bool:
@@ -251,7 +311,7 @@ def _tick(d: daemon.Daemon, project: str) -> None:
     """One real reconcile pass, then wait for any freshly dispatched
     attempt's receipt to land before the caller runs the next pass."""
     d.run_pass(project)
-    _wait(lambda: not _any_receipt_pending(project))
+    _wait_for_sync_point(lambda: not _any_receipt_pending(project))
 
 
 def _worktree_for(cfg: ProjectConfig, task_id: str) -> Path:
@@ -345,18 +405,28 @@ def test_fake_rejected_review_reaches_review_rejected(behavioral_project, tmp_st
     assert len(rejected) == 1
 
 
-def test_fake_misnamed_review_file_still_approves(behavioral_project, tmp_state, fake_cli):
+def test_fake_misnamed_review_file_still_approves(behavioral_project, tmp_state, fake_cli,
+                                                    sync_dispatch):
     """P33/self-correct anchor: VERDICT: APPROVED in a MISNAMED file
     (P42-REVIEW.md, not <task_id>-REVIEW.md) must still be found -- the old
     rigid single-path lookup found nothing and fail-safed a genuinely-
-    approved task to REVIEW_REJECTED."""
+    approved task to REVIEW_REJECTED.
+
+    Drives dispatch through `sync_dispatch` (this file's `_tick_sync`), not
+    `_tick`'s real wrapper.launch_detached double-fork: this test flaked
+    under loaded xdist workers because a real os.fork()'d wrapper's
+    wall-clock completion is load-dependent (see `sync_dispatch`'s
+    docstring for the full root cause and the established B25 precedent).
+    `_tick_sync` removes the fork this test's poll used to wait on, so its
+    20-iteration budget only bounds genuine reconcile-pass progress, never
+    a real subprocess's completion time."""
     cfg = behavioral_project
     fake_cli.queue(TASK_ID, "implementer", _impl_commit_step())
     fake_cli.queue(TASK_ID, "review", _review_approve_step(cfg, TASK_ID, filename="P42-REVIEW.md"))
 
     d = daemon.Daemon({"demo": cfg.root})
     for _ in range(20):
-        _tick(d, "demo")
+        sync_dispatch(d, "demo")
         tsf = storage.load_state("demo", TASK_ID)
         if tsf and tsf.state in (TaskState.MERGE_READY, TaskState.REVIEW_REJECTED,
                                    TaskState.BLOCKED):
