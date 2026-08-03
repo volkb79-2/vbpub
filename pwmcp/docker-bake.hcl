@@ -9,12 +9,12 @@ variable "NAMESPACE" {
 // Coordinated Playwright version, available from npm, PyPI, and MCR.
 // Compatibility variable name retained for downstream tooling.
 variable "PLAYWRIGHT_VERSION_PYPI" {
-  default = "1.61.0"
+  default = "1.62.0"
 }
 
 // Compatibility alias for the coordinated version above.
 variable "PLAYWRIGHT_VERSION_NPM" {
-  default = "1.61.0"
+  default = "1.62.0"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -44,12 +44,12 @@ variable "LIGHTHOUSE_VERSION" {
 
 // Compatibility alias for the coordinated pwmcp release (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.61.0-r12"
+  default = "1.62.0-r1"
 }
 
 // Compatibility alias for the coordinated pwmcp release.
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.0-r12"
+  default = "1.62.0-r1"
 }
 
 variable "OCI_SOURCE" {

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release": "1.61.0-r12",
+  "release": "1.62.0-r1",
   "playwright": {
-    "python": "1.61.0",
-    "protocol": "1.61"
+    "python": "1.62.0",
+    "protocol": "1.62"
   },
   "client": {
     "distribution": "pwmcp-client",
