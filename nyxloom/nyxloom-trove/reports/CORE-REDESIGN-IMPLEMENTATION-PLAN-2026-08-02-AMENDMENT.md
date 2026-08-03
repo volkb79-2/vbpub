@@ -22,7 +22,8 @@ Last updated: 2026-08-03
 | CR-00 | done | Sonnet implementation `4c995686`; independent Opus review-and-fix `8bdf283f`; authoritative `tester-unified` parallel suite completed at 100% with exit 0 and the coverage gate accepted 0 changed executable production lines (the package changes tests/docs only); merged to `main` as `5a9d441d`. |
 | CR-15 | done | Opus implementation `b0bc7dfb`; independent Opus security review-and-fix `3aa1ea21` (closed the ntfy feedback mutation ingress and the credential-store/HTTP-framing races); coverage-rejection repair `ef6e1bc7`. The authoritative gate rejected the first attempt at 96.7% changed-line coverage (3 lines behind `pragma: no cover`, 12 unexecuted); both classes were answered by deleting genuinely unreachable code and testing the real failure modes, never by widening the gate. Final `tester-unified` run on `ef6e1bc7`: `diff-coverage OK: 360/360 changed executable lines covered (100.0% >= 100.0% floor)`, `GATE_EXIT=0`. Merged to `main` as `7afc897e`. |
 | CR-01 | done | Sonnet implementation (`6295095e`, rebased as `b9f98696`); independent Opus review-and-fix `03fcf0a5` (replaced a tautological interpreter-discrimination test that could not fail) and `a8953911`. The authoritative gate rejected the package at 178/190 changed executable lines (93.7%); every uncovered line was the unavailable-source half of a fact reader, unreachable from the real repo and therefore untested while the registry looked covered. Those oracles were written rather than excluded. Final `tester-unified` run on `a8953911`: `diff-coverage OK: 190/190 changed executable lines covered (100.0% >= 100.0% floor)`, `GATE_EXIT=0`. Merged to `main` as `36f24685`. |
-| CR-02a | implementing | Opus implementation in `.worktrees/nyxloom-cr02` (typed snapshot descriptors, authoritative fan-in, fault matrix). Focused snapshot/fault/characterization suites green; awaiting whole-suite evidence, independent review and the authoritative gate. CR-02b (advisory census + AST allow-list oracle) remains a separate package. |
+| CR-02a | done | Opus implementation `ae527004` (typed snapshot descriptors, the authoritative fan-in, `SNAPSHOT_UNAVAILABLE`/`SNAPSHOT_DEGRADED`, and the fault matrix driven through the real `run_pass`); independent Opus review-and-fix `1d5ac095`. The gate rejected the package at 433/445 (97.3%) plus one excluded line; the exclusion was a bare `...` line inside a docstring example, which coverage.py's textual exclusion pass matched, silently opting the whole docstring out. Review also deleted an unreachable second `permits_effects` guard (replaced by a structural oracle that fails if any acquisition below the guard is classified authoritative) and a `merge_audits` helper with no production caller. Final `tester-unified` run on `1d5ac095`: `diff-coverage OK: 443/443 changed executable lines covered (100.0% >= 100.0% floor)`, `GATE_EXIT=0`. Merged to `main` as `104e9681`. |
+| CR-02b | pending | The complete advisory census and the AST allow-list oracle for broad exception handling, plus the contract's "source audit finds no unclassified broad exception" acceptance. Separated per the readiness audit's CR-02a/CR-02b split. |
 | CR-03 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
 
 Program operating decisions:
@@ -48,6 +49,13 @@ Program operating decisions:
   the controller verifies the reported denominator against the package's own
   diff before accepting any green. Both are cheap; a package merged on the
   previous package's evidence is not.
+- **Bounded contract amendment (CR-02a):** `types.py` and
+  `schemas/event.schema.json` carry the two new snapshot event types. CR-02's
+  acceptance — "one actionable event" per authoritative fault — cannot be met
+  without them, and no existing member has the right meaning (`TICK_ERROR` is a
+  different fault class, and CR-16 claims its streaks). Granted as a
+  package-scoped extension of the core-redesign exception, recorded here rather
+  than inferred from it.
 - Reviewers may improve and commit the implementation as they see fit while
   preserving the package contract; review is not limited to comments.
 
