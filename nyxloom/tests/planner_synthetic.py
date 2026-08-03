@@ -25,10 +25,20 @@ Four states are absent from the real corpus, and each owns real rules:
 `READY_TO_CARVE` is the sharpest gap: item 12 is a whole rule that the
 historical differential cannot exercise at all, and it is CR-06c's scope.
 
-Each scenario carries MULTIPLE tasks in the state it targets. A single-task
+Scenarios that target an ORDERING claim carry MULTIPLE tasks in the state they
+target -- `self-reviewing-pair`, `ready-to-carve-pair`, `needs-decision-pair`,
+the two review-wave scenarios and `mixed-unreached-states`. A single-task
 projection cannot exhibit an ordering defect, which is precisely how the
 `SELF_REVIEWING` one hid: the rule picks a task, and with one candidate every
 iteration order agrees.
+
+CORRECTED BY CR-06c. This paragraph used to claim that of EVERY scenario, and
+it was untrue of three: `self-reviewing-without-implementer`,
+`self-reviewing-leg-in-flight` and `draft` each carry ONE task, deliberately,
+because what they pin is a guard refusing to fire rather than an order. That
+is a fine thing for a scenario to do; the docstring promising otherwise was
+the defect, because a reader checking whether this corpus can see an ordering
+bug would have taken the promise for the property.
 """
 
 from __future__ import annotations
