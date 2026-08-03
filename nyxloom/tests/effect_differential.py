@@ -51,28 +51,37 @@ _SHA = re.compile(r"\b[0-9a-f]{40}\b")
 _ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?")
 
 
-def _normalize(value: Any, root: str) -> Any:
-    """Replace values that legitimately differ per run with their shape."""
+def _normalize(value: Any, root: str, state_root: str = "") -> Any:
+    """Replace values that legitimately differ per run with their shape.
+
+    Two roots, not one. The project checkout and the STATE directory are
+    different temporary trees, and an attempt record carries paths under both
+    -- a log path under the state root normalized only against the project
+    root still differs per run, which reads as a behavioural delta.
+    """
     if isinstance(value, str):
-        out = value.replace(root, "<root>")
+        out = value
+        if state_root:
+            out = out.replace(state_root, "<state>")
+        out = out.replace(root, "<root>")
         out = _ISO.sub("<ts>", out)
         out = _ID.sub(lambda m: f"<{m.group(1)}-id>", out)
         out = _SHA.sub("<sha>", out)
         return out
     if isinstance(value, dict):
-        return {k: _normalize(v, root) for k, v in sorted(value.items())}
+        return {k: _normalize(v, root, state_root) for k, v in sorted(value.items())}
     if isinstance(value, list):
-        return [_normalize(v, root) for v in value]
+        return [_normalize(v, root, state_root) for v in value]
     return value
 
 
-def _event_row(ev: Event, root: str) -> dict:
+def _event_row(ev: Event, root: str, state_root: str) -> dict:
     return {
         "type": ev.type.value,
-        "task_id": _normalize(ev.task_id, root),
-        "attempt_id": _normalize(ev.attempt_id, root),
-        "wave_id": _normalize(ev.wave_id, root),
-        "payload": _normalize(ev.payload, root),
+        "task_id": _normalize(ev.task_id, root, state_root),
+        "attempt_id": _normalize(ev.attempt_id, root, state_root),
+        "wave_id": _normalize(ev.wave_id, root, state_root),
+        "payload": _normalize(ev.payload, root, state_root),
     }
 
 
@@ -103,6 +112,8 @@ _SEED_PATHS: dict[TaskState, tuple[TaskState, ...]] = {
     TaskState.REVIEW_REJECTED: (TaskState.QUEUED, TaskState.ACTIVE,
                                 TaskState.AWAITING_REVIEW,
                                 TaskState.REVIEW_REJECTED),
+    TaskState.SELF_REVIEWING: (TaskState.QUEUED, TaskState.ACTIVE,
+                               TaskState.SELF_REVIEWING),
 }
 
 
@@ -289,6 +300,62 @@ def _scenarios() -> list[dict]:
             ),
             "action": lambda: reconcile.AutoMergeTask(task_id="demo-D23"),
         },
+        # -- CR-05c: the three ways an agent leg starts ------------------
+        {
+            "name": "dispatch-implementer",
+            "seed": lambda p, cfg: _seed_task(p, "demo-D30", TaskState.QUEUED),
+            "action": lambda: reconcile.DispatchImplementer(
+                task_id="demo-D30", route_id="fake-cli"),
+        },
+        {
+            "name": "dispatch-implementer-admission-refused",
+            "seed": lambda p, cfg: (
+                _seed_task(p, "demo-D31", TaskState.QUEUED),
+                _pause(p, "drain-agents"),
+            ),
+            "action": lambda: reconcile.DispatchImplementer(
+                task_id="demo-D31", route_id="fake-cli"),
+            "teardown": _unpause,
+        },
+        {
+            "name": "resume-attempt",
+            "seed": lambda p, cfg: (
+                _seed_task(p, "demo-D32", TaskState.ACTIVE),
+                _seed_attempt_full(p, "demo-D32", "att-d32",
+                                   role=Role.IMPLEMENTER,
+                                   state=AttemptState.INTERRUPTED,
+                                   session="sess-d32",
+                                   worktree=str(cfg.root),
+                                   branch="feat/demo-D32"),
+            ),
+            "action": lambda: reconcile.ResumeAttempt(task_id="demo-D32",
+                                                      attempt_id="att-d32"),
+        },
+        {
+            "name": "launch-self-review-warm",
+            "seed": lambda p, cfg: (
+                _seed_task(p, "demo-D33", TaskState.SELF_REVIEWING),
+                _seed_attempt_full(p, "demo-D33", "att-d33",
+                                   role=Role.IMPLEMENTER,
+                                   state=AttemptState.EXITED,
+                                   session="sess-d33",
+                                   worktree=str(cfg.root),
+                                   branch="feat/demo-D33"),
+            ),
+            "action": lambda: reconcile.LaunchSelfReview(
+                task_id="demo-D33", source_attempt_id="att-d33"),
+        },
+        {
+            "name": "launch-self-review-no-warm-session",
+            "seed": lambda p, cfg: (
+                _seed_task(p, "demo-D34", TaskState.SELF_REVIEWING),
+                _seed_attempt_full(p, "demo-D34", "att-d34",
+                                   role=Role.IMPLEMENTER,
+                                   state=AttemptState.EXITED, session=None),
+            ),
+            "action": lambda: reconcile.LaunchSelfReview(
+                task_id="demo-D34", source_attempt_id="att-d34"),
+        },
         {
             "name": "auto-merge-conflict",
             "seed": lambda p, cfg: (
@@ -300,6 +367,39 @@ def _scenarios() -> list[dict]:
             "action": lambda: reconcile.AutoMergeTask(task_id="demo-D24"),
         },
     ]
+
+
+def _seed_attempt_full(project: str, task_id: str, attempt_id: str, *,
+                       role: Role, state: AttemptState,
+                       session: str | None = None,
+                       worktree: str | None = None,
+                       branch: str | None = None) -> None:
+    """An attempt record with the fields a launch family actually reads.
+
+    Resume needs a session handle and a worktree; self-review BORROWS both
+    from the implementer's record, so a scenario that omits them exercises
+    the graceful-degradation arm instead -- which is a different case, and
+    one this file covers separately.
+    """
+    attempt = Attempt(attempt_id=attempt_id, role=role, state=state,
+                      route=Route(route_id="fake-cli", cli="fake",
+                                  model="fake-model"),
+                      started=utc_now(), session_handle=session,
+                      worktree=worktree, branch=branch)
+    storage.append_and_apply(project, {}, actor=Actor(ActorKind.TICK, "seed"),
+                             type=EventType.ATTEMPT_CREATED,
+                             payload={"attempt": attempt.to_dict()},
+                             task_id=task_id, attempt_id=attempt_id)
+
+
+def _pause(project: str, mode: str) -> None:
+    paths.pause_flag(project).write_text(mode, encoding="utf-8")
+
+
+def _unpause(project: str) -> None:
+    flag = paths.pause_flag(project)
+    if flag.exists():
+        flag.unlink()
 
 
 def _commit_on_main(root, filename: str, body: str) -> None:
@@ -330,6 +430,10 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+# A resume template, which `sample_project`'s routes omit: without one
+# `build_resume` raises and the resume and warm self-review scenarios would
+# record an exception rather than an event sequence.
+resume = ["fake", "--resume", "{session}", "--cwd", "{worktree}", "{prompt}"]
 
 [routes.fake-review]
 cli = "fake"
@@ -426,6 +530,7 @@ def record(project: str, cfg: Any, monkeypatch: Any) -> dict:
     monkeypatch.setattr(wrapper, "launch_detached", _fake_launch)
     paths.routes_path().write_text(_REVIEW_ROUTES, encoding="utf-8")
     root = str(cfg.root)
+    state_root = str(paths.state_root())
     out: dict[str, Any] = {"version": TRANSCRIPT_VERSION, "scenarios": {}}
     for scenario in _scenarios():
         scenario["seed"](project, cfg)
@@ -433,5 +538,11 @@ def record(project: str, cfg: Any, monkeypatch: Any) -> dict:
         action = scenario["action"]()
         states = storage.list_states(project)
         events = d._execute(project, cfg, states, action)
-        out["scenarios"][scenario["name"]] = [_event_row(ev, root) for ev in events]
+        out["scenarios"][scenario["name"]] = [
+            _event_row(ev, root, state_root) for ev in events]
+        # A scenario that changes project-wide state (a pause flag) undoes it
+        # here, so scenario ORDER cannot decide a later scenario's outcome.
+        teardown = scenario.get("teardown")
+        if teardown is not None:
+            teardown(project)
     return out

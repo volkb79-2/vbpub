@@ -131,6 +131,86 @@
         "wave_id": null
       }
     ],
+    "dispatch-implementer": [
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": "feat/demo-D30",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "implementer",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-model",
+              "route_id": "fake-cli",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "CREATED",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>/.worktrees/feat/demo-D30"
+          }
+        },
+        "task_id": "demo-D30",
+        "type": "ATTEMPT_CREATED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": "feat/demo-D30",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": 4242,
+            "receipt": null,
+            "role": "implementer",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-model",
+              "route_id": "fake-cli",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "PREFLIGHTING",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>/.worktrees/feat/demo-D30"
+          }
+        },
+        "task_id": "demo-D30",
+        "type": "ATTEMPT_PREFLIGHTED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": null,
+        "payload": {
+          "from": "QUEUED",
+          "notes": null,
+          "to": "ACTIVE"
+        },
+        "task_id": "demo-D30",
+        "type": "TASK_TRANSITIONED",
+        "wave_id": null
+      }
+    ],
+    "dispatch-implementer-admission-refused": [],
     "interrupt-attempt-no-pid-files": [],
     "interrupt-attempt-unparseable-pid": [],
     "launch-gate-diagnosis": [
@@ -271,6 +351,87 @@
         "wave_id": "wave-d20"
       }
     ],
+    "launch-self-review-no-warm-session": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "from": "SELF_REVIEWING",
+          "notes": "self-review skipped (no warm session to resume) -- proceeding to frontier review",
+          "to": "AWAITING_REVIEW"
+        },
+        "task_id": "demo-D34",
+        "type": "TASK_TRANSITIONED",
+        "wave_id": null
+      }
+    ],
+    "launch-self-review-warm": [
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": "feat/demo-D33",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "self-review",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-model",
+              "route_id": "fake-cli",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": "sess-d33",
+            "started": "<ts>",
+            "state": "CREATED",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>"
+          }
+        },
+        "task_id": "demo-D33",
+        "type": "ATTEMPT_CREATED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": "feat/demo-D33",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": 4242,
+            "receipt": null,
+            "role": "self-review",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-model",
+              "route_id": "fake-cli",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": "sess-d33",
+            "started": "<ts>",
+            "state": "PREFLIGHTING",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>"
+          }
+        },
+        "task_id": "demo-D33",
+        "type": "ATTEMPT_PREFLIGHTED",
+        "wave_id": null
+      }
+    ],
     "mark-interrupted": [
       {
         "attempt_id": "att-d05",
@@ -374,6 +535,41 @@
         },
         "task_id": "demo-D11",
         "type": "NEEDS_OPERATOR",
+        "wave_id": null
+      }
+    ],
+    "resume-attempt": [
+      {
+        "attempt_id": "att-d32",
+        "payload": {
+          "attempt": {
+            "attempt_id": "att-d32",
+            "base_commit": null,
+            "branch": "feat/demo-D32",
+            "ended": null,
+            "log_path": "<state>/projects/demo/attempts/att-d32/attempt.resume-1.log",
+            "pgid": null,
+            "pid": 4242,
+            "receipt": null,
+            "role": "implementer",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-model",
+              "route_id": "fake-cli",
+              "routes_rev": null,
+              "variant": null
+            },
+            "session_handle": "sess-d32",
+            "started": "<ts>",
+            "state": "RUNNING",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>"
+          }
+        },
+        "task_id": "demo-D32",
+        "type": "ATTEMPT_RESUMED",
         "wave_id": null
       }
     ],

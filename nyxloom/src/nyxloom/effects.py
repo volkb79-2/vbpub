@@ -97,13 +97,14 @@ log = get_logger("effects")
 
 #: Handlers still implemented on ``Daemon`` rather than in an effector module,
 #: with the package that owns moving them. CR-05a moved the lifecycle and gate
-#: families and CR-05b the review dispatch and guarded merge; what remains is
-#: attempt dispatch/resume (CR-05c), the receipt-exit consumer (CR-05c) and
-#: carve/carver-session execution (CR-05d).
+#: families, CR-05b the review dispatch and guarded merge, and CR-05c the
+#: attempt launches; what remains is carve and the carver session (CR-05d)
+#: and the receipt-exit consumer (CR-05e, which routes by attempt ROLE and
+#: whose CARVER branch delegates into carve, so it lands last).
 #:
 #: This number may only go DOWN, and it must go down in the same commit that
 #: moves the handler. See the module docstring.
-LEGACY_HANDLER_BUDGET = 9
+LEGACY_HANDLER_BUDGET = 6
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +347,33 @@ class SystemGit:
         is a page nobody can act on.
         """
         return self.run(root, "worktree", "add", "--detach", path, commit)
+
+    def worktree_add(self, root: str, path: str, branch: str) -> None:
+        """Check out an EXISTING branch into a new worktree.
+
+        Raises on failure, unlike most operations here. A dispatch whose
+        worktree could not be created must not proceed to launch an agent
+        into a directory that is not there -- the pass-level isolation records
+        it as a TICK_ERROR and the task is re-planned.
+        """
+        self._checked(root, "worktree", "add", path, branch)
+
+    def worktree_add_new_branch(self, root: str, branch: str, path: str,
+                                base: str) -> None:
+        """Create ``branch`` off ``base`` and check it out into a worktree.
+
+        The first-dispatch shape. Raises on failure for the same reason as
+        :meth:`worktree_add`.
+        """
+        self._checked(root, "worktree", "add", "-b", branch, path, base)
+
+    def _checked(self, root: str, *args: str) -> subprocess.CompletedProcess:
+        res = self.run(root, *args)
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(
+                res.returncode, ["git", "-C", root, *args],
+                output=res.stdout, stderr=res.stderr)
+        return res
 
     def worktree_remove(self, root: str, path: str) -> None:
         """Force-remove a worktree. Best effort: the caller is cleaning up."""

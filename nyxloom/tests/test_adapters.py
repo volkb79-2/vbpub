@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -476,33 +478,50 @@ def test_build_dispatch_review_independent_unbound_when_no_attempt_id():
 
 
 def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
-    """O2 (grep-provable): EVERY control-plane build_dispatch call site passes
-    its own `role=` explicitly -- guarding the exact silent mismatch this
-    package exists to close (a call site importing Role but never actually
-    passing role=, silently keeping the wrong-role default).
+    """O2: EVERY control-plane build_dispatch call site passes its own `role=`
+    explicitly -- guarding the exact silent mismatch this package exists to
+    close (a call site importing Role but never actually passing role=,
+    silently keeping the wrong-role default).
 
-    CR-05b: the call sites are no longer all in daemon.py. Effect execution
-    moves into `effects*.py` one family per CR-05 sub-package, so the scan
-    globs the whole control-plane dispatch surface rather than naming one
-    file -- otherwise a moved call site drops out of the census silently,
-    which is the failure this test exists to prevent, one level up.
+    CR-05b widened the scan from `daemon.py` to the whole control-plane
+    dispatch surface, since effect execution moves into `effects*.py` one
+    family per CR-05 sub-package.
+
+    CR-05c replaced the regex with an `ast` walk. The regex balanced exactly
+    ONE level of nested parentheses, so a call site whose argument was itself
+    a call with an argument -- `approved_amendments=f(g(), x)` -- did not
+    match, and the census under-counted. It reported the shortfall rather than
+    passing, which is the only reason it was caught; a census that can miss a
+    call site for a reason unrelated to the property it checks is not a
+    census, so the parser now understands the language.
     """
-    import re
-
     src_dir = Path(__file__).parent.parent / "src" / "nyxloom"
     sources = [src_dir / "daemon.py", *sorted(src_dir.glob("effects*.py"))]
-    calls: list[str] = []
+
+    call_roles: list[tuple[str, str | None]] = []
     for path in sources:
-        calls.extend(re.findall(
-            r"adapters\.build_dispatch\(\s*(?:[^()]|\([^()]*\))*?\)",
-            path.read_text(encoding="utf-8"), flags=re.DOTALL))
-    assert len(calls) == 5, f"expected exactly 5 build_dispatch call sites, found {len(calls)}"
-    roles_seen = set()
-    for call in calls:
-        m = re.search(r"role=Role\.(\w+)", call)
-        assert m is not None, f"build_dispatch call site without an explicit role=: {call[:120]}"
-        roles_seen.add(m.group(1))
-    assert roles_seen == {"CARVER", "IMPLEMENTER", "REVIEW_INDEPENDENT"}, roles_seen
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "build_dispatch"
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "adapters"):
+                continue
+            role = None
+            for kw in node.keywords:
+                if kw.arg == "role" and isinstance(kw.value, ast.Attribute):
+                    role = kw.value.attr
+            call_roles.append((f"{path.name}:{node.lineno}", role))
+
+    assert len(call_roles) == 5, (
+        f"expected exactly 5 build_dispatch call sites, found {len(call_roles)}: "
+        f"{[c[0] for c in call_roles]}")
+    missing = [where for where, role in call_roles if role is None]
+    assert not missing, f"build_dispatch call sites with no explicit role=: {missing}"
+    assert {role for _, role in call_roles} == {
+        "CARVER", "IMPLEMENTER", "REVIEW_INDEPENDENT"}, call_roles
 
 def test_build_dispatch_prompt_too_long():
     """Oracle 3: long prompt raises AdapterError."""
