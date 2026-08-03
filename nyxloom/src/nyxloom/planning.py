@@ -635,10 +635,29 @@ def run_rules(ctx: PlanContext, table: tuple[RuleSpec, ...], trace: Any,
     completion over all tasks instead would reorder the breadcrumb stream, and
     the differential's subsequence check would (correctly) call that a lost
     trace.
+
+    A rule NAME is an identity here, not a label, so uniqueness is enforced
+    where names become identities rather than only in
+    :meth:`PlanArbiter.__init__`. The arbiter's grant ledger is keyed by name
+    and :meth:`RuleEmitter.__call__` authorises an exclusive emission by
+    comparing the holder's name to the emitting spec's -- so two specs sharing
+    a name are ONE identity to the arbiter, and the second would emit under
+    the first's grant. That is a second carve authority in a single pass: the
+    exact invariant this kernel exists to make unrepresentable, reachable by
+    copy-pasting a table entry and forgetting to change ``name=``. Checking it
+    only in the arbiter's constructor made the invariant depend on the CALLER
+    passing the table there, which ``run_rules``'s own signature does not
+    require.
     """
     channels = PlanChannels()
-    emitters = {spec.name: RuleEmitter(spec, arbiter, channels, trace)
-                for spec in table}
+    emitters: dict[str, RuleEmitter] = {}
+    for spec in table:
+        if spec.name in emitters:
+            raise DuplicateRule(
+                f"two rules named {spec.name!r} -- a name is the arbiter's "
+                f"identity for a rule, so the second would emit under the "
+                f"first's grant")
+        emitters[spec.name] = RuleEmitter(spec, arbiter, channels, trace)
     index = 0
     while index < len(table):
         spec = table[index]

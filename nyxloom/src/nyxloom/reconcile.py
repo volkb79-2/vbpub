@@ -694,6 +694,19 @@ TRACE_KINDS = frozenset({
     # GA4 2026-07-25 (module contract item 16): the gate-verify cadence
     # trigger's own breadcrumb ("fire"/"paused") -- same "no prose" rule.
     "gate-verify",
+    # F019 P1b 2026-07-25 (module contract item 10): the gate-failure
+    # diagnosis routing's breadcrumb ("dispatch"/"skip:drain-agents").
+    #
+    # REGISTERED LATE, in CR-06a's review, and the delay is the point: the
+    # planner emitted this kind from the day F019 landed while this frozenset
+    # -- which the docstring below calls the vocabulary a `kind` is one of --
+    # did not list it, and NOTHING checked, because this declaration had no
+    # consumer at all. `tests/test_planning.py::
+    # test_the_breadcrumb_vocabulary_is_exactly_what_the_rules_can_record`
+    # now DERIVES the vocabulary from the rules' own call graphs and requires
+    # it to match this set exactly in both directions, so the next kind added
+    # to a rule fails here instead of drifting for four months.
+    "gate-diagnosis",
 })
 
 

@@ -36,7 +36,9 @@ from nyxloom.planning import (
     UnclaimedResource, UndeclaredClaim, UndeclaredEmission, UnknownResource,
     run_rules,
 )
-from nyxloom.types import TaskState
+from nyxloom.types import (
+    Attempt, AttemptState, Role, Route, TaskState, TaskStateFile,
+)
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "nyxloom"
 
@@ -68,8 +70,14 @@ class CallGraph:
     def __init__(self, sources: dict[str, str]) -> None:
         self.functions: dict[tuple[str, str], ast.AST] = {}
         self.imports: dict[str, dict[str, tuple[str, str | None]]] = {}
+        #: Names bound at each module's TOP LEVEL. A reachable function that
+        #: stores through one of these mutates state that outlives the pass --
+        #: the "no global mutation" clause of the parent acceptance, which a
+        #: logging/clock/file scan cannot see.
+        self.module_names: dict[str, frozenset[str]] = {}
         for module, source in sources.items():
             tree = ast.parse(source)
+            self.module_names[module] = _module_level_names(tree)
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     self.functions.setdefault((module, node.name), node)
@@ -121,6 +129,17 @@ class CallGraph:
         return found
 
 
+def _module_level_names(tree: ast.Module) -> frozenset[str]:
+    """The names a module binds at its top level."""
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return frozenset(names)
+
+
 def _package_sources() -> dict[str, str]:
     return {path.stem: path.read_text(encoding="utf-8") for path in SRC.glob("*.py")}
 
@@ -157,6 +176,27 @@ def derive_emits(graph: CallGraph, module: str, name: str) -> frozenset[str]:
     return frozenset(found)
 
 
+def derive_note_kinds(graph: CallGraph, module: str, name: str) -> frozenset[str]:
+    """Breadcrumb ``kind`` values the call graph rooted at ``module.name`` can
+    record.
+
+    The same derivation shape as ``derive_emits``, against the other declared
+    vocabulary a rule writes into: ``reconcile.TRACE_KINDS``. Every kind is a
+    string LITERAL at the call site (module contract item 8 forbids prose in a
+    breadcrumb, and a computed kind would be prose by another route), so the
+    first argument of every reachable ``.note(...)`` is exactly the set.
+    """
+    kinds: set[str] = set()
+    for _key, node in graph.reachable(module, name):
+        for call in ast.walk(node):
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "note" and call.args
+                    and isinstance(call.args[0], ast.Constant)
+                    and isinstance(call.args[0].value, str)):
+                kinds.add(call.args[0].value)
+    return frozenset(kinds)
+
+
 # ---------------------------------------------------------------------------
 # oracle 2: what a rule may NOT reach
 #
@@ -188,11 +228,37 @@ _FORBIDDEN_METHODS = {
     "touch": "file I/O", "append_and_apply": "store append",
     "apply_event": "store append", "iter_events": "store read",
 }
+#: Methods that mutate their receiver in place. Only impure when the receiver
+#: is a name the MODULE binds -- a rule appending to its own local list is the
+#: normal way a rule works.
+_MUTATING_METHODS = {
+    "append", "extend", "insert", "remove", "sort", "reverse",
+    "add", "discard", "update", "setdefault", "pop", "clear",
+}
 
 
-def _impure_uses(node: ast.AST) -> list[str]:
+def _impure_uses(node: ast.AST, module_names: frozenset[str] = frozenset()) -> list[str]:
     hits: list[str] = []
     for child in ast.walk(node):
+        # -- global mutation: the acceptance clause the capability scan above
+        # cannot see. Three shapes reach module state from inside a function:
+        # rebinding it (`global X`), storing through it (`X[k] = v`,
+        # `X.attr = v`), and mutating it in place (`X.append(...)`). A plain
+        # `X = v` is NOT one of them -- without a `global` statement that
+        # binds a local that shadows the module name and dies with the call.
+        if isinstance(child, ast.Global):
+            hits.append(f"global {', '.join(child.names)} (global mutation)")
+        targets: list[ast.AST] = []
+        if isinstance(child, ast.Assign):
+            targets = list(child.targets)
+        elif isinstance(child, (ast.AugAssign, ast.AnnAssign)):
+            targets = [child.target]
+        for target in targets:
+            base = target
+            while isinstance(base, (ast.Subscript, ast.Attribute)):
+                base = base.value
+            if base is not target and isinstance(base, ast.Name) and base.id in module_names:
+                hits.append(f"{base.id}[...] = ... (global mutation)")
         if isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name):
             capability = _FORBIDDEN_BASES.get(child.value.id)
             if capability is not None:
@@ -210,6 +276,9 @@ def _impure_uses(node: ast.AST) -> list[str]:
             if (isinstance(func.value, ast.Name) and func.value.id in _CLOCK_BASES
                     and func.attr in _CLOCK_ATTRS):
                 hits.append(f"{func.value.id}.{func.attr}() (clock read)")
+            if (isinstance(func.value, ast.Name) and func.value.id in module_names
+                    and func.attr in _MUTATING_METHODS):
+                hits.append(f"{func.value.id}.{func.attr}() (global mutation)")
     return hits
 
 
@@ -217,7 +286,8 @@ def impurities(graph: CallGraph, module: str, name: str) -> list[str]:
     """Every impure capability reachable from ``module.name``."""
     found: list[str] = []
     for (mod, fn), node in graph.reachable(module, name):
-        found.extend(f"{mod}.{fn} -> {hit}" for hit in _impure_uses(node))
+        found.extend(f"{mod}.{fn} -> {hit}"
+                     for hit in _impure_uses(node, graph.module_names.get(mod, frozenset())))
     return sorted(set(found))
 
 
@@ -274,6 +344,54 @@ class TestThisRepo:
         assert not offenders, (
             "a planning rule can reach an impure capability:\n"
             + "\n".join(sorted(set(offenders))))
+
+    def test_the_breadcrumb_vocabulary_is_exactly_what_the_rules_can_record(
+            self, table, graph):
+        """`reconcile.TRACE_KINDS` is derived from the rules, not trusted.
+
+        It had ALREADY DRIFTED when CR-06a landed: F019 P1b (2026-07-25) added
+        the `"gate-diagnosis"` breadcrumb to the REVIEW_REJECTED triage and
+        never registered it here, and four months of passes emitted a kind the
+        declaration said did not exist. Nothing failed, because this frozenset
+        had NO consumer -- `TraceNote`'s docstring calls `kind` "one of
+        TRACE_KINDS" and nothing checked. That is the same defect class as an
+        unverified `emits`, and it gets the same answer.
+
+        BOTH directions, like the legacy budget: a kind a rule can record and
+        this set omits is drift, and a kind this set declares that no rule can
+        record is a vocabulary entry outliving the rule that used it -- which
+        is how a reader learns to distrust the whole list.
+        """
+        recorded = frozenset().union(*(
+            derive_note_kinds(graph, *_root_of(spec)) for spec in table))
+        assert recorded, "no breadcrumb kind derived -- the walk found nothing"
+        assert recorded == reconcile.TRACE_KINDS, (
+            f"kinds a rule records but TRACE_KINDS omits: "
+            f"{sorted(recorded - reconcile.TRACE_KINDS)}; "
+            f"kinds TRACE_KINDS declares that no rule can record: "
+            f"{sorted(reconcile.TRACE_KINDS - recorded)}")
+
+    def test_every_resource_bound_action_names_a_real_action_class(self):
+        """`EXCLUSIVE_ACTIONS` is keyed by class NAME so the kernel need not
+        import the vocabulary -- which means a TYPO in a key silently disables
+        the guard for that action. Nothing else would notice: the emit-time
+        lookup simply misses, `RuleSpec.__post_init__`'s claim check simply
+        misses, and a carve-family action becomes emittable by any rule.
+
+        The carve-family completeness check is by name deliberately. A new
+        `*Carve*` action that genuinely is NOT carve authority is possible, but
+        it should have to be argued in a diff to this test rather than arrive
+        as an omission -- which is exactly how the ninth producer arrives.
+        """
+        unknown = set(planning.EXCLUSIVE_ACTIONS) - ACTION_NAMES
+        assert not unknown, (
+            f"EXCLUSIVE_ACTIONS names no such action class: {sorted(unknown)} "
+            f"-- the guard for it is silently off")
+        assert set(planning.EXCLUSIVE_ACTIONS.values()) <= planning.KNOWN_RESOURCES
+        carve_family = {name for name in ACTION_NAMES if "Carve" in name}
+        assert carve_family <= set(planning.EXCLUSIVE_ACTIONS), (
+            f"carve-family actions with no exclusive resource: "
+            f"{sorted(carve_family - set(planning.EXCLUSIVE_ACTIONS))}")
 
     def test_the_legacy_rule_budget_is_exact_in_both_directions(self, table):
         """Over budget means new debt; under budget means debt repaid without
@@ -389,6 +507,44 @@ def test_the_purity_oracle_follows_a_call_into_another_module():
         "helpers_probe": "def resolve(a, b):\n    return a + b\n",
     })
     assert impurities(clean, "rules_probe", "a_rule") == []
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("_CACHE = {}\ndef a_rule(ctx, emit):\n    global _CACHE\n    _CACHE = {}\n",
+     "global _CACHE (global mutation)"),
+    ("_CACHE = {}\ndef a_rule(ctx, emit):\n    _CACHE['seen'] = 1\n",
+     "_CACHE[...] = ... (global mutation)"),
+    ("_SEEN: set = set()\ndef a_rule(ctx, emit):\n    _SEEN.add(ctx)\n",
+     "_SEEN.add() (global mutation)"),
+    ("_N = 0\ndef a_rule(ctx, emit):\n    _N.total += 1\n",
+     "_N[...] = ... (global mutation)"),
+])
+def test_the_purity_oracle_sees_a_rule_reach_module_state(source, expected):
+    """The acceptance's fifth clause -- "no global mutation" -- which the
+    capability scan cannot see at all: nothing about `_CACHE['seen'] = 1` is a
+    log, a clock, a file or a subprocess.
+
+    It is the clause that matters most to a rule TABLE: `PlanContext` is
+    frozen precisely so a rule cannot hand state to a later rule, and a module
+    global is the obvious way around that. Each shape is a separate case
+    because they are separate AST nodes, and a scan that caught only `global`
+    would miss the two that need no statement at all.
+    """
+    graph = CallGraph({"probe": source})
+    hits = impurities(graph, "probe", "a_rule")
+    assert [h.split(" -> ", 1)[1] for h in hits] == [expected], hits
+
+
+def test_a_rules_own_local_bookkeeping_is_not_global_mutation():
+    """The control that keeps the check from being a blanket ban: every legacy
+    rule builds its actions in a local list and appends to it, so a scan that
+    flagged `.append` regardless of receiver would fail the whole shipping
+    table and have to be turned off."""
+    graph = CallGraph(
+        {"probe": "_CACHE = {}\ndef a_rule(ctx, emit):\n"
+                  "    acc = []\n    acc.append(1)\n    local = {}\n"
+                  "    local['k'] = 1\n    _CACHE = 2\n    return acc\n"})
+    assert impurities(graph, "probe", "a_rule") == []
 
 
 @pytest.mark.parametrize("body, expected", [
@@ -513,6 +669,34 @@ def test_emitting_an_undeclared_action_type_is_refused():
 def test_two_rules_may_not_share_a_name():
     with pytest.raises(DuplicateRule):
         PlanArbiter((_probe_spec(), _probe_spec()))
+
+
+def test_two_rules_sharing_a_name_cannot_launder_one_grant_into_two_carves():
+    """The name-collision route to a second carve authority, closed in the
+    kernel rather than only in the arbiter's constructor.
+
+    A rule NAME is the arbiter's IDENTITY for a rule: the grant ledger is
+    keyed by it and `RuleEmitter.__call__` authorises an exclusive emission by
+    comparing the holder's name to the emitting spec's. So two specs sharing a
+    name are ONE identity -- the second emits under the first's grant and the
+    pass plans TWO CarveDispatches, which is precisely the invariant this
+    kernel exists to make unrepresentable, reached by copy-pasting a table
+    entry and forgetting to change `name=`.
+
+    `PlanArbiter.__init__` refused the collision, but `run_rules` takes an
+    ARBITER, not a table, so the invariant depended on the caller having built
+    that arbiter from this table. `run_rules` builds the emitter map, so it is
+    where the collision becomes an identity, and it now refuses there too.
+    """
+    def greedy(ctx, emit):
+        emit.claim("carve-slot")
+        emit(reconcile.CarveDispatch(project="p"))
+
+    table = (_probe_spec(name="dup", rule=greedy),
+             _probe_spec(name="dup", rule=greedy))
+    # An arbiter built WITHOUT the table -- the gap the constructor check left.
+    with pytest.raises(DuplicateRule):
+        run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter())
 
 
 def test_a_spec_must_state_its_contract_items_and_its_rationale():
@@ -745,6 +929,49 @@ def test_the_attempt_channels_order_follows_the_snapshot():
     assert found, (
         "no corpus projection plans two attempt actions -- the gap this test "
         "pins can no longer be demonstrated, so re-read it before deleting")
+
+
+def _self_reviewing(task_id: str) -> TaskStateFile:
+    """A SELF_REVIEWING task whose implementer leg finished, warm handle kept."""
+    return TaskStateFile(
+        schema_version=1, task_id=task_id, project="corpus",
+        state=TaskState.SELF_REVIEWING, since=corpus_profiles.NOW,
+        attempts=[Attempt(
+            attempt_id=f"{task_id}-impl", role=Role.IMPLEMENTER,
+            state=AttemptState.EXITED,
+            route=Route(route_id=corpus_profiles.ROUTE_A, cli="fake", model="fake-a"),
+            started=corpus_profiles.NOW, session_handle="warm")])
+
+
+def test_two_self_reviewing_tasks_launch_in_sorted_order():
+    """The gap the permutation oracle could NOT see, and why it could not.
+
+    `self_review_dispatch` walked `inp.states.items()` raw, so two
+    SELF_REVIEWING tasks in one pass produced their two `LaunchSelfReview`
+    actions in snapshot iteration order -- and the daemon builds `inp.states`
+    by scanning a directory, so the plan depended on the filesystem. Exactly
+    the attempt ladder's defect, in a rule THIS package moved.
+
+    `test_permuting_the_snapshot_key_order_cannot_change_the_plan` asserts
+    strict order equality for the SELF_REVIEW channel and passed anyway,
+    because NO corpus projection contains even one SELF_REVIEWING task: the
+    channel's acceptance was vacuous, not met. A green over a corpus says
+    nothing about a branch the corpus never enters, which is why this input is
+    built rather than found.
+
+    Fixed rather than pinned (unlike the attempt ladder, deferred to CR-06b):
+    sorting here moves 0 of 877 corpus projections, where sorting the ladder
+    moves 543 -- so the differential's zero-delta is untouched, and the parent
+    acceptance holds for this channel for a reason instead of by luck.
+    """
+    states = {"t-b": _self_reviewing("t-b"), "t-a": _self_reviewing("t-a")}
+    inp = corpus_profiles.build(states, "neutral")
+    forward = [a.task_id for a in reconcile.plan_project(inp)
+               if isinstance(a, reconcile.LaunchSelfReview)]
+    reverse = [a.task_id for a in reconcile.plan_project(_permuted(inp))
+               if isinstance(a, reconcile.LaunchSelfReview)]
+    assert forward == ["t-a", "t-b"], forward
+    assert forward == reverse
 
 
 def test_the_warm_review_session_choice_is_ambiguous_under_a_tie():

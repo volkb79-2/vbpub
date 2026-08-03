@@ -186,8 +186,23 @@ def self_review_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
     AWAITING_REVIEW (skip). Inert unless the `self_review` stage is composed
     into the pipeline -- nothing routes a task into SELF_REVIEWING otherwise,
     so a pipeline without self_review plans byte-identically to before B5.
+
+    SORTED task-id order (CR-06a review). The monolith walked
+    ``inp.states.items()`` raw here, so with two SELF_REVIEWING tasks in one
+    pass the two ``LaunchSelfReview`` actions came out in snapshot iteration
+    order -- and ``inp.states`` is built by scanning a directory, so the plan
+    depended on the filesystem. That is the parent acceptance "permuting
+    input-map order cannot change planned actions", and it was met only
+    vacuously: no corpus projection has even ONE SELF_REVIEWING task, so the
+    permutation oracle asserted an order it never observed. Sorting is free
+    here (unlike the attempt ladder's identical gap, which CR-06b owns and
+    which moves 543 of 877 corpus projections) -- it changes WHICH actions are
+    planned not at all, only their order among themselves, and no differential
+    input distinguishes the two. See
+    ``tests/test_planning.py::test_two_self_reviewing_tasks_launch_in_sorted_order``.
     """
-    for task_id, tsf in ctx.inp.states.items():
+    for task_id in sorted(ctx.inp.states):
+        tsf = ctx.inp.states[task_id]
         if tsf.state != TaskState.SELF_REVIEWING:
             continue
         if ctx.drain_agents:
