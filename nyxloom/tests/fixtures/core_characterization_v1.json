@@ -8,23 +8,36 @@
       "history": [
         {"kind": "transition", "to": "QUEUED"},
         {"kind": "transition", "to": "ACTIVE"},
+        {"kind": "attempt", "attempt_id": "impl-1", "role": "implementer", "receipt": "done"},
         {"kind": "transition", "to": "SELF_REVIEWING"},
         {"kind": "transition", "to": "AWAITING_REVIEW"},
-        {"kind": "gate", "verdict": "pass", "artifact": "artifacts/pre-merge.xml"},
+        {"kind": "attempt", "attempt_id": "rev-1", "role": "review-independent", "receipt": "done"},
+        {"kind": "review_recorded", "attempt_id": "rev-1", "result": "approved"},
         {"kind": "transition", "to": "MERGE_READY"},
+        {"kind": "gate", "gate_id": "pre-merge-gate", "phase": "pre-merge", "verdict": "pass", "artifact": "artifacts/pre-merge.xml"},
         {"kind": "merge", "commit": "1111111111111111111111111111111111111111"},
         {"kind": "transition", "to": "MERGED"},
         {"kind": "transition", "to": "VALIDATING"},
-        {"kind": "gate", "verdict": "pass", "artifact": "artifacts/post-merge.xml"},
+        {"kind": "gate", "gate_id": "post-merge-gate", "phase": "post-merge", "verdict": "pass", "artifact": "artifacts/post-merge.xml"},
         {"kind": "transition", "to": "COMPLETED"}
       ],
+      "plan_from_states": ["MERGED", "VALIDATING"],
       "expected": {
         "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
-        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "GATE_FINISHED", "TASK_TRANSITIONED", "MERGE_RECORDED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "GATE_FINISHED", "TASK_TRANSITIONED"],
+        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "ATTEMPT_EXITED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "ATTEMPT_EXITED", "REVIEW_RECORDED", "TASK_TRANSITIONED", "GATE_FINISHED", "MERGE_RECORDED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "GATE_FINISHED", "TASK_TRANSITIONED"],
         "final_state": "COMPLETED",
-        "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": "1111111111111111111111111111111111111111", "gate_verdicts": ["pass", "pass"], "gate_artifacts": ["artifacts/pre-merge.xml", "artifacts/post-merge.xml"]},
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": "1111111111111111111111111111111111111111",
+          "gate_verdicts": ["pass", "pass"],
+          "gate_artifacts": ["artifacts/pre-merge.xml", "artifacts/post-merge.xml"],
+          "attempts": ["implementer:impl-1", "review-independent:rev-1"]
+        },
+        "merge_evidence": ["review:approved:rev-1", "gate:pass:pre-merge-gate"],
+        "unbound_verdicts": [],
         "wait": null,
-        "planned_actions": ["Transition:VALIDATING", "RunPostMergeGate"]
+        "planned_actions": [],
+        "post_merge_chain": ["Transition:VALIDATING", "RunPostMergeGate"]
       }
     },
     {
@@ -33,23 +46,36 @@
       "initial_state": "QUEUED",
       "history": [
         {"kind": "transition", "to": "ACTIVE"},
+        {"kind": "attempt", "attempt_id": "impl-1", "role": "implementer", "receipt": "done"},
         {"kind": "transition", "to": "SELF_REVIEWING"},
         {"kind": "transition", "to": "AWAITING_REVIEW"},
-        {"kind": "gate", "verdict": "pass", "artifact": "artifacts/pre-merge.xml"},
+        {"kind": "attempt", "attempt_id": "rev-1", "role": "review-independent", "receipt": "done"},
+        {"kind": "review_recorded", "attempt_id": "rev-1", "result": "approved"},
         {"kind": "transition", "to": "MERGE_READY"},
+        {"kind": "gate", "gate_id": "pre-merge-gate", "phase": "pre-merge", "verdict": "pass", "artifact": "artifacts/pre-merge.xml"},
         {"kind": "merge", "commit": "2222222222222222222222222222222222222222"},
         {"kind": "transition", "to": "MERGED"},
         {"kind": "transition", "to": "VALIDATING"},
-        {"kind": "gate", "verdict": "pass", "artifact": "artifacts/post-merge.xml"},
+        {"kind": "gate", "gate_id": "post-merge-gate", "phase": "post-merge", "verdict": "pass", "artifact": "artifacts/post-merge.xml"},
         {"kind": "transition", "to": "COMPLETED"}
       ],
+      "plan_from_states": ["MERGED", "VALIDATING"],
       "expected": {
         "stage_names": ["implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
-        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "GATE_FINISHED", "TASK_TRANSITIONED", "MERGE_RECORDED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "GATE_FINISHED", "TASK_TRANSITIONED"],
+        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "ATTEMPT_EXITED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "ATTEMPT_EXITED", "REVIEW_RECORDED", "TASK_TRANSITIONED", "GATE_FINISHED", "MERGE_RECORDED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "GATE_FINISHED", "TASK_TRANSITIONED"],
         "final_state": "COMPLETED",
-        "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": "2222222222222222222222222222222222222222", "gate_verdicts": ["pass", "pass"], "gate_artifacts": ["artifacts/pre-merge.xml", "artifacts/post-merge.xml"]},
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": "2222222222222222222222222222222222222222",
+          "gate_verdicts": ["pass", "pass"],
+          "gate_artifacts": ["artifacts/pre-merge.xml", "artifacts/post-merge.xml"],
+          "attempts": ["implementer:impl-1", "review-independent:rev-1"]
+        },
+        "merge_evidence": ["review:approved:rev-1", "gate:pass:pre-merge-gate"],
+        "unbound_verdicts": [],
         "wait": null,
-        "planned_actions": ["Transition:VALIDATING", "RunPostMergeGate"]
+        "planned_actions": [],
+        "post_merge_chain": ["Transition:VALIDATING", "RunPostMergeGate"]
       }
     },
     {
@@ -58,120 +84,444 @@
       "initial_state": "QUEUED",
       "history": [
         {"kind": "transition", "to": "ACTIVE"},
+        {"kind": "attempt", "attempt_id": "impl-1", "role": "implementer", "receipt": "done"},
         {"kind": "transition", "to": "SELF_REVIEWING"},
         {"kind": "transition", "to": "AWAITING_REVIEW"},
+        {"kind": "attempt", "attempt_id": "rev-1", "role": "review-independent", "receipt": "done"},
+        {"kind": "review_recorded", "attempt_id": "rev-1", "result": "approved"},
         {"kind": "transition", "to": "MERGE_READY"},
         {"kind": "merge", "commit": "3333333333333333333333333333333333333333"},
         {"kind": "transition", "to": "MERGED"},
         {"kind": "transition", "to": "VALIDATING"},
         {"kind": "transition", "to": "COMPLETED"}
       ],
+      "plan_from_states": ["MERGED", "VALIDATING"],
       "expected": {
         "stage_names": ["implement", "self_review", "review_independent", "triage", "auto_merge"],
-        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "MERGE_RECORDED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED"],
+        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "ATTEMPT_EXITED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "ATTEMPT_EXITED", "REVIEW_RECORDED", "TASK_TRANSITIONED", "MERGE_RECORDED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED"],
         "final_state": "COMPLETED",
-        "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": "3333333333333333333333333333333333333333", "gate_verdicts": [], "gate_artifacts": []},
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": "3333333333333333333333333333333333333333",
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": ["implementer:impl-1", "review-independent:rev-1"]
+        },
+        "merge_evidence": ["review:approved:rev-1"],
+        "unbound_verdicts": [],
         "wait": null,
-        "planned_actions": ["Transition:VALIDATING", "Transition:COMPLETED"]
+        "planned_actions": [],
+        "post_merge_chain": ["Transition:VALIDATING", "Transition:COMPLETED"]
       }
     },
     {
       "name": "self_review_rejection",
       "pipeline": "full",
       "initial_state": "ACTIVE",
-      "history": [{"kind": "transition", "to": "SELF_REVIEWING"}, {"kind": "transition", "to": "QUEUED"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED"], "final_state": "QUEUED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": null, "planned_actions": ["DispatchImplementer"]}
+      "history": [
+        {"kind": "attempt", "attempt_id": "impl-1", "role": "implementer", "receipt": "done"},
+        {"kind": "transition", "to": "SELF_REVIEWING"},
+        {"kind": "transition", "to": "QUEUED"}
+      ],
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "ATTEMPT_EXITED", "TASK_TRANSITIONED", "TASK_TRANSITIONED"],
+        "final_state": "QUEUED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": ["implementer:impl-1"]
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": null,
+        "planned_actions": ["DispatchImplementer"]
+      }
     },
     {
       "name": "independent_rejection_fixable",
       "pipeline": "full",
       "initial_state": "AWAITING_REVIEW",
-      "history": [{"kind": "transition", "to": "REVIEW_REJECTED"}],
+      "history": [
+        {"kind": "attempt", "attempt_id": "rev-1", "role": "review-independent", "receipt": "done"},
+        {"kind": "review_recorded", "attempt_id": "rev-1", "result": "rejected", "reject_class": "fixable"},
+        {"kind": "transition", "to": "REVIEW_REJECTED"}
+      ],
       "triage_class": "fixable",
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "TASK_TRANSITIONED"], "final_state": "REVIEW_REJECTED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": null, "planned_actions": ["Transition:QUEUED"]}
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "ATTEMPT_EXITED", "REVIEW_RECORDED", "TASK_TRANSITIONED"],
+        "final_state": "REVIEW_REJECTED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": ["review-independent:rev-1"]
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": null,
+        "planned_actions": ["Transition:QUEUED"]
+      }
     },
     {
       "name": "independent_rejection_architectural",
       "pipeline": "full",
       "initial_state": "AWAITING_REVIEW",
-      "history": [{"kind": "transition", "to": "REVIEW_REJECTED"}],
+      "history": [
+        {"kind": "attempt", "attempt_id": "rev-1", "role": "review-independent", "receipt": "done"},
+        {"kind": "review_recorded", "attempt_id": "rev-1", "result": "rejected", "reject_class": "architectural"},
+        {"kind": "transition", "to": "REVIEW_REJECTED"}
+      ],
       "triage_class": "architectural",
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "TASK_TRANSITIONED"], "final_state": "REVIEW_REJECTED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": null, "planned_actions": ["Transition:READY_TO_CARVE"]}
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "ATTEMPT_EXITED", "REVIEW_RECORDED", "TASK_TRANSITIONED"],
+        "final_state": "REVIEW_REJECTED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": ["review-independent:rev-1"]
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": null,
+        "planned_actions": ["Transition:READY_TO_CARVE"]
+      }
     },
     {
       "name": "independent_rejection_product",
       "pipeline": "gated",
       "initial_state": "AWAITING_REVIEW",
-      "history": [{"kind": "transition", "to": "REVIEW_REJECTED"}],
+      "history": [
+        {"kind": "attempt", "attempt_id": "rev-1", "role": "review-independent", "receipt": "done"},
+        {"kind": "review_recorded", "attempt_id": "rev-1", "result": "rejected", "reject_class": "product"},
+        {"kind": "transition", "to": "REVIEW_REJECTED"}
+      ],
       "triage_class": "product",
-      "expected": {"stage_names": ["implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "TASK_TRANSITIONED"], "final_state": "REVIEW_REJECTED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "human-decision", "planned_actions": ["Transition:NEEDS_DECISION"]}
+      "expected": {
+        "stage_names": ["implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "ATTEMPT_EXITED", "REVIEW_RECORDED", "TASK_TRANSITIONED"],
+        "final_state": "REVIEW_REJECTED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": ["review-independent:rev-1"]
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": null,
+        "planned_actions": ["Transition:NEEDS_DECISION"]
+      }
     },
     {
       "name": "gate_failure",
       "pipeline": "full",
       "initial_state": "VALIDATING",
-      "history": [{"kind": "gate", "verdict": "fail", "artifact": "artifacts/post-merge.log"}, {"kind": "transition", "to": "BLOCKED"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "GATE_FINISHED", "TASK_TRANSITIONED"], "final_state": "BLOCKED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": ["fail"], "gate_artifacts": ["artifacts/post-merge.log"]}, "wait": "blocked", "planned_actions": []}
+      "history": [
+        {"kind": "gate", "gate_id": "post-merge-gate", "phase": "post-merge", "verdict": "fail", "artifact": "artifacts/post-merge.log"},
+        {"kind": "transition", "to": "BLOCKED"}
+      ],
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "GATE_FINISHED", "TASK_TRANSITIONED"],
+        "final_state": "BLOCKED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": ["fail"],
+          "gate_artifacts": ["artifacts/post-merge.log"],
+          "attempts": []
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": "blocked",
+        "planned_actions": []
+      }
     },
     {
       "name": "merge_conflict",
       "pipeline": "full",
       "initial_state": "MERGE_READY",
-      "history": [{"kind": "needs_operator", "reason": "auto-merge-conflict"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "NEEDS_OPERATOR"], "final_state": "MERGE_READY", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "human-decision", "planned_actions": ["AutoMergeTask"]}
+      "history": [
+        {"kind": "needs_operator", "reason": "auto-merge-conflict"}
+      ],
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "NEEDS_OPERATOR"],
+        "final_state": "MERGE_READY",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": []
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": "operator-signalled-retry",
+        "planned_actions": ["AutoMergeTask"]
+      }
     },
     {
       "name": "human_decision",
       "pipeline": "full",
       "initial_state": "NEEDS_DECISION",
-      "history": [{"kind": "decision_opened", "decision_id": "D-101"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "DECISION_OPENED"], "final_state": "NEEDS_DECISION", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "human-decision", "planned_actions": []}
+      "history": [
+        {"kind": "decision_opened", "decision_id": "D-101"}
+      ],
+      "depends_on": ["D-101"],
+      "open_decisions": ["D-101"],
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "DECISION_OPENED"],
+        "final_state": "NEEDS_DECISION",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": []
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": "human-decision",
+        "planned_actions": []
+      }
     },
     {
       "name": "provider_pause",
       "pipeline": "full",
       "initial_state": "ACTIVE",
-      "history": [{"kind": "provider_pause", "route_id": "route-1"}, {"kind": "transition", "to": "QUEUED"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "PROVIDER_STATE_CHANGED", "TASK_TRANSITIONED"], "final_state": "QUEUED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "provider-backoff", "planned_actions": []}
+      "history": [
+        {"kind": "provider_pause", "route_id": "route-1"},
+        {"kind": "transition", "to": "QUEUED"}
+      ],
+      "provider_ok": false,
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "PROVIDER_STATE_CHANGED", "TASK_TRANSITIONED"],
+        "final_state": "QUEUED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": []
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": "dispatch-skip:no-healthy-route",
+        "planned_actions": []
+      }
     },
     {
       "name": "crash_replay",
       "pipeline": "full",
       "initial_state": "CARVED",
-      "history": [{"kind": "transition", "to": "QUEUED"}, {"kind": "transition", "to": "ACTIVE"}, {"kind": "transition", "to": "BLOCKED"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED"], "final_state": "BLOCKED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "blocked", "planned_actions": []}
+      "history": [
+        {"kind": "transition", "to": "QUEUED"},
+        {"kind": "transition", "to": "ACTIVE"},
+        {"kind": "transition", "to": "BLOCKED"}
+      ],
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "TASK_TRANSITIONED", "TASK_TRANSITIONED", "TASK_TRANSITIONED"],
+        "final_state": "BLOCKED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": []
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": "blocked",
+        "planned_actions": []
+      }
     },
     {
       "name": "stale_result",
       "pipeline": "full",
       "initial_state": "AWAITING_REVIEW",
-      "history": [{"kind": "review_recorded", "attempt_id": "stale-att-1"}],
-      "expected": {"stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED", "REVIEW_RECORDED"], "final_state": "AWAITING_REVIEW", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "review", "planned_actions": []}
+      "history": [
+        {"kind": "review_recorded", "attempt_id": "stale-att-1", "result": "approved"}
+      ],
+      "expected": {
+        "stage_names": ["carve", "implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "REVIEW_RECORDED"],
+        "final_state": "AWAITING_REVIEW",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": []
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": ["stale-att-1"],
+        "wait": "review-wave-pending",
+        "planned_actions": []
+      }
     },
     {
       "name": "malformed_result",
       "pipeline": "full",
       "initial_state": "ACTIVE",
-      "history": [{"kind": "malformed_transition", "to": "NOT_A_STATE"}],
-      "expected_error": "ValueError"
+      "history": [
+        {"kind": "malformed_transition", "to": "NOT_A_STATE"}
+      ],
+      "expected_error": "ValueError",
+      "expected_state_after_rejection": "ACTIVE"
     },
     {
       "name": "attempt_exhaustion",
       "pipeline": "gated",
       "initial_state": "REVIEW_REJECTED",
-      "history": [],
-      "attempts_used": 3,
+      "history": [
+        {"kind": "attempt", "attempt_id": "impl-1", "role": "implementer", "receipt": "error"},
+        {"kind": "attempt", "attempt_id": "impl-2", "role": "implementer", "receipt": "error"},
+        {"kind": "attempt", "attempt_id": "impl-3", "role": "implementer", "receipt": "error"}
+      ],
       "max_attempts": 3,
-      "expected": {"stage_names": ["implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"], "event_types": ["TASK_CREATED"], "final_state": "REVIEW_REJECTED", "artifacts": {"handoff_path": "handoff/demo-P01.md", "merge_commit": null, "gate_verdicts": [], "gate_artifacts": []}, "wait": "human-decision", "planned_actions": ["Transition:NEEDS_DECISION"]}
+      "expected": {
+        "stage_names": ["implement", "self_review", "review_independent", "triage", "auto_merge", "post_merge_gate"],
+        "event_types": ["TASK_CREATED", "ATTEMPT_EXITED", "ATTEMPT_EXITED", "ATTEMPT_EXITED"],
+        "final_state": "REVIEW_REJECTED",
+        "artifacts": {
+          "handoff_path": "handoff/demo-P01.md",
+          "merge_commit": null,
+          "gate_verdicts": [],
+          "gate_artifacts": [],
+          "attempts": ["implementer:impl-1", "implementer:impl-2", "implementer:impl-3"]
+        },
+        "merge_evidence": [],
+        "unbound_verdicts": [],
+        "wait": null,
+        "planned_actions": ["Transition:NEEDS_DECISION"]
+      }
+    }
+  ],
+  "known_gaps": [
+    {
+      "wait": "dispatch-skip:no-healthy-route",
+      "scenarios": ["provider_pause"],
+      "owner": "CR-08",
+      "detail": "A queued task whose tier has no healthy route neither progresses nor parks in an operator-visible state: it stays QUEUED and the only record is a per-pass reconcile trace breadcrumb. Durable route health (CR-08) plus the operator trace (CR-14) must give this wait a persisted, bounded form."
+    },
+    {
+      "wait": "operator-signalled-retry",
+      "scenarios": ["merge_conflict"],
+      "owner": "CR-05",
+      "detail": "After an auto-merge conflict emits NEEDS_OPERATOR the task stays MERGE_READY and every subsequent pass re-plans AutoMergeTask, so the conflict is retried indefinitely with no backoff and no durable wait state. The CR-05 effect boundary must record the failed effect and stop re-planning it unchanged."
     }
   ],
   "future": [
-    {"name": "band_1_valid_decline_promotes_to_2", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 1, "route_id": "local-1", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "context-over-limit", "corroborated": true}}, "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:2", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 2}, "wait": null}},
-    {"name": "band_2_valid_decline_promotes_to_3", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 2, "route_id": "cheap-2", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "tool-unavailable", "corroborated": true}}, "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:3", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 3}, "wait": null}},
-    {"name": "band_3_valid_decline_promotes_to_4", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 3, "route_id": "standard-3", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": true}}, "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:4", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 4}, "wait": null}},
-    {"name": "band_4_valid_decline_promotes_to_5", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 4, "route_id": "strong-4", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": true}}, "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:5", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 5}, "wait": null}},
-    {"name": "band_5_decline_becomes_human_wait", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 5, "route_id": "frontier-5", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": true}}, "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "OpenHumanDecision"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "DECISION_OPENED"], "final": {"lifecycle": "waiting", "effective_band": 5}, "wait": "human-decision"}},
-    {"name": "uncorroborated_decline_does_not_promote", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 1, "route_id": "local-1", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": false}}, "expected": {"ordered_actions": ["RecordFailure", "Diagnose"], "events": ["RESULT_RECORDED", "DIAGNOSIS_RECORDED"], "final": {"lifecycle": "open", "effective_band": 1}, "wait": null}},
-    {"name": "decline_cap_is_one_human_wait", "status": "expected-red-until-CR-09", "activation": "CR-09", "input": {"requested_band": 1, "effective_band": 4, "route_id": "strong-4", "task_fingerprint": "bounded-edit", "decline_count": 3, "decline_cap": 3, "decline": {"reason_code": "capability-bound", "corroborated": true}}, "expected": {"ordered_actions": ["RecordDecline", "OpenHumanDecision"], "events": ["RESULT_RECORDED", "DECISION_OPENED"], "final": {"lifecycle": "waiting", "effective_band": 4}, "wait": "human-decision"}}
+    {
+      "name": "band_1_valid_decline_promotes_to_2",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "a pure band-ladder planner (decline record -> route exclusion -> band promotion -> route selection) reachable from reconcile.plan_project",
+        "retire_by": "Move this item into `active`, drive it through the CR-09 ladder driver, and record its ordered actions/events the same way the active corpus does.",
+        "required_event_types": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"],
+        "required_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand", "SelectRoute"]
+      },
+      "input": {"requested_band": 1, "effective_band": 1, "route_id": "local-1", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "context-over-limit", "corroborated": true}},
+      "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:2", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 2}, "wait": null}
+    },
+    {
+      "name": "band_2_valid_decline_promotes_to_3",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "a pure band-ladder planner (decline record -> route exclusion -> band promotion -> route selection) reachable from reconcile.plan_project",
+        "retire_by": "Move this item into `active`, drive it through the CR-09 ladder driver, and record its ordered actions/events the same way the active corpus does.",
+        "required_event_types": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"],
+        "required_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand", "SelectRoute"]
+      },
+      "input": {"requested_band": 1, "effective_band": 2, "route_id": "cheap-2", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "tool-unavailable", "corroborated": true}},
+      "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:3", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 3}, "wait": null}
+    },
+    {
+      "name": "band_3_valid_decline_promotes_to_4",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "a pure band-ladder planner (decline record -> route exclusion -> band promotion -> route selection) reachable from reconcile.plan_project",
+        "retire_by": "Move this item into `active`, drive it through the CR-09 ladder driver, and record its ordered actions/events the same way the active corpus does.",
+        "required_event_types": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"],
+        "required_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand", "SelectRoute"]
+      },
+      "input": {"requested_band": 1, "effective_band": 3, "route_id": "standard-3", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": true}},
+      "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:4", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 4}, "wait": null}
+    },
+    {
+      "name": "band_4_valid_decline_promotes_to_5",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "a pure band-ladder planner (decline record -> route exclusion -> band promotion -> route selection) reachable from reconcile.plan_project",
+        "retire_by": "Move this item into `active`, drive it through the CR-09 ladder driver, and record its ordered actions/events the same way the active corpus does.",
+        "required_event_types": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"],
+        "required_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand", "SelectRoute"]
+      },
+      "input": {"requested_band": 1, "effective_band": 4, "route_id": "strong-4", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": true}},
+      "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "PromoteBand:5", "SelectRoute"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "BAND_PROMOTED"], "final": {"lifecycle": "open", "effective_band": 5}, "wait": null}
+    },
+    {
+      "name": "band_5_decline_becomes_human_wait",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "a pure band-ladder planner whose top-band decline opens a human decision instead of promoting further",
+        "retire_by": "Move this item into `active` and assert the terminal human wait against the CR-09 ladder driver, not against this recorded shape.",
+        "required_event_types": ["RESULT_RECORDED", "ROUTE_EXCLUDED"],
+        "required_actions": ["RecordDecline", "ExcludeRoute", "OpenHumanDecision"]
+      },
+      "input": {"requested_band": 1, "effective_band": 5, "route_id": "frontier-5", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": true}},
+      "expected": {"ordered_actions": ["RecordDecline", "ExcludeRoute", "OpenHumanDecision"], "events": ["RESULT_RECORDED", "ROUTE_EXCLUDED", "DECISION_OPENED"], "final": {"lifecycle": "waiting", "effective_band": 5}, "wait": "human-decision"}
+    },
+    {
+      "name": "uncorroborated_decline_does_not_promote",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "decline-validity checking: an uncorroborated decline is a failure to diagnose, never a promotion trigger",
+        "retire_by": "Move this item into `active` once decline validity is enforced, and add the negative case that a corroborated decline still promotes.",
+        "required_event_types": ["RESULT_RECORDED", "DIAGNOSIS_RECORDED"],
+        "required_actions": ["RecordFailure", "Diagnose"]
+      },
+      "input": {"requested_band": 1, "effective_band": 1, "route_id": "local-1", "task_fingerprint": "bounded-edit", "decline": {"reason_code": "capability-bound", "corroborated": false}},
+      "expected": {"ordered_actions": ["RecordFailure", "Diagnose"], "events": ["RESULT_RECORDED", "DIAGNOSIS_RECORDED"], "final": {"lifecycle": "open", "effective_band": 1}, "wait": null}
+    },
+    {
+      "name": "decline_cap_is_one_human_wait",
+      "classification": "inventory",
+      "executable": false,
+      "activation": {
+        "package": "CR-09",
+        "driver": "a per-task decline cap that converts the (cap+1)-th decline into a single human decision rather than another promotion",
+        "retire_by": "Move this item into `active` once the cap exists, and add the boundary case at cap-1 declines.",
+        "required_event_types": ["RESULT_RECORDED"],
+        "required_actions": ["RecordDecline", "OpenHumanDecision"]
+      },
+      "input": {"requested_band": 1, "effective_band": 4, "route_id": "strong-4", "task_fingerprint": "bounded-edit", "decline_count": 3, "decline_cap": 3, "decline": {"reason_code": "capability-bound", "corroborated": true}},
+      "expected": {"ordered_actions": ["RecordDecline", "OpenHumanDecision"], "events": ["RESULT_RECORDED", "DECISION_OPENED"], "final": {"lifecycle": "waiting", "effective_band": 4}, "wait": "human-decision"}
+    }
   ]
 }
