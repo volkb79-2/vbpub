@@ -492,10 +492,20 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     if "incremental-write" in route.prompt_hints:
         prompt += "\nFor large writes, batch in ~80-line chunks."
 
-    # Free-endpoint confidentiality guard: a free OpenRouter model is served by
-    # providers that may log/train on prompts (that is the price of "free"), so
-    # it must never receive secrets. Free routes carry the "free-endpoint" hint
-    # in routes.host.toml; this injects the operator-mandated no-secrets notice.
+    # Free-endpoint confidentiality NOTICE: a free OpenRouter model is served
+    # by providers that may log/train on prompts (that is the price of
+    # "free"), so it must never receive secrets. Free routes carry the
+    # "free-endpoint" hint in routes.host.toml; this injects the
+    # operator-mandated no-secrets notice.
+    #
+    # CR-13a 2026-08-03: this is ADDRESSED TO THE MODEL and is not the guard;
+    # it was, before containment existed, and calling a sentence in a prompt a
+    # confidentiality guard is exactly the kind of untestable trust-boundary
+    # claim the standing rule forbids. What actually stops a free route from
+    # holding a secret is containment.child_env (it receives only what its
+    # route declares) and the per-use container around it. Keep the notice --
+    # an agent that knows not to paste credentials into a prompt is still
+    # better than one that does not -- but do not read it as enforcement.
     if "free-endpoint" in route.prompt_hints:
         prompt += ("\nFor the free endpoint, never upload any confidential "
                    "information, personal data, credentials or secrets.")

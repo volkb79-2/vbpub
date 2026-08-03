@@ -299,3 +299,36 @@ traversal refusal, audited privileged operations. Draft-2 additions: the
 notification injection rule (§8) and the static-web-root property (§7). The
 secrets rule from dstdns §6 generalizes: an agent needing a secret value is a
 `BLOCKED:` condition, never an exception.
+
+**2026-08-03 (CR-13a, D-R7) — what "least-privilege credentials" and
+"worktree boundaries" actually mean now.** Until this date the list above was
+aspiration for the EXECUTION boundary: a dispatched agent was a direct child
+of the daemon, in the daemon's namespace, with the daemon's environment
+(minus a three-name denylist added 2026-08-02), the docker socket, the
+operator's home, and every registered repository. The shipped mechanism:
+
+- a route declares `trust = "operator"` or it runs CONTAINED — and a free
+  endpoint runs contained regardless of what it declares;
+- a contained leg gets a per-use container with no docker socket, no operator
+  home, only the declared repository mounted, and a network that cannot reach
+  the control plane;
+- an agent's environment is an ALLOWLIST built from the route's `secrets`
+  declaration plus non-authority operational names — inheritance is gone, and
+  so is the denylist that stood in for it;
+- containment that cannot be established REFUSES THE LAUNCH, at the effect
+  boundary and again in the wrapper. There is no uncontained fallback.
+
+**Scope, stated so it stays testable.** All of the above applies to every leg
+the daemon dispatches through the wrapper — implementer, resume, self-review,
+review, gate diagnosis, carve and carver. It does NOT apply to the four
+operator-initiated interactive surfaces that shell out directly
+(`intake_chat`, `decision_chat`, `onboarding_scan`,
+`onboarding_questionnaire`, each in their `_run_subprocess_turn`): those still
+inherit the full daemon environment and run uncontained. They are driven by a
+human command rather than by the autonomous loop and use the operator-trusted
+review route, which is why they are a gap rather than a hole — but they are a
+gap, and this paragraph exists so nobody reads the list above as covering them.
+
+Per-task resource and permission policy (CPU, memory, pids, wall-time, mounts
+and network as selector constraints) and a recorded containment identity are
+CR-13b and are NOT shipped. Do not read this section as claiming them.

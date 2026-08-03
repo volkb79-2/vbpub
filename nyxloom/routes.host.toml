@@ -15,6 +15,30 @@
 
 revision = "2026-07-23"
 
+# 2026-08-03 (CR-13a, D-R7): every route now declares its EXECUTION POSTURE.
+#   trust = "operator"   the operator's own subscription/CLI; runs as a direct
+#                        child of the daemon, uncontained, as before.
+#   trust = "untrusted"  runs in a per-use container: no docker socket, no
+#                        operator home, only the declared repository mounted,
+#                        a network that cannot reach the control plane, and
+#                        ONLY the env names in `secrets`.
+# An ABSENT `trust` key means untrusted (containment.requires_containment
+# fails closed), and a FREE endpoint is untrusted whatever it declares -- so a
+# route added here without thinking about this gets containment, and a free
+# route cannot be talked out of it.
+#
+# `secrets` is the complete environment a route's CLI receives beyond
+# containment.BASE_ENV_ALLOW. Before this, every route inherited the daemon's
+# whole environment minus a three-name denylist; a route that declares no
+# secrets now receives none, which is why the subscription CLIs (claude,
+# codex -- they authenticate from files in the operator's home, not from an
+# env var) declare an empty set rather than being left undeclared.
+#
+# SYNC OBLIGATION: this is the tracked copy. The DEPLOYED
+# $XDG_STATE_HOME/nyxloom/routes.toml carries no `trust` key until it is
+# synced, and every route in it will therefore require containment and refuse
+# to launch. Sync before restarting the daemon.
+
 # 2026-07-23 (operator): added codex-luna-high (gpt-5.6-luna @ high effort via
 # codex) as a medium/band-2 implementation route. Folded into `implement-2`
 # by the B16 tier-rename (was previously its own [tiers.luna-high] pending
@@ -23,8 +47,13 @@ revision = "2026-07-23"
 # 2026-07-17: LIFTED the 2026-07-15 temporary sonnet-high override on the
 # implementation tiers -- cheap-first (deepseek) restored, codex reintegrated
 # as a fallback, and vetted free OpenRouter models available via
-# [tiers.implement-1-free] (opt-in; see the free-route block + the
-# free-endpoint confidentiality guard).
+# [tiers.implement-1-free] (opt-in; see the free-route block).
+# 2026-08-03 (CR-13a): the free tier remains DISABLED by standing program rule
+# and, independently, by mechanism -- a free route requires containment, and
+# containment requires an agent image this deployment has not built, so a
+# free-route dispatch is refused at the effect boundary and again at launch.
+# Lifting the rule is an operator decision; building the image is a
+# prerequisite for it, not a substitute.
 [tiers.implement-1]      # was haiku-low + flash-high (band 1: mechanical/cheap)
 routes = ["claude-haiku", "opencode-deepseek-high", "reasonix-deepseek-high", "codex-terra-med"]
 
@@ -49,7 +78,11 @@ routes = ["claude-opus-high"]
 # openrouter). OPT-IN tier -- deliberately NOT in the default implementation
 # path: free providers may LOG/TRAIN on prompts, so every free route carries the
 # `free-endpoint` prompt_hint, which makes adapters.build_dispatch inject a
-# no-secrets guard into the agent prompt.
+# no-secrets NOTICE into the agent prompt.
+# 2026-08-03 (CR-13a): that notice is addressed to the model and was never
+# enforcement. The guard is containment -- see the trust/secrets block at the
+# top of this file. A free route now runs with no operator home, no docker
+# socket, no route to the control plane, and one env var.
 # VETTED USABLE: nemotron-ultra (1M ctx), nemotron-nano, hy3, laguna-xs.
 # EXCLUDED: cohere/north-mini-code:free -> "No allowed providers are available"
 # (its free providers are filtered out under this account's data policy).
@@ -67,6 +100,8 @@ dispatch_extra = ["--auto"]
 resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/deepseek/deepseek-v4-flash", "--variant", "high", "--dir", "{worktree}", "{prompt}"]
 session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
 usage_source = "session-json"
+trust = "operator"
+secrets = ["OPENROUTER_API_KEY"]
 
 [routes.opencode-deepseek-max]
 inherit = "opencode-deepseek-high"
@@ -79,6 +114,8 @@ status = "fallback-only"
 probe = ["reasonix", "--version"]
 resume = ["reasonix", "run", "-c", "-dir", "{worktree}", "{prompt}"]
 usage_source = "run-log-deepseek-usage"
+trust = "operator"
+secrets = ["DEEPSEEK_API_KEY"]
 
 [routes.reasonix-deepseek-max]
 inherit = "reasonix-deepseek-high"
@@ -92,6 +129,11 @@ sandbox = "danger-full-access"
 probe = ["codex", "--version"]
 resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
 usage_source = "exec-output-footer"
+# codex authenticates from the operator's own subscription state in $HOME,
+# not from an env var -- hence an EMPTY secrets set, which is a declaration
+# ("this route needs nothing forwarded") rather than an omission.
+trust = "operator"
+secrets = []
 
 [routes.codex-luna-high]
 cli = "codex"
@@ -101,6 +143,8 @@ sandbox = "danger-full-access"
 probe = ["codex", "--version"]
 resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
 usage_source = "exec-output-footer"
+trust = "operator"
+secrets = []
 
 # OpenAI models are always dispatched through Codex, never through OpenRouter.
 # This low-effort route is intentionally trial-only; the controller selects it
@@ -118,6 +162,9 @@ probe = ["claude", "--version"]
 session_capture = "newest-jsonl"
 resume = ["claude", "--resume", "{session}", "--model", "sonnet", "--effort", "high", "-p", "{prompt}"]
 usage_source = "output-format-json"
+# Subscription auth from $HOME, like codex above -- nothing to forward.
+trust = "operator"
+secrets = []
 
 [routes.claude-opus-high]
 inherit = "claude-sonnet5-high"
@@ -136,6 +183,8 @@ probe = ["claude", "--version"]
 session_capture = "newest-jsonl"
 resume = ["claude", "--resume", "{session}", "--model", "haiku", "-p", "{prompt}"]
 usage_source = "output-format-json"
+trust = "operator"
+secrets = []
 
 [routes.claude-haiku-high]
 inherit = "claude-haiku"
@@ -164,6 +213,14 @@ dispatch_extra = ["--auto"]
 resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "--dir", "{worktree}", "{prompt}"]
 session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
 usage_source = "session-json"
+# CR-13a: the tier this package exists for. Inherited by every free route
+# below, and NOT waivable -- containment.is_free_endpoint would force it even
+# if this line said "operator". The prompt-injected no-secrets notice stays
+# (it addresses what the MODEL is told), but it is no longer the guard: the
+# guard is that this leg has no operator home, no docker socket, no route to
+# the control plane, and exactly one env var.
+trust = "untrusted"
+secrets = ["OPENROUTER_API_KEY"]
 
 [routes.openrouter-free-nemotron-nano]
 inherit = "openrouter-free-nemotron-ultra"
@@ -204,6 +261,8 @@ dispatch_extra = ["--auto"]
 resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/qwen/qwen3.7-plus", "--dir", "{worktree}", "{prompt}"]
 session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
 usage_source = "session-json"
+trust = "operator"
+secrets = ["OPENROUTER_API_KEY"]
 
 [routes.opencode-mimo-v25]
 inherit = "opencode-qwen37-plus"

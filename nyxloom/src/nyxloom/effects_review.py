@@ -274,6 +274,12 @@ class ReviewEffector:
 
         routes_obj = config.Routes.load()
         route_def = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)[0]
+        # Re-asked with the resolved route (CR-13a): the review role's route
+        # is chosen here, not by the planner, so the containment half of
+        # admission has nothing to answer about until this line has run.
+        ok, _reason = effects_dispatch.admissible(ctx, "review", route_def)
+        if not ok:
+            return []  # admission refused; task stays REVIEW_REJECTED, retried next pass
         route_snap = Route(route_id=route_def.route_id, cli=route_def.cli,
                            model=route_def.model, variant=route_def.variant,
                            effort=route_def.effort, routes_rev=routes_obj.revision)
@@ -312,6 +318,7 @@ class ReviewEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(cfg.root), attempt_dir=attempt_dir,
             receipt_path=receipt_path, route_def=route_def,
+            repo_root=str(cfg.root),
             leases=effects_dispatch.lease_specs(cfg, fm_d))
         attempt.pid = self._ports.processes.launch_detached(spec)
         attempt.state = AttemptState.PREFLIGHTING
@@ -360,6 +367,10 @@ class ReviewEffector:
 
         routes_obj = config.Routes.load()
         route_def = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)[0]
+        # Re-asked with the resolved route -- see launch_gate_diagnosis.
+        ok, _reason = effects_dispatch.admissible(ctx, "review", route_def)
+        if not ok:
+            return []  # admission refused; task stays AWAITING_REVIEW, re-evaluated next pass
         log.info("review-launch", project=project, tasks=list(action.task_ids),
                  route=route_def.route_id, wave=wave_id)
         route_snap = Route(route_id=route_def.route_id, cli=route_def.cli,
@@ -457,7 +468,8 @@ class ReviewEffector:
             project=project, task_id=first_task or wave_id or "review",
             attempt_id=attempt_id, argv=argv, cwd=str(cfg.root),
             attempt_dir=attempt_dir, receipt_path=receipt_path,
-            route_def=route_def, leases=review_leases,
+            route_def=route_def, repo_root=str(cfg.root),
+            leases=review_leases,
             # A wave review judges EVERY member in one run, so the wrapper is
             # TOLD the membership: it cannot derive it, and scanning the
             # worktree for files that look like reviews is the defect the
@@ -516,19 +528,23 @@ class ReviewEffector:
 
 def wrapper_spec(*, project: str, task_id: str, attempt_id: str, argv: list[str],
                  cwd: str, attempt_dir, receipt_path: str, route_def,
-                 leases: list[dict[str, Any]],
+                 leases: list[dict[str, Any]], repo_root: str,
                  result_tasks: list[str] | None = None):
     """A review leg's ``WrapperSpec``.
 
     Always carries ``result_kind``: this leg produces a TYPED judgement, and
     the wrapper collecting it is what makes the merge decision readable from
     a schema rather than scanned out of prose.
+
+    ``repo_root`` is required rather than defaulted (CR-13a): it is the only
+    host path a contained leg is given, and a default would make "the launch
+    site forgot" indistinguishable from "this leg needs nothing".
     """
     return wrapper.WrapperSpec(
         project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
         cwd=cwd, log_path=str(attempt_dir / "attempt.log"),
         receipt_path=receipt_path, attempt_dir=str(attempt_dir),
-        route_def=asdict(route_def), leases=leases,
+        route_def=asdict(route_def), repo_root=repo_root, leases=leases,
         result_kind=results.ResultKind.REVIEW_INDEPENDENT.value,
         result_tasks=result_tasks,
     )

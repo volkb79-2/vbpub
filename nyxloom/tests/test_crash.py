@@ -217,7 +217,10 @@ def test_wrapper_sigkill_drill(tmp_state, tmp_path):
         log_path=str(attempt_dir / "wrapper.log"),
         receipt_path=str(attempt_dir / "receipt.json"),
         attempt_dir=str(attempt_dir),
-        route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        # CR-13a: a local fake script is the operator's own -- declared, not
+        # defaulted; an undeclared route would require containment.
+        route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model",
+                   "trust": "operator"},
         leases=[{"name": "wrapper-drill-lease", "capacity": 1}],
     )
 

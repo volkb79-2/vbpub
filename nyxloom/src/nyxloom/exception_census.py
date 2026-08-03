@@ -118,10 +118,15 @@ LEGACY_BUDGET: dict[str, int] = {
     "decision_chat.py": 7,
     "cli.py": 6,
     "commands.py": 5,
-    # Store and process boundaries. CR-04 owns the store's; CR-13a owns the
-    # wrapper's, since containment changes what a launch failure even means.
+    # Store and process boundaries. CR-04 owns the store's; CR-13a owned the
+    # wrapper's and retired them (3 -> 0): containment changed what a launch
+    # failure means, so each of the three was classified where it stands --
+    # the post-fork crash guard and the lease-releasing re-raise are
+    # cleanup/containment, the session-capture swallow is
+    # advisory-degradation. The entry stays at 0 rather than being deleted so
+    # a new unclassified handler in this module still fails the budget.
     "storage_sqlite.py": 3,
-    "wrapper.py": 3,
+    "wrapper.py": 0,
     "migrate_store.py": 1,
     # Route/provider surfaces, retired by the routing packages.
     "benchmark_sources.py": 3,
@@ -130,9 +135,10 @@ LEGACY_BUDGET: dict[str, int] = {
     "notify.py": 2,
     "free_models.py": 1,
     "route_doctor.py": 1,
-    # CR-15's credential store. One handler, retired with CR-13a's per-route
-    # secret injection.
-    "control_auth.py": 1,
+    # CR-15's credential store. One handler, retired by CR-13a (1 -> 0) and
+    # classified in place as cleanup/containment: it reports a refusal that
+    # was already decided, on a path with no permission left to grant.
+    "control_auth.py": 0,
 }
 
 

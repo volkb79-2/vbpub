@@ -22,6 +22,14 @@ from nyxloom.types import (
 )
 from nyxloom.wrapper import WrapperSpec, launch_detached, wrapper_main, SESSION_CAPTURE_DELAY
 
+#: CR-13a: every spec here runs a local fake script -- the operator's own,
+#: with no third party serving it -- so it declares operator trust and takes
+#: the uncontained path. The declaration is REQUIRED, not defaulted: a route
+#: that says nothing requires containment (containment.requires_containment),
+#: which is what `TestContainmentGate` below exercises.
+OPERATOR_ROUTE = {"route_id": "fake-cli", "cli": "fake", "model": "fake-model",
+                  "trust": "operator"}
+
 
 def _read_log_records(log_dir: Path) -> list[dict]:
     """P05a: local helper (never added to conftest.py -- see
@@ -114,7 +122,8 @@ class TestWrapperSpec:
             log_path="/tmp/log.txt",
             receipt_path="/tmp/receipt.json",
             attempt_dir="/tmp/attempt",
-            route_def={"route_id": "fake", "cli": "fake", "model": "fake-model"},
+            route_def={"route_id": "fake", "cli": "fake", "model": "fake-model",
+                       "trust": "operator"},
             leases=[{"name": "demo.stack", "capacity": 1}],
             env_overrides={"KEY": "value"},
             term_grace_seconds=15,
@@ -150,7 +159,7 @@ class TestHappyPath:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         spec_path = attempt_dir / "spec.json"
@@ -251,7 +260,8 @@ class TestStreamJsonSessionCapture:
             # cli="claude" -- the real adapters.capture_session branches on
             # this to read the stream-json first line instead of scanning
             # ~/.claude/projects/.
-            route_def={"route_id": "claude-test", "cli": "claude", "model": "sonnet"},
+            route_def={"route_id": "claude-test", "cli": "claude", "model": "sonnet",
+                       "trust": "operator"},
         )
         spec_path = attempt_dir / "spec.json"
         spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
@@ -297,7 +307,8 @@ class TestStreamJsonSessionCapture:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "claude-test", "cli": "claude", "model": "sonnet"},
+            route_def={"route_id": "claude-test", "cli": "claude", "model": "sonnet",
+                       "trust": "operator"},
         )
         spec_path = attempt_dir / "spec.json"
         spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
@@ -337,7 +348,7 @@ class TestBlocked:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         spec_path = attempt_dir / "spec.json"
@@ -411,7 +422,7 @@ class TestScopeAmendment:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         spec_path = attempt_dir / "spec.json"
@@ -483,7 +494,7 @@ class TestScopeAmendment:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
         spec_path = attempt_dir / "spec.json"
         spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
@@ -533,7 +544,7 @@ class TestLimit:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         spec_path = attempt_dir / "spec.json"
@@ -592,7 +603,7 @@ class TestTransient:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         spec_path = attempt_dir / "spec.json"
@@ -654,7 +665,7 @@ class TestError:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         spec_path = attempt_dir / "spec.json"
@@ -713,7 +724,7 @@ class TestLeaseRace:
                 log_path=str(log_path),
                 receipt_path=str(receipt_path),
                 attempt_dir=str(attempt_dir),
-                route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+                route_def=OPERATOR_ROUTE,
                 leases=[{"name": "demo.stack", "capacity": 1}],
             )
 
@@ -768,7 +779,7 @@ class TestLeaseLifecycle:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
             leases=[{"name": "demo.stack", "capacity": 1}],
         )
 
@@ -821,7 +832,7 @@ class TestDetach:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
 
         # Mock adapters
@@ -894,7 +905,7 @@ class TestSigterm:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
             term_grace_seconds=1,
         )
 
@@ -955,7 +966,7 @@ class TestSigterm:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
             leases=[{"name": "demo.stack", "capacity": 1}],
             term_grace_seconds=2,
         )
@@ -1057,7 +1068,7 @@ class TestKillDrill:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
             leases=[{"name": "demo.stack", "capacity": 1}],
         )
 
@@ -1107,7 +1118,7 @@ class TestKillDrill:
             log_path=str(log_path),
             receipt_path=str(receipt_path),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
             leases=[{"name": "demo.stack", "capacity": 1}],
             term_grace_seconds=2,
         )
@@ -1173,7 +1184,7 @@ class TestP05aLogging:
             project=project, task_id=task_id, attempt_id=attempt_id,
             argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
             receipt_path=str(receipt_path), attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
         )
         spec_path = attempt_dir / "spec.json"
         spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
@@ -1229,7 +1240,7 @@ class TestP05aLogging:
                 project=project, task_id=task_id, attempt_id=attempt_id,
                 argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
                 receipt_path=str(receipt_path), attempt_dir=str(attempt_dir),
-                route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+                route_def=OPERATOR_ROUTE,
                 leases=[{"name": "demo.stack", "capacity": 1}],
             )
             spec_path = attempt_dir / "spec.json"
@@ -1277,7 +1288,7 @@ class TestP05aLogging:
             project=project, task_id=task_id, attempt_id=attempt_id,
             argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
             receipt_path=str(receipt_path), attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=OPERATOR_ROUTE,
             term_grace_seconds=1,
         )
         spec_path = attempt_dir / "spec.json"
@@ -1316,21 +1327,34 @@ class TestP05aLogging:
         assert exits[0]["attempt"] == attempt_id
 
 
-class TestDaemonOnlySecretsAreNotInherited:
-    """2026-08-02 review amendment (RISK-006). The wrapper used to hand the
-    child `os.environ.copy()` -- the WHOLE daemon environment -- so every
-    dispatched CLI, including the opt-in free/untrusted OpenRouter tier,
-    inherited the daemon's own secrets. nyxloomd/secrets.env.example already
-    claimed AA_API_KEY was "NOT forwarded to any CLI"; the code disagreed.
+class TestTheChildEnvironmentIsWhatTheRouteDeclared:
+    """2026-08-02 (RISK-006) then 2026-08-03 (CR-13a). The wrapper used to
+    hand the child `os.environ.copy()` -- the WHOLE daemon environment -- so
+    every dispatched CLI, including the opt-in free/untrusted OpenRouter tier,
+    inherited the daemon's own secrets. RISK-006 removed three of them by
+    name. CR-13a removed the question: the child receives the route's DECLARED
+    secrets and nothing else.
+
+    These cases were amended rather than retired, and one of them CHANGED
+    VERDICT: `test_provider_key_the_cli_needs_is_still_inherited` asserted
+    that OPENROUTER_API_KEY reaches the CLI by inheritance. Under an
+    allowlist that is no longer a property of the system, and asserting it
+    would pin the defect. The property it was protecting -- a route that
+    needs its provider key still gets it -- survives as
+    `test_a_declared_provider_key_still_reaches_the_cli`, with the key now
+    reaching the child because the ROUTE ASKED, which is the only reason it
+    should ever have.
 
     The oracle is the environment the CLI ACTUALLY RECEIVES: the fake CLI
     dumps its own environ into the attempt log and the assertions read it
-    back. Asserting on child_env()'s return value alone would prove only that
-    a helper exists, not that Popen was given it.
+    back. Asserting on the env-builder's return value alone would prove only
+    that a helper exists, not that Popen was given it.
     """
 
+    DECLARING = dict(OPERATOR_ROUTE, secrets=["OPENROUTER_API_KEY"])
+
     def _run_with_env(self, tmp_state, tmp_path, mock_adapters, monkeypatch,
-                      env_overrides=None):
+                      env_overrides=None, route=None):
         project, task_id, attempt_id = "demo", "demo-P01-sample", "att-1"
         seed(project, task_id, attempt_id)
 
@@ -1352,7 +1376,7 @@ class TestDaemonOnlySecretsAreNotInherited:
             argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
             receipt_path=str(attempt_dir / "receipt.json"),
             attempt_dir=str(attempt_dir),
-            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            route_def=route or OPERATOR_ROUTE,
             env_overrides=env_overrides or {},
         )
         spec_path = attempt_dir / "spec.json"
@@ -1365,8 +1389,8 @@ class TestDaemonOnlySecretsAreNotInherited:
             self, tmp_state, tmp_path, mock_adapters, monkeypatch):
         env_text = self._run_with_env(tmp_state, tmp_path, mock_adapters, monkeypatch)
 
-        # The three stripped names, and — the point of the exercise — their
-        # VALUES, which must not have reached the child under any name.
+        # The three names RISK-006 stripped, and — the point of the exercise —
+        # their VALUES, which must not have reached the child under any name.
         assert "AA_API_KEY=" not in env_text
         assert "NTFY_TOKEN=" not in env_text
         assert "NTFY_CMD_TOKEN=" not in env_text
@@ -1374,21 +1398,182 @@ class TestDaemonOnlySecretsAreNotInherited:
         assert "ntfy-publisher-secret" not in env_text
         assert "ntfy-command-secret" not in env_text
 
-    def test_provider_key_the_cli_needs_is_still_inherited(
+    def test_an_undeclared_provider_key_is_no_longer_inherited(
             self, tmp_state, tmp_path, mock_adapters, monkeypatch):
-        """Fail-safe in the other direction: strip too much and every
-        OpenRouter/DeepSeek route stops authenticating. Only the daemon-only
-        names go."""
+        """The inversion, seen from the child. This route declares no
+        secrets, so a provider key sitting in the daemon's environment does
+        NOT reach it -- under the denylist it did, because nobody had put it
+        on the list."""
         env_text = self._run_with_env(tmp_state, tmp_path, mock_adapters, monkeypatch)
-        assert "OPENROUTER_API_KEY=provider-key-the-cli-needs" in env_text
+        assert "OPENROUTER_API_KEY=" not in env_text
+        assert "provider-key-the-cli-needs" not in env_text
 
-    def test_env_override_can_deliberately_resupply_a_stripped_name(
+    def test_a_declared_provider_key_still_reaches_the_cli(
             self, tmp_state, tmp_path, mock_adapters, monkeypatch):
-        """The strip is a default, not a prohibition: a dispatch that has a
-        reason to pass one of these names does so explicitly per attempt, and
-        the override wins because it is applied after the strip."""
+        """Fail-safe in the other direction: allowlist too hard and every
+        OpenRouter/DeepSeek route stops authenticating. A route that declares
+        its key gets exactly that key."""
+        env_text = self._run_with_env(tmp_state, tmp_path, mock_adapters,
+                                      monkeypatch, route=self.DECLARING)
+        assert "OPENROUTER_API_KEY=provider-key-the-cli-needs" in env_text
+        assert "aa-secret-value" not in env_text
+        assert "ntfy-publisher-secret" not in env_text
+
+    def test_env_override_can_deliberately_supply_an_undeclared_name(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """The allowlist is the default, not a prohibition: a dispatch that
+        has a reason to pass a name does so explicitly per attempt, and the
+        override wins because it is applied last."""
         env_text = self._run_with_env(
             tmp_state, tmp_path, mock_adapters, monkeypatch,
             env_overrides={"NTFY_TOKEN": "deliberately-passed"})
         assert "NTFY_TOKEN=deliberately-passed" in env_text
         assert "ntfy-publisher-secret" not in env_text
+
+    def test_the_attempt_identity_still_reaches_the_child(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """CR-03's binding travels in the same environment the allowlist
+        rebuilt; it must survive the inversion."""
+        env_text = self._run_with_env(tmp_state, tmp_path, mock_adapters, monkeypatch)
+        assert "NYXLOOM_TASK_ID=demo-P01-sample" in env_text
+        assert "NYXLOOM_ATTEMPT_ID=att-1" in env_text
+
+
+class TestContainmentGateFailsClosed:
+    """CR-13a (D-R7): a route that requires containment and cannot get it
+    does not launch, and says so where an operator reads it.
+
+    Nothing here needs docker -- that is the point. The refusal is reached by
+    a route that declares no trust in a deployment that has configured no
+    image, which is precisely the state the DEPLOYED routes.toml is in until
+    an operator syncs it. The capability proofs live in
+    tests/test_containment.py, where they start real containers.
+    """
+
+    def _spec(self, tmp_path, *, route, argv, repo_root=""):
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        spec = WrapperSpec(
+            project="demo", task_id="demo-P01-sample", attempt_id="att-1",
+            argv=argv, cwd=str(tmp_path),
+            log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir), route_def=route, repo_root=repo_root)
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+        return spec, spec_path, attempt_dir
+
+    def test_an_undeclared_route_refuses_rather_than_launching_uncontained(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch, fake_cli):
+        """The whole package in one case: no silent downgrade. The marker
+        file proves the CLI was never started -- an assertion on the exit code
+        alone could not tell "refused" from "ran and failed"."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        seed("demo", "demo-P01-sample", "att-1")
+        marker = tmp_path / "the-agent-ran"
+        script = tmp_path / "cli.sh"
+        script.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        script.chmod(0o755)
+
+        _spec, spec_path, attempt_dir = self._spec(
+            tmp_path, route={"route_id": "r", "cli": "fake", "model": "m"},
+            argv=[str(script)])
+
+        assert wrapper_main(str(spec_path)) == 76
+        assert not marker.exists(), "the CLI ran despite containment refusing"
+
+    def test_the_refusal_is_recorded_in_the_receipt_with_a_reason(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        seed("demo", "demo-P01-sample", "att-1")
+        _spec, spec_path, attempt_dir = self._spec(
+            tmp_path, route={"route_id": "r", "cli": "fake", "model": "m"},
+            argv=["true"])
+
+        wrapper_main(str(spec_path))
+
+        receipt = json.loads((attempt_dir / "receipt.json").read_text())
+        assert receipt["result"] == "error"
+        assert receipt["exit_code"] == 76
+        assert receipt["blocked_reason"] == "containment-unavailable:no-image-configured"
+
+    def test_the_refusal_is_a_failed_attempt_event_not_a_silent_skip(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """The operator-visible record. FAILED rather than EXITED, because
+        nothing ran -- the same distinction the lease-race refusal draws."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        seed("demo", "demo-P01-sample", "att-1")
+        _spec, spec_path, _dir = self._spec(
+            tmp_path, route={"route_id": "r", "cli": "fake", "model": "m"},
+            argv=["true"])
+
+        wrapper_main(str(spec_path))
+
+        events = list(storage.iter_events("demo"))
+        failed = [e for e in events if e.type is EventType.ATTEMPT_FAILED]
+        assert len(failed) == 1
+        attempt = failed[0].payload["attempt"]
+        assert attempt["state"] == AttemptState.FAILED.value
+        assert attempt["receipt"]["blocked_reason"].startswith("containment-unavailable:")
+
+    def test_the_refusal_is_logged_at_error_with_the_reason(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        log_dir = tmp_path / "logs"
+        log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+        seed("demo", "demo-P01-sample", "att-1")
+        _spec, spec_path, _dir = self._spec(
+            tmp_path, route={"route_id": "r", "cli": "fake", "model": "m"},
+            argv=["true"])
+
+        wrapper_main(str(spec_path))
+
+        records = [r for r in _read_log_records(log_dir)
+                   if r.get("msg") == "containment-unavailable"]
+        assert len(records) == 1
+        assert records[0]["level"] == "error"
+        assert records[0]["reason"] == "no-image-configured"
+        assert records[0]["attempt"] == "att-1"
+
+    def test_a_launch_site_that_declared_no_repository_is_refused(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """`repo_root` defaults to empty, so a launch site that forgets it
+        cannot produce a container with nothing mounted -- it produces no
+        container at all."""
+        monkeypatch.setenv("NYXLOOM_CONTAINMENT_IMAGE", "agent:local")
+        seed("demo", "demo-P01-sample", "att-1")
+        _spec, spec_path, attempt_dir = self._spec(
+            tmp_path, route={"route_id": "r", "cli": "fake", "model": "m"},
+            argv=["true"], repo_root="")
+
+        assert wrapper_main(str(spec_path)) == 76
+        receipt = json.loads((attempt_dir / "receipt.json").read_text())
+        assert receipt["blocked_reason"] == (
+            "containment-unavailable:no-repository-declared")
+
+    def test_a_free_route_cannot_be_talked_into_an_uncontained_launch(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """`trust = "operator"` on a free endpoint is refused by the wrapper
+        exactly as an undeclared route is -- the declaration does not win."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        seed("demo", "demo-P01-sample", "att-1")
+        _spec, spec_path, _dir = self._spec(
+            tmp_path,
+            route={"route_id": "free", "cli": "opencode", "model": "m:free",
+                   "status": "free", "trust": "operator"},
+            argv=["true"])
+
+        assert wrapper_main(str(spec_path)) == 76
+
+    def test_an_operator_trusted_route_is_unaffected(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch, fake_cli):
+        """The other direction: containment must not become a wall in front
+        of the routes the factory runs on today."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        seed("demo", "demo-P01-sample", "att-1")
+        script = fake_cli(["ran"], exit_code=0)
+        _spec, spec_path, attempt_dir = self._spec(
+            tmp_path, route=OPERATOR_ROUTE, argv=[str(script)])
+
+        assert wrapper_main(str(spec_path)) == 0
+        assert "ran" in (attempt_dir / "attempt.log").read_text()

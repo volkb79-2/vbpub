@@ -602,6 +602,17 @@ class RouteDef:
     usage_source: str | None = None
     status: str | None = None       # e.g. "fallback-only"
     role_default: str | None = None
+    # CR-13a (D-R7): the execution-containment declaration. `trust` is the
+    # ONLY way to run a route uncontained, and only "operator" does it --
+    # anything else, INCLUDING an absent key, means the agent runs in a
+    # per-use container (containment.requires_containment). A free endpoint
+    # cannot waive it at all. `secrets` names the env vars this route's CLI
+    # receives -- names only, never values -- and is the whole environment it
+    # gets beyond containment.BASE_ENV_ALLOW; the pre-CR-13a behaviour was
+    # the daemon's entire environment minus a denylist.
+    trust: str | None = None
+    secrets: list[str] = field(default_factory=list)
+    containment_image: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 

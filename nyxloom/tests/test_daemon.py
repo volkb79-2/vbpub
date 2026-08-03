@@ -2584,7 +2584,10 @@ def test_hang_detection_full_pipeline_real(tmp_state, sample_project, monkeypatc
         log_path=str(attempt_dir / "attempt.log"),
         receipt_path=str(attempt_dir / "receipt.json"),
         attempt_dir=str(attempt_dir),
-        route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        # CR-13a: a local fake script is the operator's own -- declared, not
+        # defaulted; an undeclared route would require containment.
+        route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model",
+                   "trust": "operator"},
         term_grace_seconds=2,
     )
     wrapper_pid = wrapper.launch_detached(spec)

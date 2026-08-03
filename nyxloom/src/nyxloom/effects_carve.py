@@ -1032,6 +1032,11 @@ class CarveEffector:
                     project, cfg, states, EventType.NEEDS_OPERATOR,
                     {"reason": "carver-no-route"}, task_id=None))
             return events
+        # The session's PINNED route, so this is the first point at which
+        # admission's containment half (CR-13a) can be asked.
+        ok, _reason = effects_dispatch.admissible(ctx, "carve", route_def)
+        if not ok:
+            return events  # refused at the effect boundary; nothing launched
 
         seq = self._carver._next_carve_seq(project)
         task_id = f"carver-session-{project}-{seq}"
@@ -1110,7 +1115,7 @@ class CarveEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
-            route_def=asdict(route_def),
+            route_def=asdict(route_def), repo_root=str(cfg.root),
             leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = self._ports.processes.launch_detached(spec)
@@ -1289,6 +1294,11 @@ class CarveEffector:
         (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
 
         route_def = review_routes[0]
+        # Re-asked with the resolved route (CR-13a): admission's containment
+        # half is a property of the route, and a carve selects its own.
+        ok, _reason = effects_dispatch.admissible(ctx, "carve", route_def)
+        if not ok:
+            return events  # refused at the effect boundary; nothing launched
         route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
                             variant=route_def.variant, effort=route_def.effort,
                             routes_rev=routes_obj.revision)
@@ -1310,6 +1320,7 @@ class CarveEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            repo_root=str(cfg.root),
             leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = self._ports.processes.launch_detached(spec)

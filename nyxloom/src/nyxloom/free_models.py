@@ -66,7 +66,9 @@ non-free tiers or hand-authored routes" without needing surgical line-level
 edits into an arbitrarily-interspersed hand-authored region.
 
 Every generated route carries `prompt_hints = ["free-endpoint"]` (the same
-key `adapters.build_dispatch`'s no-secrets confidentiality guard scans for)
+key `adapters.build_dispatch`'s no-secrets confidentiality NOTICE scans for),
+`trust = "untrusted"` and a one-name `secrets` allowlist (CR-13a: the notice
+tells the model not to ask; containment is what stops it from having),
 and dispatches via `opencode` using the `<source>/<model-id>` addressing
 convention the existing hand-curated `openrouter-free-*` routes already use
 (`openrouter/nvidia/...:free`) -- generalized here to `<source-name>/<model-
@@ -426,13 +428,23 @@ def _render_route_block(route_id: str, model: DiscoveredModel) -> str:
     via opencode, `<source>/<model-id>` addressing (matches the existing
     `openrouter/<vendor>/<model>:free` convention -- generalized to any
     source name), and the `free-endpoint` prompt_hint that makes
-    adapters.build_dispatch inject the no-secrets confidentiality guard."""
+    adapters.build_dispatch inject the no-secrets confidentiality NOTICE.
+
+    CR-13a: the notice is addressed to the MODEL and is not the guard. The
+    guard is `trust = "untrusted"` plus a `secrets` allowlist, emitted here
+    so a discovered route arrives contained rather than becoming contained
+    when someone remembers -- `status = "free"` would force containment
+    anyway (containment.is_free_endpoint), but a route with no declared
+    secrets would then reach its provider with no credential at all, which
+    is a broken route rather than a contained one."""
     model_ref = f"{model.source}/{model.id}"
     return "".join([
         f"[routes.{route_id}]\n",
         'cli = "opencode"\n',
         f'model = "{model_ref}"\n',
         'status = "free"\n',
+        'trust = "untrusted"\n',
+        'secrets = ["OPENROUTER_API_KEY"]\n',
         'prompt_hints = ["free-endpoint"]\n',
         'probe = ["opencode", "--version"]\n',
         'dispatch_extra = ["--auto"]\n',

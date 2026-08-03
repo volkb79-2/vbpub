@@ -185,7 +185,12 @@ def audit_control_refusal(ingress: str, reason: str) -> None:
             type=EventType.CONTROL_MUTATION_REFUSED,
             payload={"path": ingress, "reason": reason},
         )
-    except Exception as exc:
+    except Exception as exc:  # census: cleanup/containment (CR-13a)
+        # The refusal has ALREADY been decided by the caller; this handler
+        # runs on the reporting path behind it. It cannot turn a denial into
+        # an admission -- there is no permission left to grant -- and letting
+        # the exception escape would replace a constant refusal with an error
+        # response that tells an attacker the audit store is down.
         log.error("control-plane refusal could not be audited",
                   control_path=ingress, reason=reason, error=repr(exc)[:200])
 

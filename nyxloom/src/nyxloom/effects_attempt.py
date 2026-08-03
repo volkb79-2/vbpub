@@ -103,7 +103,11 @@ class AttemptEffector:
 
     def dispatch_implementer(self, ctx: effects.EffectContext,
                              action: reconcile.DispatchImplementer) -> list[Event]:
-        ok, _reason = effects_dispatch.admissible(ctx, "dispatch")
+        # The route is resolved BEFORE admission (CR-13a): containment is a
+        # property of the route, so the gate cannot ask about it otherwise.
+        routes_obj = config.Routes.load()
+        route_def = routes_obj.routes[action.route_id]
+        ok, _reason = effects_dispatch.admissible(ctx, "dispatch", route_def)
         if not ok:
             return []  # admission refused; task stays QUEUED, re-evaluated next pass
         events: list[Event] = []
@@ -115,8 +119,6 @@ class AttemptEffector:
         effects_dispatch.ensure_worktree(self._ports, cfg.root, branch,
                                          worktree_path, cfg.default_branch)
 
-        routes_obj = config.Routes.load()
-        route_def = routes_obj.routes[action.route_id]
         attempt_id = new_id("att")
         with bind(task=task_id, attempt=attempt_id):
             log.info("dispatch", project=project, route=route_def.route_id)
@@ -147,7 +149,7 @@ class AttemptEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(worktree_path), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=receipt_path, attempt_dir=str(attempt_dir),
-            route_def=asdict(route_def),
+            route_def=asdict(route_def), repo_root=str(cfg.root),
             leases=effects_dispatch.lease_specs(
                 cfg, effects_dispatch.frontmatter_for(cfg, tsf)),
         )
@@ -163,9 +165,6 @@ class AttemptEffector:
 
     def resume_attempt(self, ctx: effects.EffectContext,
                        action: reconcile.ResumeAttempt) -> list[Event]:
-        ok, _reason = effects_dispatch.admissible(ctx, "resume")
-        if not ok:
-            return []  # admission refused; attempt stays INTERRUPTED, re-evaluated next pass
         project, cfg, states = ctx.project, ctx.cfg, ctx.states
         task_id = action.task_id
         tsf = states[task_id]
@@ -174,6 +173,9 @@ class AttemptEffector:
         resume_n = next_resume_n(self._ports.files, attempt_dir)
         routes_obj = config.Routes.load()
         route_def = routes_obj.routes[attempt.route.route_id]
+        ok, _reason = effects_dispatch.admissible(ctx, "resume", route_def)
+        if not ok:
+            return []  # admission refused; attempt stays INTERRUPTED, re-evaluated next pass
         # A retry is degraded-but-continuing: WARNING, not INFO.
         with bind(task=task_id, attempt=action.attempt_id):
             log.warning("attempt-retry", project=project,
@@ -188,6 +190,7 @@ class AttemptEffector:
             log_path=str(attempt_dir / f"attempt.resume-{resume_n}.log"),
             receipt_path=str(attempt_dir / "receipt.json"),
             attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            repo_root=str(cfg.root),
             leases=effects_dispatch.lease_specs(
                 cfg, effects_dispatch.frontmatter_for(cfg, tsf)),
         )
@@ -238,6 +241,14 @@ class AttemptEffector:
         branch = source.branch or f"feat/{task_id}"
         routes_obj = config.Routes.load()
         route_def = routes_obj.routes[source.route.route_id]
+        # Asked a SECOND time, now that the borrowed route is known: this leg
+        # cannot resolve its route before deciding whether there is a session
+        # to borrow at all, and the containment question is a property of the
+        # route. The pause/budget half is idempotent, so re-asking costs
+        # nothing and keeps ONE gate rather than a second, weaker one.
+        ok, _reason = effects_dispatch.admissible(ctx, "self-review", route_def)
+        if not ok:
+            return []  # admission refused; task stays SELF_REVIEWING, retried next pass
         attempt_id = new_id("att")
         attempt = Attempt(
             attempt_id=attempt_id, role=Role.SELF_REVIEW,
@@ -259,6 +270,7 @@ class AttemptEffector:
             cwd=worktree, log_path=str(attempt_dir / "attempt.log"),
             receipt_path=str(attempt_dir / "receipt.json"),
             attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            repo_root=str(cfg.root),
             leases=effects_dispatch.lease_specs(
                 cfg, effects_dispatch.frontmatter_for(cfg, tsf)),
             result_kind=results.ResultKind.SELF_REVIEW.value,
