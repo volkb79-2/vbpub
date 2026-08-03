@@ -986,17 +986,23 @@ class Daemon:
                 # _build_input, watchdog).
                 try:
                     appended.extend(self._execute(project, cfg, states, action))
-                except Exception as action_exc:
+                except Exception as action_exc:  # census: cleanup/containment (CR-02b)
                     detail = f"action {type(action).__name__}: {repr(action_exc)[:400]}"
                     try:
                         ev = storage.append_and_apply(
                             project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
                             type=EventType.TICK_ERROR, payload={"error": detail})
+                        # Reporting a failure must never itself become one: the
+                        # remaining actions are independent of this one, and a
+                        # dead notification transport is not a reason to abandon
+                        # them. Both handlers are containment, not authority --
+                        # neither can turn a refusal into a permission, because
+                        # the effect has already failed.
                         try:
                             notify.notify_event(cfg, {}, ev)
-                        except Exception:
+                        except Exception:  # census: cleanup/containment (CR-02b)
                             pass
-                    except Exception:
+                    except Exception:  # census: cleanup/containment (CR-02b)
                         pass
             # GA4 2026-07-25 (module contract item 16): drain any completed
             # background gate-verify results ONCE PER PASS -- the sole place
@@ -1020,7 +1026,13 @@ class Daemon:
             if appended:
                 render.render_after_event(self.registry)
             return len(actions)
-        except Exception as exc:
+        except Exception as exc:  # census: process-boundary translation (CR-02b)
+            # The pass-level net. It reports and returns 0 -- it never lets a
+            # partially-applied pass look like a completed one. Distinct from
+            # the fail-closed SNAPSHOT_UNAVAILABLE return above: that one names
+            # WHICH authoritative source was missing, this one only knows that
+            # something outside the fan-in raised, which is why CR-16 watches
+            # TICK_ERROR streaks rather than treating one as actionable.
             detail = repr(exc)[:500]
             try:
                 ev = storage.append_and_apply(
@@ -1030,9 +1042,9 @@ class Daemon:
                 try:
                     cfg2 = config.ProjectConfig.load(self.registry[project])
                     notify.notify_event(cfg2, {}, ev)
-                except Exception:
+                except Exception:  # census: cleanup/containment (CR-02b)
                     pass
-            except Exception:
+            except Exception:  # census: cleanup/containment (CR-02b)
                 pass
             return 0
         finally:
@@ -1223,12 +1235,11 @@ class Daemon:
                 # P18: additional actionable push to the feedback channel,
                 # in ADDITION to the normal notifications-channel push
                 # notify.notify_event already sent above via _append_ev.
-                # CR-02b census: advisory-degradation -- a feedback-channel
-                # push that fails must not undo the durable DECISION_OPENED
-                # that has already been appended.
+                # A feedback-channel push that fails must not undo the durable
+                # DECISION_OPENED that has already been appended.
                 try:
                     decision_chat.notify_decision_opened(cfg, decision_id)
-                except Exception as exc:
+                except Exception as exc:  # census: advisory-degradation (CR-02b)
                     push_failures.append(f"{decision_id}:{type(exc).__name__}")
         if push_failures:
             # ONE aggregate descriptor: descriptor names are unique per audit,

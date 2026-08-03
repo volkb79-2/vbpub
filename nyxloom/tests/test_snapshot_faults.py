@@ -972,3 +972,108 @@ def test_a_crashing_watchdog_removes_a_safety_net_without_closing_the_gate(
     assert executed >= 1, "a detector crash suppressed the planned action"
     assert launches, "the dispatch the positive control proves must still happen"
     assert EventType.SNAPSHOT_UNAVAILABLE not in _types()
+
+
+# --------------------------------------------------------------------------
+# CR-02b: reporting a failure must never itself become one.
+#
+# The handlers below are the pass's containment net: they run where the
+# effect they guard has ALREADY failed. Each was classified by CR-02b's
+# census, and a census tag on an untested handler is a claim nobody checked
+# -- so each one is driven here.
+
+
+def _fail_execute(mp) -> None:
+    """Make the one planned action raise, without touching the fan-in.
+
+    Injected at `Daemon._execute` because that is the boundary the per-action
+    isolation handler wraps; a fault inside the planner would be caught by the
+    pass-level net instead and prove nothing about this one."""
+    mp.setattr(daemon.Daemon, "_execute", lambda *a, **k: _raiser())
+
+
+def test_an_action_failure_is_contained_and_the_pass_survives_a_dead_transport(
+        tmp_state, fault_project, launches, fault_mp):
+    """Per-action isolation, with the notification channel also broken.
+
+    One action raising must not abort the pass -- the remaining actions are
+    independent of it -- and the TICK_ERROR that records it must still land
+    even though notifying about it fails. Containment, not authority: the
+    effect already failed, so neither handler can turn a refusal into a
+    permission."""
+    _seed_queued("demo")
+    _fail_execute(fault_mp)
+    fault_mp.setattr(notify, "notify_event", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    assert d.run_pass("demo") == 1, "the pass reported the action it planned"
+    fault_mp.undo()
+
+    assert launches == []
+    errors = [e for e in _events() if e.type is EventType.TICK_ERROR]
+    assert len(errors) == 1, "the contained failure was not recorded"
+    assert "_Boom" in errors[0].payload["error"]
+    assert EventType.SNAPSHOT_UNAVAILABLE not in _types(), (
+        "an action failure was misreported as an unavailable snapshot")
+
+
+def test_an_action_failure_that_cannot_even_be_recorded_still_does_not_escape(
+        tmp_state, fault_project, launches, fault_mp):
+    """The store is the thing that is broken, so there is nowhere left to
+    write the TICK_ERROR. What must NOT happen is the append error escaping
+    the action loop: it would abort every remaining action in the pass on
+    behalf of a failure that had already been contained."""
+    _seed_queued("demo")
+    _fail_execute(fault_mp)
+    fault_mp.setattr(storage, "append_and_apply", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    assert d.run_pass("demo") == 1
+    fault_mp.undo()
+
+    assert launches == []
+    assert EventType.TICK_ERROR not in _types(), "the store was supposed to be down"
+
+
+def test_a_pass_level_fault_is_reported_even_when_the_transport_is_dead(
+        tmp_state, fault_project, launches, fault_mp):
+    """The pass-level net, distinct from the fail-closed return above.
+
+    SNAPSHOT_UNAVAILABLE names WHICH authoritative source was missing;
+    TICK_ERROR only knows that something outside the fan-in raised, which is
+    why CR-16 watches its streaks rather than treating one as actionable. A
+    dead notification channel must not stop the record being written."""
+    _seed_queued("demo")
+    fault_mp.setattr(daemon.reconcile, "plan_project", _raiser)
+    fault_mp.setattr(notify, "notify_event", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    assert d.run_pass("demo") == 0
+    fault_mp.undo()
+
+    assert launches == []
+    errors = [e for e in _events() if e.type is EventType.TICK_ERROR]
+    assert len(errors) == 1
+    assert "_Boom" in errors[0].payload["error"]
+    assert EventType.SNAPSHOT_UNAVAILABLE not in _types(), (
+        "a planner fault was misreported as an unavailable snapshot -- the two "
+        "call for different operator responses")
+
+
+def test_a_pass_level_fault_with_no_store_left_returns_zero_rather_than_raising(
+        tmp_state, fault_project, launches, fault_mp):
+    """The last containment layer. If this raised, `run_pass`'s caller (the
+    reconcile loop) would see an exception from a method whose whole contract
+    is to return a count -- and the loop would take the project down with
+    it rather than retrying on the next tick."""
+    _seed_queued("demo")
+    fault_mp.setattr(daemon.reconcile, "plan_project", _raiser)
+    fault_mp.setattr(storage, "append_and_apply", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    assert d.run_pass("demo") == 0
+    fault_mp.undo()
+
+    assert launches == []
+    for banned in IRREVERSIBLE:
+        assert banned not in _types()
