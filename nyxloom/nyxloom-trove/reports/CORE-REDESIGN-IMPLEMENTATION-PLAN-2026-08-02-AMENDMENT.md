@@ -21,7 +21,7 @@ Last updated: 2026-08-03
 | Program preparation | in progress | `e9bf702f` adds a package-scoped exception to the obsolete frozen-file list; it does not generally unfreeze core files. |
 | CR-00 | done | Sonnet implementation `4c995686`; independent Opus review-and-fix `8bdf283f`; authoritative `tester-unified` parallel suite completed at 100% with exit 0 and the coverage gate accepted 0 changed executable production lines (the package changes tests/docs only); merged to `main` as `5a9d441d`. |
 | CR-15 | done | Opus implementation `b0bc7dfb`; independent Opus security review-and-fix `3aa1ea21` (closed the ntfy feedback mutation ingress and the credential-store/HTTP-framing races); coverage-rejection repair `ef6e1bc7`. The authoritative gate rejected the first attempt at 96.7% changed-line coverage (3 lines behind `pragma: no cover`, 12 unexecuted); both classes were answered by deleting genuinely unreachable code and testing the real failure modes, never by widening the gate. Final `tester-unified` run on `ef6e1bc7`: `diff-coverage OK: 360/360 changed executable lines covered (100.0% >= 100.0% floor)`, `GATE_EXIT=0`. Merged to `main` as `7afc897e`. |
-| CR-01 | reviewing | Sonnet implementation `6295095e` (product-truth fact registry, archive lifecycle model, CFG4/L7/ARC1 lint rules, carve-context archive exclusion). Independent Opus review in progress; awaiting rebase onto accepted CR-15 and the authoritative gate. |
+| CR-01 | done | Sonnet implementation (`6295095e`, rebased as `b9f98696`); independent Opus review-and-fix `03fcf0a5` (replaced a tautological interpreter-discrimination test that could not fail) and `a8953911`. The authoritative gate rejected the package at 178/190 changed executable lines (93.7%); every uncovered line was the unavailable-source half of a fact reader, unreachable from the real repo and therefore untested while the registry looked covered. Those oracles were written rather than excluded. Final `tester-unified` run on `a8953911`: `diff-coverage OK: 190/190 changed executable lines covered (100.0% >= 100.0% floor)`, `GATE_EXIT=0`. Merged to `main` as `36f24685`. |
 | CR-02a | implementing | Opus implementation in `.worktrees/nyxloom-cr02` (typed snapshot descriptors, authoritative fan-in, fault matrix). Focused snapshot/fault/characterization suites green; awaiting whole-suite evidence, independent review and the authoritative gate. CR-02b (advisory census + AST allow-list oracle) remains a separate package. |
 | CR-03 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
 
@@ -34,6 +34,20 @@ Program operating decisions:
 - Free or otherwise untrusted routes remain disabled until CR-13a is gated.
 - Implementation agents do not run the long gate. The controller runs it from
   each committed package branch, and no package merges on cockpit-only evidence.
+- **A package branch is REBASED onto accepted `main`, never merged into, before
+  the gate runs.** `coverage_gate` resolves its base by HEAD's parent count: a
+  normal tip is diffed against `merge-base(main, HEAD)` — the package's own
+  delta — but a MERGE commit is diffed against its FIRST parent, which for
+  `git merge main` inside a package branch is the package tip, making the
+  measured delta *what `main` brought in*. That is not a hypothetical: CR-01's
+  first gate run reported `360/360 (100.0%)` and `GATE_EXIT=0` while measuring
+  CR-15's 360 lines, and CR-01's own 190 lines were unmeasured. Rebased, the
+  same tree failed at 178/190. Two independent checks caught it — the count was
+  byte-identical to the previously accepted package's, and an out-of-band
+  recount of the branch's changed executable lines disagreed with the gate — so
+  the controller verifies the reported denominator against the package's own
+  diff before accepting any green. Both are cheap; a package merged on the
+  previous package's evidence is not.
 - Reviewers may improve and commit the implementation as they see fit while
   preserving the package contract; review is not limited to comments.
 
