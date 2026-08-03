@@ -124,7 +124,7 @@ private *afterwards* is too late; also measured, the copy has already gone.
 tools/gate.sh . unit      → gofmt, build, vet, all oracles green
 tools/gate.sh . e2e       → 22 privileged oracles green, 3 consecutive clean runs
 tools/canary-run.sh       → 32 canaries rejected, 0 survived
-tools/gate.sh . coverage  → see below
+tools/gate.sh . coverage  → 302/344 changed lines (87.8% >= 75.0%)
 nyxloom lint              → clean
 ```
 
