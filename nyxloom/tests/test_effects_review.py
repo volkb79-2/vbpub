@@ -319,7 +319,177 @@ def _routes():
     return Routes(
         revision="test-rev",
         tiers={"frontier-review": ["review-route"]},
+        # CR-13a review: `trust` is REQUIRED, not defaulted -- a local fake
+        # script is the operator's own. Without it this route requires
+        # containment, `launch_review`'s admission gate refuses (no image is
+        # configured in a test environment), no spec is ever built, and the
+        # wave-lease oracle below fails for a reason that has nothing to do
+        # with leases. CR-13a's own fixture-posture pass missed this one.
+        routes={"review-route": RouteDef(route_id="review-route", cli="fake",
+                                         model="review-model",
+                                         trust="operator",
+                                         role_default="review-independent")},
+    )
+
+
+class TestAReviewWithNoRouteRefusesRatherThanCrashing:
+    """CR-13a review: the role-indexed twin of the vanished-route defect.
+
+    Both review legs resolved their route with `for_role(...)[0]` and no
+    guard, so a deployment with no review-independent route raised IndexError
+    -- which run_pass's outer net turns into a TICK_ERROR that ends the whole
+    pass. Same class as the dispatch KeyError, same fix: refuse the launch and
+    let every other task in the pass proceed.
+
+    `effects_carve` already had this discipline and said why ("routes.toml
+    could change between planning and execution within the same pass. Never
+    mint a synthetic task / worktree we cannot actually dispatch into"); the
+    review legs did not inherit it.
+    """
+
+    def _no_review_routes(self):
+        from nyxloom.config import Routes
+        return Routes(revision="test-rev", tiers={}, routes={})
+
+    def test_launch_review_refuses_when_no_route_serves_the_role(
+            self, tmp_state, sample_project, monkeypatch):
+        from nyxloom import wrapper
+        monkeypatch.setattr(effects_review.config.Routes, "load",
+                            classmethod(lambda cls: self._no_review_routes()))
+        launched: list = []
+        monkeypatch.setattr(wrapper, "launch_detached",
+                            lambda spec: (launched.append(spec), 4242)[1])
+
+        effector = effects_review.ReviewEffector(effects.EffectPorts.system())
+        states = {"t-a": TaskStateFile(schema_version=storage.SCHEMA_VERSION,
+                                       task_id="t-a", project="demo",
+                                       state=TaskState.AWAITING_REVIEW,
+                                       since=utc_now())}
+        ctx = effects.EffectContext(project="demo", cfg=sample_project,
+                                    states=states,
+                                    ports=effects.EffectPorts.system())
+        try:
+            events = effector.launch_review(
+                ctx, reconcile.LaunchReview(wave_id="w1", task_ids=["t-a"]))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an unroutable review raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert launched == [], "nothing may launch without a resolved route"
+        assert states["t-a"].state is TaskState.AWAITING_REVIEW, (
+            "a refused review must leave the task reviewable next pass")
+
+
+def _uncontainable_review_routes():
+    """A `review-independent` route that resolves but cannot be contained --
+    no `trust = "operator"` declaration, so containment.requires_containment
+    is True for it. Paired with NYXLOOM_CONTAINMENT_IMAGE left unset, this
+    makes `admissible`'s containment half refuse deterministically without
+    ever asking docker (see test_effects_dispatch.py's own
+    TestAdmissionRefusesAnUncontainableRoute, which established the
+    technique)."""
+    from nyxloom.config import RouteDef, Routes
+    return Routes(
+        revision="test-rev",
+        tiers={"frontier-review": ["review-route"]},
         routes={"review-route": RouteDef(route_id="review-route", cli="fake",
                                          model="review-model",
                                          role_default="review-independent")},
     )
+
+
+class TestAGateDiagnosisRouteRefusesRatherThanCrashing:
+    """CR-13a review: `launch_gate_diagnosis` resolves its route with
+    `effects_dispatch.route_for_role` (never a bare `for_role(...)[0]`) and
+    re-asks admission once that route is known -- the SAME two-part
+    discipline `TestAReviewWithNoRouteRefusesRatherThanCrashing` covers for
+    `launch_review` above. No prior test drove `launch_gate_diagnosis`
+    itself far enough to reach either refusal.
+    """
+
+    def test_refuses_when_no_route_serves_the_review_independent_role(
+            self, tmp_state, sample_project):
+        """sample_project's own routes.toml (conftest.SAMPLE_ROUTES_TOML)
+        declares no review-independent role/tier, so `route_for_role`
+        returns None -- the role-indexed twin of the vanished route-id case,
+        for this leg."""
+        effector = effects_review.ReviewEffector(effects.EffectPorts.system())
+        states = {"t1": TaskStateFile(schema_version=storage.SCHEMA_VERSION,
+                                      task_id="t1", project="demo",
+                                      state=TaskState.REVIEW_REJECTED,
+                                      since=utc_now())}
+        ctx = effects.EffectContext(project="demo", cfg=sample_project,
+                                    states=states,
+                                    ports=effects.EffectPorts.system())
+
+        try:
+            events = effector.launch_gate_diagnosis(
+                ctx, reconcile.LaunchGateDiagnosis(task_id="t1"))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an unroutable gate diagnosis raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert states["t1"].state is TaskState.REVIEW_REJECTED, (
+            "a refused diagnosis must leave the task retried next pass")
+
+    def test_refuses_when_the_resolved_route_cannot_be_contained(
+            self, tmp_state, sample_project, monkeypatch):
+        """The SECOND admission check -- asked again once the role-resolved
+        route is known, since containment is a property of the route and
+        cannot be answered before `route_for_role` resolves it."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        monkeypatch.setattr(effects_review.config.Routes, "load",
+                            classmethod(lambda cls: _uncontainable_review_routes()))
+        effector = effects_review.ReviewEffector(effects.EffectPorts.system())
+        states = {"t1": TaskStateFile(schema_version=storage.SCHEMA_VERSION,
+                                      task_id="t1", project="demo",
+                                      state=TaskState.REVIEW_REJECTED,
+                                      since=utc_now())}
+        ctx = effects.EffectContext(project="demo", cfg=sample_project,
+                                    states=states,
+                                    ports=effects.EffectPorts.system())
+
+        try:
+            events = effector.launch_gate_diagnosis(
+                ctx, reconcile.LaunchGateDiagnosis(task_id="t1"))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an uncontainable route raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert states["t1"].state is TaskState.REVIEW_REJECTED
+
+
+class TestLaunchReviewRefusesWhenItsResolvedRouteCannotBeContained:
+    """CR-13a review: `launch_review`'s OWN second admission check --
+    distinct from `TestAReviewWithNoRouteRefusesRatherThanCrashing` above,
+    which covers the FIRST refusal (route_for_role returns None). This one
+    is only reachable once a REAL route has resolved."""
+
+    def test_launch_review_refuses_when_the_resolved_route_cannot_be_contained(
+            self, tmp_state, sample_project, monkeypatch):
+        from nyxloom import wrapper
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        monkeypatch.setattr(effects_review.config.Routes, "load",
+                            classmethod(lambda cls: _uncontainable_review_routes()))
+        launched: list = []
+        monkeypatch.setattr(wrapper, "launch_detached",
+                            lambda spec: (launched.append(spec), 4242)[1])
+
+        effector = effects_review.ReviewEffector(effects.EffectPorts.system())
+        states = {"t-a": TaskStateFile(schema_version=storage.SCHEMA_VERSION,
+                                       task_id="t-a", project="demo",
+                                       state=TaskState.AWAITING_REVIEW,
+                                       since=utc_now())}
+        ctx = effects.EffectContext(project="demo", cfg=sample_project,
+                                    states=states,
+                                    ports=effects.EffectPorts.system())
+        try:
+            events = effector.launch_review(
+                ctx, reconcile.LaunchReview(wave_id="w1", task_ids=["t-a"]))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an uncontainable review route raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert launched == [], "nothing may launch without contained admission"
+        assert states["t-a"].state is TaskState.AWAITING_REVIEW, (
+            "a refused review must leave the task reviewable next pass")

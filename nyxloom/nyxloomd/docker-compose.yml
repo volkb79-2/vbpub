@@ -90,8 +90,32 @@ services:
                                         # to .pre-sqlite. Reversible: comment out + restore
                                         # events.jsonl from .pre-sqlite (backups also at
                                         # ~/.local/state/nyxloom-backups/).
-      NYXLOOM_HTTP_BIND: "0.0.0.0"   # P38: safe here -- a private ciu bridge
-                                      # network, never host-net
+      NYXLOOM_HTTP_BIND: "0.0.0.0"   # P38: a private ciu bridge network, never
+                                      # host-net, and no published host port.
+                                      # What that does and does not buy, stated
+                                      # so it stays testable (CR-13a): any
+                                      # container ON nyxloomd-net can reach
+                                      # 8942; nothing off it can, because
+                                      # docker isolates user-defined bridges.
+                                      # Until 2026-08-03 dispatched agents were
+                                      # children of THIS container and so were
+                                      # on this network -- they are now in
+                                      # per-use containers on a different one
+                                      # (tests/test_containment.py proves the
+                                      # refusal against a real listener). GETs
+                                      # remain unauthenticated by design;
+                                      # mutations require CR-15's credential.
+    # CR-13a: the image untrusted agent CLIs run in, and the daemon-path ->
+    # host-path mapping the host docker daemon needs for their bind mounts
+    # (docker-out-of-docker: this container's /workspaces/vbpub is the host's
+    # /home/vb/volkb79-2/vbpub, and passing the former would silently mount an
+    # empty directory). Both are UNSET here on purpose: no agent image has
+    # been built yet, so every untrusted/free route refuses to launch, which
+    # is the intended posture until one exists. Setting NYXLOOM_CONTAINMENT_
+    # IMAGE without a matching HOST_MAP does not weaken that -- the mapping is
+    # checked before docker is asked.
+      # NYXLOOM_CONTAINMENT_IMAGE: "ghcr.io/volkb79-2/nyxloom-agent:0.0.0-dev"
+      # NYXLOOM_CONTAINMENT_HOST_MAP: "/workspaces/vbpub=/home/vb/volkb79-2/vbpub,/workspaces/dstdns=/home/vb/volkb79-2/dstdns,/workspaces/netcup-api-filter=/home/vb/volkb79-2/netcup-api-filter"
     # tini (PID 1, via init: true above) supervises this shell, which runs
     # supervise.sh -- a SUPERVISOR LOOP for the daemon, not the daemon itself
     # (no `exec`), so bash stays the daemon's parent and respawns it after each

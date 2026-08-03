@@ -125,7 +125,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import results
+from . import containment, results
 from .config import RouteDef
 from .log import get_logger
 from .types import Basis, Role, Usage
@@ -492,10 +492,20 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     if "incremental-write" in route.prompt_hints:
         prompt += "\nFor large writes, batch in ~80-line chunks."
 
-    # Free-endpoint confidentiality guard: a free OpenRouter model is served by
-    # providers that may log/train on prompts (that is the price of "free"), so
-    # it must never receive secrets. Free routes carry the "free-endpoint" hint
-    # in routes.host.toml; this injects the operator-mandated no-secrets notice.
+    # Free-endpoint confidentiality NOTICE: a free OpenRouter model is served
+    # by providers that may log/train on prompts (that is the price of
+    # "free"), so it must never receive secrets. Free routes carry the
+    # "free-endpoint" hint in routes.host.toml; this injects the
+    # operator-mandated no-secrets notice.
+    #
+    # CR-13a 2026-08-03: this is ADDRESSED TO THE MODEL and is not the guard;
+    # it was, before containment existed, and calling a sentence in a prompt a
+    # confidentiality guard is exactly the kind of untestable trust-boundary
+    # claim the standing rule forbids. What actually stops a free route from
+    # holding a secret is containment.child_env (it receives only what its
+    # route declares) and the per-use container around it. Keep the notice --
+    # an agent that knows not to paste credentials into a prompt is still
+    # better than one that does not -- but do not read it as enforcement.
     if "free-endpoint" in route.prompt_hints:
         prompt += ("\nFor the free endpoint, never upload any confidential "
                    "information, personal data, credentials or secrets.")
@@ -915,8 +925,15 @@ def probe(route: RouteDef) -> tuple[bool, str]:
     # P05a (§5): a provider call -> DEBUG.
     log.debug("probe", route=route.route_id, cli=route.cli)
     try:
+        # CR-13a review: the SAME allowlist the dispatched leg gets. This runs
+        # the route's own binary, in the DAEMON's process, on every pass -- and
+        # it is not reached through the wrapper, so containment.child_env is
+        # not applied to it by the launch path. Without this it was the one
+        # place a route-declared argv still saw the daemon's whole environment
+        # after CR-13a deleted the denylist. It cannot be more restrictive than
+        # the real dispatch, which already runs on exactly this environment.
         result = subprocess.run(probe_argv, capture_output=True, text=True,
-                              timeout=60)
+                              timeout=60, env=containment.child_env(route))
         if result.returncode == 0:
             return (True, "ok")
         else:
@@ -997,8 +1014,16 @@ def capture_session(route: RouteDef, *, attempt_dir: Path, worktree: str,
         # Run session discovery command. P05a (§5): a provider call -> DEBUG.
         log.debug("session-discover", route=route.route_id, worktree=worktree)
         try:
+            # CR-13a review: the SAME allowlist the dispatched leg gets. The
+            # wrapper calls this five seconds after launching a CONTAINED leg,
+            # and it runs the route's own `session_discover` argv on the HOST,
+            # outside that container -- every generated free route declares one
+            # (free_models._render_route_block). Containment cannot reach this
+            # call, so the environment half is applied here directly rather
+            # than left inherited, which is what it was before this line.
             result = subprocess.run(route.session_discover, capture_output=True,
-                                  text=True, timeout=30)
+                                  text=True, timeout=30,
+                                  env=containment.child_env(route))
             if result.returncode != 0:
                 return None
 

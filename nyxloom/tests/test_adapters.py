@@ -717,13 +717,16 @@ def test_probe_named_builtin_one_token_ping(version_record_script, tmp_path, mon
         route_id="test",
         cli=str(version_record_script),
         model="fake-model",
-        probe="one-token-ping"
+        probe="one-token-ping",
+        # CR-13a review: declared, not inherited -- probe now runs on the
+        # allowlist. Also makes the argv assertion below unconditional; the
+        # `if record_file.exists()` guard it replaces meant this oracle
+        # quietly checked nothing whenever the shim failed to write.
+        secrets=["RECORD_FILE"],
     )
     ok, detail = adapters.probe(route)
     assert ok is True
-    if record_file.exists():
-        args = record_file.read_text().strip()
-        assert "--version" in args
+    assert "--version" in record_file.read_text().strip()
 
 
 def test_probe_named_builtin_session_limit_check(version_record_script, tmp_path, monkeypatch):
@@ -735,13 +738,36 @@ def test_probe_named_builtin_session_limit_check(version_record_script, tmp_path
         route_id="test",
         cli=str(version_record_script),
         model="fake-model",
-        probe="session-limit-check"
+        probe="session-limit-check",
+        secrets=["RECORD_FILE"],   # CR-13a review: see one-token-ping above
     )
     ok, detail = adapters.probe(route)
     assert ok is True
-    if record_file.exists():
-        args = record_file.read_text().strip()
-        assert "--version" in args
+    assert "--version" in record_file.read_text().strip()
+
+
+def test_probe_gets_only_the_env_its_route_declares(tmp_path, monkeypatch):
+    """CR-13a review. `probe` runs a route-declared argv in the DAEMON's own
+    process on every reconcile pass, and is not reached through the wrapper --
+    so containment never applied to it and it inherited everything. The route
+    is free/untrusted here: the class the package says must never hold the
+    daemon's credentials."""
+    monkeypatch.setenv("NTFY_TOKEN", "operator-notification-publisher")
+    out = tmp_path / "seen.txt"
+    monkeypatch.setenv("SEEN_FILE", str(out))
+
+    spy = tmp_path / "spy.sh"
+    spy.write_text('#!/bin/sh\nprintf "%s" "${NTFY_TOKEN-ABSENT}" > "$SEEN_FILE"\n')
+    spy.chmod(0o755)
+
+    route = RouteDef(route_id="free-1", cli="opencode", model="m:free",
+                     status="free", probe=[str(spy)], secrets=["SEEN_FILE"])
+    ok, _detail = adapters.probe(route)
+
+    assert ok is True, "the positive control failed; the rest proves nothing"
+    assert out.read_text() == "ABSENT", (
+        "the daemon's notification-publisher token reached a free route's "
+        "probe argv")
 
 
 # Oracle 6: capture_session
@@ -806,7 +832,13 @@ def test_capture_session_newest_jsonl_no_dir(tmp_path, monkeypatch):
 
 
 def test_capture_session_discover(tmp_path, monkeypatch, emit_script):
-    """Oracle 6: session_discover runs command, parses JSON, matches dir."""
+    """Oracle 6: session_discover runs command, parses JSON, matches dir.
+
+    CR-13a review: `EMIT_FILE` is DECLARED by the route rather than inherited.
+    This call runs on the host, outside any container, so containment cannot
+    reach it -- the allowlist is applied to it directly instead, and a test
+    shim needs a name in `secrets` for the same reason a real route does.
+    """
     json_output = json.dumps([
         {"id": "sess-1", "dir": "/tmp/wt", "title": "Session 1"},
         {"id": "sess-2", "dir": "/other/wt", "title": "Session 2"}
@@ -819,7 +851,8 @@ def test_capture_session_discover(tmp_path, monkeypatch, emit_script):
         route_id="test",
         cli="fake",
         model="fake-model",
-        session_discover=[str(emit_script)]
+        session_discover=[str(emit_script)],
+        secrets=["EMIT_FILE"],
     )
 
     result = adapters.capture_session(
@@ -844,7 +877,8 @@ def test_capture_session_discover_by_title(tmp_path, monkeypatch, emit_script):
         route_id="test",
         cli="fake",
         model="fake-model",
-        session_discover=[str(emit_script)]
+        session_discover=[str(emit_script)],
+        secrets=["EMIT_FILE"],
     )
 
     result = adapters.capture_session(
@@ -854,6 +888,38 @@ def test_capture_session_discover_by_title(tmp_path, monkeypatch, emit_script):
         launched_at=datetime.now(tz=timezone.utc)
     )
     assert result == "sess-1"
+
+
+def test_capture_session_discover_gets_only_the_env_its_route_declares(
+        tmp_path, monkeypatch, emit_script):
+    """CR-13a review. The wrapper calls this five seconds after launching a
+    CONTAINED leg, on the host, outside that container -- and every generated
+    free route declares a `session_discover`. Before this it inherited the
+    daemon's whole environment, which is precisely what CR-13a deleted the
+    denylist to stop. The undeclared name must be absent."""
+    emit_file = tmp_path / "emit.txt"
+    emit_file.write_text(json.dumps([{"id": "sess-1", "dir": "/tmp/wt"}]))
+    monkeypatch.setenv("EMIT_FILE", str(emit_file))
+    monkeypatch.setenv("NTFY_CMD_TOKEN", "operator-command-channel")
+
+    leak = tmp_path / "leak.txt"
+    spy = tmp_path / "spy.sh"
+    spy.write_text('#!/bin/sh\nprintf "%s" "${NTFY_CMD_TOKEN-ABSENT}" > "$LEAK_FILE"\n'
+                   'cat "$EMIT_FILE"\n')
+    spy.chmod(0o755)
+    monkeypatch.setenv("LEAK_FILE", str(leak))
+
+    route = RouteDef(route_id="test", cli="fake", model="fake-model",
+                     session_discover=[str(spy)],
+                     secrets=["EMIT_FILE", "LEAK_FILE"])
+    result = adapters.capture_session(
+        route, attempt_dir=tmp_path / "attempt", worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc))
+
+    assert result == "sess-1", "the positive control failed; the rest proves nothing"
+    assert leak.read_text() == "ABSENT", (
+        "an undeclared daemon secret reached a route-declared argv running "
+        "outside the container")
 
 
 # P17 2026-07-15: capture_session extracts session_id from a claude route's
@@ -2555,7 +2621,8 @@ def test_capture_session_discover_emits_debug(tmp_path, monkeypatch, emit_script
     log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
 
     route = RouteDef(route_id="discover-route", cli="fake", model="fake-model",
-                      session_discover=[str(emit_script)])
+                      session_discover=[str(emit_script)],
+                      secrets=["EMIT_FILE"])
     result = adapters.capture_session(
         route, attempt_dir=tmp_path / "attempt", worktree="/tmp/wt",
         launched_at=datetime.now(tz=timezone.utc),

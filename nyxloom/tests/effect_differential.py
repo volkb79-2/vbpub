@@ -494,6 +494,7 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 # A resume template, which `sample_project`'s routes omit: without one
 # `build_resume` raises and the resume and warm self-review scenarios would
 # record an exception rather than an event sequence.
@@ -505,6 +506,7 @@ model = "fake-review-model"
 role_default = "review-independent"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 """
 
 

@@ -34,13 +34,66 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from . import effects, frontmatter, paths
+from . import containment, effects, frontmatter, paths
 from .config import ProjectConfig
+from .log import get_logger
 from .types import Event, EventType, TaskStateFile
+
+log = get_logger("effects.dispatch")
 
 #: The launch kinds the admission gate distinguishes. A pause mode blocks
 #: some and not others, so the vocabulary is closed rather than free text.
 LAUNCH_KINDS = frozenset({"dispatch", "resume", "review", "carve", "self-review"})
+
+
+def route_by_id(routes_obj: Any, route_id: str, *, project: str,
+                kind: str) -> Any | None:
+    """The pinned route, or ``None`` -- a REFUSAL, never a ``KeyError``.
+
+    CR-13a review. The planner picks ``route_id`` out of the routes in ITS
+    snapshot; the effector then re-reads ``routes.toml`` FROM DISK and looks it
+    up. Any divergence between those two reads -- an operator editing the file
+    mid-pass, or the routes sync this package's own SYNC OBLIGATION instructs
+    them to perform -- makes the id absent. As a bare ``[]`` lookup that raised
+    ``KeyError``, which ``run_pass``'s outer net turns into a ``TICK_ERROR``
+    that kills the WHOLE pass for the project, not just this one launch.
+
+    A route id that no longer resolves is precisely the fail-closed case this
+    package exists for, so it refuses like every other one: the caller returns
+    no events, the task stays where it was and stays visible, and the next pass
+    re-plans against the routes that now exist. ERROR rather than WARNING for
+    the same reason ``containment-refused`` is -- it repeats every pass until a
+    human changes the deployment.
+
+    ``effects_carve``'s carve path already had this discipline ("routes.toml
+    could change between planning and execution within the same pass. Never
+    mint a synthetic task / worktree we cannot actually dispatch into"); this
+    is that rule, made reusable so the three attempt legs and the two review
+    legs cannot each get it subtly differently.
+    """
+    route = getattr(routes_obj, "routes", {}).get(route_id)
+    if route is None:
+        log.error("route-unknown", project=project, kind=kind,
+                  reason=f"route-unknown:{route_id}")
+    return route
+
+
+def route_for_role(routes_obj: Any, role: str, *, project: str,
+                   kind: str) -> Any | None:
+    """The first route serving ``role``, or ``None`` -- never an ``IndexError``.
+
+    The role-indexed twin of :func:`route_by_id`, for the legs that ask for a
+    role rather than naming a route. ``for_role(...)[0]`` on an empty list is
+    the same defect in a different shape: a deployment with no
+    review-independent route took the pass down instead of declining to launch
+    a review.
+    """
+    candidates = routes_obj.for_role(role)
+    if not candidates:
+        log.error("role-unroutable", project=project, kind=kind,
+                  reason=f"role-unroutable:{role}")
+        return None
+    return candidates[0]
 
 
 def pause_mode(files: Any, project: str) -> str:
@@ -82,7 +135,8 @@ def budget_remaining(cfg: ProjectConfig,
     return cfg.policy.max_cost - spent
 
 
-def admissible(ctx: effects.EffectContext, kind: str) -> tuple[bool, str]:
+def admissible(ctx: effects.EffectContext, kind: str,
+               route: Any = None) -> tuple[bool, str]:
     """May this launch happen right now? Reason string when not.
 
     Order matters. The snapshot verdict is checked FIRST, for the same reason
@@ -100,6 +154,21 @@ def admissible(ctx: effects.EffectContext, kind: str) -> tuple[bool, str]:
     already ran, so it drains). An exhausted budget blocks ALL kinds,
     including the review and resume legs the planner never gated, which are
     the most expensive to launch into a spent budget.
+
+    CONTAINMENT (CR-13a, D-R7) is checked LAST and only when a ``route`` is
+    given: it is the most expensive question (two calls to the docker daemon)
+    and the one most likely to be answered by a cheaper refusal above it. A
+    route that requires containment (see
+    ``containment.requires_containment`` -- everything but an explicitly
+    operator-trusted, non-free route) and cannot get it is refused HERE so
+    the daemon does not mint an attempt that can only fail. The wrapper
+    re-checks at the moment of launch regardless; the two are separated by a
+    process start, and an image pruned in between must stop the launch rather
+    than the previous check.
+
+    Passing no route is NOT "containment does not apply" -- it is a caller
+    that has not resolved its route yet, and the wrapper's own gate is what
+    covers it. There is no path on which a required containment is skipped.
     """
     audit = ctx.snapshot_audit
     if audit is not None and not audit.permits_effects:
@@ -112,6 +181,18 @@ def admissible(ctx: effects.EffectContext, kind: str) -> tuple[bool, str]:
     budget = budget_remaining(ctx.cfg, ctx.states)
     if budget is not None and budget <= 0:
         return (False, "budget-exhausted")
+    if route is not None and containment.requires_containment(route):
+        reason = containment.unavailable_reason(
+            route, repo_root=str(ctx.cfg.root), run=ctx.ports.processes.run)
+        if reason:
+            # The only refusal here logged at ERROR. Pause and budget are
+            # normal operation and heal by themselves; this one repeats
+            # every pass until a human changes the deployment, and the
+            # attempt it prevents is one that would have carried the reason
+            # in a receipt.
+            log.error("containment-refused", project=ctx.project, kind=kind,
+                      route=getattr(route, "route_id", "?"), reason=reason)
+            return (False, f"containment-unavailable:{reason}")
     return (True, "")
 
 

@@ -784,6 +784,12 @@ class CarverEffector:
                     {"reason": "carver-no-route"}, task_id=None))
             return events
         route_def = review_routes[0]
+        # (b2) re-ask admission now that the route is resolved (CR-13a):
+        # containment is a property of the route, so it cannot be asked in
+        # step (a) above.
+        ok, _reason = effects_dispatch.admissible(ctx, "carve", route_def)
+        if not ok:
+            return events
 
         # (c) mint a synthetic carver attempt + worktree (branch authority,
         # like the current carve) -- SAME _next_carve_seq counter as legacy
@@ -851,6 +857,7 @@ class CarverEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            repo_root=str(cfg.root),
             leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = self._ports.processes.launch_detached(spec)
@@ -895,6 +902,11 @@ class CarverEffector:
                 events.append(self._append_ev(
                     project, cfg, states, EventType.NEEDS_OPERATOR,
                     {"reason": "carver-no-route"}, task_id=None))
+            return events
+        # The generation's PINNED route -- the first point at which
+        # admission's containment half (CR-13a) can be asked.
+        ok, _reason = effects_dispatch.admissible(ctx, "carve", route_def)
+        if not ok:
             return events
 
         seq = self._next_carve_seq(project)
@@ -960,7 +972,7 @@ class CarverEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
-            route_def=asdict(route_def),
+            route_def=asdict(route_def), repo_root=str(cfg.root),
             leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = self._ports.processes.launch_detached(spec)

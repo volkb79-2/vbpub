@@ -138,8 +138,43 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 role_default = "review-independent"
 resume = ["fake", "--resume", "{session}", "{prompt}"]
+"""
+
+# CR-13a review: a route with NO `trust = "operator"` declaration, so
+# containment.requires_containment is True for it. With NYXLOOM_CONTAINMENT_
+# IMAGE unset, containment.plan_for raises "no-image-configured" -- a
+# deterministic refusal that never has to ask docker (see
+# test_effects_dispatch.py's TestAdmissionRefusesAnUncontainableRoute, which
+# established this technique). Used to reach the SECOND admission check in
+# _execute_carve_via_session_resume (route resolved by bare dict lookup, not
+# for_role) without a trusted route masking it.
+CARVER_ROUTES_TOML_UNTRUSTED = """\
+revision = "test-p3c-untrusted"
+
+[routes.untrusted-cli]
+cli = "fake"
+model = "fake-model"
+probe = ["true"]
+usage_source = "none"
+"""
+
+# Same idea, but role-indexed (role_default) -- for the LEGACY (feature-off)
+# fresh-carve path, which resolves its route via for_role, never a pinned id.
+UNTRUSTED_REVIEW_INDEPENDENT_ROUTES_TOML = """\
+revision = "test-legacy-untrusted"
+
+[tiers.flash-high]
+routes = ["untrusted-cli"]
+
+[routes.untrusted-cli]
+cli = "fake"
+model = "fake-model"
+probe = ["true"]
+usage_source = "none"
+role_default = "review-independent"
 """
 
 
@@ -396,6 +431,29 @@ def test_start_carver_session_refuses_when_paused(tmp_state, carver_project, pat
     assert patch_launch == []
 
 
+def test_start_carver_session_refuses_when_resolved_route_cannot_be_contained(
+        tmp_state, carver_project, patch_launch, monkeypatch):
+    """CR-13a review: the SECOND admission check in `start_session` -- asked
+    again once ``review_routes[0]`` is resolved, since containment is a
+    property of the route (step (b2) in the method's own comments). Distinct
+    from the pause refusal above, which is asked BEFORE any route is known
+    and so cannot see this half of admission at all."""
+    monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+    cfg = carver_project
+    paths.routes_path().write_text(UNTRUSTED_REVIEW_INDEPENDENT_ROUTES_TOML)
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+
+    try:
+        events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    except Exception as exc:                          # noqa: BLE001 -- the oracle
+        pytest.fail(f"an uncontainable route raised {exc!r} instead of refusing")
+
+    assert events == []
+    assert patch_launch == []
+    assert states == {}, "no synthetic task may be minted when containment refuses"
+
+
 # ==========================================================================
 # _execute_resume_carver_session -- launch half (plan §5.2)
 # ==========================================================================
@@ -602,6 +660,39 @@ def test_resume_carver_session_unresolvable_pinned_route_needs_operator(
     assert events[0].type is EventType.NEEDS_OPERATOR
     assert events[0].payload == {"reason": "carver-no-route"}
     assert patch_launch == []
+
+
+def test_resume_carver_session_refuses_when_resolved_route_cannot_be_contained(
+        tmp_state, carver_project, patch_launch, monkeypatch):
+    """CR-13a review: the SECOND admission check in `resume_session` --
+    asked again once the generation's PINNED route (a bare dict lookup by
+    id, never re-selected via for_role) is resolved, since containment is a
+    property of the route. The session is seeded directly at WARM with a
+    route pointing at an UNTRUSTED route -- ``_bootstrap_to_warm`` cannot be
+    reused here, since its route is declared ``trust = "operator"`` and
+    would never reach containment at all."""
+    monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+    cfg = carver_project
+    paths.routes_path().write_text(CARVER_ROUTES_TOML_UNTRUSTED)
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_STARTED,
+        payload={"generation": 1, "session_id": "S1",
+                 "route": {"route_id": "untrusted-cli"}, "spine_revisions": {}},
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+    action = reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+                                           source_ids=("d1",), generation=1)
+
+    try:
+        events = d._execute("demo", cfg, states, action)
+    except Exception as exc:                          # noqa: BLE001 -- the oracle
+        pytest.fail(f"an uncontainable route raised {exc!r} instead of refusing")
+
+    assert events == []
+    assert patch_launch == []
+    assert states == {}, "no synthetic task may be minted when containment refuses"
 
 
 def test_resume_carver_session_refuses_when_carve_already_in_flight(
@@ -1490,6 +1581,75 @@ def test_carve_dispatch_byte_identical_when_feature_off(
     assert "REQUIRED OUTPUT CONTRACT" in text
     assert "CARVE-" in text and ".md" in text  # legacy contract, not the P3c envelope
     assert "carve-proposal" not in text
+
+
+def test_legacy_carve_dispatch_refuses_when_resolved_route_cannot_be_contained(
+        tmp_state, sample_project, patch_launch, monkeypatch):
+    """CR-13a review: the legacy (feature-off) fresh-carve path's OWN
+    second admission check (effects_carve.py `_execute_carve_dispatch`,
+    ``route_def = review_routes[0]`` then ``admissible(ctx, "carve",
+    route_def)``) -- asked again once the role-resolved route is KNOWN,
+    since containment is a property of the route a carve selects for itself.
+
+    UNLIKE every other refusal site covered in this package, the synthetic
+    carve TASK is already minted (TASK_CREATED) by the time this admission
+    check runs -- worktree/branch creation and the packet are already
+    written -- so a refusal here does not return an empty events list; it
+    leaves a real ACTIVE task with NO attempt. Stated plainly rather than
+    asserted away: this is the one site where "launches nothing" holds (no
+    ATTEMPT_CREATED, nothing spawned) but "returns []" does not."""
+    monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+    cfg = sample_project
+    assert cfg.carve.session == "fresh"
+    paths.routes_path().write_text(UNTRUSTED_REVIEW_INDEPENDENT_ROUTES_TOML)
+    d = daemon.Daemon({"demo": cfg.root})
+    states: dict = {}
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+
+    try:
+        events = d._execute("demo", cfg, states, action)
+    except Exception as exc:                          # noqa: BLE001 -- the oracle
+        pytest.fail(f"an uncontainable route raised {exc!r} instead of refusing")
+
+    assert [e.type for e in events] == [EventType.TASK_CREATED]
+    assert patch_launch == [], "nothing may launch without contained admission"
+    task_id = events[0].task_id
+    assert states[task_id].state is TaskState.ACTIVE
+    assert states[task_id].attempts == []
+
+
+def test_normalize_branch_refuses_when_resolved_route_cannot_be_contained(
+        tmp_state, carver_project, patch_launch, monkeypatch):
+    """CR-13a review: `_execute_carve_via_session_resume`'s OWN second
+    admission check -- asked again once the session's PINNED route (bare
+    dict lookup, not for_role) is resolved, since containment is a property
+    of the route. `ctx` is threaded into this method specifically so this
+    call can be made at all (see the method's own docstring: without it, it
+    raised NameError and killed the whole pass). Unlike the legacy path's
+    equivalent refusal above, NOTHING is minted here yet when this check
+    runs -- the synthetic task/attempt/packet all come AFTER it -- so this
+    one returns a clean empty events list."""
+    monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+    cfg = carver_project
+    paths.routes_path().write_text(CARVER_ROUTES_TOML_UNTRUSTED)
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.CARVER_SESSION_STARTED,
+        payload={"generation": 1, "session_id": "S1",
+                 "route": {"route_id": "untrusted-cli"}, "spine_revisions": {}},
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+    action = reconcile.CarveDispatch(project="demo", kind="headroom")
+
+    try:
+        events = d._execute("demo", cfg, states, action)
+    except Exception as exc:                          # noqa: BLE001 -- the oracle
+        pytest.fail(f"an uncontainable route raised {exc!r} instead of refusing")
+
+    assert events == []
+    assert patch_launch == []
+    assert states == {}, "no synthetic task may be minted when containment refuses"
 
 
 def test_normalize_branch_unresolvable_pinned_route_needs_operator(

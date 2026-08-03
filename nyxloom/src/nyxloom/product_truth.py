@@ -110,6 +110,38 @@ def actual_state_backend(root: Path) -> str | None:
         encoding="utf-8") else "sqlite"
 
 
+def actual_containment(root: Path) -> str | None:
+    """How a dispatched agent CLI is actually isolated, per the CODE.
+
+    The amendment names "containment requirement" as one of the machine-known
+    facts the standing rule covers, and CR-13a is precisely the package that
+    falsifies the old claim: `secrets.env.example` said "today the daemon
+    fork+execs them, so they inherit this env", which stopped being true the
+    moment the wrapper stopped handing out `os.environ`.
+
+    Read from ``wrapper.py``, the module that actually spawns the child, and
+    in the order the postures superseded each other -- the same "the literal
+    token appearing anywhere in that module counts" rule
+    :func:`actual_state_backend` uses, for the same reason: a reader who finds
+    the older token there has to go and check.
+
+    * ``env-denylist`` -- the RISK-006 stopgap: the whole daemon environment
+      minus three names.
+    * ``per-use-container`` -- CR-13a: a container per leg, and an
+      environment built from what the route declares.
+    * ``inherited`` -- neither, i.e. the original unguarded posture.
+    """
+    module = root / "src" / "nyxloom" / "wrapper.py"
+    if not module.exists():
+        return None
+    text = module.read_text(encoding="utf-8")
+    if "DAEMON_ONLY_ENV" in text:
+        return "env-denylist"
+    if "containment.requires_containment" in text or "contained_launch" in text:
+        return "per-use-container"
+    return "inherited"
+
+
 def actual_daemon_mode(root: Path) -> str | None:
     service = _compose_service(root)
     if not service:
@@ -193,6 +225,12 @@ FACT_REGISTRY: tuple[ProductFact, ...] = (
         doc_relpath="README.md",
         description="nyxloom-trove/nyxloom.toml [policy].merge_mode",
         actual=actual_merge_mode,
+    ),
+    ProductFact(
+        key="containment",
+        doc_relpath="README.md",
+        description="how a dispatched agent CLI is isolated (src/nyxloom/wrapper.py)",
+        actual=actual_containment,
     ),
     ProductFact(
         key="trove_path",

@@ -74,6 +74,7 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 """
 
 # One VALID body per mutating path. Valid on purpose: a refusal must be

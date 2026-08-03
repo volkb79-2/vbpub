@@ -23,8 +23,9 @@ provenance, typed stop conditions, a zero-AI dashboard. Why:
 <!-- product-truth:state_backend=sqlite -->
 <!-- product-truth:daemon_mode=resident -->
 <!-- product-truth:merge_mode=guarded-automatic -->
+<!-- product-truth:containment=per-use-container -->
 
-These three facts are asserted against the real running configuration by
+These four facts are asserted against the real running configuration by
 `tests/test_product_truth.py` on every gate run (CR-01, DR-04) — if either
 side drifts, that test fails until the docs and the config agree again:
 
@@ -43,6 +44,17 @@ side drifts, that test fails until the docs and the config agree again:
   project is paused (shipped, P48). The "no automated merge" framing under
   Non-goals below is the ORIGINAL pre-implementation stance and no longer
   describes the shipped system.
+- **Containment: per-use container.** An agent CLI is no longer a direct
+  child of the daemon inheriting its environment, its mounts and its docker
+  socket (CR-13a, D-R7). A route declares its posture in `routes.toml`:
+  `trust = "operator"` runs uncontained, anything else — including an absent
+  declaration, and unconditionally including every free endpoint — runs in a
+  per-use container with no docker socket, no operator home, only the
+  declared repository mounted, a network that cannot reach the control plane,
+  and ONLY the env vars the route's `secrets` names. Containment that cannot
+  be established REFUSES THE LAUNCH; there is no uncontained fallback.
+  Per-task resource and permission policy (CPU, memory, wall-time, mount and
+  network policy as selector constraints) is CR-13b and is NOT shipped.
 
 ## Deciding log
 

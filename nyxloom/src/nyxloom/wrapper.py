@@ -25,9 +25,21 @@ INTERFACE CONTRACT (frozen):
        On success append LEASE_ACQUIRED per lease (task-scoped).
     3. Append ATTEMPT_STARTED: attempt.state=RUNNING, pid/pgid of the CLI
        child (see 4), log_path set.
-    4. Spawn the CLI: subprocess.Popen(spec.argv, cwd=spec.cwd,
-       env=child_env(spec.env_overrides) -- the daemon environment MINUS
-       DAEMON_ONLY_ENV, plus this attempt's overrides (2026-08-02, RISK-006),
+    4. Establish containment (CR-13a, D-R7), then spawn. If the pinned route
+       requires containment (containment.requires_containment -- true unless
+       the route declares trust="operator", and unconditionally true for a
+       free endpoint), build a ContainmentPlan from spec.repo_root/spec.cwd
+       and wrap spec.argv in `docker run`. ANY failure to establish it --
+       no image configured, no repository declared, an unmapped host path, a
+       docker daemon that does not answer, an image that was never built --
+       writes receipt {result:'error', exit_code:76, blocked_reason:
+       'containment-unavailable:<why>'}, appends ATTEMPT_FAILED, logs ERROR
+       and exits 76 WITHOUT spawning anything. There is no uncontained
+       fallback; a downgrade is the one outcome containment cannot have.
+       Then subprocess.Popen(argv, cwd=spec.cwd,
+       env=containment.child_env(route, overrides) -- an ALLOWLIST of
+       BASE_ENV_ALLOW plus the route's DECLARED secrets plus this attempt's
+       overrides, never the daemon's environment,
        stdout=log fd (append, line-buffered), stderr=STDOUT,
        start_new_session=True). Write child pid to <attempt_dir>/child.pid.
     5. After launch, try adapters.capture_session(route via spec.route_def
@@ -40,7 +52,11 @@ INTERFACE CONTRACT (frozen):
        on both first dispatch and resume, where the log path differs.)
     6. Install SIGTERM/SIGINT handler: forward SIGTERM to the child's
        process group, wait up to spec.term_grace_seconds (default 30), then
-       SIGKILL the group; classify as interrupted.
+       SIGKILL the group; classify as interrupted. For a CONTAINED leg the
+       child is the docker CLIENT, which forwards SIGTERM to the container
+       but whose death does NOT stop it -- so the SIGKILL path also issues
+       `docker rm -f` on the container name, or the kill would leave a live
+       unsupervised agent behind.
     7. Wait for exit. Classification precedence:
        interrupted-by-signal -> receipt {result 'error', exit_code, blocked_
        reason 'interrupted'} + ATTEMPT_INTERRUPTED (state INTERRUPTED);
@@ -101,7 +117,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import adapters, leases, paths, results, storage
+from . import adapters, containment, leases, paths, results, storage
 from .config import RouteDef
 from .log import get_logger
 from .types import (
@@ -113,36 +129,27 @@ log = get_logger("wrapper")  # P05a (docs/plan-logging.md §5)
 
 SESSION_CAPTURE_DELAY = 5.0
 
-# 2026-08-02 (review amendment RISK-006): daemon-only secrets that must NEVER
-# reach a dispatched agent CLI. The wrapper hands the child `os.environ.copy()`
-# -- i.e. the whole daemon environment -- so without this filter every route,
-# INCLUDING the opt-in free/untrusted OpenRouter tier, inherited them.
-#
-#   AA_API_KEY      benchmark ingest, consumed by the daemon itself.
-#                   nyxloomd/secrets.env.example already documents it as
-#                   "NOT forwarded to any CLI" -- the code contradicted the doc.
-#   NTFY_TOKEN      the operator-notification PUBLISHER identity. An agent
-#                   holding it can forge operator-facing notifications.
-#   NTFY_CMD_TOKEN  the feedback/command-channel reader identity, the transport
-#                   the operator answers decisions on -- the sharpest edge: the
-#                   north-star rule is that a human owns direction, and this
-#                   token is part of how that answer travels.
-#
-# A route that genuinely needs one of these can still receive it explicitly via
-# `spec.env_overrides`, which is applied AFTER the strip and is set per dispatch.
-# This is a stopgap for the blast radius, not containment: an agent still shares
-# the daemon's namespace, mounts and docker socket. Real least-privilege is the
-# per-use CLI-container package (D-R7); see the 2026-08-02 amendment reports.
-DAEMON_ONLY_ENV = ("AA_API_KEY", "NTFY_TOKEN", "NTFY_CMD_TOKEN")
+#: Exit code for a leg that never started because containment could not be
+#: established. Distinct from 75 (lease-lost-race) so an operator reading a
+#: receipt can tell "someone else held the lease" -- normal, self-healing --
+#: from "this deployment cannot contain an agent" -- which needs a human and
+#: will not heal on its own.
+CONTAINMENT_EXIT = 76
 
-
-def child_env(env_overrides: dict[str, str] | None = None) -> dict[str, str]:
-    """The environment a dispatched CLI receives: the daemon's, minus
-    DAEMON_ONLY_ENV, plus this attempt's explicit overrides (which win, so an
-    override can deliberately re-supply a stripped name)."""
-    env = {k: v for k, v in os.environ.items() if k not in DAEMON_ONLY_ENV}
-    env.update(env_overrides or {})
-    return env
+# 2026-08-03 (CR-13a, D-R7): the RISK-006 daemon-only-secret DENYLIST that
+# stood here is GONE, replaced by containment.child_env's allowlist. (Its
+# constant name is deliberately not repeated in this module: product_truth's
+# `containment` fact reads this file for it, and a mention in prose is
+# indistinguishable from the thing itself to a reader who greps -- the same
+# rule actual_state_backend applies to the store selector.)
+# The denylist named three secrets an agent must not receive; it could not
+# name the fourth,
+# because a denylist only ever excludes what someone already thought of, and
+# the daemon's environment grows with the deployment. What a route receives is
+# now exactly what it DECLARES (RouteDef.secrets) plus the non-authority
+# operational names in containment.BASE_ENV_ALLOW plus this attempt's
+# overrides -- and for a contained leg, only the declared names cross the
+# container boundary at all.
 
 
 @dataclass
@@ -156,6 +163,13 @@ class WrapperSpec:
     receipt_path: str
     attempt_dir: str
     route_def: dict[str, Any]           # RouteDef fields, reconstructable
+    #: CR-13a (D-R7): the repository whose worktree this leg runs in -- the
+    #: ONLY host path a contained leg is given. Empty is not "the default";
+    #: it is "no launch site declared one", and a route that requires
+    #: containment refuses to launch on it (containment.plan_for). The
+    #: requirement itself is NOT a field: it is derived from the pinned
+    #: `route_def`, so no launch site can omit containment by forgetting it.
+    repo_root: str = ""
     leases: list[dict[str, Any]] = field(default_factory=list)  # {name, capacity}
     env_overrides: dict[str, str] = field(default_factory=dict)
     term_grace_seconds: int = 30
@@ -304,6 +318,65 @@ def _write_typed_results(spec: WrapperSpec, log_text: str) -> None:
         os.replace(tmp, out)
 
 
+def _refuse_launch(spec: WrapperSpec, *, blocked_reason: str,
+                   exit_code: int) -> int:
+    """Record a leg that never started, and return its exit code.
+
+    ONE shape for both pre-launch refusals -- the lease race and a
+    containment failure -- because a reader must be able to tell them apart by
+    ``blocked_reason`` rather than by which of two near-identical code paths
+    happened to write the receipt. Both are attempt state FAILED (nothing ran)
+    rather than EXITED (a process completed), which is the same distinction
+    step 9 of the contract draws.
+    """
+    receipt = Receipt(result=ReceiptResult.ERROR, exit_code=exit_code,
+                      blocked_reason=blocked_reason)
+    Path(spec.receipt_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(spec.receipt_path).write_text(
+        json.dumps(receipt.to_dict()), encoding="utf-8")
+    state = storage.load_state(spec.project, spec.task_id)
+    attempt = state.attempt_by_id(spec.attempt_id)
+    attempt.state = AttemptState.FAILED
+    attempt.receipt = receipt
+    storage.append_and_apply(
+        spec.project,
+        {spec.task_id: state},
+        actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+        type=EventType.ATTEMPT_FAILED,
+        payload={"attempt": attempt.to_dict()},
+        task_id=spec.task_id,
+        attempt_id=spec.attempt_id,
+    )
+    return exit_code
+
+
+def contained_launch(spec: WrapperSpec, route: RouteDef,
+                     env_overrides: dict[str, str]) -> tuple[list[str], str]:
+    """``(argv, container_name)`` for this leg. Raises rather than downgrades.
+
+    Returns ``spec.argv`` unchanged and an empty name for a route that runs
+    uncontained (``trust = "operator"``, never a free endpoint). Otherwise
+    builds the plan, verifies the runtime can actually start it NOW, and wraps
+    the argv -- raising :class:`containment.ContainmentUnavailable` if any of
+    that fails.
+
+    The probe is here and not only at the effect boundary because the two are
+    separated by a process launch and by however long the daemon's pass took:
+    an image pruned in between must stop THIS launch, not the previous
+    admission check.
+    """
+    if not containment.requires_containment(route):
+        return list(spec.argv), ""
+    plan = containment.plan_for(route, worktree=spec.cwd,
+                                repo_root=spec.repo_root,
+                                overrides=env_overrides)
+    reason = containment.probe(plan.image)
+    if reason:
+        raise containment.ContainmentUnavailable(reason)
+    name = containment.container_name(spec.attempt_id)
+    return plan.docker_argv(spec.argv, name), name
+
+
 def wrapper_main(spec_path: str) -> int:
     """The wrapper process body (see contract). Returns process exit code."""
     spec_json = Path(spec_path).read_text(encoding="utf-8")
@@ -317,6 +390,36 @@ def wrapper_main(spec_path: str) -> int:
     attempt = state.attempt_by_id(spec.attempt_id)
     if attempt is None:
         return 1
+
+    # CR-03 (DR-13): the child is TOLD its identity rather than asked to
+    # transcribe it out of the prompt. An agent that mistypes an attempt id
+    # produces a judgement the reader must refuse, which reads to an operator
+    # as a broken reviewer rather than as a typo -- and a cheap model copying
+    # a hex string is exactly the kind of mechanical burden that produces
+    # those.
+    env_overrides = {
+        **spec.env_overrides,
+        "NYXLOOM_TASK_ID": spec.task_id,
+        "NYXLOOM_ATTEMPT_ID": spec.attempt_id,
+    }
+
+    # Step 4a (CR-13a, D-R7): establish containment BEFORE acquiring any
+    # lease. A leg that cannot be contained will not run, so it must not
+    # first take a mutex other work is waiting on -- and refusing here means
+    # there is nothing to unwind.
+    route_def = RouteDef(**spec.route_def)
+    try:
+        argv, container = contained_launch(spec, route_def, env_overrides)
+    except containment.ContainmentUnavailable as exc:
+        # P05a (§5): ERROR -- this attempt failed, and unlike a lease race it
+        # will fail identically next pass until an operator changes the
+        # deployment. The reason travels in the receipt, not only in this log.
+        log.error("containment-unavailable", project=spec.project,
+                  task=spec.task_id, attempt=spec.attempt_id,
+                  route=route_def.route_id, reason=exc.reason)
+        return _refuse_launch(
+            spec, blocked_reason=f"containment-unavailable:{exc.reason}",
+            exit_code=CONTAINMENT_EXIT)
 
     held_leases: list[leases.Lease] = []
 
@@ -333,35 +436,12 @@ def wrapper_main(spec_path: str) -> int:
                 # Release acquired leases
                 for held in held_leases:
                     held.release()
-                # Write receipt
-                receipt = Receipt(
-                    result=ReceiptResult.ERROR,
-                    exit_code=75,
-                    blocked_reason="lease-lost-race",
-                )
-                Path(spec.receipt_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(spec.receipt_path).write_text(
-                    json.dumps(receipt.to_dict()), encoding="utf-8"
-                )
                 # P05a (§5): "attempt errored" is a named ERROR example --
                 # a lease-race loss fails this whole attempt (state FAILED).
                 log.error("lease-lost-race", project=spec.project, task=spec.task_id,
                           attempt=spec.attempt_id, lease=lease_spec["name"])
-                # Append ATTEMPT_FAILED
-                state = storage.load_state(spec.project, spec.task_id)
-                attempt = state.attempt_by_id(spec.attempt_id)
-                attempt.state = AttemptState.FAILED
-                attempt.receipt = receipt
-                storage.append_and_apply(
-                    spec.project,
-                    {spec.task_id: state},
-                    actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
-                    type=EventType.ATTEMPT_FAILED,
-                    payload={"attempt": attempt.to_dict()},
-                    task_id=spec.task_id,
-                    attempt_id=spec.attempt_id,
-                )
-                return 75
+                return _refuse_launch(spec, blocked_reason="lease-lost-race",
+                                      exit_code=75)
             held_leases.append(lease)
 
         # Append LEASE_ACQUIRED for each lease
@@ -403,24 +483,19 @@ def wrapper_main(spec_path: str) -> int:
         old_sigint = signal.signal(signal.SIGINT, sigterm_handler)
 
         try:
-            # Step 4: Spawn CLI
+            # Step 4: Spawn (the CLI, or the docker client running it)
             log_path = Path(spec.log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            # CR-03 (DR-13): the child is TOLD its identity rather than
-            # asked to transcribe it out of the prompt. An agent that
-            # mistypes an attempt id produces a judgement the reader must
-            # refuse, which reads to an operator as a broken reviewer rather
-            # than as a typo -- and a cheap model copying a hex string is
-            # exactly the kind of mechanical burden that produces those.
-            env = child_env({
-                **spec.env_overrides,
-                "NYXLOOM_TASK_ID": spec.task_id,
-                "NYXLOOM_ATTEMPT_ID": spec.attempt_id,
-            })
+            # CR-13a: an ALLOWLIST built from the route's own declaration.
+            # For a contained leg this is the DOCKER CLIENT's environment;
+            # only the names in the plan's `-e` list cross into the container,
+            # and their values are read by docker from here rather than
+            # written into an argv.
+            env = containment.child_env(route_def, env_overrides)
 
             with log_path.open("ab") as log_fd:
                 child = subprocess.Popen(
-                    spec.argv,
+                    argv,
                     cwd=spec.cwd,
                     env=env,
                     stdout=log_fd,
@@ -470,7 +545,6 @@ def wrapper_main(spec_path: str) -> int:
                 time.sleep(0.05)
             if not interrupted:
                 try:
-                    route_def = RouteDef(**spec.route_def)
                     # P05a (§5): a provider call -> DEBUG.
                     log.debug("session-capture-attempt", project=spec.project, task=spec.task_id,
                               attempt=spec.attempt_id, route=route_def.route_id)
@@ -498,8 +572,11 @@ def wrapper_main(spec_path: str) -> int:
                             task_id=spec.task_id,
                             attempt_id=spec.attempt_id,
                         )
-                except Exception:
-                    pass  # Non-critical
+                except Exception:  # census: advisory-degradation (CR-13a)
+                    # A resume handle that could not be captured only ever
+                    # SUBTRACTS: the leg still runs, and the daemon cold-starts
+                    # instead of resuming. It can never make a launch happen.
+                    pass
             # Wait for child, handling interruption with grace period
             grace_end = None
             child_exit_code = -1
@@ -526,6 +603,13 @@ def wrapper_main(spec_path: str) -> int:
                         os.killpg(os.getpgid(child.pid), signal.SIGKILL)
                     except OSError:
                         pass
+                    # CR-13a: for a contained leg the process just killed was
+                    # the docker CLIENT. The container it started outlives it,
+                    # so without this the SIGKILL leaves an agent running with
+                    # nothing supervising it -- strictly worse than the
+                    # uncontained leg this replaced.
+                    if container:
+                        containment.force_remove(container)
                     # Continue waiting for child to be reaped
                     grace_end = time.monotonic() + 5  # Extended grace for SIGKILL
 
@@ -626,7 +710,6 @@ def wrapper_main(spec_path: str) -> int:
                       attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code)
 
         # Step 8: Extract usage
-        route_def = RouteDef(**spec.route_def)
         usage = adapters.extract_usage(route_def, Path(spec.attempt_dir), log_text)
         from .config import Prices
         prices = Prices.load()
@@ -689,8 +772,12 @@ def wrapper_main(spec_path: str) -> int:
 
         return child_exit_code
 
-    except Exception:
-        # On crash, release leases
+    except Exception:  # census: cleanup/containment (CR-13a)
+        # Releases the flocks and RE-RAISES: it substitutes no value and
+        # decides nothing. Without it a wrapper crash would hold every mutex
+        # this leg took until the kernel released them at process death --
+        # which it does, but not before the next pass has already seen them
+        # held. Nothing here can turn a refusal into a permission.
         for lease in held_leases:
             lease.release()
         raise

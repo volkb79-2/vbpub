@@ -83,6 +83,20 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+# CR-13a: a local fake script is the operator's own -- declared, not
+# defaulted. An undeclared route requires containment and would be refused
+# at the effect boundary, which is the behaviour TestAdmissionRefusesAn
+# UncontainableRoute (tests/test_effects_dispatch.py) covers deliberately.
+#
+# `secrets` is the COMPLETE set of env names this route's CLI receives
+# beyond containment.BASE_ENV_ALLOW, and declaring it is what makes these
+# end-to-end tests exercise the real inversion rather than route around it:
+# the fake CLI is a python shim that needs PYTHONPATH to import
+# nyxloom.testing and NYXLOOM_FAKE_SCRIPT to find its scripted turns.
+# Under the old inheritance both simply arrived; under the allowlist a
+# route that does not ask does not get, which is the whole point.
+trust = "operator"
+secrets = ["PYTHONPATH", "NYXLOOM_FAKE_SCRIPT"]
 dispatch_extra = ["--role", "implementer", "--task", "{task_id}"]
 
 [routes.fake-review]
@@ -90,6 +104,20 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+# CR-13a: a local fake script is the operator's own -- declared, not
+# defaulted. An undeclared route requires containment and would be refused
+# at the effect boundary, which is the behaviour TestAdmissionRefusesAn
+# UncontainableRoute (tests/test_effects_dispatch.py) covers deliberately.
+#
+# `secrets` is the COMPLETE set of env names this route's CLI receives
+# beyond containment.BASE_ENV_ALLOW, and declaring it is what makes these
+# end-to-end tests exercise the real inversion rather than route around it:
+# the fake CLI is a python shim that needs PYTHONPATH to import
+# nyxloom.testing and NYXLOOM_FAKE_SCRIPT to find its scripted turns.
+# Under the old inheritance both simply arrived; under the allowlist a
+# route that does not ask does not get, which is the whole point.
+trust = "operator"
+secrets = ["PYTHONPATH", "NYXLOOM_FAKE_SCRIPT"]
 dispatch_extra = ["--role", "review", "--task", "{task_id}"]
 """
 
@@ -777,16 +805,24 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
         revision="test-behavioral-resume",
         tiers={"flash-high": ["fake-impl"], "review-independent": ["fake-review"]},
         routes={
+            # CR-13a: the in-memory pair must carry the SAME execution
+            # posture as BEHAVIORAL_ROUTES_TOML above, or this test would
+            # be measuring the containment refusal instead of the resume
+            # gate it exists to measure.
             "fake-impl": config_mod.RouteDef(
                 route_id="fake-impl", cli="fake", model="fake-model",
                 probe=["true"], usage_source="none",
                 dispatch_extra=["--role", "implementer", "--task", "{task_id}"],
                 resume=resume_template,
+                trust="operator",
+                secrets=["PYTHONPATH", "NYXLOOM_FAKE_SCRIPT"],
             ),
             "fake-review": config_mod.RouteDef(
                 route_id="fake-review", cli="fake", model="fake-model",
                 probe=["true"], usage_source="none",
                 dispatch_extra=["--role", "review", "--task", "{task_id}"],
+                trust="operator",
+                secrets=["PYTHONPATH", "NYXLOOM_FAKE_SCRIPT"],
             ),
         },
     )

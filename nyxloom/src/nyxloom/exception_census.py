@@ -118,10 +118,37 @@ LEGACY_BUDGET: dict[str, int] = {
     "decision_chat.py": 7,
     "cli.py": 6,
     "commands.py": 5,
-    # Store and process boundaries. CR-04 owns the store's; CR-13a owns the
-    # wrapper's, since containment changes what a launch failure even means.
+    # Store and process boundaries. CR-04 owns the store's; CR-13a owned the
+    # wrapper's and retired two of three (3 -> 1): containment changed what a
+    # launch failure means, so each was classified where it stands -- the
+    # lease-releasing re-raise as cleanup/containment, the session-capture
+    # swallow as advisory-degradation.
+    #
+    # The ONE that remains is `launch_detached`'s post-fork guard, and it is
+    # left unclassified DELIBERATELY. It lives in the forked grandchild,
+    # which calls `os._exit` and so never writes coverage data: no test can
+    # measure that line, and adding the census comment to it would make it a
+    # CHANGED line the diff-coverage gate then reports as uncovered. Its
+    # class is not in doubt (cleanup/containment -- it prints a traceback and
+    # picks an exit code on a path where the launch has already failed); what
+    # is in doubt is whether the two ratchets can both be satisfied there at
+    # once. Retiring it means moving the handler out of the fork child, which
+    # is a change to the detachment primitive and belongs to whichever
+    # package next has a reason to touch it.
+    #
+    # CR-13a's REVIEW tried the obvious escape and MEASURED it failing, which
+    # is why this stays at 1 rather than being re-litigated a third time:
+    # extracting `run_reporting_crashes(spec_path) -> int` (handler inside,
+    # `os._exit` left at the call site) does make the handler an ordinary
+    # function body a test covers -- but it rewrites the grandchild's call
+    # site into ONE new line that is itself inside the fork and therefore
+    # still unmeasurable, and now CHANGED. Measured with docker hidden: that
+    # line, `os._exit(run_reporting_crashes(...))`, is reported uncovered by
+    # the diff-coverage gate. The extraction relocates the uncoverable line;
+    # it does not remove it. The only real exit is to stop forking here, and
+    # that is the detachment primitive's own redesign.
     "storage_sqlite.py": 3,
-    "wrapper.py": 3,
+    "wrapper.py": 1,
     "migrate_store.py": 1,
     # Route/provider surfaces, retired by the routing packages.
     "benchmark_sources.py": 3,
@@ -130,9 +157,10 @@ LEGACY_BUDGET: dict[str, int] = {
     "notify.py": 2,
     "free_models.py": 1,
     "route_doctor.py": 1,
-    # CR-15's credential store. One handler, retired with CR-13a's per-route
-    # secret injection.
-    "control_auth.py": 1,
+    # CR-15's credential store. One handler, retired by CR-13a (1 -> 0) and
+    # classified in place as cleanup/containment: it reports a refusal that
+    # was already decided, on a path with no permission left to grant.
+    "control_auth.py": 0,
 }
 
 

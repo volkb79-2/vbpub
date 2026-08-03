@@ -981,7 +981,8 @@ class CarveEffector:
                 return ev.payload
         return None
 
-    def _execute_carve_via_session_resume(self, project: str, cfg: ProjectConfig,
+    def _execute_carve_via_session_resume(self, ctx: effects.EffectContext,
+                                          project: str, cfg: ProjectConfig,
                                           states: dict[str, TaskStateFile],
                                           action: "reconcile.CarveDispatch",
                                           snap: carver_session.CarverSessionSnapshot
@@ -1032,6 +1033,11 @@ class CarveEffector:
                     project, cfg, states, EventType.NEEDS_OPERATOR,
                     {"reason": "carver-no-route"}, task_id=None))
             return events
+        # The session's PINNED route, so this is the first point at which
+        # admission's containment half (CR-13a) can be asked.
+        ok, _reason = effects_dispatch.admissible(ctx, "carve", route_def)
+        if not ok:
+            return events  # refused at the effect boundary; nothing launched
 
         seq = self._carver._next_carve_seq(project)
         task_id = f"carver-session-{project}-{seq}"
@@ -1110,7 +1116,7 @@ class CarveEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
-            route_def=asdict(route_def),
+            route_def=asdict(route_def), repo_root=str(cfg.root),
             leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = self._ports.processes.launch_detached(spec)
@@ -1163,7 +1169,12 @@ class CarveEffector:
         # EXACT pre-P3c fresh-carve path.
         snap = self._carver._carver_session(project, cfg)
         if snap is not None and snap.status is CarverStatus.WARM and snap.session_id:
-            return self._execute_carve_via_session_resume(project, cfg, states, action, snap)
+            # `ctx` is threaded in (CR-13a review) because the body's own
+            # containment admission needs it: without it that call raised
+            # NameError instead of gating, and the whole pass died on the
+            # normalize branch. See the admission call in that method.
+            return self._execute_carve_via_session_resume(
+                ctx, project, cfg, states, action, snap)
 
         # F018 P3d (concern-3 #2 + checklist #6): close the not-WARM legacy
         # fall-through. When the persistent session is DEGRADED with recovery
@@ -1289,6 +1300,11 @@ class CarveEffector:
         (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
 
         route_def = review_routes[0]
+        # Re-asked with the resolved route (CR-13a): admission's containment
+        # half is a property of the route, and a carve selects its own.
+        ok, _reason = effects_dispatch.admissible(ctx, "carve", route_def)
+        if not ok:
+            return events  # refused at the effect boundary; nothing launched
         route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
                             variant=route_def.variant, effort=route_def.effort,
                             routes_rev=routes_obj.revision)
@@ -1310,6 +1326,7 @@ class CarveEffector:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            repo_root=str(cfg.root),
             leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = self._ports.processes.launch_detached(spec)

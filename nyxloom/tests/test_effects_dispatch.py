@@ -8,12 +8,14 @@ only ever admitted is not known to refuse.
 from __future__ import annotations
 
 import dataclasses
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from nyxloom import effects, effects_dispatch, paths, storage
-from nyxloom.config import MutexDef
+from nyxloom import effects, effects_dispatch, log, paths, storage
+from nyxloom.config import MutexDef, RouteDef
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Basis, Event, EventType, Role,
     Route, TaskState, TaskStateFile, Usage, utc_now,
@@ -192,6 +194,153 @@ class TestAdmissible:
         autonomous decision."""
         assert effects_dispatch.admissible(
             _ctx(sample_project, audit=None), "carve")[0] is True
+
+
+# ---------------------------------------------------------------------------
+# admission's containment precondition (CR-13a)
+
+
+class _Processes:
+    """A process port that answers docker without running it."""
+
+    def __init__(self, version_rc=0, inspect_rc=0) -> None:
+        self.version_rc, self.inspect_rc = version_rc, inspect_rc
+        self.calls: list[list[str]] = []
+
+    def run(self, argv, *, cwd=None, timeout=None):
+        argv = list(argv)
+        self.calls.append(argv)
+        rc = self.version_rc if "version" in argv else self.inspect_rc
+        return subprocess.CompletedProcess(argv, rc, "", "")
+
+
+def _ctx_with(cfg, processes, **kw):
+    ctx = _ctx(cfg, **kw)
+    return dataclasses.replace(
+        ctx, ports=dataclasses.replace(ctx.ports, processes=processes))
+
+
+def _route(**kw) -> RouteDef:
+    base = dict(route_id="r1", cli="fake", model="m")
+    base.update(kw)
+    return RouteDef(**base)
+
+
+class TestAdmissionRefusesAnUncontainableRoute:
+    """CR-13a: the execute-time gate over containment.
+
+    Both directions, like every other case in this file. The refusing half is
+    the acceptance criterion ("a route configured to require containment that
+    is unavailable does not launch"); the admitting half is what keeps the
+    gate from being a wall in front of the whole factory.
+    """
+
+    def _env(self, **over):
+        # An identity mapping for the tmp tree these fixtures live under:
+        # this process IS containerized, so without a declared mapping the
+        # repository path is one the host daemon cannot resolve -- which is
+        # itself a refusal, exercised separately below.
+        env = {"NYXLOOM_CONTAINMENT_IMAGE": "agent:local",
+               "NYXLOOM_CONTAINMENT_HOST_MAP": "/tmp=/tmp"}
+        env.update(over)
+        return env
+
+    def test_an_operator_trusted_route_never_consults_docker_at_all(
+            self, tmp_state, sample_project, monkeypatch):
+        """Containment is not required, so the most expensive question is not
+        asked -- and a deployment with no docker at all still dispatches its
+        trusted routes."""
+        processes = _Processes()
+        ctx = _ctx_with(sample_project, processes)
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(trust="operator"))
+        assert (ok, reason) == (True, "")
+        assert processes.calls == []
+
+    def test_passing_no_route_leaves_the_gate_exactly_as_it_was(
+            self, tmp_state, sample_project):
+        processes = _Processes(version_rc=1)
+        ctx = _ctx_with(sample_project, processes)
+        assert effects_dispatch.admissible(ctx, "dispatch")[0] is True
+        assert processes.calls == []
+
+    def test_an_untrusted_route_is_admitted_when_containment_is_available(
+            self, tmp_state, sample_project, monkeypatch):
+        for name, value in self._env().items():
+            monkeypatch.setenv(name, value)
+        processes = _Processes()
+        ctx = _ctx_with(sample_project, processes)
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(trust="untrusted"))
+        assert (ok, reason) == (True, "")
+        assert any("version" in c for c in processes.calls)
+        assert any("inspect" in c for c in processes.calls)
+
+    def test_an_untrusted_route_is_refused_when_the_image_is_missing(
+            self, tmp_state, sample_project, monkeypatch):
+        for name, value in self._env().items():
+            monkeypatch.setenv(name, value)
+        ctx = _ctx_with(sample_project, _Processes(inspect_rc=1))
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(trust="untrusted"))
+        assert ok is False
+        assert reason == "containment-unavailable:image-missing:agent:local"
+
+    def test_a_free_route_is_refused_when_no_image_is_configured(
+            self, tmp_state, sample_project, monkeypatch):
+        """The deployed state today: free routes declared, no agent image
+        built. The free tier stays disabled by mechanism rather than by a
+        sentence in a prompt."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        processes = _Processes()
+        ctx = _ctx_with(sample_project, processes)
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(status="free"))
+        assert ok is False
+        assert reason == "containment-unavailable:no-image-configured"
+        assert processes.calls == [], (
+            "a configuration fault must be answered without asking docker")
+
+    def test_every_launch_kind_is_gated_not_only_dispatch(
+            self, tmp_state, sample_project, monkeypatch):
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        ctx = _ctx_with(sample_project, _Processes())
+        for kind in sorted(effects_dispatch.LAUNCH_KINDS):
+            ok, reason = effects_dispatch.admissible(ctx, kind, _route())
+            assert ok is False, kind
+            assert reason.startswith("containment-unavailable:"), kind
+
+    def test_a_cheaper_refusal_still_wins_so_docker_is_not_asked_when_paused(
+            self, tmp_state, sample_project, monkeypatch):
+        """Ordering, stated as a cost property: a paused project must not pay
+        two docker round-trips per planned launch to be told it is paused."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        processes = _Processes()
+        ctx = _ctx_with(sample_project, processes,
+                        files=_Files(content="drain-agents"))
+        ok, reason = effects_dispatch.admissible(ctx, "dispatch", _route())
+        assert (ok, reason) == (False, "paused:drain-agents")
+        assert processes.calls == []
+
+    def test_the_refusal_is_logged_at_error_with_the_route_and_the_reason(
+            self, tmp_state, sample_project, tmp_path, monkeypatch):
+        """Pause and budget heal by themselves; this one repeats every pass
+        until a human changes the deployment, so it is the only refusal here
+        that reaches the operator's log at ERROR."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        log_dir = tmp_path / "logs"
+        log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+        ctx = _ctx_with(sample_project, _Processes())
+
+        effects_dispatch.admissible(ctx, "dispatch", _route(route_id="free-1"))
+
+        records = [json.loads(ln) for ln in
+                   (log_dir / "nyxloom.jsonl").read_text().splitlines() if ln.strip()]
+        refusals = [r for r in records if r.get("msg") == "containment-refused"]
+        assert len(refusals) == 1
+        assert refusals[0]["level"] == "error"
+        assert refusals[0]["route"] == "free-1"
+        assert refusals[0]["reason"] == "no-image-configured"
 
 
 # ---------------------------------------------------------------------------

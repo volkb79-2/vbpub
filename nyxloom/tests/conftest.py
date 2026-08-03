@@ -58,6 +58,11 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+# CR-13a: a local fake script IS the operator's own -- there is no third
+# party serving it -- so it declares operator trust and runs uncontained.
+# The declaration is required, not defaulted: containment.requires_containment
+# refuses any route that does not make one.
+trust = "operator"
 """
 
 SAMPLE_HANDOFF = """\

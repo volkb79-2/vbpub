@@ -140,6 +140,42 @@ class TestDiscriminatesRealMismatch:
         root = _minimal_project(tmp_path)
         assert product_truth.actual_state_backend(root) is None
 
+    def test_containment_posture_mismatch_detected(self, tmp_path):
+        """CR-13a. The amendment names "containment requirement" as one of
+        the machine-known facts, and this package is exactly the one that
+        falsified the old claim -- `secrets.env.example` said agent CLIs
+        "inherit this env", which stopped being true when the wrapper stopped
+        handing out the daemon's environment.
+
+        Driven through all three postures, in the order they superseded each
+        other, so the reader can see the check discriminate rather than
+        merely agree with today's tree."""
+        root = _minimal_project(tmp_path)
+        wrapper = root / "src" / "nyxloom" / "wrapper.py"
+        fact = product_truth.ProductFact(
+            "containment", "README.md", "d", product_truth.actual_containment)
+        _write(root / "README.md", "<!-- product-truth:containment=per-use-container -->\n")
+
+        _write(wrapper, "argv, name = contained_launch(spec, route, env)\n")
+        assert product_truth.check_fact(root, fact) == (
+            "per-use-container", "per-use-container")
+
+        # Regress to the denylist stopgap: the doc claim does not move.
+        _write(wrapper, 'DAEMON_ONLY_ENV = ("AA_API_KEY",)\n')
+        declared, actual = product_truth.check_fact(root, fact)
+        assert (declared, actual) == ("per-use-container", "env-denylist")
+
+        # ...and regress the whole way, to plain inheritance.
+        _write(wrapper, "env = os.environ.copy()\n")
+        assert product_truth.check_fact(root, fact)[1] == "inherited"
+
+    def test_containment_is_unavailable_without_the_module_that_launches(self, tmp_path):
+        """No wrapper.py means the fact cannot be established at all, which
+        the real-repo assertion treats as a hard failure rather than
+        guessing a posture."""
+        root = _minimal_project(tmp_path)
+        assert product_truth.actual_containment(root) is None
+
     def test_daemon_mode_mismatch_detected(self, tmp_path):
         root = _minimal_project(tmp_path)
         _write(root / "README.md", "<!-- product-truth:daemon_mode=resident -->\n")
