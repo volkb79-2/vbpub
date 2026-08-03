@@ -760,33 +760,72 @@ def test_a_lifecycle_action_that_names_no_task_is_refused_by_name():
     assert len(channels.assemble()) == 1
 
 
-def test_no_rule_module_shadows_one_of_its_own_function_names():
+def _oracle_roots() -> list[tuple[str, str]]:
+    """Every function the two oracles start a walk from.
+
+    One list, so the collision guard below and the purity oracle cannot drift
+    into disagreeing about which walks exist.
+    """
+    return ([_root_of(spec) for spec in planning.rule_table()]
+            + [("planning", "derive"), ("planning", "tasks"),
+               ("reconcile", "plan_project")])
+
+
+def test_no_module_the_oracles_walk_shadows_a_name_they_can_resolve():
     """The call-graph walker both oracles use keys functions by
     `(module, name)` and resolves collisions with `setdefault` -- so two
     same-named functions in one module become ONE node, and whichever `ast`
-    reached first wins. For a rule module that means a rule's derived `emits`
-    and its purity verdict could be computed from the wrong body.
+    reached first wins. A rule's derived `emits`, or its purity verdict, could
+    then be computed from the wrong body.
 
-    Scoped to the modules that HOST rules, which is the population where the
-    consequence is a wrong oracle verdict rather than a wrong debug tool. The
-    package at large is full of legitimate collisions (`__init__`, `to_dict`,
-    `visit_Compare`, and `planning`'s own `PlanArbiter.available` /
-    `RuleEmitter.available`), so a package-wide ban would be false; making the
-    walker qualify names properly is a change to shared test infrastructure
-    that `tests/test_effects.py` also depends on, and it is not CR-06b's.
+    SCOPED BY WHAT THE WALKER CAN ACTUALLY RESOLVE, in two directions, and
+    CR-06b had the first one too narrow.
+
+    * MODULES: every module the walk ENTERS, not only the ones that host
+      rules. The walk crosses module boundaries on `from .x import y`, so
+      `stages` and `planning` are inside it -- `planning` because
+      `PlanContext.derive` and `.tasks` are explicit roots, and `stages`
+      because `derive` calls into it. A collision there corrupts an oracle
+      verdict exactly as one in a rule module would.
+    * NAMES: only names the resolver can reach -- a module-level `def`, or a
+      name some root names directly. `_resolve` follows a bare call to a
+      module-level function or an imported one; it never resolves a method on
+      a value, so `PlanArbiter.available` and `RuleEmitter.available` sharing
+      a name is harmless and a blanket ban would be false. Banning what cannot
+      be reached is how a guard acquires exceptions and then gets deleted.
+
+    Making the walker qualify names properly is a change to shared test
+    infrastructure `tests/test_effects.py` also depends on, and it is not
+    CR-06b's; refusing the collision is.
     """
+    roots_by_module: dict[str, set[str]] = {}
+    for module, name in _oracle_roots():
+        roots_by_module.setdefault(module, set()).add(name)
+
+    graph = _graph()
+    walked: set[str] = set()
+    for module, name in _oracle_roots():
+        walked |= {key[0] for key, _node in graph.reachable(module, name)}
+    assert walked >= set(roots_by_module), "a declared root is unreachable"
+
     collisions = []
-    for module in sorted({_root_of(spec)[0] for spec in planning.rule_table()}):
+    for module in sorted(walked):
         tree = ast.parse((SRC / f"{module}.py").read_text(encoding="utf-8"))
-        seen: set[str] = set()
+        everywhere: dict[str, int] = {}
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name in seen:
-                    collisions.append(f"{module}.{node.name}")
-                seen.add(node.name)
+                everywhere[node.name] = everywhere.get(node.name, 0) + 1
+        resolvable: dict[str, int] = {
+            node.name: everywhere[node.name] for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for name in roots_by_module.get(module, ()):
+            resolvable[name] = everywhere.get(name, 0)
+        collisions += [f"{module}.{name} x{count}"
+                       for name, count in sorted(resolvable.items()) if count > 1]
     assert not collisions, (
-        f"a rule module defines one name twice: {collisions} -- the oracles' "
-        "call graph would silently walk only one of them")
+        f"a module the oracles walk defines one resolvable name twice: "
+        f"{collisions} -- the call graph would silently walk only one of them")
 
 
 def test_the_lifecycle_channel_is_grouped_by_task_and_sorted():

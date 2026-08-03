@@ -50,6 +50,7 @@ package. It is not written down as expected.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import subprocess
 from dataclasses import fields, is_dataclass
 from functools import lru_cache
@@ -511,7 +512,24 @@ def test_synthetic_corpus_plans_are_identical(profile: str):
 def test_every_declared_divergence_has_a_pin_and_a_shape():
     """An entry with no pinning test is exactly the blanket exemption this
     mechanism exists to refuse, and it would be invisible: the general
-    comparison would go green and nothing would say why."""
+    comparison would go green and nothing would say why.
+
+    CR-06b REVIEW: `pin in globals()` did not achieve that. It refused a
+    MISSPELLED pin, which is a typo check; it accepted an entry that named any
+    other test in this module, which is the blanket exemption itself wearing a
+    name -- verified by pointing an entry at
+    `test_corpus_is_the_recorded_historical_logs` and watching it pass. Three
+    conditions replace it, and together they mean "pinned" cannot be claimed
+    without wiring:
+
+    * the pin must be a callable TEST, so it is collected and actually runs;
+    * its source must NAME this divergence's own machinery -- the synthetic
+      scenario for a scenario-scoped entry, the repair function for a
+      repair-scoped one. A test that never mentions the thing cannot be
+      failing when that thing changes shape;
+    * no two entries may share a pin, so a second divergence cannot shelter
+      under the first one's test.
+    """
     for name, divergence in KNOWN_DIVERGENCES.items():
         assert divergence.why, name
         assert (divergence.scenario is None) != (divergence.repair is None), (
@@ -520,9 +538,20 @@ def test_every_declared_divergence_has_a_pin_and_a_shape():
         if divergence.scenario is not None:
             assert divergence.scenario in planner_synthetic.SCENARIO_NAMES, (
                 f"{name}: declared for a scenario that no longer exists")
-        assert divergence.pin in globals(), (
+        pin = globals().get(divergence.pin)
+        assert callable(pin) and divergence.pin.startswith("test_"), (
             f"{name}: names a pinning test {divergence.pin!r} that does not "
             f"exist -- an unpinned divergence is a blanket exemption")
+        anchor = divergence.scenario or divergence.repair.__name__
+        assert anchor in inspect.getsource(pin), (
+            f"{name}: its pin {divergence.pin!r} never mentions {anchor!r}, so "
+            f"it is not pinning THIS divergence -- naming an unrelated test "
+            f"is the blanket exemption with a citation attached")
+
+    pins = [divergence.pin for divergence in KNOWN_DIVERGENCES.values()]
+    assert len(set(pins)) == len(pins), (
+        f"two divergences share a pinning test: {sorted(pins)} -- the second "
+        f"is sheltering under the first one's evidence")
 
 
 def test_the_self_review_divergence_is_exactly_the_repair_it_claims_to_be():
@@ -625,6 +654,22 @@ def test_the_review_resume_divergence_only_ever_breaks_a_tie():
         old_waves = [a for a in old if type(a).__name__ == "LaunchReview"]
         new_waves = [a for a in new if type(a).__name__ == "LaunchReview"]
         assert len(old_waves) == len(new_waves), case_id
+
+        # CR-06b review: the pin also checks the MODEL `compare` relies on,
+        # not only the planner. `_retie_the_warm_review_session` applied to
+        # the baseline must reproduce the handles the new planner chose --
+        # otherwise the model and the behaviour it claims to describe have
+        # drifted apart, and every green above is measured against the wrong
+        # reconstruction. Outside the tie branch on purpose: it must also be a
+        # no-op wherever there is no tie to break.
+        retied, model_problems = _retie_the_warm_review_session(
+            list(old), list(new), inp)
+        assert not model_problems, f"{case_id}: {model_problems}"
+        assert ([a.resume_session for a in retied
+                 if type(a).__name__ == "LaunchReview"]
+                == [a.resume_session for a in new_waves]), (
+            f"{case_id}: the declared tie-break MODEL does not reproduce the "
+            f"planner it describes")
         for before, after in zip(old_waves, new_waves):
             assert before.wave_id == after.wave_id, case_id
             assert before.task_ids == after.task_ids, case_id
@@ -681,13 +726,30 @@ def _corpus_plans():
 
 @lru_cache(maxsize=1)
 def _corpus_case_that_diverges():
-    """A real projection the two planners genuinely disagree about.
+    """A real projection the two planners genuinely disagree about, and a
+    NON-DEGENERATE one.
 
     `next` with no default on purpose: if the corpus stops producing one, the
     controls below are testing nothing and should blow up rather than skip.
+
+    The three extra conditions are the CR-06b review's finding, and they are
+    not fastidiousness. The first diverging projection in the corpus
+    (`dstdns-179`) plans exactly TWO actions, both `InterruptAttempt`,
+    differing only in order -- so every mutation below changed the action
+    multiset, every one of them was refused by the multiset guard, and the
+    foreign-class and contiguity guards were never reached at all. Four
+    controls that read as four independent probes were one probe run four
+    times, and deleting the foreign-class guard would not have failed any of
+    them. Requiring several actions, several tasks, and at least one action
+    the ladder CANNOT emit puts the other guards back inside this control's
+    reach.
     """
-    return next(case for case in _corpus_plans()
-                if _normalize_plan(case[2]) != _normalize_plan(case[3]))
+    return next(
+        case for case in _corpus_plans()
+        if _normalize_plan(case[2]) != _normalize_plan(case[3])
+        and len(case[2]) >= 4
+        and len({a.task_id for a in case[2] if hasattr(a, "task_id")}) >= 2
+        and {type(a).__name__ for a in case[2]} - _ATTEMPT_LADDER_EMITS)
 
 
 @pytest.mark.parametrize("mutate, why", [
@@ -698,6 +760,8 @@ def _corpus_case_that_diverges():
                    for i, a in enumerate(plan)], "a field changed"),
     (lambda plan: [reconcile.OpenWave(task_ids=["zzz"])] + plan[1:],
      "an action from another channel replaced one"),
+    (lambda plan: list(reversed(plan)),
+     "the whole plan was reordered, multiset intact"),
 ])
 def test_the_declared_repairs_cannot_absorb_a_foreign_delta(mutate, why):
     """The anti-decoration control for the repair mechanism itself.
@@ -707,6 +771,15 @@ def test_the_declared_repairs_cannot_absorb_a_foreign_delta(mutate, why):
     the same clothes -- same channel, same action classes -- and each must
     still be reported, or `KNOWN_DIVERGENCES` has become the blanket exemption
     it is written to avoid.
+
+    The last mutation is the CR-06b review's addition, and it is the only one
+    the MULTISET guard cannot refuse: the other four all add, drop or rewrite
+    an action, so they die on the cheapest check and never exercise the
+    others. A whole-plan reversal keeps every action and every field, which is
+    what a genuine reordering defect would look like -- and it drags actions
+    from other channels into the differing window, where the foreign-class
+    guard is what has to refuse them. Paired with the non-degenerate case
+    `_corpus_case_that_diverges` now insists on; either alone is not enough.
     """
     case_id, inp, old, new = _corpus_case_that_diverges()
     mutated = mutate(list(new))

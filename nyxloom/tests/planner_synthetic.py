@@ -192,11 +192,17 @@ SCENARIOS: tuple[tuple[str, dict[str, TaskStateFile], str], ...] = (
                   attempts=[_attempt("att-r2", Role.REVIEW_INDEPENDENT,
                                      AttemptState.EXITED, minutes=5, handle="h2")]),
         ),
-        "two EXITED review attempts sharing a `started` timestamp -- the "
-        "recorded ambiguity in LaunchReview.resume_session, where "
-        "max(key=started) returns the FIRST maximal element and the choice "
-        "therefore follows map order. Present so the defect stays visible "
-        "to whichever package repairs it.",
+        "two EXITED review attempts sharing a `started` timestamp. WHAT IT "
+        "ACTUALLY PINS, restated by CR-06b's review: NOT the resume_session "
+        "tie -- both tasks carry a REVIEW_INDEPENDENT attempt as their "
+        "LATEST, so the in-flight recency guard suppresses every launch and "
+        "no LaunchReview is planned, which is why "
+        "`review-resume-tie-reaches-a-launch` below had to be added. What is "
+        "left is a real case worth keeping: a whole WAVE whose every member "
+        "already has a live review leg plans nothing, so a relaxation of the "
+        "recency guard shows up as a launch appearing here. The original "
+        "rationale claimed it kept the tie-break defect visible; the defect "
+        "is repaired and the claim was never true of this projection.",
     ),
     (
         "review-resume-tie-reaches-a-launch",
