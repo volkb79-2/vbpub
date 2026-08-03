@@ -93,7 +93,8 @@
         "gate_diagnosis_after_failures": {"type": "integer", "minimum": 1},
         "reviewer_repair": {"type": "boolean"},
         "reviewer_repair_paths": {"type": "array", "items": {"type": "string"}},
-        "verdict_audit_sample_size": {"type": "integer", "minimum": 0}
+        "verdict_audit_sample_size": {"type": "integer", "minimum": 0},
+        "deadman_multiple": {"type": "integer", "minimum": 1}
       }
     },
     "notify": {

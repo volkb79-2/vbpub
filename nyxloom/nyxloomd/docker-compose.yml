@@ -123,14 +123,36 @@ services:
           - nyxloomd                                # stable alias -- see REPORT for
                                                       # the devcontainer-side join step
     healthcheck:
-      # TCP-connect probe (bash /dev/tcp) — robust vs. HTTP-response timing and
-      # avoids depending on curl in the image. Succeeds once the dashboard
-      # ThreadingHTTPServer is listening on its bind (0.0.0.0, this network).
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/8942' 2>/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
+      # CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
+      # RISK-007). Two stages, both required -- keep in sync with
+      # ciu.compose.yml.j2's healthcheck block (the ciu template this file
+      # is the pre-rendered copy of). FIRST the original TCP-connect probe
+      # against the bind address -- cheap, and still catches "the dashboard
+      # thread is not even listening" before spending a python startup on
+      # the second stage. SECOND `nyxloom doctor --liveness`, which reads
+      # the store directly (no Daemon constructed, no dependency on the
+      # daemon process being responsive) for what a TCP connect cannot see:
+      # the durable per-project heartbeat gauge (storage.record_heartbeat,
+      # stamped at the end of EVERY run_pass -- doctor.liveness_findings'
+      # 'reconcile-deadman' check), a run of consecutive TICK_ERROR events
+      # (watchdog.py's 'tick-error-streak' pattern -- a daemon up,
+      # listening, and raising every single pass), and whether the
+      # configured ntfy/webhook channel is actually reachable
+      # (notify.probe_transport) -- so a crash-looping notification
+      # transport fails THIS check even though the reconcile loop itself is
+      # fine. A wedged-but-listening daemon passed the OLD check
+      # indefinitely; it fails this one on the second stage.
+      #
+      # The second stage's stdout is deliberately NOT discarded: docker keeps
+      # the last few healthcheck outputs in `docker inspect .State.Health`, and
+      # the findings table is the only thing that says WHICH project is dead
+      # and why. An unhealthy container with no reason attached is the same
+      # "something is wrong and nothing said what" this package exists to end.
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/8942' 2>/dev/null && /opt/nyxloom-venv/bin/python -m nyxloom.cli doctor --liveness 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 12s
       retries: 5
-      start_period: 40s
+      start_period: 60s
     logging:
       driver: json-file
       options:

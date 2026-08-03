@@ -344,6 +344,41 @@ def test_nyxloomd_compose_drops_host_network_and_binds_bridge_address():
 
 
 # --------------------------------------------------------------------------
+# CR-16 2026-08-03 (RISK-007): the healthcheck's SECOND stage, and the health
+# budget that has to be big enough to run it.
+
+def test_nyxloomd_healthcheck_chains_the_liveness_probe_after_the_tcp_stage():
+    """A TCP connect proves a socket is listening; it proved exactly that for
+    ten days while the daemon was `Exited (143)`. Both compose files must run
+    `doctor --liveness` -- which reads the store in a fresh process, with no
+    Daemon -- as a REQUIRED second stage, and must not discard its output: the
+    findings table is the only thing that says which project is dead."""
+    for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
+        text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
+        line = next(ln for ln in text.splitlines() if ln.lstrip().startswith("test: ["))
+        assert "doctor --liveness" in line, \
+            f"{fname} healthcheck is TCP-only again -- the RISK-007 blind spot"
+        assert "&&" in line, f"{fname} healthcheck must REQUIRE the liveness stage"
+        assert ">/dev/null" not in line.split("doctor --liveness")[1], \
+            f"{fname} discards the liveness findings -- unhealthy with no reason attached"
+
+
+def test_nyxloomd_health_budget_is_the_same_in_the_instance_file_and_the_defaults():
+    """`ciu.toml` is the INSTANCE config and overrides `ciu.defaults.toml.j2`,
+    so a budget widened only in the template does not reach the deployment.
+    CR-16's second healthcheck stage costs a python start plus one event-log
+    read per registered project; under the old TCP-only 5s timeout a healthy
+    daemon can be marked unhealthy by its own outage detector."""
+    import tomllib
+    instance = tomllib.loads((NYXLOOMD_DIR / "ciu.toml").read_text(encoding="utf-8"))
+    defaults = tomllib.loads(
+        (NYXLOOMD_DIR / "ciu.defaults.toml.j2").read_text(encoding="utf-8"))
+    assert instance["nyxloomd"]["health"] == defaults["nyxloomd"]["health"], (
+        "nyxloomd/ciu.toml and ciu.defaults.toml.j2 disagree on the health "
+        "budget -- the instance file wins, so the template's value is a lie")
+
+
+# --------------------------------------------------------------------------
 # Oracle 1: CreateTask/Transition
 
 def test_create_task_and_transition(tmp_state, sample_project, patch_siblings, monkeypatch):
@@ -4674,7 +4709,13 @@ def test_log_level_post_emits_log_not_domain_event(http_daemon, tmp_state):
     """Oracle 4 (D-L4): the level change emits an INFO log record and
     appends NO domain event -- the event log is byte-for-byte unchanged
     across the POST, unlike every other POST /api/config/* endpoint on
-    this surface (which all append a CONFIG_CHANGED/PAUSE_* event)."""
+    this surface (which all append a CONFIG_CHANGED/PAUSE_* event).
+
+    CR-16 (RISK-007) keeps this oracle byte-exact: `http_daemon` runs the
+    REAL background reconcile loop, and CR-16's per-pass deadman heartbeat
+    is a GAUGE (one overwritten `meta` row), not an event, precisely so
+    that a once-per-pass liveness stamp does not enter -- or dilute -- the
+    event log this assertion is written against."""
     d = http_daemon
     base = f"http://127.0.0.1:{d.http_port}"
     log_dir = tmp_state / "logs"

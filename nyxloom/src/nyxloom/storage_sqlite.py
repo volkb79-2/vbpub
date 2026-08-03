@@ -264,6 +264,52 @@ def iter_events(project: str, since: int = 0) -> Iterator[Event]:
         yield _row_to_event(row, project)
 
 
+#: `meta` key holding the per-project reconcile deadman heartbeat (CR-16).
+_HEARTBEAT_KEY = "reconcile_heartbeat"
+
+
+def record_heartbeat(project: str) -> None:
+    """Stamp "a reconcile pass completed for this project, now" (CR-16).
+
+    A GAUGE, not an event: exactly one row in `meta`, overwritten in place.
+    The heartbeat is written once per reconcile pass -- every
+    `reconcile_interval_seconds` (30 by default), forever, per project --
+    so recording it as an event would append ~2,880 rows per project per
+    day against an organic rate of ~70-110/day measured on the live
+    stores. That is not a log any full-log reader survives, and `run_pass`
+    itself re-reads the WHOLE log every pass as an authoritative snapshot
+    input. Same database file, same durability, same restart-safety, same
+    "a separate process can read it with the daemon dead" property --
+    without turning the event log into a heartbeat log.
+    """
+    conn = _connect(project)
+    try:
+        # The writer guarantees the table: `_connect` only runs the schema
+        # DDL for a brand-new database, and `meta` has been in that schema
+        # since SP01 but was never written to, so this costs one no-op
+        # statement and removes a whole class of "reserved, therefore
+        # never actually exercised" surprise.
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+        conn.execute(
+            "INSERT INTO meta(k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            (_HEARTBEAT_KEY, iso(utc_now())),
+        )
+    finally:
+        conn.close()
+
+
+def read_heartbeat(project: str):
+    """The last `record_heartbeat` stamp, or None if none was ever written."""
+    conn = _connect(project)
+    try:
+        row = conn.execute(
+            "SELECT v FROM meta WHERE k = ?", (_HEARTBEAT_KEY,)).fetchone()
+    finally:
+        conn.close()
+    return parse_iso(row[0]) if row else None
+
+
 def load_state(project: str, task_id: str) -> TaskStateFile | None:
     conn = _connect(project)
     try:

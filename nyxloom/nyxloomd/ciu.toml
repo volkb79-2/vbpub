@@ -12,10 +12,17 @@ run_as_gid = 1003
 docker_gid = 994
 
 [nyxloomd.health]
-interval = "15s"
-timeout = "5s"
+# CR-16 2026-08-03 (RISK-007): kept in step with ciu.defaults.toml.j2, which
+# widened these for the healthcheck's new second stage (`nyxloom doctor
+# --liveness`: a python start, an event-log read per registered project, and a
+# bounded ntfy/webhook reachability probe). This INSTANCE file overrides the
+# defaults template, so leaving it at the old TCP-only 15s/5s/40s would have
+# silently kept the tighter budget in the deployment the template was widened
+# for -- a healthy daemon marked unhealthy by its own outage detector.
+interval = "20s"
+timeout = "12s"
 retries = 5
-start_period = "40s"
+start_period = "60s"
 
 [nyxloomd.logging]
 max_size = "10m"

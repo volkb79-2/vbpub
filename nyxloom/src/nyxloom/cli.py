@@ -421,17 +421,44 @@ def cmd_lint(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    """doctor [--project X] [--rebuild [--write]]"""
+    """doctor [--project X] [--rebuild [--write]] [--liveness]"""
     from . import config, doctor, storage
 
     registry = config.load_registry()
-    all_findings = []
 
     if args.project:
         projects = [args.project] if args.project in registry else []
     else:
         projects = list(registry.keys())
 
+    # CR-16 (RISK-007): the fast liveness-only path -- deadman, TICK_ERROR
+    # streak, and notify-transport reachability ONLY. Deliberately skips the
+    # other 11 checks, the host-scoped docker/cgroup checks, and rebuild:
+    # this is the path a container healthcheck runs on a tight interval
+    # (nyxloomd/docker-compose.yml), so it pays for exactly what it needs.
+    # It is still a plain CLI invocation -- no Daemon constructed, no HTTP
+    # server started -- which is what makes its own non-zero exit code an
+    # alarm path independent of the daemon being alive at all.
+    if args.liveness:
+        live_findings = []
+        # One shared transport-probe cache for the whole invocation: every
+        # registered project resolves the same NYXLOOM_NTFY_URL by default, so
+        # without it an N-project sweep makes N identical outbound requests and
+        # can serialise N x the probe timeout into the healthcheck's own
+        # wall-clock budget. See doctor._transport_finding.
+        probe_cache: dict = {}
+        for pid in projects:
+            cfg = config.ProjectConfig.load(registry[pid])
+            live_findings.extend(doctor.liveness_findings(cfg, probe_cache=probe_cache))
+        rows = [{
+            "kind": f.kind, "severity": f.severity, "message": f.message,
+            "project": f.project or "", "refs": ", ".join(f.refs) if f.refs else "",
+        } for f in live_findings]
+        if rows:
+            print(_format_table(rows, ["kind", "severity", "message", "project", "refs"]))
+        return 1 if any(f.severity in ("critical", "error") for f in live_findings) else 0
+
+    all_findings = []
     http_entries = []
     for pid in projects:
         root = registry[pid]
@@ -1891,6 +1918,13 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser.add_argument("--project", help="Project ID (optional)")
     doctor_parser.add_argument("--rebuild", action="store_true", help="Rebuild mode")
     doctor_parser.add_argument("--write", action="store_true", help="Write changes")
+    # CR-16 (RISK-007): the fast, narrowly-scoped path -- deadman,
+    # TICK_ERROR streak, notify-transport reachability ONLY, skipping the
+    # other 11 (slower, subprocess-touching) checks. See cmd_doctor and
+    # nyxloomd/docker-compose.yml's healthcheck.
+    doctor_parser.add_argument("--liveness", action="store_true",
+                                help="Liveness checks only (deadman, tick-error streak, "
+                                     "notify transport) -- fast path for a healthcheck")
 
     # status
     status_parser = subparsers.add_parser("status")

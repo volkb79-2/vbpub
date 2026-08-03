@@ -39,6 +39,22 @@ INTERFACE CONTRACT (frozen):
   counts per type, tasks merged (ids), total cost recorded in the window,
   decisions open count. Deterministic ordering. (Scheduling a daily digest
   is an operator cron concern, exposed via CLI 'nyxloom digest'.)
+
+CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
+RISK-007) adds:
+
+- probe_transport(nc, timeout=3.0) -> NotifyTransportProbe: an ACTIVE
+  reachability check for the configured push channel, distinct from
+  send() -- it never publishes a real notification (no title/body/topic
+  write), just confirms the channel answers, so it is safe to run on a
+  short poll cycle without becoming the notification-storm watchdog.py
+  exists to catch. 'healthy' | 'unreachable' | 'unconfigured'; NEVER
+  raises. This is the SECOND, independent alarm path RISK-007 requires:
+  doctor.liveness_findings calls it from a plain function call in a
+  freshly-started `nyxloom doctor` process, and reports the result via
+  DoctorFinding + process exit code -- a channel that has nothing to do
+  with ntfy/webhook, so 'the transport that carries the alarm is the
+  same transport that just failed' cannot happen here.
 """
 
 from __future__ import annotations
@@ -47,11 +63,14 @@ import http.server
 import json
 import os
 import threading
+import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from io import BytesIO
+from typing import Literal
 from urllib.parse import urlencode
 
-from . import storage
+from . import snapshot, storage
 from .config import NotifyConfig, ProjectConfig
 from .log import get_logger
 from .types import (
@@ -59,6 +78,41 @@ from .types import (
 )
 
 log = get_logger("notify")
+
+#: probe_transport's default network timeout. Short on purpose: it is meant
+#: to run from a container healthcheck on a tight interval (see
+#: nyxloomd/docker-compose.yml), and a slow/hung transport must fail the
+#: probe promptly rather than eat the healthcheck's own wall-clock budget.
+_DEFAULT_PROBE_TIMEOUT_S = 3.0
+
+NotifyTransportStatus = Literal["healthy", "unreachable", "unconfigured"]
+
+
+@dataclass(frozen=True)
+class NotifyTransportProbe:
+    """Result of one active reachability probe of the notification channel.
+
+    ``status``:
+      * ``"healthy"``      -- the configured endpoint answered at all (even a
+                              non-2xx HTTP response proves the TRANSPORT
+                              carried the request there and a response back;
+                              that is all this probe claims).
+      * ``"unreachable"``  -- a connection-level fault: refused, timed out,
+                              DNS failure, or similar. THE case RISK-007
+                              names ("the notification channel was
+                              crash-looping").
+      * ``"unconfigured"`` -- neither ntfy nor webhook is set up. Not a
+                              fault -- a project may legitimately run with no
+                              push channel at all.
+    """
+
+    status: NotifyTransportStatus
+    channel: str    # "ntfy" | "webhook" | "" (unconfigured)
+    detail: str
+
+    @property
+    def healthy(self) -> bool:
+        return self.status == "healthy"
 
 
 def notification_for(ev: Event) -> dict | None:
@@ -284,6 +338,55 @@ def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
     # No notification channel configured
     log.debug("notification unconfigured")
     return (False, "unconfigured")
+
+
+def probe_transport(nc: NotifyConfig, *, timeout: float = _DEFAULT_PROBE_TIMEOUT_S,
+                     ) -> NotifyTransportProbe:
+    """Active reachability probe for the configured push channel (CR-16).
+
+    Deliberately NOT `send()`: this never writes a title/body/topic, so it
+    is safe to run on a tight interval without becoming the very
+    notification storm watchdog.py exists to catch. ntfy wins if both are
+    configured, mirroring `send()`'s own precedence -- probing the channel
+    a real notify_event() call would actually use is the point.
+
+    A GET to the bare configured URL is enough: any HTTP response (even a
+    404/405 -- ntfy's root path and a webhook endpoint both routinely
+    reject a bare GET) proves the socket connected and the server answered,
+    which is everything this probe claims. A connection-level fault
+    (refused, DNS, timeout) OR a malformed configured URL (`ValueError` --
+    urllib's own reaction to e.g. a scheme-less string; an operator typo is
+    exactly as unreachable as a dead server, and this probe existing to be
+    a caller's ONE place to ask "can the channel be used" is defeated if a
+    typo instead raises past it) both mean the transport itself is down.
+    """
+    if nc.ntfy_url and nc.ntfy_topic:
+        try:
+            req = urllib.request.Request(nc.ntfy_url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout):
+                pass
+        except urllib.error.HTTPError as exc:
+            return NotifyTransportProbe(
+                "healthy", "ntfy", f"ntfy reachable (HTTP {exc.code})")
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+            return NotifyTransportProbe(
+                "unreachable", "ntfy", snapshot.bounded_detail(f"{type(exc).__name__}: {exc}"))
+        return NotifyTransportProbe("healthy", "ntfy", "ntfy reachable")
+
+    if nc.webhook_url:
+        try:
+            req = urllib.request.Request(nc.webhook_url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout):
+                pass
+        except urllib.error.HTTPError as exc:
+            return NotifyTransportProbe(
+                "healthy", "webhook", f"webhook reachable (HTTP {exc.code})")
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+            return NotifyTransportProbe(
+                "unreachable", "webhook", snapshot.bounded_detail(f"{type(exc).__name__}: {exc}"))
+        return NotifyTransportProbe("healthy", "webhook", "webhook reachable")
+
+    return NotifyTransportProbe("unconfigured", "", "no ntfy or webhook configured")
 
 
 def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event) -> None:

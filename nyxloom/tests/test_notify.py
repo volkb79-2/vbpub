@@ -963,3 +963,180 @@ class TestTokenAuth:
             assert captured["auth"] is None
         finally:
             srv.shutdown()
+
+
+# =========================================================================
+# CR-16 (RISK-007): probe_transport -- an ACTIVE reachability check for the
+# notification channel, distinct from send(). This is the second alarm path
+# doctor.liveness_findings drives: real local HTTP servers (never a
+# monkeypatched urlopen), so a probe that reported "healthy" against a
+# server that was never actually listening would be caught here.
+# =========================================================================
+
+from nyxloom.notify import NotifyTransportProbe, probe_transport  # noqa: E402
+
+
+def test_probe_transport_unconfigured_is_not_a_fault():
+    """Oracle: no ntfy/webhook configured -> 'unconfigured', not a fault --
+    a project may legitimately run with no push channel."""
+    probe = probe_transport(NotifyConfig())
+    assert probe.status == "unconfigured"
+    assert probe.channel == ""
+    assert probe.healthy is False
+
+
+def test_probe_transport_ntfy_reachable_on_200():
+    """Oracle: a real listening ntfy endpoint answering 200 -> 'healthy'."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        nc = NotifyConfig(ntfy_url=f"http://127.0.0.1:{port}", ntfy_topic="alerts")
+        probe = probe_transport(nc)
+    finally:
+        thread.join(timeout=2)
+        server.server_close()
+
+    assert probe == NotifyTransportProbe("healthy", "ntfy", "ntfy reachable")
+    assert probe.healthy is True
+
+
+def test_probe_transport_ntfy_reachable_even_on_http_error_status():
+    """Oracle: the probe claims only 'the transport carried a request there
+    and a response back' -- a 404/405 from a real server still proves that,
+    so it reads as 'healthy' too (this is what makes a bare GET against a
+    POST-only endpoint a safe, non-alarming probe)."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(405)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        nc = NotifyConfig(ntfy_url=f"http://127.0.0.1:{port}", ntfy_topic="alerts")
+        probe = probe_transport(nc)
+    finally:
+        thread.join(timeout=2)
+        server.server_close()
+
+    assert probe.status == "healthy"
+    assert probe.channel == "ntfy"
+    assert "405" in probe.detail
+
+
+def test_probe_transport_ntfy_unreachable_connection_refused():
+    """Oracle: THE case RISK-007 names ("the notification channel was
+    crash-looping") -- a connection-level fault reads as 'unreachable', and
+    the probe must not hang waiting for a timeout."""
+    nc = NotifyConfig(ntfy_url="http://127.0.0.1:1", ntfy_topic="alerts")
+    start = time.time()
+    probe = probe_transport(nc, timeout=1.0)
+    elapsed = time.time() - start
+
+    assert probe.status == "unreachable"
+    assert probe.channel == "ntfy"
+    assert probe.healthy is False
+    assert elapsed < 1.0
+
+
+def test_probe_transport_ntfy_wins_over_webhook_when_both_configured():
+    """Oracle: same precedence as send() -- probing the channel a real
+    notify_event() call would actually use is the point."""
+    nc = NotifyConfig(ntfy_url="http://127.0.0.1:1", ntfy_topic="alerts",
+                       webhook_url="http://127.0.0.1:1/hook")
+    probe = probe_transport(nc, timeout=1.0)
+    assert probe.channel == "ntfy"
+
+
+def test_probe_transport_webhook_used_when_ntfy_absent():
+    """Oracle: webhook-only configuration is probed too, same 'healthy on
+    any real response' rule as ntfy."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        nc = NotifyConfig(webhook_url=f"http://127.0.0.1:{port}/hook")
+        probe = probe_transport(nc)
+    finally:
+        thread.join(timeout=2)
+        server.server_close()
+
+    assert probe == NotifyTransportProbe("healthy", "webhook", "webhook reachable")
+
+
+def test_probe_transport_webhook_unreachable():
+    nc = NotifyConfig(webhook_url="http://127.0.0.1:1/hook")
+    probe = probe_transport(nc, timeout=1.0)
+    assert probe.status == "unreachable"
+    assert probe.channel == "webhook"
+
+
+def test_probe_transport_webhook_reachable_even_on_http_error_status():
+    """Webhook mirror of the ntfy 'any real response counts' case above."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        nc = NotifyConfig(webhook_url=f"http://127.0.0.1:{port}/hook")
+        probe = probe_transport(nc)
+    finally:
+        thread.join(timeout=2)
+        server.server_close()
+
+    assert probe.status == "healthy"
+    assert "404" in probe.detail
+
+
+def test_probe_transport_malformed_url_is_unreachable_not_a_crash():
+    """A real defect this package found in its OWN first draft: a
+    scheme-less/malformed configured URL makes urllib raise ValueError
+    (not URLError/OSError), which a narrower except tuple let escape --
+    turning an operator's URL typo into `nyxloom doctor` crashing instead of
+    reporting. Fixed by widening the except tuple; this is the regression
+    test for it."""
+    nc = NotifyConfig(ntfy_url="not-a-valid-url", ntfy_topic="alerts")
+    probe = probe_transport(nc, timeout=1.0)
+    assert probe.status == "unreachable"
+    assert probe.channel == "ntfy"
+
+
+def test_probe_transport_never_raises_and_never_leaks_the_url():
+    """The diagnostic detail must be safe to put in a DoctorFinding/log line
+    -- never the URL a webhook's own secret can be embedded in."""
+    nc = NotifyConfig(webhook_url="http://127.0.0.1:1/hook?token=sk-SECRET")
+    probe = probe_transport(nc, timeout=1.0)
+    assert "sk-SECRET" not in probe.detail
+    assert "127.0.0.1" not in probe.detail

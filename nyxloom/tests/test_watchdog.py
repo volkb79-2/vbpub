@@ -231,6 +231,101 @@ def test_attempt_loop_distinguishes_task_ids():
 
 
 # ============================================================================
+# (d) TICK_ERROR streak (CR-16, RISK-007)
+# ============================================================================
+
+def test_tick_error_streak_detected_above_threshold():
+    """Oracle: > K (default 3) TRAILING TICK_ERROR events -> a
+    'tick-error-streak' signal -- the shape of a daemon that is up, healthy
+    by its TCP check, and raising every single reconcile pass."""
+    base = _utc(2026, 8, 3, 12, 0)
+    events = [
+        make_event(i, EventType.TICK_ERROR, base + timedelta(minutes=i),
+                   payload={"error": "RuntimeError: boom"})
+        for i in range(1, 5)  # 4 > 3
+    ]
+    signals = detect_runaways(events, WatchdogConfig())
+    streaks = [s for s in signals if s.pattern == "tick-error-streak"]
+    assert len(streaks) == 1
+    assert streaks[0].key == "tick-error-streak"
+    assert streaks[0].detail == "4 consecutive TICK_ERROR events"
+
+
+def test_tick_error_streak_not_flagged_at_threshold():
+    """Negative: exactly K (3) consecutive -- not > K -- stays healthy."""
+    base = _utc(2026, 8, 3, 12, 0)
+    events = [
+        make_event(i, EventType.TICK_ERROR, base + timedelta(minutes=i))
+        for i in range(1, 4)  # exactly 3
+    ]
+    assert detect_runaways(events, WatchdogConfig()) == []
+
+
+def test_tick_error_streak_is_a_trailing_run_not_a_total_count():
+    """A per-CYCLE measure like (b): a HEALTHY event breaking the run resets
+    it, even though the total TICK_ERROR count over the whole window is
+    still well above the threshold."""
+    base = _utc(2026, 8, 3, 12, 0)
+    events = [
+        make_event(1, EventType.TICK_ERROR, base),
+        make_event(2, EventType.TICK_ERROR, base + timedelta(minutes=1)),
+        make_event(3, EventType.TICK_ERROR, base + timedelta(minutes=2)),
+        make_event(4, EventType.TICK_ERROR, base + timedelta(minutes=3)),
+        # A genuinely successful pass interrupts the streak.
+        make_event(5, EventType.TASK_TRANSITIONED, base + timedelta(minutes=4)),
+        make_event(6, EventType.TICK_ERROR, base + timedelta(minutes=5)),
+    ]
+    assert [s for s in detect_runaways(events, WatchdogConfig())
+            if s.pattern == "tick-error-streak"] == []
+
+
+def test_tick_error_streak_never_carries_the_free_text_error_payload():
+    """Injection boundary (module docstring): TICK_ERROR's payload['error']
+    is a free-text exception repr -- it must never leak into the key or the
+    detail, unlike (b)/(c)'s reason/task_id keys."""
+    base = _utc(2026, 8, 3, 12, 0)
+    events = [
+        make_event(i, EventType.TICK_ERROR, base + timedelta(minutes=i),
+                   payload={"error": "SECRET-LOOKING-TOKEN-abc123"})
+        for i in range(1, 6)
+    ]
+    signals = detect_runaways(events, WatchdogConfig())
+    streak = next(s for s in signals if s.pattern == "tick-error-streak")
+    assert "SECRET-LOOKING-TOKEN-abc123" not in streak.key
+    assert "SECRET-LOOKING-TOKEN-abc123" not in streak.detail
+
+
+def test_tick_error_streak_is_broken_by_any_event_the_daemon_writes_per_pass():
+    """The constraint CR-16's deadman heartbeat has to respect, stated as a
+    test on THIS module: (d) is a raw adjacency scan, so ANY event written
+    once per reconcile pass -- success or failure alike -- would sit between
+    every pair of TICK_ERRORs and permanently defeat the pattern. That is
+    exactly why the heartbeat is a gauge (storage.record_heartbeat, one
+    overwritten `meta` row) and not an event. This test fails the moment
+    someone reintroduces a per-pass event type."""
+    base = _utc(2026, 8, 3, 12, 0)
+    events = []
+    for i in range(5):
+        events.append(make_event(i * 2 + 1, EventType.TICK_ERROR,
+                                  base + timedelta(minutes=i * 2)))
+        events.append(make_event(i * 2 + 2, EventType.DAEMON_STARTED,
+                                  base + timedelta(minutes=i * 2 + 1)))
+    assert [s for s in detect_runaways(events, WatchdogConfig())
+            if s.pattern == "tick-error-streak"] == []
+
+
+def test_tick_error_streak_custom_threshold_more_sensitive():
+    base = _utc(2026, 8, 3, 12, 0)
+    events = [
+        make_event(i, EventType.TICK_ERROR, base + timedelta(minutes=i))
+        for i in range(1, 3)  # 2 consecutive
+    ]
+    assert detect_runaways(events, WatchdogConfig()) == []
+    signals = detect_runaways(events, WatchdogConfig(tick_error_streak_count=1))
+    assert any(s.pattern == "tick-error-streak" for s in signals)
+
+
+# ============================================================================
 # RunawaySignal itself
 # ============================================================================
 

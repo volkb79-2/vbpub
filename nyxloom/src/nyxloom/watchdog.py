@@ -19,12 +19,23 @@ never silently repeated forever. It is intentionally independent of the
 specific 'rejections' bug -- it looks at raw event shape, not at
 reconcile.py's specific branches.
 
-INTERFACE CONTRACT (frozen):
+CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
+RISK-007) ADDS pattern (d) below: every pattern up to that point detects
+TOO MUCH activity. Nothing here detected a daemon that is up, dispatching
+its HTTP healthcheck fine, and failing every single reconcile pass --
+exactly the shape a bare TCP check cannot see. (d) closes that gap using
+the SAME pure event-shape analysis as (a)-(c); the two OTHER RISK-007
+mechanisms -- the durable per-project heartbeat and the transport-health
+probe -- live in daemon.py/doctor.py and notify.py respectively, because
+neither is a pattern over one project's event window the way (a)-(d) are.
+
+INTERFACE CONTRACT (frozen except for CR-16's (d), see above):
 
 - WatchdogConfig: safe, conservative, configurable thresholds. Every field
   has a default so a caller need not tune anything to get protection.
 - RunawaySignal: one detected pattern.
     pattern: 'notification-storm' | 'reconcile-thrash' | 'attempt-loop'
+      | 'tick-error-streak'
     key: a STABLE dedup key for the underlying condition (same condition
       across calls -> same key; used by the daemon both to dedup the
       human escalation event and to track a same-condition streak for
@@ -58,9 +69,18 @@ INTERFACE CONTRACT (frozen):
       the same window (i.e. repeated attempts with no forward progress)
       (key 'attempt-loop:<task_id>').
 
+  (d) TICK_ERROR streak (CR-16, RISK-007): the TRAILING run of TICK_ERROR
+      events at the very tail of `recent_events` (emission order, not
+      time-windowed -- a per-CYCLE measure like (b)) is longer than
+      cfg.tick_error_streak_count (key 'tick-error-streak', a single fixed
+      key -- unlike (b)/(c) there is no reason/task_id to key on:
+      TICK_ERROR's payload['error'] is a free-text exception repr, never
+      safe to carry into a stable dedup key or a notification body, so the
+      detail below reports a count only).
+
   Order is deterministic: (a) total-volume storm, then (a) per-reason
   storms sorted by (type, reason), then (b) thrash, then (c) attempt-loop
-  sorted by task_id.
+  sorted by task_id, then (d) the tick-error streak.
 """
 
 from __future__ import annotations
@@ -84,11 +104,19 @@ class WatchdogConfig:
     reason_storm_count: int = 5
     thrash_consecutive_count: int = 5
     attempt_loop_count: int = 5
+    # CR-16 2026-08-03 (RISK-007): a healthy pass occasionally hits a single
+    # contained failure (the per-action isolation daemon.py's run_pass
+    # already has) -- three or more IN A ROW is not that, it is a daemon
+    # failing every cycle. Well below "every pass forever" (the RISK-007
+    # incident shape) and well above the occasional single TICK_ERROR a
+    # transient fault can legitimately produce.
+    tick_error_streak_count: int = 3
 
 
 @dataclass(frozen=True)
 class RunawaySignal:
     pattern: str   # 'notification-storm' | 'reconcile-thrash' | 'attempt-loop'
+                   # | 'tick-error-streak' (CR-16)
     key: str       # stable dedup key for the underlying condition
     detail: str    # short fixed-field description -- no event/handoff prose
 
@@ -165,6 +193,29 @@ def detect_runaways(recent_events: list[Event], cfg: WatchdogConfig) -> list[Run
                 key=f"attempt-loop:{task_id}",
                 detail=f"{count} attempts for {task_id} with no recorded progress",
             ))
+
+    # (d) TICK_ERROR streak (CR-16, RISK-007) -- trailing run at the tail of
+    # `recent_events`, in emission order (a per-CYCLE measure like (b), NOT
+    # time-windowed): a daemon that is up and answering its TCP healthcheck
+    # but raising every single pass. See module docstring.
+    #
+    # CR-16's own deadman heartbeat is deliberately NOT an event (it is a
+    # gauge -- storage.record_heartbeat), which is what keeps this raw
+    # adjacency scan meaningful: an event written at the end of every pass,
+    # success or failure alike, would sit between every pair of TICK_ERRORs
+    # and this pattern would never find two "consecutive".
+    tick_error_run = 0
+    for ev in reversed(recent_events):
+        if ev.type is EventType.TICK_ERROR:
+            tick_error_run += 1
+        else:
+            break
+    if tick_error_run > cfg.tick_error_streak_count:
+        signals.append(RunawaySignal(
+            pattern="tick-error-streak",
+            key="tick-error-streak",
+            detail=f"{tick_error_run} consecutive TICK_ERROR events",
+        ))
 
     return signals
 

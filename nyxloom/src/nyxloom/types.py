@@ -356,6 +356,15 @@ class EventType(enum.Enum):
     # `degraded` list) -- never one per pass, which is the notification-storm
     # shape reference/DOCTRINE.md and watchdog.py both exist to prevent.
     SNAPSHOT_DEGRADED = "SNAPSHOT_DEGRADED"
+    # CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
+    # RISK-007) deliberately adds NO event type. Its durable per-project
+    # deadman heartbeat fires once per reconcile pass, forever -- ~2,880 a day
+    # per project at the default 30s interval, against a measured organic rate
+    # of ~70-110 -- so it is a GAUGE (one overwritten row in the store's `meta`
+    # table; storage.record_heartbeat / read_heartbeat), not an event. This
+    # enum is the vocabulary of things that HAPPENED and is read back in full
+    # by run_pass, render, rebuild, and export; a per-tick liveness stamp
+    # belongs in none of them.
 
 
 class ActorKind(enum.Enum):

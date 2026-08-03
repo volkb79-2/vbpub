@@ -554,6 +554,262 @@ def test_doctor_decision_hold(sample_project):
         assert 'D-002' in decision_hold[0].refs
 
 
+# ============================================================================
+# CR-16 (RISK-007): liveness_findings -- reconcile-deadman, tick-error-streak,
+# notify-transport-unreachable. Folded into doctor_project's sweep AND
+# callable standalone; every case here drives the REAL function against a
+# REAL event log (storage.append_event with an explicit `timestamp=`), never
+# a mock of doctor.liveness_findings itself, so a regression that silently
+# stops reporting is caught rather than a mock that always agrees with the
+# code it is supposed to be checking.
+# ============================================================================
+
+from datetime import timedelta
+
+from nyxloom.doctor import liveness_findings
+from nyxloom.config import NotifyConfig
+
+
+def _aged_heartbeat(project: str, age_seconds: int) -> None:
+    """Stamp the REAL heartbeat gauge through the REAL writer with the
+    store's own clock wound back -- never direct SQL, so a test here breaks
+    if the gauge's location or format ever moves."""
+    old = utc_now() - timedelta(seconds=age_seconds)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(storage_sqlite, "utc_now", lambda: old)
+        storage.record_heartbeat(project)
+
+
+def _old_event(project: str, ev_type: EventType, age_seconds: int) -> None:
+    storage.append_event(
+        project, actor=Actor(ActorKind.TICK, "nyxloomd"), type=ev_type,
+        payload={}, timestamp=utc_now() - timedelta(seconds=age_seconds),
+    )
+
+
+def test_liveness_deadman_stale_heartbeat_is_critical(sample_project):
+    """Oracle: reconcile_interval_seconds (30, sample project default) *
+    deadman_multiple (5, Policy default) = 150s threshold. A heartbeat older
+    than that -> 'reconcile-deadman', critical."""
+    _aged_heartbeat("demo", age_seconds=999)
+
+    findings = liveness_findings(sample_project)
+    deadman = [f for f in findings if f.kind == "reconcile-deadman"]
+    assert len(deadman) == 1
+    assert deadman[0].severity == "critical"
+    assert deadman[0].project == "demo"
+
+
+def test_liveness_deadman_fresh_heartbeat_is_healthy(sample_project):
+    _aged_heartbeat("demo", age_seconds=1)
+    findings = liveness_findings(sample_project)
+    assert [f for f in findings if f.kind == "reconcile-deadman"] == []
+
+
+def test_liveness_deadman_heartbeat_wins_over_a_stale_event_log(sample_project):
+    """The gauge is the authority, not the log: an idle project whose newest
+    EVENT is ancient is still alive if the heartbeat is fresh -- which is the
+    whole reason the heartbeat exists rather than reusing "latest event"."""
+    _old_event("demo", EventType.DAEMON_STARTED, age_seconds=99999)
+    _aged_heartbeat("demo", age_seconds=1)
+    findings = liveness_findings(sample_project)
+    assert [f for f in findings if f.kind == "reconcile-deadman"] == []
+
+
+def test_liveness_deadman_no_events_at_all_is_not_yet_a_fault(sample_project):
+    """A project that has never ticked has nothing to measure against --
+    that is not the same claim as 'the daemon died'."""
+    findings = liveness_findings(sample_project)
+    assert [f for f in findings if f.kind == "reconcile-deadman"] == []
+
+
+def test_liveness_deadman_falls_back_to_latest_event_with_no_heartbeat(sample_project):
+    """No heartbeat recorded at all (e.g. this package's code landed on an
+    already-running store, and the daemon has not ticked since) still has
+    SOMETHING to anchor on -- the most recent event of any type -- rather
+    than reading as permanently, instantly stale."""
+    _old_event("demo", EventType.DAEMON_STARTED, age_seconds=1)
+    findings = liveness_findings(sample_project)
+    assert [f for f in findings if f.kind == "reconcile-deadman"] == []
+
+
+def test_liveness_deadman_stale_with_no_heartbeat_at_all_is_critical(sample_project):
+    _old_event("demo", EventType.DAEMON_STARTED, age_seconds=999)
+    findings = liveness_findings(sample_project)
+    assert len([f for f in findings if f.kind == "reconcile-deadman"]) == 1
+
+
+def test_liveness_tick_error_streak_is_critical(sample_project):
+    """Oracle: > tick_error_streak_count (3, WatchdogConfig default)
+    consecutive TICK_ERROR events -> 'tick-error-streak', critical -- the
+    daemon is looping (a fresh heartbeat keeps the deadman check
+    silent) but raising every pass."""
+    for _ in range(4):
+        storage.append_and_apply(
+            "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+            type=EventType.TICK_ERROR, payload={"error": "boom"})
+
+    findings = liveness_findings(sample_project)
+    streak = [f for f in findings if f.kind == "tick-error-streak"]
+    assert len(streak) == 1
+    assert streak[0].severity == "critical"
+    assert "4 consecutive TICK_ERROR" in streak[0].message
+
+
+def test_liveness_tick_error_streak_healthy_below_threshold(sample_project):
+    for _ in range(3):
+        storage.append_and_apply(
+            "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+            type=EventType.TICK_ERROR, payload={"error": "boom"})
+    findings = liveness_findings(sample_project)
+    assert [f for f in findings if f.kind == "tick-error-streak"] == []
+
+
+def test_liveness_tick_error_streak_from_a_resolved_burst_is_not_reported(sample_project):
+    """The recency guard (CR-16 review). watchdog's pattern (d) is a trailing
+    run in EMISSION order with no clock: a burst of TICK_ERRORs that ended --
+    the daemon recovered and the project has been quietly idle since, so no
+    later event ever displaced them -- would otherwise keep this check
+    critical forever, which through the container healthcheck means
+    permanently UNHEALTHY for a fault that is over. A FRESH heartbeat proves
+    the daemon is looping right now, so nothing at all should be reported."""
+    for _ in range(6):
+        _old_event("demo", EventType.TICK_ERROR, age_seconds=9999)
+    _aged_heartbeat("demo", age_seconds=1)
+
+    assert liveness_findings(sample_project) == []
+
+
+def test_liveness_transport_probe_is_shared_across_projects_via_the_cache(
+        sample_project, monkeypatch):
+    """One invocation of `nyxloom doctor --liveness` sweeps every registered
+    project, and they all resolve the SAME ntfy URL by default -- so the
+    probe must run once, not once per project. Without this the healthcheck
+    serialises N probe timeouts into its own wall-clock budget."""
+    from nyxloom import notify as notify_mod
+    calls = []
+
+    def _counting_probe(nc, **kwargs):
+        calls.append(nc.ntfy_url)
+        return notify_mod.NotifyTransportProbe("healthy", "ntfy", "ok")
+    monkeypatch.setattr(notify_mod, "probe_transport", _counting_probe)
+    sample_project.notify = NotifyConfig(ntfy_url="http://example.invalid", ntfy_topic="t")
+
+    cache: dict = {}
+    liveness_findings(sample_project, probe_cache=cache)
+    liveness_findings(sample_project, probe_cache=cache)
+    assert calls == ["http://example.invalid"]
+
+    # No cache -> a genuinely fresh probe every time.
+    liveness_findings(sample_project)
+    assert len(calls) == 2
+
+
+def test_liveness_transport_unreachable_is_critical(sample_project):
+    """Oracle: the SECOND, independent alarm path -- notify.probe_transport
+    reachability, reported through doctor's findings/exit code rather than
+    through the channel it is checking."""
+    sample_project.notify = NotifyConfig(ntfy_url="http://127.0.0.1:1", ntfy_topic="alerts")
+    findings = liveness_findings(sample_project)
+    unreachable = [f for f in findings if f.kind == "notify-transport-unreachable"]
+    assert len(unreachable) == 1
+    assert unreachable[0].severity == "critical"
+    assert unreachable[0].refs == ["ntfy"]
+
+
+def test_liveness_transport_unconfigured_is_healthy(sample_project):
+    """sample_project's [notify] section (conftest's SAMPLE_PROJECT_TOML) is
+    empty -- unconfigured must not read as a fault."""
+    findings = liveness_findings(sample_project)
+    assert [f for f in findings if f.kind.startswith("notify-transport")] == []
+
+
+def test_liveness_event_log_unreadable_is_a_critical_finding_not_a_crash(
+        sample_project, monkeypatch):
+    """The event log is what every one of the three checks reads. Unreadable
+    is the loudest possible liveness fault, not three silent skips."""
+    def _raise(*a, **k):
+        raise RuntimeError("store is down")
+    monkeypatch.setattr(storage, "iter_events", _raise)
+
+    findings = liveness_findings(sample_project)
+    assert len(findings) == 1
+    assert findings[0].kind == "liveness-check-failed"
+    assert findings[0].severity == "critical"
+    assert "store is down" in findings[0].message
+
+
+def test_liveness_one_check_failing_does_not_silence_the_others(
+        sample_project, monkeypatch):
+    """Isolation between the three checks: a bug in one (here, the deadman
+    check itself raising) must not silence the tick-error-streak check that
+    runs right alongside it -- a surface whose entire job is reporting must
+    not go quiet because of its OWN defect."""
+    def _boom(cfg, events):
+        raise RuntimeError("deadman check itself is broken")
+    monkeypatch.setattr("nyxloom.doctor._deadman_finding", _boom)
+    for _ in range(4):
+        storage.append_and_apply(
+            "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+            type=EventType.TICK_ERROR, payload={"error": "boom"})
+
+    findings = liveness_findings(sample_project)
+    kinds = {f.kind for f in findings}
+    assert "liveness-check-failed" in kinds
+    failed = next(f for f in findings if f.kind == "liveness-check-failed")
+    assert "reconcile-deadman" in failed.refs
+    assert "tick-error-streak" in kinds, "a sibling check's failure silenced this one"
+
+
+def test_doctor_project_folds_in_liveness_findings(sample_project):
+    """`nyxloom doctor`'s ordinary sweep (no --liveness) ALSO reports these
+    three -- an operator running the plain command sees them too, not only
+    the fast healthcheck path."""
+    _aged_heartbeat("demo", age_seconds=999)
+    findings = doctor_project(sample_project)
+    assert any(f.kind == "reconcile-deadman" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# cmd_doctor --liveness (cli.py)
+
+
+def test_cmd_doctor_liveness_flag_reports_critical_and_exits_nonzero(
+        sample_project, tmp_state, capsys):
+    """The container-healthcheck path end to end: a plain `nyxloom doctor
+    --liveness` CLI invocation -- no Daemon constructed anywhere in this
+    call -- observes a stale heartbeat and exits non-zero."""
+    _aged_heartbeat("demo", age_seconds=999)
+
+    exit_code = cli.main(["doctor", "--liveness"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "reconcile-deadman" in out
+
+
+def test_cmd_doctor_liveness_flag_healthy_exits_zero(sample_project, tmp_state, capsys):
+    _aged_heartbeat("demo", age_seconds=1)
+    exit_code = cli.main(["doctor", "--liveness"])
+    assert exit_code == 0
+
+
+def test_cmd_doctor_liveness_flag_skips_the_other_checks(sample_project, tmp_state, monkeypatch):
+    """The fast path never calls the other 11 checks or the host-scoped
+    ones -- it is a narrow, fast surface on purpose (see doctor.liveness_
+    findings' docstring)."""
+    called = []
+    monkeypatch.setattr("nyxloom.doctor.doctor_host", lambda: (called.append("host") or []))
+
+    def _tripwire_doctor_project(cfg):
+        called.append("doctor_project")
+        return []
+    monkeypatch.setattr("nyxloom.doctor.doctor_project", _tripwire_doctor_project)
+
+    cli.main(["doctor", "--liveness"])
+    assert called == []
+
+
 # Oracle 13: rebuild with divergence
 def test_rebuild_divergence_diffs(sample_project):
     """Oracle 13a: rebuild finds diffs when diverged."""
