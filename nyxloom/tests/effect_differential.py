@@ -406,6 +406,21 @@ def _scenarios() -> list[dict]:
                                                            proposal_id="p1"),
         },
         {
+            # The exit consumer's own refusal: an exit whose task is not in
+            # the state the leg was dispatched from is STALE, and consuming
+            # it would re-apply a verdict the task has already moved past.
+            "name": "emit-attempt-exit-no-receipt",
+            "seed": lambda p, cfg: (
+                _seed_task(p, "demo-D40", TaskState.ACTIVE),
+                _seed_attempt_full(p, "demo-D40", "att-d40",
+                                   role=Role.IMPLEMENTER,
+                                   state=AttemptState.RUNNING),
+            ),
+            "action": lambda: reconcile.EmitAttemptExit(task_id="demo-D40",
+                                                        attempt_id="att-d40"),
+            "expect_raises": True,
+        },
+        {
             "name": "auto-merge-conflict",
             "seed": lambda p, cfg: (
                 _branch_with_file(cfg.root, "feat/demo-D24",
@@ -586,7 +601,22 @@ def record(project: str, cfg: Any, monkeypatch: Any) -> dict:
         d = daemon.Daemon({project: cfg.root})
         action = scenario["action"]()
         states = storage.list_states(project)
-        events = d._execute(project, cfg, states, action)
+        if scenario.get("expect_raises"):
+            # Some effects RAISE on a premise the planner should have made
+            # true. run_pass's per-action isolation records that as a
+            # TICK_ERROR; the differential records the exception TYPE, since
+            # which exception it is is part of the behaviour.
+            try:
+                events = d._execute(project, cfg, states, action)
+            except Exception as exc:
+                out["scenarios"][scenario["name"]] = [
+                    {"raised": type(exc).__name__}]
+                teardown = scenario.get("teardown")
+                if teardown is not None:
+                    teardown(project)
+                continue
+        else:
+            events = d._execute(project, cfg, states, action)
         out["scenarios"][scenario["name"]] = [
             _event_row(ev, root, state_root) for ev in events]
         # A scenario that changes project-wide state (a pause flag) undoes it

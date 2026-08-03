@@ -307,6 +307,11 @@
       }
     ],
     "dispatch-implementer-admission-refused": [],
+    "emit-attempt-exit-no-receipt": [
+      {
+        "raised": "FileNotFoundError"
+      }
+    ],
     "interrupt-attempt-no-pid-files": [],
     "interrupt-attempt-unparseable-pid": [],
     "launch-gate-diagnosis": [

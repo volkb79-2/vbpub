@@ -451,12 +451,12 @@ class TestDaemonVerdictMapping:
         self._write("demo", TASK, ATTEMPT, verdict, **extra)
         d = daemon.Daemon({"demo": sample_project.root})
 
-        assert d._typed_verdict("demo", TASK, ATTEMPT,
+        assert d._exit._typed_verdict("demo", TASK, ATTEMPT,
                                  ResultKind.REVIEW_INDEPENDENT)[0] == expected
 
     def test_no_result_at_all_is_missing_with_a_reason(self, tmp_state, sample_project):
         d = daemon.Daemon({"demo": sample_project.root})
-        verdict, why = d._typed_verdict("demo", TASK, "att-never-ran",
+        verdict, why = d._exit._typed_verdict("demo", TASK, "att-never-ran",
                                          ResultKind.REVIEW_INDEPENDENT)
         assert verdict == "missing"
         assert why
@@ -471,7 +471,7 @@ class TestDaemonVerdictMapping:
         (attempt_dir / "attempt.log").write_bytes(b"tampered\n")
         d = daemon.Daemon({"demo": sample_project.root})
 
-        verdict, why = d._typed_verdict("demo", TASK, ATTEMPT,
+        verdict, why = d._exit._typed_verdict("demo", TASK, ATTEMPT,
                                          ResultKind.REVIEW_INDEPENDENT)
 
         assert verdict == "rejected"

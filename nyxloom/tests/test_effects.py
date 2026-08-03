@@ -108,10 +108,13 @@ class TestThisRepo:
 
     def test_every_legacy_handler_names_the_package_that_owns_moving_it(
             self, registry):
-        """Not merely "some package": the row says WHICH, so the remaining
-        work is a plan rather than a pile."""
-        owners = {s.kind: s.legacy_owner for s in registry.legacy_specs()}
-        assert owners and all(o in ("CR-05d", "CR-05e") for o in owners.values()), owners
+        """CR-05e emptied the legacy set: every action type is owned by an
+        effector module. The rule inverts rather than retires -- a legacy
+        registration reappearing is a REGRESSION now, not debt, and this is
+        what says so."""
+        assert registry.legacy_specs() == (), (
+            "a legacy handler reappeared: every action type has an effector "
+            f"module owner. {[s.kind for s in registry.legacy_specs()]}")
 
     def test_a_handler_that_starts_background_work_declares_an_idempotency_key(
             self, registry):
@@ -169,6 +172,8 @@ class TestThisRepo:
                                                       kind="headroom"),
             "admit-carve-proposal": reconcile.AdmitCarveProposal(
                 project="demo", proposal_id="p1"),
+            "emit-attempt-exit": reconcile.EmitAttemptExit(task_id="t1",
+                                                           attempt_id="a1"),
         }
         keys = {}
         for spec in registry.specs:
@@ -210,8 +215,16 @@ class TestThisRepo:
         source = (SRC / "daemon.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         legacy_fn = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == "_execute_legacy")
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == "_execute_legacy"),
+            None)
+        if legacy_fn is None:
+            # CR-05e deleted the ladder with the last family. The rule still
+            # binds: no ladder means the registry must declare no legacy.
+            assert not registry.legacy_specs(), (
+                "the ladder is gone but the registry still declares legacy "
+                f"handlers: {[s.kind for s in registry.legacy_specs()]}")
+            return
         in_ladder = set()
         for node in ast.walk(legacy_fn):
             if (isinstance(node, ast.Call)

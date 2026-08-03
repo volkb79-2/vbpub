@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import (adapters, daemon, lint, notify, paths, reconcile, render, results,
+from nyxloom import (adapters, daemon, effects_exit, lint, notify, paths, reconcile,
+                     render, results,
                      snapshot,
                      storage, wrapper)
 from nyxloom.config import Policy, ProjectConfig
@@ -219,7 +220,7 @@ def test_project_config_loads_reviewer_repair_from_toml(tmp_state, sample_projec
 
 def test_reviewer_repair_glob_matching_accepts_tests_rejects_src(tmp_state, sample_project):
     d = daemon.Daemon({"demo": sample_project.root})
-    offending = d._reviewer_repair_offending_paths(
+    offending = d._exit._reviewer_repair_offending_paths(
         sample_project,
         ["nyxloom/tests/test_x.py", "nyxloom/tests/conftest.py", "nyxloom/src/nyxloom/daemon.py"],
     )
@@ -228,7 +229,7 @@ def test_reviewer_repair_glob_matching_accepts_tests_rejects_src(tmp_state, samp
 
 def test_reviewer_repair_glob_matching_all_in_bounds_is_empty(tmp_state, sample_project):
     d = daemon.Daemon({"demo": sample_project.root})
-    offending = d._reviewer_repair_offending_paths(
+    offending = d._exit._reviewer_repair_offending_paths(
         sample_project, ["tests/test_a.py", "nyxloom/tests/conftest.py"])
     assert offending == []
 
@@ -356,7 +357,7 @@ def test_out_of_bounds_repair_revert_failure_still_forces_rejected(
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
     d = daemon.Daemon({"demo": cfg.root})
-    monkeypatch.setattr(d, "_revert_reviewer_repair", lambda *a, **k: False)
+    monkeypatch.setattr(d._exit, "_revert_reviewer_repair", lambda *a, **k: False)
     d.run_pass("demo")
 
     assert storage.load_state("demo", task_id).state is TaskState.REVIEW_REJECTED
@@ -507,7 +508,7 @@ def test_verdict_is_repaired_false_when_no_review_report(tmp_state, sample_proje
     task_id = "t-no-review-yet"
     _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
     d = daemon.Daemon({"demo": cfg.root})
-    assert d._verdict_is_repaired(cfg, task_id) is False
+    assert d._exit._verdict_is_repaired(cfg, task_id) is False
 
 
 def test_pre_review_sha_storage_error_is_typed_unavailable(tmp_state, sample_project,
@@ -526,7 +527,7 @@ def test_pre_review_sha_storage_error_is_typed_unavailable(tmp_state, sample_pro
 
     monkeypatch.setattr(storage, "iter_events", boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._pre_review_sha("demo", "t-x", "att-x")
+        d._exit._pre_review_sha("demo", "t-x", "att-x")
 
 
 def test_pre_review_sha_returns_none_when_no_matching_attempt_created(tmp_state, sample_project):
@@ -537,7 +538,7 @@ def test_pre_review_sha_returns_none_when_no_matching_attempt_created(tmp_state,
     d = daemon.Daemon({"demo": sample_project.root})
     _seed_review_attempt("demo", "t-other", "att-other", pre_review_sha="deadbeef")
     _write_typed_result("demo", "t-other", "att-other", results.Verdict.APPROVED)
-    assert d._pre_review_sha("demo", "t-other", "att-DIFFERENT") is None
+    assert d._exit._pre_review_sha("demo", "t-other", "att-DIFFERENT") is None
 
 
 def test_reviewer_repair_touched_paths_none_on_git_diff_failure_NOT_EMPTY(
@@ -560,13 +561,13 @@ def test_reviewer_repair_touched_paths_none_on_git_diff_failure_NOT_EMPTY(
     d = daemon.Daemon({"demo": cfg.root})
 
     # Could not look -> None.
-    assert d._reviewer_repair_touched_paths(
+    assert d._exit._reviewer_repair_touched_paths(
         cfg, task_id, "not-a-real-sha-deadbeef") is None
 
     # Looked, found nothing -> [] (the genuinely benign case it must not be
     # confused with): diffing a real branch head against itself.
     head = _branch_head(cfg.root, task_id)
-    assert d._reviewer_repair_touched_paths(cfg, task_id, head) == []
+    assert d._exit._reviewer_repair_touched_paths(cfg, task_id, head) == []
 
 
 def test_undeterminable_diff_rejects_like_a_missing_baseline(
@@ -583,10 +584,10 @@ def test_undeterminable_diff_rejects_like_a_missing_baseline(
     _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
     d = daemon.Daemon({"demo": cfg.root})
     baseline = _branch_head(cfg.root, task_id)
-    monkeypatch.setattr(d, "_pre_review_sha", lambda *a, **kw: baseline)
-    monkeypatch.setattr(d, "_reviewer_repair_touched_paths", lambda *a, **kw: None)
+    monkeypatch.setattr(d._exit, "_pre_review_sha", lambda *a, **kw: baseline)
+    monkeypatch.setattr(d._exit, "_reviewer_repair_touched_paths", lambda *a, **kw: None)
 
-    outcome, details = d._enforce_reviewer_repair("demo", cfg, task_id, "att-x")
+    outcome, details = d._exit._enforce_reviewer_repair("demo", cfg, task_id, "att-x")
     assert outcome == "rejected"
     assert details["reason"] == "undeterminable_diff"
 
@@ -612,7 +613,7 @@ def test_reviewer_repair_touched_paths_skips_blank_diff_lines(tmp_state, sample_
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     d = daemon.Daemon({"demo": cfg.root})
-    touched = d._reviewer_repair_touched_paths(cfg, task_id, baseline)
+    touched = d._exit._reviewer_repair_touched_paths(cfg, task_id, baseline)
     assert touched == ["tests/test_a.py", "src/b.py"]
 
 
@@ -623,7 +624,7 @@ def test_revert_reviewer_repair_repo_root_unresolved_returns_false(tmp_state, tm
     non_git_dir.mkdir()
     cfg_stub = types.SimpleNamespace(root=non_git_dir)
     d = daemon.Daemon({})
-    ok = d._revert_reviewer_repair("demo", cfg_stub, "t-x", "deadbeef")
+    ok = d._exit._revert_reviewer_repair("demo", cfg_stub, "t-x", "deadbeef")
     assert ok is False
 
 
@@ -631,7 +632,7 @@ def test_revert_reviewer_repair_branch_tip_unresolved_returns_false(tmp_state, s
     """_revert_reviewer_repair's `tip_res.returncode != 0` branch: the repo
     resolves fine, but feat/<task_id> does not exist."""
     d = daemon.Daemon({"demo": sample_project.root})
-    ok = d._revert_reviewer_repair("demo", sample_project, "t-does-not-exist", "deadbeef")
+    ok = d._exit._revert_reviewer_repair("demo", sample_project, "t-does-not-exist", "deadbeef")
     assert ok is False
 
 
@@ -653,7 +654,7 @@ def test_revert_reviewer_repair_worktree_add_failure_returns_false(tmp_state, sa
     scratch.write_text("occupied by a stray file, not a real worktree")
 
     d = daemon.Daemon({"demo": cfg.root})
-    ok = d._revert_reviewer_repair("demo", cfg, task_id, baseline)
+    ok = d._exit._revert_reviewer_repair("demo", cfg, task_id, baseline)
     assert ok is False
 
 
@@ -686,7 +687,7 @@ def test_revert_reviewer_repair_git_revert_command_failure_aborts_and_returns_fa
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     d = daemon.Daemon({"demo": cfg.root})
-    ok = d._revert_reviewer_repair("demo", cfg, task_id, baseline)
+    ok = d._exit._revert_reviewer_repair("demo", cfg, task_id, baseline)
     assert ok is False
     assert abort_calls, "revert --abort must be issued on a failed revert"
 
@@ -712,5 +713,5 @@ def test_revert_reviewer_repair_update_ref_cas_refused_returns_false(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     d = daemon.Daemon({"demo": cfg.root})
-    ok = d._revert_reviewer_repair("demo", cfg, task_id, baseline)
+    ok = d._exit._revert_reviewer_repair("demo", cfg, task_id, baseline)
     assert ok is False

@@ -885,7 +885,7 @@ def test_scope_amendment_helpers_fail_closed_on_storage_error(
 
     monkeypatch.setattr(storage, "iter_events", _boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._scope_amendments_approved("demo", TASK_ID)
+        d._exit._scope_amendments_approved("demo", TASK_ID)
     with pytest.raises(snapshot.SnapshotUnavailable):
         d._scope_amendment_files("demo", TASK_ID)
 

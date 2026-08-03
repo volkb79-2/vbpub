@@ -15,7 +15,9 @@ import dataclasses
 
 import pytest
 
-from nyxloom import effects, effects_carve, effects_carver, storage
+from nyxloom import (
+    effects, effects_carve, effects_carver, effects_lifecycle, storage,
+)
 from nyxloom.types import (
     Actor, ActorKind, Event, EventType, TaskState, TaskStateFile, utc_now,
 )
@@ -24,7 +26,9 @@ from nyxloom.types import (
 def _effector():
     ports = effects.EffectPorts.system()
     return effects_carve.CarveEffector(
-        ports, effects_carver.CarverEffector(ports))
+        ports, effects_carver.CarverEffector(ports),
+        effects_lifecycle.LifecycleEffector(
+            ports, effects.ProviderPauseRegistry(ports.clock)))
 
 
 def _review(task_id: str, result: str, seq: int) -> Event:

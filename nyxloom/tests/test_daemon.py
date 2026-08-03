@@ -30,7 +30,8 @@ from conftest import SAMPLE_ROUTES_TOML
 from nyxloom import (
     effects_carve,
     adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
-    effects_dispatch, effects_gates, effects_review, lint, log, notify, paths, reconcile,
+    effects_attempt, effects_dispatch, effects_gates, effects_review, lint, log,
+    notify, paths, reconcile,
     render, results, snapshot, storage, wrapper,
 )
 from nyxloom.types import (
@@ -4127,21 +4128,21 @@ def test_parse_reject_class_unit(tmp_state, sample_project):
     _make_feature_branch(cfg.root, "t-pc-1", "a.py", "# a\n")
     _commit_review_report(cfg.root, "t-pc-1", cfg.reports_dir,
                           "VERDICT: REJECTED\nREJECT_CLASS: product\n")
-    assert d._parse_reject_class(cfg, "t-pc-1") == "product"
+    assert effects_review.parse_reject_class(d._ports.git, cfg, "t-pc-1") == "product"
 
     _make_feature_branch(cfg.root, "t-pc-2", "b.py", "# b\n")
     _commit_review_report(cfg.root, "t-pc-2", cfg.reports_dir, "VERDICT: REJECTED\n")
-    assert d._parse_reject_class(cfg, "t-pc-2") is None
+    assert effects_review.parse_reject_class(d._ports.git, cfg, "t-pc-2") is None
 
     _make_feature_branch(cfg.root, "t-pc-3", "c.py", "# c\n")
     _commit_review_report(cfg.root, "t-pc-3", cfg.reports_dir,
                           "VERDICT: REJECTED\nREJECT_CLASS: totally-bogus\n")
-    assert d._parse_reject_class(cfg, "t-pc-3") is None
+    assert effects_review.parse_reject_class(d._ports.git, cfg, "t-pc-3") is None
 
     _make_feature_branch(cfg.root, "t-pc-4", "d.py", "# d\n")
     _commit_review_report(cfg.root, "t-pc-4", cfg.reports_dir,
                           "VERDICT: REJECTED\nREJECT_CLASS: incapable\n")
-    assert d._parse_reject_class(cfg, "t-pc-4") == "incapable"
+    assert effects_review.parse_reject_class(d._ports.git, cfg, "t-pc-4") == "incapable"
 
 
 def test_review_rationale_unit(tmp_state, sample_project):
@@ -4153,17 +4154,17 @@ def test_review_rationale_unit(tmp_state, sample_project):
     _make_feature_branch(cfg.root, "t-rr-1", "a.py", "# a\n")
     _commit_review_report(cfg.root, "t-rr-1", cfg.reports_dir,
                           "# Review\n\nThe cap is off by one.\n\nVERDICT: REJECTED\n")
-    got = d._review_rationale(cfg, "t-rr-1")
+    got = effects_attempt.review_rationale(d._ports.git, cfg, "t-rr-1")
     assert got is not None and "cap is off by one" in got
 
     # NEGATIVE: a branch with no committed review at all.
     _make_feature_branch(cfg.root, "t-rr-2", "b.py", "# b\n")
-    assert d._review_rationale(cfg, "t-rr-2") is None
+    assert effects_attempt.review_rationale(d._ports.git, cfg, "t-rr-2") is None
 
     # bounded: an oversized review is truncated.
     _make_feature_branch(cfg.root, "t-rr-3", "c.py", "# c\n")
     _commit_review_report(cfg.root, "t-rr-3", cfg.reports_dir, "X" * 9000 + "\nVERDICT: REJECTED\n")
-    bounded = d._review_rationale(cfg, "t-rr-3", max_chars=4000)
+    bounded = effects_attempt.review_rationale(d._ports.git, cfg, "t-rr-3", max_chars=4000)
     assert bounded is not None and len(bounded) < 5000
     assert "truncated" in bounded
 
@@ -6470,8 +6471,8 @@ def test_carver_ack_O1_headline_no_refire(
     states = {task_id: tsf}
 
     # -- call the exit consumer
-    events = d._consume_carver_session_exit(
-        project, cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context(project, cfg, states), task_id, attempt_id)
 
     # -- verify CARVER_CONTEXT_CONSUMED was emitted with highest sequence
     consumed = [e for e in events
@@ -6536,8 +6537,8 @@ def test_carver_ack_O2_failed_turn_no_emit(
     d = daemon.Daemon({project: cfg.root})
     states = {task_id: tsf}
 
-    events = d._consume_carver_session_exit(
-        project, cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context(project, cfg, states), task_id, attempt_id)
 
     consumed = [e for e in events
                 if e.type is EventType.CARVER_CONTEXT_CONSUMED]
@@ -6577,8 +6578,8 @@ def test_carver_ack_O3_only_merge_feed(
     d = daemon.Daemon({project: cfg.root})
     states = {task_id: tsf}
 
-    events = d._consume_carver_session_exit(
-        project, cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context(project, cfg, states), task_id, attempt_id)
 
     consumed = [e for e in events
                 if e.type is EventType.CARVER_CONTEXT_CONSUMED]
@@ -6720,8 +6721,8 @@ def test_carver_ack_O5_byte_identical_off(
     d2 = daemon.Daemon({project: cfg.root})
     states = {task_id: tsf}
 
-    events = d2._consume_carver_session_exit(
-        project, cfg, states, task_id, attempt_id)
+    events = d2._carver.consume_session_exit(
+        d2._effect_context(project, cfg, states), task_id, attempt_id)
 
     consumed = [e for e in events
                 if e.type is EventType.CARVER_CONTEXT_CONSUMED]
@@ -7122,7 +7123,7 @@ def test_parse_reject_class_transient(tmp_state, sample_project):
     d = daemon.Daemon({"demo": cfg.root})
     _make_feature_branch(cfg.root, "t-pc-tr", "a.py", "# a\n")
     _commit_review_report(cfg.root, "t-pc-tr", cfg.reports_dir, "REJECT_CLASS: transient\n")
-    assert d._parse_reject_class(cfg, "t-pc-tr") == "transient"
+    assert effects_review.parse_reject_class(d._ports.git, cfg, "t-pc-tr") == "transient"
 
 
 def test_attempt_has_review_recorded(tmp_state, sample_project, monkeypatch):
@@ -7130,15 +7131,15 @@ def test_attempt_has_review_recorded(tmp_state, sample_project, monkeypatch):
     d = daemon.Daemon({"demo": cfg.root})
     _seed_review_rejected("demo", "t-ahr", attempts=[])
     _emit_review_recorded("demo", "t-ahr", "rejected", attempt_id="att-bound")
-    assert d._attempt_has_review_recorded("demo", "att-bound") is True
-    assert d._attempt_has_review_recorded("demo", "att-absent") is False
+    assert d._exit._attempt_has_review_recorded("demo", "att-bound") is True
+    assert d._exit._attempt_has_review_recorded("demo", "att-absent") is False
     # CR-02a: False means "this review leg has NOT been consumed", so an
     # unreadable log used to authorize RE-consuming a verdict that was
     # already recorded. It is a typed fault now; the genuine
     # not-yet-consumed case above is the negative control.
     monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._attempt_has_review_recorded("demo", "att-bound")
+        d._exit._attempt_has_review_recorded("demo", "att-bound")
 
 
 def test_gate_diagnosis_architectural_routes_to_carve_end_to_end(tmp_state, sample_project):
