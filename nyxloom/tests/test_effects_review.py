@@ -319,7 +319,14 @@ def _routes():
     return Routes(
         revision="test-rev",
         tiers={"frontier-review": ["review-route"]},
+        # CR-13a review: `trust` is REQUIRED, not defaulted -- a local fake
+        # script is the operator's own. Without it this route requires
+        # containment, `launch_review`'s admission gate refuses (no image is
+        # configured in a test environment), no spec is ever built, and the
+        # wave-lease oracle below fails for a reason that has nothing to do
+        # with leases. CR-13a's own fixture-posture pass missed this one.
         routes={"review-route": RouteDef(route_id="review-route", cli="fake",
                                          model="review-model",
+                                         trust="operator",
                                          role_default="review-independent")},
     )
