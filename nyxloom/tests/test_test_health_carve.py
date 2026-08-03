@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, snapshot, storage
+from nyxloom import (
+    daemon, effects_carve, lint, paths, reconcile, snapshot, storage,
+)
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import CarveDispatch, ReconcileInput, plan_project
 from nyxloom.types import (
@@ -297,12 +299,12 @@ def test_carve_kind_reads_the_notes_marker(notes, expected):
         schema_version=storage.SCHEMA_VERSION, task_id="carve-demo-1", project="demo",
         state=TaskState.ACTIVE, since=utc_now(), handoff_path=None, notes=notes,
     )
-    assert daemon.Daemon._carve_kind({"carve-demo-1": tsf}, "carve-demo-1") == expected
+    assert effects_carve.CarveEffector._carve_kind({"carve-demo-1": tsf}, "carve-demo-1") == expected
 
 
 def test_carve_kind_unknown_task_is_headroom():
-    assert daemon.Daemon._carve_kind({}, "nope") == "headroom"
-    assert daemon.Daemon._carve_kind({}, None) == "headroom"
+    assert effects_carve.CarveEffector._carve_kind({}, "nope") == "headroom"
+    assert effects_carve.CarveEffector._carve_kind({}, None) == "headroom"
 
 
 # ==========================================================================
@@ -593,7 +595,7 @@ def test_test_health_dispatch_stamps_the_durable_marker_END_TO_END(
 
     tsf = storage.load_state("demo", task_id)
     assert "kind=test-health" in tsf.notes
-    assert daemon.Daemon._carve_kind({task_id: tsf}, task_id) == "test-health"
+    assert effects_carve.CarveEffector._carve_kind({task_id: tsf}, task_id) == "test-health"
 
     age = daemon.Daemon({"demo": sample_project.root})._days_since_test_health_carve("demo")
     assert age is not None and age < 1.0
@@ -626,7 +628,7 @@ def test_headroom_dispatch_stamps_no_marker_THE_NEGATIVE(
 
 def _packet(cfg, kind: str) -> str:
     d = daemon.Daemon({"demo": cfg.root})
-    return d._build_carve_packet(cfg, "demo", 7, {}, own_task_id="carve-demo-7", kind=kind)
+    return d._carve._build_carve_packet(cfg, "demo", 7, {}, own_task_id="carve-demo-7", kind=kind)
 
 
 def test_test_health_packet_states_the_pass_and_authorizes_carving_nothing(

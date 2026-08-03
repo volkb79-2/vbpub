@@ -27,7 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, storage
+from nyxloom import (
+    daemon, effects_carve, lint, paths, reconcile, storage,
+)
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, EventType, Receipt, ReceiptResult,
     Role, Route, TaskState, TaskStateFile, utc_now,
@@ -192,10 +194,11 @@ def test_oracle_5_bounded_sampling_most_recent_first(monkeypatch):
             schema_version=storage.SCHEMA_VERSION, task_id=tid, project="demo",
             state=TaskState.COMPLETED, since=now - timedelta(days=i), handoff_path=None,
         )
-    capturing = _CapturingLog(daemon.log)
-    monkeypatch.setattr(daemon, "log", capturing)
+    # CR-05f: the truncation notice is the CARVE effector's log line now.
+    capturing = _CapturingLog(effects_carve.log)
+    monkeypatch.setattr(effects_carve, "log", capturing)
 
-    sampled = d._sample_verdict_audit_tasks(states, sample_size=2)
+    sampled = d._carve._sample_verdict_audit_tasks(states, sample_size=2)
 
     assert [t.task_id for t in sampled] == ["demo-P0", "demo-P1"]  # most recent first
     dropped_calls = [kw for msg, kw in capturing.calls if msg == "verdict-audit-sample-truncated"]
@@ -217,7 +220,7 @@ def test_oracle_5_negative_no_truncation_no_log(monkeypatch):
     capturing = _CapturingLog(daemon.log)
     monkeypatch.setattr(daemon, "log", capturing)
 
-    sampled = d._sample_verdict_audit_tasks(states, sample_size=5)
+    sampled = d._carve._sample_verdict_audit_tasks(states, sample_size=5)
 
     assert [t.task_id for t in sampled] == ["demo-P0"]
     assert not any(msg == "verdict-audit-sample-truncated" for msg, _kw in capturing.calls)
@@ -236,7 +239,7 @@ def test_sample_excludes_non_completed_tasks():
             schema_version=storage.SCHEMA_VERSION, task_id="demo-P1", project="demo",
             state=TaskState.ACTIVE, since=now, handoff_path=None),
     }
-    sampled = d._sample_verdict_audit_tasks(states, sample_size=5)
+    sampled = d._carve._sample_verdict_audit_tasks(states, sample_size=5)
     assert [t.task_id for t in sampled] == ["demo-P0"]
 
 
@@ -251,7 +254,7 @@ def test_task_final_diff_none_when_no_merge_commit(tmp_state, sample_project):
         schema_version=storage.SCHEMA_VERSION, task_id="demo-P50", project="demo",
         state=TaskState.COMPLETED, since=utc_now(), handoff_path=None, merge_commit=None,
     )
-    assert d._task_final_diff(sample_project, tsf) is None
+    assert d._carve._task_final_diff(sample_project, tsf) is None
 
 
 def test_task_final_diff_none_when_git_fails(tmp_state, sample_project):
@@ -263,7 +266,7 @@ def test_task_final_diff_none_when_git_fails(tmp_state, sample_project):
         state=TaskState.COMPLETED, since=utc_now(), handoff_path=None,
         merge_commit="deadbeef" * 5,
     )
-    assert d._task_final_diff(sample_project, tsf) is None
+    assert d._carve._task_final_diff(sample_project, tsf) is None
 
 
 def test_task_final_diff_real_content(tmp_state, sample_project):
@@ -274,7 +277,7 @@ def test_task_final_diff_real_content(tmp_state, sample_project):
         schema_version=storage.SCHEMA_VERSION, task_id="demo-P51", project="demo",
         state=TaskState.COMPLETED, since=utc_now(), handoff_path=None, merge_commit=merge_sha,
     )
-    diff = d._task_final_diff(sample_project, tsf)
+    diff = d._carve._task_final_diff(sample_project, tsf)
     assert diff is not None
     assert "src_p51.py" in diff
     assert "p51 content" in diff
@@ -300,7 +303,7 @@ def test_task_final_diff_genuinely_empty_is_not_none(tmp_state, sample_project):
         schema_version=storage.SCHEMA_VERSION, task_id="demo-P52", project="demo",
         state=TaskState.COMPLETED, since=utc_now(), handoff_path=None, merge_commit=merge_sha,
     )
-    diff = d._task_final_diff(sample_project, tsf)
+    diff = d._carve._task_final_diff(sample_project, tsf)
     assert diff == ""
     assert diff is not None
 
@@ -334,7 +337,7 @@ def test_empty_diff_renders_its_own_message_not_the_unavailable_one(
 
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
-    body = "\n".join(d._carve_packet_body_lines(
+    body = "\n".join(d._carve._carve_packet_body_lines(
         cfg, "demo", seq=1, states=states, kind="gap-audit"))
 
     assert "Diff: (empty -- merge introduced no changes)" in body
@@ -362,7 +365,7 @@ def test_oracle_4_component_grouping(tmp_state, sample_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
     body = "\n".join(lines)
 
     assert "### Component: worker" in body
@@ -395,7 +398,7 @@ def test_oracle_4_negative_missing_component_degrades(tmp_state, sample_project)
 
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
     body = "\n".join(lines)
 
     assert "### Component: (uncategorized)" in body
@@ -413,7 +416,7 @@ def test_missing_handoff_still_audits_never_crashes(tmp_state, sample_project):
 
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
     body = "\n".join(lines)
 
     assert "### Component: (uncategorized)" in body
@@ -426,7 +429,7 @@ def test_no_completed_tasks_yields_explicit_note(tmp_state, sample_project):
     cfg = sample_project
     cfg.policy.verdict_audit_sample_size = 5
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
     body = "\n".join(lines)
     assert "No COMPLETED tasks are available to sample this pass." in body
 
@@ -453,7 +456,7 @@ def test_oracle_3_prompt_never_contains_recorded_verdict_or_rationale(tmp_state,
 
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
     body = "\n".join(lines)
 
     assert "demo-P70" in body  # sanity: the task IS in the packet
@@ -469,7 +472,7 @@ def test_oracle_3_output_contract_never_mentions_recorded_fields(tmp_state, samp
     body lines."""
     cfg = sample_project
     cfg.policy.verdict_audit_sample_size = 5
-    packet = daemon.Daemon({"demo": cfg.root})._build_carve_packet(
+    packet = daemon.Daemon({"demo": cfg.root})._carve._build_carve_packet(
         cfg, "demo", seq=1, states={}, kind="gap-audit")
     assert '"verdict_audit"' in packet
     assert "REJECT_CLASS" not in packet
@@ -490,11 +493,11 @@ def test_oracle_6_disabled_no_verdict_audit_section(tmp_state, sample_project):
     assert cfg.policy.verdict_audit_sample_size == 0  # ships disabled
 
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
     body = "\n".join(lines)
     assert "Verdict audit" not in body
 
-    packet = d._build_carve_packet(cfg, "demo", seq=1, states={}, kind="gap-audit")
+    packet = d._carve._build_carve_packet(cfg, "demo", seq=1, states={}, kind="gap-audit")
     assert "verdict_audit" not in packet
 
 
@@ -510,7 +513,7 @@ def test_oracle_6_disabled_even_with_completed_tasks_present(tmp_state, sample_p
 
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states=states, kind="gap-audit")
     body = "\n".join(lines)
     assert "Verdict audit" not in body
     # The pre-existing (pre-GAP2) '## Current queue' section legitimately
@@ -528,7 +531,7 @@ def test_verdict_audit_is_gap_audit_only_negative(tmp_state, sample_project):
     cfg = sample_project
     cfg.policy.verdict_audit_sample_size = 5
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="test-health")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="test-health")
     body = "\n".join(lines)
     assert "Verdict audit" not in body
 
@@ -543,7 +546,7 @@ def test_oracle_1_disagreement_yields_disputed_candidate(tmp_state, sample_proje
     _record_review("demo", "demo-P80", "approved")
 
     d = daemon.Daemon({"demo": cfg.root})
-    disputes = d._verdict_audit_disputes(
+    disputes = d._carve._verdict_audit_disputes(
         "demo", [{"task_id": "demo-P80", "judgment": "REJECTED", "rationale": "looks unsafe"}])
 
     assert len(disputes) == 1
@@ -558,7 +561,7 @@ def test_oracle_2_agreement_produces_nothing(tmp_state, sample_project):
     _record_review("demo", "demo-P81", "approved")
 
     d = daemon.Daemon({"demo": cfg.root})
-    disputes = d._verdict_audit_disputes(
+    disputes = d._carve._verdict_audit_disputes(
         "demo", [{"task_id": "demo-P81", "judgment": "APPROVED", "rationale": "looks fine"}])
 
     assert disputes == []
@@ -572,7 +575,7 @@ def test_oracle_2_agreement_on_rejected_also_produces_nothing(tmp_state, sample_
     _record_review("demo", "demo-P82", "rejected")
 
     d = daemon.Daemon({"demo": cfg.root})
-    disputes = d._verdict_audit_disputes(
+    disputes = d._carve._verdict_audit_disputes(
         "demo", [{"task_id": "demo-P82", "judgment": "REJECTED", "rationale": "confirmed unsafe"}])
 
     assert disputes == []
@@ -582,7 +585,7 @@ def test_verdict_audit_disputes_skips_malformed_entries(tmp_state, sample_projec
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
     _record_review("demo", "demo-P83", "approved")
-    disputes = d._verdict_audit_disputes("demo", [
+    disputes = d._carve._verdict_audit_disputes("demo", [
         {"task_id": "", "judgment": "REJECTED"},          # no task_id
         {"task_id": "demo-P83", "judgment": "MAYBE"},      # not a valid judgment
         # CR-03: a task with NO recorded review is skipped too -- there is

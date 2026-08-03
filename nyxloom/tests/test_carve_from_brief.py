@@ -21,6 +21,7 @@ import pytest
 from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
+    effects_carve,
     adapters, backlog_items, daemon, intake_chat, lint, notify, paths, reconcile,
     render, storage, wrapper,
 )
@@ -85,7 +86,7 @@ def test_targeted_source_notes_include_genuinely_briefed_items_detail(tmp_state,
                                     priority=2, decisions=["D-042"])
 
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_source_note_lines(cfg, item_id=item_id)
+    lines = d._carve._carve_source_note_lines(cfg, item_id=item_id)
     joined = "\n".join(lines)
 
     assert ALIGNED_PURPOSE in joined
@@ -123,7 +124,7 @@ def test_real_p29_brief_round_trips_priority_and_decisions_to_the_carver(
                                     priority=parsed.priority, decisions=parsed.decisions)
 
     d = daemon.Daemon({"demo": cfg.root})
-    joined = "\n".join(d._carve_source_note_lines(cfg, item_id=item_id))
+    joined = "\n".join(d._carve._carve_source_note_lines(cfg, item_id=item_id))
 
     assert ALIGNED_PURPOSE in joined
     assert ELICITED_DETAIL in joined
@@ -154,7 +155,7 @@ def test_targeted_source_notes_omit_detail_once_brief_is_gone(tmp_state, sample_
     assert not backlog_items.is_briefed(item)
 
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_source_note_lines(cfg, item_id=item_id)
+    lines = d._carve._carve_source_note_lines(cfg, item_id=item_id)
     joined = "\n".join(lines)
 
     assert ALIGNED_PURPOSE not in joined
@@ -165,7 +166,7 @@ def test_targeted_source_notes_omit_detail_once_brief_is_gone(tmp_state, sample_
 def test_targeted_source_notes_unknown_item_yields_plain_reference(tmp_state, sample_project):
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_source_note_lines(cfg, item_id="B999")
+    lines = d._carve._carve_source_note_lines(cfg, item_id="B999")
     joined = "\n".join(lines)
     assert "B999" in joined
     assert "not found" in joined
@@ -180,7 +181,7 @@ def test_untargeted_source_notes_unchanged_no_item_id(tmp_state, sample_project)
     (cfg.root / "nyxloom-trove" / "backlog.md").write_text("# backlog\n", encoding="utf-8")
 
     d = daemon.Daemon({"demo": cfg.root})
-    lines = d._carve_source_note_lines(cfg)
+    lines = d._carve._carve_source_note_lines(cfg)
     joined = "\n".join(lines)
     assert "nyxloom-trove/backlog.md" in joined
 
