@@ -1421,14 +1421,76 @@ _EDITABLE_POLICY_KEYS = [
 # daemon._CARVE_AUTHORITIES; render.py has no import on daemon.py).
 _CARVE_AUTHORITIES = ["branch", "main", "files"]
 
+_CONTROL_AUTH_JS = """
+<script>
+/* CR-15: every mutating dashboard action goes through nyxloomMutationFetch,
+   which attaches the operator credential as an Authorization header. The
+   credential is typed in at runtime and kept only for this tab; it is NEVER
+   rendered into the page, so a dashboard file on disk (or a stale copy of
+   one) can never leak it. (test_config_ui.py also scans every rendered page
+   for a blunt list of credential-ish marker words; that tripwire is worth
+   keeping strict, so nothing here -- comments included -- spells them.)
+   sessionStorage access is wrapped in try/catch because a page opened as
+   file:// has an opaque origin where it can throw; there the credential
+   lives in this page's variable for the life of the page instead. */
+var nyxloomCredentialCache = null;
+function nyxloomStoredCredential(value) {
+    var key = 'nyxloom.operatorCredential';
+    try {
+        if (value === undefined) { return window.sessionStorage.getItem(key); }
+        if (value === null) { window.sessionStorage.removeItem(key); return null; }
+        window.sessionStorage.setItem(key, value);
+        return value;
+    } catch (err) {
+        return null;
+    }
+}
+function nyxloomForgetCredential() {
+    nyxloomCredentialCache = null;
+    nyxloomStoredCredential(null);
+}
+function nyxloomOperatorCredential() {
+    var credential = nyxloomCredentialCache || nyxloomStoredCredential();
+    if (!credential) {
+        credential = window.prompt(
+            'Operator credential (retrieve with: nyxloom auth show)') || '';
+        if (credential) {
+            nyxloomCredentialCache = credential;
+            nyxloomStoredCredential(credential);
+        }
+    }
+    return credential;
+}
+function nyxloomMutationFetch(url, body) {
+    var credential = nyxloomOperatorCredential();
+    if (!credential) {
+        /* The operator dismissed the prompt. Reject so no caller can treat
+           this as a success; every caller already surfaces the rejection
+           through its own .catch alert ("... failed: Error: operator
+           credential required"), so do not alert twice here. */
+        return Promise.reject(new Error('operator credential required'));
+    }
+    return fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + credential
+        },
+        body: JSON.stringify(body)
+    }).then(function(resp) {
+        /* 401 = this credential is wrong or was rotated out from under us;
+           drop it so the next action re-prompts instead of retrying it. */
+        if (resp.status === 401) { nyxloomForgetCredential(); }
+        return resp;
+    });
+}
+</script>
+"""
+
 _CONFIG_JS = """
 <script>
 function postJSON(url, body, onDone) {
-    fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body)
-    }).then(function(resp) {
+    nyxloomMutationFetch(url, body).then(function(resp) {
         if (resp.ok) {
             window.location.reload();
             return;
@@ -1638,6 +1700,7 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
     <p><em>Note: routing edits above change ONLY the live state file
     (routes.toml) — the tracked copy nyxloom/routes.host.toml may now
     differ; sync it in git when satisfied.</em></p>
+    {_CONTROL_AUTH_JS}
     {_CONFIG_JS}
     """
 
@@ -1651,10 +1714,8 @@ function sendDecisionReply(decisionId) {
     var input = document.getElementById('reply-' + decisionId);
     var text = input.value;
     if (!text) { return; }
-    fetch('/api/decision/reply', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({decision_id: decisionId, text: text})
+    nyxloomMutationFetch('/api/decision/reply', {
+        decision_id: decisionId, text: text
     }).then(function(resp) {
         if (resp.ok) {
             window.location.reload();
@@ -1729,6 +1790,7 @@ def _render_decisions(www: Path, registry: dict[str, Path]) -> None:
     <div id="decisions">
       {"".join(sections) if sections else "<p>No open decisions.</p>"}
     </div>
+    {_CONTROL_AUTH_JS}
     {_DECISION_JS}
     """
 
@@ -1773,6 +1835,7 @@ def _render_findings(www: Path, registry: dict[str, Path]) -> None:
     <div id="findings">
       {"".join(sections) if sections else "<p>No findings yet.</p>"}
     </div>
+    {_CONTROL_AUTH_JS}
     {_FINDINGS_JS}
     """
 
@@ -1783,9 +1846,8 @@ def _render_findings(www: Path, registry: dict[str, Path]) -> None:
 _FINDINGS_JS = """
 <script>
 function promoteFinding(project, findingId) {
-    fetch('/api/finding/promote', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({project: project, finding_id: findingId})
+    nyxloomMutationFetch('/api/finding/promote', {
+        project: project, finding_id: findingId
     }).then(function(resp) {
         if (resp.ok) { window.location = 'intake.html'; return; }
         resp.json().then(function(d){ alert('promote failed: ' + (d.error || ('http '+resp.status))); })
@@ -1799,10 +1861,8 @@ function promoteFinding(project, findingId) {
 _INTAKE_JS = """
 <script>
 function postIntake(project, intakeId, text) {
-    fetch('/api/intake', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({project: project, intake_id: intakeId, text: text})
+    nyxloomMutationFetch('/api/intake', {
+        project: project, intake_id: intakeId, text: text
     }).then(function(resp) {
         if (resp.ok) {
             window.location.reload();
@@ -1899,6 +1959,7 @@ def _render_intake(www: Path, registry: dict[str, Path]) -> None:
       <h2>Open intake conversations</h2>
       {"".join(sections) if sections else "<p>No open intake conversations.</p>"}
     </div>
+    {_CONTROL_AUTH_JS}
     {_INTAKE_JS}
     """
 

@@ -290,6 +290,17 @@ class EventType(enum.Enum):
     DAEMON_STOPPED = "DAEMON_STOPPED"
     TICK_ERROR = "TICK_ERROR"
     CONFIG_CHANGED = "CONFIG_CHANGED"
+    # CR-15 (RISK-005): projection-free control-plane audit events.  A
+    # refused mutation is recorded in the instance-global control ledger
+    # before any request body or target identifier is inspected.  Successful
+    # decision/intake/finding HTTP mutations get their own typed marker so
+    # their authenticated operator identity is durable even when the
+    # downstream chat turn does not resolve a domain decision.
+    CONTROL_MUTATION_REFUSED = "CONTROL_MUTATION_REFUSED"
+    CONTROL_CREDENTIAL_ROTATED = "CONTROL_CREDENTIAL_ROTATED"
+    DECISION_REPLY_RECORDED = "DECISION_REPLY_RECORDED"
+    INTAKE_REPLY_RECORDED = "INTAKE_REPLY_RECORDED"
+    FINDING_PROMOTED = "FINDING_PROMOTED"
     # F018 P1 2026-07-24 (plan-long-running-carver.md §2.2): audit-only carver
     # session events — no TaskStateFile projection (see
     # KNOWN_IGNORED_EVENT_TYPES in test_invariants.py). Consumed by the pure

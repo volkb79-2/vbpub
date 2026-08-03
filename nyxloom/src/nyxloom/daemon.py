@@ -154,9 +154,15 @@ INTERFACE CONTRACT (frozen):
   P15 2026-07-15 (spec amendment, user directive): CONFIG mutations are now
   allowed through audited HTTP endpoints (workflow-STATE mutations
   remain CLI-only). 2026-08-02: "loopback" struck from that sentence -- the
-  deployed bind is 0.0.0.0 (P38), these endpoints are UNAUTHENTICATED, and
-  `Daemon._reject_cross_site` is CSRF hardening only. Read `_start_http`'s
-  bind-time warning and `_reject_cross_site` for the real posture.
+  deployed bind is 0.0.0.0 (P38).
+  CR-15 2026-08-02 (RISK-005): every POST in `_CONFIG_POST_PATHS` requires an
+  operator credential (`control_auth`, `Authorization: Bearer <secret>`),
+  checked before the request body is read; the authenticated identity becomes
+  the `Actor` of the resulting events. GETs are deliberately left open so a
+  trusted network can serve the dashboard read-only. `_reject_cross_site` is
+  CSRF hardening that runs in ADDITION to that check, never instead of it.
+  See `_handle_post` for the fixed order and control_auth's module docstring
+  for what the trust boundary does and does not claim.
   All three are POST, JSON in/out, 400 on validation
   failure with NO write performed, 404 for an unknown project/tier, 405 for
   GET on these paths:
@@ -345,7 +351,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import (
-    adapters, backlog_items, carver_session, commands, config, decision_chat, decisions,
+    adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat, decisions,
     frontmatter, gate_canary, gate_runner, intake_chat, leases, lint, merge_digest, notify,
     paths, reconcile, render, stages, storage, watchdog, wrapper,
 )
@@ -369,6 +375,14 @@ SSE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_HTTP_PORT = 8942
 DEFAULT_HTTP_BIND = "127.0.0.1"
 DEFAULT_RECONCILE_INTERVAL = 30.0
+# CR-15: the instance-global control ledger (refusals, rotations, daemon-
+# scoped config changes).  Owned by control_auth, re-exported here because
+# every writer on this surface lives in this module.
+CONTROL_AUDIT_PROJECT = control_auth.CONTROL_LEDGER_PROJECT
+# CR-15: cap on a mutating POST's declared body length. Every payload on this
+# surface is small JSON; the largest realistic one is an intake/decision reply
+# text, which intake_chat/decision_chat cap far below this anyway.
+_MAX_REQUEST_BODY_BYTES = 1 << 20
 # P44 2026-07-16 (anti-runaway self-correction): trailing window for
 # _history's review_rejections_by_area count (module constant, not
 # config.Policy -- Policy is frozen for this package, same reasoning as
@@ -500,8 +514,11 @@ def resolve_level(registry: dict[str, Path] | None = None) -> tuple[str, str]:
 # P30 2026-07-16: /api/intake joins it too -- the ONE sanctioned write path
 # into intake_chat.advance_intake. (2026-08-02: the words "loopback-only like
 # the rest of this surface" were struck here -- untrue since P38 deployed
-# NYXLOOM_HTTP_BIND=0.0.0.0. Every path in this set is an UNAUTHENTICATED
-# mutation; _reject_cross_site is CSRF hardening, not authentication.)
+# NYXLOOM_HTTP_BIND=0.0.0.0.)
+# CR-15 2026-08-02: this table is now the authentication surface, not just the
+# GET->405 set. `_handle_post` requires a valid operator credential for every
+# member before it reads a body, so membership here means "authenticated
+# mutation" and nothing in this set is reachable without a credential.
 # P02 2026-07-21: /api/config/log-level joins it too (D-L3 runtime control).
 _CONFIG_POST_PATHS = frozenset({
     "/api/config/policy", "/api/config/pause", "/api/config/tier",
@@ -659,6 +676,12 @@ def _pid_alive(pid: int | None) -> bool:
 class Daemon:
     def __init__(self, registry: dict[str, Path]):
         self.registry = registry
+        # CR-15: the control-plane trust root is instance state.  Only the
+        # handle is built here (no I/O in __init__ -- `nyxloom tick` builds a
+        # Daemon too and never serves HTTP); _start_http bootstraps the file,
+        # and every mutation re-reads it so an atomic CLI rotation invalidates
+        # the old credential immediately, with no cache to expire.
+        self._control_auth = control_auth.CredentialStore(paths.daemon_dir())
         self.http_port: int = 0
         self.http_bind: str = ""
         self._stop_event = threading.Event()
@@ -7446,6 +7469,23 @@ class Daemon:
         return best.policy.http_port, best.policy.http_bind
 
     def _start_http(self) -> None:
+        # CR-15: bootstrap the operator credential before the socket exists,
+        # so no request can ever race a missing store.  A failure here is
+        # NOT fatal: reads and the reconcile loop stay up, and every mutation
+        # fails closed (503) because it re-reads the store per request.
+        # Crashing the daemon instead would turn "the credential file has the
+        # wrong mode" into "the factory stops", which is a worse outcome than
+        # a control plane that refuses to be driven -- recover with
+        # `nyxloom auth rotate --force`.
+        try:
+            self._control_auth.ensure()
+        except control_auth.CredentialStoreError as exc:
+            log.error(
+                "operator credential unavailable; every control-plane mutation "
+                "will be refused until it is repaired "
+                "(nyxloom auth rotate --force)",
+                reason=str(exc), credential_path=str(self._control_auth.path),
+            )
         port, bind = self._chosen_http()
         daemon = self
 
@@ -7492,21 +7532,22 @@ class Daemon:
         self._httpd = httpd
         self.http_port = httpd.server_address[1]
         self.http_bind = httpd.server_address[0]
-        # 2026-07-20: state the security assumption out loud at bind time. The
-        # control plane is UNAUTHENTICATED (POST /api/config/* can pause/resume
-        # projects, edit policy, answer decisions) -- a non-loopback bind is only
-        # safe on a PRIVATE, unpublished network (the ciu bridge), which the infra
-        # layer, not this process, guarantees. A WARNING, not INFO (2026-07-21,
-        # P01): this states the assumption rather than crying wolf, but a
-        # non-loopback bind is still worth a level above the routine operational
-        # narrative -- and this is P01's first real caller of nyxloom.log,
-        # proof the module works end-to-end. Loopback (the default) needs no
-        # callout.
+        # 2026-07-20: state the security assumption out loud at bind time.
+        # CR-15 2026-08-02 narrows WHAT the assumption is: mutations are
+        # authenticated now, so the remaining exposure of a non-loopback bind
+        # is the READ surface, which stays open on purpose (reads must remain
+        # separable so a trusted network can serve the dashboard without
+        # granting control authority). Still a WARNING, not INFO (P01): it
+        # states an assumption rather than crying wolf, but a non-loopback bind
+        # is worth a level above the routine operational narrative. Loopback
+        # (the default) needs no callout. The message must not re-assert the
+        # old "UNAUTHENTICATED" claim -- asserted by
+        # test_nonloopback_bind_warns_about_the_open_read_surface.
         if self.http_bind not in ("127.0.0.1", "::1"):
             log.warning(
                 "HTTP control plane bound to a non-loopback address "
-                "(UNAUTHENTICATED; assumes a private, unpublished network -- "
-                "the ciu bridge)",
+                "(mutations require operator authentication; read endpoints "
+                "still assume a trusted network)",
                 http_bind=self.http_bind, http_port=self.http_port,
             )
         t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
@@ -7529,10 +7570,22 @@ class Daemon:
             self._http_thread = None
 
     @staticmethod
-    def _send_json(handler: http.server.BaseHTTPRequestHandler, code: int, body: bytes) -> None:
+    def _send_json(handler: http.server.BaseHTTPRequestHandler, code: int, body: bytes,
+                   *, close: bool = False) -> None:
+        """`close=True` ends the connection after this response.
+
+        CR-15 refuses a mutation BEFORE reading its body, so those bytes are
+        still queued on a keep-alive HTTP/1.1 socket and the next read would
+        parse them as a fresh request line. Sending `Connection: close` both
+        tells the client (http.server also flips close_connection on this
+        header) and drops the unread body with the socket -- cheaper than
+        reading an unauthenticated body just to discard it.
+        """
         handler.send_response(code)
         handler.send_header("Content-Type", "application/json")
         handler.send_header("Content-Length", str(len(body)))
+        if close:
+            handler.send_header("Connection", "close")
         handler.end_headers()
         handler.wfile.write(body)
 
@@ -7699,15 +7752,14 @@ class Daemon:
 
     def _append_ui_event(self, project: str, cfg: ProjectConfig | None,
                           states: dict[str, TaskStateFile], ev_type: EventType,
-                          payload: dict[str, Any], **kw) -> Event:
-        """Same append+apply+notify shape as `_append_ev`, but with actor
-        OPERATOR 'ui' — the audited identity for every HTTP config-mutation
-        endpoint (module docstring's P15 CONFIG-mutation amendment).
+                          payload: dict[str, Any], *, actor: Actor, **kw) -> Event:
+        """Same append+apply+notify shape as `_append_ev`, with the named
+        authenticated operator responsible for this HTTP mutation.
         `_append_ev` is deliberately NOT reused here: it hardcodes actor
         TICK/'nyxloomd', which is correct for reconcile-pass-triggered
         events but wrong for operator-initiated UI writes."""
         ev = storage.append_and_apply(
-            project, states, actor=Actor(ActorKind.OPERATOR, "ui"), type=ev_type,
+            project, states, actor=actor, type=ev_type,
             payload=payload, **kw,
         )
         if cfg is not None:
@@ -7717,9 +7769,64 @@ class Daemon:
                 pass
         return ev
 
+    def _audit_control_refusal(self, path: str, reason: str) -> None:
+        """Append exactly one refusal event to the instance control ledger.
+
+        The payload carries the request PATH and the refusal REASON and
+        nothing else -- no body, no target id, no header value.  The refusal
+        is decided before the body is read, so there is no target to record:
+        that is what makes a refused reply to a real decision id and to a
+        fabricated one indistinguishable in the audit trail as well as on
+        the wire.
+
+        Never raises.  A refusal whose audit append fails is still a refusal
+        (the caller has already decided to deny), and letting the append's
+        exception escape would replace the constant 401/503 with a 500 whose
+        body carries the storage error -- turning an audit outage into a
+        distinguishable response.  The failure itself is logged at ERROR.
+        """
+        try:
+            storage.append_event(
+                CONTROL_AUDIT_PROJECT,
+                actor=control_auth.unauthenticated_actor(),
+                type=EventType.CONTROL_MUTATION_REFUSED,
+                payload={"path": path, "reason": reason},
+            )
+        except Exception as exc:
+            log.error("control-plane refusal could not be audited",
+                      control_path=path, reason=reason, error=repr(exc)[:200])
+
+    def _authenticate_control_mutation(
+        self, handler: http.server.BaseHTTPRequestHandler, path: str,
+    ) -> Actor | None:
+        """Authenticate before body parsing or any target/id lookup.
+
+        Returns the named operator, or None after having already audited the
+        refusal and sent a response.  Both refusal responses are constant
+        byte strings: the caller learns whether the trust root is readable,
+        never anything about the target it named."""
+        try:
+            actor = self._control_auth.authenticate(handler.headers)
+        except control_auth.CredentialStoreError:
+            self._audit_control_refusal(path, "credential-store-unavailable")
+            self._send_json(handler, 503,
+                            b'{"error":"mutation authentication unavailable"}', close=True)
+            return None
+        if actor is None:
+            self._audit_control_refusal(path, "invalid-or-missing-credential")
+            self._send_json(handler, 401,
+                            b'{"error":"mutation authentication required"}', close=True)
+            return None
+        return actor
+
     def _read_json_body(self, handler: http.server.BaseHTTPRequestHandler) -> dict | None:
         """Read+parse the request body; None (caller sends 400) on any
-        malformed input, including a non-object JSON value."""
+        malformed input, including a non-object JSON value.
+
+        CR-15: only reached AFTER authentication, and only for a declared
+        length within _MAX_REQUEST_BODY_BYTES (checked by `_handle_post`), so
+        this read cannot be used to make the daemon allocate an arbitrary
+        buffer -- which it could before, from any unauthenticated socket."""
         try:
             length = int(handler.headers.get("Content-Length", 0) or 0)
         except ValueError:
@@ -7737,11 +7844,8 @@ class Daemon:
     def _reject_cross_site(handler: http.server.BaseHTTPRequestHandler) -> str | None:
         """None when this POST may proceed; otherwise the refusal reason.
 
-        2026-08-02 (review amendment RISK-005). Every mutating endpoint on this
-        server is UNAUTHENTICATED, and the deployed bind is 0.0.0.0 on the ciu
-        bridge -- so a browser that can reach the dashboard is, by itself,
-        enough to pause a project, rewrite policy, or ANSWER A HUMAN DECISION.
-        Two cheap, standards-based checks close the drive-by half of that:
+        2026-08-02 (review amendment RISK-005).  These standards-based checks
+        remain a defense in depth ahead of CR-15 operator authentication:
 
         - Require Content-Type: application/json. A cross-site <form> can only
           send urlencoded/multipart/text-plain, so requiring a type it cannot
@@ -7753,10 +7857,8 @@ class Daemon:
           send none and are unaffected. Same-origin is host-compared, so
           reaching the dashboard as nyxloomd:8942 or localhost:8942 both work.
 
-        This is CSRF hardening, NOT authentication: anything that can open a
-        socket to this port still holds full control-plane authority. Real
-        operator identity is the control-plane-auth package (CR-15); see the
-        2026-08-02 amendment reports."""
+        These checks do not replace the credential check in ``_handle_post``.
+        """
         ctype = (handler.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
             return "content-type must be application/json"
@@ -7772,11 +7874,47 @@ class Daemon:
         return None
 
     def _handle_post(self, handler: http.server.BaseHTTPRequestHandler) -> None:
+        """The ONE gate every mutating route passes through.
+
+        Order is deliberate and load-bearing (CR-15):
+
+        1. Unknown path -> 404, decided from a static table before anything
+           else runs, so an unrouted path cannot reach the credential check
+           and flood the ledger.  The table leaks nothing: the dashboard's own
+           JavaScript names every path already.
+        2. Cross-site refusal (CSRF: Content-Type + Origin), unchanged from
+           the 2026-08-02 amendment.
+        3. Operator authentication -- BEFORE the body is read and therefore
+           before any project, decision, intake or finding id is resolved.
+        4. Body parse, then dispatch with the authenticated Actor threaded
+           into every handler; no handler may invent its own actor.
+
+        Adding a path to `_CONFIG_POST_PATHS` therefore authenticates it by
+        construction -- a new endpoint cannot forget the credential check
+        (asserted for every path by test_control_auth.py) -- but it must also
+        gain a branch below, or it falls through to the 500 at the end.
+        """
         parsed = urllib.parse.urlparse(handler.path)
         path = parsed.path
+        if path not in _CONFIG_POST_PATHS:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
         refusal = self._reject_cross_site(handler)
         if refusal is not None:
-            self._send_json(handler, 403, json.dumps({"error": refusal}).encode("utf-8"))
+            self._audit_control_refusal(path, refusal)
+            self._send_json(handler, 403, json.dumps({"error": refusal}).encode("utf-8"),
+                            close=True)
+            return
+        actor = self._authenticate_control_mutation(handler, path)
+        if actor is None:
+            return
+        # Bound the body only once the caller is known: every payload on this
+        # surface is small JSON (ids, a mode name, a reply text), so a declared
+        # length past the cap is a mistake or an attempt to make the daemon
+        # allocate. Refuse before reading a byte of it.
+        declared = (handler.headers.get("Content-Length") or "0").strip()
+        if declared.isdigit() and int(declared) > _MAX_REQUEST_BODY_BYTES:
+            self._send_json(handler, 413, b'{"error":"request body too large"}', close=True)
             return
         body = self._read_json_body(handler)
         if body is None:
@@ -7784,31 +7922,38 @@ class Daemon:
             return
 
         if path == "/api/config/policy":
-            self._post_config_policy(handler, body)
+            self._post_config_policy(handler, body, actor)
             return
         if path == "/api/config/pause":
-            self._post_config_pause(handler, body)
+            self._post_config_pause(handler, body, actor)
             return
         if path == "/api/config/tier":
-            self._post_config_tier(handler, body)
+            self._post_config_tier(handler, body, actor)
             return
         if path == "/api/decision/reply":
-            self._post_decision_reply(handler, body)
+            self._post_decision_reply(handler, body, actor)
             return
         if path == "/api/intake":
-            self._post_intake(handler, body)
+            self._post_intake(handler, body, actor)
             return
         if path == "/api/config/log-level":
-            self._post_config_log_level(handler, body)
+            self._post_config_log_level(handler, body, actor)
             return
         # FN-6: promote a finding to an interactive intake conversation
         if path == "/api/finding/promote":
-            self._post_finding_promote(handler, body)
+            self._post_finding_promote(handler, body, actor)
             return
 
-        self._send_json(handler, 404, b'{"error":"not found"}')
+        # Unreachable while _CONFIG_POST_PATHS and the branches above agree.
+        # Answer anyway: falling off the end of a BaseHTTPRequestHandler
+        # method sends NO response at all, so a future path added to the table
+        # but not to the dispatch chain would hang every client on it until
+        # their own timeout rather than failing visibly.
+        log.error("routed control path has no handler", control_path=path)
+        self._send_json(handler, 500, b'{"error":"unrouted control path"}')
 
-    def _post_config_log_level(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+    def _post_config_log_level(self, handler: http.server.BaseHTTPRequestHandler,
+                               body: dict, actor: Actor) -> None:
         """P02 (D-L3 §4.4): live-flip the daemon's effective log level, no
         restart required, and persist it to paths.daemon_log_level_path()
         so a respawn's bootstrap resolve_level() picks the same level back
@@ -7818,7 +7963,15 @@ class Daemon:
         other endpoint in this config-mutation section, there is
         deliberately NO storage.append_and_apply / _append_ui_event call
         here (a log-level flip is an operational-diagnostics concern, not
-        a fact about task/attempt state the event log needs to replay)."""
+        a fact about task/attempt state the event log needs to replay).
+
+        CR-15 refines, and does not repeal, that rule: the flip is an
+        authenticated control-plane mutation, so it appends ONE CONFIG_CHANGED
+        to the instance control ledger (CONTROL_AUDIT_PROJECT) naming the
+        operator who made it.  No PROJECT event log is touched, so D-L4's
+        actual invariant -- a level flip never enters a project's replayable
+        history -- still holds byte-for-byte (asserted by
+        test_log_level_post_emits_log_not_domain_event)."""
         level = body.get("level")
         if not isinstance(level, str) or not level.strip():
             self._send_json(handler, 400, b'{"error":"missing level"}')
@@ -7841,16 +7994,25 @@ class Daemon:
         # in the rendered record is always the record's own severity
         # ("info" here), overwritten unconditionally by structlog.stdlib.
         # add_log_level regardless of what a same-named kwarg carried.
-        log.info("log level changed", new_level=canonical, change_source="ui")
+        old_level, _old_source = resolve_level(self.registry)
+        log.info("log level changed", new_level=canonical, change_source="http",
+                 operator_id=actor.id)
 
         log_module.set_level(canonical)
         override_path = paths.daemon_log_level_path()
         override_path.parent.mkdir(parents=True, exist_ok=True)
         override_path.write_text(canonical, encoding="utf-8")
 
+        storage.append_event(
+            CONTROL_AUDIT_PROJECT, actor=actor, type=EventType.CONFIG_CHANGED,
+            payload={"scope": "daemon", "key": "log-level",
+                     "old": old_level, "new": canonical},
+        )
+
         self._send_json(handler, 200, json.dumps({"ok": True, "level": canonical}).encode("utf-8"))
 
-    def _post_decision_reply(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+    def _post_decision_reply(self, handler: http.server.BaseHTTPRequestHandler,
+                             body: dict, actor: Actor) -> None:
         """P18: drive the decision-chat bridge from the UI (decisions.html),
         the same advance_chat() path the feedback-channel router uses."""
         decision_id = body.get("decision_id")
@@ -7869,15 +8031,21 @@ class Daemon:
         project, cfg = target
 
         try:
-            decision_chat.advance_chat(cfg, project, decision_id, text.strip())
+            decision_chat.advance_chat(cfg, project, decision_id, text.strip(), actor=actor)
         except Exception as exc:
             self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
             return
 
+        storage.append_event(
+            project, actor=actor, type=EventType.DECISION_REPLY_RECORDED,
+            decision_id=decision_id, payload={},
+        )
+
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
 
-    def _post_intake(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+    def _post_intake(self, handler: http.server.BaseHTTPRequestHandler,
+                     body: dict, actor: Actor) -> None:
         """P30: drive the intake-chat bridge from the UI (intake.html) --
         the ONE sanctioned write path into intake_chat.advance_intake().
         Body is untrusted operator input: passed through as plain text (no
@@ -7891,8 +8059,9 @@ class Daemon:
 
         2026-08-02: the preceding sentence used to end "Loopback-only, same as
         every other route on this server" -- untrue since P38 moved the deployed
-        bind to 0.0.0.0 on the ciu bridge. See _reject_cross_site for what
-        actually guards this endpoint (CSRF only; it is not authenticated)."""
+        bind to 0.0.0.0 on the ciu bridge. CR-15: this endpoint is reached only
+        with a valid operator credential (_handle_post), and `actor` is that
+        operator; _reject_cross_site adds the CSRF check on top."""
         project = body.get("project")
         text = body.get("text")
         intake_id = body.get("intake_id")
@@ -7922,15 +8091,21 @@ class Daemon:
             self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
             return
 
+        storage.append_event(
+            project, actor=actor, type=EventType.INTAKE_REPLY_RECORDED,
+            payload={"intake_id": intake_id},
+        )
+
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps(
             {"ok": True, "intake_id": intake_id, "reply": reply}).encode("utf-8"))
 
-    def _post_finding_promote(self, handler, body: dict) -> None:
+    def _post_finding_promote(self, handler, body: dict, actor: Actor) -> None:
         """FN-6: promote a finding to an interactive intake conversation. The
         finding's typed content seeds a NEW intake (new_id('intake')); everything
         downstream is the existing intake pipeline. Same surface as /api/intake
-        (NOT loopback-only since P38 -- see _reject_cross_site).
+        (NOT loopback-only since P38; CR-15 authenticates it -- see
+        _handle_post and _reject_cross_site).
         `finding_id`/`project` are validated against real records; the
         minted intake_id (not any client value) names the file."""
         from . import findings as findings_mod
@@ -7959,11 +8134,16 @@ class Daemon:
         except Exception as exc:
             self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
             return
+        storage.append_event(
+            project, actor=actor, type=EventType.FINDING_PROMOTED,
+            payload={"finding_id": finding_id, "intake_id": intake_id},
+        )
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps(
             {"ok": True, "intake_id": intake_id, "reply": reply}).encode("utf-8"))
 
-    def _post_config_policy(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+    def _post_config_policy(self, handler: http.server.BaseHTTPRequestHandler,
+                            body: dict, actor: Actor) -> None:
         project = body.get("project")
         key = body.get("key")
         value = body.get("value")
@@ -7999,7 +8179,8 @@ class Daemon:
                 return
             states = storage.list_states(project)
             self._append_ui_event(project, cfg, states, EventType.CONFIG_CHANGED,
-                                   {"scope": "policy", "key": key, "old": old_value, "new": value})
+                                   {"scope": "policy", "key": key, "old": old_value, "new": value},
+                                   actor=actor)
             render.render_after_event(self.registry)
             self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
             return
@@ -8033,11 +8214,13 @@ class Daemon:
 
         states = storage.list_states(project)
         self._append_ui_event(project, cfg, states, EventType.CONFIG_CHANGED,
-                               {"scope": "policy", "key": key, "old": old_value, "new": value})
+                               {"scope": "policy", "key": key, "old": old_value, "new": value},
+                               actor=actor)
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
 
-    def _post_config_pause(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+    def _post_config_pause(self, handler: http.server.BaseHTTPRequestHandler,
+                           body: dict, actor: Actor) -> None:
         project = body.get("project")
         mode = body.get("mode")
 
@@ -8058,16 +8241,18 @@ class Daemon:
 
         if mode == "run":
             flag.unlink(missing_ok=True)
-            self._append_ui_event(project, cfg, states, EventType.PAUSE_CLEARED, {})
+            self._append_ui_event(project, cfg, states, EventType.PAUSE_CLEARED, {}, actor=actor)
         else:
             flag.parent.mkdir(parents=True, exist_ok=True)
             flag.write_text(mode, encoding="utf-8")
-            self._append_ui_event(project, cfg, states, EventType.PAUSE_SET, {"mode": mode})
+            self._append_ui_event(project, cfg, states, EventType.PAUSE_SET,
+                                  {"mode": mode}, actor=actor)
 
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps({"ok": True, "mode": mode}).encode("utf-8"))
 
-    def _post_config_tier(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+    def _post_config_tier(self, handler: http.server.BaseHTTPRequestHandler,
+                          body: dict, actor: Actor) -> None:
         tier = body.get("tier")
         route_ids = body.get("routes")
 
@@ -8110,7 +8295,8 @@ class Daemon:
                 cfg = None
             states = storage.list_states(project)
             self._append_ui_event(project, cfg, states, EventType.CONFIG_CHANGED,
-                                   {"scope": "routes", "key": tier, "old": old_routes, "new": route_ids})
+                                   {"scope": "routes", "key": tier, "old": old_routes,
+                                    "new": route_ids}, actor=actor)
 
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))

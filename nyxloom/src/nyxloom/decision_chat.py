@@ -381,7 +381,8 @@ def _finalize_decision(cfg: ProjectConfig, project: str, decision_id: str,
     return True
 
 
-def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: str) -> str:
+def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: str,
+                 actor: Actor | None = None) -> str:
     """Advance one decision-chat turn: launch (first) or resume (Nth), post
     the (redacted, capped) reply to the feedback channel, finalize the
     decision if the reply carries a DECISION: line. Returns the reply text
@@ -430,8 +431,9 @@ def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: 
     decided = _parse_decision_line(reply)
     if decided is not None:
         choice, note = decided
+        resolution_actor = actor or Actor(ActorKind.FRONTIER_SESSION, "decision-agent")
         _finalize_decision(cfg, project, decision_id, choice, note,
-                            ActorKind.FRONTIER_SESSION, "decision-agent")
+                            resolution_actor.kind, resolution_actor.id)
 
     _post_feedback(cfg, decision_id, reply)
     log.debug("decision-chat turn advanced", decision_id=decision_id, route=route.route_id)

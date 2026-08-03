@@ -270,7 +270,8 @@ def test_reply_redacted_before_posting_and_storing(sample_project, tmp_path, mon
 
 def test_loop_guard_ignores_own_tag_and_reply_tag(sample_project, monkeypatch):
     calls = []
-    monkeypatch.setattr(decision_chat, "advance_chat", lambda *a: calls.append(a))
+    monkeypatch.setattr(decision_chat, "advance_chat",
+                        lambda *a, **kw: calls.append(a))
 
     registry = load_registry()
     assert decision_chat.handle_feedback_message(registry, "D-001: hi", [decision_chat.DECISION_AGENT_TAG]) is None
@@ -285,7 +286,8 @@ def test_wrap_command_handler_routes_decision_prefix_and_falls_through(sample_pr
 
     calls = []
     monkeypatch.setattr(decision_chat, "advance_chat",
-                         lambda cfg_, project, decision_id, text: calls.append((project, decision_id, text)))
+                         lambda cfg_, project, decision_id, text, actor=None:
+                         calls.append((project, decision_id, text)))
 
     base_calls = []
 
@@ -339,7 +341,8 @@ def test_bare_text_routes_only_when_exactly_one_chat_active(sample_project, monk
 
     calls = []
     monkeypatch.setattr(decision_chat, "advance_chat",
-                         lambda cfg_, project, decision_id, text: calls.append((project, decision_id, text)))
+                         lambda cfg_, project, decision_id, text, actor=None:
+                         calls.append((project, decision_id, text)))
 
     def base_handler(text, tags):
         return "base-reply"

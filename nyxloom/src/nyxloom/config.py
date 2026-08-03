@@ -138,7 +138,9 @@ class Policy:
     # drops any toml http_bind and sources it SOLELY from the NYXLOOM_HTTP_BIND
     # env var (or this loopback default) -- nyxloom.toml is bind-mounted and
     # shared verbatim host<->container, so it can't differ per target, and the
-    # bind guards an unauthenticated control plane. Kept on Policy (not a
+    # bind is what limits the reach of the OPEN READ surface (CR-15 2026-08-02:
+    # mutations require an operator credential -- see control_auth.py -- but
+    # every GET is deliberately unauthenticated). Kept on Policy (not a
     # separate infra struct) only so cfg.policy.http_bind consumers are
     # unchanged; it is deliberately absent from nyxloom-config.schema.json.
     http_bind: str = "127.0.0.1"
@@ -341,8 +343,9 @@ class ProjectConfig:
             for name, m in data.get("mutexes", {}).items()
         }
         # http_bind is INFRA-sourced, NOT a toml [policy] key (2026-07-20). It is
-        # the address the daemon's unauthenticated HTTP control plane binds to, so
-        # it is security-relevant AND must differ per deployment target (loopback
+        # the address the daemon's HTTP control plane binds to -- whose GET/read
+        # half is unauthenticated by design (CR-15 authenticates only mutations),
+        # so it is security-relevant AND must differ per deployment target (loopback
         # on the host; 0.0.0.0 on a private ciu bridge). nyxloom.toml is bind-
         # mounted and shared VERBATIM between host and container runs, so it
         # structurally cannot carry a per-target value -- only the infra layer

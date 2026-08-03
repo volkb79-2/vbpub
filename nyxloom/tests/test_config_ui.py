@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import structlog.contextvars
 
-from nyxloom import config, daemon, lint, log, paths, reconcile, render, storage
+from nyxloom import config, control_auth, daemon, lint, log, paths, reconcile, render, storage
 from nyxloom.types import (
     ActorKind, Attempt, AttemptState, EventType, Role, Route, TaskState,
     TaskStateFile,
@@ -125,11 +125,19 @@ def cfg_daemon(tmp_state, sample_project, monkeypatch):
         assert not t.is_alive(), "cfg_daemon fixture's daemon thread outlived teardown and may pollute global logging"
 
 
+def _operator() -> control_auth.OperatorCredential:
+    """The daemon's own operator record (CR-15). `ensure()` rather than
+    `load()` so a test that never started the HTTP server still gets the same
+    store the daemon would have bootstrapped."""
+    return control_auth.CredentialStore(paths.daemon_dir()).ensure()
+
+
 def _post(base: str, path: str, body: dict) -> tuple[int, dict]:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{base}{path}", data=data, method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 **control_auth.authorization_header(_operator())},
     )
     try:
         resp = urllib.request.urlopen(req, timeout=5)
@@ -165,7 +173,8 @@ def test_policy_update_full_flow(cfg_daemon, sample_project, monkeypatch):
     assert len(changed) == 1
     assert changed[0].payload == {"scope": "policy", "key": "max_active_tasks", "old": 2, "new": 5}
     assert changed[0].actor.kind is ActorKind.OPERATOR
-    assert changed[0].actor.id == "ui"
+    # CR-15: the authenticated operator, not the interface name "ui".
+    assert changed[0].actor.id == _operator().operator_id
 
     captured = []
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: (captured.append(inp), [])[1])
@@ -271,7 +280,7 @@ def test_pause_via_ui_then_resume(cfg_daemon):
     set_evs = [e for e in storage.iter_events("demo") if e.type is EventType.PAUSE_SET]
     assert len(set_evs) == 1
     assert set_evs[0].payload == {"mode": "drain-agents"}
-    assert set_evs[0].actor.id == "ui"
+    assert set_evs[0].actor.id == _operator().operator_id
     assert set_evs[0].actor.kind is ActorKind.OPERATOR
 
     status2, _resp2 = _post(base, "/api/config/pause", {"project": "demo", "mode": "run"})
@@ -279,7 +288,7 @@ def test_pause_via_ui_then_resume(cfg_daemon):
     assert not flag.exists()
     cleared = [e for e in storage.iter_events("demo") if e.type is EventType.PAUSE_CLEARED]
     assert len(cleared) == 1
-    assert cleared[0].actor.id == "ui"
+    assert cleared[0].actor.id == _operator().operator_id
 
 
 def test_pause_unknown_mode_rejected(cfg_daemon):
@@ -296,6 +305,7 @@ def test_pause_unknown_mode_rejected(cfg_daemon):
 # ==========================================================================
 
 def test_config_html_renders_policy_and_tiers_no_secrets_no_innerhtml(sample_project, tmp_state):
+    credential = control_auth.CredentialStore(paths.daemon_dir()).ensure("alice")
     paths.routes_path().write_text(TIER_ROUTES_TOML, encoding="utf-8")
     registry = {"demo": sample_project.root}
     render.render_all(registry)
@@ -307,9 +317,20 @@ def test_config_html_renders_policy_and_tiers_no_secrets_no_innerhtml(sample_pro
     assert "opus-cli" in content
     assert "innerHTML" not in content
 
+    # The no-secrets marker scan, kept from the original oracle. CR-15 drops
+    # only "authorization" from the marker list -- the header NAME is now
+    # legitimately in the page -- and replaces it with the stronger check
+    # below: the credential VALUE appears nowhere, and the header is built
+    # from a runtime-supplied variable rather than a baked-in literal.
     lowered = content.lower()
-    for marker in ("token", "secret", "password", "authorization"):
+    for marker in ("token", "secret", "password"):
         assert marker not in lowered
+    assert "'Authorization': 'Bearer ' + credential" in content
+
+    # And the live credential itself is never rendered, under any spelling.
+    assert credential.credential not in content
+    for page in sorted(paths.www_dir().rglob("*.html")):
+        assert credential.credential not in page.read_text(encoding="utf-8"), page
 
     index_content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
     assert 'href="config.html"' in index_content
@@ -417,8 +438,11 @@ def _post_headers(base: str, path: str, body: dict,
     """_post's sibling with caller-controlled headers (no implicit
     Content-Type), for exercising the cross-site refusals."""
     data = json.dumps(body).encode("utf-8")
+    # Authenticated by default so these oracles isolate the CSRF refusals from
+    # CR-15's credential refusal; the caller's headers still win on collision.
+    request_headers = {**control_auth.authorization_header(_operator()), **headers}
     req = urllib.request.Request(f"{base}{path}", data=data, method="POST",
-                                 headers=headers)
+                                 headers=request_headers)
     try:
         resp = urllib.request.urlopen(req, timeout=5)
         return resp.status, json.loads(resp.read())
