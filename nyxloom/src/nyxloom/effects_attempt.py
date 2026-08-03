@@ -105,8 +105,15 @@ class AttemptEffector:
                              action: reconcile.DispatchImplementer) -> list[Event]:
         # The route is resolved BEFORE admission (CR-13a): containment is a
         # property of the route, so the gate cannot ask about it otherwise.
+        # Resolving it is itself a refusal point (CR-13a review): the planner
+        # chose this id from ITS snapshot and this line re-reads routes.toml
+        # from disk, so an id that no longer exists must decline the launch,
+        # not raise past the gate and take the whole pass with it.
         routes_obj = config.Routes.load()
-        route_def = routes_obj.routes[action.route_id]
+        route_def = effects_dispatch.route_by_id(
+            routes_obj, action.route_id, project=ctx.project, kind="dispatch")
+        if route_def is None:
+            return []  # route gone since planning; task stays QUEUED
         ok, _reason = effects_dispatch.admissible(ctx, "dispatch", route_def)
         if not ok:
             return []  # admission refused; task stays QUEUED, re-evaluated next pass
@@ -172,7 +179,10 @@ class AttemptEffector:
         attempt_dir = paths.attempt_dir(project, action.attempt_id)
         resume_n = next_resume_n(self._ports.files, attempt_dir)
         routes_obj = config.Routes.load()
-        route_def = routes_obj.routes[attempt.route.route_id]
+        route_def = effects_dispatch.route_by_id(
+            routes_obj, attempt.route.route_id, project=project, kind="resume")
+        if route_def is None:
+            return []  # the pinned route is gone; attempt stays INTERRUPTED
         ok, _reason = effects_dispatch.admissible(ctx, "resume", route_def)
         if not ok:
             return []  # admission refused; attempt stays INTERRUPTED, re-evaluated next pass
@@ -240,7 +250,11 @@ class AttemptEffector:
         worktree = source.worktree or str(cfg.root)
         branch = source.branch or f"feat/{task_id}"
         routes_obj = config.Routes.load()
-        route_def = routes_obj.routes[source.route.route_id]
+        route_def = effects_dispatch.route_by_id(
+            routes_obj, source.route.route_id, project=project,
+            kind="self-review")
+        if route_def is None:
+            return []  # the borrowed route is gone; task stays SELF_REVIEWING
         # Asked a SECOND time, now that the borrowed route is known: this leg
         # cannot resolve its route before deciding whether there is a session
         # to borrow at all, and the containment question is a property of the

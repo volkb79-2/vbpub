@@ -64,6 +64,15 @@ def _paused_ports(mode: str = "drain-agents"):
                                files=_PausedFiles())
 
 
+def _attempt(attempt_id: str, route_id: str) -> Attempt:
+    """An attempt pinned to a route id, which is what a resume actually
+    resolves against (CR-13a review)."""
+    return Attempt(attempt_id=attempt_id, role=Role.IMPLEMENTER,
+                   state=AttemptState.INTERRUPTED,
+                   route=Route(route_id=route_id, cli="fake", model="fake-model"),
+                   started=utc_now())
+
+
 def _task(task_id: str, state: TaskState, attempts=()) -> TaskStateFile:
     return TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id,
                          project="demo", state=state, since=utc_now(),
@@ -75,20 +84,110 @@ class TestAdmissionRefusals:
     emits nothing and leaves the task exactly where the planner found it."""
 
     def test_a_refused_dispatch_launches_nothing(self, tmp_state, sample_project):
+        """The route id is the REAL one (CR-13a review). It used to be "r1",
+        which does not exist in sample_project's routes -- harmless while the
+        pause check ran first and returned before anything looked a route up,
+        but CR-13a moved route resolution AHEAD of admission, and the lookup
+        was a bare `routes[...]`. This oracle then stopped measuring the pause
+        refusal at all and started raising KeyError. Naming a route that
+        exists is what keeps it about admission; the vanished-route case is
+        its own test below."""
         effector = effects_attempt.AttemptEffector(_paused_ports())
         ctx = _ctx(sample_project, {"t1": _task("t1", TaskState.QUEUED)},
                    ports=_paused_ports())
         assert effector.dispatch_implementer(
-            ctx, reconcile.DispatchImplementer(task_id="t1", route_id="r1")) == []
+            ctx, reconcile.DispatchImplementer(task_id="t1",
+                                               route_id="fake-cli")) == []
 
     def test_a_refused_resume_launches_nothing(self, tmp_state, sample_project):
         """The resume path had no admission-refusal oracle before CR-05c: the
-        branch existed and was never executed by any test."""
+        branch existed and was never executed by any test.
+
+        CR-13a review: the task now carries a REAL attempt pinned to a REAL
+        route. It previously carried none, so `attempt_by_id` returned None and
+        -- once CR-13a moved route resolution ahead of the admission check --
+        this reached `attempt.route.route_id` on None. Same shape as the
+        dispatch case above: an oracle that had stopped testing its subject."""
         effector = effects_attempt.AttemptEffector(_paused_ports())
-        ctx = _ctx(sample_project, {"t1": _task("t1", TaskState.ACTIVE)},
+        ctx = _ctx(sample_project,
+                   {"t1": _task("t1", TaskState.ACTIVE,
+                                attempts=[_attempt("a1", "fake-cli")])},
                    ports=_paused_ports())
         assert effector.resume_attempt(
             ctx, reconcile.ResumeAttempt(task_id="t1", attempt_id="a1")) == []
+
+
+class TestARouteThatVanishedBetweenPlanningAndExecution:
+    """CR-13a review, and it is a PRODUCTION defect rather than a test one.
+
+    The planner picks a route id out of the routes in ITS snapshot. The
+    effector then re-reads routes.toml FROM DISK and indexes it. Any
+    divergence between those two reads used to be a bare-lookup `KeyError`,
+    which run_pass's outer net turns into a TICK_ERROR that kills the ENTIRE
+    pass for that project -- every other task included, not just this launch.
+
+    The condition is not hypothetical and this package creates it: CR-13a's
+    own SYNC OBLIGATION tells the operator to sync routes.toml, and the
+    deployed and tracked copies use different route ids (pre-B16
+    frontier-review/sonnet5-high/... versus post-B16 implement-1/2, review-3).
+    A task queued against an old id, then a sync, then a pass -- and the pass
+    dies. The documented remediation path produced a crash loop.
+
+    A route id that no longer resolves is exactly the fail-closed case this
+    package exists for, so every one of these asserts a clean refusal AND that
+    nothing raised.
+    """
+
+    def test_a_dispatch_whose_route_vanished_refuses_and_leaves_the_task_alone(
+            self, tmp_state, sample_project):
+        effector = effects_attempt.AttemptEffector(effects.EffectPorts.system())
+        states = {"t1": _task("t1", TaskState.QUEUED)}
+        ctx = _ctx(sample_project, states)
+
+        events = effector.dispatch_implementer(
+            ctx, reconcile.DispatchImplementer(task_id="t1",
+                                               route_id="route-that-was-renamed"))
+
+        assert events == []
+        assert states["t1"].state is TaskState.QUEUED, (
+            "a refused dispatch must leave the task dispatchable next pass")
+
+    def test_a_resume_whose_pinned_route_vanished_refuses_rather_than_raising(
+            self, tmp_state, sample_project):
+        """Sharper than dispatch: a resume's route id is PINNED on the attempt
+        record, written possibly days earlier, so it is the likeliest of all
+        to name something a later routes.toml no longer defines."""
+        effector = effects_attempt.AttemptEffector(effects.EffectPorts.system())
+        states = {"t1": _task("t1", TaskState.ACTIVE,
+                              attempts=[_attempt("a1", "route-that-was-renamed")])}
+        ctx = _ctx(sample_project, states)
+
+        assert effector.resume_attempt(
+            ctx, reconcile.ResumeAttempt(task_id="t1", attempt_id="a1")) == []
+        assert states["t1"].state is TaskState.ACTIVE
+
+    def test_the_refusal_is_a_refusal_and_not_an_exception_the_pass_absorbs(
+            self, tmp_state, sample_project):
+        """The distinction that matters. `run_pass` has an outer net, so a
+        KeyError here ALSO ends in "no launch" -- via a TICK_ERROR that ends
+        the whole pass. This asserts the mechanism, not just the outcome:
+        calling the effector directly, with no net underneath it, must not
+        raise."""
+        effector = effects_attempt.AttemptEffector(effects.EffectPorts.system())
+        ctx = _ctx(sample_project, {"t1": _task("t1", TaskState.QUEUED)})
+        try:
+            effector.dispatch_implementer(
+                ctx, reconcile.DispatchImplementer(task_id="t1", route_id="gone"))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an unresolvable route raised {exc!r} instead of refusing")
+
+    def test_route_by_id_names_the_id_it_could_not_resolve(self, sample_project):
+        """The reason an operator reads. `route-unknown:<id>` is one line to
+        act on; a bare refusal is not."""
+        from nyxloom.config import Routes
+        routes = Routes(revision="r", tiers={}, routes={})
+        assert effects_dispatch.route_by_id(
+            routes, "gone", project="demo", kind="dispatch") is None
 
     def test_a_refused_self_review_launches_nothing_and_does_not_degrade(
             self, tmp_state, sample_project):

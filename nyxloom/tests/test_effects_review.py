@@ -330,3 +330,51 @@ def _routes():
                                          trust="operator",
                                          role_default="review-independent")},
     )
+
+
+class TestAReviewWithNoRouteRefusesRatherThanCrashing:
+    """CR-13a review: the role-indexed twin of the vanished-route defect.
+
+    Both review legs resolved their route with `for_role(...)[0]` and no
+    guard, so a deployment with no review-independent route raised IndexError
+    -- which run_pass's outer net turns into a TICK_ERROR that ends the whole
+    pass. Same class as the dispatch KeyError, same fix: refuse the launch and
+    let every other task in the pass proceed.
+
+    `effects_carve` already had this discipline and said why ("routes.toml
+    could change between planning and execution within the same pass. Never
+    mint a synthetic task / worktree we cannot actually dispatch into"); the
+    review legs did not inherit it.
+    """
+
+    def _no_review_routes(self):
+        from nyxloom.config import Routes
+        return Routes(revision="test-rev", tiers={}, routes={})
+
+    def test_launch_review_refuses_when_no_route_serves_the_role(
+            self, tmp_state, sample_project, monkeypatch):
+        from nyxloom import wrapper
+        monkeypatch.setattr(effects_review.config.Routes, "load",
+                            classmethod(lambda cls: self._no_review_routes()))
+        launched: list = []
+        monkeypatch.setattr(wrapper, "launch_detached",
+                            lambda spec: (launched.append(spec), 4242)[1])
+
+        effector = effects_review.ReviewEffector(effects.EffectPorts.system())
+        states = {"t-a": TaskStateFile(schema_version=storage.SCHEMA_VERSION,
+                                       task_id="t-a", project="demo",
+                                       state=TaskState.AWAITING_REVIEW,
+                                       since=utc_now())}
+        ctx = effects.EffectContext(project="demo", cfg=sample_project,
+                                    states=states,
+                                    ports=effects.EffectPorts.system())
+        try:
+            events = effector.launch_review(
+                ctx, reconcile.LaunchReview(wave_id="w1", task_ids=["t-a"]))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an unroutable review raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert launched == [], "nothing may launch without a resolved route"
+        assert states["t-a"].state is TaskState.AWAITING_REVIEW, (
+            "a refused review must leave the task reviewable next pass")

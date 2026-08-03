@@ -273,7 +273,11 @@ class ReviewEffector:
         (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
 
         routes_obj = config.Routes.load()
-        route_def = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)[0]
+        route_def = effects_dispatch.route_for_role(
+            routes_obj, Role.REVIEW_INDEPENDENT.value, project=project,
+            kind="review")
+        if route_def is None:
+            return []  # no review route configured; task stays REVIEW_REJECTED
         # Re-asked with the resolved route (CR-13a): the review role's route
         # is chosen here, not by the planner, so the containment half of
         # admission has nothing to answer about until this line has run.
@@ -366,7 +370,11 @@ class ReviewEffector:
         (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
 
         routes_obj = config.Routes.load()
-        route_def = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)[0]
+        route_def = effects_dispatch.route_for_role(
+            routes_obj, Role.REVIEW_INDEPENDENT.value, project=project,
+            kind="review")
+        if route_def is None:
+            return []  # no review route configured; task stays AWAITING_REVIEW
         # Re-asked with the resolved route -- see launch_gate_diagnosis.
         ok, _reason = effects_dispatch.admissible(ctx, "review", route_def)
         if not ok:
