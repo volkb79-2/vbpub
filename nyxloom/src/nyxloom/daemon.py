@@ -2531,7 +2531,12 @@ class Daemon:
             return _degrade(snapshot.Reason.SOURCE_ERROR, f"{type(e).__name__}: {e}")
 
     # CR-05d: the carver-session surface moved to `effects_carver`. These are
-    # DELEGATES for the shell's remaining readers -- `_build_input` threads the
+    # DELEGATES for the shell's remaining readers -- and only for the ones it
+    # actually still calls. `_carve_in_flight` and `_build_carver_resume_prompt`
+    # were written as delegates too and DELETED when the gate found them
+    # uncovered: after the move nothing on this side calls them, and an unused
+    # forwarding method is decoration that makes the shell look more coupled
+    # to the carver than it is -- `_build_input` threads the
     # snapshot and the validated proposals into the planner, and the carve
     # families CR-05f still owns share the sequence counter and the packet
     # builders. The shell may call an effector; the reverse is what the
@@ -2567,9 +2572,6 @@ class Daemon:
                         *, events: Sequence[Event] | None = None) -> int:
         return self._carver._next_carve_seq(project, events=events)
 
-    def _carve_in_flight(self, states: dict[str, TaskStateFile]) -> bool:
-        return self._carver._carve_in_flight(states)
-
     def _spine_revisions(self, cfg: ProjectConfig) -> dict[str, str]:
         return self._carver._spine_revisions(cfg)
 
@@ -2578,11 +2580,6 @@ class Daemon:
                                          *, events: Sequence[Event] | None = None):
         return self._carver._highest_consumed_feed_sequence(
             project, source_ids, events=events)
-
-    def _build_carver_resume_prompt(self, project: str, task_id: str, mode: str,
-                                     source_ids, repair_ids=()) -> str:
-        return self._carver._build_carver_resume_prompt(
-            project, task_id, mode, source_ids, repair_ids)
 
     @staticmethod
     def _carve_kind(states: dict[str, TaskStateFile], task_id: str | None) -> str:
