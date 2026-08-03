@@ -108,7 +108,10 @@ class TestThisRepo:
 
     def test_every_legacy_handler_names_the_package_that_owns_moving_it(
             self, registry):
-        assert all(s.legacy_owner == "CR-05b" for s in registry.legacy_specs())
+        """Not merely "some package": the row says WHICH, so the remaining
+        work is a plan rather than a pile."""
+        owners = {s.kind: s.legacy_owner for s in registry.legacy_specs()}
+        assert owners and all(o in ("CR-05c", "CR-05d") for o in owners.values()), owners
 
     def test_a_handler_that_starts_background_work_declares_an_idempotency_key(
             self, registry):
@@ -145,6 +148,10 @@ class TestThisRepo:
             "provider-pause": reconcile.ProviderPause(route_id="r1"),
             "verify-gate": reconcile.VerifyGate(project="demo"),
             "post-merge-gate": reconcile.RunPostMergeGate(task_id="t1"),
+            "launch-review": reconcile.LaunchReview(wave_id="w1",
+                                                    task_ids=["t1"]),
+            "launch-gate-diagnosis": reconcile.LaunchGateDiagnosis(task_id="t1"),
+            "auto-merge": reconcile.AutoMergeTask(task_id="t1"),
         }
         keys = {}
         for spec in registry.specs:
@@ -483,16 +490,34 @@ class TestGitPort:
         assert git.rev_parse("/repo", "deadbeef^1") == ""
         assert "--quiet" in processes.calls[0][1]
 
-    def test_worktree_add_reports_whether_git_accepted_it(self):
+    def test_worktree_add_returns_the_whole_result_including_stderr(self):
+        """One caller only needs to know it failed; another puts git's own
+        stderr into the operator escalation, and "scratch worktree setup
+        failed" with no reason is a page nobody can act on."""
         git, _ = self._git(subprocess.CompletedProcess([], 0, "", ""))
-        assert git.worktree_add_detached("/repo", "/scratch", "abc") is True
-        git, _ = self._git(subprocess.CompletedProcess([], 128, "", "exists"))
-        assert git.worktree_add_detached("/repo", "/scratch", "abc") is False
+        assert git.worktree_add_detached("/repo", "/scratch", "abc").returncode == 0
+        git, _ = self._git(subprocess.CompletedProcess([], 128, "", "already exists"))
+        refused = git.worktree_add_detached("/repo", "/scratch", "abc")
+        assert refused.returncode == 128 and refused.stderr == "already exists"
 
     def test_worktree_remove_is_forced_and_best_effort(self):
         git, processes = self._git()
         git.worktree_remove("/repo", "/scratch")
         assert processes.calls[0][1][-3:] == ("remove", "--force", "/scratch")
+
+    def test_changed_paths_reports_nothing_when_git_refuses(self):
+        """An empty list is REAL zero-progress to the caller, so the refusal
+        case must not be distinguishable by accident -- it degrades to the
+        same answer deliberately, and the caller's own guard is what keeps a
+        merge from being undone by a progress signal that could not run."""
+        git, _ = self._git(subprocess.CompletedProcess([], 128, "", "bad object"))
+        assert git.changed_paths("/repo", "deadbeef") == []
+
+    def test_changed_paths_lists_the_files_a_commit_touched(self):
+        git, processes = self._git(
+            subprocess.CompletedProcess([], 0, "a.py\n\n b.py \n", ""))
+        assert git.changed_paths("/repo", "c1") == ["a.py", "b.py"]
+        assert "diff-tree" in processes.calls[0][1]
 
     def test_update_ref_is_a_compare_and_swap_and_returns_the_refusal(self):
         """The CAS operand is what makes an auto-revert safe, and the WHOLE
@@ -659,7 +684,7 @@ class TestGateEffectorQueues:
 
             def worktree_add_detached(self, root, path, commit):
                 calls.append(("add", path, commit))
-                return True
+                return subprocess.CompletedProcess([], 0, "", "")
 
         class _Files:
             def exists(self, path):

@@ -86,7 +86,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import notify, snapshot, storage
+from . import notify, snapshot, storage, wrapper
 from .config import ProjectConfig
 from .log import get_logger
 from .types import (
@@ -97,12 +97,13 @@ log = get_logger("effects")
 
 #: Handlers still implemented on ``Daemon`` rather than in an effector module,
 #: with the package that owns moving them. CR-05a moved the lifecycle and gate
-#: families; CR-05b owns the rest (attempt dispatch/resume, review launch and
-#: exit consumption, carve and carver-session execution, auto-merge).
+#: families and CR-05b the review dispatch and guarded merge; what remains is
+#: attempt dispatch/resume (CR-05c), the receipt-exit consumer (CR-05c) and
+#: carve/carver-session execution (CR-05d).
 #:
 #: This number may only go DOWN, and it must go down in the same commit that
 #: moves the handler. See the module docstring.
-LEGACY_HANDLER_BUDGET = 12
+LEGACY_HANDLER_BUDGET = 9
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +141,15 @@ class SystemProcesses:
         """
         return subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
                               timeout=timeout)
+
+    def launch_detached(self, spec: Any) -> int:
+        """Start a supervised agent leg and return the wrapper's pid.
+
+        The one port operation that creates a process this daemon does not
+        wait for, which is why every caller must pass the admission gate in
+        ``effects_dispatch.admissible`` immediately beforehand.
+        """
+        return wrapper.launch_detached(spec)
 
     def terminate(self, pid: int) -> None:
         """SIGTERM one process."""
@@ -209,10 +219,114 @@ class SystemGit:
             pass
         return fallback
 
+    def top_level_checked(self, root: str) -> str | None:
+        """``git rev-parse --show-toplevel``, or ``None`` when git refused.
+
+        The THIRD failure policy on one command, and the reason each is named
+        rather than inlined: this caller neither propagates (:meth:`top_level`)
+        nor substitutes a default (:meth:`top_level_or`) -- it ESCALATES to an
+        operator, because a guarded merge that cannot locate the repository
+        must not proceed and must not look like a conflict.
+        """
+        res = self.run(root, "rev-parse", "--show-toplevel")
+        value = res.stdout.strip()
+        return value if res.returncode == 0 and value else None
+
     def head_commit(self, root: str) -> str:
         """``git rev-parse HEAD``, or ``""`` when the call fails."""
         res = self.run(root, "rev-parse", "HEAD")
         return res.stdout.strip() if res.returncode == 0 else ""
+
+    def resolve(self, root: str, rev: str) -> str:
+        """``git rev-parse <rev>`` -- the raw answer, empty when unresolvable.
+
+        Unlike :meth:`rev_parse` this does NOT pass ``--verify --quiet``: the
+        merge path resolves a branch it expects to exist, and wants git's own
+        stderr in the log if it does not.
+        """
+        return self.run(root, "rev-parse", rev).stdout.strip()
+
+    def changed_paths(self, root: str, commit: str) -> list[str]:
+        """The files a commit changed against its first parent.
+
+        ``diff-tree`` rather than ``diff``, so it answers for a MERGE commit
+        and a fast-forward alike -- an empty list is then real zero-progress
+        rather than "this was a merge and we could not tell".
+        """
+        res = self.run(root, "diff-tree", "--no-commit-id", "--name-only",
+                       "-r", commit)
+        if res.returncode != 0:
+            return []
+        return [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+
+    def merge_no_ff(self, worktree: str, branch: str,
+                    message: str) -> subprocess.CompletedProcess:
+        """A REAL ``git merge --no-ff`` inside ``worktree``.
+
+        Never the surgical commit-tree technique an operator uses by hand:
+        that grafts a tree without any 3-way merge algorithm running, so it
+        has NO conflict detection at all. Fine under human supervision, never
+        fine unattended, where a genuine textual conflict must escalate
+        rather than silently clobber whatever else landed concurrently.
+
+        The identity is passed explicitly because ``--no-ff`` always creates a
+        commit, and an environment with no global git identity fails with
+        "Please tell me who you are" -- which reads like a real conflict if
+        the caller cannot tell them apart.
+        """
+        return self.run(worktree, "-c", "user.name=nyxloomd",
+                        "-c", "user.email=nyxloomd@localhost",
+                        "merge", "--no-ff", branch, "-m", message)
+
+    def merge_abort(self, worktree: str) -> None:
+        """Abandon an in-progress merge. Best effort: the caller is already
+        on its escalation path and the worktree is about to be removed."""
+        self.run(worktree, "merge", "--abort")
+
+    def resolve_verify(self, root: str, rev: str) -> str | None:
+        """``git rev-parse --verify <rev>``, or None when it does not exist.
+
+        Without ``--quiet``, so git's own message reaches stderr: the caller
+        records a MISSING baseline as an invalidation rather than silently
+        trusting an unverifiable claim, and the reason belongs in the log.
+        """
+        res = self.run(root, "rev-parse", "--verify", rev)
+        if res.returncode != 0:
+            return None
+        return res.stdout.strip() or None
+
+    def diff(self, root: str, rev_range: str) -> str:
+        """Committed diff text for a revision range."""
+        return self.run(root, "diff", rev_range).stdout
+
+    def diff_stat(self, root: str, rev_range: str) -> str:
+        """``--stat`` summary for a revision range."""
+        return self.run(root, "diff", "--stat", rev_range).stdout
+
+    def status_porcelain(self, root: str) -> str:
+        return self.run(root, "status", "--porcelain").stdout
+
+    def diff_unstaged(self, root: str) -> str:
+        return self.run(root, "diff").stdout
+
+    def diff_staged(self, root: str) -> str:
+        return self.run(root, "diff", "--cached").stdout
+
+    def show(self, root: str, ref_path: str) -> subprocess.CompletedProcess:
+        """``git show <ref>:<path>``.
+
+        The caller supplies the whole ``<ref>:./<path>`` operand, and the
+        ``./`` prefix is LOAD-BEARING under ``-C``: without it git resolves
+        the path against the repository root rather than the ``-C``
+        directory, which silently finds nothing for a project that lives in a
+        subdirectory of its repo.
+        """
+        return self.run(root, "show", ref_path)
+
+    def ls_tree_names(self, root: str, ref: str,
+                      path: str) -> subprocess.CompletedProcess:
+        """Recursive name-only listing of a path on a ref."""
+        return self.run(root, "ls-tree", "-r", "--name-only", ref, "--", path)
 
     def rev_parse(self, root: str, rev: str) -> str:
         """Resolve ``rev``, or ``""`` when it does not exist.
@@ -222,10 +336,16 @@ class SystemGit:
         """
         return self.run(root, "rev-parse", "--verify", "--quiet", rev).stdout.strip()
 
-    def worktree_add_detached(self, root: str, path: str, commit: str) -> bool:
-        """Add a detached worktree at ``commit``; False if git refused."""
-        return self.run(root, "worktree", "add", "--detach", path,
-                        commit).returncode == 0
+    def worktree_add_detached(self, root: str, path: str,
+                              commit: str) -> subprocess.CompletedProcess:
+        """Add a detached worktree at ``commit``.
+
+        Returns the whole result rather than a boolean: one caller only needs
+        to know it failed, and another puts git's own stderr into the
+        operator escalation -- "scratch worktree setup failed" with no reason
+        is a page nobody can act on.
+        """
+        return self.run(root, "worktree", "add", "--detach", path, commit)
 
     def worktree_remove(self, root: str, path: str) -> None:
         """Force-remove a worktree. Best effort: the caller is cleaning up."""
@@ -377,6 +497,15 @@ class EffectContext:
     #: itself, so the identity the registry declares and the identity the
     #: effector enforces cannot drift apart.
     idempotency_key: str | None = None
+    #: The CURRENT pass's snapshot fan-in verdict (CR-02a), or ``None`` when
+    #: no fan-in ran in this call stack -- an operator-initiated verb such as
+    #: `dispatch_targeted_carve`, which is an explicit human instruction
+    #: rather than an autonomous decision, and is permitted.
+    #:
+    #: Absence is NOT the same as clean, which is why the admission check
+    #: distinguishes them. The pass owns this value and hands it down; an
+    #: effector must not reach for a verdict that outlived its pass.
+    snapshot_audit: Any = None
 
     def events(self) -> Sequence[Event]:
         return self.ports.event_log.require(self.project)

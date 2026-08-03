@@ -505,11 +505,22 @@ def test_no_dead_end_validating():
 # the handoff's ask -- not a replacement for test_types.py's fuller guard.
 # ===========================================================================
 
+# CR-05b: the control plane's DISPATCH SURFACE is no longer one file. Effect
+# execution now lives in `effects*.py` modules, and more move there with each
+# CR-05 sub-package -- so the scan globs them rather than listing them, and a
+# family that moves does not silently drop out of this census.
+CONTROL_PLANE_SRC = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((REPO_ROOT / "src" / "nyxloom").glob("effects*.py"))
+)
+
 _ROLE_DISPATCH_RE = re.compile(r"role=Role\.(\w+)")
 
 
 def _dispatched_roles() -> frozenset[Role]:
-    names = set(_ROLE_DISPATCH_RE.findall(DAEMON_SRC)) | set(_ROLE_DISPATCH_RE.findall(RECONCILE_SRC))
+    names = (set(_ROLE_DISPATCH_RE.findall(DAEMON_SRC))
+             | set(_ROLE_DISPATCH_RE.findall(RECONCILE_SRC))
+             | set(_ROLE_DISPATCH_RE.findall(CONTROL_PLANE_SRC)))
     return frozenset(Role[n] for n in names)
 
 

@@ -476,36 +476,34 @@ def test_build_dispatch_review_independent_unbound_when_no_attempt_id():
 
 
 def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
-    """O2 (grep-provable): all five daemon.py build_dispatch call sites
-    (legacy CarveDispatch's CARVER, IMPLEMENTER, REVIEW_INDEPENDENT, F018 P3a's
-    StartCarverSession CARVER bootstrap, and F019 P1b's gate-diagnosis
-    REVIEW_INDEPENDENT cold dispatch) pass their own role= explicitly -- guards
-    against the exact silent-mismatch this package exists to close (a call site
-    importing Role but never actually passing role= to build_dispatch, silently
-    keeping the wrong-role default). F018 P3a (2026-07-25) added the 4th call
-    site (_execute_start_carver_session's cold bootstrap launch, role=Role.CARVER
-    like the legacy carve dispatch it mirrors). F019 P1b (2026-07-25) added the
-    5th (_execute_gate_diagnosis's cold classify-only launch,
-    role=Role.REVIEW_INDEPENDENT) -- roles_seen stays the same 3-element set (no
-    new role, just a second REVIEW_INDEPENDENT call site)."""
+    """O2 (grep-provable): EVERY control-plane build_dispatch call site passes
+    its own `role=` explicitly -- guarding the exact silent mismatch this
+    package exists to close (a call site importing Role but never actually
+    passing role=, silently keeping the wrong-role default).
+
+    CR-05b: the call sites are no longer all in daemon.py. Effect execution
+    moves into `effects*.py` one family per CR-05 sub-package, so the scan
+    globs the whole control-plane dispatch surface rather than naming one
+    file -- otherwise a moved call site drops out of the census silently,
+    which is the failure this test exists to prevent, one level up.
+    """
     import re
 
-    daemon_src = (Path(__file__).parent.parent / "src" / "nyxloom" / "daemon.py").read_text()
-    calls = re.findall(
-        r"adapters\.build_dispatch\(\s*(?:[^()]|\([^()]*\))*?\)",
-        daemon_src,
-        flags=re.DOTALL,
-    )
+    src_dir = Path(__file__).parent.parent / "src" / "nyxloom"
+    sources = [src_dir / "daemon.py", *sorted(src_dir.glob("effects*.py"))]
+    calls: list[str] = []
+    for path in sources:
+        calls.extend(re.findall(
+            r"adapters\.build_dispatch\(\s*(?:[^()]|\([^()]*\))*?\)",
+            path.read_text(encoding="utf-8"), flags=re.DOTALL))
     assert len(calls) == 5, f"expected exactly 5 build_dispatch call sites, found {len(calls)}"
     roles_seen = set()
     for call in calls:
-        m = re.search(r"role\s*=\s*Role\.(\w+)", call)
-        assert m is not None, f"a build_dispatch call site is missing role=Role.*:\n{call}"
+        m = re.search(r"role=Role\.(\w+)", call)
+        assert m is not None, f"build_dispatch call site without an explicit role=: {call[:120]}"
         roles_seen.add(m.group(1))
-    assert roles_seen == {"CARVER", "IMPLEMENTER", "REVIEW_INDEPENDENT"}
+    assert roles_seen == {"CARVER", "IMPLEMENTER", "REVIEW_INDEPENDENT"}, roles_seen
 
-
-# Oracle 3: Prompt-length guard
 def test_build_dispatch_prompt_too_long():
     """Oracle 3: long prompt raises AdapterError."""
     route = RouteDef(

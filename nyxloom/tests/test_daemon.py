@@ -29,8 +29,8 @@ from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
     adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
-    effects_gates, lint, log, notify, paths, reconcile, render, results, snapshot, storage,
-    wrapper,
+    effects_dispatch, effects_gates, effects_review, lint, log, notify, paths, reconcile,
+    render, results, snapshot, storage, wrapper,
 )
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
@@ -1163,7 +1163,7 @@ def test_incapable_escalation_note_resolves_provenance_marker(
     tsf = storage.load_state("demo", "demo-P02")
     fm = d._frontmatter_for(cfg, tsf)
 
-    note = d._incapable_escalation_note(cfg, fm)
+    note = effects_review.incapable_escalation_note(d._ports.git, cfg, fm)
     assert note != ""
     assert "higher-tier model" in note
     assert "own" in note.lower() and "judgment" in note.lower()
@@ -1185,7 +1185,7 @@ def test_incapable_escalation_note_negative_origin_not_incapable(
     tsf = storage.load_state("demo", "demo-P02")
     fm = d._frontmatter_for(cfg, tsf)
 
-    assert d._incapable_escalation_note(cfg, fm) == ""
+    assert effects_review.incapable_escalation_note(d._ports.git, cfg, fm) == ""
 
 
 def test_incapable_escalation_note_negative_no_source_ref(
@@ -1200,7 +1200,7 @@ def test_incapable_escalation_note_negative_no_source_ref(
     tsf = storage.load_state("demo", "demo-P03")
     fm = d._frontmatter_for(cfg, tsf)
 
-    assert d._incapable_escalation_note(cfg, fm) == ""
+    assert effects_review.incapable_escalation_note(d._ports.git, cfg, fm) == ""
 
 
 def test_incapable_escalation_note_negative_no_frontmatter():
@@ -1208,7 +1208,7 @@ def test_incapable_escalation_note_negative_no_frontmatter():
     graceful-degradation case _frontmatter_for itself returns) -> ''. No cfg
     access needed -- proves the None-check short-circuits before any I/O."""
     d = daemon.Daemon({})
-    assert d._incapable_escalation_note(None, None) == ""
+    assert effects_review.incapable_escalation_note(d._ports.git, None, None) == ""
 
 
 def test_execute_carve_dispatch_rescope_supersedes_origin_with_rescoped_outcome(
@@ -6979,8 +6979,8 @@ def test_execute_gate_diagnosis_admission_refused(tmp_state, sample_project, pat
     task_id = "t-gd-refused"
     _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
     _seed_review_rejected("demo", task_id, attempts=[])
-    monkeypatch.setattr(daemon.Daemon, "_dispatch_admissible",
-                        lambda self, *a, **k: (False, "test-refused"))
+    monkeypatch.setattr(effects_dispatch, "admissible",
+                        lambda ctx, kind: (False, "test-refused"))
     _scripted(monkeypatch, [[reconcile.LaunchGateDiagnosis(task_id=task_id)]])
     daemon.Daemon({"demo": cfg.root}).run_pass("demo")
     assert patch_siblings["launch_detached"] == []
@@ -7071,30 +7071,39 @@ def test_latest_gate_failure_returns_latest_tail_and_phase(tmp_state, sample_pro
     _seed_review_rejected("demo", "t-lgf", attempts=[])
     _emit_gate_finished("demo", "t-lgf", exit_code=0, phase="pre-merge", output_tail="ignored-pass")
     _emit_gate_finished("demo", "t-lgf", exit_code=1, phase="mutation", output_tail="SURVIVED mutant")
-    assert d._latest_gate_failure("demo", "t-lgf") == ("SURVIVED mutant", "mutation")
+    events = list(storage.iter_events("demo"))
+    assert effects_review.latest_gate_failure(events, "t-lgf") == (
+        "SURVIVED mutant", "mutation")
 
 
 def test_latest_gate_failure_none_when_no_failure(tmp_state, sample_project):
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
     _seed_review_rejected("demo", "t-lgf2", attempts=[])
-    assert d._latest_gate_failure("demo", "t-lgf2") == ("", "")
+    events = list(storage.iter_events("demo"))
+    assert effects_review.latest_gate_failure(events, "t-lgf2") == ("", "")
 
 
-def test_latest_gate_failure_iter_events_failure_is_typed_unavailable(
+def test_gate_diagnosis_on_an_unreadable_log_is_typed_unavailable(
         tmp_state, sample_project, monkeypatch):
-    """CR-02a: ("", "") is the same value a task with NO gate failure gets,
-    so an unreadable log used to dispatch a gate-diagnosis reviewer with the
-    evidence field silently blank. The read is authoritative now.
+    """CR-02a, restated at the seam CR-05b moved the read to.
+
+    ("", "") is the same value a task with NO gate failure gets, so an
+    unreadable log would dispatch a gate-diagnosis reviewer with the evidence
+    field silently blank. `latest_gate_failure` is now PURE over an events
+    sequence, so the authoritative read happens where the handler acquires
+    the log -- and it must still raise rather than hand back an empty one.
 
     The genuine "no failure recorded" case still returns ("", "") -- see
     test_latest_gate_failure_none_when_no_failure, the negative control that
     keeps this from collapsing back into one indistinguishable answer."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
+    _seed_review_rejected("demo", "t-lgf3", attempts=[])
     monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._latest_gate_failure("demo", "whatever")
+        d._execute("demo", cfg, storage.list_states("demo"),
+                   reconcile.LaunchGateDiagnosis(task_id="t-lgf3"))
 
 
 def test_triage_classes_surfaces_transient(tmp_state, sample_project):

@@ -373,7 +373,8 @@ from typing import Any, Sequence
 
 from . import (
     adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat,
-    decisions, doc_lifecycle, effects, effects_gates, effects_lifecycle, frontmatter,
+    decisions, doc_lifecycle, effects, effects_dispatch, effects_gates,
+    effects_lifecycle, effects_merge, effects_review, frontmatter,
     gate_canary, gate_runner, intake_chat, leases,
     lint, merge_digest, notify, paths, reconcile, render, results, snapshot, stages,
     storage, watchdog, wrapper,
@@ -738,6 +739,8 @@ class Daemon:
         self._gates = effects_gates.GateEffector(self._ports)
         self._lifecycle = effects_lifecycle.LifecycleEffector(
             self._ports, self._provider_backoff)
+        self._review = effects_review.ReviewEffector(self._ports)
+        self._merge = effects_merge.MergeEffector(self._ports)
         self._registry = self._build_registry()
         # CR-02a 2026-08-03 (authoritative snapshot fail-closed audit): the
         # audit produced by the CURRENT pass's fan-in, per project. Set by
@@ -753,23 +756,26 @@ class Daemon:
     # -- the effect registry (CR-05a) --------------------------------------
 
     #: Action types whose effect still lives on this class rather than in an
-    #: effector module. CR-05b owns moving them; until it does, they are
+    #: effector module, with the package that owns moving each. They are
     #: REGISTERED (so every action has exactly one owner and completeness is
     #: checked at construction) but declared legacy, and
     #: ``effects.LEGACY_HANDLER_BUDGET`` holds the count in both directions.
-    _LEGACY_ACTIONS: tuple[tuple[str, str], ...] = (
-        ("dispatch-implementer", "DispatchImplementer"),
-        ("resume-attempt", "ResumeAttempt"),
-        ("launch-self-review", "LaunchSelfReview"),
-        ("emit-attempt-exit", "EmitAttemptExit"),
-        ("launch-review", "LaunchReview"),
-        ("launch-gate-diagnosis", "LaunchGateDiagnosis"),
-        ("carve-dispatch", "CarveDispatch"),
-        ("admit-carve-proposal", "AdmitCarveProposal"),
-        ("start-carver-session", "StartCarverSession"),
-        ("resume-carver-session", "ResumeCarverSession"),
-        ("compact-carver-session", "CompactCarverSession"),
-        ("auto-merge-task", "AutoMergeTask"),
+    _LEGACY_ACTIONS: tuple[tuple[str, str, str], ...] = (
+        # CR-05c: the attempt lifecycle. The receipt-exit consumer routes by
+        # attempt ROLE, so it moves with the launch families rather than with
+        # whichever effector dispatched the leg.
+        ("dispatch-implementer", "DispatchImplementer", "CR-05c"),
+        ("resume-attempt", "ResumeAttempt", "CR-05c"),
+        ("launch-self-review", "LaunchSelfReview", "CR-05c"),
+        ("emit-attempt-exit", "EmitAttemptExit", "CR-05c"),
+        # CR-05d: carve and the persistent carver session, the largest
+        # remaining family and the one the exit consumer's CARVER branch
+        # delegates into.
+        ("carve-dispatch", "CarveDispatch", "CR-05d"),
+        ("admit-carve-proposal", "AdmitCarveProposal", "CR-05d"),
+        ("start-carver-session", "StartCarverSession", "CR-05d"),
+        ("resume-carver-session", "ResumeCarverSession", "CR-05d"),
+        ("compact-carver-session", "CompactCarverSession", "CR-05d"),
     )
 
     def _build_registry(self) -> effects.EffectRegistry:
@@ -786,7 +792,11 @@ class Daemon:
             registry.register(spec)
         for spec in effects_gates.specs(self._gates):
             registry.register(spec)
-        for kind, action_name in self._LEGACY_ACTIONS:
+        for spec in effects_review.specs(self._review):
+            registry.register(spec)
+        for spec in effects_merge.specs(self._merge):
+            registry.register(spec)
+        for kind, action_name, owner in self._LEGACY_ACTIONS:
             registry.register(effects.HandlerSpec(
                 action_type=getattr(reconcile, action_name),
                 kind=kind,
@@ -796,15 +806,20 @@ class Daemon:
                 # `emits` set written here would be a claim nothing checks.
                 emits=None,
                 idempotency_key=None,
-                legacy_owner="CR-05b",
+                legacy_owner=owner,
             ))
         registry.require_covers(reconcile.Action.__subclasses__())
         return registry
 
     def _effect_context(self, project: str, cfg: ProjectConfig,
                         states: dict[str, TaskStateFile]) -> effects.EffectContext:
+        # CR-05b: the pass's snapshot verdict travels ON the context. The
+        # SHELL owns it -- `run_pass` records it and clears it in a `finally`
+        # -- and hands it down, so an effector consults THIS pass's verdict
+        # and cannot reach one that outlived its pass.
         return effects.EffectContext(project=project, cfg=cfg, states=states,
-                                     ports=self._ports)
+                                     ports=self._ports,
+                                     snapshot_audit=self._snapshot_audit.get(project))
 
     # -- lifecycle ------------------------------------------------------
 
@@ -1536,23 +1551,13 @@ class Daemon:
             snapshot_audit=b.audit(),
         )
 
+    # CR-05b: the launch primitives below are DELEGATES. Their bodies moved
+    # to `effects_dispatch`, where the four families that launch an agent
+    # share them as plain functions over the effect context instead of
+    # sharing an object.
+
     def _pause_mode(self, project: str) -> str:
-        """P15 2026-07-15 (factory-state pause MODES): the project pause
-        flag file's CONTENT is now the mode. Absent -> 'run'. An explicit
-        'drain-agents' content selects that mode; anything else (including
-        the legacy EMPTY flag file — today's pre-P15 behaviour) is
-        'drain-handoffs', since that mode is exactly what a bare boolean
-        pause flag always meant (block new dispatch only)."""
-        p = paths.pause_flag(project)
-        if not p.exists():
-            return "run"
-        try:
-            content = p.read_text(encoding="utf-8").strip()
-        except OSError:
-            content = ""
-        if content == "drain-agents":
-            return "drain-agents"
-        return "drain-handoffs"
+        return effects_dispatch.pause_mode(self._ports.files, project)
 
     def _merged_branches(self, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                           *, builder: snapshot.SnapshotBuilder | None = None,
@@ -1780,23 +1785,6 @@ class Daemon:
         re-consumes a verdict."""
         return any(ev.type is EventType.REVIEW_RECORDED and ev.attempt_id == attempt_id
                     for ev in self._require_events(project, events))
-
-    def _latest_gate_failure(self, project: str, task_id: str,
-                              *, events: Sequence[Event] | None = None) -> tuple[str, str]:
-        """F019 P1b: (output_tail, phase) of the task's most recent FAILED
-        pre-merge/mutation gate -- the evidence the gate-diagnosis reviewer reads
-        (P1a persisted it into GateResult.output_tail). ("", "") when none is
-        found (degrades gracefully: the reviewer still classifies from the diff +
-        handoff)."""
-        out_tail, phase = "", ""
-        for ev in self._require_events(project, events):
-            if (ev.type is EventType.GATE_FINISHED and ev.task_id == task_id):
-                gr = (ev.payload or {}).get("gate_result") or {}
-                if (gr.get("phase") in ("pre-merge", "mutation")
-                        and gr.get("exit_code", 0) != 0):
-                    out_tail = gr.get("output_tail", "") or ""
-                    phase = gr.get("phase", "") or ""
-        return out_tail, phase
 
     def _leases_free(self, cfg: ProjectConfig,
                       *, builder: snapshot.SnapshotBuilder | None = None,
@@ -2236,64 +2224,18 @@ class Daemon:
         return "|".join(sorted(parts_sig))
 
     def _budget_remaining(self, cfg: ProjectConfig, states: dict[str, TaskStateFile]) -> float | None:
-        if cfg.policy.max_cost is None:
-            return None
-        spent = 0.0
-        for tsf in states.values():
-            for att in tsf.attempts:
-                if att.usage is not None and att.usage.cost is not None:
-                    if cfg.policy.cost_currency is None or att.usage.currency == cfg.policy.cost_currency:
-                        spent += att.usage.cost
-        return cfg.policy.max_cost - spent
+        return effects_dispatch.budget_remaining(cfg, states)
 
     def _dispatch_admissible(self, project: str, cfg: ProjectConfig,
                              states: dict[str, TaskStateFile], kind: str) -> tuple[bool, str]:
-        """P55 2026-07-19 (R5 -- execute-time admission at the EFFECT
-        BOUNDARY). Every guard the planner evaluates runs against a snapshot;
-        the daemon then executes minutes of side-effects with NO re-check, so
-        a mid-pass auto-pause (the watchdog can write the pause flag partway
-        through a pass) or any planner gap could still launch an agent this
-        pass. This predicate is called immediately BEFORE every wrapper launch
-        so pause/budget are authoritative at the moment of effect, not merely
-        at plan time. `kind` in {'dispatch','resume','review','carve','self-review'}.
+        """Execute-time admission, delegated to `effects_dispatch.admissible`.
 
-        Semantics deliberately MATCH the planner's existing per-kind pause
-        rules (so this changes no behaviour except closing the plan/execute
-        gap) and ADD the budget check the planner omits for resume/review
-        (M9): 'drain-agents' blocks every kind (no new agent process of any
-        kind); 'drain-handoffs' blocks new work ('dispatch'/'carve') but lets
-        in-flight legs finish ('resume'/'review'/'self-review' -- the self_review
-        leg continues a task the implementer already ran, so it drains); an
-        exhausted budget blocks
-        ALL kinds -- including the review/resume legs the planner never
-        gated, which are the most expensive to launch into a spent budget.
-
-        Does NOT yet cover the four non-daemon launch sites (intake/decision/
-        onboarding); the fully structural form (an AdmissionToken minted only
-        here and required by wrapper.launch_detached) is a follow-up -- this
-        package closes the R5 gap for every launch the AUTONOMOUS loop makes."""
-        # CR-02a: the snapshot audit is checked FIRST, at the effect boundary,
-        # for the same reason P55 put pause/budget here -- a guard evaluated
-        # only at plan time is a guard with a window. `run_pass` already
-        # refuses to plan on a failed audit, so in the autonomous loop this is
-        # belt-and-braces; it becomes load-bearing the moment CR-05 moves
-        # execution behind a handler registry that can be driven from
-        # elsewhere. Absence of an audit means no fan-in ran in this call
-        # stack (an operator-initiated verb such as dispatch_targeted_carve,
-        # which is an explicit human instruction rather than an autonomous
-        # decision) and is permitted.
-        audit = self._snapshot_audit.get(project)
-        if audit is not None and not audit.permits_effects:
-            return (False, f"snapshot-unavailable:{audit.summary()}")
-        pause_mode = self._pause_mode(project)
-        if pause_mode == "drain-agents":
-            return (False, "paused:drain-agents")
-        if pause_mode == "drain-handoffs" and kind in ("dispatch", "carve"):
-            return (False, "paused:drain-handoffs")
-        budget = self._budget_remaining(cfg, states)
-        if budget is not None and budget <= 0:
-            return (False, "budget-exhausted")
-        return (True, "")
+        Retained as the daemon-side call site for the carve families CR-05d
+        still owns; the rule itself, and the reason it lives at the effect
+        boundary rather than in the planner, are documented there.
+        """
+        return effects_dispatch.admissible(
+            self._effect_context(project, cfg, states), kind)
 
     def _history(self, project: str, *, events: Sequence[Event] | None = None):
         """P44 2026-07-16 (anti-runaway self-correction): review_rejections_by_area
@@ -2383,12 +2325,8 @@ class Daemon:
         by rewriting the handoff's scope.touch on disk) and the FRONTIER_
         REVIEW dispatch (so the reviewer does not reject the now-legitimate
         out-of-scope edit)."""
-        files: list[str] = []
-        for payload in self._scope_amendments_approved(project, task_id, events=events):
-            f = payload.get("file")
-            if f and f not in files:
-                files.append(f)
-        return files
+        return effects_dispatch.scope_amendment_files(
+            self._require_events(project, events), task_id)
 
     def _days_since_test_health_carve(self, project: str,
                                        *, events: Sequence[Event] | None = None,
@@ -3346,302 +3284,13 @@ class Daemon:
     # -- execution map ---------------------------------------------------
 
     def _gate_hint(self, cfg: ProjectConfig) -> str:
-        if not cfg.gates:
-            return ""
-        gate = sorted(cfg.gates.values(), key=lambda g: g.gate_id)[0]
-        return " ".join(gate.argv)
-
-    def _merge_progress_units(self, cfg: ProjectConfig, commit: str) -> list[str]:
-        """P64 2026-07-20 (A12, D-061): objective progress signal for the
-        ratchet -- the files a merge actually changed (vs its first parent).
-        MERGE_RECORDED previously carried NO progress_units, so the ratchet's
-        reader defaulted every merge to zero progress and false-fired after any
-        N merges (a SPEC_ATTENTION bleed source). An empty list (a no-op merge)
-        is now real zero-progress; a normal merge that touched files is not, so
-        the ratchet fires ONLY on genuinely-empty consecutive merges. Uses
-        `git diff-tree` so it works on both merge and fast-forward commits."""
-        try:
-            repo_root = subprocess.run(
-                ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True).stdout.strip() or str(cfg.root)
-            res = subprocess.run(
-                ["git", "-C", repo_root, "diff-tree", "--no-commit-id",
-                 "--name-only", "-r", commit],
-                capture_output=True, text=True)
-            if res.returncode != 0:
-                return []
-            return [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
-        except OSError:
-            return []
-
-    def _execute_auto_merge(self, project: str, cfg: ProjectConfig,
-                             states: dict[str, TaskStateFile],
-                             action: "reconcile.AutoMergeTask") -> list[Event]:
-        """MERGE_READY -> MERGED (real git merge succeeds) or a
-        NEEDS_OPERATOR escalation left at MERGE_READY (a genuine conflict,
-        or any git-plumbing failure) -- see reconcile.py module contract
-        item 13 for why no verdict re-check belongs here.
-
-        Deliberately uses a disposable scratch worktree + a REAL `git merge
-        --no-ff`, never the surgical commit-tree technique an operator uses
-        by hand elsewhere in this project's own workflow: that technique
-        (commit-tree + update-ref + selective checkout) grafts the branch's
-        tree onto main WITHOUT any 3-way merge algorithm ever running, so
-        it silently has no conflict detection at all -- fine under human
-        supervision (the operator reads the diff), never fine for
-        unattended merging, where a genuine textual conflict must escalate,
-        not silently clobber whatever else landed on main concurrently.
-
-        The final `update-ref <new> <old>` call uses git's own compare-and-
-        swap form (fails if the ref no longer equals `old_commit`) as a
-        race guard: if anything else moved the default branch between this
-        method reading it and writing the merge result, the write is
-        refused rather than silently rebasing over an unknown state.
-
-        The merge commit's `-c user.name=/-c user.email=` are passed
-        explicitly, not left to ambient global git config: a `--no-ff`
-        merge always creates a commit, and an environment with no global
-        identity configured (observed in the test-runner container) would
-        otherwise fail with "Please tell me who you are" -- easy to
-        misread as a real conflict if not distinguished.
-        """
-        task_id = action.task_id
-        events: list[Event] = []
-        tsf = states[task_id]
-
-        branch = next(
-            (a.branch for a in tsf.attempts if a.role is Role.IMPLEMENTER and a.branch),
-            None,
-        )
-        if branch is None:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"detail": f"auto-merge: no recorded implementer branch for {task_id}",
-                 "reason": "auto-merge-error"}, task_id=task_id))
-            return events
-
-        repo_root_res = subprocess.run(
-            ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True,
-        )
-        repo_root = repo_root_res.stdout.strip()
-        if repo_root_res.returncode != 0 or not repo_root:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"detail": f"auto-merge: could not resolve repo root for {task_id}",
-                 "reason": "auto-merge-error"}, task_id=task_id))
-            return events
-
-        old_commit = subprocess.run(
-            ["git", "-C", repo_root, "rev-parse", cfg.default_branch],
-            capture_output=True, text=True,
-        ).stdout.strip()
-
-        scratch = Path(repo_root) / ".worktrees" / f"automerge-{task_id}"
-        if scratch.exists():
-            subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                            capture_output=True, text=True)
-
-        add = subprocess.run(
-            ["git", "-C", repo_root, "worktree", "add", "--detach", str(scratch), old_commit],
-            capture_output=True, text=True,
-        )
-        if add.returncode != 0:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"detail": f"auto-merge: scratch worktree setup failed for {task_id}: {add.stderr[:150]}",
-                 "reason": "auto-merge-error"}, task_id=task_id))
-            return events
-
-        merge = subprocess.run(
-            ["git", "-C", str(scratch),
-             "-c", "user.name=nyxloomd", "-c", "user.email=nyxloomd@localhost",
-             "merge", "--no-ff", branch, "-m", f"Merge {task_id} (guarded-automatic)"],
-            capture_output=True, text=True,
-        )
-        if merge.returncode != 0:
-            subprocess.run(["git", "-C", str(scratch), "merge", "--abort"],
-                            capture_output=True, text=True)
-            subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                            capture_output=True, text=True)
-            # P05a (§5): "merge conflict escalated" is one of the named ERROR
-            # examples in the rubric -- a genuine conflict that needs a human.
-            log.error("merge-conflict", project=project, task=task_id, branch=branch)
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"detail": f"auto-merge: real conflict merging {task_id} -- operator must resolve by hand",
-                 "reason": "auto-merge-conflict"}, task_id=task_id))
-            return events
-
-        new_commit = subprocess.run(
-            ["git", "-C", str(scratch), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-
-        # D-CORRECT-1: deterministic pre-merge gate on the MERGED tree in the
-        # scratch worktree. Publish only on pass; a failure routes back to
-        # REVIEW_REJECTED and main is never touched. Skipped entirely when
-        # policy.pre_merge_gate is False (parity with the pre-D-CORRECT-1
-        # behaviour).
-        if getattr(cfg.policy, "pre_merge_gate", True):
-            gate = effects_gates.select_post_merge_gate(cfg)
-            if gate is not None:
-                merge_commit_sha = new_commit
-                argv = [tok.replace("{worktree}", str(scratch)) for tok in gate.argv]
-                started = utc_now()
-                out_tail = ""
-                try:
-                    proc = subprocess.run(argv, cwd=str(scratch), capture_output=True,
-                                          text=True, timeout=gate.timeout_seconds)
-                    exit_code = proc.returncode
-                    if exit_code != 0:
-                        out_tail = effects_gates.gate_output_tail(proc.stdout, proc.stderr)
-                except subprocess.TimeoutExpired as _te:
-                    exit_code = 124
-                    out_tail = effects_gates.gate_output_tail(_te.stdout, _te.stderr)
-                except OSError:
-                    exit_code = 127
-                gate_result = GateResult(gate_id=gate.gate_id, phase="pre-merge",
-                    commit=merge_commit_sha, exit_code=exit_code, started=started,
-                    ended=utc_now(), environment=gate.environment,
-                    output_tail=out_tail)
-                events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
-                    {"gate_result": gate_result.to_dict()}, task_id=task_id))
-                if exit_code != 0:
-                    # DO NOT publish. Clean up the scratch and route back for a fix.
-                    subprocess.run(
-                        ["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                        capture_output=True, text=True)
-                    events.append(self._transition(project, cfg, states, task_id,
-                        TaskState.REVIEW_REJECTED,
-                        f"pre-merge gate failed (exit {exit_code}); not published"))
-                    return events
-
-        # F017: opt-in deterministic MUTATION gate on the same scratch merge tree,
-        # after the coverage gate. A surviving mutant on a changed line is a hollow
-        # test -> route back to REVIEW_REJECTED, never publish. Skipped entirely
-        # when policy.mutation_gate is False (default) or no phase=="mutation" gate
-        # is declared. Mirrors the D-CORRECT-1 block above.
-        if getattr(cfg.policy, "mutation_gate", False):
-            mgate = effects_gates.select_mutation_gate(cfg)
-            if mgate is not None:
-                margv = [tok.replace("{worktree}", str(scratch)) for tok in mgate.argv]
-                mstarted = utc_now()
-                mout_tail = ""
-                try:
-                    mproc = subprocess.run(margv, cwd=str(scratch), capture_output=True,
-                                           text=True, timeout=mgate.timeout_seconds)
-                    mexit = mproc.returncode
-                    if mexit != 0:
-                        mout_tail = effects_gates.gate_output_tail(mproc.stdout, mproc.stderr)
-                except subprocess.TimeoutExpired as _te:
-                    mexit = 124
-                    mout_tail = effects_gates.gate_output_tail(_te.stdout, _te.stderr)
-                except OSError:
-                    mexit = 127
-                mresult = GateResult(gate_id=mgate.gate_id, phase="mutation",
-                    commit=new_commit, exit_code=mexit, started=mstarted,
-                    ended=utc_now(), environment=mgate.environment,
-                    output_tail=mout_tail)
-                events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
-                    {"gate_result": mresult.to_dict()}, task_id=task_id))
-                if mexit != 0:
-                    subprocess.run(
-                        ["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                        capture_output=True, text=True)
-                    events.append(self._transition(project, cfg, states, task_id,
-                        TaskState.REVIEW_REJECTED,
-                        f"mutation gate failed (exit {mexit}); not published"))
-                    return events
-
-        subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                        capture_output=True, text=True)
-
-        ff = subprocess.run(
-            ["git", "-C", repo_root, "update-ref", f"refs/heads/{cfg.default_branch}",
-             new_commit, old_commit],
-            capture_output=True, text=True,
-        )
-        if ff.returncode != 0:
-            events.append(self._append_ev(
-                project, cfg, states, EventType.NEEDS_OPERATOR,
-                {"detail": f"auto-merge: ref update raced for {task_id} -- git state needs inspection",
-                 "reason": "auto-merge-error"}, task_id=task_id))
-            return events
-
-        # P63 2026-07-20 (M13, Fable-xhigh critique): the merge is now DONE --
-        # `update-ref` above durably advanced the default branch to the merge
-        # commit. The old code then ran `git checkout <default> -- <changed>`
-        # in the shared repo root to materialize the merge into the LIVE
-        # working tree; that step is DELETED. nyxloom self-hosts inside the
-        # operator's live vbpub checkout, so a blind checkout there silently
-        # CLOBBERED the operator's uncommitted edits to any merged file,
-        # errored on files the merge DELETED (leaving tree/index inconsistent),
-        # and, if the live checkout sat on a non-default branch, grafted main's
-        # content onto it. The daemon's job is to advance the merge REF, not to
-        # mutate the operator's working tree -- a running system picks up new
-        # code through a deliberate rebuild/redeploy, never a surprise
-        # mid-merge checkout. The post-merge gate no longer needs the live
-        # tree either: it runs in a clean scratch worktree at the merge commit
-        # (see _run_post_merge_gate).
-
-        events.append(self._transition(project, cfg, states, task_id, TaskState.MERGED, None))
-        # P05a (§5): a distinct "merge" INFO line (merge_commit/branch),
-        # alongside (not instead of) the generic state-transition INFO
-        # _transition() already emits above.
-        log.info("merge", project=project, task=task_id, merge_commit=new_commit, branch=branch)
-        # F018 P2a — guarded carver_digest build (parity with cli.cmd_merge).
-        _carver_digest = None
-        try:
-            _carver_digest = merge_digest.carver_digest_payload(
-                cfg, states, task_id, new_commit, source_kind="review",
-            )
-        except Exception:
-            log.warning("carver_digest build failed", exc_info=True)
-        payload: dict[str, object] = {
-            "merge_commit": new_commit,
-            "progress_units": self._merge_progress_units(cfg, new_commit),
-            "source_kind": "review",
-        }
-        if _carver_digest is not None:
-            payload["carver_digest"] = _carver_digest
-        events.append(self._append_ev(
-            project, cfg, states, EventType.MERGE_RECORDED,
-            payload,
-            task_id=task_id))
-
-        # Best-effort backlog auto-tick, same parity as cmd_merge (cli.py) --
-        # the merge itself is already durably recorded above, so a backlog
-        # that cannot be read/written must not sink an otherwise-successful
-        # auto-merge.
-        try:
-            backlog_items.tick_merged(backlog_items.resolve_path(cfg), task_id, new_commit)
-        except (OSError, UnicodeDecodeError):
-            pass
-        return events
+        return effects_dispatch.gate_hint(cfg)
 
     def _frontmatter_for(self, cfg: ProjectConfig, tsf: TaskStateFile):
-        if not tsf.handoff_path:
-            return None
-        path = cfg.root / tsf.handoff_path
-        if not path.exists():
-            return None
-        try:
-            fm, _body = frontmatter.parse_handoff(path)
-            return fm
-        except Exception:
-            return None
+        return effects_dispatch.frontmatter_for(cfg, tsf)
 
     def _lease_specs(self, cfg: ProjectConfig, fm) -> list[dict[str, Any]]:
-        if fm is None:
-            return []
-        out = []
-        for m in fm.effective_mutexes():
-            mdef = cfg.mutexes.get(m)
-            if mdef is None:
-                continue
-            out.append({"name": mdef.lease_name(cfg.project_id), "capacity": mdef.capacity})
-        return out
+        return effects_dispatch.lease_specs(cfg, fm)
 
     def _ensure_worktree(self, root: Path, branch: str, worktree_path: Path, default_branch: str) -> None:
         if worktree_path.exists():
@@ -5886,78 +5535,10 @@ class Daemon:
             receipt.head_commit = branch_sha
 
     def _review_report_text(self, cfg: ProjectConfig, task_id: str) -> str | None:
-        """B4b: the raw text of the frontier reviewer's committed
-        <task_id>-REVIEW.md on feat/<task_id> (read-only `git show`), for the two
-        B4b consumers that need the reviewer's PROSE rather than just its
-        APPROVED/REJECTED classification: _parse_reject_class (the Tier-2
-        self-class line) and _review_rationale (the rejection findings embedded
-        into a re-dispatch packet). Mirrors _parse_review_verdict's lookup -- the
-        documented path first, then (only if that is absent/empty) a broadened
-        *REVIEW*.md on the branch whose name or content references the task (the
-        misnamed-file case a live P26 incident hit). Returns None if nothing is
-        found. The `./` prefix on `git show` is load-bearing under -C (see
-        _parse_review_verdict)."""
-        branch = f"feat/{task_id}"
-        rel_path = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
-        show_res = subprocess.run(
-            ["git", "-C", str(cfg.root), "show", f"{branch}:./{rel_path}"],
-            capture_output=True, text=True,
-        )
-        if show_res.returncode == 0 and show_res.stdout.strip():
-            return show_res.stdout
-        ls_res = subprocess.run(
-            ["git", "-C", str(cfg.root), "ls-tree", "-r", "--name-only", branch,
-             "--", f"./{cfg.reports_dir}"],
-            capture_output=True, text=True,
-        )
-        if ls_res.returncode == 0:
-            for path in ls_res.stdout.splitlines():
-                path = path.strip()
-                if not path or path == rel_path:
-                    continue
-                name = path.rsplit("/", 1)[-1]
-                if "REVIEW" not in name.upper() or not name.upper().endswith(".MD"):
-                    continue
-                show2 = subprocess.run(
-                    ["git", "-C", str(cfg.root), "show", f"{branch}:./{path}"],
-                    capture_output=True, text=True,
-                )
-                if show2.returncode != 0:
-                    continue
-                if task_id in name or task_id in show2.stdout:
-                    return show2.stdout
-        return None
+        return effects_review.review_report_text(self._ports.git, cfg, task_id)
 
     def _parse_reject_class(self, cfg: ProjectConfig, task_id: str) -> str | None:
-        """B4b (D-060 triage Tier-2; D-066): extract the reviewer's self-stamped
-        `REJECT_CLASS: <fixable|architectural|incapable|product|transient>` line
-        from the committed review report (adapters.build_dispatch's
-        REVIEW_INDEPENDENT prompt requires it on a REJECTED verdict). Returns the
-        class lowercased, or None when the line is absent or its value is
-        unrecognised -> the task stays unclassified and reconcile falls back to
-        the mechanical attempt-budget path. Only meaningful on a rejection; the
-        REVIEW_INDEPENDENT consumption site calls it only when the verdict is not
-        'approved'.
-
-        F019 P1b: `transient` (D-F019-2) is a valid class the gate-diagnosis
-        reviewer emits for a flaky gate; it routes to the same plain retry as
-        `fixable`, never a re-scope/escalation.
-
-        D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): `incapable`
-        joins the vocabulary -- distinct from `architectural` (scope/design
-        wrong): incapable means the scope was fine but the model showed a
-        structural/repeated capability gap, so reconcile's triage table routes
-        it to the SAME READY_TO_CARVE re-scope destination but the carve
-        consumer (`_rescope_context`/`_carve_packet_body_lines`) branches on
-        which class fired to bump the tier instead of re-scoping."""
-        text = self._review_report_text(cfg, task_id)
-        if not text:
-            return None
-        m = re.search(
-            r"^\s*REJECT_CLASS:\s*(fixable|architectural|incapable|product|transient)\b",
-            text, re.IGNORECASE | re.MULTILINE,
-        )
-        return m.group(1).lower() if m else None
+        return effects_review.parse_reject_class(self._ports.git, cfg, task_id)
 
     def _review_rationale(self, cfg: ProjectConfig, task_id: str,
                           max_chars: int = 4000) -> str | None:
@@ -5978,26 +5559,6 @@ class Daemon:
         if len(text) > max_chars:
             text = text[:max_chars].rstrip() + "\n[... review report truncated ...]"
         return text
-
-    def _task_branch_head_sha(self, cfg: ProjectConfig, task_id: str) -> str | None:
-        """DR8 (routing-model-redesign.md D-R8, refined): resolve feat/<task_id>'s
-        current HEAD sha, read-only -- the SAME `git rev-parse --verify` call
-        style _crosscheck_head_commit uses just above (never a write to the
-        branch). Called at LaunchReview dispatch time to record the pre-review
-        baseline (`pre_review_sha`) a repair's diff range is measured from.
-        Returns None if the branch does not exist or the resolve fails --
-        callers degrade to "no repair enforcement possible": a missing
-        baseline INVALIDATES an unverifiable repair (see
-        _enforce_reviewer_repair) rather than silently trusting it."""
-        branch = f"feat/{task_id}"
-        res = subprocess.run(
-            ["git", "-C", str(cfg.root), "rev-parse", "--verify", branch],
-            capture_output=True, text=True,
-        )
-        if res.returncode != 0:
-            return None
-        sha = res.stdout.strip()
-        return sha or None
 
     def _verdict_is_repaired(self, cfg: ProjectConfig, task_id: str) -> bool:
         """DR8: True when the committed <task>-REVIEW.md's VERDICT line carries
@@ -6289,38 +5850,6 @@ class Daemon:
             "origin_tier": origin_tier,
         }
 
-    def _incapable_escalation_note(self, cfg: ProjectConfig, fm) -> str:
-        """D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): resolve the
-        `incapable`-escalation provenance marker (Work 4's rescope prompt instructs
-        the carver to stamp the origin task's id into the new handoff's
-        `source.ref`, per schema `handoff-frontmatter.schema.json`'s "parent task
-        id" field -- NOT `depends_on`, which would gate this task's dispatch on
-        the origin task reaching COMPLETED/merged, something a REJECTED-then-
-        superseded origin task never does) into the terse, NON-SPECIFIC review
-        meta-note `build_dispatch`'s REVIEW_INDEPENDENT branch appends.
-
-        Returns '' (no note -> build_dispatch's append is a no-op, byte-identical
-        dispatch) unless `fm.source.ref` names a real prior task whose OWN latest
-        committed review report is still readable AND self-stamped
-        `REJECT_CLASS: incapable` (re-checked via `_parse_reject_class`, the SAME
-        helper `_rescope_context` uses -- no new plumbing, no new storage). A
-        task whose `source.ref` points to an ordinary/non-escalated origin (or has
-        no `source.ref` at all -- every non-rescoped handoff) returns ''."""
-        if fm is None or fm.source is None:
-            return ""
-        origin_id = fm.source.ref
-        if not origin_id:
-            return ""
-        if self._parse_reject_class(cfg, origin_id) != "incapable":
-            return ""
-        return (
-            "This is a fresh implementation from a higher-tier model, dispatched "
-            "because a previous reviewer judged the assigned tier incapable of "
-            "this task across multiple dimensions. Form your OWN independent "
-            "judgment of THIS implementation -- do not assume anything about "
-            "what was previously wrong."
-        )
-
     def _typed_verdict(self, project: str, task_id: str, attempt_id: str,
                        kind: results.ResultKind) -> tuple[str, str]:
         """THE review-authority read (CR-03, DR-13). Returns (verdict, why).
@@ -6406,14 +5935,14 @@ class Daemon:
 
     def _execute_legacy(self, ctx: effects.EffectContext,
                         action: reconcile.Action) -> list[Event]:
-        """The effect families CR-05b still owns: attempt dispatch/resume and
-        exit consumption, review launch and verdict consumption, carve and
-        carver-session execution, and auto-merge.
+        """The effect families that have not moved yet.
 
-        Every branch here is registered in :meth:`_build_registry` with
-        ``legacy_owner="CR-05b"``, and ``effects.LEGACY_HANDLER_BUDGET`` holds
-        the count in both directions -- so this ladder can only shrink, and it
-        cannot shrink silently.
+        CR-05a took the lifecycle and gate families; CR-05b took review
+        dispatch and the guarded merge. What is left is attempt
+        dispatch/resume, the receipt-exit consumer, and carve -- registered
+        in :meth:`_build_registry` with the package that owns moving them,
+        and counted by ``effects.LEGACY_HANDLER_BUDGET`` in both directions,
+        so this ladder can only shrink and cannot shrink silently.
         """
         project, cfg, states = ctx.project, ctx.cfg, ctx.states
         events: list[Event] = []
@@ -6948,421 +6477,6 @@ class Daemon:
                                                    {"from": states[task_id].state.value,
                                                     "blocker": blocker.to_dict()}, task_id=task_id))
 
-        elif isinstance(action, reconcile.LaunchGateDiagnosis):
-            # F019 P1b: dispatch the warm independent reviewer in GATE-DIAGNOSIS
-            # mode for ONE gate-failed task. Classify-only (the gate already
-            # decided "fail"); the task STAYS in REVIEW_REJECTED. Mirrors the
-            # LaunchReview dispatch machinery (admission, route, D-R10/B6 warm
-            # session reuse, wrapper spawn) but with a single-task classify-only
-            # packet and wave_id=None -- the marker the receipt-exit consumption
-            # uses (with the no-binding guard) to tell a diagnosis leg from a wave
-            # review.
-            ok, _reason = self._dispatch_admissible(project, cfg, states, "review")
-            if not ok:
-                return events  # admission refused; task stays REVIEW_REJECTED, retried next pass
-            task_id = action.task_id
-            tsf_d = states[task_id]
-            attempt_id = new_id("att")
-            attempt_dir = paths.attempt_dir(project, attempt_id)
-            packet_dir = attempt_dir / "packet"
-            packet_dir.mkdir(parents=True, exist_ok=True)
-            branch = f"feat/{task_id}"
-            diff_res = subprocess.run(
-                ["git", "-C", str(cfg.root), "diff", f"{cfg.default_branch}...{branch}"],
-                capture_output=True, text=True,
-            )
-            (packet_dir / f"{task_id}.diff").write_text(diff_res.stdout, encoding="utf-8")
-            out_tail, phase = self._latest_gate_failure(project, task_id)
-            packet_lines = [
-                "# Gate-failure diagnosis packet",
-                "",
-                "## Your role: INDEPENDENT REVIEWER — GATE-FAILURE DIAGNOSIS (classify only)",
-                "",
-                f"The deterministic {phase or 'merge'} gate for `{task_id}` FAILED. The",
-                "gate ALREADY decided \"fail\" — you are NOT re-deciding pass/fail, NOT",
-                "approving, and NOT merging or editing the implementation. Read the gate",
-                "output, the diff, and the handoff, then CLASSIFY the failure so the",
-                "pipeline routes it to the right place.",
-                "",
-                f"Write `{cfg.reports_dir}/{task_id}-REVIEW.md` containing EXACTLY one line:",
-                "  `REJECT_CLASS: <fixable|architectural|product|transient>`",
-                "  - fixable       — a bounded code/test defect a targeted re-implementation fixes",
-                "  - architectural — design/scope is wrong; a same-base retry cannot fix it (re-scope)",
-                "  - product       — a product/direction decision is required (escalate to a human)",
-                "  - transient     — a flaky/infra gate failure unrelated to the diff (plain retry)",
-                f"Commit the report to `{branch}`. Do NOT merge, approve, or edit the code.",
-                "",
-                f"### Gate output tail ({phase or 'gate'})",
-                "```",
-                out_tail or "(no captured gate output)",
-                "```",
-                "",
-                f"### Diff ({cfg.default_branch}...{branch}) — full text in {task_id}.diff here",
-                "### Handoff",
-                f"- {tsf_d.handoff_path or '(no handoff path on record)'}",
-            ]
-            (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
-
-            routes_obj = config.Routes.load()
-            review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
-            route_def = review_routes[0]
-            route_snap = Route(route_id=route_def.route_id, cli=route_def.cli,
-                                model=route_def.model, variant=route_def.variant,
-                                effort=route_def.effort, routes_rev=routes_obj.revision)
-            # D-R10/B6 warm-session reuse -- the same "warmest prior EXITED review
-            # session" rule reconcile applies to waves, computed here at execution
-            # time (the self_review executor sets the daemon-reads-the-handle
-            # precedent). None -> cold dispatch (no prior session, or the stage did
-            # not opt into session-reuse).
-            resume_session = None
-            if "session-reuse" in stages.stage_context("review_independent"):
-                prior_sessions = [
-                    a for tsf_ in states.values() for a in tsf_.attempts
-                    if a.role is Role.REVIEW_INDEPENDENT
-                    and a.state is AttemptState.EXITED and a.session_handle
-                ]
-                if prior_sessions:
-                    resume_session = max(
-                        prior_sessions, key=lambda a: a.started).session_handle
-            log.info("gate-diagnosis-launch", project=project, task=task_id,
-                     route=route_def.route_id, phase=phase, resumed=bool(resume_session))
-            attempt = Attempt(attempt_id=attempt_id, role=Role.REVIEW_INDEPENDENT,
-                               state=AttemptState.CREATED, route=route_snap,
-                               started=utc_now(), wave_id=None)
-            created_payload = {"attempt": attempt.to_dict()}
-            if resume_session:
-                created_payload["resumed_from"] = resume_session
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
-                                           created_payload, task_id=task_id,
-                                           attempt_id=attempt_id))
-            gate_hint = self._gate_hint(cfg)
-            receipt_path = str(attempt_dir / "receipt.json")
-            packet_md = str(packet_dir / "packet.md")
-            if resume_session:
-                resume_prompt = adapters.review_resume_prompt(
-                    packet_path=packet_md, attempt_id=attempt_id,
-                    gate_hint=gate_hint, spine_pointer=None)
-                argv = adapters.build_resume(
-                    route_def, session=resume_session, worktree=str(cfg.root),
-                    prompt=resume_prompt)
-            else:
-                argv, _prompt = adapters.build_dispatch(
-                    route_def, handoff_path=packet_md, worktree=str(cfg.root),
-                    branch=cfg.default_branch, task_id=task_id, gate_hint=gate_hint,
-                    receipt_path=receipt_path, role=Role.REVIEW_INDEPENDENT,
-                    attempt_id=attempt_id, approved_amendments=[],
-                )
-            fm_d = self._frontmatter_for(cfg, tsf_d)
-            spec = wrapper.WrapperSpec(
-                project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
-                cwd=str(cfg.root), log_path=str(attempt_dir / "attempt.log"),
-                receipt_path=receipt_path, attempt_dir=str(attempt_dir),
-                route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_d),
-                # CR-03: collect this leg's typed judgement.
-                result_kind=results.ResultKind.REVIEW_INDEPENDENT.value,
-            )
-            pid = wrapper.launch_detached(spec)
-            attempt.state = AttemptState.PREFLIGHTING
-            attempt.pid = pid
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
-                                           {"attempt": attempt.to_dict()}, task_id=task_id,
-                                           attempt_id=attempt_id))
-
-        elif isinstance(action, reconcile.LaunchReview):
-            ok, _reason = self._dispatch_admissible(project, cfg, states, "review")
-            if not ok:
-                return events  # P55: execute-time admission refused; task stays AWAITING_REVIEW, re-evaluated next pass
-            wave_id = action.wave_id
-            attempt_id = new_id("att")
-            attempt_dir = paths.attempt_dir(project, attempt_id)
-            packet_dir = attempt_dir / "packet"
-            packet_dir.mkdir(parents=True, exist_ok=True)
-            packet_lines = [
-                "# Review packet",
-                "",
-                "## Your role: INDEPENDENT FRONTIER REVIEWER (merge gate)",
-                "",
-                "You are reviewing another agent's committed work — you did",
-                "not write it. For each task below (2026-07-15 role contract;",
-                "the first live review wrote implementer artifacts instead):",
-                "1. Read the handoff contract, then the diff (<task>.diff",
-                "   here, or `git diff main...feat/<task>` in the repo).",
-                "2. Verify actual git state — git state is truth, receipts",
-                f"   lie: run `git log {cfg.default_branch}..feat/<task>` and",
-                "   `git status` in the worktree. Do NOT trust the receipt's",
-                "   `head_commit` / `files_touched` / `oracles` fields: they",
-                "   have been observed null/empty even when real work was",
-                "   committed (live P93 lesson). If the worktree holds",
-                "   UNCOMMITTED changes (see the UNCOMMITTED section below,",
-                "   per task), review them too — the implementer's commit",
-                "   discipline is not guaranteed; do not treat uncommitted",
-                "   work as nonexistent.",
-                "3. Adversarially verify against the handoff's oracles:",
-                "   hollow tests, overclaimed evidence, missing handoff",
-                "   requirements, edge-case gaps, env-specific claims.",
-                "4. Re-run the handoff's declared gate yourself; never trust",
-                "   a report's pasted output.",
-                "5. Small defects: fix them YOURSELF, commit to the task's",
-                "   feat/ branch. Large/architectural defects: REJECT.",
-                # CR-03 (DR-13): the prose report is for HUMANS. The merge
-                # decision comes from the typed judgement below, read through
-                # a schema and bound to this attempt -- so a report written to
-                # the wrong path, or left over from a previous attempt, is
-                # inert rather than misread. Both were live incidents under
-                # the old VERDICT-line scan. The prose path stays derived from
-                # cfg.reports_dir; a hardcoded stale path here once fail-safed
-                # every review to rejected.
-                f"6. Write {cfg.reports_dir}/<task>-REVIEW.md: findings,",
-                "   what you fixed, verdict + reasoning, for HUMAN readers.",
-                "   Commit it to the feat/ branch (NOT main). Do NOT merge.",
-                "   Do NOT write the implementer's LOG/REPORT. Its formatting",
-                "   is yours to choose: nothing in the pipeline parses it.",
-                "7. REQUIRED, and this is what drives the pipeline: for EACH",
-                "   task you reviewed, write a typed judgement as JSON to",
-                "   `nyxloom-judgement-<task>.json` in the worktree root:",
-                '   {"schema_version": ' + str(results.SCHEMA_VERSION) + ',',
-                '    "kind": "review_independent", "task_id": "<task>",',
-                '    "attempt_id": "' + attempt_id + '",',
-                '    "verdict": "approved" or "rejected",',
-                '    "summary": "<one line>"}',
-                "   The attempt_id above is THIS review attempt -- copy it",
-                "   exactly. It is what binds your verdict to this run, so a",
-                "   judgement left by an earlier attempt cannot be consumed.",
-                "   A task with no readable judgement is a review LEG failure",
-                "   and the review is relaunched: never read as an approval,",
-                "   and never as a rejection of the work.",
-                "",
-            ]
-            # B6/P74: reference the carver-maintained spine digest BY POINTER
-            # (never slurp its body) when the review_independent stage's context
-            # declares "spine-digest" -- standing invariants/risks/reflections at
-            # file-pointer cost, framing every task's review. The path is emitted
-            # whether or not the file exists yet (the carver creates/maintains it);
-            # the reviewer reads it from the repo, so the packet never inlines it.
-            spine_pointer = None
-            if "spine-digest" in stages.stage_context("review_independent"):
-                spine_pointer = f"{cfg.reports_dir}/SPINE-DIGEST.md"
-                packet_lines.extend([
-                    "## Standing spine digest (read from the repo; not inlined here)",
-                    f"- {spine_pointer} -- the carver-maintained catalog of standing",
-                    "  invariants, recent review reflections, and open risks. Read it",
-                    "  in the repo for cross-cutting context; it is referenced here by",
-                    "  pointer, never pasted.",
-                    "",
-                ])
-            for t in action.task_ids:
-                tsf_t = states.get(t)
-                branch = f"feat/{t}"
-                diff_res = subprocess.run(
-                    ["git", "-C", str(cfg.root), "diff", f"{cfg.default_branch}...{branch}"],
-                    capture_output=True, text=True,
-                )
-                stat_res = subprocess.run(
-                    ["git", "-C", str(cfg.root), "diff", "--stat", f"{cfg.default_branch}...{branch}"],
-                    capture_output=True, text=True,
-                )
-                (packet_dir / f"{t}.diff").write_text(diff_res.stdout, encoding="utf-8")
-                packet_lines.append(f"## {t}")
-                if tsf_t is not None and tsf_t.handoff_path:
-                    packet_lines.append(f"- handoff: {tsf_t.handoff_path}")
-                packet_lines.append(f"### COMMITTED ({cfg.default_branch}...{branch})")
-                packet_lines.append(f"- diff stat:\n{stat_res.stdout}")
-                packet_lines.append("")
-
-                # P21 2026-07-16: also capture UNCOMMITTED worktree state --
-                # "experience shows the commit requirement is often not
-                # honored" (user directive), so a committed-only diff misses
-                # real work still sitting in the task's worktree. Same
-                # worktree derivation DispatchImplementer uses (~845):
-                # cfg.root / cfg.worktree_root / feat/<task>.
-                worktree_path = cfg.root / cfg.worktree_root / branch
-                packet_lines.append(
-                    "### UNCOMMITTED (worktree — may be lost on teardown; REVIEW IT)"
-                )
-                if not worktree_path.exists():
-                    packet_lines.append(
-                        f"- worktree {worktree_path} is absent (already torn down); "
-                        "no uncommitted state could be captured."
-                    )
-                else:
-                    status_res = subprocess.run(
-                        ["git", "-C", str(worktree_path), "status", "--porcelain"],
-                        capture_output=True, text=True,
-                    )
-                    unstaged_res = subprocess.run(
-                        ["git", "-C", str(worktree_path), "diff"],
-                        capture_output=True, text=True,
-                    )
-                    staged_res = subprocess.run(
-                        ["git", "-C", str(worktree_path), "diff", "--cached"],
-                        capture_output=True, text=True,
-                    )
-                    if not (status_res.stdout.strip() or unstaged_res.stdout.strip()
-                            or staged_res.stdout.strip()):
-                        packet_lines.append("- clean: no uncommitted changes in the worktree.")
-                    else:
-                        packet_lines.append(f"- git status --porcelain:\n{status_res.stdout}")
-                        packet_lines.append(f"- unstaged diff:\n{unstaged_res.stdout}")
-                        packet_lines.append(f"- staged diff (--cached):\n{staged_res.stdout}")
-                packet_lines.append("")
-            (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
-
-            routes_obj = config.Routes.load()
-            review_routes = routes_obj.for_role(Role.REVIEW_INDEPENDENT.value)
-            route_def = review_routes[0]
-            # P05a (§5): review launch -> INFO. Carries every wave member
-            # (not a single `task`, since one review attempt can cover a
-            # whole wave -- see A9 above) plus the route and wave id.
-            log.info("review-launch", project=project, tasks=list(action.task_ids),
-                     route=route_def.route_id, wave=wave_id)
-            route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
-                                variant=route_def.variant, effort=route_def.effort,
-                                routes_rev=routes_obj.revision)
-            members = list(action.task_ids)
-            first_task = members[0] if members else None
-            # A launch with no members is a no-op (nothing to review).
-            record_on = members or ([first_task] if first_task else [])
-            attempt = Attempt(attempt_id=attempt_id, role=Role.REVIEW_INDEPENDENT,
-                               state=AttemptState.CREATED, route=route_snap, started=utc_now(),
-                               wave_id=wave_id)
-            # P61 2026-07-20 (A9): record the ONE review attempt on EVERY wave
-            # member, so each member's LATEST attempt is this review (the
-            # per-task has_review_in_flight guard then sees it in flight for
-            # all of them and does not relaunch) and A7's per-member
-            # is_first_review reads a correct review history. The wrapper writes
-            # ATTEMPT_STARTED/EXITED keyed to first_task only; the secondary
-            # members' copies are healed to EXITED when the fan-out consumer
-            # runs (see the EmitAttemptExit REVIEW_INDEPENDENT branch) and, until
-            # then, the receipt-based reconcile scan (which keys on attempt_id,
-            # not task) drives their exit consumption.
-            for t in record_on:
-                created_payload = {"attempt": attempt.to_dict()}
-                if action.resume_session:
-                    # B6/P74: record that this review WARM-resumed a prior session
-                    # (observability + the reuse oracle) -- the daemon-set marker,
-                    # not something the agent reports.
-                    created_payload["resumed_from"] = action.resume_session
-                # DR8 (routing-model-redesign.md D-R8, refined): the PRE-review
-                # baseline sha for this member's own feat/<t> branch -- the
-                # boundary "everything committed on the branch after this is
-                # the reviewer's" that _enforce_reviewer_repair diffs against.
-                # Only resolved when the policy is on (an unused git rev-parse
-                # per member is pointless when reviewer_repair is off, and the
-                # post-hoc path is inert either way -- see EmitAttemptExit).
-                # If the branch cannot be resolved, record nothing and log a
-                # warning -- a missing baseline degrades to "no repair
-                # enforcement possible", handled as an invalidation, never a
-                # silent trust, by _enforce_reviewer_repair.
-                if cfg.policy.reviewer_repair:
-                    pre_sha = self._task_branch_head_sha(cfg, t)
-                    if pre_sha:
-                        created_payload["pre_review_sha"] = pre_sha
-                    else:
-                        log.warning("reviewer-repair-baseline-unresolved",
-                                   project=project, task=t, attempt=attempt_id)
-                events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
-                                               created_payload, task_id=t,
-                                               attempt_id=attempt_id, wave_id=wave_id))
-
-            gate_hint = self._gate_hint(cfg)
-            receipt_path = str(attempt_dir / "receipt.json")
-            packet_md = str(packet_dir / "packet.md")
-            # B21 2026-07-23 (D-R16 §3): aggregate every approved scope-
-            # amendment file across ALL wave members, so the reviewer is
-            # told about every widened allowlist in this review, not just
-            # one member's. [] on a wave with no amendment history (every
-            # pre-B21 review, unchanged).
-            approved_amendments: list[str] = []
-            for t in members:
-                for f in self._scope_amendment_files(project, t):
-                    if f not in approved_amendments:
-                        approved_amendments.append(f)
-            # D-BATCHC (2026-07-26, plan-factory-hardening.md §D part 2): the
-            # review-depth directive -- computed from the wave's PRIMARY
-            # task's complexity band (Frontmatter.tier, with a scope.touch
-            # -size fallback) and the project's declared gate rigor
-            # (gate_runner.select_verification_gate(cfg).asserts). Two
-            # ALREADY-EXISTING inputs, no new schema field. Scoped to
-            # first_task (the wave's primary task, already used above for
-            # task_id/receipt naming) rather than aggregated across every
-            # member -- mirrors gate_hint's own project-level, not
-            # per-member, scope. compute_review_depth_directive is pure and
-            # returns "" for the neutral low-band+rigorous-gate case, so
-            # build_dispatch's append is a no-op then (byte-identical dispatch).
-            first_tsf = states.get(first_task) if first_task else None
-            first_fm = self._frontmatter_for(cfg, first_tsf) if first_tsf is not None else None
-            review_gate = gate_runner.select_verification_gate(cfg)
-            review_depth = adapters.compute_review_depth_directive(
-                tier=first_fm.tier if first_fm is not None else None,
-                scope_touch=first_fm.scope.touch if first_fm is not None else [],
-                gate_asserts=review_gate.asserts if review_gate is not None else [],
-            )
-            # D-R3 (2026-07-26, refined; routing-model-redesign.md D-R3): the
-            # incapable-escalation meta-note -- resolved from first_fm's
-            # `source.ref` provenance marker (see _incapable_escalation_note),
-            # the SAME first_task-scoped, "" -> no-op pattern review_depth uses
-            # immediately above.
-            escalation_note = self._incapable_escalation_note(cfg, first_fm)
-            if action.resume_session:
-                # B6/P74 (D-R10): WARM resume of a prior review session -> the
-                # ~35-40k role-contract/orientation prefix replays from prompt
-                # cache (the cache-hit win). A7 is PRESERVED: review_resume_prompt
-                # threads THIS fresh attempt_id and requires the identical
-                # `(attempt <id>)` verdict stamp the cold build_dispatch uses, so a
-                # warm session (which still holds the PRIOR wave's packet + old
-                # attempt id) cannot misbind a stale verdict -- the daemon counts
-                # only verdicts carrying the current attempt id. If the route has
-                # no resume template build_resume raises, and run_pass's per-action
-                # isolation (A10) leaves the task AWAITING_REVIEW for a later pass.
-                resume_prompt = adapters.review_resume_prompt(
-                    packet_path=packet_md, attempt_id=attempt_id,
-                    gate_hint=gate_hint, spine_pointer=spine_pointer)
-                argv = adapters.build_resume(
-                    route_def, session=action.resume_session,
-                    worktree=str(cfg.root), prompt=resume_prompt)
-            else:
-                argv, _prompt = adapters.build_dispatch(
-                    route_def, handoff_path=packet_md, worktree=str(cfg.root),
-                    branch=cfg.default_branch, task_id=first_task or wave_id or "review",
-                    gate_hint=gate_hint, receipt_path=receipt_path, role=Role.REVIEW_INDEPENDENT,
-                    attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
-                    approved_amendments=approved_amendments,
-                    review_depth=review_depth,  # D-BATCHC: complexity/gate-rigor directive
-                    escalation_note=escalation_note,  # D-R3: incapable-escalation meta-note
-                    repair_allowed=cfg.policy.reviewer_repair,  # DR8: bounded test-repair permission
-                )
-            # P61 (A9): the review holds the UNION of its members' leases, so a
-            # concurrent carve/dispatch cannot touch a task while it is under
-            # review (dedup by lease name).
-            review_leases: list[dict[str, Any]] = []
-            _seen_leases: set[str] = set()
-            for t in members:
-                tsf_t = states.get(t)
-                fm_t = self._frontmatter_for(cfg, tsf_t) if tsf_t is not None else None
-                for ls in self._lease_specs(cfg, fm_t):
-                    if ls["name"] not in _seen_leases:
-                        _seen_leases.add(ls["name"])
-                        review_leases.append(ls)
-            spec = wrapper.WrapperSpec(
-                project=project, task_id=first_task or wave_id or "review", attempt_id=attempt_id,
-                argv=argv, cwd=str(cfg.root), log_path=str(attempt_dir / "attempt.log"),
-                receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
-                leases=review_leases,
-                # CR-03: a wave review judges EVERY member in one run, so the
-                # wrapper is told the membership -- it cannot derive it, and
-                # scanning the worktree for files that look like reviews is
-                # the defect this package removes.
-                result_kind=results.ResultKind.REVIEW_INDEPENDENT.value,
-                result_tasks=list(members),
-            )
-            pid = wrapper.launch_detached(spec)
-            attempt.state = AttemptState.PREFLIGHTING
-            attempt.pid = pid
-            for t in record_on:
-                events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
-                                               {"attempt": attempt.to_dict()}, task_id=t,
-                                               attempt_id=attempt_id, wave_id=wave_id))
-
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
 
@@ -7378,12 +6492,9 @@ class Daemon:
         elif isinstance(action, reconcile.CompactCarverSession):
             events.extend(self._execute_compact_carver_session(project, cfg, states, action))
 
-        elif isinstance(action, reconcile.AutoMergeTask):
-            events.extend(self._execute_auto_merge(project, cfg, states, action))
-
         # No `else` branch: an action with no owner never reaches here. The
         # registry refuses it at lookup (effects.UnownedAction), and only the
-        # twelve types registered as legacy are routed to this method at all.
+        # types registered as legacy are routed to this method at all.
         return events
 
     # -- HTTP / SSE --------------------------------------------------------
