@@ -1,0 +1,114 @@
+# nyxloom project config — srdm (shared-ramdisk-depot-manager).
+# Created by P01. See ../HANDOFF-P01-bootstrap-and-store.md.
+
+[project]
+id = "srdm"
+default_branch = "main"
+
+trove = "nyxloom-trove"
+
+# srdm is a subdir of the vbpub monorepo; git ops resolve upward to vbpub.
+worktree_root = "../.worktrees"
+
+handoff_globs        = ["nyxloom-trove/handoffs/*.md"]
+
+# The `roadmap` and `backlog` KEYS are deliberately absent. Declaring them
+# opts a project into the numeric-prefixed "direction spine" (1-north-star,
+# 2-product-definition, 3-roadmap, 4-backlog, each with schema-validated
+# frontmatter), which lint rules S1-S4 then enforce. STANDARD.md makes the
+# spine optional and keeps plain roadmap.md / backlog.md valid — which is
+# what nyxloom-trove/ holds. Adopt the spine deliberately, as its own
+# package, not as a side effect of a bootstrap.
+reports_dir          = "nyxloom-trove/reports"
+decisions_inbox      = "nyxloom-trove/decisions.md"
+archive_dir          = "nyxloom-trove/archive"
+archive_keep_visible = 10
+agent_logs           = "nyxloom-trove/agent-logs"
+
+# --- [refs]: docs nyxloom READS but never edits ------------------------------
+# In-project only: lint rule CFG3 rejects a ref that escapes the project
+# root, and rightly so — nyxloom's document surface is what it can reason
+# about, and a path reaching into a sibling project is a dependency it cannot
+# own.
+#
+# srdm's governing documents deliberately live OUTSIDE this tree: the master
+# plan and its resources companion are in ../wings-cgroups/, the patch stack
+# in ../wings-patchstack/, and the system srdm replaces in
+# ../scripts/gstammtisch-guide/. They are DESIGN documents for the whole
+# program, not srdm's own — a change there is a decision, not an
+# implementation, and this package must never edit them. README.md and
+# nyxloom-trove/GUIDE.md link them, which is where a reader looks anyway.
+[refs]
+readme          = "README.md"
+gate_guide      = "nyxloom-trove/GUIDE.md"
+store_format    = "docs/store-format.md"
+example_profile = "examples/soulmask.profile.json"
+
+# --- gates -------------------------------------------------------------------
+#
+# srdm does NOT use vbpub's shared `tester-unified` container. That image is
+# a Python 3.14 venv closure built from four projects' pyprojects: it has no
+# Go toolchain, runs unprivileged as uid 1003, and has no systemd. srdm is
+# Go, and its P02+ oracles need a privileged systemd-in-Docker harness.
+# Adding Go to tester-unified would rebuild and re-risk the gate of ciu,
+# cmru, topos and nyxloom to serve a project that still could not run its own
+# e2e oracles there. So srdm ships gate/Dockerfile with two targets. See
+# decision D-006.
+#
+# Cockpit doctrine is unchanged: the gate is srdm-gate, never the
+# devcontainer — which in srdm's case cannot even pretend, having no Go.
+#
+# SRDM_CGROUP_PARENT is the EXPLICIT per-project tier override AGENTS.md
+# sanctions (the same role CMRU_TESTER_CGROUP_PARENT plays for cmru). It is
+# not a fallback: tools/cgroup-parent.sh VERIFIES the slice is a real
+# configured unit before any container starts, and refuses otherwise —
+# because a name systemd does not know fails OPEN into an unlimited
+# transient slice rather than erroring.
+
+[gates.unit]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} unit"]
+phase = "implementation"
+# Deliberately NOT claiming changed-line-coverage: nyxloom's coverage_gate.py
+# is Python-specific and no Go equivalent is wired up yet. Declaring an
+# assertion this gate does not make would be a declaration mismatch, which is
+# worse than a narrower honest claim. See D-007.
+asserts = ["tests-pass"]
+timeout_seconds = 1200
+environment = "srdm-gate"
+
+# The privileged systemd-in-Docker harness for publication topology, hold
+# services, cgroup charging and teardown correctness.
+#
+# ITS CASE SET IS EMPTY UNTIL P02 (decision D-004). The image and the
+# invocation are real and buildable, so the declaration is backed by
+# something rather than being a promise — but a green privileged-e2e is NOT
+# evidence of anything before P02 adds cases. Do not read it as one.
+[gates.privileged-e2e]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} e2e"]
+phase = "pre-merge"
+asserts = ["tests-pass"]
+timeout_seconds = 2400
+environment = "srdm-gate-e2e"
+
+# Proves the gate REJECTS known-bad code. Each canary breaks exactly one
+# contract an oracle claims to assert, and the named test must go red. A
+# canary that survives is a hollow oracle. Run it whenever an oracle changes.
+[gates.canary]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/canary-run.sh"]
+phase = "review"
+asserts = ["canary-verified"]
+timeout_seconds = 2400
+environment = "srdm-gate"
+
+[mutexes.merge-lane]
+scope = "project"
+capacity = 1
+
+[policy]
+max_active_tasks = 2
+ready_queue_target = 3
+carve_ahead_target = 0
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+reconcile_interval_seconds = 30

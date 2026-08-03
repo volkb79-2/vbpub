@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "id": "soulmask",
+  "classes": [
+    {
+      "name": "pak",
+      "kind": "managed",
+      "paths": ["WS/Content/Paks"],
+      "memory_min": 157286400,
+      "zswap_max": 0,
+      "noexec": true
+    },
+    {
+      "name": "code",
+      "kind": "managed",
+      "paths": [
+        "Engine",
+        "WS/Binaries",
+        "linux64",
+        "Steam/config",
+        "Steam/depotcache",
+        "Steam/steamapps",
+        "Steam/userdata",
+        "Steam/libraryfolder.vdf",
+        "steamclient.so",
+        "libsteamwebrtc.so",
+        "steamapps",
+        "steamcmd",
+        "Manifest_DebugFiles_Linux.txt",
+        "Manifest_NonUFSFiles_Linux.txt"
+      ],
+      "memory_min": 209715200
+    },
+    {
+      "name": "state",
+      "kind": "excluded",
+      "paths": [
+        "WS/Saved",
+        "WS/Config",
+        "Steam/logs",
+        "Steam/appcache"
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "name": "pak-present",
+      "kind": "non-empty",
+      "path": "WS/Content/Paks/WS-Linux.pak"
+    },
+    {
+      "name": "server-binary-present",
+      "kind": "exists",
+      "path": "WS/Binaries/Linux"
+    },
+    {
+      "name": "no-download-staging-left",
+      "kind": "absent",
+      "path": "steamapps/downloading"
+    }
+  ]
+}

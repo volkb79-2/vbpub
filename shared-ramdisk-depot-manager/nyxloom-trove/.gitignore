@@ -1,0 +1,3 @@
+# Per-attempt agent transcripts: churny and regenerable. Force-add a run
+# when a specific attempt is worth keeping.
+agent-logs/

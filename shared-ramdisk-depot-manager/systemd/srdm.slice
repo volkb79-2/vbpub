@@ -1,0 +1,46 @@
+# srdm.slice — REFERENCE unit. srdm does not install this, and does not
+# write it at runtime (decision D-003): setting cgroup values on a container
+# the daemon starts is an API call it already has rights for, but writing
+# /etc/systemd/system and reloading systemd needs host root, which the daemon
+# does not and must not have. `srdm doctor` VERIFIES this unit instead, and
+# names the fix when it is missing or too small.
+#
+# Install (operator, needs root):
+#   sudo cp systemd/srdm.slice /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   systemd-analyze verify /etc/systemd/system/srdm.slice
+#
+# THE NAME IS LOAD-BEARING. systemd reads "-" as the slice hierarchy
+# separator, so `shared-ramdisk-depot-manager.slice` would nest under
+# auto-created `shared.slice` / `shared-ramdisk.slice` / ... each carrying
+# MemoryMin=0. A child's floor is only effective while its parent's covers
+# it, so every class floor beneath such a slice would be arithmetically dead
+# — silently. The single token keeps this at cgroup root, and
+# `srdm-gen-<g8>.slice` / `srdm-hold-<g8>-<class>.service` nest correctly
+# beneath it. (srdm refuses a hyphenated slice name in config for the same
+# reason.)
+
+[Unit]
+Description=srdm — shared release generations held resident in tmpfs
+Before=slices.target
+
+[Slice]
+# MemoryMin must be at least the SUM of the active profile's managed class
+# floors, or those floors protect nothing. For the Soulmask profile that is
+# pak 150M + code 200M = 350M; 512M ships as the value, leaving headroom for
+# a third class without an immediate edit.
+#
+# Reconcile against the host's own budget next to the Wings tier before
+# raising it: on a 16 GB host, an 8 GB dev/game tier plus 512M here fits.
+# `srdm doctor` reports the shortfall in both numbers when it does not.
+MemoryMin=512M
+
+# No MemoryMax here on purpose. This slice's job is to PROTECT a working set
+# from reclaim, not to cap it: the tmpfs pages it holds are the thing being
+# guaranteed. Per-class sizing is the tmpfs `size=` option, which is a hard
+# cap — ENOSPC quarantines the generation rather than growing without bound.
+
+# Held pages are the point, so they must not be the first thing reclaimed
+# under pressure elsewhere on the host.
+CPUWeight=100
+IOWeight=100
