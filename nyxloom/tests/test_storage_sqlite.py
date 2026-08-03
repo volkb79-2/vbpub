@@ -708,3 +708,95 @@ def test_a_locked_database_raises_rather_than_silently_skipping_the_write(
         project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
         payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
     assert storage.load_state(project, task_id).state is TaskState.ACTIVE
+
+
+def test_a_blank_line_in_an_export_is_skipped_not_imported(sqlite_backend):
+    """Exports are edited by hand -- that is half the reason for having one --
+    and an editor adding a trailing blank line must not become an event that
+    fails to parse."""
+    project = "sp04-blank"
+    _seed(project, "t-blank", TaskState.QUEUED)
+    text = storage.export_jsonl(project)
+
+    assert storage.import_jsonl("sp04-blank-copy", "\n\n" + text + "\n\n") == 1
+
+
+def test_a_malformed_line_rolls_the_whole_import_back(sqlite_backend):
+    """An import is all-or-nothing. A half-imported log is a history with a
+    hole in it, and nothing downstream could tell that from a short one."""
+    project = "sp04-partial"
+    _seed(project, "t-partial", TaskState.QUEUED)
+    good = storage.export_jsonl(project)
+
+    with pytest.raises(Exception):
+        storage.import_jsonl("sp04-partial-copy", good + "{ not json\n")
+
+    assert list(storage.iter_events("sp04-partial-copy")) == []
+    assert storage.list_states("sp04-partial-copy") == {}
+
+
+def test_a_projection_failure_during_import_rolls_back_the_projection(sqlite_backend):
+    """The import's second transaction. Its rollback matters for the same
+    reason the first one's does: a store whose log imported and whose
+    projection did not is one that reads as empty while holding a full
+    history."""
+    project = "sp04-import-proj"
+    _seed(project, "t-ip", TaskState.QUEUED)
+    text = storage.export_jsonl(project)
+
+    real = storage_sqlite._upsert_state_row
+    try:
+        storage_sqlite._upsert_state_row = lambda *a, **k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database or disk is full"))
+        with pytest.raises(sqlite3.OperationalError):
+            storage.import_jsonl("sp04-import-proj-copy", text)
+    finally:
+        storage_sqlite._upsert_state_row = real
+
+    assert storage.list_states("sp04-import-proj-copy") == {}
+
+
+def test_a_transition_event_carrying_notes_records_them(sqlite_backend):
+    """`notes` on a TASK_TRANSITIONED payload is the operator-visible reason a
+    task moved. It is projected from the EVENT (the only way a note can now
+    reach a row at all, since CR-04a stopped the store writing back caller
+    edits), so nothing else records it if this does not."""
+    project, task_id = "sp04-notes", "t-notes"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE", "notes": "provider throttled"},
+        task_id=task_id)
+
+    assert storage.load_state(project, task_id).notes == "provider throttled"
+    assert storage.replay(project)[task_id].notes == "provider throttled"
+
+
+def test_a_reasserted_block_refreshes_its_reason(sqlite_backend):
+    """A task already BLOCKED, blocked again with a NEWER reason.
+
+    The transition is a no-op (from == to), but the blocker and its notes are
+    still refreshed: the second reason is the current one, and leaving the
+    first in place would show an operator a stale explanation for why work
+    stopped -- which is the only thing that record is for."""
+    project, task_id = "sp04-reblock", "t-reblock"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    blocker = {"type": "contract", "unblock_condition": "first", "detail": None}
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"blocker": blocker, "notes": "first reason"}, task_id=task_id)
+    assert storage.load_state(project, task_id).state is TaskState.BLOCKED
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"blocker": {"type": "environment", "unblock_condition": "second",
+                              "detail": None},
+                  "notes": "second reason"}, task_id=task_id)
+
+    current = storage.load_state(project, task_id)
+    assert current.state is TaskState.BLOCKED
+    assert current.notes == "second reason"
+    assert current.blocker.unblock_condition == "second"
+    assert storage.replay(project)[task_id].notes == "second reason"

@@ -181,8 +181,15 @@ def test_blocked_reassert_apply_is_silent_noop(tmp_state):
     )
     affected = storage.apply_event(states, ev)  # must not raise
 
-    assert affected == []
+    # CR-04b: the re-assert reports the task as AFFECTED. It used to report
+    # nothing, so the refreshed blocker never reached the row -- `replay`
+    # ended with the newer reason while the served projection kept the older
+    # one, two disagreeing answers to "why did this task stop" with the
+    # operator-facing one stale. The property this oracle actually guards is
+    # that a re-assert does not RAISE and does not move the state.
+    assert affected == [task_id]
     assert states[task_id].state is TaskState.BLOCKED
+    assert states[task_id].blocker.unblock_condition == "second"
 
 
 # Oracle O2: replay() over a log with a duplicate TASK_BLOCKED for an

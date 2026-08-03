@@ -135,14 +135,22 @@ def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
             # constructing the event in the first place — kept intentionally
             # duplicated, not stale.
             #
-            # A re-asserted TASK_BLOCKED still refreshes the blocker/notes
-            # payload in place (mutating the statefile object already held
-            # by the caller's `states` map) so a newer blocker reason wins on
-            # replay, even though this no-op does not itself trigger a save.
+            # A re-asserted TASK_BLOCKED refreshes the blocker/notes payload
+            # so a newer reason wins -- and REPORTS THE TASK AS AFFECTED so
+            # the refreshed row is actually written.
+            #
+            # CR-04b: it used to refresh the object and return nothing, which
+            # was already a divergence and only became visible once the store
+            # stopped writing back the caller's map (CR-04a). `replay` applies
+            # every event and ends with the newer reason; the served
+            # projection kept the older one. Two answers to "why did this task
+            # stop", disagreeing, with the operator-facing one stale -- which
+            # is the only thing that record exists for.
             if t is EventType.TASK_BLOCKED:
                 tsf.blocker = Blocker.from_dict(ev.payload["blocker"])
                 if ev.payload.get("notes"):
                     tsf.notes = ev.payload["notes"]
+                affected.append(tsf.task_id)
             return affected
         check_task_transition(tsf.state, to)
         tsf.state = to
