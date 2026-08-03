@@ -51,12 +51,19 @@ from . import (
 from .config import ProjectConfig
 from .log import get_logger
 from .types import (
-    Attempt, AttemptState, CarverStatus, Event, EventType, Role, Route,
+    Attempt, AttemptState, CarverStatus, Event, EventType, ReceiptResult, Role,
+    Route,
     TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES, TaskState, TaskStateFile,
-    new_id, utc_now,
+    iso, new_id, utc_now,
 )
 
 log = get_logger("effects.carve")
+
+#: The carver's REQUIRED OUTPUT CONTRACT record. Imported LAZILY inside the
+#: consumer: it is still declared in `daemon.py`, and a module-level import
+#: would make this effector import the shell -- the one direction the
+#: boundary forbids. Moving the dataclass itself is CR-07's, which owns the
+#: persisted-type surface.
 
 # v2 §8 stop-policy outcomes (docs/SPEC.md §8), inherited verbatim. These are
 # the CARVER agent's SELF-REPORTED run outcome (summary.outcome) -- what its
@@ -86,9 +93,14 @@ class CarveEffector:
     direction.
     """
 
-    def __init__(self, ports: effects.EffectPorts, carver: Any) -> None:
+    def __init__(self, ports: effects.EffectPorts, carver: Any,
+                 lifecycle: Any) -> None:
         self._ports = ports
         self._carver = carver
+        # A carve leg that exits on a provider LIMIT pauses the route, which
+        # is the LIFECYCLE effector's effect -- reached by composition rather
+        # than by growing a second pause registry here.
+        self._lifecycle = lifecycle
 
     # -- forwarding seams -------------------------------------------------
 
@@ -1448,6 +1460,181 @@ class CarveEffector:
         # docstring, AD1 fix) means this exact proposal_id is never
         # re-selected by a later pass, regardless of `states` contents.
         return events
+    def consume_carve_exit(self, ctx: effects.EffectContext, task_id: str,
+                           attempt_id: str) -> list[Event]:
+        """role == CARVER branch of EmitAttemptExit (called
+        from _execute BEFORE the REVIEW_INDEPENDENT/implementer branches).
+        Parses the carver's REQUIRED OUTPUT CONTRACT file, persists the
+        full CarveSummary for the dashboard, emits a typed-only
+        CARVE_OUTCOME, raises headroom/roadmap-exhausted SPEC_ATTENTION and
+        (branch authority only) a NEEDS_OPERATOR, then retires the
+        synthetic carve task to SUPERSEDED (clears reconcile.py's carve
+        slot).
+
+        P51 2026-07-19 (live incident: two real carves both hit
+        carve-parse-failed despite writing a genuinely valid report):
+        _execute_carve_dispatch's 'branch' authority worktree is a git
+        worktree of the WHOLE physical repo (worktree_root = '../.worktrees'
+        is relative to cfg.root, one level ABOVE it), so the carver's own
+        cwd there is the repo root, not cfg.root -- it correctly wrote (and
+        committed) its report at <worktree>/<cfg.root.name>/<reports_dir>/
+        CARVE-N.md, e.g. <worktree>/nyxloom/nyxloom-trove/reports/CARVE-6.md.
+        'main'/'files' authority never hits this: _execute_carve_dispatch
+        sets carve_cwd = cfg.root directly for both (no separate worktree).
+        The distinguishing signal is deliberately "does the recorded
+        worktree differ from cfg.root", NOT the current policy's
+        carve_authority string -- carve_authority is a live-editable POLICY
+        value (config.html can change it any time after this attempt was
+        dispatched), while attempt.worktree is what was ACTUALLY used for
+        THIS specific attempt; keying off the live policy instead would
+        silently break replaying an older attempt after an operator
+        changes carve_authority later. Reusing cfg.root.name (not a
+        repo-root subprocess call) matches the SAME repo-layout assumption
+        cfg.worktree_root's '../.worktrees' already bakes in throughout
+        this carve mechanism -- not a new, riskier one."""
+        project, cfg, states = ctx.project, ctx.cfg, ctx.states
+        events: list[Event] = []
+        tsf = states[task_id]
+        attempt = tsf.attempt_by_id(attempt_id)
+        m = re.match(r"^carve-.*-(\d+)$", task_id)
+        seq = int(m.group(1)) if m else 0
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+
+        # P57 2026-07-20 (M4, Fable-xhigh critique): a carver that exited on a
+        # provider LIMIT / ERROR / BLOCKED wrote NO report (it never ran the
+        # carve to completion). Before this, the code fell straight through to
+        # report-parsing, found nothing, and emitted NEEDS_OPERATOR{carve-
+        # parse-failed} -- conflating an INFRA failure with a malformed report
+        # -- then SUPERSEDED (freeing the slot) so the NEXT pass immediately
+        # dispatched a fresh carver into the SAME rate limit (a burn loop the
+        # watchdog only catches after several wasted frontier dispatches +
+        # operator pings, because attempt-loop counts per task_id and every
+        # carve mints a fresh carve-<seq> task). Read the wrapper receipt
+        # first: on a non-DONE result, ProviderPause the carve route on a
+        # LIMIT (so the re-carve does not dive back into the same limit) and
+        # escalate with a DISTINCT, typed reason -- never carve-parse-failed
+        # -- then SUPERSEDE to free the slot as before.
+        carve_result = attempt.receipt.result if attempt.receipt else None
+        if carve_result is not None and carve_result is not ReceiptResult.DONE:
+            if carve_result is ReceiptResult.LIMIT:
+                events.extend(self._lifecycle.pause_provider(
+                    ctx, attempt.route.route_id, task_id))
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carve-leg-failed", "result": carve_result.value, "seq": seq},
+                task_id=task_id))
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_SUPERSEDED,
+                {"from": states[task_id].state.value, "notes": "carve-leg-failed"},
+                task_id=task_id))
+            return events
+
+        worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
+        if attempt.worktree and worktree.resolve() != cfg.root.resolve():
+            # P58 2026-07-20 (M5, Fable-xhigh critique -- corrects P51). A
+            # branch-authority carve worktree is a git worktree of the WHOLE
+            # physical repo. cfg.root may BE the repo root (dstdns:
+            # worktree_root=".worktrees") or a SUBDIR of it (nyxloom:
+            # worktree_root="../.worktrees", nyxloom is a subdir of the vbpub
+            # repo). The carver writes its report at <worktree>/<repo-relative
+            # path of cfg.root>/<reports_dir>. P51 hard-coded cfg.root.name --
+            # correct ONLY for the one-level-nested nyxloom layout; for a
+            # repo-root project it inserted a bogus segment and EVERY carve
+            # parse-failed (dstdns would reproduce the P51 incident the moment
+            # its carving resumed). `git rev-parse --show-prefix` from
+            # cfg.root is that repo-relative path exactly: "" for a repo-root
+            # project, "nyxloom/" for the nested one. An empty component is a
+            # no-op in Path joining, so one expression handles both layouts.
+            prefix = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", "--show-prefix"],
+                capture_output=True, text=True).stdout.strip()
+            report_path = worktree / prefix / cfg.reports_dir / f"CARVE-{seq}.md"
+        else:
+            report_path = worktree / cfg.reports_dir / f"CARVE-{seq}.md"
+
+        summary: CarveSummary | None = None
+        if report_path.exists():
+            try:
+                from .daemon import CarveSummary  # see the note at module scope
+                data = json.loads(report_path.read_text(encoding="utf-8"))
+                summary = CarveSummary.from_dict(data)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                summary = None
+
+        if summary is not None:
+            carves_dir = paths.project_dir(project) / "carves"
+            carves_dir.mkdir(parents=True, exist_ok=True)
+            persisted = {"seq": seq, "timestamp": iso(utc_now())}
+            persisted.update(summary.to_dict())
+            (carves_dir / f"{seq}.json").write_text(
+                json.dumps(persisted, sort_keys=True), encoding="utf-8")
+
+            carved_ids = [c.get("id", "") for c in summary.carved]
+            outcome_payload: dict[str, Any] = {
+                "seq": seq, "carved_ids": carved_ids, "outcome": summary.outcome,
+                "headroom_estimate": summary.headroom_estimate,
+            }
+            # F007 2026-07-27 (GAP2): THE COMPARISON, daemon-side -- only when
+            # this report actually carries blind judgments (every pre-GAP2
+            # report, and every report from a project with the knob off,
+            # leaves summary.verdict_audit == [] -> this whole block is a
+            # no-op and outcome_payload is UNCHANGED, so the existing exact-
+            # equality CARVE_OUTCOME payload assertions are unaffected).
+            # DISPUTED entries become carve candidates through this SAME
+            # envelope -- the CARVE_OUTCOME event this pass already emits to
+            # report what came out of the carve -- rather than a second,
+            # independent dispatch mechanism.
+            if summary.verdict_audit:
+                # No `events=`: this is an effect-boundary caller, so it takes
+                # CR-02a's fresh typed acquisition, which raises rather than
+                # handing back a silently empty log.
+                disputes = self._verdict_audit_disputes(project, summary.verdict_audit)
+                if disputes:
+                    outcome_payload["verdict_audit_disputes"] = disputes
+            events.append(self._append_ev(
+                project, cfg, states, EventType.CARVE_OUTCOME, outcome_payload,
+                task_id=task_id, attempt_id=attempt_id))
+
+            # D-065 (B63 2026-07-20): 'headroom-low' and 'roadmap-exhausted' are
+            # readings of the WORK roadmap's runway -- and 'roadmap-exhausted' is
+            # read straight back by reconcile as roadmap_exhausted_open, which
+            # THROTTLES item 9's headroom refill. A test-health carve (item 15)
+            # never reads the work roadmap at all: it reports how much TEST debt
+            # remains. Letting its numbers through here would mean a healthy suite
+            # ("0 test-debt areas left") announcing the product roadmap was
+            # exhausted and suppressing all further work carving -- a false alarm
+            # that silently stalls the factory. Suppressed at the SOURCE rather
+            # than steered around in packet prose, which would be LLM-dependent.
+            is_test_health = self._carve_kind(states, task_id) == "test-health"
+            if not is_test_health and summary.headroom_estimate < cfg.policy.headroom_warn:
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.SPEC_ATTENTION,
+                    {"reason": "headroom-low",
+                     "detail": f"{summary.headroom_estimate} packages left"},
+                    task_id=task_id))
+            if not is_test_health and summary.outcome == "ROADMAP_EXHAUSTED":
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.SPEC_ATTENTION,
+                    {"reason": "roadmap-exhausted",
+                     "detail": f"{summary.headroom_estimate} packages left"},
+                    task_id=task_id))
+            if authority == "branch":
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "carve-ready", "carved_count": len(summary.carved),
+                     "headroom_estimate": summary.headroom_estimate},
+                    task_id=task_id))
+        else:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carve-parse-failed", "seq": seq}, task_id=task_id))
+
+        events.append(self._append_ev(
+            project, cfg, states, EventType.TASK_SUPERSEDED,
+            {"from": states[task_id].state.value, "notes": "carve-consumed"},
+            task_id=task_id))
+        return events
+
 
 def specs(effector: CarveEffector) -> tuple[effects.HandlerSpec, ...]:
     return (

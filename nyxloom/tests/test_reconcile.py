@@ -3221,12 +3221,19 @@ def test_no_inline_attempt_budget_formula_outside_accessor():
     gone, so the defect this package fixes cannot recur."""
     src_dir = Path(__file__).parent.parent / "src" / "nyxloom"
     reconcile_src = (src_dir / "reconcile.py").read_text()
-    daemon_src = (src_dir / "daemon.py").read_text()
+    # CR-05e: the consumer that applies the budget moved out of `daemon.py`
+    # into an effector module, so the scan follows it. The property is
+    # unchanged -- ONE accessor, no inline re-derivation anywhere in the
+    # control plane -- and widening the scan is what keeps it from passing
+    # vacuously against a file the formula no longer lives in.
+    control_plane = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in [src_dir / "daemon.py", *sorted(src_dir.glob("effects*.py"))])
     assert "def attempts_used" in reconcile_src
     assert "rejected_attempts_count = sum(" not in reconcile_src
     assert "attempts_count = sum(" not in reconcile_src
-    assert "attempts_used = sum(" not in daemon_src
-    assert "reconcile.attempts_used(" in daemon_src   # daemon uses the shared accessor
+    assert "attempts_used = sum(" not in control_plane
+    assert "reconcile.attempts_used(" in control_plane   # the shared accessor
 
 
 def test_review_rejected_attempts_exhausted_routes_to_ready_to_carve():

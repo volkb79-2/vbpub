@@ -243,7 +243,7 @@ def _write_bootstrap_ack(d: daemon.Daemon, cfg: ProjectConfig,
     """Write a valid BOOTSTRAP-ACK.json for the given attempt's start/recover
     turn, satisfying P3d ACK validation (kind=start or kind=resume+mode=recover
     require it). The ack echoes the current spine revisions."""
-    ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
+    ack_path = d._carver._carver_bootstrap_ack_path(cfg, attempt)
     ack_path.parent.mkdir(parents=True, exist_ok=True)
     spine = d._carver._spine_revisions(cfg)
     ack_path.write_text(json.dumps(
@@ -418,7 +418,8 @@ def _bootstrap_to_warm(d: daemon.Daemon, cfg: ProjectConfig, patch_launch,
     _mark_turn_outcome("demo", task_id, attempt_id,
                        session_handle=session_id, result=ReceiptResult.DONE)
     states = storage.list_states("demo")
-    d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
     assert _snapshot("demo").status is CarverStatus.WARM
     assert _snapshot("demo").session_id == session_id
     return task_id
@@ -546,7 +547,8 @@ def test_ad3_successful_repair_turn_records_proposal_and_leaves_cursor_untouched
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
-    consume = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    consume = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     # Success branch reached: the corrected proposal is recorded ...
     assert any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in consume)
@@ -645,7 +647,8 @@ def test_consume_start_success_emits_started_and_supersedes_turn_task(
     attempt = states[task_id].attempt_by_id(attempt_id)
     _write_bootstrap_ack(d, cfg, attempt)
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     started = [e for e in events if e.type is EventType.CARVER_SESSION_STARTED]
     assert len(started) == 1
@@ -680,7 +683,8 @@ def test_consume_start_capture_failure_emits_degraded_never_started(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
     degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
@@ -706,7 +710,8 @@ def test_consume_start_turn_error_receipt_emits_degraded(
                        result=ReceiptResult.ERROR)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
     assert any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
@@ -734,7 +739,8 @@ def test_consume_resume_success_emits_resumed_and_reuses_sticky_session_id(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     resumed = [e for e in events if e.type is EventType.CARVER_SESSION_RESUMED]
     assert len(resumed) == 1
@@ -767,7 +773,8 @@ def test_consume_resume_failure_emits_degraded(tmp_state, carver_project, patch_
                        result=ReceiptResult.ERROR)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     assert any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
@@ -833,7 +840,8 @@ def test_e2e_two_resumes_both_target_same_s1_with_distinct_turn_ids(
         _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                            result=ReceiptResult.DONE)
         states = storage.list_states("demo")
-        d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+        d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert seen_sessions == ["S1", "S1"]
     # distinct turn ids -- the persistent session is a cache, never an
@@ -937,7 +945,8 @@ def test_start_and_resume_under_branch_authority_mint_real_worktrees(
     # Write BOOTSTRAP-ACK.json (P3d ACK validation requires it for start).
     attempt = states[task_id].attempt_by_id(attempt_id)
     _write_bootstrap_ack(d, cfg, attempt)
-    d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
     patch_launch.clear()
 
     states = storage.list_states("demo")
@@ -1114,18 +1123,18 @@ def test_bootstrap_packet_annotates_terminal_handoff_and_blocker_tasks(
 def test_carver_turn_marker_defaults_and_malformed_generation(tmp_state, carver_project):
     d = daemon.Daemon({"demo": carver_project.root})
 
-    assert d._carver_turn_marker({}, "does-not-exist") == ("start", "headroom", 0, ())
+    assert d._carver._carver_turn_marker({}, "does-not-exist") == ("start", "headroom", 0, ())
 
     tsf_no_notes = TaskStateFile(
         schema_version=1, task_id="t1", project="demo",
         state=TaskState.ACTIVE, since=utc_now(), notes=None)
-    assert d._carver_turn_marker({"t1": tsf_no_notes}, "t1") == ("start", "headroom", 0, ())
+    assert d._carver._carver_turn_marker({"t1": tsf_no_notes}, "t1") == ("start", "headroom", 0, ())
 
     tsf_malformed = TaskStateFile(
         schema_version=1, task_id="t2", project="demo",
         state=TaskState.ACTIVE, since=utc_now(),
         notes="carver-session seq=1 kind=resume mode=recover generation=NaN")
-    kind, mode, generation, source_ids = d._carver_turn_marker({"t2": tsf_malformed}, "t2")
+    kind, mode, generation, source_ids = d._carver._carver_turn_marker({"t2": tsf_malformed}, "t2")
     assert (kind, mode, generation, source_ids) == ("resume", "recover", 0, ())
 
     # F018 P3c: a real 'sources=' token round-trips via comma-split.
@@ -1134,7 +1143,7 @@ def test_carver_turn_marker_defaults_and_malformed_generation(tmp_state, carver_
         state=TaskState.ACTIVE, since=utc_now(),
         notes="carver-session seq=2 kind=resume mode=merge-feed generation=1 "
               "sources=merge:demo:1,merge:demo:2")
-    marker = d._carver_turn_marker({"t3": tsf_sourced}, "t3")
+    marker = d._carver._carver_turn_marker({"t3": tsf_sourced}, "t3")
     assert marker == ("resume", "merge-feed", 1, ("merge:demo:1", "merge:demo:2"))
 
 
@@ -1298,7 +1307,8 @@ def test_ad1_empty_proposal_from_normalized_rescope_leaves_origin_ready_to_carve
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
-    d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     # No proposal was ever recorded, so a real run_pass has nothing to
     # admit -- the origin must still be READY_TO_CARVE, never superseded.
@@ -1341,7 +1351,8 @@ def test_ad1_valid_rescope_proposal_supersedes_origin_only_on_admission(
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
-    consume_events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    consume_events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
     assert any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in consume_events)
 
     # Right after consumption (before admission), the origin is UNCHANGED.
@@ -1541,7 +1552,8 @@ def test_branch_authority_normalize_reads_envelope_at_worktree_report_path(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
 
@@ -1570,7 +1582,8 @@ def test_write_authority_turn_missing_envelope_degrades_no_proposal(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
@@ -1606,7 +1619,8 @@ def test_write_authority_turn_malformed_envelope_degrades_no_proposal(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
@@ -1637,7 +1651,8 @@ def test_read_only_resume_turn_never_records_proposal_even_if_envelope_present(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
@@ -1674,7 +1689,8 @@ def test_ad2_carved_nothing_turn_records_resumed_not_proposal_stays_warm(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     assert not any(e.type is EventType.CARVER_PROPOSAL_RECORDED for e in events)
@@ -1729,7 +1745,8 @@ def test_full_loop_normalize_record_validate_admit_end_to_end(
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
-    consume_events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    consume_events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     resumed = [e for e in consume_events if e.type is EventType.CARVER_SESSION_RESUMED]
     assert len(resumed) == 1
@@ -1927,7 +1944,8 @@ def test_o4_start_no_ack_degrades(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
     degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
@@ -1952,7 +1970,8 @@ def test_o4_start_valid_ack_reaches_warm(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
     assert _snapshot("demo").status is CarverStatus.WARM
@@ -1982,7 +2001,7 @@ def test_o4_recover_no_ack_degrades(
 
     # Remove any BOOTSTRAP-ACK.json left by _bootstrap_to_warm.
     attempt = states[task_id].attempt_by_id(attempt_id)
-    ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
+    ack_path = d._carver._carver_bootstrap_ack_path(cfg, attempt)
     if ack_path.exists():
         ack_path.unlink()
 
@@ -1990,7 +2009,8 @@ def test_o4_recover_no_ack_degrades(
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
     degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]
@@ -2016,7 +2036,8 @@ def test_o4_merge_feed_unaffected_by_ack(
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_DEGRADED for e in events)
     assert any(e.type is EventType.CARVER_SESSION_RESUMED for e in events)
@@ -2267,7 +2288,7 @@ def test_bootstrap_ack_malformed_json(tmp_state, carver_project, patch_launch):
     attempt_id = states[task_id].attempts[0].attempt_id
 
     attempt = states[task_id].attempt_by_id(attempt_id)
-    ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
+    ack_path = d._carver._carver_bootstrap_ack_path(cfg, attempt)
     ack_path.parent.mkdir(parents=True, exist_ok=True)
     # Write invalid JSON.
     ack_path.write_text("not valid json", encoding="utf-8")
@@ -2276,7 +2297,8 @@ def test_bootstrap_ack_malformed_json(tmp_state, carver_project, patch_launch):
                        result=ReceiptResult.DONE)
     states = storage.list_states("demo")
 
-    events = d._consume_carver_session_exit("demo", cfg, states, task_id, attempt_id)
+    events = d._carver.consume_session_exit(
+        d._effect_context("demo", cfg, states), task_id, attempt_id)
 
     assert not any(e.type is EventType.CARVER_SESSION_STARTED for e in events)
     degraded = [e for e in events if e.type is EventType.CARVER_SESSION_DEGRADED]

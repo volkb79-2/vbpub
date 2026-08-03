@@ -485,8 +485,8 @@ def test_a_receipt_bound_to_a_wrong_attempt_never_becomes_truthy(
         type=EventType.REVIEW_RECORDED, payload={"result": "approved"},
         task_id="t-a", attempt_id="att-real")
 
-    assert d._attempt_has_review_recorded("demo", "att-real") is True
-    assert d._attempt_has_review_recorded("demo", "att-other") is False
+    assert d._exit._attempt_has_review_recorded("demo", "att-real") is True
+    assert d._exit._attempt_has_review_recorded("demo", "att-other") is False
 
 
 # --------------------------------------------------------------------------
