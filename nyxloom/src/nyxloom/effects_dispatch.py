@@ -115,6 +115,29 @@ def admissible(ctx: effects.EffectContext, kind: str) -> tuple[bool, str]:
     return (True, "")
 
 
+def ensure_worktree(ports: Any, root, branch: str, worktree_path,
+                    default_branch: str) -> None:
+    """A worktree for ``branch``, created if absent.
+
+    Two shapes: the branch already EXISTS (a re-dispatch after a rejected
+    review, or a carve turn resuming an authority branch -- whose commits
+    must be preserved) or it does not (a first dispatch, branching from the
+    default). Checking first is what keeps a re-dispatch from silently
+    starting over on an empty branch.
+
+    A refused add RAISES. Launching an agent into a directory that is not
+    there is worse than a TICK_ERROR and a re-plan.
+    """
+    if ports.files.exists(worktree_path):
+        return
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+    if ports.git.resolve_verify(str(root), branch) is not None:
+        ports.git.worktree_add(str(root), str(worktree_path), branch)
+    else:
+        ports.git.worktree_add_new_branch(str(root), branch,
+                                          str(worktree_path), default_branch)
+
+
 def gate_hint(cfg: ProjectConfig) -> str:
     """The gate command an agent is told to run, as a single string.
 

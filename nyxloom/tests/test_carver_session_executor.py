@@ -46,7 +46,10 @@ import pytest
 
 from dataclasses import replace as dc_replace
 
-from nyxloom import carver_session, daemon, lint, paths, reconcile, snapshot, storage
+from nyxloom import (
+    carver_session, daemon, effects_carver, lint, paths, reconcile, snapshot,
+    storage,
+)
 from nyxloom.config import ProjectConfig, register_project
 from nyxloom.types import (
     Actor, ActorKind, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
@@ -242,7 +245,7 @@ def _write_bootstrap_ack(d: daemon.Daemon, cfg: ProjectConfig,
     require it). The ack echoes the current spine revisions."""
     ack_path = d._carver_bootstrap_ack_path(cfg, attempt)
     ack_path.parent.mkdir(parents=True, exist_ok=True)
-    spine = d._spine_revisions(cfg)
+    spine = d._carver._spine_revisions(cfg)
     ack_path.write_text(json.dumps(
         {"kind": "bootstrap-ack", "spine_revisions": spine}), encoding="utf-8")
 
@@ -299,7 +302,7 @@ def test_start_carver_session_launches_bootstrap_under_strategic_carver_lease(
     states: dict = {}
     action = reconcile.StartCarverSession(project="demo", mode="headroom")
 
-    events = d._execute_start_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     types = [e.type for e in events]
     assert types == [EventType.TASK_CREATED, EventType.ATTEMPT_CREATED,
@@ -337,7 +340,7 @@ def test_start_carver_session_no_route_emits_needs_operator_no_launch(
     states: dict = {}
     action = reconcile.StartCarverSession(project="demo")
 
-    events = d._execute_start_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert len(events) == 1
     assert events[0].type is EventType.NEEDS_OPERATOR
@@ -355,12 +358,10 @@ def test_start_carver_session_refuses_when_carve_already_in_flight(
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
     # First launch occupies the slot.
-    d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     assert len(patch_launch) == 1
 
-    events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
 
     assert events == []
     assert len(patch_launch) == 1  # no second launch
@@ -380,8 +381,7 @@ def test_start_carver_session_refuses_on_stale_warm_snapshot(
                  "spine_revisions": {}},
     )
     d = daemon.Daemon({"demo": cfg.root})
-    events = d._execute_start_carver_session(
-        "demo", cfg, {}, reconcile.StartCarverSession(project="demo"))
+    events = d._execute("demo", cfg, {}, reconcile.StartCarverSession(project="demo"))
 
     assert events == []
     assert patch_launch == []
@@ -391,8 +391,7 @@ def test_start_carver_session_refuses_when_paused(tmp_state, carver_project, pat
     cfg = carver_project
     paths.pause_flag("demo").write_text("drain-agents")
     d = daemon.Daemon({"demo": cfg.root})
-    events = d._execute_start_carver_session(
-        "demo", cfg, {}, reconcile.StartCarverSession(project="demo"))
+    events = d._execute("demo", cfg, {}, reconcile.StartCarverSession(project="demo"))
     assert events == []
     assert patch_launch == []
 
@@ -407,8 +406,7 @@ def _bootstrap_to_warm(d: daemon.Daemon, cfg: ProjectConfig, patch_launch,
     the bootstrap turn's task_id. Writes the required BOOTSTRAP-ACK.json
     to simulate the carver's acknowledgement."""
     states: dict = {}
-    events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 
@@ -436,7 +434,7 @@ def test_resume_carver_session_pins_route_and_reuses_session_id(
     states = storage.list_states("demo")
     action = reconcile.ResumeCarverSession(
         project="demo", mode="merge-feed", source_ids=("merge:demo:1",), generation=1)
-    events = d._execute_resume_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     types = [e.type for e in events]
     assert types == [EventType.TASK_CREATED, EventType.ATTEMPT_CREATED,
@@ -478,7 +476,7 @@ def test_ad3_repair_proposal_turn_packet_names_ids_and_checklist(
     states = storage.list_states("demo")
     action = reconcile.ResumeCarverSession(
         project="demo", mode="repair-proposal", generation=1)
-    events = d._execute_resume_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert [e.type for e in events] == [
         EventType.TASK_CREATED, EventType.ATTEMPT_CREATED, EventType.ATTEMPT_PREFLIGHTED]
@@ -534,9 +532,7 @@ def test_ad3_successful_repair_turn_records_proposal_and_leaves_cursor_untouched
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    launch = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="repair-proposal", generation=1))
+    launch = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="repair-proposal", generation=1))
     task_id = launch[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 
@@ -580,7 +576,7 @@ def test_resume_carver_session_recover_mode_requires_degraded_status(
 
     states = storage.list_states("demo")
     action = reconcile.ResumeCarverSession(project="demo", mode="recover", generation=1)
-    events = d._execute_resume_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert events == []
     assert patch_launch == []
@@ -598,7 +594,7 @@ def test_resume_carver_session_unresolvable_pinned_route_needs_operator(
     states = storage.list_states("demo")
     action = reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                            source_ids=("d1",), generation=1)
-    events = d._execute_resume_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert len(events) == 1
     assert events[0].type is EventType.NEEDS_OPERATOR
@@ -617,16 +613,12 @@ def test_resume_carver_session_refuses_when_carve_already_in_flight(
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    first = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+    first = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
     assert len(first) == 3  # occupies the slot -- left ACTIVE, not consumed
     assert len(patch_launch) == 1
 
-    second = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="targeted-intake",
+    second = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="targeted-intake",
                                       source_ids=("i1",), generation=1))
     assert second == []
     assert len(patch_launch) == 1  # no second launch
@@ -642,8 +634,7 @@ def test_consume_start_success_emits_started_and_supersedes_turn_task(
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
@@ -682,8 +673,7 @@ def test_consume_start_capture_failure_emits_degraded_never_started(
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle=None,
@@ -709,8 +699,7 @@ def test_consume_start_turn_error_receipt_emits_degraded(
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
@@ -733,9 +722,7 @@ def test_consume_resume_success_emits_resumed_and_reuses_sticky_session_id(
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    resume_events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+    resume_events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
     task_id = resume_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
@@ -772,9 +759,7 @@ def test_consume_resume_failure_emits_degraded(tmp_state, carver_project, patch_
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    resume_events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="targeted-intake",
+    resume_events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="targeted-intake",
                                       source_ids=("i1",), generation=1))
     task_id = resume_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
@@ -839,9 +824,7 @@ def test_e2e_two_resumes_both_target_same_s1_with_distinct_turn_ids(
     for mode, source_ids in (("merge-feed", ("d1",)), ("targeted-intake", ("i1",))):
         patch_launch.clear()
         states = storage.list_states("demo")
-        events = d._execute_resume_carver_session(
-            "demo", cfg, states,
-            reconcile.ResumeCarverSession(project="demo", mode=mode,
+        events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode=mode,
                                           source_ids=source_ids, generation=1))
         task_id = events[0].task_id
         attempt_id = states[task_id].attempts[0].attempt_id
@@ -872,7 +855,7 @@ def test_e2e_daemon_restart_still_resumes_s1(tmp_state, carver_project, patch_la
 
     d2 = daemon.Daemon({"demo": cfg.root})  # simulated restart: brand new instance
     states = storage.list_states("demo")
-    events = d2._execute_resume_carver_session(
+    events = d2._execute(
         "demo", cfg, states,
         reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
@@ -895,8 +878,7 @@ def test_lease_lost_race_loser_creates_no_generation_advances_no_cursor(
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 
@@ -939,8 +921,7 @@ def test_start_and_resume_under_branch_authority_mint_real_worktrees(
     cfg = carver_project_branch_authority
     d = daemon.Daemon({"demo": cfg.root})
 
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, {}, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, {}, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     spec = patch_launch[0]
     assert spec.cwd != str(cfg.root)
@@ -960,9 +941,7 @@ def test_start_and_resume_under_branch_authority_mint_real_worktrees(
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    resume_events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+    resume_events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
     resume_spec = patch_launch[0]
     assert resume_spec.cwd != str(cfg.root)
@@ -1011,9 +990,7 @@ def test_resume_recover_mode_launches_from_degraded_status(
     assert _snapshot("demo").session_id == "S1"  # DEGRADED never clears it
 
     states = storage.list_states("demo")
-    events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="recover", generation=1))
+    events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="recover", generation=1))
 
     assert len(patch_launch) == 1
     assert patch_launch[0].argv[2] == "S1"
@@ -1032,9 +1009,7 @@ def test_resume_carver_session_refuses_when_paused(
     paths.pause_flag("demo").write_text("drain-agents")
 
     states = storage.list_states("demo")
-    events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+    events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
     assert events == []
     assert patch_launch == []
@@ -1053,7 +1028,7 @@ def test_spine_revisions_hashes_existing_paths_and_skips_missing_ones(
                       product_definition="docs/MISSING-DOC.md")  # never written
     d = daemon.Daemon({"demo": cfg.root})
 
-    revisions = d._spine_revisions(cfg2)
+    revisions = d._carver._spine_revisions(cfg2)
 
     assert "north_star" in revisions
     assert len(revisions["north_star"]) == 64  # sha256 hex digest
@@ -1069,15 +1044,15 @@ def test_recent_merge_digest_ids_zero_limit_short_circuits_storage_error_raises(
     the cold-bootstrap packet's merge-digest pointers gave the carver a
     falsely-clean picture of project history."""
     d = daemon.Daemon({"demo": carver_project.root})
-    assert d._recent_merge_digest_ids("demo", 0) == []
+    assert d._carver._recent_merge_digest_ids("demo", 0) == []
 
     def _boom(project, since=0):
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._recent_merge_digest_ids("demo", 0) == []   # still short-circuits
+    assert d._carver._recent_merge_digest_ids("demo", 0) == []   # still short-circuits
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._recent_merge_digest_ids("demo", 5)
+        d._carver._recent_merge_digest_ids("demo", 5)
 
 
 def test_recent_merge_digest_ids_skips_malformed_digest_without_id(
@@ -1106,7 +1081,7 @@ def test_recent_merge_digest_ids_skips_malformed_digest_without_id(
     d = daemon.Daemon({project: cfg.root})
     # No KeyError; the malformed digest and the no-digest merge are both skipped,
     # leaving only the well-formed digest_id.
-    assert d._recent_merge_digest_ids(project, 5) == ["merge:demo:1"]
+    assert d._carver._recent_merge_digest_ids(project, 5) == ["merge:demo:1"]
 
 
 def test_bootstrap_packet_annotates_terminal_handoff_and_blocker_tasks(
@@ -1129,7 +1104,7 @@ def test_bootstrap_packet_annotates_terminal_handoff_and_blocker_tasks(
                             detail="needs a decision")),
     }
 
-    text = d._build_carver_bootstrap_packet(cfg, "demo", 1, states)
+    text = d._carver._build_carver_bootstrap_packet(cfg, "demo", 1, states)
 
     assert "demo-done" not in text  # terminal task -- skipped
     assert "demo-active" in text and "handoff/demo-active.md" in text
@@ -1650,9 +1625,7 @@ def test_read_only_resume_turn_never_records_proposal_even_if_envelope_present(
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    resume_events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+    resume_events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
     task_id = resume_events[0].task_id
     seq = task_id.rsplit("-", 1)[-1]
@@ -1801,7 +1774,7 @@ def test_o1_compact_rotate_fallback_emits_rotated_no_launch(
     states = storage.list_states("demo")
     action = reconcile.CompactCarverSession(
         project="demo", generation=gen_before, trigger="turns")
-    events = d._execute_compact_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     rotated = [e for e in events if e.type is EventType.CARVER_SESSION_ROTATED]
     assert len(rotated) == 1
@@ -1828,7 +1801,7 @@ def test_o1_compact_unsupported_strategy_emits_needs_operator_no_rotate(
     states = storage.list_states("demo")
     action = reconcile.CompactCarverSession(
         project="demo", generation=gen_before, trigger="turns")
-    events = d._execute_compact_carver_session("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert not any(e.type is EventType.CARVER_SESSION_ROTATED for e in events)
     needs_op = [e for e in events if e.type is EventType.NEEDS_OPERATOR]
@@ -1839,29 +1812,30 @@ def test_o1_compact_unsupported_strategy_emits_needs_operator_no_rotate(
 
 # --- O2: routing regression ---
 
-def test_o2_compact_carver_session_no_longer_raises_value_error(
+def test_o2_compact_carver_session_reaches_a_registered_handler(
         tmp_state, carver_project, patch_launch):
-    """O2: _execute dispatch of CompactCarverSession no longer raises
-    ValueError (would surface as TICK_ERROR)."""
+    """O2 restated (CR-05d). The PROPERTY -- a planned CompactCarverSession
+    is executed rather than raising -- is unchanged; the MECHANISM it named
+    (an isinstance branch in `_execute`) is gone, replaced by a registry
+    lookup that additionally checks completeness when the Daemon is BUILT
+    rather than on the first pass that plans one."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     _bootstrap_to_warm(d, cfg, patch_launch, session_id="S1")
     patch_launch.clear()
 
-    # Drive through run_pass with a CompactCarverSession action.
-    from unittest.mock import patch as mock_patch
-    with mock_patch.object(d, "_execute_compact_carver_session",
-                           return_value=[]):
-        # If the _execute dispatch doesn't have a CompactCarverSession
-        # branch, this would raise ValueError.
-        action = reconcile.CompactCarverSession(
-            project="demo", generation=1, trigger="turns")
-        events = d._execute("demo", cfg, {}, action)
-        # No ValueError means the branch exists.
-        assert events == []
+    action = reconcile.CompactCarverSession(
+        project="demo", generation=1, trigger="turns")
+    spec = d._registry.spec_for(action)
+    assert spec.kind == "compact-carver-session"
+    assert not spec.legacy_owner, "the compact verb no longer lives on the shell"
 
-
-# --- O3: concern-3 fall-through closed ---
+    # Assert the REAL handler runs rather than mocking it: the registry
+    # captures BOUND methods when the Daemon is built, so patching the class
+    # afterwards would not intercept -- and a test that silently patched
+    # nothing would assert only that `_execute` returns.
+    events = d._execute("demo", cfg, storage.list_states("demo"), action)
+    assert [e.type for e in events] == [EventType.CARVER_SESSION_ROTATED]
 
 def test_o3_degraded_exhausted_rotates_no_carve_task(
         tmp_state, carver_project, patch_launch):
@@ -1945,8 +1919,7 @@ def test_o4_start_no_ack_degrades(
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
     # Do NOT write the ACK file.
@@ -1970,8 +1943,7 @@ def test_o4_start_valid_ack_reaches_warm(
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
     attempt = states[task_id].attempt_by_id(attempt_id)
@@ -2004,9 +1976,7 @@ def test_o4_recover_no_ack_degrades(
 
     # Launch a recover-mode resume.
     states = storage.list_states("demo")
-    resume_events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="recover", generation=1))
+    resume_events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="recover", generation=1))
     task_id = resume_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 
@@ -2038,9 +2008,7 @@ def test_o4_merge_feed_unaffected_by_ack(
     patch_launch.clear()
 
     states = storage.list_states("demo")
-    resume_events = d._execute_resume_carver_session(
-        "demo", cfg, states,
-        reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
+    resume_events = d._execute("demo", cfg, states, reconcile.ResumeCarverSession(project="demo", mode="merge-feed",
                                       source_ids=("d1",), generation=1))
     task_id = resume_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
@@ -2074,7 +2042,7 @@ def test_o5_carver_no_route_debounced(
         project="demo", mode="merge-feed", source_ids=("d1",), generation=1)
 
     # First pass: emits NEEDS_OPERATOR.
-    events1 = d._execute_resume_carver_session("demo", cfg, states, action)
+    events1 = d._execute("demo", cfg, states, action)
     needs1 = [e for e in events1 if e.type is EventType.NEEDS_OPERATOR]
     assert len(needs1) == 1
     assert needs1[0].payload["reason"] == "carver-no-route"
@@ -2084,7 +2052,7 @@ def test_o5_carver_no_route_debounced(
                                   payload=ev.payload, task_id=ev.task_id)
 
     # Second pass (same episode, no rotation/started in between): suppressed.
-    events2 = d._execute_resume_carver_session("demo", cfg, states, action)
+    events2 = d._execute("demo", cfg, states, action)
     needs2 = [e for e in events2 if e.type is EventType.NEEDS_OPERATOR]
     assert needs2 == []
 
@@ -2105,7 +2073,7 @@ def test_o5_debounce_re_armed_by_rotation(
         project="demo", mode="merge-feed", source_ids=("d1",), generation=1)
 
     # First pass emits.
-    events1 = d._execute_resume_carver_session("demo", cfg, states, action)
+    events1 = d._execute("demo", cfg, states, action)
     assert any(e.type is EventType.NEEDS_OPERATOR for e in events1)
     # Persist events.
     for ev in events1:
@@ -2186,11 +2154,12 @@ def test_o6_enablement_warn_emitted_once(tmp_state, carver_project, monkeypatch)
     cfg = carver_project
     assert cfg.carve.session == "project-persistent"
     spy = _LogSpy()
-    monkeypatch.setattr(daemon, "log", spy)  # module attr -- see _LogSpy's docstring
+    # CR-05d: the acknowledgement is the CARVER effector's log line now.
+    monkeypatch.setattr(effects_carver, "log", spy)  # module attr -- see _LogSpy's docstring
     calls = spy.calls
     d = daemon.Daemon({"demo": cfg.root})
-    d._carver_session("demo", cfg)
-    d._carver_session("demo", cfg)
+    d._carver._carver_session("demo", cfg)
+    d._carver._carver_session("demo", cfg)
 
     assert len(calls) == 1  # once per daemon instance
     event, kw = calls[0]
@@ -2205,9 +2174,10 @@ def test_o6_fresh_project_no_warn(tmp_state, sample_project, monkeypatch):
     cfg = sample_project
     assert cfg.carve.session == "fresh"
     spy = _LogSpy()
-    monkeypatch.setattr(daemon, "log", spy)  # module attr -- see _LogSpy's docstring
+    # CR-05d: the acknowledgement is the CARVER effector's log line now.
+    monkeypatch.setattr(effects_carver, "log", spy)  # module attr -- see _LogSpy's docstring
     d = daemon.Daemon({"demo": cfg.root})
-    d._carver_session("demo", cfg)
+    d._carver._carver_session("demo", cfg)
 
     assert [event for event, _kw in spy.calls] == []
 
@@ -2262,7 +2232,7 @@ def test_compact_stale_plan_refuses_cleanly(tmp_state, carver_project):
     d = daemon.Daemon({"demo": cfg.root})
     action = reconcile.CompactCarverSession(
         project="demo", generation=0, trigger="turns")
-    events = d._execute_compact_carver_session("demo", cfg, {}, action)
+    events = d._execute("demo", cfg, {}, action)
     assert events == []
 
 
@@ -2275,12 +2245,12 @@ def test_bootstrap_packet_with_spine_revisions(tmp_state, carver_project):
     cfg2 = dc_replace(cfg, north_star="docs/NORTH-STAR.md",
                       roadmap="docs/ROADMAP.md")
     d = daemon.Daemon({"demo": cfg.root})
-    text = d._build_carver_bootstrap_packet(cfg2, "demo", 1, {})
+    text = d._carver._build_carver_bootstrap_packet(cfg2, "demo", 1, {})
     assert "north_star" in text
     assert "roadmap" in text
     assert "BOOTSTRAP-ACK.json" in text
     # The spine revisions listing and JSON template should be present.
-    spine_revs = d._spine_revisions(cfg2)
+    spine_revs = d._carver._spine_revisions(cfg2)
     for level, rev in spine_revs.items():
         assert level in text
         assert rev in text
@@ -2292,8 +2262,7 @@ def test_bootstrap_ack_malformed_json(tmp_state, carver_project, patch_launch):
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
-    launch_events = d._execute_start_carver_session(
-        "demo", cfg, states, reconcile.StartCarverSession(project="demo"))
+    launch_events = d._execute("demo", cfg, states, reconcile.StartCarverSession(project="demo"))
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 

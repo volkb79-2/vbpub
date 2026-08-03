@@ -158,6 +158,13 @@ class TestThisRepo:
                                                       attempt_id="a1"),
             "launch-self-review": reconcile.LaunchSelfReview(
                 task_id="t1", source_attempt_id="a1"),
+            "start-carver-session": reconcile.StartCarverSession(
+                project="demo", mode="headroom"),
+            "resume-carver-session": reconcile.ResumeCarverSession(
+                project="demo", mode="merge-feed", source_ids=("d1",),
+                generation=1),
+            "compact-carver-session": reconcile.CompactCarverSession(
+                project="demo", generation=1, trigger="turns"),
         }
         keys = {}
         for spec in registry.specs:
@@ -236,17 +243,22 @@ def _function_nodes(module_file: Path) -> dict[str, ast.FunctionDef]:
 
 
 def _derive_emissions(spec) -> frozenset:
-    """EventType members reachable from a spec's declared entry points.
+    """EventType members the spec's entry points can APPEND.
 
     The call graph is WALKED, not listed: starting from the handler (and the
     drain, when the family has one), every ``self.<name>`` the source mentions
     is followed, whether it is called there or handed to the background port
     to be called later. A hand-maintained root list would let a new helper
-    emit a new event type without the declaration noticing, which is the
-    drift this oracle exists to catch.
+    emit a new event type without the declaration noticing.
 
-    ``ctx.transition(...)`` contributes TASK_TRANSITIONED without naming it,
-    because the transition seam is what appends that event.
+    Only APPEND sites count -- an ``EventType`` member reached inside an
+    append call, plus ``ctx.transition(...)`` for TASK_TRANSITIONED. CR-05d is
+    why: the carver's proposal validators READ CARVER_PROPOSAL_RECORDED to
+    decide whether a proposal was already admitted, and counting a comparison
+    as an emission would have forced the launch verbs to declare an event
+    they cannot produce. A declaration that names events the handler only
+    reads is not a permission -- it is noise that makes the real permission
+    unreadable.
     """
     module = sys.modules[spec.handler.__module__]
     functions = _function_nodes(Path(module.__file__))
@@ -261,16 +273,26 @@ def _derive_emissions(spec) -> frozenset:
             continue
         seen.add(name)
         for node in ast.walk(functions[name]):
-            if not isinstance(node, ast.Attribute):
-                continue
-            if isinstance(node.value, ast.Name):
-                if node.value.id == "EventType":
-                    found.add(getattr(EventType, node.attr))
-                elif node.value.id == "self":
+            if isinstance(node, ast.Attribute):
+                if (isinstance(node.value, ast.Name)
+                        and node.value.id == "self"):
                     pending.append(node.attr)
-            if node.attr == "transition" and not (
-                    isinstance(node.value, ast.Name) and node.value.id == "self"):
+                continue
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if func.attr == "transition" and not (
+                    isinstance(func.value, ast.Name) and func.value.id == "self"):
                 found.add(EventType.TASK_TRANSITIONED)
+            if func.attr not in ("append", "_append_ev"):
+                continue
+            for arg in ast.walk(node):
+                if (isinstance(arg, ast.Attribute)
+                        and isinstance(arg.value, ast.Name)
+                        and arg.value.id == "EventType"):
+                    found.add(getattr(EventType, arg.attr))
     return frozenset(found)
 
 

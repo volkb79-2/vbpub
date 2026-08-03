@@ -112,7 +112,8 @@ class AttemptEffector:
         tsf = states[task_id]
         branch = f"feat/{task_id}"
         worktree_path = cfg.root / cfg.worktree_root / branch
-        self._ensure_worktree(cfg.root, branch, worktree_path, cfg.default_branch)
+        effects_dispatch.ensure_worktree(self._ports, cfg.root, branch,
+                                         worktree_path, cfg.default_branch)
 
         routes_obj = config.Routes.load()
         route_def = routes_obj.routes[action.route_id]
@@ -157,24 +158,6 @@ class AttemptEffector:
                                  task_id=task_id, attempt_id=attempt_id))
         events.append(ctx.transition(task_id, TaskState.ACTIVE, None))
         return events
-
-    def _ensure_worktree(self, root, branch: str, worktree_path,
-                         default_branch: str) -> None:
-        """A worktree for this task's branch, created if absent.
-
-        Two shapes: the branch already exists (a re-dispatch after a rejected
-        review, whose commits must be preserved) or it does not (a first
-        dispatch, branching from the default). Checking first is what keeps a
-        re-dispatch from silently starting over on an empty branch.
-        """
-        if self._ports.files.exists(worktree_path):
-            return
-        worktree_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._ports.git.resolve_verify(str(root), branch) is not None:
-            self._ports.git.worktree_add(str(root), str(worktree_path), branch)
-        else:
-            self._ports.git.worktree_add_new_branch(
-                str(root), branch, str(worktree_path), default_branch)
 
     # -- resume ----------------------------------------------------------
 

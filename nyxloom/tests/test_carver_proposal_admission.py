@@ -40,7 +40,9 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, frontmatter, lint, paths, reconcile, snapshot, storage
+from nyxloom import (
+    daemon, effects_carver, frontmatter, lint, paths, reconcile, snapshot, storage,
+)
 from nyxloom.config import ProjectConfig, register_project
 from nyxloom.types import (
     Actor, ActorKind, EventType, TaskState, TaskStateFile, utc_now,
@@ -267,8 +269,8 @@ def test_valid_proposal_produces_one_validated_proposal(tmp_state, carver_projec
     _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    proposals = d._validated_carve_proposals("demo", cfg, snap)
+    snap = d._carver._carver_session("demo", cfg)
+    proposals = d._carver._validated_carve_proposals("demo", cfg, snap)
 
     assert len(proposals) == 1
     vp = proposals[0]
@@ -287,7 +289,7 @@ def test_feature_off_validated_proposals_is_empty(tmp_state, carver_project):
     _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    assert d._validated_carve_proposals("demo", cfg, None) == ()
+    assert d._carver._validated_carve_proposals("demo", cfg, None) == ()
 
 
 @pytest.mark.parametrize("mutate", [
@@ -305,8 +307,8 @@ def test_malformed_payload_not_validated(tmp_state, carver_project, mutate):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_stale_base_revision_not_validated(tmp_state, carver_project):
@@ -317,8 +319,8 @@ def test_stale_base_revision_not_validated(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_hash_mismatch_not_validated(tmp_state, carver_project):
@@ -329,8 +331,8 @@ def test_hash_mismatch_not_validated(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_lint_red_handoff_not_validated(tmp_state, carver_project):
@@ -345,8 +347,8 @@ def test_lint_red_handoff_not_validated(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("turn_mutate", ["absent", "wrong"])
@@ -362,8 +364,8 @@ def test_wrong_or_absent_turn_id_not_validated(tmp_state, carver_project, turn_m
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("bad_path", ["../outside.md", "/etc/passwd", "handoff/../../escape.md"])
@@ -374,8 +376,8 @@ def test_path_traversal_not_validated(tmp_state, carver_project, bad_path):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_concern1_stale_generation_excluded(tmp_state, carver_project):
@@ -391,15 +393,15 @@ def test_concern1_stale_generation_excluded(tmp_state, carver_project):
     _record("demo", stale_payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
+    snap = d._carver._carver_session("demo", cfg)
     assert snap.generation == 1
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
     # The SAME artifact, correctly attributed to generation 1, DOES validate.
     fresh_payload = _proposal_payload(generation=1, turn_id="att-1",
                                        artifacts=[_artifact(relpath, sha)])
     _record("demo", fresh_payload)
-    proposals = d._validated_carve_proposals("demo", cfg, snap)
+    proposals = d._carver._validated_carve_proposals("demo", cfg, snap)
     assert len(proposals) == 1
     assert proposals[0].proposal_id == "demo:carve:1:att-1"
 
@@ -417,8 +419,8 @@ def test_already_admitted_proposal_excluded_via_marker(tmp_state, carver_project
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1
+    snap = d._carver._carver_session("demo", cfg)
+    assert len(d._carver._validated_carve_proposals("demo", cfg, snap)) == 1
 
     storage.append_and_apply(
         "demo", {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
@@ -426,7 +428,7 @@ def test_already_admitted_proposal_excluded_via_marker(tmp_state, carver_project
         payload={"proposal_id": payload["proposal_id"], "generation": 1,
                  "artifact_ids": ["demo-P901"]},
     )
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_race_with_ordinary_scan_does_not_suppress_validation(tmp_state, carver_project):
@@ -447,14 +449,14 @@ def test_race_with_ordinary_scan_does_not_suppress_validation(tmp_state, carver_
     _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
+    snap = d._carver._carver_session("demo", cfg)
     # Simulate the ordinary scan having ALREADY created the task -- no
     # CARVER_PROPOSAL_ADMITTED marker exists yet.
     raced_states = {
         "demo-P901": TaskStateFile(schema_version=1, task_id="demo-P901", project="demo",
                                     state=TaskState.CARVED, since=utc_now()),
     }
-    proposals = d._validated_carve_proposals("demo", cfg, snap)
+    proposals = d._carver._validated_carve_proposals("demo", cfg, snap)
     assert len(proposals) == 1
     assert proposals[0].artifact_ids == ["demo-P901"]
     # Confirm _execute_admit_carve_proposal correctly proceeds despite the
@@ -553,8 +555,8 @@ def test_effect_boundary_recheck_refuses_on_changed_artifact(tmp_state, carver_p
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1  # sanity: valid now
+    snap = d._carver._carver_session("demo", cfg)
+    assert len(d._carver._validated_carve_proposals("demo", cfg, snap)) == 1  # sanity: valid now
 
     # Mutate the artifact's content after validation but before admission.
     (cfg.root / relpath).write_text(
@@ -589,9 +591,9 @@ def test_rescope_supersedes_origin_only_on_successful_admission(tmp_state, carve
         "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
                                       state=TaskState.READY_TO_CARVE, since=utc_now()),
     })
-    snap = d._carver_session("demo", cfg)
+    snap = d._carver._carver_session("demo", cfg)
     # Merely being validated does NOT touch the origin.
-    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1
+    assert len(d._carver._validated_carve_proposals("demo", cfg, snap)) == 1
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
 
     action = reconcile.AdmitCarveProposal(
@@ -702,8 +704,8 @@ def test_ad3_pending_repairs_below_ceiling_and_p3b_does_not_escalate(
     _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, "0" * 64)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    repairs = d._pending_carve_repairs("demo", cfg, snap)
+    snap = d._carver._carver_session("demo", cfg)
+    repairs = d._carver._pending_carve_repairs("demo", cfg, snap)
     assert len(repairs) == 1
     assert repairs[0].proposal_id == "demo:carve:1:att-1"
     assert repairs[0].generation == 1
@@ -728,8 +730,8 @@ def test_ad3_pending_repairs_empty_at_ceiling_where_p3b_escalates(
     _record("demo", _proposal_payload(turn_id="att-2", artifacts=[_artifact(relpath, "1" * 64)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._pending_carve_repairs("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._pending_carve_repairs("demo", cfg, snap) == ()
     escalations = [e for e in d._carve_proposal_repair_escalations("demo", cfg, {})
                    if e.type is EventType.NEEDS_OPERATOR
                    and e.payload.get("reason") == "carver-proposal-invalid"]
@@ -749,9 +751,9 @@ def test_ad3_pending_repairs_feature_off_and_zero_invalid_are_empty(
     _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._pending_carve_repairs("demo", cfg, None) == ()   # feature off
-    assert d._pending_carve_repairs("demo", cfg, snap) == ()   # on, zero invalid
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._pending_carve_repairs("demo", cfg, None) == ()   # feature off
+    assert d._carver._pending_carve_repairs("demo", cfg, snap) == ()   # on, zero invalid
 
 
 def test_ad3_pending_repairs_sorted_by_proposal_id(tmp_state, carver_project):
@@ -768,8 +770,8 @@ def test_ad3_pending_repairs_sorted_by_proposal_id(tmp_state, carver_project):
     _record("demo", _proposal_payload(turn_id="att-1", artifacts=[_artifact(relpath, "0" * 64)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    repairs = d._pending_carve_repairs("demo", cfg, snap)
+    snap = d._carver._carver_session("demo", cfg)
+    repairs = d._carver._pending_carve_repairs("demo", cfg, snap)
     assert [r.proposal_id for r in repairs] == ["demo:carve:1:att-1", "demo:carve:1:att-2"]
 
 
@@ -786,9 +788,9 @@ def test_ad3_pending_repairs_excludes_wrong_generation(tmp_state, carver_project
                                       artifacts=[_artifact(relpath, "0" * 64)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
+    snap = d._carver._carver_session("demo", cfg)
     assert snap.generation == 1
-    assert d._pending_carve_repairs("demo", cfg, snap) == ()
+    assert d._carver._pending_carve_repairs("demo", cfg, snap) == ()
 
 
 def test_ad3_pending_repairs_storage_error_is_typed_unavailable(
@@ -805,15 +807,15 @@ def test_ad3_pending_repairs_storage_error_is_typed_unavailable(
     cfg = carver_project
     _bootstrap_warm()
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)  # captured BEFORE the monkeypatch
+    snap = d._carver._carver_session("demo", cfg)  # captured BEFORE the monkeypatch
 
     def _boom(project, since=0):
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._pending_carve_repairs("demo", cfg, snap)
-    assert d._pending_carve_repairs("demo", cfg, None) == ()
+        d._carver._pending_carve_repairs("demo", cfg, snap)
+    assert d._carver._pending_carve_repairs("demo", cfg, None) == ()
 
 
 # ==========================================================================
@@ -948,15 +950,15 @@ def test_validated_proposals_storage_error_is_typed_unavailable(
     cfg = carver_project
     _bootstrap_warm()
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)  # captured BEFORE the monkeypatch below
+    snap = d._carver._carver_session("demo", cfg)  # captured BEFORE the monkeypatch below
 
     def _boom(project, since=0):
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._validated_carve_proposals("demo", cfg, snap)
-    assert d._validated_carve_proposals("demo", cfg, None) == ()
+        d._carver._validated_carve_proposals("demo", cfg, snap)
+    assert d._carver._validated_carve_proposals("demo", cfg, None) == ()
 
 
 def test_event_sequence_at_or_before_cursor_excluded(tmp_state, carver_project):
@@ -966,11 +968,11 @@ def test_event_sequence_at_or_before_cursor_excluded(tmp_state, carver_project):
     ev = _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1  # sanity
+    snap = d._carver._carver_session("demo", cfg)
+    assert len(d._carver._validated_carve_proposals("demo", cfg, snap)) == 1  # sanity
 
     snap.last_consumed_event_sequence = ev.sequence
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("proposal_id", [
@@ -989,8 +991,8 @@ def test_malformed_proposal_id_structure_not_validated(
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("bad_path", [None, 123, ""])
@@ -1002,8 +1004,8 @@ def test_artifact_path_not_a_string_not_validated(tmp_state, carver_project, bad
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_artifact_path_null_byte_resolution_error_not_validated(tmp_state, carver_project):
@@ -1017,8 +1019,8 @@ def test_artifact_path_null_byte_resolution_error_not_validated(tmp_state, carve
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_discover_handoffs_error_not_validated(tmp_state, carver_project, monkeypatch):
@@ -1033,8 +1035,8 @@ def test_discover_handoffs_error_not_validated(tmp_state, carver_project, monkey
 
     monkeypatch.setattr(frontmatter, "discover_handoffs", _boom)
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_read_bytes_oserror_not_validated(tmp_state, carver_project, monkeypatch):
@@ -1049,8 +1051,8 @@ def test_read_bytes_oserror_not_validated(tmp_state, carver_project, monkeypatch
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_source_not_a_dict_not_validated(tmp_state, carver_project):
@@ -1062,8 +1064,8 @@ def test_source_not_a_dict_not_validated(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_artifact_entry_not_a_dict_not_validated(tmp_state, carver_project):
@@ -1073,8 +1075,8 @@ def test_artifact_entry_not_a_dict_not_validated(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 @pytest.mark.parametrize("bad_hash", [None, 123, ""])
@@ -1087,8 +1089,8 @@ def test_artifact_hash_not_a_string_not_validated(tmp_state, carver_project, bad
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_frontmatter_parse_error_not_validated(tmp_state, carver_project):
@@ -1102,8 +1104,8 @@ def test_frontmatter_parse_error_not_validated(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_lint_file_error_not_validated(tmp_state, carver_project, monkeypatch):
@@ -1118,8 +1120,8 @@ def test_lint_file_error_not_validated(tmp_state, carver_project, monkeypatch):
 
     monkeypatch.setattr(lint, "lint_file", _boom)
     d = daemon.Daemon({"demo": cfg.root})
-    snap = d._carver_session("demo", cfg)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    snap = d._carver._carver_session("demo", cfg)
+    assert d._carver._validated_carve_proposals("demo", cfg, snap) == ()
 
 
 def test_carve_proposal_recorded_payload_storage_error_is_typed_unavailable(
@@ -1381,4 +1383,4 @@ def test_proposal_already_admitted_storage_error_is_typed_unavailable(
 
     monkeypatch.setattr(storage, "iter_events", _boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._proposal_already_admitted("demo", "demo:carve:1:att-1")
+        d._carver._proposal_already_admitted("demo", "demo:carve:1:att-1")
