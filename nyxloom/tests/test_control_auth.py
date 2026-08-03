@@ -23,12 +23,16 @@ are deliberately generous failsafes against hanging the suite, never oracles.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
+import socket
 import stat
+import threading
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 import structlog.contextvars
@@ -164,6 +168,31 @@ def _ledger() -> list:
 
 def _refusals() -> list:
     return [e for e in _ledger() if e.type is EventType.CONTROL_MUTATION_REFUSED]
+
+
+def _capture_errors(monkeypatch) -> list[tuple[str, dict]]:
+    """Capture `control_auth`'s ERROR records without configuring logging.
+
+    Patches the module attribute that OWNS the logger (not the shared
+    structlog root), so teardown restores exactly what it found and a sibling
+    test on the same xdist worker cannot inherit the capture."""
+    errors: list[tuple[str, dict]] = []
+    real_log = control_auth.log
+
+    class _CapturingLog:
+        def error(self, msg, **kw):
+            errors.append((msg, dict(kw)))
+            return real_log.error(msg, **kw)
+
+        def warning(self, msg, **kw):
+            errors.append((msg, dict(kw)))
+            return real_log.warning(msg, **kw)
+
+        def __getattr__(self, name):
+            return getattr(real_log, name)
+
+    monkeypatch.setattr(control_auth, "log", _CapturingLog())
+    return errors
 
 
 class _Snapshot:
@@ -402,16 +431,18 @@ def test_decision_resolution_event_carries_the_operator_identity(sample_project,
     assert len(resolved) == 1
     assert resolved[0].actor.kind is ActorKind.OPERATOR
     assert resolved[0].actor.id == "dave"
+    # The DECISION: line was authored by the agent; the AUTHORITY is still the
+    # operator whose message drove the turn.
+    assert resolved[0].actor.kind is not ActorKind.FRONTIER_SESSION
 
-    # Regression guard for the pre-CR-15 default: an unattributed call (the
-    # ntfy feedback router, which has no operator identity) still records the
-    # decision agent rather than inventing an operator.
+    # And there is no way to reach this code path unattributed: `actor` is a
+    # required keyword argument, so no call site can produce an anonymous
+    # answer to a human decision.
     other = decisions.open_decision(sample_project, "And this?", "resume")
-    decision_chat.advance_chat(sample_project, "demo", other, "yes")
-    resolved2 = [e for e in storage.iter_events("demo")
-                 if e.type is EventType.DECISION_RESOLVED and e.decision_id == other]
-    assert len(resolved2) == 1
-    assert resolved2[0].actor.kind is ActorKind.FRONTIER_SESSION
+    with pytest.raises(TypeError):
+        decision_chat.advance_chat(sample_project, "demo", other, "yes")
+    assert not [e for e in storage.iter_events("demo")
+                if e.type is EventType.DECISION_RESOLVED and e.decision_id == other]
 
 
 def test_log_level_flip_audits_the_operator_without_touching_project_history(served):
@@ -528,6 +559,152 @@ def test_rotation_is_atomic_and_leaves_a_0600_store_without_the_old_value():
     # No temp file survives a successful rotation.
     assert [p.name for p in store.path.parent.iterdir()
             if p.name.startswith(f".{store.path.name}")] == []
+
+
+def test_rotation_survives_a_directory_that_cannot_be_fsynced(tmp_state):
+    """Honest semantics for the one failure that happens AFTER the swap.
+
+    Once `os.replace` lands, the new credential is what authenticates and the
+    old one is dead. Reporting "rotation failed" for the parent-directory
+    fsync would leave the operator holding a value that no longer works and no
+    copy of the one that does -- so the rotation stands, the returned record
+    is the live one, and only the durability is downgraded to a warning."""
+    store = _store()
+    store.ensure("alice")
+    real_fsync = os.fsync
+
+    def _fail_on_directories(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(22, "Invalid argument")
+        return real_fsync(fd)
+
+    errors: list[tuple[str, dict]] = []
+    real_log = control_auth.log
+
+    class _CapturingLog:
+        def warning(self, msg, **kw):
+            errors.append((msg, dict(kw)))
+
+        def __getattr__(self, name):
+            return getattr(real_log, name)
+
+    original_log = control_auth.log
+    original_fsync = os.fsync
+    try:
+        control_auth.log = _CapturingLog()
+        os.fsync = _fail_on_directories
+        rotated = store.rotate("alice")
+    finally:
+        os.fsync = original_fsync
+        control_auth.log = original_log
+
+    # The rotation HAPPENED: the returned value is the one on disk and the one
+    # that now authenticates.
+    assert store.load().credential == rotated.credential
+    assert rotated.generation == 2
+    assert any("durable" in msg for msg, _kw in errors), errors
+
+
+def test_a_store_that_grows_under_the_read_is_refused_not_parsed_as_a_prefix(
+        tmp_state):
+    """The size fstat decides how many bytes are consumed, so an append
+    between the stat and the read would leave a valid PREFIX parsed and the
+    rest silently ignored -- a store whose real content nobody validated. The
+    growth is injected at the syscall seam: deterministic, no threads."""
+    store = _store()
+    legitimate = store.ensure("alice")
+    real_fstat = os.fstat
+    grown: list[int] = []
+
+    def _grow_after_first_stat(fd):
+        info = real_fstat(fd)
+        if stat.S_ISREG(info.st_mode) and not grown:
+            grown.append(fd)
+            with open(store.path, "ab") as stream:
+                stream.write(b'{"appended":"by someone else"}\n')
+        return info
+
+    original_fstat = os.fstat
+    try:
+        os.fstat = _grow_after_first_stat
+        with pytest.raises(control_auth.CredentialStoreError):
+            store.load()
+    finally:
+        os.fstat = original_fstat
+
+    assert grown, "the append was never injected -- load did not fstat the store"
+    # ...and the loader never returned the prefix it could have parsed.
+    assert legitimate.credential.encode() in store.path.read_bytes()
+
+
+def test_an_io_fault_reading_the_store_fails_closed(tmp_state):
+    """A read that faults mid-way is a store that cannot be trusted, not a
+    reason to authenticate against whatever came back."""
+    store = _store()
+    store.ensure("alice")
+    original_read = os.read
+
+    def _eio(fd, size):
+        raise OSError(5, "Input/output error")
+
+    try:
+        os.read = _eio
+        with pytest.raises(control_auth.CredentialStoreError):
+            store.load()
+    finally:
+        os.read = original_read
+
+
+def test_hard_linked_store_is_refused(tmp_state):
+    """A second name for the credential inode is a second, differently-
+    permissioned door to the secret -- and `rotate`'s os.replace never makes
+    one, so its presence means somebody else did."""
+    store = _store()
+    store.ensure("alice")
+    os.link(store.path, store.path.with_name("second-name.json"))
+
+    with pytest.raises(control_auth.CredentialStoreError):
+        store.load()
+
+
+def test_load_validates_and_reads_one_file_description(tmp_state):
+    """The TOCTOU claim in the module docstring, exercised rather than read.
+
+    A writer of the state directory replaces the store the instant after the
+    loader opens it. A path-based `lstat`-then-read would validate the honest
+    file and then read the attacker's; validating with `fstat` on the SAME
+    descriptor cannot, so the legitimate credential comes back. The race is
+    SIMULATED at the syscall seam -- no threads, no timing, deterministic."""
+    store = _store()
+    legitimate = store.ensure("alice")
+
+    attacker = store.path.with_name("attacker.json")
+    attacker.write_text(json.dumps({
+        "schema_version": control_auth.SCHEMA_VERSION,
+        "operator_id": "mallory", "credential": "m" * 43, "generation": 99,
+    }), encoding="utf-8")
+    attacker.chmod(0o600)
+
+    real_open = os.open
+    swapped: list[str] = []
+
+    def _swap_after_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if str(path) == str(store.path) and not swapped:
+            swapped.append(str(path))
+            os.replace(attacker, store.path)     # the attacker wins the race
+        return fd
+
+    original_open = os.open
+    try:
+        os.open = _swap_after_open
+        record = store.load()
+    finally:
+        os.open = original_open
+
+    assert swapped, "the race was never simulated -- load did not open the store"
+    assert record.credential == legitimate.credential
+    assert record.operator_id == "alice"
 
 
 def test_rotation_can_rename_the_operator(tmp_state):
@@ -776,18 +953,7 @@ def test_refusal_survives_an_unwritable_audit_ledger(served, sample_project, mon
 
     monkeypatch.setattr(storage, "append_event", _boom)
 
-    errors: list[tuple[str, dict]] = []
-    real_log = daemon.log
-
-    class _CapturingLog:
-        def error(self, msg, **kw):
-            errors.append((msg, dict(kw)))
-            return real_log.error(msg, **kw)
-
-        def __getattr__(self, name):
-            return getattr(real_log, name)
-
-    monkeypatch.setattr(daemon, "log", _CapturingLog())
+    errors = _capture_errors(monkeypatch)
     snapshot = _Snapshot(sample_project)
 
     status, raw = _post_raw(served, "/api/config/pause",
@@ -797,6 +963,49 @@ def test_refusal_survives_an_unwritable_audit_ledger(served, sample_project, mon
     assert (status, raw) == (401, UNAUTHENTICATED_BODY)
     snapshot.assert_unchanged("a mutation slipped through while auditing failed")
     assert any("could not be audited" in msg for msg, _kw in errors), errors
+
+
+def test_an_unauditable_decision_reply_is_refused_before_the_turn_runs(
+        served, sample_project, monkeypatch):
+    """The other half of "audit failure must not silently permit a mutation".
+
+    A refusal that cannot be audited is still a refusal (above). A SUCCESS
+    that cannot be audited is a mutation with no record of who made it -- so
+    on this endpoint the record is written first and an unwritable ledger
+    refuses the turn outright, rather than answering a human decision
+    anonymously."""
+    from nyxloom import decision_chat
+
+    decision_id = decisions.open_decision(sample_project, "Ship it?", "resume")
+    monkeypatch.setattr(decision_chat, "advance_chat",
+                        lambda *a, **kw: pytest.fail("the turn ran unaudited"))
+    monkeypatch.setattr(storage, "append_event",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+
+    status, raw = _post(served, "/api/decision/reply",
+                        {"decision_id": decision_id, "text": "option b"})
+
+    assert status == 503
+    assert json.loads(raw)["error"] == "mutation audit unavailable"
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/intake", {"project": "demo", "text": "add a dark mode toggle"}),
+    ("/api/finding/promote",
+     {"project": "demo", "finding_id": "fnd-000000000001"}),
+])
+def test_an_unauditable_mutation_is_never_reported_as_success(
+        served, sample_project, monkeypatch, path, body):
+    """Endpoints whose audit record names an id minted DURING the operation
+    cannot audit first. They must still never answer 200 for a mutation whose
+    operator was not recorded -- the caller has to learn that the trail is
+    broken."""
+    monkeypatch.setattr(storage, "append_event",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+
+    status, _raw = _post(served, path, body)
+
+    assert status != 200, f"{path} reported success for an unaudited mutation"
 
 
 def test_cross_site_refusal_survives_an_unwritable_audit_ledger(
@@ -902,6 +1111,215 @@ def test_unknown_post_path_is_404_before_authentication_and_is_not_audited(serve
     status, _raw = _post_raw(served, "/api/config/nope", {}, _json_headers())
     assert status == 404
     assert not _refusals()
+
+
+# ==========================================================================
+# Request framing: a refusal decided before the body is read must not leave
+# that body on the socket for the next request line to be parsed out of.
+# ==========================================================================
+
+def _raw_exchange(port: int, request: bytes) -> bytes:
+    """Send raw bytes, read until the peer closes or stops sending.
+
+    Deliberately below http.client: these oracles are about what is on the
+    WIRE (how many responses, whether the connection was dropped), which a
+    client library normalizes away. The timeout is a generous failsafe against
+    hanging the suite, never a measured budget -- the server either closes the
+    connection or it does not, and both outcomes are reached immediately."""
+    sock = socket.create_connection(("127.0.0.1", port), timeout=60)
+    try:
+        sock.sendall(request)
+        chunks = []
+        # A server that neither answers nor closes raises socket.timeout out of
+        # recv after 60s and fails the test with that as its message -- the
+        # failsafe is the socket's own timeout, so there is no branch here to
+        # exclude from coverage.
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        sock.close()
+
+
+def _smuggled_pause(credential: str) -> bytes:
+    """A complete, VALID pause request -- as a request body."""
+    body = b'{"project":"demo","mode":"drain-agents"}'
+    return (b"POST /api/config/pause HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Authorization: Bearer " + credential.encode("utf-8") + b"\r\n"
+            b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+            b"\r\n" + body)
+
+
+@pytest.mark.parametrize("first_line,extra_headers,why", [
+    (b"POST /api/config/nope HTTP/1.1", b"", "unknown path (404, before auth)"),
+    (b"POST /api/config/pause HTTP/1.1", b"Origin: http://evil.example\r\n",
+     "cross-site refusal (403, before auth)"),
+])
+def test_a_refusal_before_the_body_does_not_smuggle_the_next_request(
+        served, sample_project, first_line, extra_headers, why):
+    """The framing hazard behind "refuse before reading the body".
+
+    On an HTTP/1.1 keep-alive connection the unread body stays queued, so the
+    server's next read parses it as a fresh request line -- letting an
+    attacker hide a fully authenticated mutation inside a request that was
+    refused. The oracle is the wire: exactly ONE response, the connection
+    dropped, and the smuggled pause never executed."""
+    credential = _store().load().credential
+    smuggled = _smuggled_pause(credential)
+    request = (first_line + b"\r\nHost: 127.0.0.1\r\n"
+               b"Content-Type: application/json\r\n" + extra_headers +
+               b"Content-Length: " + str(len(smuggled)).encode("ascii") +
+               b"\r\n\r\n" + smuggled)
+
+    wire = _raw_exchange(served.http_port, request)
+
+    assert wire.count(b"HTTP/1.1 ") == 1, f"{why}: smuggled request was answered"
+    assert b"connection: close" in wire.lower(), why
+    assert not paths.pause_flag("demo").exists(), f"{why}: smuggled pause ran"
+
+
+@pytest.mark.parametrize("framing,why", [
+    (b"Content-Length: 40\r\nContent-Length: 5\r\n", "two Content-Length headers"),
+    (b"Transfer-Encoding: chunked\r\n", "chunked body http.server cannot de-chunk"),
+    (b"Transfer-Encoding:\r\nContent-Length: 40\r\n",
+     "Transfer-Encoding present but empty -- `.get` reports it falsy"),
+    (b"Content-Length: +40\r\n", "sign-prefixed length int() would accept"),
+    (b"Content-Length: 4_0\r\n", "underscore-separated length int() would accept"),
+    # Leading OWS is not part of a field value and the header parser has
+    # already removed it before `_declared_body_length` sees anything; trailing
+    # OWS survives, so that is the case worth pinning.
+    (b"Content-Length: 40 \r\n", "trailing whitespace around the length"),
+    (b"Content-Length: 40\t\r\n", "tab-padded length"),
+])
+def test_ambiguously_framed_bodies_are_refused_and_the_connection_dropped(
+        served, sample_project, framing, why):
+    """A body length IS the message framing. `int()` accepts "+40" and "4_0";
+    HTTP does not, and `.get` would silently take the first of two
+    Content-Lengths -- the classic desync. All of them are refused, the
+    connection is dropped rather than left mid-message, and nothing mutates."""
+    snapshot = _Snapshot(sample_project)
+    body = b'{"project":"demo","mode":"drain-agents"}'
+    credential = _store().load().credential
+    request = (b"POST /api/config/pause HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+               b"Content-Type: application/json\r\n"
+               b"Authorization: Bearer " + credential.encode("utf-8") + b"\r\n" +
+               framing + b"\r\n" + body)
+
+    wire = _raw_exchange(served.http_port, request)
+
+    assert wire.startswith(b"HTTP/1.1 400 "), why
+    assert b"ambiguous request framing" in wire, why
+    assert wire.count(b"HTTP/1.1 ") == 1, why
+    assert b"connection: close" in wire.lower(), why
+    snapshot.assert_unchanged(why)
+
+
+def test_a_sign_prefixed_length_cannot_smuggle_a_body_past_the_cap(
+        served, sample_project):
+    """The cap and the read must agree on ONE parse of Content-Length. When
+    the cap check used `str.isdigit` and the read used `int`, "+1048577" fell
+    between them: over the cap, but read anyway."""
+    snapshot = _Snapshot(sample_project)
+    credential = _store().load().credential
+    request = (b"POST /api/config/pause HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+               b"Content-Type: application/json\r\n"
+               b"Authorization: Bearer " + credential.encode("utf-8") + b"\r\n"
+               b"Content-Length: +" + str((1 << 20) + 1).encode("ascii") + b"\r\n"
+               b"\r\n" + b'{"project":"demo","mode":"drain-agents"}')
+
+    wire = _raw_exchange(served.http_port, request)
+
+    assert wire.startswith(b"HTTP/1.1 400 ")
+    assert b"ambiguous request framing" in wire
+    snapshot.assert_unchanged("an unframeable oversized body mutated state")
+
+
+# ==========================================================================
+# Structural census: the auth boundary cannot be routed around
+# ==========================================================================
+
+def _daemon_ast() -> ast.Module:
+    return ast.parse(Path(daemon.__file__).read_text(encoding="utf-8"))
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    return next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def _calls(fn: ast.FunctionDef) -> list[tuple[int, str, ast.Call]]:
+    return [(node.lineno, ast.unparse(node.func), node)
+            for node in ast.walk(fn) if isinstance(node, ast.Call)]
+
+
+def test_mutation_route_census_equals_the_production_dispatch():
+    """The census the oracles in this file rest on, read from daemon.py itself.
+
+    `_CONFIG_POST_PATHS` is the authentication surface; the `if path == ...`
+    chain is the dispatch. If they disagree, one of two unguarded shapes has
+    shipped: a dispatch branch for a path the table does not authenticate, or
+    a tabled path with no handler. Either fails here, naming the path."""
+    dispatch = _function(_daemon_ast(), "_handle_post")
+    routed = {
+        node.comparators[0].value
+        for node in ast.walk(dispatch)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name) and node.left.id == "path"
+        and isinstance(node.ops[0], ast.Eq)
+        and isinstance(node.comparators[0], ast.Constant)
+    }
+    assert routed == set(daemon._CONFIG_POST_PATHS)
+    assert routed == {path for path, _body in MUTATIONS}
+
+
+def test_every_mutating_route_crosses_the_auth_boundary_before_body_or_target():
+    """The ORDER, asserted structurally rather than only per-endpoint.
+
+    Authentication must happen exactly once, before the body is read and
+    before any handler (which is where a project/decision/intake/finding id is
+    resolved) runs -- and every handler must receive the authenticated actor,
+    so none can invent its own. A future route added below the body read, or
+    dispatched without `actor`, fails here even if it is in the table."""
+    dispatch = _function(_daemon_ast(), "_handle_post")
+    calls = _calls(dispatch)
+
+    auth = [line for line, name, _ in calls
+            if name.endswith("_authenticate_control_mutation")]
+    body = [line for line, name, _ in calls if name.endswith("_read_json_body")]
+    handlers = [(line, name, node) for line, name, node in calls
+                if "._post_" in name]
+
+    assert len(auth) == 1, "authentication must have exactly one call site"
+    assert body and min(body) > auth[0], "the body is read before authentication"
+    assert handlers, "no route handlers found -- the census would be vacuous"
+    assert min(line for line, _n, _c in handlers) > auth[0]
+    assert len(handlers) == len(daemon._CONFIG_POST_PATHS)
+    for _line, name, node in handlers:
+        supplied = ({a.id for a in node.args if isinstance(a, ast.Name)} |
+                    {kw.arg for kw in node.keywords})
+        assert "actor" in supplied, f"{name} is dispatched without the operator"
+
+
+def test_do_post_has_no_second_entry_point_and_reads_stay_read_only():
+    """Two structural negatives that keep the boundary the ONLY way in:
+    `do_POST` delegates to `_handle_post` and to nothing else on the daemon,
+    and the GET surface -- which is deliberately unauthenticated -- appends no
+    events and calls no mutating handler."""
+    tree = _daemon_ast()
+    do_post = _function(tree, "do_POST")
+    delegated = {name for _line, name, _node in _calls(do_post)
+                 if name.startswith("daemon.")}
+    assert delegated == {"daemon._handle_post"}
+
+    handle_get = _function(tree, "_handle_get")
+    for _line, name, _node in _calls(handle_get):
+        assert "._post_" not in name, name
+        assert not name.endswith(("_append_ui_event", "storage.append_event",
+                                  "storage.append_and_apply")), name
 
 
 def test_a_tabled_path_without_a_handler_authenticates_then_fails_loudly(
@@ -1022,12 +1440,69 @@ def test_ensure_is_idempotent_and_creates_a_0600_regular_file(tmp_state):
 
 
 def test_credential_has_real_entropy_and_is_not_reused(tmp_state):
+    """256 bits, freshly drawn each time -- the package's stated reason for
+    having no rate limit. Asserted on the DECODED byte count, because a
+    urlsafe-base64 length check on its own would pass a 24-byte token: 32
+    characters is not 32 bytes of entropy."""
+    import base64
+
     store = _store()
     seen = {store.ensure().credential}
     for _ in range(5):
         seen.add(store.rotate().credential)
     assert len(seen) == 6
-    assert all(len(c) >= 32 for c in seen)
+    for credential in seen:
+        padded = credential + "=" * (-len(credential) % 4)
+        assert len(base64.urlsafe_b64decode(padded)) >= 32, credential
+
+
+def test_rotation_is_atomic_under_a_concurrent_reader(tmp_state):
+    """The atomicity claim on `os.replace`, exercised against a real reader.
+
+    A reader racing a rotation must see the whole OLD record or the whole NEW
+    one -- never a partial file, and never a refusal caused merely by the swap
+    being in progress. Both threads run a fixed number of iterations and are
+    joined; nothing here waits on a clock or asserts on how far either got, so
+    a slower machine changes the interleaving, never the verdict."""
+    store = _store()
+    store.ensure("alice")
+    rounds = 40
+    failures: list[str] = []
+    generations: list[int] = []
+    reader_done = threading.Event()
+
+    def _rotate() -> None:
+        # No except clause: a rotation that raises kills this thread, the
+        # `finally` still releases the reader, and the generation assertion at
+        # the end fails with the store's real state. Catching it here would
+        # only add an unreachable branch.
+        try:
+            for _ in range(rounds):
+                store.rotate("alice")
+        finally:
+            reader_done.set()
+
+    def _read() -> None:
+        try:
+            while not reader_done.is_set():
+                record = store.load()
+                generations.append(record.generation)
+                if record.operator_id != "alice" or len(record.credential) < 32:
+                    failures.append(f"torn record: {record!r}")
+        except Exception as exc:
+            failures.append(f"load raised {exc!r} during a rotation")
+
+    writer = threading.Thread(target=_rotate)
+    reader = threading.Thread(target=_read)
+    writer.start()
+    reader.start()
+    writer.join(timeout=60)
+    reader.join(timeout=60)
+
+    assert not writer.is_alive() and not reader.is_alive()
+    assert failures == []
+    assert generations, "the reader never observed the store"
+    assert store.load().generation == rounds + 1
 
 
 @pytest.mark.parametrize("bad", [

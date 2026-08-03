@@ -71,6 +71,12 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               recovers a store the loader refuses (mode,
                               owner, corruption) and restarts generation at 1.
                               Audit trail: nyxloom events _nyxloom-control
+                              NB: this credential governs the HTTP control
+                              plane only. The ntfy feedback topic is a
+                              separate ingress with no verifiable sender, so
+                              its mutating verbs are refused unless the
+                              deployment sets NYXLOOM_CHANNEL_OPERATOR_ID --
+                              see control_auth.channel_operator.
   tick [--project X]          daemon.run_once — one pass, prints action
                               count. THE debug/fallback mode.
   decide <project> <D-id> --choose TEXT [--note TEXT]

@@ -15,15 +15,35 @@ cfg.notify.cmd_topic (never a decision_topic field, which does not exist).
 
 from __future__ import annotations
 
+import json
 import logging
 import textwrap
 
 import pytest
 import structlog.contextvars
 
-from nyxloom import adapters, decision_chat, decisions, log, notify, paths, storage
+from nyxloom import (
+    adapters, commands, control_auth, decision_chat, decisions, log, notify, paths,
+    storage,
+)
 from nyxloom.config import load_registry
-from nyxloom.types import EventType
+from nyxloom.types import Actor, ActorKind, EventType
+
+# CR-15: `advance_chat` now REQUIRES the authenticated identity that drove the
+# turn -- there is no unattributed answer to a human decision. These direct
+# unit calls stand in for the HTTP endpoint's authenticated operator.
+TEST_OPERATOR = Actor(ActorKind.OPERATOR, "test-operator")
+CHANNEL_OPERATOR = "phone-operator"
+
+
+@pytest.fixture()
+def channel_operator(monkeypatch) -> str:
+    """Name the operator the ntfy feedback topic is bound to (CR-15).
+
+    Without it the channel's mutating routes are CLOSED. monkeypatch owns the
+    variable so the process env is restored at teardown."""
+    monkeypatch.setenv(control_auth.CHANNEL_OPERATOR_ENV, CHANNEL_OPERATOR)
+    return CHANNEL_OPERATOR
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +154,8 @@ def test_first_reply_launches_agent_and_captures_session(sample_project, tmp_pat
     monkeypatch.setattr(adapters, "build_dispatch", fake_build_dispatch)
     monkeypatch.setattr(adapters, "build_resume", fake_build_resume)
 
-    reply = decision_chat.advance_chat(cfg, "demo", "D-001", "please discuss")
+    reply = decision_chat.advance_chat(cfg, "demo", "D-001", "please discuss",
+                                      actor=TEST_OPERATOR)
 
     assert len(calls["build_dispatch"]) == 1
     assert calls["build_dispatch"][0]["route"] == "decision-agent-route"
@@ -197,7 +218,8 @@ def test_second_reply_resumes_session_and_finalizes_decision(sample_project, tmp
     monkeypatch.setattr(adapters, "build_dispatch", fake_build_dispatch)
     monkeypatch.setattr(adapters, "build_resume", fake_build_resume)
 
-    reply = decision_chat.advance_chat(cfg, "demo", "D-001", "let's go with option b")
+    reply = decision_chat.advance_chat(cfg, "demo", "D-001", "let's go with option b",
+                                      actor=TEST_OPERATOR)
 
     # RESUMED, not relaunched.
     assert len(calls["build_dispatch"]) == 0
@@ -229,7 +251,8 @@ def test_no_review_route_configured_degrades_to_typed_reply(sample_project, monk
 
     monkeypatch.setattr(adapters, "build_dispatch", boom)
 
-    reply = decision_chat.advance_chat(cfg, "demo", "D-005", "hello")
+    reply = decision_chat.advance_chat(cfg, "demo", "D-005", "hello",
+                                      actor=TEST_OPERATOR)
     assert "frontier-review" in reply
     chat = decision_chat.load_chat("demo", "D-005")
     assert chat is not None
@@ -255,7 +278,8 @@ def test_reply_redacted_before_posting_and_storing(sample_project, tmp_path, mon
 
     monkeypatch.setattr(adapters, "build_dispatch", lambda route, **kw: ([str(script)], "prompt"))
 
-    reply = decision_chat.advance_chat(cfg, "demo", "D-070", "any secrets?")
+    reply = decision_chat.advance_chat(cfg, "demo", "D-070", "any secrets?",
+                                      actor=TEST_OPERATOR)
 
     assert secret not in reply
     assert "[REDACTED]" in reply
@@ -279,15 +303,16 @@ def test_loop_guard_ignores_own_tag_and_reply_tag(sample_project, monkeypatch):
     assert calls == []
 
 
-def test_wrap_command_handler_routes_decision_prefix_and_falls_through(sample_project, monkeypatch):
+def test_wrap_command_handler_routes_decision_prefix_and_falls_through(
+        sample_project, monkeypatch, channel_operator):
     cfg = sample_project
     _write_inbox(cfg.root, "D-010", "OPEN")
     registry = load_registry()
 
     calls = []
     monkeypatch.setattr(decision_chat, "advance_chat",
-                         lambda cfg_, project, decision_id, text, actor=None:
-                         calls.append((project, decision_id, text)))
+                         lambda cfg_, project, decision_id, text, *, actor:
+                         calls.append((project, decision_id, text, actor)))
 
     base_calls = []
 
@@ -300,7 +325,9 @@ def test_wrap_command_handler_routes_decision_prefix_and_falls_through(sample_pr
     # Decision-shaped -> handled here, base handler never runs.
     result = wrapped("D-010: let's talk", [])
     assert result is None
-    assert calls == [("demo", "D-010", "let's talk")]
+    # CR-15: the named channel operator, not the transport name "feedback-chat".
+    assert calls == [("demo", "D-010", "let's talk",
+                      Actor(ActorKind.OPERATOR, channel_operator))]
     assert base_calls == []
 
     # A verb command -> falls through untouched.
@@ -316,7 +343,8 @@ def test_wrap_command_handler_routes_decision_prefix_and_falls_through(sample_pr
     assert calls == []
 
 
-def test_decide_command_finalizes_via_feedback_channel(sample_project, monkeypatch):
+def test_decide_command_finalizes_via_feedback_channel(sample_project, monkeypatch,
+                                                        channel_operator):
     cfg = sample_project
     _write_inbox(cfg.root, "D-020", "OPEN")
     registry = load_registry()
@@ -331,18 +359,27 @@ def test_decide_command_finalizes_via_feedback_channel(sample_project, monkeypat
     assert d.status == "DECIDED"
 
     events = list(storage.iter_events("demo"))
-    assert any(e.type is EventType.DECISION_RESOLVED and e.decision_id == "D-020" for e in events)
+    resolved = [e for e in events
+                if e.type is EventType.DECISION_RESOLVED and e.decision_id == "D-020"]
+    assert len(resolved) == 1
+    # CR-15: "who answered this decision" resolves to the named operator.
+    assert resolved[0].actor == Actor(ActorKind.OPERATOR, channel_operator)
+    # ...and the human-readable inbox records the same authority, so the two
+    # durable answers to "who decided this" cannot drift apart.
+    inbox = (cfg.root / cfg.decisions_inbox).read_text(encoding="utf-8")
+    assert f"**Decision ({channel_operator}," in inbox
 
 
-def test_bare_text_routes_only_when_exactly_one_chat_active(sample_project, monkeypatch):
+def test_bare_text_routes_only_when_exactly_one_chat_active(sample_project, monkeypatch,
+                                                             channel_operator):
     cfg = sample_project
     _write_inbox(cfg.root, "D-030", "OPEN")
     registry = load_registry()
 
     calls = []
     monkeypatch.setattr(decision_chat, "advance_chat",
-                         lambda cfg_, project, decision_id, text, actor=None:
-                         calls.append((project, decision_id, text)))
+                         lambda cfg_, project, decision_id, text, *, actor:
+                         calls.append((project, decision_id, text, actor)))
 
     def base_handler(text, tags):
         return "base-reply"
@@ -359,7 +396,109 @@ def test_bare_text_routes_only_when_exactly_one_chat_active(sample_project, monk
 
     result = wrapped("go ahead with it", [])
     assert result is None
-    assert calls == [("demo", "D-030", "go ahead with it")]
+    assert calls == [("demo", "D-030", "go ahead with it",
+                      Actor(ActorKind.OPERATOR, channel_operator))]
+
+
+# ==========================================================================
+# CR-15 (RISK-005): the feedback channel answers HUMAN DECISIONS, and it
+# carries no verified sender identity. Closed by default.
+# ==========================================================================
+
+def _control_refusals() -> list:
+    return [e for e in storage.iter_events(control_auth.CONTROL_LEDGER_PROJECT)
+            if e.type is EventType.CONTROL_MUTATION_REFUSED]
+
+
+@pytest.mark.parametrize("message,ingress", [
+    ("decide D-040 option-a", "ntfy:decide"),
+    ("D-040: let's talk", "ntfy:decision-chat"),
+])
+def test_channel_decision_routes_are_closed_and_audited_by_default(
+        tmp_state, sample_project, monkeypatch, message, ingress):
+    """Anything that can publish to this topic could otherwise supply the
+    human's answer -- the exact exposure RISK-005 names. Without a named
+    channel operator: the decision stays OPEN, no event is appended, no agent
+    turn is launched, the reply is the fixed refusal, and one refusal is
+    audited."""
+    cfg = sample_project
+    _write_inbox(cfg.root, "D-040", "OPEN")
+    registry = load_registry()
+    monkeypatch.setattr(decision_chat, "advance_chat",
+                        lambda *a, **kw: pytest.fail("a closed channel ran a turn"))
+
+    result = decision_chat.handle_feedback_message(registry, message, [])
+
+    assert result == commands.CHANNEL_CLOSED_REPLY
+    parsed = decisions.parse_inbox(
+        (cfg.root / cfg.decisions_inbox).read_text(encoding="utf-8"))
+    assert next(x for x in parsed if x.id == "D-040").status == "OPEN"
+    assert list(storage.iter_events("demo")) == []
+
+    refusals = _control_refusals()
+    assert len(refusals) == 1
+    assert refusals[0].payload == {"path": ingress,
+                                   "reason": "no-named-channel-operator"}
+    assert refusals[0].actor.id == control_auth.UNAUTHENTICATED_ACTOR_ID
+
+
+def test_refused_channel_decision_cannot_distinguish_a_real_id_from_a_fake(
+        tmp_state, sample_project):
+    """The refusal precedes `find_project_for_decision`, so the channel is not
+    an oracle for which decisions are open -- the same property the HTTP 401
+    has, proved the same way: identical replies AND identical audit records."""
+    cfg = sample_project
+    _write_inbox(cfg.root, "D-050", "OPEN")
+    registry = load_registry()
+
+    real = decision_chat.handle_feedback_message(registry, "decide D-050 yes", [])
+    fake = decision_chat.handle_feedback_message(registry, "decide D-999 yes", [])
+
+    assert real == fake == commands.CHANNEL_CLOSED_REPLY
+    payloads = [e.payload for e in _control_refusals()]
+    assert payloads == [{"path": "ntfy:decide",
+                         "reason": "no-named-channel-operator"}] * 2
+    ledger_text = json.dumps(
+        [e.to_dict() for e in
+         storage.iter_events(control_auth.CONTROL_LEDGER_PROJECT)])
+    assert "D-050" not in ledger_text
+    assert "D-999" not in ledger_text
+
+
+def test_closed_channel_bare_text_falls_through_without_a_state_lookup(
+        tmp_state, sample_project, monkeypatch):
+    """Bare text can only mutate via the sole-active-chat lookup, so a closed
+    channel must not perform that lookup at all: it falls through to the verb
+    dispatch, and audits nothing (an ordinary chat line is not evidence that
+    anyone attempted a mutation)."""
+    _write_inbox(sample_project.root, "D-060", "OPEN")
+    registry = load_registry()
+    decision_chat.save_chat(decision_chat.DecisionChat(
+        decision_id="D-060", project="demo", session_id="sess-x"))
+    monkeypatch.setattr(decision_chat, "_find_sole_active_chat",
+                        lambda reg: pytest.fail("closed channel looked up state"))
+    monkeypatch.setattr(decision_chat, "advance_chat",
+                        lambda *a, **kw: pytest.fail("a closed channel ran a turn"))
+
+    result = decision_chat.handle_feedback_message(registry, "go ahead with it", [])
+
+    assert result is decision_chat._NOT_HANDLED
+    assert not _control_refusals()
+
+
+def test_an_unusable_channel_identity_keeps_the_decision_route_closed(
+        tmp_state, sample_project, monkeypatch):
+    """An unusable value must not degrade to a default identity: that would
+    reopen the ingress and attribute a human decision to a name nobody chose."""
+    monkeypatch.setenv(control_auth.CHANNEL_OPERATOR_ENV, "not a valid id")
+    _write_inbox(sample_project.root, "D-070", "OPEN")
+    registry = load_registry()
+
+    assert decision_chat.handle_feedback_message(
+        registry, "decide D-070 option-a", []) == commands.CHANNEL_CLOSED_REPLY
+    parsed = decisions.parse_inbox(
+        (sample_project.root / sample_project.decisions_inbox).read_text(encoding="utf-8"))
+    assert next(x for x in parsed if x.id == "D-070").status == "OPEN"
 
 
 # ==========================================================================

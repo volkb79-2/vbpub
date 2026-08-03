@@ -3284,10 +3284,23 @@ def test_nonloopback_bind_warns_about_the_open_read_surface(
     # through a deterministic in-process seam, not a race-prone shared resource).
     emitted: list[tuple[str, dict]] = []
     _real_log = daemon.log
+    # CR-15 review: the capture SETS this the instant the notice is emitted, so
+    # the test blocks on a real synchronization point instead of polling a
+    # wall-clock deadline. The previous `deadline = monotonic() + 5` loop made
+    # a slow or loaded host decide the verdict -- exactly the L20 anti-pattern
+    # STANDING.md forbids. The wait's timeout is a generous hang failsafe: the
+    # assertion below is on the captured record, not on how long it took.
+    notice_seen = threading.Event()
+
+    def _bind_notices() -> list[tuple[str, dict]]:
+        return [(m, kw) for m, kw in emitted
+                if kw.get("http_bind") == "0.0.0.0" and "non-loopback" in m]
 
     class _CapturingLog:
         def warning(self, msg, **kw):
             emitted.append((msg, dict(kw)))
+            if _bind_notices():
+                notice_seen.set()
             return _real_log.warning(msg, **kw)
 
         def __getattr__(self, name):
@@ -3299,18 +3312,12 @@ def test_nonloopback_bind_warns_about_the_open_read_surface(
     t = threading.Thread(target=d.run, daemon=True)
     t.start()
 
-    def _bind_notices() -> list[tuple[str, dict]]:
-        return [(m, kw) for m, kw in emitted
-                if kw.get("http_bind") == "0.0.0.0" and "non-loopback" in m]
-
     def _notice_emitted() -> bool:
         return bool(_bind_notices())
 
-    deadline = time.monotonic() + 5
-    while not _notice_emitted() and time.monotonic() < deadline:
-        time.sleep(0.02)
+    notice_seen.wait(timeout=60)
     d.stop()
-    t.join(timeout=5)
+    t.join(timeout=60)
     assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
     assert _notice_emitted(), (

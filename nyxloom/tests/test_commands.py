@@ -8,14 +8,39 @@ import subprocess
 import threading
 from pathlib import Path
 
-from nyxloom import paths, storage
+import pytest
+
+from nyxloom import control_auth, paths, storage
 from nyxloom.commands import (
-    CommandListener, HELP_TEXT, REPLY_TAG, UNKNOWN_REPLY,
+    CHANNEL_CLOSED_REPLY, CommandListener, HELP_TEXT, REPLY_TAG, UNKNOWN_REPLY,
 )
 from nyxloom.config import load_registry, register_project
 from nyxloom.types import (
     Actor, ActorKind, EventType, TaskState, TaskStateFile, utc_now,
 )
+
+
+# --------------------------------------------------------------------------
+# local fixtures / helpers (never added to conftest.py)
+
+CHANNEL_OPERATOR = "phone-operator"
+
+
+@pytest.fixture()
+def channel_operator(monkeypatch) -> str:
+    """CR-15: name the operator this ntfy topic's write ACL belongs to.
+
+    Without it the mutating verbs are CLOSED, which is the default every test
+    that does NOT request this fixture exercises. monkeypatch owns the
+    variable, so the process env is restored at teardown and a sibling test on
+    the same xdist worker cannot inherit an open channel."""
+    monkeypatch.setenv(control_auth.CHANNEL_OPERATOR_ENV, CHANNEL_OPERATOR)
+    return CHANNEL_OPERATOR
+
+
+def _control_refusals() -> list:
+    return [e for e in storage.iter_events(control_auth.CONTROL_LEDGER_PROJECT)
+            if e.type is EventType.CONTROL_MUTATION_REFUSED]
 
 
 # =========================================================================
@@ -44,7 +69,8 @@ def test_shell_metacharacters_rejected_by_strict_regex(sample_project):
 # Oracle 2: pause / resume -- CLI-equivalent flag + event semantics
 # =========================================================================
 
-def test_resume_clears_flag_and_appends_cleared_event(tmp_state, sample_project):
+def test_resume_clears_flag_and_appends_cleared_event(tmp_state, sample_project,
+                                                      channel_operator):
     flag = paths.pause_flag("demo")
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.touch()
@@ -58,11 +84,14 @@ def test_resume_clears_flag_and_appends_cleared_event(tmp_state, sample_project)
     events = list(storage.iter_events("demo"))
     cleared = [e for e in events if e.type is EventType.PAUSE_CLEARED]
     assert len(cleared) == 1
-    assert cleared[0].actor.id == "ntfy-cmd"
+    # CR-15: the NAMED operator this channel is bound to, not the transport
+    # name "ntfy-cmd" -- "who resumed this project" must resolve to a human.
+    assert cleared[0].actor.id == channel_operator
     assert cleared[0].actor.kind is ActorKind.OPERATOR
 
 
-def test_pause_sets_flag_and_appends_set_event(tmp_state, sample_project):
+def test_pause_sets_flag_and_appends_set_event(tmp_state, sample_project,
+                                                channel_operator):
     flag = paths.pause_flag("demo")
     assert not flag.exists()
 
@@ -77,9 +106,126 @@ def test_pause_sets_flag_and_appends_set_event(tmp_state, sample_project):
     events = list(storage.iter_events("demo"))
     set_evs = [e for e in events if e.type is EventType.PAUSE_SET]
     assert len(set_evs) == 1
-    assert set_evs[0].actor.id == "ntfy-cmd"
+    assert set_evs[0].actor.id == channel_operator
     assert set_evs[0].actor.kind is ActorKind.OPERATOR
     assert set_evs[0].payload == {"mode": "drain-handoffs"}
+
+
+# =========================================================================
+# CR-15 (RISK-005): the ntfy channel is a SECOND mutation ingress into the
+# same invariants the HTTP control plane guards, and it carries no verified
+# sender identity. Closed by default; audited when refused.
+# =========================================================================
+
+def test_mutating_verb_census_is_derived_from_the_source_not_restated():
+    """The guard that keeps the oracles below honest.
+
+    Membership in `_MUTATING_VERBS` is what makes a verb authenticated in
+    `handle_message`, so this census reads commands.py itself: every `_cmd_*`
+    handler whose body writes (appends an event or writes the pause flag) must
+    be in the set. A new mutating verb added without joining it -- the exact
+    way an unguarded ingress ships -- fails here, naming the verb."""
+    import ast
+    from nyxloom import commands as commands_mod
+
+    tree = ast.parse(Path(commands_mod.__file__).read_text(encoding="utf-8"))
+    writers: set[str] = set()
+    handlers: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("_cmd_"):
+            continue
+        verb = node.name[len("_cmd_"):]
+        handlers.add(verb)
+        calls = {ast.unparse(child.func) for child in ast.walk(node)
+                 if isinstance(child, ast.Call)}
+        if any(call.endswith(("storage.append_event", "write_text", "unlink"))
+               for call in calls):
+            writers.add(verb)
+
+    assert handlers == {"status", "pause", "resume", "digest"}, handlers
+    assert writers == commands_mod._MUTATING_VERBS, (
+        f"verbs that write state: {sorted(writers)}; verbs the ingress "
+        f"authenticates: {sorted(commands_mod._MUTATING_VERBS)}")
+
+
+@pytest.mark.parametrize("message", ["pause demo", "pause demo agents",
+                                     "resume demo"])
+def test_mutating_verb_is_closed_and_audited_without_a_named_operator(
+        tmp_state, sample_project, message):
+    """No named channel operator -> no state change, a fixed reply, and
+    exactly one audited refusal. The negative of every enabled-path oracle
+    above: with the fixture those same messages mutate."""
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("drain-handoffs", encoding="utf-8")
+    before = [e.to_dict() for e in storage.iter_events("demo")]
+
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message(message, [])
+
+    assert reply == CHANNEL_CLOSED_REPLY
+    assert flag.read_text(encoding="utf-8") == "drain-handoffs"
+    assert [e.to_dict() for e in storage.iter_events("demo")] == before
+
+    refusals = _control_refusals()
+    assert len(refusals) == 1
+    assert refusals[0].payload == {"path": f"ntfy:{message.split()[0]}",
+                                   "reason": "no-named-channel-operator"}
+    assert refusals[0].actor.id == control_auth.UNAUTHENTICATED_ACTOR_ID
+
+
+def test_refused_mutation_cannot_distinguish_a_real_project_from_a_ghost(
+        tmp_state, sample_project):
+    """The refusal precedes the registry lookup, so the channel cannot be
+    used to enumerate projects through a mutating verb -- and the contrast
+    that proves it is not hollow: a READ verb still distinguishes them,
+    because the read surface is deliberately open."""
+    cl = CommandListener(load_registry())
+
+    assert cl.handle_message("pause demo", []) == CHANNEL_CLOSED_REPLY
+    assert cl.handle_message("pause ghost", []) == CHANNEL_CLOSED_REPLY
+    assert [e.payload for e in _control_refusals()] == [
+        {"path": "ntfy:pause", "reason": "no-named-channel-operator"}] * 2
+
+    assert "unknown project" in cl.handle_message("status ghost", [])
+    assert "unknown project" not in cl.handle_message("status demo", [])
+
+
+def test_read_verbs_stay_open_on_a_closed_channel(tmp_state, sample_project):
+    """Reads and mutations are separable here exactly as they are over HTTP:
+    a closed channel still answers help/status/digest, and audits nothing."""
+    cl = CommandListener(load_registry())
+    assert cl.handle_message("help", []) == HELP_TEXT
+    assert "demo:" in cl.handle_message("status demo", [])
+    assert cl.handle_message("digest demo", [])
+    assert not _control_refusals()
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "has space", "-leading-dash",
+                                 control_auth.UNAUTHENTICATED_ACTOR_ID])
+def test_an_unusable_channel_identity_keeps_the_channel_closed(
+        tmp_state, sample_project, monkeypatch, bad):
+    """An unusable value must not degrade to a default identity -- that would
+    silently reopen the ingress under a name nobody chose."""
+    monkeypatch.setenv(control_auth.CHANNEL_OPERATOR_ENV, bad)
+    cl = CommandListener(load_registry())
+
+    assert cl.handle_message("pause demo", []) == CHANNEL_CLOSED_REPLY
+    assert not paths.pause_flag("demo").exists()
+    assert not any(e.type is EventType.PAUSE_SET
+                   for e in storage.iter_events("demo"))
+
+
+def test_a_channel_refusal_survives_an_unwritable_audit_ledger(
+        tmp_state, sample_project, monkeypatch):
+    """An audit outage must not become a way through: the verb is still
+    refused with the same fixed reply and still writes nothing."""
+    monkeypatch.setattr(storage, "append_event",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+    cl = CommandListener(load_registry())
+
+    assert cl.handle_message("pause demo", []) == CHANNEL_CLOSED_REPLY
+    assert not paths.pause_flag("demo").exists()
 
 
 # =========================================================================
@@ -87,7 +233,8 @@ def test_pause_sets_flag_and_appends_set_event(tmp_state, sample_project):
 # "UI/CLI/ntfy verb each set the mode file + event").
 # =========================================================================
 
-def test_pause_agents_mode_sets_flag_content_and_event(tmp_state, sample_project):
+def test_pause_agents_mode_sets_flag_content_and_event(tmp_state, sample_project,
+                                                       channel_operator):
     flag = paths.pause_flag("demo")
     cl = CommandListener(load_registry())
     reply = cl.handle_message("pause demo agents", [])
@@ -99,7 +246,7 @@ def test_pause_agents_mode_sets_flag_content_and_event(tmp_state, sample_project
     assert set_evs[0].payload == {"mode": "drain-agents"}
 
 
-def test_pause_handoffs_mode_explicit(tmp_state, sample_project):
+def test_pause_handoffs_mode_explicit(tmp_state, sample_project, channel_operator):
     flag = paths.pause_flag("demo")
     cl = CommandListener(load_registry())
     reply = cl.handle_message("pause demo handoffs", [])
@@ -110,7 +257,8 @@ def test_pause_handoffs_mode_explicit(tmp_state, sample_project):
     assert set_evs[0].payload == {"mode": "drain-handoffs"}
 
 
-def test_pause_unknown_mode_rejected_no_flag_no_event(tmp_state, sample_project):
+def test_pause_unknown_mode_rejected_no_flag_no_event(tmp_state, sample_project,
+                                                      channel_operator):
     flag = paths.pause_flag("demo")
     assert not flag.exists()
     cl = CommandListener(load_registry())
@@ -153,7 +301,7 @@ def _make_merged_drift(root: Path, task_id: str, branch: str) -> None:
     ))
 
 
-def test_ntfy_resume_verified_clean_resumes(tmp_state, sample_project):
+def test_ntfy_resume_verified_clean_resumes(tmp_state, sample_project, channel_operator):
     """No drift (no statefiles at all -> the shared planner's scan comes
     back `[]`, verified clean) -- resume proceeds exactly as it did before
     the guard existed: flag removed, PAUSE_CLEARED appended once with an
@@ -173,7 +321,8 @@ def test_ntfy_resume_verified_clean_resumes(tmp_state, sample_project):
     assert cleared[0].payload == {}
 
 
-def test_ntfy_resume_drift_refuses_and_writes_nothing(tmp_state, sample_project):
+def test_ntfy_resume_drift_refuses_and_writes_nothing(tmp_state, sample_project,
+                                                      channel_operator):
     """A task believed MERGE_READY whose branch was actually merged (real
     drift, the shared planner's `[ProposedTransition(...)]`) -> the guard
     refuses. The reply names the drifted task id AND the repair command;
@@ -204,7 +353,7 @@ def test_ntfy_resume_drift_refuses_and_writes_nothing(tmp_state, sample_project)
 
 
 def test_ntfy_resume_scan_failure_refuses_distinguishably(
-    tmp_state, sample_project, monkeypatch,
+    tmp_state, sample_project, monkeypatch, channel_operator,
 ):
     """The scan itself raising (e.g. the git subprocess call blows up while
     gathering ground truth) must NEVER be read as 'no drift' -- refuses
@@ -228,7 +377,7 @@ def test_ntfy_resume_scan_failure_refuses_distinguishably(
 
 
 def test_ntfy_resume_cfg_load_failure_refuses_without_crashing(
-    tmp_state, sample_project, monkeypatch,
+    tmp_state, sample_project, monkeypatch, channel_operator,
 ):
     """A project config that fails to load (malformed project.toml, say)
     must degrade to the same 'could not verify' refusal -- not raise out
@@ -466,7 +615,7 @@ def _read_log_records(path) -> list[dict]:
     return [json.loads(ln) for ln in lines]
 
 
-def test_pause_and_resume_emit_info(tmp_state, sample_project, tmp_path):
+def test_pause_and_resume_emit_info(tmp_state, sample_project, tmp_path, channel_operator):
     """§5: pause/resume are the canonical INFO example -- 'one line per
     decision that changed the world'."""
     from nyxloom import log as nyx_log
@@ -490,7 +639,8 @@ def test_pause_and_resume_emit_info(tmp_state, sample_project, tmp_path):
         nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
 
 
-def test_pause_unknown_mode_emits_warning(tmp_state, sample_project, tmp_path):
+def test_pause_unknown_mode_emits_warning(tmp_state, sample_project, tmp_path,
+                                          channel_operator):
     """§5: a rejected control command (bad mode word) is a WARNING, and --
     non-hollow control -- distinct from the INFO a successful pause emits."""
     from nyxloom import log as nyx_log

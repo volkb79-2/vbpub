@@ -28,9 +28,20 @@ SECURITY MODEL (non-negotiable, see handoff/P12-ntfy-command-listener.md):
   values read from storage) are ever placed into a reply, always through
   fixed templates -- the same injection boundary as notify.py, applied to
   replies too.
-- Every executed verb (pause/resume) appends an audited event via
-  storage.append_event with actor Actor(OPERATOR, "ntfy-cmd"). status/
-  digest/help never mutate state and never append events.
+- CR-15 2026-08-03 (RISK-005): the MUTATING verbs (pause/resume) are CLOSED
+  by default. Everything above is transport hygiene, not authentication:
+  `cmd_token_env` is this daemon's own READ credential for subscribing, ntfy
+  exposes no sender identity, and the old `Actor(OPERATOR, "ntfy-cmd")` was a
+  transport name -- the same non-identity as the HTTP surface's "ui". So a
+  message on this topic cannot be attributed to a human, and pausing a
+  project is the emergency brake. `pause`/`resume` therefore refuse with a
+  fixed reply, write nothing, and append ONE audited refusal to the control
+  ledger unless the deployment has named the operator this topic's write ACL
+  belongs to (`control_auth.channel_operator()` /
+  NYXLOOM_CHANNEL_OPERATOR_ID). When it has, the executed verb appends its
+  audited event with THAT named operator as the actor. The READ verbs
+  (help/status/digest) are unchanged and stay open, exactly as the HTTP read
+  surface does.
 
 INTERFACE CONTRACT (frozen; see handoff P12):
 
@@ -52,10 +63,10 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from . import config, notify, paths, resync, storage
+from . import config, control_auth, notify, paths, resync, storage
 from .config import NotifyConfig, ProjectConfig
 from .log import get_logger
-from .types import Actor, ActorKind, EventType, TaskState
+from .types import Actor, EventType, TaskState
 
 log = get_logger("commands")
 
@@ -75,6 +86,16 @@ _VERB_RE = re.compile(
 
 UNKNOWN_REPLY = "unknown command \u2014 send: help"
 
+# CR-15: the fixed refusal for a mutating verb on an unattributable channel.
+# Constant text, no interpolation, and identical for every project and verb --
+# a refusal must not become an oracle for what exists (same property the HTTP
+# 401 has). It names the remedy surfaces, not the deployment knob: the knob is
+# a daemon-side trust assertion, not something to advertise on the topic.
+CHANNEL_CLOSED_REPLY = (
+    "refused: this channel cannot change state \u2014 it carries no verified "
+    "sender identity. Use the dashboard or the nyxloom CLI."
+)
+
 HELP_TEXT = "\n".join([
     "nyxloom commands:",
     "help                        - this message",
@@ -89,6 +110,12 @@ HELP_TEXT = "\n".join([
 # defaults to "handoffs" (drain-handoffs) -- unchanged legacy meaning of a
 # bare pause.
 _MODE_WORD_TO_MODE = {"agents": "drain-agents", "handoffs": "drain-handoffs"}
+
+# CR-15: the verbs that change state. Membership here is what makes a verb
+# authenticated in `handle_message` -- a new mutating verb that forgets to
+# join this set is caught by test_commands.py's verb census, which derives the
+# mutating set from the module rather than restating it.
+_MUTATING_VERBS = frozenset({"pause", "resume"})
 
 DIGEST_MAX_CHARS = 1500
 
@@ -173,6 +200,16 @@ class CommandListener:
         if verb == "help":
             return HELP_TEXT
 
+        # CR-15: a mutating verb resolves its operator BEFORE the project
+        # argument is looked up, so a refused `pause <real>` and a refused
+        # `pause <ghost>` are the same fixed string with the same audit record
+        # -- the channel twin of the HTTP surface's auth-before-lookup order.
+        operator: Actor | None = None
+        if verb in _MUTATING_VERBS:
+            operator = control_auth.channel_operator_for(verb)
+            if operator is None:
+                return CHANNEL_CLOSED_REPLY
+
         if project is None:
             log.debug("command missing project", verb=verb)
             return f"missing project: send '{verb} <project>'"
@@ -183,9 +220,9 @@ class CommandListener:
         if verb == "status":
             return self._cmd_status(project)
         if verb == "pause":
-            return self._cmd_pause(project, mode_word)
+            return self._cmd_pause(project, mode_word, operator)
         if verb == "resume":
-            return self._cmd_resume(project)
+            return self._cmd_resume(project, operator)
         if verb == "digest":
             return self._cmd_digest(project)
         return UNKNOWN_REPLY  # unreachable given _VERB_RE; kept defensive
@@ -214,11 +251,15 @@ class CommandListener:
             line += " (paused)"
         return line
 
-    def _cmd_pause(self, project: str, mode_word: str | None) -> str:
+    def _cmd_pause(self, project: str, mode_word: str | None, operator: Actor) -> str:
         """P15 2026-07-15: `pause <project> [agents|handoffs]` -- default
         'handoffs' (drain-handoffs), the legacy meaning of a bare pause. The
         flag file's CONTENT becomes the mode (reconcile.py/daemon.py's
-        pause-mode contract); PAUSE_SET carries {"mode": ...}."""
+        pause-mode contract); PAUSE_SET carries {"mode": ...}.
+
+        CR-15: pausing is the emergency brake, so `operator` is the named
+        channel operator `handle_message` already proved -- required, not
+        optional, and it becomes the event's actor."""
         if mode_word is not None and mode_word not in _MODE_WORD_TO_MODE:
             log.warning("pause command rejected", reason="unknown-mode",
                         project=project, mode=mode_word)
@@ -229,13 +270,14 @@ class CommandListener:
         flag_path.parent.mkdir(parents=True, exist_ok=True)
         flag_path.write_text(mode, encoding="utf-8")
         storage.append_event(
-            project, actor=Actor(ActorKind.OPERATOR, "ntfy-cmd"),
-            type=EventType.PAUSE_SET, payload={"mode": mode},
+            project, actor=operator, type=EventType.PAUSE_SET,
+            payload={"mode": mode},
         )
-        log.info("project paused", project=project, mode=mode)
+        log.info("project paused", project=project, mode=mode,
+                 ingress="ntfy", operator_id=operator.id)
         return f"paused ({mode}): {project}"
 
-    def _cmd_resume(self, project: str) -> str:
+    def _cmd_resume(self, project: str, operator: Actor) -> str:
         """resume <project> -- the SECOND resume surface (chat-ops), now
         carrying the same RP03 pre-resume drift guard as `cli.cmd_resume`'s
         project-level path (see `_pre_resume_drift_scan` above -- the
@@ -250,7 +292,12 @@ class CommandListener:
         A refusal writes NOTHING -- the scan runs and this method returns
         the refusal string BEFORE either the pause-flag unlink or the
         PAUSE_CLEARED append, so a repeated call refuses identically
-        (mirrors the CLI's own atomicity contract)."""
+        (mirrors the CLI's own atomicity contract).
+
+        CR-15: `handle_message` proved the named channel operator before this
+        method (and therefore before the project lookup and the drift scan),
+        so an unattributable resume never reaches this project's state at
+        all; `operator` is that identity and becomes the event's actor."""
         try:
             cfg = ProjectConfig.load(self.registry[project])
         except Exception:
@@ -289,10 +336,10 @@ class CommandListener:
         flag_path = paths.pause_flag(project)
         flag_path.unlink(missing_ok=True)
         storage.append_event(
-            project, actor=Actor(ActorKind.OPERATOR, "ntfy-cmd"),
-            type=EventType.PAUSE_CLEARED, payload={},
+            project, actor=operator, type=EventType.PAUSE_CLEARED, payload={},
         )
-        log.info("project resumed", project=project)
+        log.info("project resumed", project=project,
+                 ingress="ntfy", operator_id=operator.id)
         return f"resumed: {project}"
 
     def _cmd_digest(self, project: str) -> str:

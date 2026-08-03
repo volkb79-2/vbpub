@@ -163,6 +163,12 @@ INTERFACE CONTRACT (frozen):
   CSRF hardening that runs in ADDITION to that check, never instead of it.
   See `_handle_post` for the fixed order and control_auth's module docstring
   for what the trust boundary does and does not claim.
+  This HTTP surface is NOT the only mutation ingress: the ntfy feedback topic
+  (`commands.CommandListener`, `decision_chat.handle_feedback_message`) is the
+  other one, and it carries no verified sender identity. CR-15 closes its
+  mutating verbs by default -- see `control_auth.channel_operator`. Both
+  ingresses audit refusals into the same control ledger through the same
+  helper, so they cannot drift into two different refusal shapes.
   All three are POST, JSON in/out, 400 on validation
   failure with NO write performed, 404 for an unknown project/tier, 405 for
   GET on these paths:
@@ -7769,32 +7775,16 @@ class Daemon:
                 pass
         return ev
 
-    def _audit_control_refusal(self, path: str, reason: str) -> None:
-        """Append exactly one refusal event to the instance control ledger.
+    @staticmethod
+    def _audit_control_refusal(path: str, reason: str) -> None:
+        """One audited refusal, on the SAME helper the ntfy ingress uses.
 
-        The payload carries the request PATH and the refusal REASON and
-        nothing else -- no body, no target id, no header value.  The refusal
-        is decided before the body is read, so there is no target to record:
-        that is what makes a refused reply to a real decision id and to a
-        fabricated one indistinguishable in the audit trail as well as on
-        the wire.
-
-        Never raises.  A refusal whose audit append fails is still a refusal
-        (the caller has already decided to deny), and letting the append's
-        exception escape would replace the constant 401/503 with a 500 whose
-        body carries the storage error -- turning an audit outage into a
-        distinguishable response.  The failure itself is logged at ERROR.
+        The behaviour (exactly one event, path+reason only, never raises)
+        lives in `control_auth.audit_control_refusal` so both mutation
+        ingresses -- this HTTP surface and the notification channel -- can
+        never drift into two different refusal shapes.
         """
-        try:
-            storage.append_event(
-                CONTROL_AUDIT_PROJECT,
-                actor=control_auth.unauthenticated_actor(),
-                type=EventType.CONTROL_MUTATION_REFUSED,
-                payload={"path": path, "reason": reason},
-            )
-        except Exception as exc:
-            log.error("control-plane refusal could not be audited",
-                      control_path=path, reason=reason, error=repr(exc)[:200])
+        control_auth.audit_control_refusal(path, reason)
 
     def _authenticate_control_mutation(
         self, handler: http.server.BaseHTTPRequestHandler, path: str,
@@ -7819,18 +7809,52 @@ class Daemon:
             return None
         return actor
 
-    def _read_json_body(self, handler: http.server.BaseHTTPRequestHandler) -> dict | None:
-        """Read+parse the request body; None (caller sends 400) on any
+    @staticmethod
+    def _declared_body_length(handler: http.server.BaseHTTPRequestHandler) -> int | None:
+        """The request's framing length, or None when it is not unambiguous.
+
+        THE one place a body length is derived, because a body length IS the
+        message framing: get it wrong and the next bytes on a keep-alive
+        socket are read as a new request.  Three ways to be ambiguous, all
+        refused rather than guessed:
+
+        - Two Content-Length headers (`.get` would silently take the first --
+          the classic request-smuggling desync, since the peer at the other
+          end may take the second).
+        - A value `int()` accepts but RFC 9110's `Content-Length = 1*DIGIT`
+          does not: "+9", "9_9", and any surrounding whitespace.  `int("+9")`
+          == 9 would have quietly under-declared the cap check below.
+          Trailing OWS is technically legal and is still refused: no real
+          client emits it, and a length parse that tolerates decoration is
+          exactly the primitive a desync is built from -- the two ends must
+          agree on the number, or there must be no request.
+        - `Transfer-Encoding` PRESENT, whatever its value: http.server does
+          not de-chunk, so the body would stay on the socket after the
+          response.  Tested with `get_all`, because an empty value is still a
+          present header and `.get` would report it as falsy.
+        """
+        if handler.headers.get_all("Transfer-Encoding"):
+            return None
+        values = handler.headers.get_all("Content-Length") or []
+        if not values:
+            return 0
+        if len(values) != 1:
+            return None
+        raw = values[0]
+        if raw != raw.strip() or not raw.isascii() or not raw.isdigit():
+            return None
+        return int(raw)
+
+    def _read_json_body(self, handler: http.server.BaseHTTPRequestHandler,
+                        length: int) -> dict | None:
+        """Read+parse `length` body bytes; None (caller sends 400) on any
         malformed input, including a non-object JSON value.
 
-        CR-15: only reached AFTER authentication, and only for a declared
-        length within _MAX_REQUEST_BODY_BYTES (checked by `_handle_post`), so
-        this read cannot be used to make the daemon allocate an arbitrary
-        buffer -- which it could before, from any unauthenticated socket."""
-        try:
-            length = int(handler.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            length = 0
+        CR-15: only reached AFTER authentication, and only with a length
+        `_handle_post` has already parsed strictly and capped at
+        _MAX_REQUEST_BODY_BYTES -- so this read cannot be used to make the
+        daemon allocate an arbitrary buffer, which it could before from any
+        unauthenticated socket."""
         raw = handler.rfile.read(length) if length > 0 else b""
         if not raw:
             return {}
@@ -7886,18 +7910,29 @@ class Daemon:
            the 2026-08-02 amendment.
         3. Operator authentication -- BEFORE the body is read and therefore
            before any project, decision, intake or finding id is resolved.
-        4. Body parse, then dispatch with the authenticated Actor threaded
-           into every handler; no handler may invent its own actor.
+        4. Body framing and cap, then parse, then dispatch with the
+           authenticated Actor threaded into every handler; no handler may
+           invent its own actor.
 
         Adding a path to `_CONFIG_POST_PATHS` therefore authenticates it by
         construction -- a new endpoint cannot forget the credential check
-        (asserted for every path by test_control_auth.py) -- but it must also
-        gain a branch below, or it falls through to the 500 at the end.
+        (asserted for every path by test_control_auth.py, whose census also
+        fails if a branch below names a path the table does not) -- but it
+        must also gain a branch below, or it falls through to the 500 at the
+        end.
+
+        EVERY refusal that returns without reading the body passes
+        `close=True`.  Those undrained bytes are still queued on an HTTP/1.1
+        keep-alive socket, and the next read on that connection would parse
+        them as a fresh request line: a refusal is exactly where an attacker
+        would smuggle a second, unrefused request.  Dropping the connection
+        discards them with it, which is also cheaper than reading a body we
+        have already decided to reject.
         """
         parsed = urllib.parse.urlparse(handler.path)
         path = parsed.path
         if path not in _CONFIG_POST_PATHS:
-            self._send_json(handler, 404, b'{"error":"not found"}')
+            self._send_json(handler, 404, b'{"error":"not found"}', close=True)
             return
         refusal = self._reject_cross_site(handler)
         if refusal is not None:
@@ -7908,15 +7943,19 @@ class Daemon:
         actor = self._authenticate_control_mutation(handler, path)
         if actor is None:
             return
-        # Bound the body only once the caller is known: every payload on this
-        # surface is small JSON (ids, a mode name, a reply text), so a declared
-        # length past the cap is a mistake or an attempt to make the daemon
-        # allocate. Refuse before reading a byte of it.
-        declared = (handler.headers.get("Content-Length") or "0").strip()
-        if declared.isdigit() and int(declared) > _MAX_REQUEST_BODY_BYTES:
+        # Frame and bound the body only once the caller is known: every payload
+        # on this surface is small JSON (ids, a mode name, a reply text), so an
+        # unframeable or over-cap length is a mistake or an attempt to make the
+        # daemon allocate. Refuse before reading a byte of it.
+        length = self._declared_body_length(handler)
+        if length is None:
+            self._send_json(handler, 400, b'{"error":"ambiguous request framing"}',
+                            close=True)
+            return
+        if length > _MAX_REQUEST_BODY_BYTES:
             self._send_json(handler, 413, b'{"error":"request body too large"}', close=True)
             return
-        body = self._read_json_body(handler)
+        body = self._read_json_body(handler, length)
         if body is None:
             self._send_json(handler, 400, b'{"error":"malformed json body"}')
             return
@@ -8030,16 +8069,29 @@ class Daemon:
             return
         project, cfg = target
 
+        # CR-15: audit BEFORE the effect, not after. This is the endpoint the
+        # "human owns direction" invariant runs on, so "operator X submitted a
+        # reply to decision Y" must be durable even if the turn then fails --
+        # and an unwritable ledger must REFUSE the turn rather than let an
+        # unrecorded answer through. The record is true at the point of
+        # receipt: the target is already resolved, and the id is the one the
+        # 404 above just proved exists.
+        try:
+            storage.append_event(
+                project, actor=actor, type=EventType.DECISION_REPLY_RECORDED,
+                decision_id=decision_id, payload={},
+            )
+        except Exception as exc:
+            log.error("decision reply refused: it could not be audited",
+                      control_path="/api/decision/reply", error=repr(exc)[:200])
+            self._send_json(handler, 503, b'{"error":"mutation audit unavailable"}')
+            return
+
         try:
             decision_chat.advance_chat(cfg, project, decision_id, text.strip(), actor=actor)
         except Exception as exc:
             self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
             return
-
-        storage.append_event(
-            project, actor=actor, type=EventType.DECISION_REPLY_RECORDED,
-            decision_id=decision_id, payload={},
-        )
 
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))

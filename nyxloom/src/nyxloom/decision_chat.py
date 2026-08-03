@@ -81,7 +81,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import adapters, commands, config, decisions, notify, paths, storage
+from . import adapters, commands, config, control_auth, decisions, notify, paths, storage
 from .config import NotifyConfig, ProjectConfig, RouteDef, Routes
 from .decisions import Decision
 from .log import get_logger
@@ -382,12 +382,19 @@ def _finalize_decision(cfg: ProjectConfig, project: str, decision_id: str,
 
 
 def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: str,
-                 actor: Actor | None = None) -> str:
+                 *, actor: Actor) -> str:
     """Advance one decision-chat turn: launch (first) or resume (Nth), post
     the (redacted, capped) reply to the feedback channel, finalize the
     decision if the reply carries a DECISION: line. Returns the reply text
     actually posted (assertable by callers/tests without re-parsing ntfy
-    traffic)."""
+    traffic).
+
+    CR-15: `actor` is REQUIRED and keyword-only -- it is the authenticated
+    identity that drove this turn, and a DECISION: line in the reply resolves
+    the decision under it. An optional actor would let a call site produce an
+    unattributed answer to a human decision, which is precisely the audit gap
+    this package closes; both ingresses (HTTP and the notification channel)
+    must therefore prove an operator before they get here."""
     chat = load_chat(project, decision_id) or DecisionChat(decision_id=decision_id, project=project)
     chat.transcript.append(DecisionChatMessage(role="user", text=user_text, ts=utc_now().isoformat()))
     log.debug("decision-chat turn begin", decision_id=decision_id, turn=len(chat.transcript))
@@ -431,9 +438,12 @@ def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: 
     decided = _parse_decision_line(reply)
     if decided is not None:
         choice, note = decided
-        resolution_actor = actor or Actor(ActorKind.FRONTIER_SESSION, "decision-agent")
+        # The DECISION: line is written by the agent, but the authority is the
+        # operator whose message drove this turn -- "who answered this
+        # decision" must resolve to a human, never to the model that phrased
+        # the answer.
         _finalize_decision(cfg, project, decision_id, choice, note,
-                            resolution_actor.kind, resolution_actor.id)
+                            actor.kind, actor.id)
 
     _post_feedback(cfg, decision_id, reply)
     log.debug("decision-chat turn advanced", decision_id=decision_id, route=route.route_id)
@@ -497,9 +507,19 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
     """Pure routing (no I/O beyond advance_chat's own turn + post): returns
     None when a decision-chat message was fully handled here (the caller
     must NOT also post a reply -- this module posts its own via
-    _post_feedback), or the _NOT_HANDLED sentinel when text/tags do not
-    look like a decision-chat message at all (caller should fall through
-    to its own verb dispatch)."""
+    _post_feedback), the fixed refusal STRING when the channel may not mutate
+    (the caller posts it through its ordinary reply path), or the
+    _NOT_HANDLED sentinel when text/tags do not look like a decision-chat
+    message at all (caller should fall through to its own verb dispatch).
+
+    CR-15 (RISK-005): answering a decision IS the "human owns direction"
+    invariant, and this topic carries no verified sender identity -- see
+    `control_auth.channel_operator`. So the operator is resolved FIRST, before
+    `find_project_for_decision` or `_find_sole_active_chat` touches any state:
+    a refused `decide D-001 yes` cannot be told from a refused `decide D-999
+    yes`, exactly as an unauthenticated HTTP reply cannot. When the deployment
+    HAS named an operator, that identity -- not the transport name
+    "feedback-chat" -- becomes the Actor of the resolution."""
     tags = tags or []
     if DECISION_AGENT_TAG in tags or commands.REPLY_TAG in tags:
         return None  # loop guard: our own echo, or P12's own echo
@@ -508,6 +528,9 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
 
     dm = _DECIDE_CMD_RE.match(stripped)
     if dm:
+        operator = control_auth.channel_operator_for("decide")
+        if operator is None:
+            return commands.CHANNEL_CLOSED_REPLY
         decision_id, choice = dm.group(1), dm.group(2).strip()
         log.debug("feedback message routed", route="decide-command", decision_id=decision_id)
         target = find_project_for_decision(registry, decision_id)
@@ -515,25 +538,39 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
             return _NOT_HANDLED
         project, cfg = target
         if _finalize_decision(cfg, project, decision_id, choice, "",
-                               ActorKind.OPERATOR, "feedback-chat"):
+                               operator.kind, operator.id):
             _post_feedback(cfg, decision_id, f"Resolved {decision_id}: {choice}")
         return None
 
     pm = _DECISION_PREFIX_RE.match(stripped)
     if pm:
+        operator = control_auth.channel_operator_for("decision-chat")
+        if operator is None:
+            return commands.CHANNEL_CLOSED_REPLY
         decision_id, message = pm.group(1), pm.group(2).strip()
         log.debug("feedback message routed", route="decision-prefix", decision_id=decision_id)
         target = find_project_for_decision(registry, decision_id)
         if target is None:
             return _NOT_HANDLED
         project, cfg = target
-        advance_chat(cfg, project, decision_id, message)
+        advance_chat(cfg, project, decision_id, message, actor=operator)
         return None
+
+    # Bare text can only mutate by landing in the sole active chat, and
+    # finding that chat is itself a state lookup -- so when the channel has no
+    # named operator this falls through WITHOUT looking, to the verb dispatch
+    # that refuses its own mutating verbs. Nothing is audited here: unlike the
+    # two branches above, an ordinary chat line is not evidence that anyone
+    # attempted a mutation, and auditing every stray message would let the
+    # topic fill the ledger.
+    operator = control_auth.channel_operator()
+    if operator is None:
+        return _NOT_HANDLED
 
     active = _find_sole_active_chat(registry)
     if active is not None and stripped:
         project, cfg, decision_id = active
-        advance_chat(cfg, project, decision_id, stripped)
+        advance_chat(cfg, project, decision_id, stripped, actor=operator)
         return None
 
     return _NOT_HANDLED

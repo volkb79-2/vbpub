@@ -86,6 +86,21 @@ like a nicely readable table-formatted log with filter/highlight/context." Insta
 > an operator credential (`src/nyxloom/control_auth.py`, `Authorization: Bearer <secret>`)
 > whose named identity becomes the `Actor` of the resulting events, refusals are audited,
 > and GETs stay open so the dashboard remains readable on a trusted network.
+>
+> **The HTTP surface was not the only ingress.** The ntfy feedback topic mutates the same
+> invariants — `pause`/`resume` chat-ops, `decide D-NNN <choice>`, and every decision-chat
+> turn — and it authenticates nothing: `NTFY_CMD_TOKEN` is the daemon's own *read*
+> credential for subscribing, ntfy exposes no sender identity at all, and the actors it
+> recorded (`ntfy-cmd`, `feedback-chat`) were transport names, the same non-identity as
+> `ui`. Authenticating one door and leaving the other open would have been theatre, so
+> CR-15 closes that ingress by default: its mutating routes refuse with a fixed reply, write
+> nothing, and audit one refusal, unless the deployment sets
+> `NYXLOOM_CHANNEL_OPERATOR_ID` to name the operator its topic's write ACL belongs to.
+> That variable is an *assertion by the deployment*, not authentication, and it is
+> documented as such — nyxloom cannot verify a topic ACL, it can only record whether the
+> claim was made and attribute the resulting events to the named human. Read verbs
+> (`help`/`status`/`digest`) stay open, mirroring the HTTP read/write split.
+>
 > **The standing lesson is about the mechanism, not the verdict:** a "revisit trigger"
 > phrased as a condition a human is supposed to notice ("the startup warning fires") is not
 > a trigger. It fired into a log nobody read. The record below is kept verbatim as the
