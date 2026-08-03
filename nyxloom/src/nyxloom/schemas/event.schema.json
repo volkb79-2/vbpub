@@ -71,6 +71,8 @@
         "BUDGET_EXHAUSTED",
         "ARTIFACT_REGISTERED",
         "CARVER_PROPOSAL_ADMITTED",
+        "SNAPSHOT_UNAVAILABLE",
+        "SNAPSHOT_DEGRADED",
         "TICK_ERROR"
       ]
     },

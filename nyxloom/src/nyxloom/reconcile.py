@@ -351,6 +351,7 @@ from .carver_session import (
     CarveRepairRequest, CarverFeed, CarverSessionSnapshot, CarverStatus,
     HumanIntake, ValidatedCarveProposal,
 )
+from . import snapshot
 from .config import ProjectConfig, RouteDef, Routes
 from .stages import effective_concurrency, stage_context
 from .types import (
@@ -884,6 +885,22 @@ class ReconcileInput:
     # repair" convention as its neighbours -- every pre-AD3 test plans byte-
     # identically. The planner only reads it (stays pure).
     pending_carve_repairs: tuple[CarveRepairRequest, ...] = ()
+    # CR-02a 2026-08-03 (authoritative snapshot fail-closed audit; DR-03): the
+    # provenance record for THIS snapshot -- which inputs were acquired, in
+    # which class, with which status/reason. The planner does not consult it
+    # (it stays pure, and by construction it is only ever CALLED with an audit
+    # whose authoritative inputs are all OK -- `Daemon.run_pass` refuses to
+    # plan otherwise). It rides on the input so that:
+    #   * an advisory degradation is visible to a rule that wants to explain
+    #     itself ("no route was healthy" reads very differently when the
+    #     provider probe itself could not run), and
+    #   * CR-05's handler registry and CR-06's planning rules consume ONE
+    #     already-classified audit instead of re-deriving authoritative-vs-
+    #     advisory policy per call site.
+    # Defaults to an empty audit so every pre-CR-02a test still builds a
+    # ReconcileInput unchanged.
+    snapshot_audit: "snapshot.SnapshotAudit" = field(
+        default_factory=lambda: snapshot.SnapshotAudit(()))
 
 
 # B4b (critique I4): a handoff stamps the main sha it was carved against as

@@ -29,7 +29,7 @@ from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
     adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
-    lint, log, notify, paths, reconcile, render, storage, wrapper,
+    lint, log, notify, paths, reconcile, render, snapshot, storage, wrapper,
 )
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
@@ -1771,14 +1771,18 @@ def test_attempt_scan_surfaces_self_review_receipt_only_when_self_reviewing(
     tsf_sr = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
                            state=TaskState.SELF_REVIEWING, since=utc_now(), handoff_path=None,
                            attempts=[att])
-    _lq, _pa, receipts = d._attempt_scan(project, {task_id: tsf_sr})
-    assert receipts.get(attempt_id) is not None  # surfaced for consumption
+    # CR-02a: _attempt_scan's third element is now a typed SnapshotInput for
+    # the receipts domain (a malformed receipt must be distinguishable from an
+    # absent one). Both receipts here are well-formed, so it is OK.
+    _lq, _pa, receipts_in = d._attempt_scan(project, {task_id: tsf_sr})
+    assert receipts_in.ok
+    assert receipts_in.require().get(attempt_id) is not None  # surfaced for consumption
 
     tsf_active = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
                                state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
                                attempts=[att])
-    _lq2, _pa2, receipts2 = d._attempt_scan(project, {task_id: tsf_active})
-    assert receipts2.get(attempt_id) is None  # NOT surfaced -- state-scoped, not role-alone
+    _lq2, _pa2, receipts2_in = d._attempt_scan(project, {task_id: tsf_active})
+    assert receipts2_in.require().get(attempt_id) is None  # NOT surfaced -- state-scoped
 
 
 def test_review_independent_wave_exit_fans_out_per_member_verdicts(
@@ -2294,8 +2298,8 @@ def test_resume_archives_stale_receipt_so_no_premature_exit(
 
     # The real scan therefore surfaces NO receipt for the resumed attempt,
     # so plan_project cannot fire a premature EmitAttemptExit on the stale one.
-    _log_quiet, _pid_alive, receipts = d._attempt_scan("demo", {task_id: tsf2})
-    assert receipts.get(attempt_id) is None
+    _log_quiet, _pid_alive, receipts_in = d._attempt_scan("demo", {task_id: tsf2})
+    assert receipts_in.require().get(attempt_id) is None
 
 
 # ============================================================================
@@ -2963,26 +2967,50 @@ def test_input_building(tmp_state, sample_project, monkeypatch):
 
 
 def test_lease_probe_failure_fails_closed(tmp_state, sample_project, monkeypatch):
-    """An unreadable lease must park work, never authorize a collision."""
+    """An unreadable lease must park work, never authorize a collision.
+
+    CR-02a strengthened this: the probe failure was previously recorded as
+    `{lease: False}` -- fail-closed for tasks declaring that mutex, but
+    invisible and indistinguishable from a genuinely-held lease. It is now a
+    typed AUTHORITATIVE fault naming the lease, and `_build_input` returns
+    None so no effect is planned at all."""
     def fail_probe(*_args, **_kwargs):
         raise OSError("lease directory unreadable")
 
     monkeypatch.setattr(daemon.leases, "holder_info", fail_probe)
     d = daemon.Daemon({"demo": sample_project.root})
 
-    assert d._leases_free(sample_project) == {"demo.stack": False}
+    result = d._leases_free(sample_project)
+    assert not result.ok
+    assert result.input_class is snapshot.InputClass.AUTHORITATIVE
+    assert result.reason is snapshot.Reason.PROBE_FAILED
+    assert "demo.stack" in result.provenance.ref
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        result.require()
 
 
 def test_decision_inbox_failure_aborts_snapshot(tmp_state, sample_project, monkeypatch):
-    """Unreadable decision truth cannot be interpreted as no open holds."""
+    """Unreadable decision truth cannot be interpreted as no open holds.
+
+    CR-02a: the abort is now a typed fan-in refusal (`_build_input` -> None
+    plus an authoritative `decisions_open` fault) instead of a raised OSError
+    that only the pass-level TICK_ERROR catch happened to contain."""
     def fail_read(_cfg):
         raise OSError("decisions inbox unreadable")
 
     monkeypatch.setattr(decisions, "open_ids", fail_read)
     d = daemon.Daemon({"demo": sample_project.root})
 
-    with pytest.raises(OSError, match="decisions inbox unreadable"):
-        d._build_input("demo", sample_project, storage.list_states("demo"))
+    builder = snapshot.SnapshotBuilder()
+    inp = d._build_input("demo", sample_project, storage.list_states("demo"),
+                          builder=builder)
+    assert inp is None
+    audit = builder.audit()
+    assert not audit.permits_effects
+    failed = audit.get("decisions_open")
+    assert failed is not None and not failed.ok
+    assert failed.reason is snapshot.Reason.SOURCE_ERROR
+    assert "OSError" in failed.detail
 
 
 def test_pause_mode_absent_flag_is_run(tmp_state, sample_project):
@@ -4266,20 +4294,30 @@ def test_review_rationale_unit(tmp_state, sample_project):
 
 
 def test_head_revision_resolves_main(tmp_state, sample_project):
-    """_head_revision returns main's sha; NEGATIVE: a bogus root -> None
-    (fail-safe, so a git hiccup never spuriously flags drift)."""
+    """_head_revision returns main's sha; NEGATIVE: a bogus root is a typed
+    AUTHORITATIVE fault, not a None the drift-guard reads as 'no drift'.
+
+    CR-02a changed the negative direction deliberately. Returning None made an
+    unreadable repository assert that every handoff's `input_revision` premise
+    was still current, so work was re-dispatched against a base that may have
+    moved -- P40's own root cause."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
     expected = subprocess.run(
         ["git", "-C", str(cfg.root), "rev-parse", cfg.default_branch],
         capture_output=True, text=True,
     ).stdout.strip()
-    assert d._head_revision(cfg) == expected
+    ok = d._head_revision(cfg)
+    assert ok.ok and ok.require() == expected
     assert len(expected) == 40                       # a real full sha, not a placeholder
 
     from dataclasses import replace as _replace
     bogus = _replace(cfg, root=cfg.root / "does-not-exist")
-    assert d._head_revision(bogus) is None
+    bad = d._head_revision(bogus)
+    assert not bad.ok
+    assert bad.input_class is snapshot.InputClass.AUTHORITATIVE
+    assert bad.reason is snapshot.Reason.PROBE_FAILED
+    assert bad.value is None
 
 
 def _seed_review_recorded(project, task_id, result, reject_class=None):
@@ -6386,13 +6424,17 @@ def test_pending_carver_feeds_caps_at_retain_merge_digests(
     assert [f.digest_id for f in feeds] == ["merge:demo:c3", "merge:demo:c4"]
 
 
-def test_carver_session_fails_safe_to_base_snapshot_on_unreadable_log(
+def test_carver_session_unreadable_log_is_typed_unavailable_not_a_fresh_session(
         tmp_state, sample_project, monkeypatch):
-    """Fail-safe convention (mirrors _history's own try/except-to-[] over
-    storage.iter_events): an unreadable event log must not raise out of
-    _carver_session -- it falls back to an empty event list, which the pure
-    projector turns into the base (ABSENT, generation 0, cursor 0)
-    snapshot."""
+    """CR-02a REVERSES the old fail-safe here, because it was fail-OPEN.
+
+    The previous behaviour degraded an unreadable event log to an empty event
+    list, which the pure projector turned into the BASE snapshot -- ABSENT,
+    generation 0, consumed-cursor 0. That is not a safe default: generation 0
+    with a zero cursor means "this project has never carved", so every merge
+    feed is unconsumed again and every recorded proposal is unadmitted again.
+    A transient storage hiccup could therefore re-ingest the whole history.
+    An unreadable log is now a typed authoritative fault."""
     cfg = sample_project
     project = "demo"
     cfg.carve.session = "project-persistent"
@@ -6403,19 +6445,20 @@ def test_carver_session_fails_safe_to_base_snapshot_on_unreadable_log(
     monkeypatch.setattr(storage, "iter_events", _boom)
 
     d = daemon.Daemon({project: cfg.root})
-    snap = d._carver_session(project, cfg)
-
-    assert snap is not None
-    assert snap.status is CarverStatus.ABSENT
-    assert snap.generation == 0
-    assert snap.last_consumed_event_sequence == 0
+    with pytest.raises(snapshot.SnapshotUnavailable) as exc:
+        d._carver_session(project, cfg)
+    assert exc.value.descriptor.name == "event_log"
+    assert exc.value.descriptor.input_class is snapshot.InputClass.AUTHORITATIVE
 
 
-def test_pending_carver_feeds_fails_safe_to_empty_tuple_on_unreadable_log(
+def test_pending_carver_feeds_unreadable_log_is_typed_unavailable(
         tmp_state, sample_project, monkeypatch):
-    """Same fail-safe convention on the feed-scanning side: an unreadable
-    event log must not raise out of _pending_carver_feeds -- it degrades to
-    no pending feeds rather than propagating."""
+    """CR-02a: the feed-scanning side gets the same treatment.
+
+    Degrading to "no pending feeds" is only harmless in isolation; combined
+    with _carver_session's own former degradation it reconstructs a session
+    with a zero consumed-cursor, and the pair silently re-ingests history. The
+    log is one authoritative input with one failure mode."""
     cfg = sample_project
     project = "demo"
     cfg.carve.session = "project-persistent"
@@ -6428,7 +6471,11 @@ def test_pending_carver_feeds_fails_safe_to_empty_tuple_on_unreadable_log(
     monkeypatch.setattr(storage, "iter_events", _boom)
 
     d = daemon.Daemon({project: cfg.root})
-    assert d._pending_carver_feeds(project, cfg, snap) == ()
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._pending_carver_feeds(project, cfg, snap)
+    # The `snap is None` (feature-off) short-circuit still returns () without
+    # ever touching the log -- the negative control for the assertion above.
+    assert d._pending_carver_feeds(project, cfg, None) == ()
 
 
 def test_pending_carver_feeds_retain_zero_means_none_retained(
@@ -6813,12 +6860,15 @@ def test_carver_ack_helper_empty_source_ids_returns_none(
     assert d._highest_consumed_feed_sequence("demo", ()) is None
 
 
-def test_carver_ack_helper_storage_error_returns_none(
+def test_carver_ack_helper_storage_error_is_typed_unavailable(
         tmp_state, sample_project, monkeypatch):
-    """P4a helper defensive path: a failure reading the event log must be
-    swallowed to None (a merge-feed ack that cannot compute a cursor simply
-    does not advance it — the feeds re-deliver next pass), never propagate out
-    of the exit consumer. Directly exercised (not pragma-excluded)."""
+    """CR-02a: 'swallow to None' was the wrong direction here too.
+
+    None means "no feed consumed", so the shared merge-feed cursor never
+    advances and every feed re-delivers on every subsequent pass -- the
+    unbounded re-delivery loop P4a's cursor exists to stop. An unreadable log
+    now raises the typed fault, which the per-action isolation in run_pass
+    contains as a TICK_ERROR for that one effect."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -6826,7 +6876,8 @@ def test_carver_ack_helper_storage_error_returns_none(
         raise RuntimeError("event log unreadable")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._highest_consumed_feed_sequence("demo", ("merge:demo:c1",)) is None
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._highest_consumed_feed_sequence("demo", ("merge:demo:c1",))
 
 
 
@@ -6967,13 +7018,21 @@ def test_gate_diagnosis_state_passing_gate_resets_streak(tmp_state, sample_proje
     assert pending == frozenset()
 
 
-def test_gate_diagnosis_state_handles_iter_events_failure(tmp_state, sample_project, monkeypatch):
+def test_gate_diagnosis_state_iter_events_failure_is_typed_unavailable(
+        tmp_state, sample_project, monkeypatch):
+    """CR-02a: an unreadable log cannot answer "no diagnosis pending".
+
+    The old `(frozenset(), frozenset())` both suppressed the diagnosis
+    dispatch AND un-suppressed the blind mechanical retry the diagnosis
+    exists to replace -- so a storage hiccup silently bought a full extra
+    implementer attempt on a gate-failing task."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
     _seed_review_rejected("demo", "t-gd-err", attempts=[])
     states = storage.list_states("demo")
     monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
-    assert d._gate_diagnosis_state("demo", cfg, states) == (frozenset(), frozenset())
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._gate_diagnosis_state("demo", cfg, states)
 
 
 # --- _execute (LaunchGateDiagnosis) ---------------------------------------
@@ -7141,11 +7200,20 @@ def test_latest_gate_failure_none_when_no_failure(tmp_state, sample_project):
     assert d._latest_gate_failure("demo", "t-lgf2") == ("", "")
 
 
-def test_latest_gate_failure_handles_iter_events_failure(tmp_state, sample_project, monkeypatch):
+def test_latest_gate_failure_iter_events_failure_is_typed_unavailable(
+        tmp_state, sample_project, monkeypatch):
+    """CR-02a: ("", "") is the same value a task with NO gate failure gets,
+    so an unreadable log used to dispatch a gate-diagnosis reviewer with the
+    evidence field silently blank. The read is authoritative now.
+
+    The genuine "no failure recorded" case still returns ("", "") -- see
+    test_latest_gate_failure_none_when_no_failure, the negative control that
+    keeps this from collapsing back into one indistinguishable answer."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
     monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
-    assert d._latest_gate_failure("demo", "whatever") == ("", "")
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._latest_gate_failure("demo", "whatever")
 
 
 def test_triage_classes_surfaces_transient(tmp_state, sample_project):
@@ -7172,8 +7240,13 @@ def test_attempt_has_review_recorded(tmp_state, sample_project, monkeypatch):
     _emit_review_recorded("demo", "t-ahr", "rejected", attempt_id="att-bound")
     assert d._attempt_has_review_recorded("demo", "att-bound") is True
     assert d._attempt_has_review_recorded("demo", "att-absent") is False
+    # CR-02a: False means "this review leg has NOT been consumed", so an
+    # unreadable log used to authorize RE-consuming a verdict that was
+    # already recorded. It is a typed fault now; the genuine
+    # not-yet-consumed case above is the negative control.
     monkeypatch.setattr(storage, "iter_events", _boom_iter_events)
-    assert d._attempt_has_review_recorded("demo", "att-bound") is False
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._attempt_has_review_recorded("demo", "att-bound")
 
 
 def test_gate_diagnosis_architectural_routes_to_carve_end_to_end(tmp_state, sample_project):

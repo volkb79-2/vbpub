@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, paths, storage
+from nyxloom import daemon, paths, snapshot, storage
 from nyxloom.config import ProjectConfig
 from nyxloom.testing import FakeScript, FakeStep
 from nyxloom.types import (
@@ -865,15 +865,18 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     )
 
 
-def test_scope_amendment_helpers_degrade_gracefully_on_storage_error(
+def test_scope_amendment_helpers_fail_closed_on_storage_error(
     behavioral_project, tmp_state, monkeypatch
 ):
-    """Defensive branch: Daemon._scope_amendments_approved/
-    _scope_amendment_files degrade to [] rather than raising if
-    storage.iter_events blows up (mirrors _ratchet_already_open's identical
-    try/except shape, just above the O2 section below) -- a transient
-    storage hiccup must never crash reconcile or misreport the amendment
-    count."""
+    """CR-02a REVERSES the old "degrade to []" here, and this is the single
+    worst case of the whole family.
+
+    `_scope_amendments_approved` IS the enforcement mechanism for
+    MAX_SCOPE_AMENDMENTS_PER_TASK: the daemon counts prior approvals and
+    refuses at the cap. Returning [] on a storage error reports ZERO prior
+    approvals, which re-opens the per-task lifetime cap -- an unreadable log
+    could grant unbounded scope widenings. The read is authoritative now, and
+    a fault refuses the amendment instead of granting it."""
     cfg = behavioral_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -881,8 +884,10 @@ def test_scope_amendment_helpers_degrade_gracefully_on_storage_error(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._scope_amendments_approved("demo", TASK_ID) == []
-    assert d._scope_amendment_files("demo", TASK_ID) == []
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._scope_amendments_approved("demo", TASK_ID)
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._scope_amendment_files("demo", TASK_ID)
 
 
 def test_scope_amendment_files_reach_review_independent_dispatch(

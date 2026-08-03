@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, frontmatter, lint, paths, reconcile, storage
+from nyxloom import daemon, frontmatter, lint, paths, reconcile, snapshot, storage
 from nyxloom.config import ProjectConfig, register_project
 from nyxloom.types import (
     Actor, ActorKind, EventType, TaskState, TaskStateFile, utc_now,
@@ -772,11 +772,17 @@ def test_ad3_pending_repairs_excludes_wrong_generation(tmp_state, carver_project
     assert d._pending_carve_repairs("demo", cfg, snap) == ()
 
 
-def test_ad3_pending_repairs_storage_error_degrades_to_empty(
+def test_ad3_pending_repairs_storage_error_is_typed_unavailable(
         tmp_state, carver_project, monkeypatch):
-    """Storage-read failure fails safe to () -- the same conservative
-    direction _validated_carve_proposals takes (see
-    test_validated_proposals_storage_error_degrades_to_empty)."""
+    """CR-02a: () was described as the conservative direction and is not.
+
+    An empty repair set means "nothing needs repairing", so an unreadable log
+    silently retires the repair signal for a generation that may have several
+    invalid proposals outstanding -- and P3b's ceiling escalation, which
+    counts from the same log, goes quiet with it. The read is authoritative.
+
+    Negative control: the feature-off path (`snap is None`) still returns ()
+    without touching the log."""
     cfg = carver_project
     _bootstrap_warm()
     d = daemon.Daemon({"demo": cfg.root})
@@ -786,7 +792,9 @@ def test_ad3_pending_repairs_storage_error_degrades_to_empty(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._pending_carve_repairs("demo", cfg, snap) == ()
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._pending_carve_repairs("demo", cfg, snap)
+    assert d._pending_carve_repairs("demo", cfg, None) == ()
 
 
 # ==========================================================================
@@ -910,8 +918,14 @@ def test_feature_off_run_pass_never_admits_proposals(tmp_state, sample_project):
 # not already exercised above).
 # ==========================================================================
 
-def test_validated_proposals_storage_error_degrades_to_empty(
+def test_validated_proposals_storage_error_is_typed_unavailable(
         tmp_state, carver_project, monkeypatch):
+    """CR-02a: an unreadable log is not "no admittable proposals".
+
+    Degrading to () hides a proposal that IS admittable, and (worse) the
+    same read backs `_proposal_already_admitted`, whose degraded answer is
+    "not yet admitted" -- so the pair could both hide a real proposal and
+    re-admit a consumed one depending on which call the fault hit."""
     cfg = carver_project
     _bootstrap_warm()
     d = daemon.Daemon({"demo": cfg.root})
@@ -921,7 +935,9 @@ def test_validated_proposals_storage_error_degrades_to_empty(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._validated_carve_proposals("demo", cfg, snap) == ()
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._validated_carve_proposals("demo", cfg, snap)
+    assert d._validated_carve_proposals("demo", cfg, None) == ()
 
 
 def test_event_sequence_at_or_before_cursor_excluded(tmp_state, carver_project):
@@ -1087,8 +1103,12 @@ def test_lint_file_error_not_validated(tmp_state, carver_project, monkeypatch):
     assert d._validated_carve_proposals("demo", cfg, snap) == ()
 
 
-def test_carve_proposal_recorded_payload_storage_error_returns_none(
+def test_carve_proposal_recorded_payload_storage_error_is_typed_unavailable(
         tmp_state, carver_project, monkeypatch):
+    """CR-02a: None means "never recorded", which skips the §4.2 step-4
+    re-scope supersession entirely. An unreadable log must not be able to
+    produce that answer. The genuine never-recorded case still returns None
+    -- see test_carve_proposal_recorded_payload_not_found_returns_none."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -1096,7 +1116,8 @@ def test_carve_proposal_recorded_payload_storage_error_returns_none(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._carve_proposal_recorded_payload("demo", "demo:carve:1:att-1") is None
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._carve_proposal_recorded_payload("demo", "demo:carve:1:att-1")
 
 
 def test_carve_proposal_recorded_payload_not_found_returns_none(tmp_state, carver_project):
@@ -1109,8 +1130,12 @@ def test_carve_proposal_recorded_payload_not_found_returns_none(tmp_state, carve
     assert d._carve_proposal_recorded_payload("demo", "demo:carve:1:does-not-exist") is None
 
 
-def test_repair_escalations_storage_error_degrades_to_no_events(
+def test_repair_escalations_storage_error_is_typed_unavailable(
         tmp_state, carver_project, monkeypatch):
+    """CR-02a: run_pass calls this BEFORE the fan-in's own audit check, so
+    the typed fault propagates to the pass-level containment and the pass
+    emits SNAPSHOT_UNAVAILABLE -- rather than the old [] which read as "no
+    escalation needed"."""
     cfg = carver_project
     _bootstrap_warm()
     d = daemon.Daemon({"demo": cfg.root})
@@ -1119,10 +1144,15 @@ def test_repair_escalations_storage_error_degrades_to_no_events(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._carve_proposal_repair_escalations("demo", cfg, {}) == []
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._carve_proposal_repair_escalations("demo", cfg, {})
 
 
-def test_repair_escalated_storage_error_returns_false(tmp_state, carver_project, monkeypatch):
+def test_repair_escalated_storage_error_is_typed_unavailable(
+        tmp_state, carver_project, monkeypatch):
+    """CR-02a: False means "not yet escalated", so an unreadable log re-pages
+    the operator on every pass -- the notification-storm shape this debounce
+    exists to prevent."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -1130,7 +1160,8 @@ def test_repair_escalated_storage_error_returns_false(tmp_state, carver_project,
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._carve_proposal_repair_escalated("demo", 1) is False
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._carve_proposal_repair_escalated("demo", 1)
 
 
 def test_repair_count_ignores_other_generation_records(tmp_state, carver_project):
@@ -1317,8 +1348,12 @@ def test_disposition_missing_artifact_ref_skipped(tmp_state, carver_project):
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
 
 
-def test_proposal_already_admitted_storage_error_fails_safe_to_false(
+def test_proposal_already_admitted_storage_error_is_typed_unavailable(
         tmp_state, carver_project, monkeypatch):
+    """CR-02a REVERSES this one: False was labelled 'fail-safe' and is the
+    opposite. False means NOT yet admitted, so an unreadable log RE-ADMITS an
+    already-admitted proposal -- recreating its tasks and re-running its
+    supersession. This is the AD1 idempotency cursor; it must be authoritative."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -1326,4 +1361,5 @@ def test_proposal_already_admitted_storage_error_fails_safe_to_false(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._proposal_already_admitted("demo", "demo:carve:1:att-1") is False
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._proposal_already_admitted("demo", "demo:carve:1:att-1")

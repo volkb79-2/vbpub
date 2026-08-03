@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, storage
+from nyxloom import daemon, lint, paths, reconcile, snapshot, storage
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import CarveDispatch, ReconcileInput, plan_project
 from nyxloom.types import (
@@ -396,29 +396,63 @@ def test_days_since_takes_the_most_recent_of_several(tmp_state, sample_project,
     assert d._days_since_test_health_carve("demo") == pytest.approx(3.0, abs=0.01)
 
 
-def test_days_since_bad_timestamp_is_zero_not_none_FAIL_SAFE(
+def test_days_since_bad_timestamp_is_recorded_as_a_malformed_authoritative_input(
         tmp_state, sample_project, monkeypatch):
     """A NAIVE (tz-less) timestamp in the log makes the age subtraction raise
-    TypeError. Same fail-safe direction as an unreadable log: 'just carved',
-    never None -- a corrupt event must not be what authorizes agent spend."""
+    TypeError. The arithmetic still answers 0.0 -- a corrupt event must not
+    be what authorizes agent spend -- but CR-02a adds the half that was
+    missing: 0.0 alone is indistinguishable from a genuine recent carve, so
+    one corrupt payload silently latched the cadence OFF forever with nothing
+    in the event log to explain it. The marker read is now recorded as a
+    MALFORMED authoritative input, so the pass fails closed and says which
+    marker is corrupt."""
     ev = _ev("carve-demo-1", kind="test-health", age_days=5.0, sequence=1)
     ev.timestamp = ev.timestamp.replace(tzinfo=None)
     monkeypatch.setattr(storage, "iter_events", lambda project: [ev])
     d = daemon.Daemon({"demo": sample_project.root})
-    assert d._days_since_test_health_carve("demo") == 0.0
+
+    builder = snapshot.SnapshotBuilder()
+    assert d._days_since_test_health_carve("demo", builder=builder) == 0.0
+    audit = builder.audit()
+    assert not audit.permits_effects
+    fault = audit.get("test_health_carve_marker")
+    assert fault is not None
+    assert fault.status is snapshot.InputStatus.MALFORMED
+    assert fault.reason is snapshot.Reason.MALFORMED_VALUE
+    assert "TypeError" in fault.detail
+
+    # NEGATIVE control: a well-formed marker records no fault at all, so the
+    # assertion above is about the corrupt timestamp and not about the helper
+    # always reporting one.
+    good = snapshot.SnapshotBuilder()
+    monkeypatch.setattr(storage, "iter_events", lambda project: [
+        _ev("carve-demo-2", kind="test-health", age_days=5.0, sequence=1)])
+    assert d._days_since_test_health_carve("demo", builder=good) == pytest.approx(
+        5.0, abs=0.01)
+    assert good.audit().permits_effects
 
 
-def test_days_since_unreadable_log_is_zero_not_none_FAIL_SAFE(
+def test_days_since_unreadable_log_is_typed_unavailable(
         tmp_state, sample_project, monkeypatch):
-    """The fail-safe direction matters: this value gates spawning a real
-    agent process, so an I/O error must mean 'just carved' (don't fire),
-    never None ('never carved' -> FIRE). Asserting `is not None` alone
-    would pass on the wrong answer, so pin the value."""
+    """CR-02a revises the fail-safe direction.
+
+    The old reasoning was right that None ('never carved' -> FIRE) is the
+    wrong answer, and 0.0 does avoid spending on a carve. What it missed is
+    that 0.0 is ALSO wrong: it is indistinguishable from a genuine recent
+    carve, so a persistently unreadable log silently disables the cadence for
+    as long as the fault lasts, emitting nothing. Neither sentinel is the
+    truth. The log is authoritative, and the pass fails closed with one
+    actionable event naming it.
+
+    The MALFORMED-timestamp branch keeps 0.0 as its arithmetic result but
+    additionally records an authoritative fault -- see
+    test_days_since_bad_timestamp_is_recorded_as_malformed below."""
     def boom(project):
         raise OSError("event log unreadable")
     monkeypatch.setattr(storage, "iter_events", boom)
     d = daemon.Daemon({"demo": sample_project.root})
-    assert d._days_since_test_health_carve("demo") == 0.0
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._days_since_test_health_carve("demo")
 
 
 # ==========================================================================
