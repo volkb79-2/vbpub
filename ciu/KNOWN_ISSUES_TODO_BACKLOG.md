@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-07-21.
+Last updated: 2026-08-03 (CIU-13 filed by dstdns).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -44,6 +44,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-9 | `reset_service` volume cleanup silently no-ops in DooD when the operator can write the logical path | High | FIXED |
 | CIU-10 | Pre-set `PHYSICAL_REPO_ROOT` contamination from a sibling repo's sourced `ciu.env` corrupts `ciu env generate` for a nested repo | High | FIXED |
 | CIU-11 | `standalone_root` (S1.2) guard did not fire on `ciu render`: `deploy.py` detected the standalone root from the already-resolved `repo_root` (the contaminated value) instead of the invocation dir, so `ciu render` from a sibling repo with a stale `$REPO_ROOT` rendered the *other* repo's stacks silently; `ciu up` (engine) checked `working_dir` and was correct. Fixed by a shared `enforce_standalone_root(invocation_dir)` helper both paths call. | High | FIXED |
+| CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -239,3 +240,114 @@ passed through unchanged.
 
 **Tests:** Nine new tests in `test_ciu_config_model.py` under the
 `CIU-COMMENT-ENV: TOML-aware comment handling` section.
+
+---
+
+### CIU-13 detail: a partial `[<root>.governance]` table silently disables governance (fail-open)
+
+**Reported by:** dstdns, 2026-08-03, while sizing the gating `test-runner` container.
+**Severity:** High — the failure mode is an **unconfined container on a shared
+production host**, produced silently by what looks like a one-key tuning edit.
+
+**This is not an implementation/spec mismatch.** The behaviour is intentional and
+documented: S15.10 says the global table applies only to a stack that declares
+"none of its own", and `governance.resolve_stack_governance`'s docstring states it
+outright — *"The two layers do not deep-merge (S15.10): a stack with its own table,
+however small, fully owns its governance config and does not inherit unset keys from
+the global default."* The report is that **the intended design fails open**, which
+for a resource-governance mechanism is the wrong direction.
+
+**Mechanism.** Two layers merge with *different* rules, which is the source of the
+surprise:
+
+* **S15.2** — a stack's table *is* shallow-merged, but over `GOVERNANCE_DEFAULTS`
+  (code-level, `enabled = false`). "Any key it omits falls through" is true here.
+* **S15.10** — the global `[governance]` in `ciu.global.toml` is *not* a merge layer
+  at all. It is an all-or-nothing substitute used only when the stack has no table.
+
+So "governance config merges" is true at one layer and false at the other. The
+result is a cliff rather than a gradient:
+
+| Stack declares | Effective config |
+|---|---|
+| no `[<root>.governance]` at all | the global table — fully governed |
+| `[<root>.governance]` with **one** key | `GOVERNANCE_DEFAULTS` + that key ⇒ `enabled = false` ⇒ **ungoverned** |
+
+**Live repro (verbatim, dstdns @ `1f5306e8`).** Global config
+(`ciu.global.toml.j2`) declares the estate default:
+
+```toml
+[governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+ksm_optin = "tools/ksm-optin/ksm-optin.so"
+mem_limit = "2g"
+device = "/dev/vda"
+```
+
+Intent: raise *only* `mem_limit` for the one stack that runs `pytest -n auto` under
+coverage. Edit made to `tools/test-runner/ciu.defaults.toml.j2`:
+
+```toml
+[test_runner.governance]
+mem_limit = "8g"
+```
+
+`ciu up --dir tools/test-runner -y` then printed exactly one line about it:
+
+```
+[GOVERNANCE] disabled ([<root>.governance].enabled is false)
+```
+
+and produced:
+
+```
+$ docker inspect dstdns-98535c-test-runner \
+    --format 'CgroupParent={{.HostConfig.CgroupParent}} Memory={{.HostConfig.Memory}}'
+CgroupParent= Memory=0
+```
+
+No cgroup parent, no memory cap, on a host whose whole point is keeping dev work
+from starving a production tenant. The container the edit was meant to *raise* from
+2g to 8g came back with **no limit at all**, and nothing in the output says "your
+override turned this off".
+
+**Why this is worth changing.** S15.2 already contains the correct instinct in the
+adjacent case: `resolve_cgroup_parent` refuses to guess, and "governance is enabled
+but no cgroup_parent is resolvable" is a hard `[S15.2]` abort — explicitly to avoid
+silently misplacing a container. But the layer *above* it can silently switch
+governance off wholesale, which is a strictly worse outcome (no placement **and** no
+limits) reached with no error at all. The guard and the trap are one function apart.
+
+The log line is also indistinguishable from the legitimate case. `[GOVERNANCE]
+disabled ([<root>.governance].enabled is false)` is exactly what a deliberate opt-out
+prints; nothing marks that an `enabled = true` global was overridden into `false` by
+a table that never mentioned `enabled`.
+
+**Fix options** (consumer's view — CIU owns the call):
+
+1. **Make S15.10 a merge layer**, consistent with S15.2: resolve
+   `GOVERNANCE_DEFAULTS` → global `[governance]` → stack `[<root>.governance]`,
+   shallow, last-wins. Most intuitive, matches how every other default in CIU reads,
+   and makes the one-key override do what it looks like it does.
+2. **Keep all-or-nothing but fail closed**: if a global `[governance]` with
+   `enabled = true` exists and a stack declares a table that omits `enabled`, abort
+   with an `[S15.x]` error naming both, in the same spirit as the existing
+   `cgroup_parent` abort. Preserves "a stack fully owns its config" while making the
+   ownership transfer explicit.
+3. **Minimum viable**: keep the semantics, but when governance resolves to disabled
+   *because* a partial stack table displaced an enabled global, log it as a WARNING
+   that names the cause and the keys that were dropped — not the same INFO line a
+   deliberate opt-out prints.
+
+(1) is the consumer preference. Whichever is chosen, S15.1's declaration block would
+read better if it stated the merge base explicitly — the current text can be read as
+"omitted keys fall through to the global", which is what a reader of S15.2 will
+assume.
+
+**Consumer-side pointer:** dstdns `tools/test-runner/ciu.defaults.toml.j2` carries a
+comment recording the trap and restates all five global keys as the workaround.
+Remove it if this is fixed upstream.
+
+**SPEC IDs touched by a fix:** S15.1 (declaration/merge-base wording), S15.2
+(defaults and merge), S15.10 (global default resolution).
