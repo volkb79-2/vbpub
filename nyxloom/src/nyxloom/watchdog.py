@@ -199,18 +199,13 @@ def detect_runaways(recent_events: list[Event], cfg: WatchdogConfig) -> list[Run
     # time-windowed): a daemon that is up and answering its TCP healthcheck
     # but raising every single pass. See module docstring.
     #
-    # CR-16's OWN RECONCILE_HEARTBEAT (daemon.Daemon._record_heartbeat) is
-    # written once at the end of EVERY run_pass -- success or failure alike
-    # -- so a raw scan of `recent_events` would see it interleaved after
-    # every TICK_ERROR and never find two "consecutive" without it,
-    # defeating the very pattern it exists alongside. It carries no domain
-    # signal (KNOWN_IGNORED_EVENT_TYPES: audit-only, never a real pass
-    # outcome), so it is excluded here and ONLY here -- (a)/(b)/(c) above
-    # are untouched, and are unaffected in any case since none of them scan
-    # raw adjacency without first filtering to a domain-meaningful type.
-    meaningful = [ev for ev in recent_events if ev.type is not EventType.RECONCILE_HEARTBEAT]
+    # CR-16's own deadman heartbeat is deliberately NOT an event (it is a
+    # gauge -- storage.record_heartbeat), which is what keeps this raw
+    # adjacency scan meaningful: an event written at the end of every pass,
+    # success or failure alike, would sit between every pair of TICK_ERRORs
+    # and this pattern would never find two "consecutive".
     tick_error_run = 0
-    for ev in reversed(meaningful):
+    for ev in reversed(recent_events):
         if ev.type is EventType.TICK_ERROR:
             tick_error_run += 1
         else:

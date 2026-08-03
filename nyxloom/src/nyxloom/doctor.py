@@ -40,13 +40,16 @@ available standalone via `liveness_findings(cfg)` (the fast path
 `nyxloom doctor --liveness` and the container healthcheck use — see
 cli.cmd_doctor and nyxloomd/docker-compose.yml):
     reconcile-deadman   critical no evidence of a completed reconcile pass
-                                (RECONCILE_HEARTBEAT, or any event, absent a
-                                heartbeat) within reconcile_interval_seconds
+                                (the store's heartbeat gauge, or the most
+                                recent event of any type absent a heartbeat)
+                                within reconcile_interval_seconds
                                 * cfg.policy.deadman_multiple.
     tick-error-streak   critical watchdog.detect_runaways' 'tick-error-streak'
-                                pattern fired over the recent event window:
-                                the daemon is looping (so the deadman above
-                                is silent) but raising every pass.
+                                pattern fired over the recent event window AND
+                                the newest TICK_ERROR is still inside the same
+                                staleness threshold: the daemon is looping (so
+                                the deadman above is silent) but raising every
+                                pass, NOW rather than at some point in the past.
     notify-transport-unreachable
                         critical notify.probe_transport(cfg.notify) reports
                                 'unreachable'. 'unconfigured'/'healthy' ->
@@ -135,15 +138,16 @@ def _deadman_finding(cfg: ProjectConfig, events: list) -> DoctorFinding | None:
     invisible to a TCP healthcheck and to every push-based alarm, because
     both require the daemon to be the one raising them. Read the last
     evidence of a completed pass straight from the store -- the SAME
-    RECONCILE_HEARTBEAT `daemon.Daemon._record_heartbeat` writes at the end
-    of every run_pass, win, lose, or draw -- so this answers correctly even
-    when the daemon process that used to write it is gone. No RECONCILE_
-    HEARTBEAT at all falls back to the most recent event of any type (a
-    just-started project has a DAEMON_STARTED to anchor on); no events at
-    all means the project has never ticked, which is not yet a fault."""
-    heartbeats = [ev.timestamp for ev in events if ev.type is EventType.RECONCILE_HEARTBEAT]
-    if heartbeats:
-        reference = max(heartbeats)
+    heartbeat gauge `daemon.Daemon._record_heartbeat` stamps at the end of
+    every run_pass, win, lose, or draw -- so this answers correctly even
+    when the daemon process that used to write it is gone. No heartbeat at
+    all (a store written before this check existed) falls back to the most
+    recent event of any type (a just-started project has a DAEMON_STARTED to
+    anchor on); no events at all means the project has never ticked, which
+    is not yet a fault."""
+    heartbeat = storage.read_heartbeat(cfg.project_id)
+    if heartbeat is not None:
+        reference = heartbeat
     elif events:
         reference = max(ev.timestamp for ev in events)
     else:
@@ -166,7 +170,25 @@ def _tick_error_streak_finding(cfg: ProjectConfig, events: list) -> DoctorFindin
     """CR-16 (RISK-007): a daemon that is up, looping (so `_deadman_finding`
     above stays silent), healthy by its TCP check, and raising every single
     pass -- reusing watchdog.detect_runaways' pattern (d) rather than a
-    second, divergent scan of the same event shape."""
+    second, divergent scan of the same event shape.
+
+    RECENCY GUARD (CR-16 review). `detect_runaways` is deliberately pure and
+    clock-free: its pattern (d) is a TRAILING RUN in emission order, which is
+    the right per-cycle measure for the daemon evaluating it live, but it has
+    no notion of "still". A burst of TICK_ERRORs followed by recovery leaves
+    that run at the tail of the log until some LATER event displaces it -- and
+    a recovered daemon reconciling an idle project emits nothing, so nothing
+    ever does. Without this guard `nyxloom doctor --liveness` would keep
+    exiting non-zero for a fault that ended weeks ago, which via the container
+    healthcheck means permanently UNHEALTHY: the outage detector causing the
+    outage. Reported only while the newest TICK_ERROR is inside the same
+    staleness threshold the deadman uses, so "failing every pass" means now.
+    """
+    threshold = cfg.policy.reconcile_interval_seconds * cfg.policy.deadman_multiple
+    last_error = max((ev.timestamp for ev in events if ev.type is EventType.TICK_ERROR),
+                     default=None)
+    if last_error is None or (utc_now() - last_error).total_seconds() > threshold:
+        return None
     signals = watchdog.detect_runaways(events, watchdog.WatchdogConfig())
     streak = next((s for s in signals if s.pattern == "tick-error-streak"), None)
     if streak is None:
@@ -180,13 +202,29 @@ def _tick_error_streak_finding(cfg: ProjectConfig, events: list) -> DoctorFindin
     )
 
 
-def _transport_finding(cfg: ProjectConfig) -> DoctorFinding | None:
+def _transport_finding(cfg: ProjectConfig, probe_cache: dict | None = None) -> DoctorFinding | None:
     """CR-16 (RISK-007): the second, independent alarm path. An active probe
     of the SAME channel notify.notify_event would use -- but this call, and
     the finding it produces, never travels over that channel: it is reported
     through doctor's findings table and this process's own exit code, which
-    is exactly what makes it independent of the transport it is checking."""
-    probe = notify.probe_transport(cfg.notify)
+    is exactly what makes it independent of the transport it is checking.
+
+    `probe_cache` (CR-16 review) memoises ONE invocation's probes by channel
+    identity. Every registered project resolves the same NYXLOOM_NTFY_URL by
+    default (config.ProjectConfig.load's env override), so a five-project
+    sweep otherwise makes five identical outbound requests -- 21,600/day at
+    the healthcheck's 20s interval -- and, worse, serialises five 3s timeouts
+    against a HUNG server into 15s, blowing the healthcheck's own 12s budget
+    and reporting a timeout instead of the finding. Opt-in: passing no cache
+    keeps every call a genuinely fresh probe."""
+    nc = cfg.notify
+    key = (nc.ntfy_url, nc.ntfy_topic, nc.webhook_url)
+    if probe_cache is not None and key in probe_cache:
+        probe = probe_cache[key]
+    else:
+        probe = notify.probe_transport(nc)
+        if probe_cache is not None:
+            probe_cache[key] = probe
     if probe.status != "unreachable":
         return None
     return DoctorFinding(
@@ -198,7 +236,8 @@ def _transport_finding(cfg: ProjectConfig) -> DoctorFinding | None:
     )
 
 
-def liveness_findings(cfg: ProjectConfig) -> list[DoctorFinding]:
+def liveness_findings(cfg: ProjectConfig, *,
+                       probe_cache: dict | None = None) -> list[DoctorFinding]:
     """CR-16 (RISK-007): the three checks that answer "is this project's
     reconciliation actually alive", not just "is a socket listening" --
     deadman, TICK_ERROR streak, and notification-transport reachability.
@@ -226,7 +265,7 @@ def liveness_findings(cfg: ProjectConfig) -> list[DoctorFinding]:
     for kind, check in (
         ("reconcile-deadman", lambda: _deadman_finding(cfg, events)),
         ("tick-error-streak", lambda: _tick_error_streak_finding(cfg, events)),
-        ("notify-transport-unreachable", lambda: _transport_finding(cfg)),
+        ("notify-transport-unreachable", lambda: _transport_finding(cfg, probe_cache)),
     ):
         try:
             findings.append(check())

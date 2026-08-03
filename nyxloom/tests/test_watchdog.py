@@ -295,25 +295,23 @@ def test_tick_error_streak_never_carries_the_free_text_error_payload():
     assert "SECRET-LOOKING-TOKEN-abc123" not in streak.detail
 
 
-def test_tick_error_streak_survives_reconcile_heartbeat_interleaving():
-    """Regression: CR-16's OWN RECONCILE_HEARTBEAT is written at the end of
-    EVERY run_pass, success or failure alike -- so a naive scan of raw
-    emission order would see one after EVERY TICK_ERROR and never find two
-    "consecutive", permanently defeating this exact pattern. A first draft
-    of this feature had precisely that bug (caught by this test's
-    ancestor, a full Daemon.run_pass integration test in
-    tests/test_liveness.py)."""
+def test_tick_error_streak_is_broken_by_any_event_the_daemon_writes_per_pass():
+    """The constraint CR-16's deadman heartbeat has to respect, stated as a
+    test on THIS module: (d) is a raw adjacency scan, so ANY event written
+    once per reconcile pass -- success or failure alike -- would sit between
+    every pair of TICK_ERRORs and permanently defeat the pattern. That is
+    exactly why the heartbeat is a gauge (storage.record_heartbeat, one
+    overwritten `meta` row) and not an event. This test fails the moment
+    someone reintroduces a per-pass event type."""
     base = _utc(2026, 8, 3, 12, 0)
     events = []
     for i in range(5):
         events.append(make_event(i * 2 + 1, EventType.TICK_ERROR,
                                   base + timedelta(minutes=i * 2)))
-        events.append(make_event(i * 2 + 2, EventType.RECONCILE_HEARTBEAT,
+        events.append(make_event(i * 2 + 2, EventType.DAEMON_STARTED,
                                   base + timedelta(minutes=i * 2 + 1)))
-    signals = detect_runaways(events, WatchdogConfig())
-    streaks = [s for s in signals if s.pattern == "tick-error-streak"]
-    assert len(streaks) == 1
-    assert streaks[0].detail == "5 consecutive TICK_ERROR events"
+    assert [s for s in detect_runaways(events, WatchdogConfig())
+            if s.pattern == "tick-error-streak"] == []
 
 
 def test_tick_error_streak_custom_threshold_more_sensitive():

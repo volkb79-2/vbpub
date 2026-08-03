@@ -102,6 +102,23 @@ def iter_events(project: str, since: int = 0) -> Iterator[Event]:
 
 
 # ---------------------------------------------------------------------------
+# liveness deadman gauge (CR-16, RISK-007)
+
+def record_heartbeat(project: str) -> None:
+    """Stamp "a reconcile pass completed for this project, now".
+
+    Deliberately NOT an event: see `storage_sqlite.record_heartbeat`. One
+    overwritten row, so a per-pass heartbeat costs the event log nothing.
+    """
+    storage_sqlite.record_heartbeat(project)
+
+
+def read_heartbeat(project: str):
+    """The last heartbeat stamp (aware datetime), or None if never written."""
+    return storage_sqlite.read_heartbeat(project)
+
+
+# ---------------------------------------------------------------------------
 # statefiles
 
 def load_state(project: str, task_id: str) -> TaskStateFile | None:

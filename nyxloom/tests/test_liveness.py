@@ -73,7 +73,28 @@ def test_run_pass_records_heartbeat_on_a_clean_idle_pass(
         tmp_state, sample_project, quiet_daemon):
     d = daemon.Daemon({"demo": sample_project.root})
     d.run_pass("demo")
-    assert EventType.RECONCILE_HEARTBEAT in _types()
+    assert storage.read_heartbeat("demo") is not None
+
+
+def test_the_heartbeat_is_a_gauge_and_never_grows_the_event_log(
+        tmp_state, sample_project, quiet_daemon):
+    """The constraint that decides WHERE the heartbeat lives. It is written
+    once per pass, per project, forever -- ~2,880/day at the default 30s
+    interval against a measured organic rate of ~70-110/day on the live
+    stores -- so as an EVENT it would be ~97% of the log within a day, and
+    `run_pass` itself re-reads the WHOLE log every pass as an authoritative
+    snapshot input. Ten idle passes must therefore leave the event log
+    exactly as they found it while still advancing the heartbeat."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+    before = len(_events())
+    first = storage.read_heartbeat("demo")
+
+    for _ in range(10):
+        d.run_pass("demo")
+
+    assert len(_events()) == before, "the deadman heartbeat is appending to the event log"
+    assert storage.read_heartbeat("demo") >= first
 
 
 def test_run_pass_records_heartbeat_on_snapshot_unavailable(
@@ -86,9 +107,8 @@ def test_run_pass_records_heartbeat_on_snapshot_unavailable(
     assert d.run_pass("demo") == 0
 
     fault_mp.undo()  # lift the fault before reading the log back
-    types = _types()
-    assert EventType.SNAPSHOT_UNAVAILABLE in types
-    assert EventType.RECONCILE_HEARTBEAT in types, (
+    assert EventType.SNAPSHOT_UNAVAILABLE in _types()
+    assert storage.read_heartbeat("demo") is not None, (
         "a fail-closed pass is STILL a completed pass for deadman purposes")
 
 
@@ -101,32 +121,27 @@ def test_run_pass_records_heartbeat_on_the_pass_level_exception_net(
     d = daemon.Daemon({"demo": sample_project.root})
     assert d.run_pass("demo") == 0
 
-    types = _types()
-    assert EventType.TICK_ERROR in types
-    assert EventType.RECONCILE_HEARTBEAT in types
+    assert EventType.TICK_ERROR in _types()
+    assert storage.read_heartbeat("demo") is not None
 
 
 def test_heartbeat_write_failure_is_contained_and_does_not_mask_the_pass(
         tmp_state, sample_project, quiet_daemon, monkeypatch):
-    """Fault-injection-matrix style (CR-02's shape): the store's
-    append_and_apply raises SPECIFICALLY for the heartbeat's own write --
-    every other call in the SAME pass goes through real -- so run_pass must
-    still return its real result and its own events must still land. This
-    is the daemon-side half of acceptance bullet 4 ("the alarm path is
-    itself covered by the fault-injection matrix in CR-02")."""
-    real = storage.append_and_apply
-
-    def _flaky(project, states, **kwargs):
-        if kwargs.get("type") is EventType.RECONCILE_HEARTBEAT:
-            raise RuntimeError("store hiccup")
-        return real(project, states, **kwargs)
-    monkeypatch.setattr(storage, "append_and_apply", _flaky)
+    """Fault-injection-matrix style (CR-02's shape): the store's heartbeat
+    write raises -- every other call in the SAME pass goes through real --
+    so run_pass must still return its real result and its own events must
+    still land. This is the daemon-side half of acceptance bullet 4 ("the
+    alarm path is itself covered by the fault-injection matrix in CR-02")."""
+    def _flaky(project):
+        raise RuntimeError("store hiccup")
+    monkeypatch.setattr(storage, "record_heartbeat", _flaky)
 
     d = daemon.Daemon({"demo": sample_project.root})
     result = d.run_pass("demo")  # must not raise
 
     assert isinstance(result, int)
-    assert EventType.RECONCILE_HEARTBEAT not in _types(), "the flaky write never landed"
+    monkeypatch.undo()
+    assert storage.read_heartbeat("demo") is None, "the flaky write never landed"
 
 
 # ---------------------------------------------------------------------------
@@ -147,19 +162,18 @@ def test_killing_the_daemon_mid_pass_is_detected_through_a_daemon_free_path(
     require the daemon to be alive.
 
     "A long while ago" is simulated by making the two real ticks' own
-    RECONCILE_HEARTBEAT writes carry an old timestamp (storage_sqlite's
-    own clock, monkeypatched only for the duration of the two run_pass
-    calls) rather than a wall-clock sleep (AUTHORING.md 3b: no sleep
-    decides a verdict) -- the liveness check afterwards reads the REAL
-    current time, so the staleness it reports is genuine, not asserted by
-    fiat."""
+    heartbeat writes carry an old timestamp (storage_sqlite's own clock,
+    monkeypatched only for the duration of the two run_pass calls) rather
+    than a wall-clock sleep (AUTHORING.md 3b: no sleep decides a verdict) --
+    the liveness check afterwards reads the REAL current time, so the
+    staleness it reports is genuine, not asserted by fiat."""
     old_now = utc_now() - timedelta(seconds=999)
     fault_mp.setattr(storage_sqlite, "utc_now", lambda: old_now)
     d = daemon.Daemon({"demo": sample_project.root})
     d.run_pass("demo")
     d.run_pass("demo")
     fault_mp.undo()
-    assert EventType.RECONCILE_HEARTBEAT in _types()
+    assert storage.read_heartbeat("demo") is not None
     # The daemon is "killed" here: simply never called again. Nothing below
     # constructs a Daemon, calls run_pass, or otherwise touches `d`.
 

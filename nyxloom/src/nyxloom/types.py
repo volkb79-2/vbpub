@@ -357,18 +357,14 @@ class EventType(enum.Enum):
     # shape reference/DOCTRINE.md and watchdog.py both exist to prevent.
     SNAPSHOT_DEGRADED = "SNAPSHOT_DEGRADED"
     # CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
-    # RISK-007): the durable deadman heartbeat. daemon.Daemon._record_
-    # heartbeat appends one of these at the end of EVERY run_pass invocation
-    # -- success, fail-closed, or the pass-level exception net -- so "the
-    # daemon stopped looping over this project" is a fact a SEPARATE process
-    # (doctor.liveness_findings, driven by `nyxloom doctor --liveness`, never
-    # by daemon.Daemon) can read straight off the store. Audit-only, no
-    # TaskStateFile projection (same no-op shape as SNAPSHOT_UNAVAILABLE/
-    # DEGRADED above; registered in test_invariants.KNOWN_IGNORED_EVENT_
-    # TYPES) and never pushed (absent from NotifyConfig.push_classes by
-    # default): a channel this frequent would BE the notification storm
-    # watchdog.py exists to catch.
-    RECONCILE_HEARTBEAT = "RECONCILE_HEARTBEAT"
+    # RISK-007) deliberately adds NO event type. Its durable per-project
+    # deadman heartbeat fires once per reconcile pass, forever -- ~2,880 a day
+    # per project at the default 30s interval, against a measured organic rate
+    # of ~70-110 -- so it is a GAUGE (one overwritten row in the store's `meta`
+    # table; storage.record_heartbeat / read_heartbeat), not an event. This
+    # enum is the vocabulary of things that HAPPENED and is read back in full
+    # by run_pass, render, rebuild, and export; a per-tick liveness stamp
+    # belongs in none of them.
 
 
 class ActorKind(enum.Enum):

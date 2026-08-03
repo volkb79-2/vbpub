@@ -441,9 +441,15 @@ def cmd_doctor(args) -> int:
     # alarm path independent of the daemon being alive at all.
     if args.liveness:
         live_findings = []
+        # One shared transport-probe cache for the whole invocation: every
+        # registered project resolves the same NYXLOOM_NTFY_URL by default, so
+        # without it an N-project sweep makes N identical outbound requests and
+        # can serialise N x the probe timeout into the healthcheck's own
+        # wall-clock budget. See doctor._transport_finding.
+        probe_cache: dict = {}
         for pid in projects:
             cfg = config.ProjectConfig.load(registry[pid])
-            live_findings.extend(doctor.liveness_findings(cfg))
+            live_findings.extend(doctor.liveness_findings(cfg, probe_cache=probe_cache))
         rows = [{
             "kind": f.kind, "severity": f.severity, "message": f.message,
             "project": f.project or "", "refs": ", ".join(f.refs) if f.refs else "",

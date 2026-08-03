@@ -1104,7 +1104,8 @@ class Daemon:
             # answer is "did the daemon loop over this project at all", not
             # "did it loop successfully"; a fail-closed or erroring pass is
             # already its own actionable event (SNAPSHOT_UNAVAILABLE /
-            # TICK_ERROR). See _record_heartbeat and doctor.liveness_findings.
+            # TICK_ERROR). A single overwritten gauge row, NOT an event --
+            # see _record_heartbeat and doctor.liveness_findings.
             self._record_heartbeat(project)
 
     def _record_heartbeat(self, project: str) -> None:
@@ -1114,21 +1115,27 @@ class Daemon:
         Daemon itself -- which is what makes it a deadman rather than
         in-memory bookkeeping a restart erases.
 
+        A GAUGE, not an event (`storage.record_heartbeat` -> one overwritten
+        row in the store's `meta` table). This fires once per pass, per
+        project, forever: as an EVENT it would append ~2,880 rows/project/day
+        at the default 30s interval against a measured organic rate of
+        ~70-110/day, i.e. the log would be ~97% heartbeat within a day -- and
+        `run_pass` above re-reads the whole log every pass as an authoritative
+        snapshot input, so the deadman would have bought liveness detection by
+        making every full-log reader (this method, `render`, `doctor rebuild`,
+        `export_jsonl`) progressively slower forever. It is likewise not
+        pushed: a channel firing once a pass would BE the notification storm
+        watchdog.py exists to catch.
+
         Deliberately NOT `_append_ev` (no `cfg`/`states` dependency, so it
-        still runs when config failed to load) and deliberately NOT pushed:
-        RECONCILE_HEARTBEAT is absent from NotifyConfig.push_classes by
-        default, and a channel firing once a pass would BE the notification
-        storm watchdog.py exists to catch. Contained: the store being the
+        still runs when config failed to load). Contained: the store being the
         thing that is broken is already reported elsewhere in this same
         pass (SNAPSHOT_UNAVAILABLE or the pass-level TICK_ERROR above), and
         a heartbeat write failing on TOP of that must not raise out of a
         `finally` and mask whichever of those two already ran.
         """
         try:
-            storage.append_and_apply(
-                project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
-                type=EventType.RECONCILE_HEARTBEAT, payload={},
-            )
+            storage.record_heartbeat(project)
         except Exception:  # census: cleanup/containment (CR-16)
             pass
 

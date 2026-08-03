@@ -24,6 +24,18 @@ control-plane import: CR-16 adds no new module to the closure, only new
 functions on three already-owned ones plus a new `doctor.py` -> `watchdog.py`
 import (both already listed).
 
+CR-16's independent review then moved its per-pass liveness heartbeat out of
+the event log and into the store's `meta` table as an overwritten gauge, which
+adds a small paired read/write API (`record_heartbeat`/`read_heartbeat`) to
+`storage.py` and `storage_sqlite.py`. Both rows stay inside their size
+tolerance and both remain **CR-04's** to redesign -- CR-16 is a caller of that
+surface, not a co-owner of it. The reasoning is in the functions' own
+docstrings: a heartbeat fires once per reconcile pass forever (~2,880/project/
+day at the default 30s interval, against a measured organic event rate of
+~70-110/day on the live stores), and `run_pass` re-reads the whole event log
+every pass as an authoritative snapshot input, so recording it as an event
+would have degraded every full-log reader in the system, permanently.
+
 ## Mechanical contract (enforced by `tests/test_core_characterization.py`)
 
 This document is checked by tests, so a reader editing it knows what fails and

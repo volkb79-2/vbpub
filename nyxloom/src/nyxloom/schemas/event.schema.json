@@ -73,8 +73,7 @@
         "CARVER_PROPOSAL_ADMITTED",
         "SNAPSHOT_UNAVAILABLE",
         "SNAPSHOT_DEGRADED",
-        "TICK_ERROR",
-        "RECONCILE_HEARTBEAT"
+        "TICK_ERROR"
       ]
     },
     "payload": {
