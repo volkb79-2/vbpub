@@ -6176,7 +6176,7 @@ def test_carver_snapshot_feature_off_is_inert_and_build_input_byte_identical(
     )
 
     d = daemon.Daemon({project: cfg.root})
-    assert d._carver_session(project, cfg) is None
+    assert d._carver._carver_session(project, cfg) is None
     assert d._pending_carver_feeds(project, cfg, None) == ()
 
     captured = _scripted(monkeypatch, [[]])
@@ -6211,7 +6211,7 @@ def test_carver_session_feature_on_projects_snapshot_from_event_log(
     expected = carver_session.project_session(list(storage.iter_events(project)))
 
     d = daemon.Daemon({project: cfg.root})
-    snap = d._carver_session(project, cfg)
+    snap = d._carver._carver_session(project, cfg)
 
     assert snap is not None
     assert snap.to_dict() == expected.to_dict()
@@ -6265,7 +6265,7 @@ def test_pending_carver_feeds_orders_and_excludes_consumed_and_missing_digest(
     )
 
     d = daemon.Daemon({project: cfg.root})
-    snap = d._carver_session(project, cfg)
+    snap = d._carver._carver_session(project, cfg)
     assert snap.last_consumed_event_sequence == 1
 
     feeds = d._pending_carver_feeds(project, cfg, snap)
@@ -6297,7 +6297,7 @@ def test_pending_carver_feeds_caps_at_retain_merge_digests(
         )
 
     d = daemon.Daemon({project: cfg.root})
-    snap = d._carver_session(project, cfg)
+    snap = d._carver._carver_session(project, cfg)
     feeds = d._pending_carver_feeds(project, cfg, snap)
 
     assert len(feeds) == 2
@@ -6327,7 +6327,7 @@ def test_carver_session_unreadable_log_is_typed_unavailable_not_a_fresh_session(
 
     d = daemon.Daemon({project: cfg.root})
     with pytest.raises(snapshot.SnapshotUnavailable) as exc:
-        d._carver_session(project, cfg)
+        d._carver._carver_session(project, cfg)
     assert exc.value.descriptor.name == "event_log"
     assert exc.value.descriptor.input_class is snapshot.InputClass.AUTHORITATIVE
 
@@ -6378,7 +6378,7 @@ def test_pending_carver_feeds_retain_zero_means_none_retained(
     )
 
     d = daemon.Daemon({project: cfg.root})
-    snap = d._carver_session(project, cfg)
+    snap = d._carver._carver_session(project, cfg)
     assert d._pending_carver_feeds(project, cfg, snap) == ()
 
 
@@ -6495,7 +6495,7 @@ def test_carver_ack_O1_headline_no_refire(
             project, actor=Actor(ActorKind.OPERATOR, "test"),
             type=ev.type, payload=ev.payload)
 
-    snap = d._carver_session(project, cfg)
+    snap = d._carver._carver_session(project, cfg)
     assert snap is not None
     assert snap.last_consumed_event_sequence == 2
 
@@ -6639,7 +6639,7 @@ def test_carver_ack_O4_proposal_safety_invariant(
 
     # -- verify the projector folds both, cursor at 1, feeds at seq 4
     d = daemon.Daemon({project: cfg.root})
-    snap = d._carver_session(project, cfg)
+    snap = d._carver._carver_session(project, cfg)
     assert snap is not None
     assert snap.last_consumed_event_sequence == 1
 
@@ -6693,7 +6693,7 @@ def test_carver_ack_O5_byte_identical_off(
     # -- part 1: fresh session -> _carver_session is None
     assert cfg.carve.session == "fresh"
     d = daemon.Daemon({project: cfg.root})
-    assert d._carver_session(project, cfg) is None
+    assert d._carver._carver_session(project, cfg) is None
 
     # -- part 2: a successful non-merge-feed turn (mode="carve") does NOT
     #    emit CARVER_CONTEXT_CONSUMED
@@ -6738,7 +6738,7 @@ def test_carver_ack_helper_empty_source_ids_returns_none(
     guard carries a real behavioural assertion."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
-    assert d._highest_consumed_feed_sequence("demo", ()) is None
+    assert d._carver._highest_consumed_feed_sequence("demo", ()) is None
 
 
 def test_carver_ack_helper_storage_error_is_typed_unavailable(
@@ -6758,7 +6758,7 @@ def test_carver_ack_helper_storage_error_is_typed_unavailable(
 
     monkeypatch.setattr(storage, "iter_events", _boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._highest_consumed_feed_sequence("demo", ("merge:demo:c1",))
+        d._carver._highest_consumed_feed_sequence("demo", ("merge:demo:c1",))
 
 
 

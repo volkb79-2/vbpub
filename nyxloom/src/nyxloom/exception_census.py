@@ -104,8 +104,9 @@ LEGACY_BUDGET: dict[str, int] = {
     # degradation and the merge digest builder's containment). Every one is
     # CLASSIFIED in its new module rather than inherited as debt -- the
     # per-module budget doing what it was designed for, a move lowering a
-    # number instead of rewriting a registry.
-    "daemon.py": 31,
+    # number instead of rewriting a registry. CR-05d took the last one out
+    # with the carver-session surface and CLASSIFIED it there.
+    "daemon.py": 30,
     # Diagnostics: doctor and render both read the world defensively so a
     # broken project still produces a readable report. CR-16 owns doctor's
     # (liveness reporting must not itself go dark); CR-11 owns render's.

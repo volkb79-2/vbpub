@@ -356,6 +356,36 @@ def _scenarios() -> list[dict]:
             "action": lambda: reconcile.LaunchSelfReview(
                 task_id="demo-D34", source_attempt_id="att-d34"),
         },
+        # -- CR-05d: the carver session ---------------------------------
+        {
+            # Feature-off is the DEFAULT, and it must stay byte-identical:
+            # `cfg.carve.session` is "fresh" for `sample_project`, so the
+            # snapshot reader answers None and every verb refuses cleanly.
+            "name": "start-carver-session-feature-off",
+            "seed": lambda p, cfg: None,
+            "action": lambda: reconcile.StartCarverSession(project="demo",
+                                                           mode="headroom"),
+        },
+        {
+            "name": "resume-carver-session-feature-off",
+            "seed": lambda p, cfg: None,
+            "action": lambda: reconcile.ResumeCarverSession(
+                project="demo", mode="merge-feed", source_ids=("d1",),
+                generation=1),
+        },
+        {
+            "name": "compact-carver-session-feature-off",
+            "seed": lambda p, cfg: None,
+            "action": lambda: reconcile.CompactCarverSession(
+                project="demo", generation=1, trigger="turns"),
+        },
+        {
+            "name": "start-carver-session-admission-refused",
+            "seed": lambda p, cfg: _pause(p, "drain-agents"),
+            "action": lambda: reconcile.StartCarverSession(project="demo",
+                                                           mode="headroom"),
+            "teardown": _unpause,
+        },
         {
             "name": "auto-merge-conflict",
             "seed": lambda p, cfg: (

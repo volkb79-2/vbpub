@@ -115,16 +115,15 @@ class TestAdmissionRefusals:
 
 class TestEnsureWorktree:
 
-    def _effector(self, git, files):
-        ports = dataclasses.replace(effects.EffectPorts.system(), git=git,
-                                    files=files)
-        return effects_attempt.AttemptEffector(ports)
+    def _ports(self, git, files):
+        return dataclasses.replace(effects.EffectPorts.system(), git=git,
+                                   files=files)
 
     def test_an_existing_worktree_is_left_alone(self, tmp_path):
         git = _Git()
         wt = tmp_path / "wt"
-        self._effector(git, _Files([wt]))._ensure_worktree(
-            tmp_path, "feat/t1", wt, "main")
+        effects_dispatch.ensure_worktree(
+            self._ports(git, _Files([wt])), tmp_path, "feat/t1", wt, "main")
         assert git.calls == [], "an existing worktree must not be re-created"
 
     def test_an_existing_branch_is_checked_out_not_recreated(self, tmp_path):
@@ -132,16 +131,16 @@ class TestEnsureWorktree:
         previous attempt's commits, and `-b` would refuse or start over."""
         git = _Git(branch_exists=True)
         wt = tmp_path / "wt"
-        self._effector(git, _Files())._ensure_worktree(
-            tmp_path, "feat/t1", wt, "main")
+        effects_dispatch.ensure_worktree(
+            self._ports(git, _Files()), tmp_path, "feat/t1", wt, "main")
         assert git.calls == [("resolve_verify", "feat/t1"),
                              ("worktree_add", str(wt), "feat/t1")]
 
     def test_a_first_dispatch_branches_from_the_default(self, tmp_path):
         git = _Git(branch_exists=False)
         wt = tmp_path / "wt"
-        self._effector(git, _Files())._ensure_worktree(
-            tmp_path, "feat/t1", wt, "main")
+        effects_dispatch.ensure_worktree(
+            self._ports(git, _Files()), tmp_path, "feat/t1", wt, "main")
         assert git.calls == [
             ("resolve_verify", "feat/t1"),
             ("worktree_add_new_branch", "feat/t1", str(wt), "main")]
