@@ -2,6 +2,24 @@
 
 - Status: **implementation go** (all conditional-go findings resolved),
   2026-07-23
+- **Amendment 1, 2026-08-03** [A1]: the companion's §Field findings adds two
+  production behaviours of vanilla Wings (mount propagation on the volumes
+  root; the unconditional pre-boot chown walk). Neither changes the resources
+  design. The consequences here are three: a fourth independent series
+  `filesystem` joins the shared patchstack and CI matrix; `doctor` gains the
+  mount-propagation and chown-walk checks; and the migration window's legacy
+  unit retirement inherits an ordering requirement. Marked **[A1]** below.
+- **Amendment 2, 2026-08-03** [A2]: the manager is named **`srdm`**
+  (*shared-ramdisk-depot-manager*) — `srdm.slice` replaces `game-releases.slice`
+  throughout, a single token so it stays at cgroup root and its class floors
+  are not dead under auto-created ancestors (Finding A). The companion also
+  reorders its program so `srdm` ships on **stock Wings** first
+  (`exposure: host-bind`) and the provider protocol becomes v2. **This series
+  is unaffected in substance** — it was always independent of the manager —
+  but two things follow: the resources ladder is no longer blocked behind the
+  manager's phases in either direction, and `srdm.slice`'s admin-owned
+  `MemoryMin` is needed from the manager's *first* deployment (companion
+  Phase 1), not from its last.
 - Supersedes: [`shared-ramdisk-update-lifecycle-cgroups-1-codex-fable.md`](shared-ramdisk-update-lifecycle-cgroups-1-codex-fable.md).
   Incorporates the resources-side findings of
   [`shared-ramdisk-update-lifecycle-4-codex-combined-final-remarks.md`](shared-ramdisk-update-lifecycle-4-codex-combined-final-remarks.md)
@@ -88,7 +106,7 @@ companion.)
 ## Executive decision (carried)
 
 Cgroup support is a separate proposal and a separate patch series from the
-shared-release manager: the resources series decides where Wings containers
+`srdm` (shared-ramdisk-depot-manager): the resources series decides where Wings containers
 are charged and what policy applies; the manager owns releases, generations,
 and mount leases. They share the host hierarchy, the L2 readiness event
 (via I1), and observability conventions — never configuration, provider
@@ -140,12 +158,12 @@ sites exist (server `container.go:138`, installer `server/install.go:403`).
 
 ## Recommended host hierarchy (carried)
 
-Node-configured root; both the current `wings.slice` + `game-releases.slice`
+Node-configured root; both the current `wings.slice` + `srdm.slice`
 shape and a fresh-host `game-host.slice` umbrella are valid. Manager staging
 never sits under the game tier's protected subtree (with
 `memory_recursiveprot`, a parent's protection covers its whole subtree —
 downloaders below `wings.slice` would compete for the live games' floor).
-Note the companion's issue-7 consequence: `game-releases.slice` now carries
+Note the companion's issue-7 consequence: `srdm.slice` now carries
 its own admin-owned `MemoryMin` backing the generation class floors,
 reconciled against the same host budget as `wings.slice`.
 
@@ -468,6 +486,15 @@ Gates per phase in the companion's kickoff plan. Upstream: Pelican first,
 cross-submit Pterodactyl; R1 and R2+R3 are the first PRs; R4+ as an RFC'd
 follow-up ladder.
 
+**A fourth series shares the patchstack** [A1]: `filesystem` (one patch, F1 —
+the pre-boot chown walk skips correctly-owned entries; companion §F1). It has
+no resources-side coupling whatever — no config key, no cgroup surface, no
+shared code — and appears here only because it is in the same `series.yaml`,
+the same CI matrix, and the same combined branch
+(`combined_order: [filesystem, resources, lifecycle, integration]`). It also
+precedes R1 in the upstream queue as the smallest first PR. Nothing in the
+resources ladder waits on it.
+
 ## Observability and API (carried + ledger state)
 
 Per managed server: profile + source, desired revision (+ any
@@ -477,9 +504,17 @@ trigger, desired / systemd-applied / cgroupfs-effective values,
 admitted amount, ramp progress, degraded/required state, pending-recreate
 reason, last reconcile operation. `doctor`: cgroup v2 + controllers +
 `memory_recursiveprot`, bus, capability-probe results, root/parent units +
-floors (including `game-releases.slice` protection backing), scheduler +
+floors (including `srdm.slice` protection backing), scheduler +
 BFQ read-back, stale units, live placement audit, **ledger vs systemd
-drift**. Matched console content is never published.
+drift**, and — added by Amendment 1 [A1] — **mount health**: the effective
+propagation of every mount in the companion's containerized-Wings contract
+(`/var/lib/pterodactyl`, `/var/lib/docker/containers`, the release-store
+paths), the host peer-group state that `rslave` depends on (naming
+`mount --make-rshared` when it is missing), any mount present under
+`/var/lib/pterodactyl/volumes/**` (a violation of companion invariant 14, and
+the legacy ramdisk's normal state during migration), and the current value of
+`system.check_permissions_on_boot` together with whether F1 is present in the
+running build. Matched console content is never published.
 
 ## Security model (carried)
 
@@ -546,6 +581,14 @@ admin-owned tier declaration; egg migration per the mapping table with
 `setup-cgroups.sh`, `allowed_ramdisk_units`, `WINGS_CG_RAMDISK_UNITS`, and
 `WINGS_CG_CHILD_SERVERS` retire in the same maintenance window as the
 lifecycle migration (single-writer rule).
+
+**Ordering inherited from Amendment 1** [A1]: retiring
+`WINGS_CG_RAMDISK_UNITS` means the legacy `soulmask_tmpfs` binds under
+`/var/lib/pterodactyl/volumes/**` come down inside that same window. The
+Wings container must already be running with `propagation: rslave` on the
+volumes root before that happens, or the teardown leaves ghost mounts inside
+Wings — the 2026-07-31 failure, mid-window (companion §Migration, §Field
+findings F-a). On the case-study node this is [verified] already in place.
 
 ## Direct answers (carried, one update)
 

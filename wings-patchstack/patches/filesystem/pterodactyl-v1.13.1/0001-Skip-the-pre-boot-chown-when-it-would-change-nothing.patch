@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nyxloom-carver <development@richtfest.tech>
+Date: Mon, 3 Aug 2026 13:27:42 +0000
+Subject: [PATCH] Skip the pre-boot chown when it would change nothing
+
+Chown walks a server's whole data directory and calls Lchownat on every
+entry unconditionally. That has two costs.
+
+A chown dirties the inode and journals the change even when the ownership
+is already correct, so booting a server with a large data directory does a
+great deal of write work that changes nothing.
+
+More seriously, a chown against a read-only mount fails with EROFS whether
+or not the requested ownership already matches -- the kernel does not
+special-case a no-op. Any read-only bind mount inside a server's data
+directory therefore makes the server impossible to boot, which rules out
+otherwise reasonable setups: shared immutable game content mounted once and
+reused by several servers, or a read-only network mount.
+
+Skip the syscall when it provably changes nothing. The condition is
+narrower than "the uid and gid already match": for anything that is not a
+directory the kernel also clears the setuid and setgid bits on chown, and
+does so even when the ids are unchanged, so an entry still carrying either
+bit is chowned unconditionally and that behaviour is preserved.
+
+The entry's ownership comes from the DirEntry the walker already yields, so
+this trades one lchownat for one fstatat on the unchanged path.
+---
+ server/filesystem/filesystem.go | 40 +++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/server/filesystem/filesystem.go b/server/filesystem/filesystem.go
+index 112f996..60964a6 100644
+--- a/server/filesystem/filesystem.go
++++ b/server/filesystem/filesystem.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/apex/log"
+ 	"github.com/gabriel-vasile/mimetype"
+ 	ignore "github.com/sabhiram/go-gitignore"
++	"golang.org/x/sys/unix"
+ 
+ 	"github.com/pterodactyl/wings/config"
+ 	"github.com/pterodactyl/wings/internal/ufs"
+@@ -284,6 +285,9 @@ func (fs *Filesystem) Chown(p string) error {
+ 		if err != nil {
+ 			return err
+ 		}
++		if chownIsNoop(info, uid, gid) {
++			return nil
++		}
+ 		if err := fs.unixFS.Lchownat(dirfd, name, uid, gid); err != nil {
+ 			return err
+ 		}
+@@ -294,6 +298,42 @@ func (fs *Filesystem) Chown(p string) error {
+ 	return nil
+ }
+ 
++// chownIsNoop reports whether chowning the entry to uid:gid would change
++// nothing observable, allowing the walk in Chown to skip the syscall.
++//
++// Skipping matters for two reasons. A chown dirties the inode (and journals
++// the change) even when the ownership is unchanged, so walking a large server
++// root on every boot is far more expensive than it needs to be. And a chown
++// against a read-only mount fails with EROFS regardless of whether the
++// requested ownership already matches, which makes any read-only bind mount
++// inside a server's data directory — shared immutable game content, a
++// read-only network mount — impossible to boot with.
++//
++// The check is deliberately narrower than "the uid and gid already match".
++// For anything that is not a directory the kernel also clears the setuid and
++// setgid bits on chown, and does so even when the ids are unchanged, so an
++// entry still carrying either bit is chowned unconditionally to preserve that
++// behaviour. A pre-existing "security.capability" attribute is not inspected:
++// setting one requires CAP_SETFCAP, which no path Wings offers a server can
++// obtain, so it cannot appear on content Wings is responsible for.
++func chownIsNoop(info ufs.DirEntry, uid, gid int) bool {
++	if info == nil {
++		return false
++	}
++	st, err := info.Info()
++	if err != nil {
++		return false
++	}
++	sys, ok := st.Sys().(*unix.Stat_t)
++	if !ok {
++		return false
++	}
++	if int(sys.Uid) != uid || int(sys.Gid) != gid {
++		return false
++	}
++	return st.IsDir() || st.Mode()&(ufs.ModeSetuid|ufs.ModeSetgid) == 0
++}
++
+ func (fs *Filesystem) Chmod(path string, mode ufs.FileMode) error {
+ 	return fs.unixFS.Chmod(path, mode)
+ }

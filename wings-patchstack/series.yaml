@@ -1,0 +1,45 @@
+# Wings v2 patch stack — series metadata (normative; see
+# ../wings-cgroups/shared-ramdisk-update-lifecycle-5-fable.md §Patchstack tooling).
+#
+# `resolve_target <series> <target>` maps to
+# patches/<series>/<target>-<ref>/ and branch <series>/<ref>.
+# apply/export/CI read THIS file for bases, dependencies and the combined
+# order — `SERIES` alone is not sufficient (review issue 4).
+#
+# The legacy v1 `cgroup` series is NOT carried here: it is frozen on the old
+# layout under ../wings-cgroups/v1-legacy/patchstack/ and production is
+# moving off it.
+
+series:
+  filesystem:
+    bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}
+    depends: []
+    # F1 only. On srdm's MVP path (exposure: host-bind, access: ro) and the
+    # program's first upstream PR. No other series imports it.
+  lifecycle:
+    bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}
+    depends: []
+    # L1 -> L1b (provider admission -> dynamic RO mounts/leases/disposal)
+    # L2 -> L3  (readiness -> dependencies; independent of L1)
+  resources:
+    bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}
+    depends: []
+    # R1; R2 -> R3 -> R4 -> R5 -> R6core -> R7; R8 after R5
+  integration:
+    depends: [resources, lifecycle]
+    # I1 only — binds lifecycle L2 into R6's ReadySignal registry.
+    # Exists ONLY on the combined branch.
+
+combined_order: [filesystem, resources, lifecycle, integration]  # the one legal order
+
+bases:
+  pterodactyl:
+    repo: https://github.com/pterodactyl/wings
+    ref: v1.13.1
+    commit: e771816d5e072b3f2a8b9383bfcaffaa8f569dfa
+    go: "1.24"
+  pelican:
+    repo: https://github.com/pelican-dev/wings
+    ref: main
+    commit: 70f3344cc588b31e1f48e10ddcb87d116b957e69
+    go: "1.25"

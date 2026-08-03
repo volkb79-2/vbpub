@@ -2,6 +2,22 @@
 
 - Status: **implementation go** (all conditional-go findings resolved),
   2026-07-23
+- **Amendment 1, 2026-08-03**: two production behaviours of vanilla Wings,
+  surfaced on the case-study node while the unified `soulmask_tmpfs` system
+  was deployed, are folded in — the mount-propagation requirement on Wings'
+  parent volumes mount, and the unconditional pre-boot chown walk versus
+  read-only mounts. See §Field findings; every section the amendment touched
+  is marked **[A1]**. Net additions: invariant 14, a complete containerized-
+  Wings mount contract, a new one-patch series **F1**, and oracles 14–18.
+- **Amendment 2, 2026-08-03**: the program is **reordered around vanilla-Wings
+  compatibility as the MVP**. The manager is named `srdm`
+  (*shared-ramdisk-depot-manager*) and gains an **exposure-driver** seam:
+  `host-bind` (works on stock Wings, no patch) is v1 and the default;
+  `provider` (the L1/L1b protocol of rev 5) becomes v2. Exposure carries an
+  `access: ro | rw` axis, and a `harvest` command promotes an in-place-updated
+  generation into a verified release. Consequence: the manager ships *before*
+  every Wings patch instead of after them, and the case-study migration moves
+  four phases earlier. Marked **[A2]**. Decisions 9–12; §Exposure drivers.
 - Supersedes: [`shared-ramdisk-update-lifecycle-3-codex-fable.md`](shared-ramdisk-update-lifecycle-3-codex-fable.md)
   (rev 3-fable). Incorporates every finding of the combined review
   [`shared-ramdisk-update-lifecycle-4-codex-combined-final-remarks.md`](shared-ramdisk-update-lifecycle-4-codex-combined-final-remarks.md).
@@ -47,6 +63,37 @@ Interview 2026-07-23 (second round, resolving the review):
    through Stopping; never trips crash detection). Revisit after migration
    if `SaveAndExit`-style flows matter.
 
+Interview 2026-08-03 (Amendment 2) [A2]:
+
+9. **Name**: `srdm` — *shared-ramdisk-depot-manager*. The long form is the
+   product name, the repository directory and the prose; **`srdm` is every
+   identifier**: binary, CLI, provider id, slice root, unit prefix,
+   `/run/srdm`, `/var/lib/srdm`. A single token with no `-` is required, not
+   cosmetic: systemd's `-` is the slice hierarchy separator, so a hyphenated
+   root would nest under auto-created ancestors with `MemoryMin=0` and every
+   class floor beneath it would be arithmetically dead — Finding A of
+   [`STRATEGY.md`](STRATEGY.md), and the reason the host's `soulmask_tmpfs`
+   uses an underscore. `srdm.slice` sits at cgroup root; `srdm-gen-<g8>.slice`
+   nests correctly beneath it.
+10. **Vanilla-Wings compatibility is the MVP, not a fallback.** Adoption must
+    not be hostage to upstream review. `srdm` v1 requires **no Wings patch**:
+    it exposes generations by binding them into the server's volume path
+    (`exposure: host-bind`). The rev-5 provider protocol becomes the *second*
+    exposure driver, shipped in v2 once L1/L1b land. The seam is one
+    interface; everything upstream of it — store, manifest, publication,
+    hold services, charging, journal, retention, CLI, doctor — is shared.
+11. **Exposure has an access axis** `ro | rw`. `rw` is permitted only for a
+    generation with **exactly one** consumer; such a generation is marked
+    dirty-capable and forfeits its attestation until re-verified. Two
+    consumers on a writable shared tmpfs is the 2026-07-29 corruption by
+    construction, so it is refused, not warned about.
+12. **`harvest` is in v1.** An in-place-updated generation (the game's own
+    updater writing through an `rw` exposure) can be quiesced, re-hashed,
+    classified and promoted into a normal immutable release. This removes the
+    containerized SteamCMD driver from the MVP critical path: the game's own
+    updater is a legitimate acquisition source, and `harvest` is what makes
+    its output trustworthy.
+
 ## Review triage
 
 Every point of the combined review, with disposition. "Adopted" means the
@@ -60,7 +107,7 @@ resolution is normative in this revision (or the companion, where noted).
 | 4 | Series not independent once R6 consumes L2 | Blocker | **Adopted** — R6 core is standalone behind a `ReadySignal` interface with the egg-done default; a one-patch integration series `I1` binds L2 on the combined branch; `series.yaml` metadata + CI matrix → §Workstreams; companion §PR sequence |
 | 5 | `reserved` ledger cannot be rebuilt from systemd units (offline servers undercounted) | Blocker | **Adopted** — two ledgers (reserved-desired from server configs incl. Offline; admission-active transactional); sync-rejection retains last accepted resource revision → companion §Floor budget |
 | 6 | Sync-triggered reconcile deadlocks on the power lock | Blocker | **Adopted** — normative lock hierarchy (power → resource/attempt → admission/driver), pre-start passes its power context, Panel sync never takes the power lock → companion §Online reconciliation; §L1 uses the same order |
-| 7 | One holder slice cannot carry two class policies; parent protection unbacked | Manager blocker | **Adopted** — per-class populate+hold services inside a generation slice; each carries its class memory policy; `game-releases.slice` gains a protection budget; zswap restated as charge-holder policy → §Generation slices |
+| 7 | One holder slice cannot carry two class policies; parent protection unbacked | Manager blocker | **Adopted** — per-class populate+hold services inside a generation slice; each carries its class memory policy; `srdm.slice` gains a protection budget; zswap restated as charge-holder policy → §Generation slices |
 | 8 | Publication mount topology and recovery under-specified | Manager blocker | **Adopted** — exact mount sequence (op-private tmpfs → populate/verify → RO bind exposure), per-class mount options, mountinfo-based recovery → §Publication topology |
 | 9 | `Before=docker.service` contradictory and deployment-specific | Manager blocker | **Adopted** — republish path needs no Docker; ordering contract stated against the Wings service; Wings-side bounded boot-restore retry as the general net → §Boot ordering |
 | 10 | "One state writer" vs transient workers | Manager blocker | **Adopted** — worker contract: op-private writes, fsync'd result records, daemon-only commits, cancellation/orphan rules → §Worker contract |
@@ -72,6 +119,32 @@ resolution is normative in this revision (or the companion, where noted).
 | G4 | L3 semantics incomplete (reverse index, intent, queue lifecycle, observability; generation check misplaced) | Detail | **Adopted** — all six sub-points specified; generation-equality removed from the dependency engine (manager cohort resolution is the authority; `doctor` cross-checks labels) → §L3 |
 | G5 | Golden harness flakiness (clocks, IDs, ordering) | Detail | **Adopted** → companion §Golden harness |
 | G6 | Resource capability/reset contracts unpinned | Detail | **Adopted** → companion §Systemd driver rules (reset table, capability probes, required-rejects-not-degrades, block-device discovery, bounds) |
+
+## Field findings (production, 2026-07-31) [A1]
+
+Two behaviours surfaced on the case-study node while the unified
+`soulmask_tmpfs` system was deployed
+([`../scripts/gstammtisch-guide/SOULMASK-TMPFS.md`](../scripts/gstammtisch-guide/SOULMASK-TMPFS.md)).
+Both are properties of vanilla Wings, both bear on this program, and both are
+resolved here rather than left as deployment lore.
+
+| # | Finding | Evidence | Disposition → where |
+|---|---|---|---|
+| F-a | A containerized Wings whose `/var/lib/pterodactyl` bind uses Docker's default `rprivate` never observes host-side mounts or unmounts under the volumes root. Wings kept **ghost** binds of a torn-down tmpfs alive in its own namespace, and the next start failed on a mount that no longer existed on the host. | production outage 2026-07-31 (`b87c0a5b`, `6c418fe7`); fix live in the node's Wings compose — `/var/lib/pterodactyl` and `/var/lib/docker/containers` with `propagation: rslave`, [verified] via `docker inspect` on the running container | **Adopted** — the containerized-Wings mount contract is stated completely (volumes root included), with its shared-peer-group precondition and the deliberate *absence* of propagation on game containers → §Containerized Wings mount contract, §Generation slices, §Migration; oracles 14–15 |
+| F-b | `Filesystem.Chown` walks the entire server root and calls `Lchownat` on **every** entry with no "already correct owner" skip. A chown syscall on a read-only mount returns `EROFS` even when the requested owner already matches, so any read-only mount under a server's host volume path makes the pre-boot walk fail and the server unstartable. | [verified] `server/filesystem/filesystem.go:253-294` (walk; unconditional `Lchownat` at :268 and :287); `server/power.go:207-214` (pre-boot call site) gated by `system.check_permissions_on_boot`, [verified] default `true` at `config/config.go:238` | **Adopted** — the design's structural immunity becomes invariant 14 with a regression oracle; the residual (today's host, and the migration window) is fixed by a new one-patch series **F1** → §Goals and invariants, §F1, §Migration; oracles 16–18 |
+
+This design was **already immune to F-b by construction**: provider mounts are
+Docker mounts in the *game container's* namespace and never appear under
+`/var/lib/pterodactyl/volumes/<uuid>`, which is the only tree Wings walks. That
+immunity was implicit. It is now invariant 14 with an oracle behind it, because
+it is the single property that retires the whole class of bug the legacy
+in-volume ramdisk lives with — and an implicit property is one a later refactor
+is free to lose.
+
+F-a is the opposite case: the design does *not* get it for free. It already
+prescribed `rslave` for the release store, but said nothing about the volumes
+root, which is where the outage actually happened and where the legacy binds
+still live during migration.
 
 ## Changes from the previous revision (3-fable → 5)
 
@@ -102,7 +175,7 @@ resolution is normative in this revision (or the companion, where noted).
 6. **Generation memory design corrected** (issue 7): one populate+hold
    service per class (Type=oneshot, `RemainAfterExit=yes`) carries the class
    policy and keeps the charges alive after the worker exits — replacing the
-   impossible "one holder slice, two policies" shape; `game-releases.slice`
+   impossible "one holder slice, two policies" shape; `srdm.slice`
    gains an admin-owned `MemoryMin` backing the class floors; per-class zswap
    is documented as charge-holder policy, not a per-page guarantee.
 7. **Publication topology made exact** (issue 8) and **boot ordering
@@ -125,60 +198,92 @@ resolution is normative in this revision (or the companion, where noted).
     failure table (extended), security model (extended), defaults
     (corrected), evidence index (extended with `server/update.go`).
 
-## Kickoff plan (the "go" sequence)
+## Kickoff plan (the "go" sequence) — reordered by decision 10 [A2]
 
-Contracts-first (decision 7). No Wings patch code lands before Phase 0a
-freezes.
+Rev 5 put the manager at Phase 5, behind every Wings patch. Decision 10
+inverts that: `srdm` in `host-bind` mode needs **no Wings patch at all**, so
+it ships first and the case-study node migrates off `soulmask_tmpfs` four
+phases earlier. Contracts-first (decision 7) is **not abandoned** — it is
+rescoped: the protocol freeze still precedes any L1 code, it simply no longer
+gates the whole program, because the whole program no longer waits on the
+protocol.
 
 ```text
-Phase 0a  Protocol contract freeze                     [no Wings patches]
-          - provider protocol v1 conformance fixtures: a fake provider
-            (Go test server implementing §Provider protocol v1 exactly) and
-            a fake Wings driver (client exercising every rule)
-          - golden request/response vectors; idempotency, duplicate,
-            reorder, crash-recovery, and fault scripts
-          - frozen = fixtures committed + protocol version pinned
-Phase 0b  Repository and gate preparation              [parallel with 0a]
-          - patchstack series.yaml + SERIES tooling (below)
-          - golden vanilla-compatibility harness (companion §Golden harness)
-          - CI matrix runnable in tester-unified:
-            vanilla | each series prefix per commit | combined DAG | both targets
-Phase 1   Independent Wings patches (parallel)
-          - resources R1 (config diagnostics), R2 (node placement)
-          - lifecycle L2 (readiness events)
-          gate: golden harness + per-commit build/vet/test
-Phase 2   Lifecycle L1 + L1b against the frozen fixtures
-          - start-attempt transaction, validation, callbacks, disposal,
-            boot-restore retry
+Phase 1   srdm core — THE MVP, no Wings patch required
+          - store: transaction → classification → per-file SHA-256 manifest
+            → probes → ownership normalization → fsync'd COMPLETE →
+            atomic channel flip
+          - publication topology: op tmpfs → per-class hold services →
+            verify → RO bind (§Publication topology, unchanged)
+          - exposure driver: host-bind (ro|rw) + consumer registry +
+            teardown safety (§Exposure drivers)
+          - harvest: adopt an in-place-updated generation as a release
+          - journal, retention, doctor, CLI
+          gate: kill-at-every-phase; topology recovery from
+                mountinfo+state+units; hold-service charging incl. the
+                still-held-bind case; propagation precondition refusal;
+                rw-single-consumer refusal; harvest round-trip
+Phase 2   F1 (series `filesystem`)                [parallel with Phase 1]
+          - the chown-skip patch (§F1). Promoted by decision 10 from
+            "nice, ships first" to **the MVP dependency for host-bind ro**
+          - the program's first upstream PR
+          - needs: patchstack series.yaml + tooling, CI matrix,
+            golden vanilla-compat harness (companion §Golden harness) —
+            i.e. rev 5's Phase 0b, pulled here because this is where the
+            first patch actually appears
+          gate: golden harness + per-commit build/vet/test + oracles 16-18
+Phase 3   Soulmask migration onto srdm host-bind  — retires soulmask_tmpfs
+          - profile + managed egg + rehearsal → maintenance window
+          - production runs srdm on stock (F1-only) Wings
+          gate: §Migration; this is the real acceptance test
+Phase 4   Provider protocol v1 contract freeze    [was Phase 0a]
+          - fake provider + fake Wings driver + golden vectors + fault
+            scripts; frozen = fixtures committed + protocol version pinned
+Phase 5   Lifecycle L1 + L1b, and srdm's provider exposure driver
           gate: conformance suite + the race/fault oracles of §Acceptance
-Phase 3   Resources R3–R5, R6 core, R7 (+R8 optional); integration I1 on
-          the combined branch
-          gate: privileged systemd e2e + lock-order race gate
-Phase 4   Lifecycle L3
-          gate: dependency-semantics oracles
-Phase 5   Manager v1: store+journal+worker contract → publication topology
-          e2e → provider server vs the Phase-0a fixtures → SteamCMD driver →
-          CLI
-          gate: kill-at-every-phase, topology recovery, charging/hold oracles
-Phase 6   Soulmask profile + managed egg + migration rehearsal → migration
-          window (§Migration)
+Phase 6   Lifecycle L2, L3; resources R1–R8; integration I1
+          gate: per-series gates as before
+Phase 7   Cutover: flip Soulmask from exposure: host-bind to
+          exposure: provider. A config flip and a container recreate —
+          not a migration; the store, generations and journal are untouched.
 ```
+
+What this buys, stated plainly: the risky, novel, most-likely-to-be-wrong
+half of the program (a transactional content store, tmpfs publication,
+cgroup charging, teardown correctness) gets proven in production **before**
+a single line of Wings-patch review risk is taken on. And if upstream never
+merges anything, Phases 1–3 still deliver a strictly better system than the
+node runs today.
 
 Dependency DAG (issue 4):
 
 ```text
 vanilla
+├─ filesystem: F1             (chown skip; no dependencies, no dependents) [A1]
 ├─ lifecycle: L1 → L1b        (provider admission → dynamic mounts/leases)
 │             L2 → L3         (readiness → dependencies; independent of L1)
 └─ resources: R1;  R2 → R3 → R4 → R5 → R6core → R7;  R8 after R5
 
-combined branch v2/<ref> = resources ⊕ lifecycle ⊕ I1
+combined branch v2/<ref> = filesystem ⊕ resources ⊕ lifecycle ⊕ I1
   I1 = one integration patch binding L2 events into R6's ReadySignal registry
 ```
 
-Every branch builds and tests at every commit. The **manager requires
-L1 + L1b only**; L2/L3 improve the Soulmask cluster behavior; resources and
-L4 are not protocol dependencies of the manager.
+Every branch builds and tests at every commit.
+
+**Manager dependencies, corrected by decision 10** [A2]. Rev 5 said "the
+manager requires L1 + L1b only". That is now false in the direction that
+matters:
+
+| srdm exposure | Wings patches required |
+|---|---|
+| `host-bind`, `access: rw` | **none** — stock Wings |
+| `host-bind`, `access: ro` | **F1** (or the node sets `system.check_permissions_on_boot: false`) |
+| `provider` | L1 + L1b |
+
+L2/L3 improve Soulmask cluster behavior; the resources series and L4 are not
+dependencies of the manager in any mode. F1 is a dependency of nothing *in
+the Wings DAG* — no other patch imports it — but it is squarely on `srdm`'s
+MVP path, which is why it is Phase 2 and the first upstream PR.
 
 ### Patchstack tooling (normative)
 
@@ -187,10 +292,11 @@ L4 are not protocol dependencies of the manager.
 ```yaml
 series:
   cgroup:      {layout: legacy, bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}}
+  filesystem:  {bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}, depends: []}
   lifecycle:   {bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}, depends: []}
   resources:   {bases: {pterodactyl: v1.13.1, pelican: "main@70f3344"}, depends: []}
   integration: {depends: [resources, lifecycle]}
-combined_order: [resources, lifecycle, integration]   # the one legal order
+combined_order: [filesystem, resources, lifecycle, integration]  # the one legal order
 ```
 
 `resolve_target <series> <target>` maps to
@@ -236,6 +342,22 @@ General product goals unchanged (rev 3). Soulmask invariants unchanged
     Docker label set.
 13. A stopped provider-managed server does not pin a generation once its
     stop has settled (disposal rule).
+14. **Managed content never appears under a server's host volume path —
+    under `exposure: provider`.** [A1, rescoped A2] With the provider
+    driver, release roots reach a server only as Docker mounts in the game
+    container's namespace; `/var/lib/pterodactyl/volumes/<uuid>` holds
+    mutable state and nothing else. That is what makes Wings' own filesystem
+    operations structurally unable to touch read-only managed content — the
+    pre-boot chown walk above all (F-b), but equally disk accounting,
+    backups, SFTP and archive extraction, each of which walks that same host
+    tree.
+
+    **`exposure: host-bind` waives this invariant deliberately** (decision
+    10), and the bill is itemized in §Exposure drivers rather than
+    discovered. Invariant 14 is therefore not a property of `srdm`; it is
+    the *reason provider mode is worth building* and the yardstick host-bind
+    is measured against. Oracle 16 asserts it holds in provider mode; oracle
+    19 asserts host-bind's waiver stays inside its declared bounds.
 
 ## Layer 1 — Wings v2 lifecycle series
 
@@ -280,6 +402,18 @@ Normative design:
     SyncWithEnvironment()           # re-compose; overlay now included
   ```
 
+  **On the `Chown` step** [A1]: it walks the whole server root and calls
+  `Lchownat` unconditionally on every entry, with no already-correct-owner
+  skip ([verified] `server/filesystem/filesystem.go:253-294`), and a chown
+  on a read-only mount is `EROFS` even when the owner already matches
+  (F-b). It is harmless in this design because of **invariant 14** — it
+  runs over the host volume, which never carries managed content — and not
+  because of where prepare sits: prepare only *computes* mounts, Docker
+  applies them at create, so no ordering of these two steps could expose
+  managed content to the walk. Prepare's position at the end of preflight
+  is about lease economy. The safety is the invariant, and oracle 16 is
+  what keeps it honest.
+
 - **Deferred abort.** The start case in `HandlePowerAction` wraps everything
   after a successful prepare: any failure — a later preflight error,
   environment create, Docker start — triggers `abort-start` and clears the
@@ -314,8 +448,8 @@ non-empty selector = actionable start error for that server only.
 ```yaml
 docker:
   lifecycle_providers:
-    shared-release:
-      socket: /run/wings-providers/shared-release.sock
+    srdm:
+      socket: /run/wings-providers/srdm.sock
       required_when_selected: true
       prepare_timeout: 15s
       call_timeout: 5s
@@ -327,7 +461,7 @@ docker:
         group: WINGS_CONTENT_GROUP
         channel: WINGS_CONTENT_CHANNEL
         release: WINGS_CONTENT_RELEASE
-      allowed_source_roots: [/run/game-releases, /var/lib/game-releases]
+      allowed_source_roots: [/run/srdm, /var/lib/srdm]
       allowed_target_root: /home/container
       denied_targets: [/home/container/WS/Saved]
       allowed_peer_uids: [0]          # provider-side check is primary; see protocol
@@ -347,11 +481,40 @@ users; Wings validates containment and mount policy but does not defend
 against a malicious *privileged* provider that swaps paths afterward — the
 provider is node-trusted for its declared roots, and that is the boundary.
 
-Containerized Wings (production shape) additionally mounts:
-`/run/wings-providers`, `/run/game-releases:ro,rslave`,
-`/var/lib/game-releases:ro,rslave` — `rslave` because generations are
-mounted after the Wings container starts and Docker's default bind
-propagation is `rprivate`. An operator refusing those mounts must set
+#### Containerized Wings mount contract (F-a) [A1]
+
+Docker's default bind propagation is `rprivate`: the container's view of a
+bound tree is a snapshot taken at container create and is never updated
+again. Every tree a containerized Wings must *observe changing* therefore
+needs `rslave` — and that list is longer than the release store, which is
+what rev 5 got wrong.
+
+| Mount | Mode | Why |
+|---|---|---|
+| `/var/lib/pterodactyl` | `rslave` | **The volumes root.** Anything mounted or unmounted under a server volume on the host — a legacy ramdisk during migration, an operator's rescue bind, any future per-server mount — is otherwise invisible to Wings, and a *torn-down* host mount lives on inside Wings as a ghost. That ghost is what made the pre-boot walk fail on 2026-07-31 (F-a). |
+| `/var/lib/docker/containers` | `rslave` | Wings reads other containers' log and config files live; it must see host-side create/remove without needing a restart. |
+| `/run/srdm` | `ro,rslave` | Generations are published after Wings starts; this is the tree Wings resolves provider sources against. |
+| `/var/lib/srdm` | `ro,rslave` | Persistent release store — same reason. |
+| `/run/wings-providers` | `rw` | Provider socket directory (dir `root:root` 0755, socket 0600). |
+
+**Precondition**: `rslave` requires the host-side peer group to be `shared`.
+On a systemd host `/` is shared by default ([verified] on the case-study
+node: `/` `shared:1`, `/run` `shared:5`), so this holds unless an operator
+deliberately made a subtree private. `doctor` checks it and names the
+`mount --make-rshared` fix, rather than letting the failure resurface later
+as a mystery.
+
+**Deliberately absent: the game containers' own mounts.** Docker resolves
+their sources in the *host* namespace at create, and `rprivate` is the
+correct mode for them — a running consumer must not lose its content
+because the host tore a mount down. That is not an accident of the default
+we happen to tolerate; it is the property that makes immutable generations
+safe, and it has a consequence recorded under §Generation slices: a
+container still holding the bind keeps the tmpfs pages alive after the host
+unmounts, so **disposal is a hard precondition for teardown, not a
+courtesy**. Nobody should "fix" propagation here.
+
+An operator refusing the release-store mounts must set
 `trust_provider_paths: true`, which disables Wings-side source resolution
 and says so in the docs.
 
@@ -446,7 +609,7 @@ POST /v1/reconcile
         servers: [{server_uuid, lease_id?, container_id?, generation?}]}
   resp {dropped: [lease_id...], kept: [lease_id...],
         unknown_generations: [generation...]}   # surfaced as health warnings
-GET  /v1/healthz         → 200 {protocol: 1, provider: "shared-release"}
+GET  /v1/healthz         → 200 {protocol: 1, provider: "srdm"}
 ```
 
 Idempotency and ordering:
@@ -551,23 +714,196 @@ detection never fires ([verified] `server/crash.go:47`,
 `config/config.go:258-270` — which is also why raw `SaveAndExit` without
 Wings remains a forbidden workflow). Revisit after migration.
 
-### Upstream ladder
+## F1 — pre-boot chown skips correctly-owned entries (series `filesystem`) [A1]
 
-L1 admission (optionally without dynamic mounts for a smaller first review) →
-L1b dynamic RO mounts + leases + disposal → L2 readiness → L3 dependencies.
-Each PR ships non-Soulmask use cases. Never upstream: app IDs, game paths,
-tmpfs copy logic, egg-named unit triggering, cgroup-named lifecycle
-features.
+A one-patch series, `depends: []`, touching `server/filesystem` only. It is
+not part of the lifecycle series and never appears in an L-series PR.
 
-## Layer 2 — shared-release manager
+**Behavior.** Inside the `WalkDirat` callback of `Filesystem.Chown`, read the
+entry's ownership and call `Lchownat` only when it differs from the configured
+uid/gid; apply the same check to the walk-root `Lchownat` at
+`filesystem.go:268`.
+
+**Promoted by decision 10** [A2]. Rev 5's Amendment 1 argued F1 in on side
+benefits, because provider exposure is immune to F-b via invariant 14. With
+`host-bind` as the MVP that argument is obsolete: **host-bind `ro` runs the
+pre-boot walk straight over a read-only mount, so F1 is a direct MVP
+dependency**, with `system.check_permissions_on_boot: false` as the only
+zero-patch alternative. It is Phase 2 and the program's first upstream PR.
+
+**A correction to the operational record** [A2]: `SOULMASK-TMPFS.md` reports
+this failure as specific to an instance that is both `ROLE=main` and
+`TMPFS=1` — "bind-mounted onto its *own* directory". The code does not
+support that scoping. `Chown("/")` walks the whole server root through every
+mount boundary and calls `Lchownat` on every entry
+([verified] `server/filesystem/filesystem.go:277-292`), so **every** consumer
+of a read-only bind fails the pre-boot walk, not just the population source.
+The `ROLE=main` framing looks like an artifact of which instance was tested.
+This makes F1 more load-bearing, not less, and it should be confirmed on the
+first host-bind rehearsal before anyone plans around the narrower reading.
+
+The original three arguments still stand on their own:
+
+1. **It retires a live production risk, now.** The case-study node runs its
+   shared tmpfs read-write (`SOULMASK_TMPFS_READONLY=0`) for exactly one
+   reason: a `ROLE=main` + `TMPFS=1` instance is bind-mounted onto its own
+   directory and cannot survive the read-only walk. Read-write reintroduces
+   the partial-write corruption that read-only mode exists to prevent — the
+   2026-07-29 incident, where steamcmd deleted the old `.pak` before the new
+   one finished writing and left the tmpfs with a `.sig` and no `.pak`.
+   `SOULMASK-TMPFS.md` already names this patch as the precondition for
+   restoring read-only. F1 can ship in week one; Phase 6 is the far end of
+   this program, and the risk is carried the whole way otherwise.
+2. **It is upstreamable on its own merit, without the read-only story.** The
+   current walk dirties every inode of a multi-gigabyte game install on every
+   single start. `dirent.Info()` is an `Lstatat` ([verified]
+   `internal/ufs/walk_unix.go:292`), so on an unchanged tree the patch trades
+   one `lchownat` — inode dirty, journal write — for one `fstatat`, which is
+   read-only. The common path gets *cheaper*; the read-only-mount fix falls
+   out for free. Read-only content inside a server volume is a general
+   pattern (immutable shared assets, RO network mounts), not a Soulmask
+   peculiarity, so the PR needs none of our vocabulary.
+3. **It is the cheapest possible first PR** — one file, no config key, no new
+   surface — and worth spending before the far larger L1 review lands on the
+   same maintainers.
+
+**Honest limits.** F1 helps only when the read-only content already carries
+the correct ownership; a genuinely wrong-owner entry on a read-only mount
+still fails, and should. It does not make read-only content writable for
+SFTP, backups or archive extraction — those fail on write, as they must.
+
+**Zero-patch alternative, available today**: `system.check_permissions_on_boot:
+false` ([verified] `config/config.go:238`, default `true`) disables the
+pre-boot walk node-wide. It is coarse — it also gives up Wings' ownership
+self-repair after manual or SFTP edits — and it is recorded here as the
+stopgap if F1 slips, not as the answer.
+
+## Upstream ladder (all Wings series)
+
+**F1 first** (smallest, independent, no protocol surface), then: L1 admission
+(optionally without dynamic mounts for a smaller first review) → L1b dynamic
+RO mounts + leases + disposal → L2 readiness → L3 dependencies. Each PR ships
+non-Soulmask use cases. Never upstream: app IDs, game paths, tmpfs copy logic,
+egg-named unit triggering, cgroup-named lifecycle features.
+
+## Layer 2 — `srdm`, the shared-ramdisk-depot-manager
+
+### Exposure drivers (decision 10) [A2]
+
+Everything `srdm` does up to the moment a generation becomes visible to a
+server is identical in both modes. Only the last step forks:
+
+```text
+store → transaction → verified immutable release
+      → publication (op tmpfs → hold services → verify → RO bind)
+      → EXPOSURE DRIVER                    ← the only fork
+           ├─ host-bind  (stock Wings)   bind into the volume path
+           └─ provider   (L1 + L1b)      Docker mounts + leases, per start
+```
+
+Shared by both: the release store, manifests and verification, publication
+topology, per-class hold services and charging, retention, journal, doctor,
+CLI. `srdm` is one product with two exposure drivers, never two products.
+
+#### `host-bind` — the v1 default, no Wings patch
+
+The generation's per-class RO bind is mounted onto the corresponding path
+under `/var/lib/pterodactyl/volumes/<uuid>/…`. This is what the legacy
+`soulmask_tmpfs` does; `srdm` does it with verified immutable generations,
+atomic activate/rollback, a journal, retention, and a doctor behind it.
+
+**Hard preconditions — refuse to operate, do not warn:**
+
+1. The Wings container carries `propagation: rslave` on `/var/lib/pterodactyl`
+   (F-a), and the host peer group is `shared`. Without it, every mount and
+   unmount `srdm` performs is either invisible to Wings or leaves a ghost.
+   `doctor` checks both and names the fix.
+2. For `access: ro`, one of: **F1** in the running Wings build, **or**
+   `system.check_permissions_on_boot: false` in the node config. Otherwise
+   the pre-boot chown walk fails `EROFS` (F-b) and the server cannot start.
+   `srdm` detects the condition up front rather than letting an operator meet
+   it as an unexplained start failure at an inconvenient hour.
+3. Activate, rollback and teardown require the affected consumers **stopped**.
+   There is no disposal callback in this mode, so `srdm` resolves consumers
+   itself — running containers by volume path, plus `/proc/*/mountinfo` — and
+   refuses while any hold remains. A container still holding the bind keeps
+   the tmpfs pages charged after a host unmount (§Generation slices), so this
+   is a correctness gate, not politeness.
+
+**What host-bind gives up, itemized** (this is the price of decision 10, and
+it is paid knowingly):
+
+| Property | provider | host-bind |
+|---|---|---|
+| Invariant 14 (content out of the volume tree) | held | **waived** |
+| SFTP / backups / disk accounting | content invisible | content visible, counted, backed up (≈ 2.4 GB per Soulmask server) |
+| Generation attestation | Wings-constructed Docker labels | manager-side consumer registry only |
+| Admission / lease / reconcile authority | protocol-enforced | manager bookkeeping; an operator can start a server `srdm` does not know about |
+| Auto-disposal on stop | yes (decision 5) | operator-ordered; `srdm` refuses unsafe teardown |
+| Per-start generation resolution | yes | no — applies to servers at rest |
+
+That last row costs less than it looks: v1 acquisition is **strictly manual**
+already (decision 6), so activation was always an operator action against a
+stopped cohort.
+
+#### `access: ro | rw` (decision 11)
+
+`ro` is the default and the safe mode: writes fail `EROFS` immediately rather
+than corrupting a generation halfway.
+
+`rw` is permitted **only when the generation has exactly one consumer**. With
+two, a write is the 2026-07-29 incident by construction: the peer holds the
+deleted old `.pak` open, the tmpfs exhausts mid-write, and the generation is
+left with a new `.sig` and no `.pak` — survivable for the process that
+already mmap'd the old inode, fatal for the next start. `srdm` refuses a
+second consumer on an `rw` generation; it does not warn.
+
+A generation exposed `rw` is marked **dirty-capable**. Its manifest stops
+being authoritative the moment content diverges; `doctor` re-hashes on demand
+and reports drift. While dirty it may not be promoted, shared to a second
+consumer, or used as a population source for another generation.
+
+**Writes are ephemeral.** They live in the tmpfs and evaporate on republish,
+teardown or reboot. This must be loud in the operator docs: "steamcmd
+reported Success" and "the update survives a reboot" are different claims,
+and conflating them is how a node quietly serves stale content — the
+2026-07-21 incident in a new costume.
+
+What `rw` buys is adoption: `AUTO_UPDATE=1` and the game's own updater keep
+working unchanged. No egg surgery, no operator retraining, and on the next
+container recreate `srdm` can hand over a freshly published generation.
+
+#### `harvest` (decision 12)
+
+`srdm harvest <generation>` turns the result of an in-place update into a
+first-class release:
+
+```text
+1. refuse if any consumer is running (writes must be quiesced)
+2. re-walk the tmpfs tree, recompute the per-file SHA-256 manifest
+3. classify every path; an unclassified new path blocks promotion
+   (the same rule the SteamCMD path obeys)
+4. run the profile's probes; record build identity where discoverable
+5. write the transaction into the persistent store, fsync COMPLETE last
+6. journal the operation with provenance: harvested-from-<generation>,
+   not staged-from-<source>
+```
+
+This is today's manual procedure — ROLE=main updates on disk, then
+repopulate — automated, verified and rollback-able. Its programme
+consequence is large: **the containerized SteamCMD driver leaves the MVP
+critical path.** The game's own updater is a legitimate acquisition source;
+`harvest` is what makes its output trustworthy. The SteamCMD driver remains
+in the plan (§SteamCMD driver) as the unattended path, but it is no longer
+what stands between the node and a better system.
 
 ### Process and package layout (carried)
 
-One Go binary `shared-release` (daemon + CLI subcommands `daemon, stage,
+One Go binary `srdm` (daemon + CLI subcommands `daemon, stage,
 status, activate, rollback, gc, doctor, operation`); packages as rev 3
 (`internal/{config,profile,store,source/steam,publish,lease,providerapi,
 adminapi,journal}`). Sockets: provider socket (above) and
-`/run/game-releases/admin.sock` (0600 root). The CLI refuses when the daemon
+`/run/srdm/admin.sock` (0600 root). The CLI refuses when the daemon
 is down except `doctor --offline`.
 
 ### Privilege model (issue 11 — honest)
@@ -585,10 +921,10 @@ deliberate, stated choice, not an oversight:
 The network-facing downloader is unprivileged and containerized; the daemon
 minimizes parsing of foreign data — manifest hashing, archive/ACF parsing
 run in workers; the daemon validates typed result records only. Documented
-alongside: filesystem owners (store `game-releases:game-releases`,
+alongside: filesystem owners (store `srdm:srdm`,
 0755/0644 world-readable — content carries no secrets; a future flag maps a
 group for profiles that differ), systemd policy (only
-`game-releases-*` units), and the child-worker credential table above.
+`srdm-*` units), and the child-worker credential table above.
 
 ### Worker contract (issue 10 — single-writer preserved)
 
@@ -621,7 +957,7 @@ kill-at-every-phase gate. Journal: durable per-operation records + events
 JSONL + journald; no credentials anywhere. SteamCMD driver: containerized
 as uid 988 with the egg's own runner image; `app_info_print` for build
 identity; `validate` unconditional at release creation; identity from
-`appmanifest_3017300.acf`; stage jobs in `game-releases-stage.slice`
+`appmanifest_3017300.acf`; stage jobs in `srdm-stage.slice`
 (io.max/CPUQuota/MemoryHigh are the real limiters).
 
 **Manual-only in v1** (decision 6): `stage` is operator-invoked; it is
@@ -639,9 +975,9 @@ protection is skipped). One cgroup cannot hold two memory policies, so the
 rev-3 "one holder slice per generation" is replaced:
 
 ```text
-game-releases-gen-<g8>.slice                  # aggregate per generation
-├─ game-releases-hold-<g8>-pak.service        # populate + hold, pak policy
-└─ game-releases-hold-<g8>-code.service       # populate + hold, code policy
+srdm-gen-<g8>.slice                  # aggregate per generation
+├─ srdm-hold-<g8>-pak.service        # populate + hold, pak policy
+└─ srdm-hold-<g8>-code.service       # populate + hold, code policy
 ```
 
 `<g8>` = first 8 hex of SHA-256(release-id), for unit-name sanity; the full
@@ -663,7 +999,7 @@ identity lives in the unit `Description` and the journal.
   active-but-empty service's cgroup alive, the fallback is an explicit
   minimal hold process — the oracle decides, the spec allows both.
 - **Parent protection is backed** (review): the admin-owned
-  `game-releases.slice` unit file carries `MemoryMin ≥ Σ active class
+  `srdm.slice` unit file carries `MemoryMin ≥ Σ active class
   floors` (Soulmask: ≥ 350M; ship 512M), reconciled against the host budget
   next to `wings.slice` (16 GB host: 8G tier + 512M releases — fits).
   Without this, the class floors are arithmetically dead exactly as a child
@@ -678,6 +1014,15 @@ identity lives in the unit `Description` and the journal.
   unmount the op tmpfs (frees and uncharges every page) → stop the hold
   service → stop the generation slice. `doctor` watches
   `cgroup.stat nr_dying_descendants` for leaks.
+- **"Frees and uncharges" holds only when nothing else holds a reference**
+  [A1]. A game container that still has the bind in its own `rprivate`
+  namespace keeps the superblock — and every page — alive across the host
+  unmount; the memory is not returned and the hold cgroup does not drain.
+  Disposal (decision 5) and the GC rule "no labeled container in any state"
+  are therefore *load-bearing preconditions* for teardown rather than
+  bookkeeping tidiness, and teardown refuses rather than proceeding into a
+  silent leak when they are unmet. Oracle 15 measures the difference in
+  both directions.
 
 ### Publication mount topology (issue 8 — exact)
 
@@ -685,13 +1030,13 @@ Per class, in order; every step recorded in the operation journal before it
 executes:
 
 ```text
-1. mkdir -p /run/game-releases/.op/<op-id>/<class>          (0700, root)
+1. mkdir -p /run/srdm/.op/<op-id>/<class>          (0700, root)
 2. mount -t tmpfs -o size=<class-size>,mode=0755,nodev,nosuid[,noexec]
-       tmpfs /run/game-releases/.op/<op-id>/<class>
+       tmpfs /run/srdm/.op/<op-id>/<class>
        # noexec for pak (data only); code keeps exec
 3. hold service starts; worker populates <op>/<class>/root/ from the
    release store, verifies EVERY file against the manifest, chmod -R a-w
-4. daemon creates /run/game-releases/<profile>/<generation>/<class>,
+4. daemon creates /run/srdm/<profile>/<generation>/<class>,
    then: mount --bind <op>/<class>/root  <final>
          mount -o remount,ro,bind        <final>
 5. daemon fsyncs the published-state record; only now may prepare-start
@@ -702,7 +1047,7 @@ Rules: the visible path appears only as a read-only bind of an
 already-verified tree — no renaming of mountpoints, no pre-verification
 exposure; class size = `ceil(manifest × 1.15)` rounded to 64 M (Soulmask:
 pak 2 G, code 512 M), a hard cap — ENOSPC quarantines the generation;
-`/run/game-releases` propagation is the host default (shared into the
+`/run/srdm` propagation is the host default (shared into the
 `rslave` Wings-container view; Docker resolves game-container sources in the
 host namespace at create).
 
@@ -722,12 +1067,12 @@ release store available → assigned generations republished →
 provider socket ready → Wings restores consumers
 ```
 
-- The republish path needs **no Docker**: `shared-release-restore.service`
+- The republish path needs **no Docker**: `srdm-restore.service`
   (`After=local-fs.target`, part of the same binary) republishes assigned
   generations and opens the provider socket. Ordering against
   `docker.service` is neither required nor claimed.
 - Where Wings is unit-managed (native service or a compose wrapper unit),
-  add `After=shared-release-restore.service` to that unit — ordering against
+  add `After=srdm-restore.service` to that unit — ordering against
   the **actual Wings service**, not Docker generically.
 - Where Wings is a restart-policy container (this host today), the ordering
   net is Wings-side: the L1 boot-restore retry
@@ -749,15 +1094,32 @@ unchanged (≥ 3, leased always kept).
 
 ### Manager v1 scope (updated)
 
-Includes: profile engine + Soulmask profile; SteamCMD driver; transactions →
-validated immutable releases; single active generation per group, per-class
-tmpfs + hold services; provider protocol v1; explicit offline
-`activate`/`rollback`; crash-safe state + boot republish; journal; CLI.
-Excludes: **any automatic acquisition** (decision 6), dual generations,
-rollout orchestration (runbook + L3 ordering until the post-v1 `rollout`
-command), RCON scheduling, network API, multi-node, save restoration.
-Versioned from day one: manifest, group/lease state, journal, protocol,
-label names.
+Rescoped by decision 10 [A2] — v1 is the vanilla-Wings product:
+
+**v1 includes**: profile engine + Soulmask profile; transactions → validated
+immutable releases; single active generation per group; per-class tmpfs +
+hold services + charging; **`exposure: host-bind` with the `ro|rw` axis**;
+**`harvest`**; consumer registry + teardown safety; explicit offline
+`activate`/`rollback`; crash-safe state + boot republish; journal; CLI;
+`doctor` including the host-bind preconditions.
+
+**v2 adds**: `exposure: provider` — provider protocol v1, leases,
+Wings-constructed labels, reconcile authority, per-start resolution — once
+L1/L1b land (Phase 5). Everything v1 built is reused unchanged; the cutover
+is a config flip (Phase 7).
+
+**Moved off the critical path but still planned**: the containerized SteamCMD
+driver (decision 12 — `harvest` covers acquisition for the MVP).
+
+**Excluded from both**: any automatic acquisition (decision 6), dual
+generations, rollout orchestration (runbook + L3 ordering until the post-v1
+`rollout` command), RCON scheduling, network API, multi-node, save
+restoration.
+
+**Versioned from day one**: manifest, group state, consumer registry, journal,
+protocol, label names — and the **exposure driver name and its options**, so a
+v1 host-bind deployment's state is readable by the v2 binary that will flip it
+to provider.
 
 ### Enrollment (G1 — normative)
 
@@ -768,7 +1130,7 @@ Happy path:
 2. Node config authorizes the egg and the profile/group namespace
    (`allowed_eggs`, selector validation).
 3. Admin creates the group in the manager:
-   `shared-release group create soulmask-prod --profile soulmask
+   `srdm group create soulmask-prod --profile soulmask
    --mode cohort --auto-enroll allow-listed` (modes:
    `off | allow-listed | any-authorized`).
 4. Panel admin sets the admin-only server variables
@@ -796,7 +1158,7 @@ pak class; `Steam`, `WS/Saved`, `steamapps`, `ksm-optin.so`, `.steam`,
 Updates:
 
 1. **Install guard exact-matches** (G2):
-   `[ "$WINGS_CONTENT_PROVIDER" = "shared-release" ] &&
+   `[ "$WINGS_CONTENT_PROVIDER" = "srdm" ] &&
    [ "$WINGS_CONTENT_PROFILE" = "soulmask" ]` → skip content download,
    create mutable dirs + helpers only. A typo or an unrelated future
    provider installs normally instead of silently skipping.
@@ -839,6 +1201,8 @@ All rev-3 rows stand. Added/changed:
 | Foreign labeled container found in reconcile | Alarm + pin; `doctor` lists; operator disposes | Never auto-removed |
 | Commit fails after successful start | Keep running; commit-pending + retry; reconcile auto-commits | Never stop a healthy server |
 | Boot restore races republish | `generation-degraded` (503, retryable); Wings boot retry absorbs | No stale mounts, ever |
+| Host mount torn down while Wings' volumes bind is `rprivate` (F-a) | n/a — Wings-side | Ghost mount inside Wings; the next pre-boot walk fails on a path the host no longer has. Prevented by the mount contract, checked by `doctor`, oracle 14 [A1] |
+| Teardown attempted while a consumer still holds the bind (F-a) | Refuse teardown; report the holding container | Pages stay charged and the generation stays pinned — visibly, never silently. Disposal is the fix [A1] |
 
 ## Security model (carried + protocol hardening)
 
@@ -853,6 +1217,20 @@ server's volume, writability.
 
 ## Migration of the two live servers (carried, one correction)
 
+**Rescoped by decision 10** [A2]: this migration now happens at **Phase 3**,
+onto `exposure: host-bind`, against stock Wings carrying F1 and nothing else.
+It is no longer the last act of the program but its main acceptance test —
+the point at which `soulmask_tmpfs` is retired and production runs `srdm`.
+The later flip to `exposure: provider` (Phase 7) is a config change plus a
+container recreate, and reuses this migration's store, generations and
+journal untouched; it is not a second migration.
+
+Because host-bind occupies the same volume paths the legacy ramdisk does, the
+cutover is a **replacement in place**, which is simpler than rev 5's model:
+the egg does not change shape, `WS/Saved` is untouched as always, and rollback
+is "stop `srdm`, restart `soulmask_tmpfs.service`" for as long as both are
+installed. Keep that reversal available through the whole soak.
+
 Steps as rev 3 (build+gate A, back up saves, first release + manifest
 comparison, disposable rehearsal, maintenance-window cutover with egg/image
 swap and legacy-ramdisk retirement, reboot test, update rehearsal), with the
@@ -864,6 +1242,25 @@ G3 correction made explicit:
   *fresh* managed server is born without it. The rev-3 claim "backups
   shrink at migration" was wrong for migrated volumes; it is true after the
   post-soak archive step, and immediately for new servers.
+
+Two ordering requirements added by the field findings:
+
+- **The propagation change comes first** [A1]. The node's Wings compose must
+  carry `propagation: rslave` on `/var/lib/pterodactyl` (and
+  `/var/lib/docker/containers`), **and Wings must have been recreated with
+  it**, before the legacy ramdisk binds are torn down. Tearing them down
+  under `rprivate` leaves ghost mounts inside Wings and reproduces the
+  2026-07-31 failure in the middle of the maintenance window — the worst
+  possible moment, with saves already flushed and servers already stopped.
+  On the case-study node this step is already done ([verified] live via
+  `docker inspect`); on any other node it is a prerequisite, not a step.
+- **F1 restores the read-only tmpfs, and does it before the migration, not
+  as part of it** [A1]. The legacy ramdisk runs read-write today only
+  because of F-b. Shipping F1 in Phase 1 lets `SOULMASK_TMPFS_READONLY=1`
+  come back while the legacy system is still in service, which shrinks the
+  corruption risk carried across the *whole* program instead of only at its
+  end. Treating it as part of the migration would leave the window open for
+  the entire duration.
 
 ## Acceptance oracles
 
@@ -915,7 +1312,7 @@ G3 correction made explicit:
     and quarantine, hold-service charging (active-but-empty unit owns
     ≈ class size; properties read back; teardown leaves
     `nr_dying_descendants` stable), parent-protection backing
-    (`game-releases.slice MemoryMin` present and ≥ Σ floors), ENOSPC
+    (`srdm.slice MemoryMin` present and ≥ Σ floors), ENOSPC
     quarantine, single-generation refusal while any lease or labeled
     container exists, EROFS on every managed root, unchanged `world.db`
     hashes, reboot republish before consumer starts.
@@ -923,13 +1320,84 @@ G3 correction made explicit:
     absent from SFTP/backup/disk accounting; migrated server → legacy
     in-volume content remains visible/counted/backed-up until archived.
 
+### Mount propagation and filesystem (F-a, F-b, F1) [A1]
+
+Oracles 14–15 run against the real containerized Wings shape, not unit
+tests — propagation is a property of the deployment, and a mock cannot fail
+the way `rprivate` fails.
+
+14. **Propagation, both directions**: with `/var/lib/pterodactyl` bound
+    `rprivate`, a host-side mount under a server volume is invisible inside
+    Wings **and** a host-side unmount leaves a ghost that Wings still
+    traverses; with `rslave`, both events are observed. The `rprivate` half
+    is the regression test — it must reproduce the 2026-07-31 symptom, so
+    that a future deployment losing the flag fails here rather than in
+    production. `doctor` reports the effective propagation of every mount in
+    the contract table plus the host peer-group state.
+15. **Teardown actually frees**: publish a generation → start a consumer →
+    dispose it → tear down → the hold unit's `memory.current` drops to ~0
+    and `nr_dying_descendants` stays stable. Repeat *without* disposal: the
+    pages remain charged after the host unmount, and the oracle asserts the
+    manager **refused** the teardown and named the holding container,
+    rather than proceeding into a silent leak.
+16. **Invariant 14 regression**: with a generation published and a consumer
+    running, `/var/lib/pterodactyl/volumes/<uuid>` contains mutable state
+    and **no mount at all** — asserted from `/proc/self/mountinfo`, not by
+    inspection — and the pre-boot chown walk completes clean on a restart.
+    No code path in Wings or the manager creates a mount under
+    `/var/lib/pterodactyl/volumes/**`.
+17. **F1 correctness**: a tree containing a read-only, correctly-owned
+    subtree chowns clean; a read-only subtree with a *wrong* owner still
+    fails, with the actionable EROFS naming the path; a writable
+    wrong-owner tree is still repaired exactly as vanilla repairs it. Run
+    against both pinned trees.
+18. **F1 cost**: syscall counts (`strace -c` or equivalent) over an
+    unchanged multi-GB tree, before and after. The claim "cheaper on the
+    common path" ships in the PR text only if this measures it — otherwise
+    the PR argues correctness alone.
+
+### Exposure drivers — host-bind, ro|rw, harvest (decisions 10–12) [A2]
+
+These are the **MVP gate**. Phase 1 does not ship without them.
+
+19. **Waiver stays in bounds**: under host-bind, managed content appears at
+    exactly the declared class paths under the volume root and nowhere else;
+    `WS/Saved/**` is never bound, never shadowed, and `world.db` +
+    `GameXishu.json` hashes are unchanged across publish, activate, rollback
+    and teardown. The invariant-14 waiver is bounded, not general.
+20. **Preconditions refuse, not warn**: with `/var/lib/pterodactyl` bound
+    `rprivate`, `srdm` refuses to expose and names the compose fix. With
+    `access: ro` requested on a Wings build lacking F1 and with
+    `check_permissions_on_boot: true`, `srdm` refuses and names both
+    remedies. Neither failure is allowed to surface as a server start error.
+21. **`rw` is single-consumer**: binding a second consumer to an `rw`
+    generation is refused. A generation written through is marked
+    dirty-capable; `doctor` re-hashes and reports drift; promotion, sharing
+    and use-as-source are all refused while dirty.
+22. **Ephemerality is observable**: write through an `rw` exposure, republish,
+    and assert the write is gone and the journal says so. This oracle exists
+    to make sure the documentation's loudest warning is actually true.
+23. **`harvest` round-trip**: update in place through `rw` → `harvest` →
+    the resulting release's manifest matches a from-scratch stage of the same
+    build identity, byte for byte, and carries `harvested-from` provenance.
+    An unclassified new path blocks promotion exactly as on the staged path.
+    Harvest on a running consumer is refused.
+24. **Teardown safety without disposal**: with a consumer still running,
+    `activate`, `rollback` and teardown are all refused with the holding
+    container named; after a clean stop they proceed and the hold unit's
+    `memory.current` drops to ~0 (this is oracle 15 without the protocol's
+    help — the mode that has to get it right by inspection).
+
 ### Gate
 
 `tester-unified` with full run-uid identity; the privileged systemd-in-
 Docker e2e harness extended with: the Phase-0a protocol conformance suite,
-mount-propagation cases (`rprivate` vs `rslave` into containerized Wings),
-hold-service charging, topology recovery, disposal e2e, and the race/fault
-matrix above. The devcontainer is the cockpit, not the gate.
+mount-propagation cases (`rprivate` vs `rslave` into containerized Wings —
+**for the volumes root as well as the release store**, oracle 14 [A1]),
+the chown-walk-over-read-only cases (oracles 16–17 [A1]), hold-service
+charging including the still-held-bind case (oracle 15 [A1]), topology
+recovery, disposal e2e, and the race/fault matrix above. The devcontainer is
+the cockpit, not the gate.
 
 ## Defaults (corrected)
 
@@ -937,10 +1405,13 @@ matrix above. The devcontainer is the cockpit, not the gate.
 |---|---|
 | Persistent releases | ≥ 3 retained, immutable, hash-verified |
 | Publication | Single generation; classes pak+code as hold services |
-| Consumers | RO leases, one cohort (MAIN+CLIENT) |
-| Acquisition | **Manual `stage` only** (decision 6); post-v1 package adds automation |
-| Activation/rollback | Explicit CLI, cohort confirmed offline + disposed |
-| Wings integration | `WINGS_CONTENT_PROVIDER=shared-release`, required-when-selected, auto-disposal on |
+| **Exposure (v1)** | **`host-bind`, `access: ro`** — needs F1, no other patch [A2] |
+| **Exposure (v2)** | `provider` after Phase 5; cutover is a config flip [A2] |
+| Consumers | RO, one cohort (MAIN+CLIENT); leases only in provider mode |
+| Acquisition | **Manual `stage` or `harvest`** (decisions 6, 12); SteamCMD driver off the MVP path; post-v1 package adds automation |
+| Activation/rollback | Explicit CLI; cohort confirmed offline (host-bind: `srdm` verifies no container holds the bind; provider: + disposed) |
+| Wings integration (v1) | none — stock Wings + F1; `check_permissions_on_boot` left `true` |
+| Wings integration (v2) | `WINGS_CONTENT_PROVIDER=srdm`, required-when-selected, auto-disposal on |
 | Start ordering | L3 `WINGS_START_AFTER`; Ready = registration line |
 | RCON | Root-only local helper, fixed allow-list, no published port |
 | External API control | None in v1 |
@@ -976,3 +1447,28 @@ revision**: `server/update.go:21-31` — `SyncWithEnvironment()` snapshots
 `Mounts: s.Mounts()` and `Labels` into `environment.Settings` (the issue-1
 proof). Kernel/systemd/Docker citations and production measurements as
 rev 3.
+
+**New in Amendment 1** [A1]:
+
+- `server/filesystem/filesystem.go:253-294` — `Filesystem.Chown` walks the
+  server root and calls `Lchownat` unconditionally at `:268` (walk root) and
+  `:287` (every entry); no already-correct-owner skip exists. The F-b proof.
+- `server/power.go:207-214` — the pre-boot walk call site, guarded by
+  `config.Get().System.CheckPermissionsOnBoot`.
+- `config/config.go:238` — `CheckPermissionsOnBoot` defaults to `true`; the
+  zero-patch stopgap and the reason the walk is on by default.
+- `server/server.go:331` (`EnsureDataDirectoryExists`) and
+  `sftp/handler.go:155,276` — the other `Chown` callers, neither of which
+  runs on the ordinary start path.
+- `internal/ufs/walk_unix.go:292` — `dirent.Info()` is an `Lstatat`; the
+  syscall-cost basis for F1's "cheaper on the common path" claim.
+- Production, [verified] live 2026-08-03: the case-study node's Wings
+  container carries `Propagation: rslave` on `/var/lib/pterodactyl` and
+  `/var/lib/docker/containers` (`docker inspect`), and the host `/` is
+  `shared:1` with `/run` `shared:5` (`/proc/1/mountinfo`) — the peer-group
+  precondition for `rslave`.
+- [`../scripts/gstammtisch-guide/SOULMASK-TMPFS.md`](../scripts/gstammtisch-guide/SOULMASK-TMPFS.md)
+  §"Read-only enforcement" — the 2026-07-29 partial-write incident and the
+  accepted `SOULMASK_TMPFS_READONLY=0` tradeoff F1 retires. A local doc, so
+  a hint by the evidence rule; the Wings claims it makes are re-verified
+  against vanilla above.
