@@ -153,8 +153,19 @@ remedy rather than leaving an operator to work it out.
 
 ```
 tools/gate.sh <worktree> unit      → gofmt, build, vet, all oracles green
-tools/gate.sh <worktree> e2e       → 35 privileged oracles green, 3 consecutive clean runs
+tools/gate.sh <worktree> e2e       → 33 privileged oracles green, 3 consecutive clean runs
 tools/canary-run.sh                → 58 canaries rejected, 0 survived
-tools/gate.sh <worktree> coverage  → see below
+tools/gate.sh <worktree> coverage  → 322/380 changed lines (84.7% >= 75.0%)
 nyxloom lint                       → clean
 ```
+
+33 is every `func Test` in a `//go:build e2e` file, less the three `TestMain`
+dispatchers:
+
+```
+consumer 6 · expose 5 · harvest 4 · publish 13 · systemdx 5
+```
+
+P07 added four. P06's LOG records 31 where that count gives 29, so the
+project total moved by two less than the difference between the two LOGs
+suggests; the number above is the one the command produces.
