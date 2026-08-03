@@ -1,0 +1,186 @@
+{
+  "scenarios": {
+    "create-task": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "statefile": {
+            "attempts": [],
+            "blocker": null,
+            "gate_results": [],
+            "handoff_path": "handoff/demo-D01.md",
+            "leases_held": [],
+            "merge_commit": null,
+            "notes": null,
+            "paused": false,
+            "progress_units": [],
+            "project": "demo",
+            "schema_version": 1,
+            "since": "<ts>",
+            "state": "CARVED",
+            "task_id": "demo-D01",
+            "wave_id": null
+          }
+        },
+        "task_id": "demo-D01",
+        "type": "TASK_CREATED",
+        "wave_id": null
+      }
+    ],
+    "interrupt-attempt-no-pid-files": [],
+    "interrupt-attempt-unparseable-pid": [],
+    "mark-interrupted": [
+      {
+        "attempt_id": "att-d05",
+        "payload": {
+          "attempt": {
+            "attempt_id": "att-d05",
+            "base_commit": null,
+            "branch": "feat/x",
+            "ended": "<ts>",
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "implementer",
+            "route": {
+              "cli": "fake",
+              "effort": "low",
+              "model": "m",
+              "route_id": "r1",
+              "routes_rev": "rev1",
+              "variant": "v"
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "INTERRUPTED",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "/tmp/wt"
+          }
+        },
+        "task_id": "demo-D05",
+        "type": "ATTEMPT_INTERRUPTED",
+        "wave_id": null
+      }
+    ],
+    "mark-stalled": [
+      {
+        "attempt_id": "att-d06",
+        "payload": {
+          "attempt": {
+            "attempt_id": "att-d06",
+            "base_commit": null,
+            "branch": "feat/x",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "implementer",
+            "route": {
+              "cli": "fake",
+              "effort": "low",
+              "model": "m",
+              "route_id": "r1",
+              "routes_rev": "rev1",
+              "variant": "v"
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "STALLED",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "/tmp/wt"
+          }
+        },
+        "task_id": "demo-D06",
+        "type": "ATTEMPT_STALLED",
+        "wave_id": null
+      }
+    ],
+    "open-wave": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "task_ids": [
+            "demo-D10"
+          ]
+        },
+        "task_id": null,
+        "type": "WAVE_OPENED",
+        "wave_id": "<wave-id>"
+      }
+    ],
+    "post-merge-gate-dispatch": [],
+    "provider-pause": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "route_id": "r1",
+          "state": "limited"
+        },
+        "task_id": "demo-D11",
+        "type": "PROVIDER_STATE_CHANGED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": null,
+        "payload": {
+          "reason": "provider-limited",
+          "route_id": "r1"
+        },
+        "task_id": "demo-D11",
+        "type": "NEEDS_OPERATOR",
+        "wave_id": null
+      }
+    ],
+    "spec-attention-debounced": [],
+    "spec-attention-first": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "detail": "no progress",
+          "reason": "ratchet"
+        },
+        "task_id": null,
+        "type": "SPEC_ATTENTION",
+        "wave_id": null
+      }
+    ],
+    "stall-check": [],
+    "transition-noop-same-state": [],
+    "transition-plain": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "from": "CARVED",
+          "notes": "ready",
+          "to": "QUEUED"
+        },
+        "task_id": "demo-D02",
+        "type": "TASK_TRANSITIONED",
+        "wave_id": null
+      }
+    ],
+    "transition-typed-blocker": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "blocker": {
+            "detail": "why",
+            "type": "contract",
+            "unblock_condition": "triage"
+          },
+          "from": "QUEUED",
+          "notes": "stuck"
+        },
+        "task_id": "demo-D04",
+        "type": "TASK_BLOCKED",
+        "wave_id": null
+      }
+    ],
+    "verify-gate-dispatch": []
+  },
+  "version": 1
+}

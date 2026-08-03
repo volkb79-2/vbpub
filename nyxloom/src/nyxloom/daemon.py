@@ -61,8 +61,23 @@ INTERFACE CONTRACT (frozen):
     4. render.render_all(...) if any event was appended this pass.
     5. Wrap the whole pass in try/except: append TICK_ERROR (bounded repr)
        and continue — one project's failure never stops the loop.
+    6. Drain every registered family's finished background work once (CR-05a:
+       `EffectRegistry.drain`, which replaced two hardcoded drain calls).
 - EXECUTION MAP (all storage writes via append_and_apply, actor
-  Actor(TICK, 'nyxloomd')):
+  Actor(TICK, 'nyxloomd')).
+
+  CR-05a: this map is the CONTRACT; `_execute` is no longer its
+  implementation. Each action type is registered to exactly one handler
+  (`_build_registry`), and an action with no owner fails when the Daemon is
+  CONSTRUCTED rather than on the first pass that plans it. The lifecycle
+  families (CreateTask, Transition, Interrupt/Mark*/StallCheck, OpenWave,
+  SpecAttention, ProviderPause) live in `effects_lifecycle.py`; the two gate
+  families (VerifyGate, RunPostMergeGate) and both of their background-work
+  registries live in `effects_gates.py`. The rest are still branches of
+  `_execute_legacy` here, registered as legacy handlers owned by CR-05b and
+  counted by `effects.LEGACY_HANDLER_BUDGET`. The behaviour described below
+  is unchanged either way, and `tests/test_effect_differential.py` holds the
+  moved families to the event sequences the pre-CR-05a code produced.
     CreateTask -> TASK_CREATED (statefile CARVED, handoff_path set)
     Transition -> TASK_TRANSITIONED (payload from/to/notes); P14 2026-07-15
       item 4: when action.to is BLOCKED and action.blocker is set, emits
@@ -358,7 +373,8 @@ from typing import Any, Sequence
 
 from . import (
     adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat,
-    decisions, doc_lifecycle, frontmatter, gate_canary, gate_runner, intake_chat, leases,
+    decisions, doc_lifecycle, effects, effects_gates, effects_lifecycle, frontmatter,
+    gate_canary, gate_runner, intake_chat, leases,
     lint, merge_digest, notify, paths, reconcile, render, results, snapshot, stages,
     storage, watchdog, wrapper,
 )
@@ -376,7 +392,6 @@ log = get_logger("daemon")  # P01: first real user of nyxloom.log (proof it work
 
 # Tunables (module constants so tests can shrink them for determinism).
 PROBE_TTL_SECONDS = 600
-PROVIDER_PAUSE_SECONDS = 3600
 SSE_POLL_SECONDS = 0.5
 SSE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_HTTP_PORT = 8942
@@ -701,7 +716,6 @@ class Daemon:
         # degradation, or the TTL alone silently "recovers" it next pass.
         self._probe_memo: dict[str, tuple[float, bool, str, str]] = {}
         self._stall_cache: dict[str, str | None] = {}
-        self._provider_paused: dict[str, float] = {}
         self._decisions_seen: dict[str, dict[str, str]] = {}
         # P44 2026-07-16 (anti-runaway self-correction): consecutive-pass
         # streak per "{project}:{RunawaySignal.key}" -- disposable, same
@@ -713,29 +727,18 @@ class Daemon:
         # F018 P3d: set of project_ids that already got their enablement-guard
         # WARN in this daemon instance (emit once per daemon lifetime).
         self._carver_enablement_warned: set[str] = set()
-        # GA4 2026-07-25 (module contract item 16): background-thread state for
-        # the gate-verify cadence. A full verify runs the project's gate
-        # against several disposable canary commits (minutes), so it MUST NOT
-        # run inline in a reconcile tick -- see _execute_verify_gate /
-        # _run_gate_verify_bg. project -> its live (or last) verify thread;
-        # `.is_alive()` is what makes _execute_verify_gate idempotent. The
-        # queue is the ONLY channel the background thread may write to --
-        # every event append happens on the main thread, in
-        # _drain_gate_verify_results, never here.
-        self._gate_verify_running: dict[str, threading.Thread] = {}
-        self._gate_verify_results: queue.Queue = queue.Queue()
-        # B3-followon 2026-07-26 (mirrors GA4 above): background-thread state
-        # for post-merge gate execution (module contract item 11). A gate
-        # re-run against the merged default branch is a real subprocess run
-        # (up to gate.timeout_seconds), so it MUST NOT run inline in a
-        # reconcile tick -- see _run_post_merge_gate / _run_post_merge_gate_bg.
-        # Keyed by task_id, NOT project (unlike the GA4 cadence above): more
-        # than one task can be VALIDATING -- and gating -- concurrently for
-        # the same project. The queue is the ONLY channel the background
-        # thread may write to -- every event append happens on the main
-        # thread, in _drain_post_merge_gate_results, never here.
-        self._post_merge_gate_running: dict[str, threading.Thread] = {}
-        self._post_merge_gate_results: queue.Queue = queue.Queue()
+        # CR-05a: the effect boundary. The daemon holds the ports and the
+        # registry; NO effector holds a reference back to this object, which
+        # is what stops "moved out of the god object" from meaning "still
+        # reaches into it". Background-work registries (gate verify, post-
+        # merge gate) now live on the effector that owns the work rather than
+        # as four more attributes here.
+        self._ports = effects.EffectPorts.system()
+        self._provider_backoff = effects.ProviderPauseRegistry(self._ports.clock)
+        self._gates = effects_gates.GateEffector(self._ports)
+        self._lifecycle = effects_lifecycle.LifecycleEffector(
+            self._ports, self._provider_backoff)
+        self._registry = self._build_registry()
         # CR-02a 2026-08-03 (authoritative snapshot fail-closed audit): the
         # audit produced by the CURRENT pass's fan-in, per project. Set by
         # _build_input, cleared by run_pass's `finally`. The effect boundary
@@ -746,6 +749,62 @@ class Daemon:
         # dispatch_targeted_carve), which is NOT the same as "clean" -- see
         # _dispatch_admissible for why absence is permitted there.
         self._snapshot_audit: dict[str, snapshot.SnapshotAudit] = {}
+
+    # -- the effect registry (CR-05a) --------------------------------------
+
+    #: Action types whose effect still lives on this class rather than in an
+    #: effector module. CR-05b owns moving them; until it does, they are
+    #: REGISTERED (so every action has exactly one owner and completeness is
+    #: checked at construction) but declared legacy, and
+    #: ``effects.LEGACY_HANDLER_BUDGET`` holds the count in both directions.
+    _LEGACY_ACTIONS: tuple[tuple[str, str], ...] = (
+        ("dispatch-implementer", "DispatchImplementer"),
+        ("resume-attempt", "ResumeAttempt"),
+        ("launch-self-review", "LaunchSelfReview"),
+        ("emit-attempt-exit", "EmitAttemptExit"),
+        ("launch-review", "LaunchReview"),
+        ("launch-gate-diagnosis", "LaunchGateDiagnosis"),
+        ("carve-dispatch", "CarveDispatch"),
+        ("admit-carve-proposal", "AdmitCarveProposal"),
+        ("start-carver-session", "StartCarverSession"),
+        ("resume-carver-session", "ResumeCarverSession"),
+        ("compact-carver-session", "CompactCarverSession"),
+        ("auto-merge-task", "AutoMergeTask"),
+    )
+
+    def _build_registry(self) -> effects.EffectRegistry:
+        """One handler per action type, checked here rather than at first use.
+
+        ``require_covers`` is what turns "an action class was added to the
+        planner and nobody wrote its effect" from a TICK_ERROR on the first
+        pass that plans it into a construction failure -- which is the
+        difference between a defect the operator sees and one the event log
+        absorbs.
+        """
+        registry = effects.EffectRegistry()
+        for spec in effects_lifecycle.specs(self._lifecycle):
+            registry.register(spec)
+        for spec in effects_gates.specs(self._gates):
+            registry.register(spec)
+        for kind, action_name in self._LEGACY_ACTIONS:
+            registry.register(effects.HandlerSpec(
+                action_type=getattr(reconcile, action_name),
+                kind=kind,
+                handler=self._execute_legacy,
+                # Undeclared on purpose: while the handler is a branch of the
+                # shell's ladder, its call graph is the shell's, so any
+                # `emits` set written here would be a claim nothing checks.
+                emits=None,
+                idempotency_key=None,
+                legacy_owner="CR-05b",
+            ))
+        registry.require_covers(reconcile.Action.__subclasses__())
+        return registry
+
+    def _effect_context(self, project: str, cfg: ProjectConfig,
+                        states: dict[str, TaskStateFile]) -> effects.EffectContext:
+        return effects.EffectContext(project=project, cfg=cfg, states=states,
+                                     ports=self._ports)
 
     # -- lifecycle ------------------------------------------------------
 
@@ -1004,20 +1063,16 @@ class Daemon:
                             pass
                     except Exception:  # census: cleanup/containment (CR-02b)
                         pass
-            # GA4 2026-07-25 (module contract item 16): drain any completed
-            # background gate-verify results ONCE PER PASS -- the sole place
-            # a GATE_VERIFY_RECORDED (or its escalation) is ever appended (see
-            # _drain_gate_verify_results for why this is safe to call
-            # unconditionally every pass, even for a project whose cadence is
-            # off: the queue is empty for it and this is a cheap no-op).
-            appended.extend(self._drain_gate_verify_results(project, cfg, states))
-            # B3-followon 2026-07-26: drain any completed background
-            # post-merge-gate results ONCE PER PASS -- same shape as the GA4
-            # drain immediately above (the sole place a post-merge
-            # GATE_FINISHED/MERGE_REVERTED/TASK_BLOCKED/COMPLETED is ever
-            # appended; see _drain_post_merge_gate_results for why this is a
-            # cheap no-op for a project with nothing in flight).
-            appended.extend(self._drain_post_merge_gate_results(project, cfg, states))
+            # CR-05a: drain every registered family's finished background work
+            # ONCE PER PASS, on this thread. The drains are declared on the
+            # handler specs rather than called by name here, so a family added
+            # later (CR-16's liveness probes) joins this loop by registering
+            # rather than by editing it -- and a family that forgets to
+            # register a drain has its results sit in a queue nobody reads,
+            # which its own tests catch, instead of quietly working because
+            # someone remembered to add a line here.
+            appended.extend(self._registry.drain(
+                self._effect_context(project, cfg, states)))
             # P05a (§5): "per-pass counts ... -> DEBUG" -- one summary line
             # per reconcile pass (the reconcile-trace breadcrumbs above
             # already cover the per-decision "guard evals" half of this
@@ -1797,7 +1852,11 @@ class Daemon:
         out: dict[str, bool] = {}
         failed: list[str] = []
         for route_id, route in routes.routes.items():
-            paused_until = self._provider_paused.get(route_id)
+            # CR-05a: the pause registry is OWNED by the lifecycle effector
+            # that writes it and injected here, where it is only ever read --
+            # one writer, one reader, both holding the same instance rather
+            # than both reaching for an attribute on the shell.
+            paused_until = self._provider_backoff.paused_until(route_id)
             if paused_until is not None and now < paused_until:
                 out[route_id] = False
                 continue
@@ -2584,9 +2643,8 @@ class Daemon:
         from an unreadable log -- the answer that reproduces the very
         notification storm this debounce was written to stop.
         """
-        recent = list(self._require_events(project, events))[-500:]
-        return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == reason
-                   for ev in recent)
+        return effects.spec_attention_recently_emitted(
+            self._require_events(project, events), reason)
 
     def _needs_operator_recently_emitted(self, project: str, reason: str,
                                           *, events: Sequence[Event] | None = None) -> bool:
@@ -2599,143 +2657,8 @@ class Daemon:
 
         CR-02a: ``except Exception: return False`` said "not yet escalated"
         from an unreadable log, re-firing the operator page every pass."""
-        events = list(self._require_events(project, events))
-        # Walk backwards to find the most recent clear marker.
-        clear_idx = -1
-        for i in range(len(events) - 1, -1, -1):
-            t = events[i].type
-            if t is EventType.CARVER_SESSION_ROTATED or t is EventType.CARVER_SESSION_STARTED:
-                clear_idx = i
-                break
-        # Scan forward from that clear point for a matching NEEDS_OPERATOR.
-        start = clear_idx + 1 if clear_idx >= 0 else 0
-        for ev in events[start:]:
-            if ev.type is EventType.NEEDS_OPERATOR and ev.payload.get("reason") == reason:
-                return True
-        return False
-
-    # -- GA4: gate-verify cadence (module contract item 16) ----------------
-    #
-    # A full verify runs the project's declared gate against several
-    # disposable canary commits (real subprocess gate runs -- minutes), so it
-    # MUST NOT run inline in a reconcile tick. The execution model is a
-    # background thread + result queue, with a hard rule: the background
-    # thread (_run_gate_verify_bg) NEVER appends an event or mutates daemon
-    # state directly -- it only `.put()`s a small result dict. All state
-    # mutation (event append, running-thread bookkeeping, escalation) happens
-    # on the MAIN thread, in _drain_gate_verify_results, called once per pass.
-    # On daemon restart mid-verify the in-memory thread is simply lost; the
-    # cadence re-fires on the next pass and re-runs -- idempotent, no durable
-    # half-state to reconcile.
-
-    def _execute_verify_gate(self, project: str, cfg: ProjectConfig) -> list[Event]:
-        """VerifyGate action handler. IDEMPOTENT: a live background thread for
-        this project means a verify is already in flight, so this starts NO
-        second thread -- which is exactly why the planner may harmlessly
-        replan the same VerifyGate every pass until the drain step's
-        GATE_VERIFY_RECORDED resets the cadence (module contract item 16).
-        Appends no event itself (the probe takes minutes; see
-        _run_gate_verify_bg / _drain_gate_verify_results for the actual
-        event-append seam, main-thread only)."""
-        running = self._gate_verify_running.get(project)
-        if running is not None and running.is_alive():
-            return []
-        t = threading.Thread(target=self._run_gate_verify_bg, args=(project, cfg), daemon=True)
-        self._gate_verify_running[project] = t
-        t.start()
-        return []
-
-    def _run_gate_verify_bg(self, project: str, cfg: ProjectConfig) -> None:
-        """The actual gate-verify probe -- runs on the background thread
-        started by _execute_verify_gate. Selects the project's verification
-        gate (gate_runner.select_verification_gate, the same selection GA1's
-        `nyxloom gate verify` CLI verb uses), confirms it PASSES known-good
-        HEAD, then tries gate_canary.verify_gate_rejects_canary against a
-        known-bad canary -- mirroring cli.cmd_gate_verify's own verdict
-        derivation exactly (BROKEN if good HEAD fails; else TRUSTWORTHY if a
-        canary was killed, LAUNDERS if every canary survived, INCONCLUSIVE if
-        no canary rendered a real verdict).
-
-        MUST NOT touch the event log or any daemon state directly -- every
-        mutation from a non-main thread would race the main-thread reconcile
-        loop. Guarded end-to-end: any exception anywhere in the probe (a git
-        failure, a CanaryError, an unexpected raise from the gate subprocess
-        plumbing) degrades to an INCONCLUSIVE result rather than letting the
-        thread die silently, which would otherwise look -- from the daemon's
-        perspective -- exactly like a verify that simply never finishes."""
-        verdict = "INCONCLUSIVE"
-        gate_id: str | None = None
-        try:
-            gate = gate_runner.select_verification_gate(cfg)
-            if gate is None:
-                verdict = "NO_GATE"
-            else:
-                gate_id = gate.gate_id
-                head = subprocess.run(
-                    ["git", "-C", str(cfg.root), "rev-parse", "HEAD"],
-                    capture_output=True, text=True,
-                )
-                commit = head.stdout.strip() if head.returncode == 0 else ""
-                if not commit:
-                    verdict = "INCONCLUSIVE"
-                else:
-                    good = gate_runner.run_gate_at_commit(cfg, gate, commit, phase="verify-good")
-                    if good.exit_code != 0:
-                        verdict = "BROKEN"
-                    else:
-                        canary_result = gate_canary.verify_gate_rejects_canary(cfg, gate, commit)
-                        if canary_result.killed:
-                            verdict = "TRUSTWORTHY"
-                        elif canary_result.inconclusive:
-                            verdict = "INCONCLUSIVE"
-                        else:
-                            verdict = "LAUNDERS"
-        except Exception:
-            verdict = "INCONCLUSIVE"
-        self._gate_verify_results.put({"project": project, "verdict": verdict, "gate_id": gate_id})
-
-    def _drain_gate_verify_results(self, project: str, cfg: ProjectConfig,
-                                    states: dict[str, TaskStateFile]) -> list[Event]:
-        """Called ONCE PER PASS from run_pass, main thread only -- the sole
-        consumer of `self._gate_verify_results` and the sole place a GA4
-        event is ever appended. The queue is shared across every registered
-        project (one Daemon, one queue), so this drains the WHOLE queue and
-        re-queues any result that does not belong to `project` -- harmless,
-        since run_pass loops over every registered project each tick, so
-        that project's own call picks its result back up.
-
-        For each result belonging to `project`: append GATE_VERIFY_RECORDED
-        (updates the cadence age _days_since_gate_verify reads next pass),
-        clear the running-thread entry (a fresh VerifyGate may now start a
-        new thread), and -- on LAUNDERS or BROKEN -- raise NEEDS_OPERATOR
-        (reason `gate-verify-<verdict>`), debounced through the existing
-        _needs_operator_recently_emitted so a persistent bad verdict escalates
-        once per episode, not every pass forever."""
-        events: list[Event] = []
-        pending: list[dict] = []
-        while True:
-            try:
-                pending.append(self._gate_verify_results.get_nowait())
-            except queue.Empty:
-                break
-        for result in pending:
-            if result.get("project") != project:
-                self._gate_verify_results.put(result)
-                continue
-            verdict = result.get("verdict")
-            gate_id = result.get("gate_id")
-            events.append(self._append_ev(
-                project, cfg, states, EventType.GATE_VERIFY_RECORDED,
-                {"project": project, "verdict": verdict, "gate_id": gate_id, "at": iso(utc_now())},
-                task_id=None))
-            self._gate_verify_running.pop(project, None)
-            if verdict in ("LAUNDERS", "BROKEN"):
-                reason = f"gate-verify-{verdict.lower()}"
-                if not self._needs_operator_recently_emitted(project, reason):
-                    events.append(self._append_ev(
-                        project, cfg, states, EventType.NEEDS_OPERATOR,
-                        {"reason": reason, "gate_id": gate_id}, task_id=None))
-        return events
+        return effects.needs_operator_recently_emitted(
+            self._require_events(project, events), reason)
 
     def _carver_session(self, project: str, cfg: ProjectConfig,
                         *, events: Sequence[Event] | None = None,
@@ -3394,28 +3317,19 @@ class Daemon:
 
     # -- event helpers -------------------------------------------------
 
+    # CR-05a: the three write helpers below are now DELEGATES. Their bodies
+    # moved behind the effect ports (`effects.StoreJournal`) and the
+    # lifecycle effector, so the ~190 call sites across this class keep
+    # working while there is exactly one implementation of "append an event"
+    # and one owner of the provider backoff registry.
+
     def _append_ev(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                    ev_type: EventType, payload: dict[str, Any], **kw) -> Event:
-        ev = storage.append_and_apply(
-            project, states, actor=Actor(ActorKind.TICK, "nyxloomd"), type=ev_type,
-            payload=payload, **kw,
-        )
-        try:
-            notify.notify_event(cfg, states, ev)
-        except Exception:
-            pass
-        return ev
+        return self._ports.journal.append(project, cfg, states, ev_type, payload, **kw)
 
     def _transition(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                      task_id: str, to: TaskState, notes: str | None) -> Event:
-        frm = states[task_id].state
-        # P05a (§5): every state transition funnels through this ONE helper,
-        # so one INFO call here covers the whole daemon's "state transitions
-        # -> INFO" instrumentation requirement without touching every call
-        # site individually.
-        log.info("state-transition", project=project, task=task_id, frm=frm.value, to=to.value)
-        return self._append_ev(project, cfg, states, EventType.TASK_TRANSITIONED,
-                                {"from": frm.value, "to": to.value, "notes": notes}, task_id=task_id)
+        return self._ports.journal.transition(project, cfg, states, task_id, to, notes)
 
     def _provider_pause(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                         route_id: str | None, task_id: str | None,
@@ -3426,14 +3340,8 @@ class Daemon:
         # distinctly from a genuine LIMIT receipt's pause in the event log,
         # without a new EventType (PROVIDER_STATE_CHANGED already carries a
         # free-form `state` payload value).
-        out: list[Event] = []
-        if route_id:
-            self._provider_paused[route_id] = time.monotonic() + PROVIDER_PAUSE_SECONDS
-        out.append(self._append_ev(project, cfg, states, EventType.PROVIDER_STATE_CHANGED,
-                                    {"route_id": route_id, "state": state}, task_id=task_id))
-        out.append(self._append_ev(project, cfg, states, EventType.NEEDS_OPERATOR,
-                                    {"route_id": route_id, "reason": "provider-limited"}, task_id=task_id))
-        return out
+        return self._lifecycle.pause_provider(
+            self._effect_context(project, cfg, states), route_id, task_id, state)
 
     # -- execution map ---------------------------------------------------
 
@@ -3442,372 +3350,6 @@ class Daemon:
             return ""
         gate = sorted(cfg.gates.values(), key=lambda g: g.gate_id)[0]
         return " ".join(gate.argv)
-
-    @staticmethod
-    def _gate_output_tail(stdout: object, stderr: object, limit: int = 4096) -> str:
-        """F019 P1a: a bounded text tail of a gate subprocess's stdout+stderr, for
-        the GATE_FINISHED payload on a FAILURE (so the reviewer-diagnosis routing
-        and any re-queue have the real error, not just an exit code). Tail, not
-        head: the actionable summary -- pytest FAILED lines, the diff-coverage
-        verdict -- is at the END of the output. Tolerates str|bytes|None
-        (subprocess.run yields str under text=True; a TimeoutExpired may carry
-        bytes or None), so it is safe on the timeout branch too."""
-        def _s(v: object) -> str:
-            if v is None:
-                return ""
-            if isinstance(v, str):
-                return v
-            if isinstance(v, (bytes, bytearray)):
-                return bytes(v).decode("utf-8", "replace")
-            return str(v)
-        out, err = _s(stdout), _s(stderr)
-        combined = f"{out}\n{err}" if (out and err) else (out or err)
-        return combined[-limit:]
-
-    # -- post-merge validation (nyxloom-post-merge-validation, 2026-07-17) --
-    #
-    # reconcile.py's module contract item 11 plans MERGED->VALIDATING (pure
-    # bookkeeping), then RunPostMergeGate(task_id) every pass while
-    # VALIDATING. The three helpers below do the actual work daemon-side.
-    # Unlike DispatchImplementer/LaunchReview (an AI CLI leg supervised by
-    # wrapper.launch_detached, async, receipt-polled over many passes), a
-    # post-merge gate is a TRUSTED STRUCTURED argv (config.py's own docstring:
-    # "model output can never introduce an executable") -- a deterministic,
-    # non-LLM-mediated command, so there is no receipt/session/resume
-    # machinery to reuse and none is invented here. This IS the first real
-    # consumer of GateDef.phase/timeout_seconds and GateResult (both were
-    # declared but never read/produced anywhere in daemon.py before this).
-    #
-    # ASYNC, background-thread-plus-drain (B3-followon, 2026-07-26): mirrors
-    # GA4's gate-verify cadence exactly (see _execute_verify_gate /
-    # _run_gate_verify_bg / _drain_gate_verify_results above -- read that
-    # block comment first, this is the SAME shape applied to a different
-    # trigger). Originally (module contract item 11, 2026-07-17)
-    # _run_post_merge_gate ran the gate as a fully blocking
-    # subprocess.run(..., timeout=gate.timeout_seconds) inline in the
-    # reconcile pass; the daemon's own tick loop (Daemon.run) iterates
-    # registered projects SEQUENTIALLY in a single thread, so a slow gate
-    # for one project stalled every OTHER project's reconcile pass for up
-    # to timeout_seconds. That blocking design was chosen initially because
-    # it needed zero new Role/Attempt/wrapper machinery, with this async
-    # re-cut flagged as "the natural follow-up if this blocking proves to
-    # matter in practice" -- this package is that follow-up.
-    #
-    # The execution model, byte-identical in spirit to GA4's: the background
-    # thread (_run_post_merge_gate_bg) NEVER appends an event, calls
-    # self._transition, or touches `states` directly -- it does ONLY
-    # git/filesystem/subprocess side effects (gate selection, scratch-
-    # worktree add/remove, the gate subprocess itself, and on failure the
-    # auto-revert CAS attempt) and ends by `.put()`-ing a small result dict.
-    # ALL state mutation (event append, running-thread bookkeeping, the
-    # COMPLETED/BLOCKED transition) happens on the MAIN thread, in
-    # _drain_post_merge_gate_results, called once per pass from run_pass
-    # (right next to the GA4 drain call). _run_post_merge_gate itself is now
-    # just the IDEMPOTENT DISPATCHER: a live background thread for a given
-    # task_id (unlike GA4's per-project cadence, post-merge gates are keyed
-    # per-task, since more than one task can be VALIDATING at once) means a
-    # gate for that task is already running, so it starts NO second thread --
-    # harmless, since VALIDATING re-emits RunPostMergeGate(task_id) every
-    # pass until the drain step transitions the task off VALIDATING
-    # (reconcile.py ~L1139-1141). On daemon restart mid-gate the in-memory
-    # thread is simply lost; VALIDATING re-fires the trigger next pass and
-    # the gate re-runs -- idempotent, no durable half-state to reconcile,
-    # the same argument GA4's own comment already makes.
-    def _select_post_merge_gate(self, cfg: ProjectConfig) -> GateDef | None:
-        """Prefer a gate the project declares phase == 'post-merge'. No
-        project registered today declares one (nyxloom's own nyxloom-trove/
-        nyxloom.toml has exactly one gate, phase 'implementation'), so the
-        documented default (handoff's own "if a project declares no post-
-        merge gate" clause) is to re-run the 'implementation' gate against
-        the merged default branch instead -- the same gate the merged code
-        was already required to pass, just re-verified post-merge (the
-        CLAUDE.md "re-run the gate on main post-merge" discipline this
-        pipeline exists to automate). None only if the project declares NO
-        gates at all -- see the no-op-validated-pass branch below.
-
-        F (factory-hardening): the selection logic now lives in
-        `gate_runner.select_verification_gate` so this daemon path and
-        `cli.cmd_merge` share ONE implementation (canonical L1). This method is
-        retained as the daemon-side call site (used by both the pre-merge gate
-        in `_execute_auto_merge` and `_run_post_merge_gate`)."""
-        return gate_runner.select_verification_gate(cfg)
-
-    def _select_mutation_gate(self, cfg: ProjectConfig) -> GateDef | None:
-        """Return the lowest-gate_id gate with phase == 'mutation', or None."""
-        mutation = [g for g in cfg.gates.values() if g.phase == "mutation"]
-        if mutation:
-            return sorted(mutation, key=lambda g: g.gate_id)[0]
-        return None
-
-    def _post_merge_worktree_value(self, cfg: ProjectConfig) -> str:
-        """The {worktree} substitution for a gate re-run against the
-        already-MERGED default branch (as opposed to a feature-branch
-        attempt, whose {worktree} is cfg.root / cfg.worktree_root / branch
-        -- a fresh git worktree with its OWN top-level). Post-merge
-        validation has no separate worktree: it runs against the project's
-        one already-merged checkout, so the correct value is THAT
-        checkout's git top-level.
-
-        Using `git rev-parse --show-toplevel` (rather than cfg.root itself)
-        is what makes this correct for BOTH project shapes seen in this
-        codebase: dstdns's cfg.root IS its repo root (top-level == cfg.root,
-        no-op), while nyxloom's own cfg.root is a SUBDIRECTORY of the vbpub
-        repo it is self-hosted in (top-level == cfg.root.parent) -- exactly
-        the repo-root convention nyxloom's own gate argv already assumes
-        (`cd {worktree}/nyxloom`, matching a feature worktree's top-level +
-        '/nyxloom'). Falls back to cfg.root if the git call fails for any
-        reason (e.g. a non-git test fixture)."""
-        try:
-            res = subprocess.run(
-                ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return str(cfg.root)
-
-    def _run_post_merge_gate(self, project: str, cfg: ProjectConfig,
-                              states: dict[str, TaskStateFile],
-                              action: "reconcile.RunPostMergeGate") -> list[Event]:
-        """IDEMPOTENT DISPATCHER for a post-merge gate -- mirrors
-        _execute_verify_gate exactly (see the block comment above for the
-        full design). A live background thread for this task_id means a
-        gate for it is already running, so this starts NO second thread --
-        which is exactly why VALIDATING may harmlessly re-emit the same
-        RunPostMergeGate(task_id) every pass until the drain step's
-        transition moves the task off VALIDATING. Appends no event itself
-        (the gate can take up to timeout_seconds; see
-        _run_post_merge_gate_bg / _drain_post_merge_gate_results for the
-        actual event-append seam, main-thread only). Keyed by task_id, NOT
-        project: unlike GA4's per-project verify cadence, more than one task
-        can be VALIDATING (and gating) concurrently for the same project."""
-        task_id = action.task_id
-        running = self._post_merge_gate_running.get(task_id)
-        if running is not None and running.is_alive():
-            return []
-        # The merge commit is the one piece of durable task state the bg
-        # thread needs; read it here, on the MAIN thread, and hand it down
-        # as a plain string -- the bg thread must not touch `states` itself
-        # (states/event-log mutation is main-thread-only, see the block
-        # comment above).
-        commit = states[task_id].merge_commit or ""
-        t = threading.Thread(target=self._run_post_merge_gate_bg,
-                              args=(project, cfg, task_id, commit), daemon=True)
-        self._post_merge_gate_running[task_id] = t
-        t.start()
-        return []
-
-    def _run_post_merge_gate_bg(self, project: str, cfg: ProjectConfig,
-                                 task_id: str, commit: str) -> None:
-        """The actual post-merge gate run -- runs on the background thread
-        started by _run_post_merge_gate. Does ALL the git/filesystem/
-        subprocess work the old synchronous method did (gate selection,
-        scratch-worktree add/remove, the gate subprocess itself, and on
-        failure the auto-revert `git update-ref` CAS attempt) -- none of
-        that is daemon *state*, it is external side effects, so it is safe
-        to run off-thread exactly like _run_gate_verify_bg already runs
-        `git rev-parse HEAD` off-thread.
-
-        MUST NOT touch the event log, call self._transition, or read/write
-        `states` -- every mutation from a non-main thread would race the
-        main-thread reconcile loop. Ends by `.put()`-ing a small result
-        dict for _drain_post_merge_gate_results to turn into events/
-        transitions on the main thread; NEVER appends an event itself."""
-        gate = self._select_post_merge_gate(cfg)
-
-        if gate is None:
-            # No gate declared at all for this project: the documented
-            # default is a no-op-validated pass straight to COMPLETED (no
-            # GateResult recorded -- there is nothing to record). Early
-            # return through the SAME .put() seam as every other outcome --
-            # the dispatcher stays generic, this is not special-cased there.
-            self._post_merge_gate_results.put({
-                "project": project, "task_id": task_id,
-                "gate_id": None, "gate_result": None, "outcome": "no_gate",
-            })
-            return
-
-        started = utc_now()
-        # P63 2026-07-20 (M13): run the gate in a CLEAN scratch worktree checked
-        # out at the merge commit -- never against the operator's live checkout
-        # (the old cwd=cfg.root), which may sit on a feature branch or carry
-        # uncommitted edits and would validate the WRONG tree, minting a
-        # COMPLETED/BLOCKED verdict against code that is not the merge commit.
-        # Fall back to the live root only if the merge commit is unknown (should
-        # not happen for a VALIDATING task, which reached here via a merge).
-        repo_root = subprocess.run(
-            ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True).stdout.strip()
-        scratch = None
-        if commit and repo_root:
-            scratch = Path(repo_root) / ".worktrees" / f"postmerge-{task_id}"
-            if scratch.exists():
-                subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                                capture_output=True, text=True)
-            add = subprocess.run(
-                ["git", "-C", repo_root, "worktree", "add", "--detach", str(scratch), commit],
-                capture_output=True, text=True)
-            if add.returncode != 0:
-                scratch = None  # fall back to the live root below
-        gate_cwd = str(scratch) if scratch is not None else str(cfg.root)
-        worktree_value = str(scratch) if scratch is not None else self._post_merge_worktree_value(cfg)
-        argv = [tok.replace("{worktree}", worktree_value) for tok in gate.argv]
-        out_tail = ""
-        try:
-            proc = subprocess.run(argv, cwd=gate_cwd, capture_output=True,
-                                   text=True, timeout=gate.timeout_seconds)
-            exit_code = proc.returncode
-            if exit_code != 0:
-                out_tail = self._gate_output_tail(proc.stdout, proc.stderr)
-        except subprocess.TimeoutExpired as _te:
-            exit_code = 124  # conventional shell timeout exit code
-            out_tail = self._gate_output_tail(_te.stdout, _te.stderr)
-        except OSError:
-            exit_code = 127  # command-not-found / exec failure
-        finally:
-            if scratch is not None:
-                subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
-                                capture_output=True, text=True)
-        ended = utc_now()
-
-        gate_result = GateResult(
-            gate_id=gate.gate_id, phase="post-merge", commit=commit,
-            exit_code=exit_code, started=started, ended=ended,
-            environment=gate.environment, output_tail=out_tail,
-        )
-        result: dict[str, Any] = {
-            "project": project, "task_id": task_id, "gate_id": gate.gate_id,
-            "gate_result": gate_result.to_dict(),
-        }
-
-        if exit_code == 0:
-            result["outcome"] = "completed"
-            self._post_merge_gate_results.put(result)
-            return
-
-        # F (factory-hardening): the gate FAILED on a tree already published
-        # to <default_branch> (the pre-merge gate is skippable, and a
-        # --force cli.cmd_merge or a flaky pass can also let a red commit
-        # through). Only BLOCKING it leaves the broken commit live on main.
-        # Auto-revert: CAS `update-ref` the branch back to the merge commit's
-        # first parent -- CAS (old == commit) so a NEWER merge landed since is
-        # never clobbered; a refused CAS falls through to BLOCKED for a human
-        # (canonical reference/LESSONS.md L4). Opt out: auto_revert_failed_merge.
-        result["outcome"] = "blocked"
-        result["reverted"] = False
-        if getattr(cfg.policy, "auto_revert_failed_merge", True) and commit and repo_root:
-            parent = subprocess.run(
-                ["git", "-C", repo_root, "rev-parse", "--verify", "--quiet", f"{commit}^1"],
-                capture_output=True, text=True,
-            ).stdout.strip()
-            if parent:
-                rv = subprocess.run(
-                    ["git", "-C", repo_root, "update-ref",
-                     f"refs/heads/{cfg.default_branch}", parent, commit],
-                    capture_output=True, text=True,
-                )
-                if rv.returncode == 0:
-                    # Logging is not the states/event-log mutation the
-                    # main-thread-only rule is about -- kept here, same as
-                    # GA4's own bg thread logs its verdict derivation.
-                    log.warning("merge-reverted", project=project, task=task_id,
-                                frm=commit, to=parent, gate=gate.gate_id)
-                    result["reverted"] = True
-                    result["revert_from"] = commit
-                    result["revert_to"] = parent
-                else:
-                    # CAS refused: <default_branch> no longer points at the
-                    # merge commit (something merged on top). Never force over
-                    # it -- leave it and let the BLOCKED escalation get a human.
-                    log.error("merge-revert-cas-refused", project=project, task=task_id,
-                              frm=commit, branch=cfg.default_branch, stderr=rv.stderr[:150])
-        # P05a (§5, §6 P05a oracle 2): "a gate failure" is one of the
-        # named ERROR examples in the rubric.
-        log.error("gate-failed", project=project, task=task_id,
-                  gate=gate.gate_id, exit_code=exit_code)
-        self._post_merge_gate_results.put(result)
-
-    def _drain_post_merge_gate_results(self, project: str, cfg: ProjectConfig,
-                                        states: dict[str, TaskStateFile]) -> list[Event]:
-        """Called ONCE PER PASS from run_pass, main thread only -- the sole
-        consumer of `self._post_merge_gate_results` and the sole place a
-        post-merge GATE_FINISHED/MERGE_REVERTED/TASK_BLOCKED/COMPLETED
-        transition is ever appended (mirrors _drain_gate_verify_results).
-        The queue is shared across every registered project (one Daemon,
-        one queue), so this drains the WHOLE queue and re-queues any result
-        that does not belong to `project` -- harmless, since run_pass loops
-        over every registered project each tick, so that project's own call
-        picks its result back up.
-
-        For each result belonging to `project`: pop
-        _post_merge_gate_running[task_id] (a fresh RunPostMergeGate may now
-        start a new thread for this task_id, though VALIDATING will not
-        re-emit one once this drain moves the task off VALIDATING), then
-        reconstruct exactly what the OLD synchronous code did with the
-        result dict -- GATE_FINISHED (unless outcome is "no_gate", which
-        never had one), MERGE_REVERTED when a revert succeeded, and the
-        terminal COMPLETED/BLOCKED transition, byte-identical to the old
-        branch logic."""
-        events: list[Event] = []
-        pending: list[dict] = []
-        while True:
-            try:
-                pending.append(self._post_merge_gate_results.get_nowait())
-            except queue.Empty:
-                break
-        for result in pending:
-            if result.get("project") != project:
-                self._post_merge_gate_results.put(result)
-                continue
-            task_id = result["task_id"]
-            self._post_merge_gate_running.pop(task_id, None)
-            outcome = result.get("outcome")
-
-            if outcome == "no_gate":
-                events.append(self._transition(
-                    project, cfg, states, task_id, TaskState.COMPLETED,
-                    "post-merge validation: project declares no gate, no-op pass"))
-                continue
-
-            gate_id = result.get("gate_id")
-            gate_result = result.get("gate_result")
-            events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
-                                           {"gate_result": gate_result}, task_id=task_id))
-
-            if outcome == "completed":
-                events.append(self._transition(
-                    project, cfg, states, task_id, TaskState.COMPLETED,
-                    f"post-merge gate {gate_id} passed"))
-                continue
-
-            # outcome == "blocked"
-            exit_code = gate_result["exit_code"]
-            if result.get("reverted"):
-                events.append(self._append_ev(
-                    project, cfg, states, EventType.MERGE_REVERTED,
-                    {"from": result.get("revert_from"), "to": result.get("revert_to"),
-                     "branch": cfg.default_branch,
-                     "reason": f"post-merge gate {gate_id} failed (exit {exit_code})"},
-                    task_id=task_id))
-            blocker = Blocker(
-                # P64 2026-07-20 (A12, M16): a post-merge GATE failure is an
-                # ENVIRONMENT failure (the merged tree failed its own tests),
-                # NOT a CONTRACT/underspecified-handoff. Typing it CONTRACT
-                # made every post-merge gate failure inflate
-                # blocked_underspecified_count -- a wrong signal that could
-                # trip SpecAttention('blocked-underspecified'). ENVIRONMENT
-                # keeps it out of that counter (see _history).
-                type=BlockerType.ENVIRONMENT,
-                unblock_condition="operator: inspect post-merge gate failure",
-                detail=f"post-merge gate {gate_id} exit_code={exit_code}"[:200],
-            )
-            events.append(self._append_ev(
-                project, cfg, states, EventType.TASK_BLOCKED,
-                {"from": states[task_id].state.value, "blocker": blocker.to_dict()},
-                task_id=task_id))
-        return events
 
     def _merge_progress_units(self, cfg: ProjectConfig, commit: str) -> list[str]:
         """P64 2026-07-20 (A12, D-061): objective progress signal for the
@@ -3942,7 +3484,7 @@ class Daemon:
         # policy.pre_merge_gate is False (parity with the pre-D-CORRECT-1
         # behaviour).
         if getattr(cfg.policy, "pre_merge_gate", True):
-            gate = self._select_post_merge_gate(cfg)
+            gate = effects_gates.select_post_merge_gate(cfg)
             if gate is not None:
                 merge_commit_sha = new_commit
                 argv = [tok.replace("{worktree}", str(scratch)) for tok in gate.argv]
@@ -3953,10 +3495,10 @@ class Daemon:
                                           text=True, timeout=gate.timeout_seconds)
                     exit_code = proc.returncode
                     if exit_code != 0:
-                        out_tail = self._gate_output_tail(proc.stdout, proc.stderr)
+                        out_tail = effects_gates.gate_output_tail(proc.stdout, proc.stderr)
                 except subprocess.TimeoutExpired as _te:
                     exit_code = 124
-                    out_tail = self._gate_output_tail(_te.stdout, _te.stderr)
+                    out_tail = effects_gates.gate_output_tail(_te.stdout, _te.stderr)
                 except OSError:
                     exit_code = 127
                 gate_result = GateResult(gate_id=gate.gate_id, phase="pre-merge",
@@ -3981,7 +3523,7 @@ class Daemon:
         # when policy.mutation_gate is False (default) or no phase=="mutation" gate
         # is declared. Mirrors the D-CORRECT-1 block above.
         if getattr(cfg.policy, "mutation_gate", False):
-            mgate = self._select_mutation_gate(cfg)
+            mgate = effects_gates.select_mutation_gate(cfg)
             if mgate is not None:
                 margv = [tok.replace("{worktree}", str(scratch)) for tok in mgate.argv]
                 mstarted = utc_now()
@@ -3991,10 +3533,10 @@ class Daemon:
                                            text=True, timeout=mgate.timeout_seconds)
                     mexit = mproc.returncode
                     if mexit != 0:
-                        mout_tail = self._gate_output_tail(mproc.stdout, mproc.stderr)
+                        mout_tail = effects_gates.gate_output_tail(mproc.stdout, mproc.stderr)
                 except subprocess.TimeoutExpired as _te:
                     mexit = 124
-                    mout_tail = self._gate_output_tail(_te.stdout, _te.stderr)
+                    mout_tail = effects_gates.gate_output_tail(_te.stdout, _te.stderr)
                 except OSError:
                     mexit = 127
                 mresult = GateResult(gate_id=mgate.gate_id, phase="mutation",
@@ -6848,43 +6390,35 @@ class Daemon:
 
     def _execute(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                  action: reconcile.Action) -> list[Event]:
+        """Dispatch one planned action to its registered handler.
+
+        CR-05a: this used to BE the effect layer -- a 1,090-line isinstance
+        ladder that both decided what an action meant and performed it. It is
+        now a lookup, and the only thing it can do with an action it does not
+        recognise is raise :class:`effects.UnownedAction`, which run_pass's
+        per-action isolation records as a TICK_ERROR. The families still
+        implemented below (`_execute_legacy`) are registered as legacy specs
+        owned by CR-05b, so they are reached through the SAME lookup -- there
+        is no second dispatch path a handler could hide in.
+        """
+        return self._registry.execute(
+            self._effect_context(project, cfg, states), action)
+
+    def _execute_legacy(self, ctx: effects.EffectContext,
+                        action: reconcile.Action) -> list[Event]:
+        """The effect families CR-05b still owns: attempt dispatch/resume and
+        exit consumption, review launch and verdict consumption, carve and
+        carver-session execution, and auto-merge.
+
+        Every branch here is registered in :meth:`_build_registry` with
+        ``legacy_owner="CR-05b"``, and ``effects.LEGACY_HANDLER_BUDGET`` holds
+        the count in both directions -- so this ladder can only shrink, and it
+        cannot shrink silently.
+        """
+        project, cfg, states = ctx.project, ctx.cfg, ctx.states
         events: list[Event] = []
 
-        if isinstance(action, reconcile.CreateTask):
-            tsf = TaskStateFile(
-                schema_version=storage.SCHEMA_VERSION, task_id=action.task_id, project=project,
-                state=TaskState.CARVED, since=utc_now(), handoff_path=action.handoff_path,
-            )
-            events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
-                                           {"statefile": tsf.to_dict()}, task_id=action.task_id))
-
-        elif isinstance(action, reconcile.Transition):
-            if action.to is TaskState.BLOCKED and action.blocker is not None:
-                # P14 2026-07-15 item 4: a typed-blocker BLOCKED transition
-                # (the INTERRUPTED silent-dead-end fix) emits TASK_BLOCKED,
-                # not a plain TASK_TRANSITIONED, so tsf.blocker gets set.
-                frm = states[action.task_id].state
-                events.append(self._append_ev(
-                    project, cfg, states, EventType.TASK_BLOCKED,
-                    {"from": frm.value, "blocker": action.blocker.to_dict(), "notes": action.notes},
-                    task_id=action.task_id))
-            elif states[action.task_id].state is action.to:
-                # Race-tolerant no-op guard: a transition whose target
-                # equals the current state is a no-op, not an error. This
-                # arises when two planning passes computed the same edge
-                # from a shared snapshot (e.g. both saw CARVED and planned
-                # CARVED->QUEUED) and the first already applied it — the
-                # classic symptom being the QUEUED->QUEUED TICK_ERROR under
-                # a transient double-dispatcher. Skip silently rather than
-                # letting check_task_transition raise (which surfaces as a
-                # TICK_ERROR and pollutes the event log). Root singleton
-                # enforcement is P19 (ciu-managed container); this keeps the
-                # planner idempotent regardless.
-                pass
-            else:
-                events.append(self._transition(project, cfg, states, action.task_id, action.to, action.notes))
-
-        elif isinstance(action, reconcile.DispatchImplementer):
+        if isinstance(action, reconcile.DispatchImplementer):
             ok, _reason = self._dispatch_admissible(project, cfg, states, "dispatch")
             if not ok:
                 return events  # P55: execute-time admission refused; task stays QUEUED, re-evaluated next pass
@@ -7068,65 +6602,6 @@ class Daemon:
             # implement-done consumption put it there); the leg's own EXITED
             # receipt is what moves it on (approved -> AWAITING_REVIEW, rejected
             # -> QUEUED), via the SELF_REVIEW branch of EmitAttemptExit.
-
-        elif isinstance(action, reconcile.InterruptAttempt):
-            tsf = states[action.task_id]
-            attempt_dir = paths.attempt_dir(project, action.attempt_id)
-            # P14 2026-07-15 (discovered building the oracle-1 end-to-end
-            # hang-detection test): signal the WRAPPER itself first -- its
-            # own installed handler forwards SIGTERM to the child's process
-            # group AND classifies the resulting exit as 'interrupted' (see
-            # wrapper.py's contract and its own real-signal tests, which
-            # signal wrapper_pid directly). Signaling child.pid's pgid
-            # alone bypasses the wrapper's handler entirely: the child dies
-            # from an unforwarded signal the wrapper never observed, so it
-            # falls through to plain log-tail classification and reports
-            # 'error', not 'interrupted' -- the confirmed-stall pipeline
-            # would then silently retry instead of ever reaching INTERRUPTED.
-            signaled = False
-            wrapper_pid_file = attempt_dir / "wrapper.pid"
-            if wrapper_pid_file.exists():
-                try:
-                    wpid = int(wrapper_pid_file.read_text(encoding="utf-8").strip())
-                    os.kill(wpid, signal.SIGTERM)
-                    signaled = True
-                except (ValueError, ProcessLookupError, OSError):
-                    pass
-            if not signaled:
-                # Belt and braces: the wrapper may already be gone (crashed)
-                # while the child it spawned is still alive -- kill the
-                # child's process group directly as a fallback.
-                child_pid_file = attempt_dir / "child.pid"
-                if child_pid_file.exists():
-                    try:
-                        child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
-                        pgid = os.getpgid(child_pid)
-                        os.killpg(pgid, signal.SIGTERM)
-                    except (ValueError, ProcessLookupError, OSError):
-                        pass
-            # No event: the wrapper emits ATTEMPT_INTERRUPTED itself on exit.
-
-        elif isinstance(action, reconcile.MarkInterrupted):
-            tsf = states[action.task_id]
-            attempt = tsf.attempt_by_id(action.attempt_id)
-            attempt.state = AttemptState.INTERRUPTED
-            attempt.ended = utc_now()
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_INTERRUPTED,
-                                           {"attempt": attempt.to_dict()}, task_id=action.task_id,
-                                           attempt_id=action.attempt_id))
-
-        elif isinstance(action, reconcile.MarkStalled):
-            # P14 2026-07-15 item 2: make a tier-2-confirmed stall visible.
-            # The process is still running (not ended) -- just flagged.
-            tsf = states[action.task_id]
-            attempt = tsf.attempt_by_id(action.attempt_id)
-            attempt.state = AttemptState.STALLED
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_STALLED,
-                                           {"attempt": attempt.to_dict()}, task_id=action.task_id,
-                                           attempt_id=action.attempt_id))
-
-        elif isinstance(action, reconcile.StallCheck):
-            pass  # _confirm_stall cache already updated during input build
 
         elif isinstance(action, reconcile.EmitAttemptExit):
             task_id = action.task_id
@@ -7472,14 +6947,6 @@ class Daemon:
                     events.append(self._append_ev(project, cfg, states, EventType.TASK_BLOCKED,
                                                    {"from": states[task_id].state.value,
                                                     "blocker": blocker.to_dict()}, task_id=task_id))
-
-        elif isinstance(action, reconcile.ProviderPause):
-            events.extend(self._provider_pause(project, cfg, states, action.route_id, action.task_id))
-
-        elif isinstance(action, reconcile.OpenWave):
-            wave_id = new_id("wave")
-            events.append(self._append_ev(project, cfg, states, EventType.WAVE_OPENED,
-                                           {"task_ids": list(action.task_ids)}, wave_id=wave_id))
 
         elif isinstance(action, reconcile.LaunchGateDiagnosis):
             # F019 P1b: dispatch the warm independent reviewer in GATE-DIAGNOSIS
@@ -7896,19 +7363,8 @@ class Daemon:
                                                {"attempt": attempt.to_dict()}, task_id=t,
                                                attempt_id=attempt_id, wave_id=wave_id))
 
-        elif isinstance(action, reconcile.SpecAttention):
-            # Debounce backstop: do not re-emit (and re-notify) the same
-            # spec-attention reason every cycle for a persistent condition.
-            if not self._spec_attention_recently_emitted(project, action.reason):
-                events.append(self._append_ev(project, cfg, states, EventType.SPEC_ATTENTION,
-                                               {"reason": action.reason, "detail": action.detail},
-                                               task_id=action.task_id))
-
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
-
-        elif isinstance(action, reconcile.VerifyGate):
-            events.extend(self._execute_verify_gate(project, cfg))
 
         elif isinstance(action, reconcile.AdmitCarveProposal):
             events.extend(self._execute_admit_carve_proposal(project, cfg, states, action))
@@ -7922,15 +7378,12 @@ class Daemon:
         elif isinstance(action, reconcile.CompactCarverSession):
             events.extend(self._execute_compact_carver_session(project, cfg, states, action))
 
-        elif isinstance(action, reconcile.RunPostMergeGate):
-            events.extend(self._run_post_merge_gate(project, cfg, states, action))
-
         elif isinstance(action, reconcile.AutoMergeTask):
             events.extend(self._execute_auto_merge(project, cfg, states, action))
 
-        else:
-            raise ValueError(f"unhandled action type: {type(action)!r}")
-
+        # No `else` branch: an action with no owner never reaches here. The
+        # registry refuses it at lookup (effects.UnownedAction), and only the
+        # twelve types registered as legacy are routed to this method at all.
         return events
 
     # -- HTTP / SSE --------------------------------------------------------

@@ -17,7 +17,7 @@ import subprocess
 
 import pytest
 
-from nyxloom import config, daemon, lint, notify, render, storage
+from nyxloom import config, daemon, effects_gates, lint, notify, render, storage
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, EventType, Role, Route,
     TaskState, TaskStateFile, utc_now,
@@ -266,12 +266,12 @@ def test_post_merge_gate_runs_on_merge_commit_not_live_checkout(
     tsf_mid = storage.load_state("demo", "demo-P78")
     assert tsf_mid.state is TaskState.VALIDATING   # gate only dispatched so far
 
-    t = d._post_merge_gate_running.get("demo-P78")
+    t = d._gates.post_merge_running.get("post-merge-gate:demo-P78")
     assert t is not None, "RunPostMergeGate did not start a background thread"
     t.join(timeout=10)
     assert not t.is_alive()
 
-    d._drain_post_merge_gate_results("demo", cfg, storage.list_states("demo"))
+    d._gates.drain_post_merge(d._effect_context("demo", cfg, storage.list_states("demo")))
 
     tsf = storage.load_state("demo", "demo-P78")
     assert tsf.state is TaskState.COMPLETED     # gate saw new_thing.txt at the merge commit
@@ -398,7 +398,7 @@ def test_gate_output_tail_helper_handles_types_and_bounds():
     """F019 P1a unit: _gate_output_tail tolerates str|bytes|None (and any other
     type via str()), combines stdout+stderr, and tails to the limit -- the
     actionable summary (FAILED lines, the diff-coverage verdict) is at the END."""
-    f = daemon.Daemon._gate_output_tail
+    f = effects_gates.gate_output_tail
     assert f(None, None) == ""                       # both absent
     assert f("out", "err") == "out\nerr"             # both present -> joined
     assert f("only-out", None) == "only-out"         # stdout only
