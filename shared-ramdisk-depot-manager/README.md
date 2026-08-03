@@ -14,16 +14,21 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
-## Status — P01 landed
+## Status — P01–P04 landed
 
-The release store, the journal and the offline half of `doctor` are
-implemented and gated. The rest of Phase 1 is carved but not started; see
+The store, the journal, offline `doctor`, the privileged systemd harness, the
+publication mount topology and the per-class hold units are implemented and
+gated. What is missing is everything a *consumer* needs: nothing is exposed
+into a container yet. See
 [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
 
 | | |
 |---|---|
-| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset, CLI |
-| **Not yet** | publication topology and hold services (P02), the `host-bind` exposure driver (P03), `harvest` (P04), retention/GC and the daemon (P05), SteamCMD driver, everything `provider` (v2) |
+| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset, CLI; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, teardown, mountinfo + unit reconciliation |
+| **Not yet** | consumer registry and teardown safety (P05), the `host-bind` exposure driver and doctor's mount/Wings preconditions (P06), `harvest` (P07), retention/GC, the daemon and boot restore (P08), SteamCMD driver, everything `provider` (v2) |
+
+Publication and hold are libraries with no operator entry point yet: the CLI
+verbs that drive them arrive with the daemon (P08).
 
 ```
 srdm store promote  --profile examples/soulmask.profile.json \
@@ -45,9 +50,16 @@ The single token is required, not cosmetic. systemd's `-` is the slice
 hierarchy separator, so `shared-ramdisk-depot-manager.slice` would nest under
 auto-created `shared.slice` / `shared-ramdisk.slice` / … each with
 `MemoryMin=0`, and every class floor beneath it would be arithmetically dead
-(Finding A, `../wings-cgroups/STRATEGY.md`). `srdm.slice` sits at cgroup root;
-`srdm-gen-<g8>.slice` and `srdm-hold-<g8>-<class>.service` nest correctly
-beneath it. `config.Validate` refuses a hyphenated slice name for this reason.
+(Finding A, `../wings-cgroups/STRATEGY.md`). `srdm.slice` sits at cgroup root
+and `config.Validate` refuses a hyphenated slice name for this reason.
+
+The same rule decides the per-generation aggregate, and it is **not** the
+`srdm-gen-<g8>.slice` the master plan draws: that name nests under an
+auto-created `srdm-gen.slice` carrying `memory.min=0`, which kills every class
+floor beneath it exactly as a hyphenated root would. Measured, and corrected
+to `srdm-<g8>.slice` — one level under `srdm.slice`, nothing interposed
+(decision D-015). Service names are unaffected, since only slices nest, so
+`srdm-hold-<g8>-<class>.service` keeps the plan's shape.
 
 ## The one architectural idea: exposure drivers (decision 10)
 
@@ -79,11 +91,15 @@ shared-ramdisk-depot-manager/
 │   ├── config/               on-disk layout, ownership policy
 │   ├── profile/              classification, probes, class memory policy
 │   ├── store/                the transactional release store        ← P01
-│   ├── journal/              durable records, JSONL, journald
+│   ├── journal/              durable records, JSONL, journald      ← P01
 │   ├── doctor/               diagnostics; offline subset            ← P01
 │   ├── fsx/                  durability primitives (atomic write, fsync)
-│   ├── publish/              publication topology                     P02
-│   ├── expose/               exposure drivers                         P03
+│   ├── cgroupfs/             cgroup v2 attribute reader            ← P02
+│   ├── systemdx/             transient units, via the systemd CLI  ← P02
+│   ├── mountinfo/            /proc/*/mountinfo, with propagation   ← P03
+│   ├── publish/              publication topology, reconciliation  ← P03
+│   ├── hold/                 hold units, class policy, the worker  ← P04
+│   ├── expose/               exposure drivers                         P06
 │   ├── source/steam/         SteamCMD driver (off the MVP path)
 │   ├── providerapi/          v2 only
 │   └── adminapi/             the operator socket

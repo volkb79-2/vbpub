@@ -425,3 +425,139 @@ It still refuses a tree containing anything the manifest does not name.
 Dropping that check alongside the mode check would have left content
 smugglable into a published class, which is a much bigger hole than the one
 being avoided.
+
+---
+
+## D-015 — the generation aggregate is `<parent>-<g8>.slice`, not `srdm-gen-<g8>.slice`
+
+**Status:** decided by measurement, and it corrects the master plan.
+
+The plan draws the per-generation aggregate as:
+
+```text
+srdm-gen-<g8>.slice
+├─ srdm-hold-<g8>-pak.service
+└─ srdm-hold-<g8>-code.service
+```
+
+systemd reads `-` in a **slice** name as the hierarchy separator, so that
+name does not sit under `srdm.slice`. It sits under an auto-created
+`srdm-gen.slice` that nobody declares, nobody owns and nobody configures —
+and which therefore carries `memory.min=0`. Measured on systemd 257,
+2026-08-03:
+
+```text
+ControlGroup=/srdm.slice/srdm-gen.slice/srdm-gen-b5b5b5b5.slice/srdm-hold-b5b5b5b5-pak.service
+memory.min:        0     ->      0      ->     367001600      ->     157286400
+```
+
+A cgroup v2 floor is **capped by every ancestor's** floor. A zero anywhere on
+the chain makes every floor below it arithmetically dead, no matter what the
+leaf says. This is the exact failure the single-token root name (master-plan
+decision 9) exists to prevent, arriving one level further down — and it
+arrives in the part of the design whose entire purpose is to carry the class
+floors.
+
+**Decided:** the aggregate is the configured parent's stem plus the
+generation — `srdm.slice` + `a1b2c3d4` → `srdm-a1b2c3d4.slice` — which nests
+directly under the parent and interposes nothing:
+
+```text
+/srdm.slice/srdm-a1b2c3d4.slice/srdm-hold-a1b2c3d4-pak.service
+memory.min: 536870912 -> 367001600 -> 157286400
+```
+
+Service names are unaffected: only slices nest, so
+`srdm-hold-<g8>-<class>.service` keeps the plan's shape exactly.
+
+**Why not set a floor on `srdm-gen.slice` instead.** Its correct value would
+be the sum over *all* live generations — a number with no single owner, which
+changes as generations come and go, and which two concurrent publications
+would race to write. The naming removes the problem rather than managing it.
+
+**The aggregate still needs its own floor**, whatever it is called: an
+implicitly created slice starts at zero like any other. `EnsureSlice` gives it
+the **sum** of the class floors beneath it, not the maximum — cgroup v2
+prorates a parent's protection among its children, so an aggregate protecting
+less than the sum silently shrinks every floor inside it.
+
+**Pinned by three oracles**, because the trap is structural rather than
+behavioural: a unit test asserts the derived name interposes nothing, using a
+helper that encodes systemd's naming rule and is itself pinned against the
+`ControlGroup` above; a privileged oracle walks the live cgroup chain from the
+hold unit to the configured parent and fails on any ancestor whose
+`memory.min` is below the floors beneath it; and a canary renames the slice
+back to the plan's shape and must make both go red.
+
+---
+
+## D-016 — the generation slice gets its floor before anything runs in it
+
+**Status:** accepted; measured.
+
+A slice systemd creates implicitly, because a service named it, starts at
+`memory.min=0`. If srdm set the floor afterwards, the window in which the
+aggregate is unprotected would be exactly the window in which the worker is
+faulting every page of the class into it.
+
+`systemctl set-property --runtime` works on a slice with **no unit file and no
+running instance** — measured 2026-08-03: it writes
+`/run/systemd/system.control/<slice>.d/50-MemoryMin.conf`, returns 0, and the
+value is in the kernel by the time the first service starts. So the order is
+set-property, then start the hold units.
+
+`--runtime` and not a persistent drop-in: the floor describes one live
+generation. Surviving the reboot after which srdm republishes from its own
+records would leave a floor protecting content nobody has.
+
+**Teardown has to stop the slice explicitly.** Also measured: a slice stays
+`ActiveState=active` and keeps its cgroup directory after its last service
+exits. Stopping only the services leaves the generation's aggregate — and its
+cgroup — behind. `ReleaseSlice` stops it and then `systemctl revert`s the
+drop-in; srdm only ever set-properties units it names itself, so reverting one
+cannot discard an operator's configuration.
+
+---
+
+## D-017 — the worker's exit status is the daemon's refusal channel
+
+**Status:** accepted, and half of it was found by a failing oracle.
+
+Population now happens in a separate process, in a transient unit the daemon
+did not fork. There is no wait status to read, so "this class does not fit"
+and "something is broken" have to be told apart across that boundary — and
+they must be, because the first quarantines a generation and the second does
+not.
+
+**Decided:** the worker exits with a code that names the kind — `3` out of
+space, `4` content does not match the manifest, `2` malformed invocation, `1`
+anything else — and the daemon reads it back from systemd's own
+`ExecMainStatus`. systemd keeps it durably, which also matters for P08, where
+the daemon adopting units that outlived it has nothing else to go on.
+
+**Found by the ENOSPC oracle:** `systemd-run` **blocks on the start job**, and
+for a `Type=notify` unit that job does not complete until the worker signals
+ready. A failing worker therefore reports through the *start call*, not
+through the readiness wait that follows it. The first version only consulted
+the status after the wait, so a class too small to hold its content surfaced
+as a bare `exit status 1` — a fault, unquarantined. Both paths now go through
+the same lookup.
+
+**With a guard, and the guard is the subtle part.** `ExecMainStatus` is only
+meaningful for a unit that failed *by exiting*: `ActiveState=failed` and
+`Result=exit-code`. A start refused before the worker ever ran — a unit name
+already taken, say — would otherwise hand back the status of whatever holds
+that name, and for a healthy running unit that is **0**. A failed start would
+be reported as a worker that succeeded. The canary that removes this guard
+survived the first version of its own test, which had scripted no status for
+it to wrongly believe; the test now scripts `ExecMainStatus=0` explicitly,
+because that is the value that makes the mistake silent.
+
+**One property comes with it.** `TimeoutStartSec` is set explicitly to 30
+minutes rather than left at systemd's 90-second default. For a `Type=notify`
+unit that default bounds the time until READY — and READY here means a
+multi-gigabyte class has been copied and hashed. 90 seconds is not a failsafe
+for that, it is a limit a legitimate population can reach. The value is a
+hang failsafe and never an oracle: expiry means a worker making no progress,
+which is a true failure however long you wait, and no plausible class on any
+plausible disk comes near it.

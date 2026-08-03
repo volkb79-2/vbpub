@@ -19,6 +19,7 @@ import (
 	"srdm/internal/config"
 	"srdm/internal/doctor"
 	"srdm/internal/fsx"
+	"srdm/internal/hold"
 	"srdm/internal/journal"
 	"srdm/internal/profile"
 	"srdm/internal/store"
@@ -28,6 +29,17 @@ import (
 var Version = "0.1.0-P01"
 
 func main() {
+	// The hold worker is this same binary in a different role: it is what a
+	// srdm-hold-<g8>-<class>.service runs, so that the pages of a class are
+	// faulted inside the cgroup carrying that class's memory policy.
+	//
+	// It is dispatched here, ahead of run(), because its EXIT STATUS is the
+	// contract — the daemon reads it back from systemd to tell a refusal
+	// (out of space) from a fault (D-017), and run()'s error path would
+	// collapse every one of them to 1.
+	if len(os.Args) > 1 && os.Args[1] == hold.WorkerSubcommand {
+		os.Exit(hold.RunWorker(os.Args[2:], os.Stderr))
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "srdm: %v\n", err)
 		os.Exit(1)
@@ -53,9 +65,11 @@ func run(args []string) error {
 		usage()
 		return nil
 	case "daemon", "stage", "harvest", "status", "activate", "rollback", "gc", "operation":
-		return fmt.Errorf("%q is not implemented yet: P01 ships the store, the journal and "+
-			"offline doctor. Publication and hold services arrive with P02, the host-bind "+
-			"exposure driver with P03, harvest with P04", args[0])
+		return fmt.Errorf("%q has no CLI verb yet: the store, the journal and offline doctor "+
+			"ship today, and publication topology and hold services exist as libraries "+
+			"(internal/publish, internal/hold) with no operator entry point. The exposure "+
+			"driver arrives with P06, harvest with P07, and the daemon, gc and boot restore "+
+			"with P08", args[0])
 	default:
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
@@ -74,6 +88,9 @@ func usage() {
   srdm journal list
   srdm journal show --op <id>
   srdm version
+
+Not for operators — srdm runs this on itself, as a hold unit's ExecStart:
+  srdm hold-worker --release-dir <dir> --release-id <id> --class <c> --target <dir>
 
 Common flags — accepted by every subcommand, written AFTER it:
   --state-dir <path>   persistent root (default `+config.DefaultStateDir+`)

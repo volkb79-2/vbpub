@@ -8,6 +8,7 @@
       "paths": ["WS/Content/Paks"],
       "memory_min": 157286400,
       "zswap_max": 0,
+      "zswap_writeback": true,
       "noexec": true
     },
     {

@@ -79,7 +79,7 @@ Wave 1 — it decides whether srdm ever needs host root at install time.
 | id | package | state |
 |---|---|---|
 | **P03** | mount topology: op tmpfs per class, populate, verify, seal, RO bind, teardown, mountinfo reconciliation | **done** |
-| **P04** | relocate population into per-class transient hold units; class memory policy; charging | next |
+| **P04** | relocate population into per-class transient hold units; class memory policy; charging | **done** |
 
 **What P03 settled.** The topology is built and gated at both levels: unit
 tests assert the exact mount sequence against an injected mounter, and six
@@ -118,16 +118,43 @@ trusts only the intersection of `/proc/self/mountinfo`, durable operation
 state and unit state. A published record without its mounts triggers
 republish; mounts without a record are torn down as orphans.
 
-P04 carries the per-class policy (`MemoryMin`, `MemoryZSwapMax`,
-`MemoryZSwapWriteback`) and the `srdm-gen-<g8>.slice` aggregate — and, per
-**D-011**, a worker that **parks after populating** rather than exiting.
-`SubState` for a healthy hold unit is `running`, not `exited`; anything
-waiting for `exited` is waiting for a failure. Keep the parked worker's own
-footprint minimal, since it is charged to the class cgroup alongside the
-content.
+**What P04 settled.** Population now runs in
+`srdm-hold-<g8>-<class>.service`, whose worker is the srdm binary invoked on
+itself: it populates, verifies and seals inside its own cgroup, signals
+`READY=1`, and parks. The daemon never writes a class tree — it mounts, waits
+for ready, binds. Charging is measured rather than argued: a 32 MiB pak class
+shows `shmem=33558528` on its own hold unit, and `memory.min`,
+`memory.zswap.max` and `memory.zswap.writeback` read back from the **cgroup**
+rather than from `systemctl show`.
 
-*Gates*: master-plan oracle 12 (charging, properties read back, teardown
-leaves `nr_dying_descendants` stable), topology recovery, ENOSPC quarantine.
+Three decisions came out of it, and the first corrects the master plan.
+**D-015**: `srdm-gen-<g8>.slice` does not nest under `srdm.slice` — systemd
+reads `-` as the slice hierarchy separator, so it nests under an auto-created
+`srdm-gen.slice` carrying `memory.min=0`, and a cgroup v2 floor is capped by
+every ancestor's. Every class floor beneath it would be arithmetically dead:
+master-plan decision 9's failure, one level down, in the very structure meant
+to carry the floors. The aggregate is `srdm-<g8>.slice`, and it gets the
+**sum** of the class floors beneath it, since cgroup v2 prorates a parent's
+protection among its children. **D-016**: that floor is set with
+`systemctl set-property --runtime` *before* the first hold unit starts, and
+teardown stops the slice explicitly — measured, a slice stays active and keeps
+its cgroup after its last service exits. **D-017**: the worker's exit status
+is the refusal channel, read back from `ExecMainStatus`, guarded on the unit
+having actually failed by exiting.
+
+*Gated*: master-plan oracle 12 in full — charging to the hold unit, the
+policy read back from the kernel, no ancestor capping the floors at zero,
+teardown leaving no mounts, no units and `nr_dying_descendants` stable across
+three publish/teardown cycles — plus ENOSPC quarantine end to end through the
+worker's exit status, and reconciliation seeing a stopped hold unit with every
+mount intact. 24 canaries, none surviving.
+
+Reconciliation gained its third source. It now trusts the intersection of the
+mount table, the durable records **and systemd**: a class can be fully
+mounted and not held, which no amount of looking at mounts would show, and
+which means its pages are charged to a removed cgroup carrying no policy at
+all. It is reported as `Unheld` and scheduled for republish; acting on that
+is still P08's.
 
 ### Wave 2 — exposure
 

@@ -53,14 +53,20 @@ type Class struct {
 	Kind Kind   `json:"kind"`
 	// Paths are slash-separated prefixes relative to the release root.
 	Paths []string `json:"paths"`
-	// MemoryMin is the class floor, in bytes, that the hold service carries
-	// (P02). doctor sums the managed classes' floors and checks the parent
-	// slice's MemoryMin covers them.
+	// MemoryMin is the class floor, in bytes, that the hold service carries.
+	// doctor sums the managed classes' floors and checks the parent slice's
+	// MemoryMin covers them; publication sums them again for the generation
+	// slice, because a floor is capped by every ancestor's floor.
 	MemoryMin int64 `json:"memory_min,omitempty"`
-	// ZSwapMax is the MemoryZSwapMax the hold service carries (P02). Zero
-	// means pages bypass zswap entirely — correct for incompressible pak
-	// data (measured 1.006x on the case-study node).
+	// ZSwapMax is the MemoryZSwapMax the hold service carries. Zero means
+	// pages bypass zswap entirely — correct for incompressible pak data
+	// (measured 1.006x on the case-study node). A pointer because zero is a
+	// meaningful setting and not the same as leaving the knob alone.
 	ZSwapMax *int64 `json:"zswap_max,omitempty"`
+	// ZSwapWriteback is the MemoryZSwapWriteback the hold service carries:
+	// whether this class's pages may be written back to disk. Also a
+	// pointer — unset is systemd's default, which is not "no".
+	ZSwapWriteback *bool `json:"zswap_writeback,omitempty"`
 	// NoExec mounts this class's tmpfs noexec. Data-only classes should.
 	NoExec bool `json:"noexec,omitempty"`
 }

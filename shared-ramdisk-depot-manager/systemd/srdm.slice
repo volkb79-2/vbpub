@@ -15,10 +15,15 @@
 # auto-created `shared.slice` / `shared-ramdisk.slice` / ... each carrying
 # MemoryMin=0. A child's floor is only effective while its parent's covers
 # it, so every class floor beneath such a slice would be arithmetically dead
-# — silently. The single token keeps this at cgroup root, and
-# `srdm-gen-<g8>.slice` / `srdm-hold-<g8>-<class>.service` nest correctly
-# beneath it. (srdm refuses a hyphenated slice name in config for the same
-# reason.)
+# — silently. The single token keeps this at cgroup root. (srdm refuses a
+# hyphenated slice name in config for the same reason.)
+#
+# The same rule decides the per-generation aggregate, which is why it is
+# `srdm-<g8>.slice` and not the `srdm-gen-<g8>.slice` the design sketches:
+# that name would nest under an auto-created `srdm-gen.slice` carrying
+# MemoryMin=0, reintroducing the dead floor one level down. Measured;
+# decision D-015. Only slices nest, so `srdm-hold-<g8>-<class>.service` is
+# unaffected and keeps its shape.
 
 [Unit]
 Description=srdm — shared release generations held resident in tmpfs

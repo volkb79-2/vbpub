@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,22 +14,28 @@ import (
 	"srdm/internal/mountinfo"
 )
 
-// Teardown removes a published generation's mounts, in the one order that
-// actually returns the memory.
+// Teardown removes a published generation's mounts and holds, in the one
+// order that actually returns the memory.
 //
 //  1. drop the read-only bind exposure
 //  2. unmount the op tmpfs — THIS is what frees and uncharges the pages
-//  3. (P04) stop the hold unit, then the generation slice
+//  3. stop the hold unit
+//  4. stop the generation slice, and drop the floor it was given
 //
 // Dropping the exposure first matters because the bind is the reference a
 // consumer could still be holding; unmounting the op tmpfs while a bind
 // survives frees nothing at all — measured, D-012 — and the pages stay
 // charged to a cgroup that is about to be removed.
 //
+// Stopping the unit before the slice, and the slice at all, is also measured
+// rather than assumed: a slice stays active and keeps its cgroup after its
+// last service exits, so a teardown that stops only the services leaves the
+// generation's aggregate behind.
+//
 // Teardown does NOT decide whether it is safe to run. Resolving live
 // consumers and refusing while one holds a bind is P05's job, and it runs
 // before this.
-func (p *Publisher) Teardown(opID, profileID, generation string) error {
+func (p *Publisher) Teardown(ctx context.Context, opID, profileID, generation string) error {
 	rec, err := p.LoadRecord(profileID, generation)
 	if err != nil {
 		return fmt.Errorf("publish: teardown %s/%s: %w", profileID, generation, err)
@@ -36,7 +43,7 @@ func (p *Publisher) Teardown(opID, profileID, generation string) error {
 	fields := recFields(rec)
 
 	if err := p.phase(opID, KindTeardown, PhaseTeardown, fields, func() error {
-		return p.unmountRecord(rec)
+		return p.releaseRecord(ctx, rec)
 	}); err != nil {
 		return err
 	}
@@ -52,8 +59,9 @@ func (p *Publisher) Teardown(opID, profileID, generation string) error {
 	})
 }
 
-// unmountRecord drops every mount a record names, exposure before op tmpfs.
-func (p *Publisher) unmountRecord(rec *Record) error {
+// releaseRecord drops every mount and every hold a record names, in the
+// order that uncharges.
+func (p *Publisher) releaseRecord(ctx context.Context, rec *Record) error {
 	var errs []error
 	for _, c := range rec.Classes {
 		if err := p.unmountIfMounted(c.ExposePath); err != nil {
@@ -63,6 +71,21 @@ func (p *Publisher) unmountRecord(rec *Record) error {
 	for _, c := range rec.Classes {
 		if err := p.unmountIfMounted(c.OpMount); err != nil {
 			errs = append(errs, fmt.Errorf("op tmpfs %s: %w", c.OpMount, err))
+		}
+	}
+	// Only now: while a mount survived, stopping the unit would have left
+	// the pages charged to a cgroup with nothing left to attribute them to.
+	for _, c := range rec.Classes {
+		if c.HoldUnit == "" {
+			continue
+		}
+		if err := p.holder.Forget(ctx, c.HoldUnit); err != nil {
+			errs = append(errs, fmt.Errorf("hold unit %s: %w", c.HoldUnit, err))
+		}
+	}
+	if rec.Slice != "" {
+		if err := p.holder.ReleaseSlice(ctx, rec.Slice); err != nil {
+			errs = append(errs, fmt.Errorf("slice %s: %w", rec.Slice, err))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -98,22 +121,18 @@ func (p *Publisher) unmountIfMounted(target string) error {
 
 // teardownOp cleans up after a failed publication.
 //
-// It works from what was actually mounted so far rather than from a
-// completed record, because a publication that failed has no completed
-// record — that is what failing means here.
-func (p *Publisher) teardownOp(opID string, rec *Record, profileID, gen string) error {
-	partial := &Record{
-		Generation:  gen,
-		Profile:     profileID,
-		OperationID: opID,
-		Classes:     rec.Classes,
-	}
-	// The class that was mid-flight when it failed is not in rec.Classes
-	// yet, so sweep the operation's own subtree for anything mounted.
+// It works from the record the publication was BUILDING rather than from a
+// completed one, because a publication that failed has no completed record —
+// that is what failing means here. Every class is named in that record from
+// the start precisely so this path can reach the one that was in flight.
+func (p *Publisher) teardownOp(ctx context.Context, opID string, rec *Record) error {
+	// Sweep the operation's own subtree for anything mounted that the record
+	// does not name — a mount made between two named steps, or by a previous
+	// attempt with the same operation id.
 	entries, err := p.mountInfo()
 	if err == nil {
 		opDir := p.cfg.OpDir(opID)
-		genDir := p.cfg.GenerationDir(profileID, gen)
+		genDir := p.cfg.GenerationDir(rec.Profile, rec.Generation)
 		var extra []string
 		for _, e := range mountinfo.Under(entries, opDir) {
 			extra = append(extra, e.MountPoint)
@@ -127,21 +146,21 @@ func (p *Publisher) teardownOp(opID string, rec *Record, profileID, gen string) 
 			_ = p.unmountIfMounted(m)
 		}
 	}
-	if uerr := p.unmountRecord(partial); uerr != nil {
+	if uerr := p.releaseRecord(ctx, rec); uerr != nil {
 		return uerr
 	}
 	_ = os.RemoveAll(p.cfg.OpDir(opID))
 	return nil
 }
 
-// Reconciliation is what the mount table and the durable records agree and
-// disagree about.
+// Reconciliation is what the mount table, the durable records and systemd
+// agree and disagree about.
 type Reconciliation struct {
-	// Healthy names generations whose records and mounts both exist.
+	// Healthy names generations whose record, mounts and holds all exist.
 	Healthy []string
-	// NeedsRepublish names generations with a record but missing mounts. A
-	// record alone proves nothing about mount topology — after a reboot,
-	// every record is in this state.
+	// NeedsRepublish names generations whose topology is incomplete in any
+	// way. A record alone proves nothing — after a reboot, every record is
+	// in this state.
 	NeedsRepublish []string
 	// Orphans are mount points under the srdm roots that no record claims.
 	// They are torn down: a mount nobody recorded is one nobody can reason
@@ -150,15 +169,22 @@ type Reconciliation struct {
 	// NotReadOnly names exposure binds that exist but are writable — a
 	// publication interrupted between the bind and the remount.
 	NotReadOnly []string
+	// Unheld names classes whose content is mounted but whose hold unit is
+	// gone. The pages are still there and still charged — to a cgroup that
+	// has been removed and carries no policy at all, so the class floor
+	// protects nothing and the memory is attributable to nobody.
+	Unheld []string
 }
 
-// Reconcile compares the durable records against the kernel's mount table.
+// Reconcile compares the durable records against the kernel's mount table
+// and against systemd.
 //
 // Neither source is trusted alone, and the master plan is explicit about
 // why: "a COMPLETE or published-state file alone proves nothing about mount
 // topology — a published record without its mounts triggers republish;
-// mounts without a record are torn down as orphans."
-func (p *Publisher) Reconcile(opID string) (*Reconciliation, error) {
+// mounts without a record are torn down as orphans." P04 adds the third
+// source, because a class can be fully mounted and still not be held.
+func (p *Publisher) Reconcile(ctx context.Context, opID string) (*Reconciliation, error) {
 	res := &Reconciliation{}
 
 	entries, err := p.mountInfo()
@@ -178,15 +204,30 @@ func (p *Publisher) Reconcile(opID string) (*Reconciliation, error) {
 			claimed[c.OpMount] = true
 			claimed[c.ExposePath] = true
 
-			opMnt, opOK := mountinfo.At(entries, c.OpMount)
+			_, opOK := mountinfo.At(entries, c.OpMount)
 			exposeMnt, exposeOK := mountinfo.At(entries, c.ExposePath)
 			if !opOK || !exposeOK {
 				complete = false
 				continue
 			}
-			_ = opMnt
 			if !exposeMnt.ReadOnly() {
 				res.NotReadOnly = append(res.NotReadOnly, c.ExposePath)
+				complete = false
+			}
+			if c.HoldUnit == "" {
+				continue
+			}
+			// An error here is systemd being unreachable, not a unit being
+			// absent — `systemctl show` reports a unit it has never heard of
+			// as inactive, with a zero exit. So this cannot conclude
+			// anything and must not guess: guessing "unheld" would schedule
+			// a republish of a healthy generation.
+			active, err := p.holder.IsActive(ctx, c.HoldUnit)
+			if err != nil {
+				return nil, fmt.Errorf("publish: reconcile %s: %w", name, err)
+			}
+			if !active {
+				res.Unheld = append(res.Unheld, c.HoldUnit)
 				complete = false
 			}
 		}
@@ -212,16 +253,18 @@ func (p *Publisher) Reconcile(opID string) (*Reconciliation, error) {
 	sort.Strings(res.Healthy)
 	sort.Strings(res.NeedsRepublish)
 	sort.Strings(res.NotReadOnly)
+	sort.Strings(res.Unheld)
 	// Deepest first, so tearing them down in order never blocks on a child.
 	sort.Sort(sort.Reverse(sort.StringSlice(res.Orphans)))
 
 	return res, p.jnl.Emit(journal.Record{
 		OperationID: opID, Kind: KindReconcile, Phase: PhaseRecord,
 		Outcome: journal.OutcomeOK,
-		Message: "compared published records against the mount table",
+		Message: "compared published records against the mount table and systemd",
 		Fields: map[string]string{
 			"healthy":         strings.Join(res.Healthy, ","),
 			"needs_republish": strings.Join(res.NeedsRepublish, ","),
+			"unheld":          strings.Join(res.Unheld, ","),
 			"orphan_count":    itoa(int64(len(res.Orphans))),
 		},
 	})

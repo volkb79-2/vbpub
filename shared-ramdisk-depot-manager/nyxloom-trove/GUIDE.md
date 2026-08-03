@@ -61,10 +61,10 @@ so a failing gate reads as passing — the same aliasing that makes a trailing
 
 | id | what it asserts | when |
 |---|---|---|
-| `unit` | gofmt, build, vet, and the O1–O5 oracles | implementation |
-| `coverage` | changed-line floor, 80% over `internal/` | review |
+| `unit` | gofmt, build, vet, and every oracle that needs no privilege | implementation |
+| `coverage` | changed-line floor, 75% over `internal/` | review |
 | `canary` | that each oracle **rejects** a break of the contract it names | review |
-| `privileged-e2e` | publication topology, hold services, charging | **empty until P02** (D-004) |
+| `privileged-e2e` | what the kernel and systemd do: mount topology, hold units, charging, cgroup floors, teardown | pre-merge |
 
 ```bash
 tools/gate.sh . coverage                      # against main

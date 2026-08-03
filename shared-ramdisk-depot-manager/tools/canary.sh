@@ -118,8 +118,10 @@ canary "O5-no-key-denylist" "TestCredentialShaped|TestDeniedKey" \
 
 # --- P03: publication topology --------------------------------------------
 # Stop sealing the populated tree, so the bind source stays writable.
-canary "P03-no-seal" "TestPublishSeals" \
-  "internal/publish/publish.go" \
+# The seal moved into the hold worker with P04: it is the worker that writes
+# a class tree, and nothing else ever does.
+canary "P03-no-seal" "TestWorkerPopulatesVerifiesAndSeals" \
+  "internal/hold/worker.go" \
   's#info.Mode().Perm()&\^0o222#info.Mode().Perm()|0o222#' \
   "the populated tree is never made read-only"
 
@@ -132,7 +134,7 @@ canary "P03-exposure-writable" "TestExposureIsMadeReadOnly" \
 
 # Unmount the op tmpfs before the exposure. A bind that survives its tmpfs
 # frees nothing, so this is a silent memory leak dressed as a teardown.
-canary "P03-teardown-order" "TestTeardownDropsExposure|TestPublishTearsDown" \
+canary "P03-teardown-order" "TestTeardownReleasesInTheOrder|TestPublishTearsDown" \
   "internal/publish/teardown.go" \
   's#if err := p.unmountIfMounted(c.ExposePath); err != nil {#if err := p.unmountIfMounted(c.OpMount); err != nil {#' \
   "teardown drops the op tmpfs before the exposure"
@@ -150,6 +152,95 @@ canary "P03-no-orphans" "TestReconcileFindsOrphan" \
   "internal/publish/teardown.go" \
   's#^\t\t\tif claimed\[e.MountPoint\] || e.MountPoint == p.cfg.RunDir {$#\t\t\tif true {#' \
   "reconciliation never reports an orphan mount"
+
+# --- P04: hold units, class policy and charging ---------------------------
+
+# Name the generation aggregate as the master plan sketched it. systemd reads
+# "-" as the slice hierarchy separator, so this interposes an auto-created
+# `srdm-gen.slice` that nobody owns and that carries memory.min=0 — and a
+# cgroup v2 floor is capped by every ancestor's, so every class floor beneath
+# it becomes arithmetically dead. Measured; D-015.
+canary "P04-gen-slice-nests-deeper" "TestGenerationSliceInterposesNothing|TestTheGenerationSliceIsGiven" \
+  "internal/hold/hold.go" \
+  's#\tname := stem + "-" + gen + ".slice"#\tname := stem + "-gen-" + gen + ".slice"#' \
+  "the generation slice acquires an unprotected ancestor"
+
+# Protect the aggregate with the LARGEST class floor rather than their sum.
+# The plausible wrong answer: cgroup v2 prorates a parent's protection among
+# its children, so this silently shrinks every floor inside it.
+canary "P04-floor-is-max-not-sum" "TestTheGenerationSliceIsGiven|TestPublishPerformsTheExactSequence" \
+  "internal/publish/publish.go" \
+  's#^\t\t\ttotal += c.MemoryMin$#\t\t\ttotal = c.MemoryMin#' \
+  "the generation aggregate protects less than the floors beneath it"
+
+# Stop rendering the class floor, so a hold unit carries no MemoryMin at all
+# and the class it holds is reclaimed like anything else.
+canary "P04-class-floor-dropped" "TestPropertiesCarryTheShape" \
+  "internal/hold/hold.go" \
+  's#^\tif p.MemoryMin > 0 {$#\tif false {#' \
+  "the class floor never reaches the unit"
+
+# Treat a declared MemoryZSwapMax=0 as unset. Zero is a meaningful setting —
+# pak content is incompressible, so zswap burns CPU without shrinking — and
+# dropping it is indistinguishable from a class that never asked.
+canary "P04-zswap-zero-unset" "TestPropertiesCarryTheShape" \
+  "internal/hold/hold.go" \
+  's#^\tif p.ZSwapMax != nil {$#\tif false {#' \
+  "a class that bypasses zswap silently gets the default instead"
+
+# Unmount everything and leave the hold units running. The cgroups, and
+# anything still charged to them, survive a teardown that reports success.
+canary "P04-teardown-skips-units" "TestTeardownReleasesInTheOrder|TestPublishTearsDown" \
+  "internal/publish/teardown.go" \
+  's#^\t\tif c.HoldUnit == "" {$#\t\tif true {#' \
+  "teardown leaves the hold units and their cgroups behind"
+
+# Leave the generation slice active. Measured: a slice stays active and keeps
+# its cgroup after its last service exits, so stopping the services is not
+# enough on its own.
+canary "P04-slice-not-released" "TestTeardownReleasesInTheOrder" \
+  "internal/publish/teardown.go" \
+  's#^\tif rec.Slice != "" {$#\tif false {#' \
+  "the generation aggregate outlives the generation"
+
+# Report a class that cannot fit as a fault. It would then read as a bug in
+# srdm rather than as sizing that has to be fixed, and the generation would
+# not be quarantined — the 2026-07-29 corruption shape.
+canary "P04-enospc-is-a-fault" "TestAWorkerOutOfSpaceIsARefusal" \
+  "internal/publish/publish.go" \
+  's#if err != nil && hold.ExitStatus(err) == hold.ExitNoSpace {#if err != nil \&\& false {#' \
+  "running out of space is no longer a refusal"
+
+# And the other direction: call every worker failure a refusal. Content that
+# does not match its manifest would then quarantine quietly, and a genuine
+# sizing failure would have nothing to stand out from.
+canary "P04-every-failure-is-a-refusal" "TestAWorkerFailingForAnyOtherReason" \
+  "internal/publish/publish.go" \
+  's#hold.ExitStatus(err) == hold.ExitNoSpace#true#' \
+  "every worker failure is reported as a refusal"
+
+# Stop checking whether a class is still held. Content mounted with its hold
+# unit gone is charged to a removed cgroup that carries no policy — which the
+# mount table cannot show, and which this is the only check for.
+canary "P04-unheld-invisible" "TestReconcileFlagsAClassWhoseHoldUnitIsGone" \
+  "internal/publish/teardown.go" \
+  's#^\t\t\tif !active {$#\t\t\tif active \&\& !active {#' \
+  "reconciliation cannot see a class nothing is holding"
+
+# Skip the worker's verification, so a class that does not match its manifest
+# is populated, sealed and bound anyway.
+canary "P04-worker-skips-verify" "TestWorkerRefusesContentThatDoesNotMatch" \
+  "internal/hold/worker.go" \
+  's#if err := rel.Manifest.VerifyClass(wa.Target, wa.Class); err != nil {#if err := error(nil); err != nil {#' \
+  "a class is published without being verified against the manifest"
+
+# Believe ExecMainStatus even when the unit did not fail by exiting. For a
+# healthy running unit that is 0 — so a start systemd refused would be
+# reported as a worker that succeeded.
+canary "P04-stale-exit-status" "TestStartIgnoresTheStatusOfAUnitThatDidNotFail" \
+  "internal/hold/hold.go" \
+  's#props\["ActiveState"\] != "failed" || props\["Result"\] != "exit-code"#props\["ActiveState"\] == "never"#' \
+  "a refused start is read as a worker exit status"
 
 rm -rf "$WORK"
 

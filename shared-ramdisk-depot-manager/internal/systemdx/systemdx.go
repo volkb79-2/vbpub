@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -240,6 +241,73 @@ func (c *Client) Property(ctx context.Context, unit, name string) (string, error
 		return "", fmt.Errorf("systemdx: unit %q reported no %s", unit, name)
 	}
 	return v, nil
+}
+
+// MainExitStatus reads a unit's main process exit code.
+//
+// This is how a worker reports a refusal to the daemon that started it: the
+// process is not the daemon's child, so there is no wait status to read, but
+// systemd keeps ExecMainStatus and hands it back. Measured 2026-08-03: a
+// Type=notify unit whose worker exits 3 before signalling ready reports
+// Result=exit-code, ActiveState=failed, ExecMainStatus=3.
+//
+// "[not set]" is systemd's way of saying the unit has no main process on
+// record — a unit that never ran at all rather than one that ran and failed —
+// and those are genuinely different situations, so it is an error here rather
+// than a zero.
+func (c *Client) MainExitStatus(ctx context.Context, unit string) (int, error) {
+	v, err := c.Property(ctx, unit, "ExecMainStatus")
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return 0, fmt.Errorf("systemdx: unit %q reports ExecMainStatus=%q, which is not an "+
+			"exit status", unit, v)
+	}
+	return n, nil
+}
+
+// SetProperty applies runtime properties to a unit.
+//
+// --runtime writes the drop-in under /run, so it describes one boot and
+// nothing more. That is the correct lifetime for anything srdm sets: a
+// generation slice's floor belongs to a live generation, and srdm republishes
+// from its own records after a reboot rather than from leftover drop-ins.
+//
+// It works on a unit that does not exist yet, which is what makes it usable
+// at all here — a slice created implicitly by the first service that names it
+// would otherwise be live with memory.min=0 for exactly the window in which
+// the pages are faulted. Measured 2026-08-03; see D-016.
+func (c *Client) SetProperty(ctx context.Context, unit string, props ...Property) error {
+	if err := ValidUnitName(unit); err != nil {
+		return err
+	}
+	if len(props) == 0 {
+		return fmt.Errorf("systemdx: SetProperty on %q with no properties", unit)
+	}
+	args := []string{"set-property", "--runtime", unit}
+	for _, p := range props {
+		if p.Name == "" {
+			return fmt.Errorf("systemdx: unit %q has a property with no name", unit)
+		}
+		args = append(args, p.Name+"="+p.Value)
+	}
+	_, err := c.run(ctx, "systemctl", args...)
+	return err
+}
+
+// Revert removes the drop-ins srdm wrote for a unit.
+//
+// Paired with SetProperty: it is how a generation's floor stops existing when
+// the generation does. srdm only ever set-properties units it names itself,
+// so reverting one cannot discard an admin's configuration.
+func (c *Client) Revert(ctx context.Context, unit string) error {
+	if err := ValidUnitName(unit); err != nil {
+		return err
+	}
+	_, err := c.run(ctx, "systemctl", "revert", unit)
+	return err
 }
 
 // Stop stops a unit.

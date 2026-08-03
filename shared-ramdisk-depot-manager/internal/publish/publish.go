@@ -3,13 +3,15 @@
 // The sequence is fixed by the master plan and by what has to be true at
 // every instant of it:
 //
-//  1. mkdir  /run/srdm/.op/<op>/<class>            0700, root
-//  2. mount  tmpfs size=<class>,mode=0755,nodev,nosuid[,noexec]
-//  3. populate <op>/<class>/root from the store, VERIFY every file against
-//     the manifest, then chmod -R a-w
-//  4. mount --bind <op>/<class>/root -> /run/srdm/<profile>/<gen>/<class>
+//  1. set the generation slice's floor, before anything runs in it
+//  2. mkdir  /run/srdm/.op/<op>/<class>            0700, root
+//  3. mount  tmpfs size=<class>,mode=0755,nodev,nosuid[,noexec]
+//  4. start  srdm-hold-<g8>-<class>.service, whose worker populates the
+//     class, VERIFIES every file against the manifest, seals it read-only
+//     and then parks — signalling ready only when all of that is done
+//  5. mount  --bind <op>/<class>/root -> /run/srdm/<profile>/<gen>/<class>
 //     then remount,ro,bind
-//  5. fsync the published-state record; only now is the generation usable
+//  6. fsync the published-state record; only now is the generation usable
 //
 // The invariant the order exists to hold: **the visible path appears only
 // as a read-only bind of an already-verified tree.** Nothing is renamed
@@ -18,19 +20,20 @@
 // mounts under the operation-private root and nothing under the visible
 // one.
 //
-// P03 populates inline. P04 relocates that into a per-class hold unit whose
-// worker parks after populating, so the pages are charged to a cgroup that
-// carries the class memory policy (D-011).
+// The split between this package and internal/hold is the charging
+// boundary, and it is not stylistic. Every page of a class is faulted by
+// the hold unit's own worker, inside the cgroup that carries that class's
+// memory policy, so the charge and the policy can never separate (D-011).
+// This package mounts and binds; it never writes a class tree.
 package publish
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +42,7 @@ import (
 
 	"srdm/internal/config"
 	"srdm/internal/fsx"
+	"srdm/internal/hold"
 	"srdm/internal/journal"
 	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
@@ -46,15 +50,22 @@ import (
 )
 
 // RecordSchemaVersion is the published-state document version.
-const RecordSchemaVersion = 1
+//
+// 2 since P04: a record now names the hold unit of each class and the
+// generation slice they share, because teardown and reconciliation have to
+// act on those and a record is the only durable thing that knows them.
+const RecordSchemaVersion = 2
 
 // Phases, journaled before they execute and after they settle.
+//
+// Population, verification and sealing are no longer phases here: they
+// happen inside the hold unit's worker, which is the point of P04. The
+// daemon journals PhaseHold around them and systemd's journal carries the
+// worker's own account under the unit name.
 const (
-	PhaseSize     = "size"
+	PhaseSlice    = "slice"
 	PhaseMount    = "mount"
-	PhasePopulate = "populate"
-	PhaseVerify   = "verify"
-	PhaseSeal     = "seal"
+	PhaseHold     = "hold"
 	PhaseExpose   = "expose"
 	PhaseRecord   = "record"
 	PhaseTeardown = "teardown"
@@ -71,8 +82,9 @@ const (
 // path names: the first 8 hex of SHA-256 of the release id.
 //
 // Short because it goes into systemd unit names, where the full identity
-// would be unreadable; the full release id lives in the record and the
-// journal, which is where anyone debugging actually looks.
+// would be unreadable; the full release id lives in the record, the unit
+// Description and the journal, which is where anyone debugging actually
+// looks.
 func GenerationID(releaseID string) string {
 	sum := sha256.Sum256([]byte(releaseID))
 	return hex.EncodeToString(sum[:])[:8]
@@ -121,11 +133,23 @@ func (SyscallMounter) Unmount(target string, flags int) error {
 	return syscall.Unmount(target, flags)
 }
 
+// Holder is the hold-unit surface publication depends on, injected so the
+// mount topology stays exercisable with no systemd present. The real one is
+// *hold.Manager.
+type Holder interface {
+	EnsureSlice(ctx context.Context, slice string, memoryMin int64) error
+	Start(ctx context.Context, spec hold.Spec) error
+	Forget(ctx context.Context, unit string) error
+	ReleaseSlice(ctx context.Context, slice string) error
+	IsActive(ctx context.Context, unit string) (bool, error)
+}
+
 // Publisher owns the publication topology.
 type Publisher struct {
 	cfg           config.Config
 	jnl           *journal.Journal
 	mounter       Mounter
+	holder        Holder
 	mountInfoPath string
 	sizer         func(class string, contentBytes int64) int64
 }
@@ -135,6 +159,9 @@ type Option func(*Publisher)
 
 // WithMounter injects the mount surface.
 func WithMounter(m Mounter) Option { return func(p *Publisher) { p.mounter = m } }
+
+// WithHolder injects the hold-unit surface.
+func WithHolder(h Holder) Option { return func(p *Publisher) { p.holder = h } }
 
 // WithMountInfoPath points reconciliation at a specific mount table.
 func WithMountInfoPath(path string) Option { return func(p *Publisher) { p.mountInfoPath = path } }
@@ -163,6 +190,13 @@ func New(cfg config.Config, jnl *journal.Journal, opts ...Option) (*Publisher, e
 	for _, o := range opts {
 		o(p)
 	}
+	if p.holder == nil {
+		h, err := hold.New()
+		if err != nil {
+			return nil, err
+		}
+		p.holder = h
+	}
 	for _, dir := range []string{cfg.OpRoot(), cfg.PublishedDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("publish: create %s: %w", dir, err)
@@ -178,26 +212,34 @@ type ClassRecord struct {
 	OpMount string `json:"op_mount"`
 	// ExposePath is the read-only bind a consumer sees.
 	ExposePath string `json:"expose_path"`
+	// HoldUnit is the transient unit whose cgroup the class's pages are
+	// charged to and whose properties carry the class memory policy.
+	HoldUnit string `json:"hold_unit"`
 	// SizeBytes is the tmpfs hard cap.
 	SizeBytes int64 `json:"size_bytes"`
 	// ContentBytes is what the manifest said the class holds.
 	ContentBytes int64 `json:"content_bytes"`
-	NoExec       bool  `json:"noexec"`
+	// MemoryMin is the class floor the hold unit was given, in bytes.
+	MemoryMin int64 `json:"memory_min"`
+	NoExec    bool  `json:"noexec"`
 }
 
 // Record is the durable published-state document.
 //
-// It records what SHOULD be mounted. It is never evidence that anything IS:
-// reconciliation compares it against the kernel's mount table, because a
-// record and a mount can each outlive the other.
+// It records what SHOULD be mounted and held. It is never evidence that
+// anything IS: reconciliation compares it against the kernel's mount table
+// and against systemd, because a record, a mount and a unit can each outlive
+// the others.
 type Record struct {
-	SchemaVersion int           `json:"schema_version"`
-	Generation    string        `json:"generation"`
-	ReleaseID     string        `json:"release_id"`
-	Profile       string        `json:"profile"`
-	OperationID   string        `json:"operation_id"`
-	ContentDigest string        `json:"content_digest"`
-	Classes       []ClassRecord `json:"classes"`
+	SchemaVersion int    `json:"schema_version"`
+	Generation    string `json:"generation"`
+	ReleaseID     string `json:"release_id"`
+	Profile       string `json:"profile"`
+	OperationID   string `json:"operation_id"`
+	ContentDigest string `json:"content_digest"`
+	// Slice is the per-generation aggregate the hold units live in.
+	Slice   string        `json:"slice"`
+	Classes []ClassRecord `json:"classes"`
 }
 
 // ENOSPCError reports a class tmpfs that could not hold its content.
@@ -227,10 +269,12 @@ func IsRefusal(err error) bool {
 
 // Publish makes a verified release visible as read-only per-class binds.
 //
-// On any failure the operation-private mounts are torn down and nothing
-// appears under the visible root: a caller sees either a whole generation
-// or none of it.
-func (p *Publisher) Publish(opID, profileID string, rel *store.Release, prof *profile.Profile) (rec *Record, err error) {
+// On any failure the operation's mounts are torn down, its hold units are
+// stopped and forgotten, and nothing appears under the visible root: a
+// caller sees either a whole generation or none of it.
+func (p *Publisher) Publish(ctx context.Context, opID, profileID string,
+	rel *store.Release, prof *profile.Profile) (rec *Record, err error) {
+
 	for kind, val := range map[string]string{"operation id": opID, "profile id": profileID} {
 		if err := config.ValidName(kind, val); err != nil {
 			return nil, fmt.Errorf("publish: %w", err)
@@ -241,6 +285,10 @@ func (p *Publisher) Publish(opID, profileID string, rel *store.Release, prof *pr
 	classes := managedClasses(prof)
 	if len(classes) == 0 {
 		return nil, fmt.Errorf("publish: profile %q declares no managed classes", prof.ID)
+	}
+	slice, err := hold.SliceName(p.cfg.Slice, gen)
+	if err != nil {
+		return nil, err
 	}
 
 	// `built` is deliberately NOT the named return value. A deferred cleanup
@@ -254,22 +302,46 @@ func (p *Publisher) Publish(opID, profileID string, rel *store.Release, prof *pr
 		Profile:       profileID,
 		OperationID:   opID,
 		ContentDigest: rel.Manifest.ContentDigest,
+		Slice:         slice,
+	}
+	// Every class is described BEFORE any of them is built, so cleanup knows
+	// the names of the mounts and units of the class that was in flight when
+	// a failure happened — which is exactly the one a record assembled as it
+	// went would be missing.
+	for _, class := range classes {
+		cr, err := p.describeClass(opID, profileID, gen, rel, class)
+		if err != nil {
+			return nil, err
+		}
+		built.Classes = append(built.Classes, *cr)
 	}
 
-	// Anything already mounted for this operation is torn down on failure,
-	// so a partial publication never survives the call that made it.
+	// Anything already mounted, held or reserved for this operation is torn
+	// down on failure, so a partial publication never survives the call that
+	// made it.
 	defer func() {
 		if err != nil {
-			_ = p.teardownOp(opID, built, profileID, gen)
+			_ = p.teardownOp(ctx, opID, built)
 		}
 	}()
 
-	for _, class := range classes {
-		cr, cerr := p.publishClass(opID, profileID, gen, rel, prof, class)
-		if cerr != nil {
-			return nil, cerr
+	// The aggregate's floor is set before anything runs inside it. A slice
+	// created implicitly by the first service that names it starts at
+	// memory.min=0, and a cgroup v2 floor is capped by every ancestor's, so
+	// that window would be exactly the one in which the pages are faulted.
+	if err := p.phase(opID, KindPublish, PhaseSlice, map[string]string{
+		"generation": gen, "profile": profileID, "slice": slice,
+		"memory_min": itoa(floorSum(classes)),
+	}, func() error {
+		return p.holder.EnsureSlice(ctx, slice, floorSum(classes))
+	}); err != nil {
+		return nil, err
+	}
+
+	for i := range built.Classes {
+		if err := p.publishClass(ctx, opID, rel, classes[i], &built.Classes[i], slice); err != nil {
+			return nil, err
 		}
-		built.Classes = append(built.Classes, *cr)
 	}
 
 	// The record is written last and fsync'd, for the same reason COMPLETE
@@ -293,32 +365,57 @@ func managedClasses(prof *profile.Profile) []profile.Class {
 	return out
 }
 
-func (p *Publisher) publishClass(opID, profileID, gen string, rel *store.Release,
-	prof *profile.Profile, class profile.Class) (*ClassRecord, error) {
-
-	contentBytes := rel.Manifest.ClassBytes(class.Name)
-	size := p.sizer(class.Name, contentBytes)
-	opMount := p.cfg.OpClassDir(opID, class.Name)
-	opRoot := p.cfg.OpClassRoot(opID, class.Name)
-	exposePath := p.cfg.ExposeClassDir(profileID, gen, class.Name)
-
-	cr := &ClassRecord{
-		Name:         class.Name,
-		OpMount:      opMount,
-		ExposePath:   exposePath,
-		SizeBytes:    size,
-		ContentBytes: contentBytes,
-		NoExec:       class.NoExec,
+// floorSum is what the generation aggregate has to protect: the sum of the
+// floors of the classes inside it.
+//
+// Not a maximum and not a guess. cgroup v2 distributes a parent's protection
+// among its children, so an aggregate protecting less than the sum of its
+// children's floors silently prorates every one of them.
+func floorSum(classes []profile.Class) int64 {
+	var total int64
+	for _, c := range classes {
+		if c.MemoryMin > 0 {
+			total += c.MemoryMin
+		}
 	}
+	return total
+}
+
+// describeClass names everything a class will occupy, before any of it
+// exists.
+func (p *Publisher) describeClass(opID, profileID, gen string, rel *store.Release,
+	class profile.Class) (*ClassRecord, error) {
+
+	unit, err := hold.UnitName(gen, class.Name)
+	if err != nil {
+		return nil, err
+	}
+	contentBytes := rel.Manifest.ClassBytes(class.Name)
+	return &ClassRecord{
+		Name:         class.Name,
+		OpMount:      p.cfg.OpClassDir(opID, class.Name),
+		ExposePath:   p.cfg.ExposeClassDir(profileID, gen, class.Name),
+		HoldUnit:     unit,
+		SizeBytes:    p.sizer(class.Name, contentBytes),
+		ContentBytes: contentBytes,
+		MemoryMin:    class.MemoryMin,
+		NoExec:       class.NoExec,
+	}, nil
+}
+
+func (p *Publisher) publishClass(ctx context.Context, opID string, rel *store.Release,
+	class profile.Class, cr *ClassRecord, slice string) error {
+
+	opRoot := p.cfg.OpClassRoot(opID, class.Name)
 	fields := map[string]string{
-		"generation": gen, "profile": profileID, "class": class.Name,
-		"release_id": rel.ID,
-		"size_bytes": itoa(size), "content_bytes": itoa(contentBytes),
+		"generation": GenerationID(rel.ID), "class": class.Name,
+		"release_id": rel.ID, "unit": cr.HoldUnit,
+		"size_bytes": itoa(cr.SizeBytes), "content_bytes": itoa(cr.ContentBytes),
 	}
 
 	if err := p.phase(opID, KindPublish, PhaseMount, fields, func() error {
 		// 0700: an in-flight class is nobody's business until it is bound.
-		if err := os.MkdirAll(opMount, 0o700); err != nil {
+		if err := os.MkdirAll(cr.OpMount, 0o700); err != nil {
 			return err
 		}
 		flags := uintptr(syscall.MS_NODEV | syscall.MS_NOSUID)
@@ -327,151 +424,63 @@ func (p *Publisher) publishClass(opID, profileID, gen string, rel *store.Release
 			// be executable — pak content above all.
 			flags |= syscall.MS_NOEXEC
 		}
-		data := fmt.Sprintf("size=%d,mode=0755", size)
-		return p.mounter.Mount("tmpfs", opMount, "tmpfs", flags, data)
+		data := fmt.Sprintf("size=%d,mode=0755", cr.SizeBytes)
+		return p.mounter.Mount("tmpfs", cr.OpMount, "tmpfs", flags, data)
 	}); err != nil {
-		return nil, err
+		return err
 	}
 
-	if err := p.phase(opID, KindPublish, PhasePopulate, fields, func() error {
-		if err := os.MkdirAll(opRoot, 0o755); err != nil {
-			return err
+	// The hold unit populates, verifies and seals inside its own cgroup, and
+	// reports ready only when all three are done. When Start returns, the
+	// class tree is finished and read-only and the pages that make it up are
+	// charged where the class policy applies.
+	if err := p.phase(opID, KindPublish, PhaseHold, fields, func() error {
+		err := p.holder.Start(ctx, hold.Spec{
+			Unit:  cr.HoldUnit,
+			Slice: slice,
+			// The full release identity, since the unit name carries only
+			// the 8 hex of the generation.
+			Description: fmt.Sprintf("srdm hold: release %s class %s", rel.ID, class.Name),
+			Policy: hold.Policy{
+				MemoryMin:      class.MemoryMin,
+				ZSwapMax:       class.ZSwapMax,
+				ZSwapWriteback: class.ZSwapWriteback,
+			},
+			Worker: hold.WorkerArgs{
+				ReleaseDir: rel.Dir,
+				ReleaseID:  rel.ID,
+				Class:      class.Name,
+				Target:     opRoot,
+			},
+		})
+		if err != nil && hold.ExitStatus(err) == hold.ExitNoSpace {
+			// The worker's exit status is the refusal channel: this is the
+			// sizing being wrong, not the machinery being broken, and the
+			// generation is quarantined rather than half-published.
+			return &ENOSPCError{Class: class.Name, SizeBytes: cr.SizeBytes,
+				ContentBytes: cr.ContentBytes, Err: err}
 		}
-		if err := populateClass(rel.RootDir(), opRoot, rel.Manifest, class.Name); err != nil {
-			if errors.Is(err, syscall.ENOSPC) {
-				return &ENOSPCError{Class: class.Name, SizeBytes: size,
-					ContentBytes: contentBytes, Err: err}
-			}
-			return err
-		}
-		return nil
+		return err
 	}); err != nil {
-		return nil, err
-	}
-
-	// Verified BEFORE it is sealed and long before it is visible. A class
-	// that does not match its manifest never becomes a bind.
-	if err := p.phase(opID, KindPublish, PhaseVerify, fields, func() error {
-		return rel.Manifest.VerifyClass(opRoot, class.Name)
-	}); err != nil {
-		return nil, err
-	}
-
-	if err := p.phase(opID, KindPublish, PhaseSeal, fields, func() error {
-		return sealTree(opRoot)
-	}); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := p.phase(opID, KindPublish, PhaseExpose, fields, func() error {
-		if err := os.MkdirAll(exposePath, 0o755); err != nil {
+		if err := os.MkdirAll(cr.ExposePath, 0o755); err != nil {
 			return err
 		}
-		if err := p.mounter.Mount(opRoot, exposePath, "", syscall.MS_BIND, ""); err != nil {
+		if err := p.mounter.Mount(opRoot, cr.ExposePath, "", syscall.MS_BIND, ""); err != nil {
 			return err
 		}
 		// A bind inherits the source's flags; read-only has to be applied as
 		// a second, separate remount. Doing it in one call is a classic
 		// mistake that silently leaves the bind writable.
-		return p.mounter.Mount("", exposePath, "",
+		return p.mounter.Mount("", cr.ExposePath, "",
 			syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
 	}); err != nil {
-		return nil, err
-	}
-
-	return cr, nil
-}
-
-// populateClass copies one class's entries out of the release into the op
-// tree, in manifest order so parents exist before their children.
-func populateClass(releaseRoot, opRoot string, m *store.Manifest, class string) error {
-	entries := m.ClassEntries(class)
-	if len(entries) == 0 {
-		return fmt.Errorf("publish: manifest has no entries for class %q", class)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-
-	for _, e := range entries {
-		src := filepath.Join(releaseRoot, filepath.FromSlash(e.Path))
-		dst := filepath.Join(opRoot, filepath.FromSlash(e.Path))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		switch e.Type {
-		case store.EntryDir:
-			if err := os.MkdirAll(dst, 0o755); err != nil {
-				return err
-			}
-		case store.EntrySymlink:
-			if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			if err := os.Symlink(e.Target, dst); err != nil {
-				return err
-			}
-		case store.EntryFile:
-			if err := copyRegular(src, dst); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("publish: manifest entry %q has unknown type %q", e.Path, e.Type)
-		}
-	}
-	return nil
-}
-
-func copyRegular(src, dst string) (err error) {
-	in, err := os.Open(src)
-	if err != nil {
 		return err
 	}
-	defer in.Close()
-	// 0644 now; sealTree removes the write bits once the tree verifies.
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if cerr := out.Close(); err == nil {
-			err = cerr
-		}
-	}()
-	_, err = io.Copy(out, in)
-	return err
-}
 
-// sealTree removes every write bit, deepest entry first.
-//
-// Deepest-first because removing write from a directory is harmless to
-// chmod but the ordering makes the walk independent of whether it is: no
-// step depends on a permission an earlier step removed.
-func sealTree(root string) error {
-	var paths []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			// A symlink has no permission bits of its own, and chmod would
-			// follow it to the target.
-			return nil
-		}
-		paths = append(paths, p)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
-	for _, p := range paths {
-		info, err := os.Lstat(p)
-		if err != nil {
-			return err
-		}
-		if err := os.Chmod(p, info.Mode().Perm()&^0o222); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -511,6 +520,7 @@ func recFields(rec *Record) map[string]string {
 		"generation": rec.Generation,
 		"profile":    rec.Profile,
 		"release_id": rec.ReleaseID,
+		"slice":      rec.Slice,
 	}
 }
 

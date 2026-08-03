@@ -95,10 +95,16 @@ environment = "srdm-gate"
 # The privileged systemd-in-Docker harness for publication topology, hold
 # services, cgroup charging and teardown correctness.
 #
-# ITS CASE SET IS EMPTY UNTIL P02 (decision D-004). The image and the
-# invocation are real and buildable, so the declaration is backed by
-# something rather than being a promise — but a green privileged-e2e is NOT
-# evidence of anything before P02 adds cases. Do not read it as one.
+# Every claim here is about the KERNEL or SYSTEMD rather than about Go, and
+# no unit test can reach any of them: whether a bind refuses writes with
+# EROFS rather than EACCES, whether the pages a worker faults are charged to
+# the cgroup carrying its class policy, whether a declared floor reached the
+# kernel at all, and whether any ancestor slice caps it back to zero.
+#
+# Filled by P02 (which closed D-004), P03 and P04. The one skip that is
+# legitimate lives in tools/gate.sh, at the outer level where it is visible:
+# a Docker daemon that refuses privileged containers cannot run this harness,
+# which is a property of the host and not a failing change.
 [gates.privileged-e2e]
 argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} e2e"]
 phase = "pre-merge"

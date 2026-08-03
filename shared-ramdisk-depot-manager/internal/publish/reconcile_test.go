@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,8 +31,8 @@ func writeMountInfo(t *testing.T, lines ...string) string {
 }
 
 // publishedFixture produces a real record, then lets the caller describe
-// whatever mount table they want to reconcile it against.
-func publishedFixture(t *testing.T) (*Publisher, *Record, func(...string) *Publisher) {
+// whatever mount table and unit state they want to reconcile it against.
+func publishedFixture(t *testing.T) (*Record, func(...string) (*Publisher, *fakeHolder)) {
 	t.Helper()
 	cfg := testConfig(t)
 	jnl := testJournal(t, cfg)
@@ -39,20 +40,37 @@ func publishedFixture(t *testing.T) (*Publisher, *Record, func(...string) *Publi
 	rel := stagedRelease(t, cfg, jnl, prof)
 	p, _ := newPublisher(t, cfg, jnl)
 
-	rec, err := p.Publish("op-1", "testgame", rel, prof)
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	withTable := func(lines ...string) *Publisher {
-		m := &fakeMounter{mountErr: map[string]error{}}
-		np, err := New(cfg, jnl, WithMounter(m), WithMountInfoPath(writeMountInfo(t, lines...)))
+	withTable := func(lines ...string) (*Publisher, *fakeHolder) {
+		log := &opLog{}
+		h := newFakeHolder(log)
+		np, err := New(cfg, jnl,
+			WithMounter(&fakeMounter{log: log, mountErr: map[string]error{}}),
+			WithHolder(h),
+			WithMountInfoPath(writeMountInfo(t, lines...)))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return np
+		return np, h
 	}
-	return p, rec, withTable
+	return rec, withTable
+}
+
+// mountedLines is the table a healthy generation produces.
+func mountedLines(rec *Record) []string {
+	var lines []string
+	id := 40
+	for _, c := range rec.Classes {
+		lines = append(lines,
+			mountLine(id, "/", c.OpMount, false),
+			mountLine(id+1, "/root", c.ExposePath, true))
+		id += 2
+	}
+	return lines
 }
 
 func classByName(rec *Record, name string) ClassRecord {
@@ -64,28 +82,19 @@ func classByName(rec *Record, name string) ClassRecord {
 	return ClassRecord{}
 }
 
-// Both sides present and the exposure read-only: nothing to do.
-func TestReconcileHealthyWhenRecordAndMountsAgree(t *testing.T) {
-	_, rec, withTable := publishedFixture(t)
+// Record, mounts and holds all present: nothing to do.
+func TestReconcileHealthyWhenEverySourceAgrees(t *testing.T) {
+	rec, withTable := publishedFixture(t)
+	p, _ := withTable(mountedLines(rec)...)
 
-	var lines []string
-	id := 40
-	for _, c := range rec.Classes {
-		lines = append(lines,
-			mountLine(id, "/", c.OpMount, false),
-			mountLine(id+1, "/root", c.ExposePath, true))
-		id += 2
-	}
-	p := withTable(lines...)
-
-	res, err := p.Reconcile("op-r")
+	res, err := p.Reconcile(ctx(), "op-r")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(res.Healthy, []string{"testgame/" + rec.Generation}) {
 		t.Fatalf("Healthy = %v", res.Healthy)
 	}
-	if len(res.NeedsRepublish) != 0 || len(res.Orphans) != 0 || len(res.NotReadOnly) != 0 {
+	if len(res.NeedsRepublish)+len(res.Orphans)+len(res.NotReadOnly)+len(res.Unheld) != 0 {
 		t.Fatalf("a healthy generation produced work: %+v", res)
 	}
 }
@@ -93,10 +102,10 @@ func TestReconcileHealthyWhenRecordAndMountsAgree(t *testing.T) {
 // After a reboot every record is in this state: the durable record survived
 // and every mount is gone. A record alone proves nothing about topology.
 func TestReconcileNeedsRepublishWhenMountsAreGone(t *testing.T) {
-	_, rec, withTable := publishedFixture(t)
-	p := withTable(mountLine(40, "/", "/unrelated", false))
+	rec, withTable := publishedFixture(t)
+	p, _ := withTable(mountLine(40, "/", "/unrelated", false))
 
-	res, err := p.Reconcile("op-r")
+	res, err := p.Reconcile(ctx(), "op-r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +120,7 @@ func TestReconcileNeedsRepublishWhenMountsAreGone(t *testing.T) {
 // The op tmpfs is there but the bind never happened: publication was
 // interrupted between the two.
 func TestReconcileNeedsRepublishWhenOnlyTheOpMountSurvives(t *testing.T) {
-	_, rec, withTable := publishedFixture(t)
+	rec, withTable := publishedFixture(t)
 
 	var lines []string
 	id := 40
@@ -119,9 +128,9 @@ func TestReconcileNeedsRepublishWhenOnlyTheOpMountSurvives(t *testing.T) {
 		lines = append(lines, mountLine(id, "/", c.OpMount, false))
 		id++
 	}
-	p := withTable(lines...)
+	p, _ := withTable(lines...)
 
-	res, err := p.Reconcile("op-r")
+	res, err := p.Reconcile(ctx(), "op-r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,18 +143,18 @@ func TestReconcileNeedsRepublishWhenOnlyTheOpMountSurvives(t *testing.T) {
 // bind and the remount — the one window in which a consumer could write to
 // what is meant to be immutable content.
 func TestReconcileFlagsAWritableExposure(t *testing.T) {
-	_, rec, withTable := publishedFixture(t)
+	rec, withTable := publishedFixture(t)
 	pak := classByName(rec, "pak")
 	code := classByName(rec, "code")
 
-	p := withTable(
+	p, _ := withTable(
 		mountLine(40, "/", pak.OpMount, false),
 		mountLine(41, "/root", pak.ExposePath, false), // NOT read-only
 		mountLine(42, "/", code.OpMount, false),
 		mountLine(43, "/root", code.ExposePath, true),
 	)
 
-	res, err := p.Reconcile("op-r")
+	res, err := p.Reconcile(ctx(), "op-r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,12 +169,59 @@ func TestReconcileFlagsAWritableExposure(t *testing.T) {
 	}
 }
 
+// Fully mounted and NOT held. This is the state that the mount table alone
+// cannot see: the content is all there and readable, and every page of it is
+// charged to a cgroup that has been removed — so the class floor protects
+// nothing and the memory is attributable to nobody.
+func TestReconcileFlagsAClassWhoseHoldUnitIsGone(t *testing.T) {
+	rec, withTable := publishedFixture(t)
+	p, h := withTable(mountedLines(rec)...)
+
+	pak := classByName(rec, "pak")
+	h.inactive[pak.HoldUnit] = true
+
+	res, err := p.Reconcile(ctx(), "op-r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(res.Unheld, []string{pak.HoldUnit}) {
+		t.Fatalf("Unheld = %v, want the class whose hold unit stopped", res.Unheld)
+	}
+	if len(res.Healthy) != 0 {
+		t.Error("a generation whose content is charged to a dead cgroup was called healthy")
+	}
+	if len(res.NeedsRepublish) != 1 {
+		t.Errorf("an unheld class did not schedule a republish: %v", res.NeedsRepublish)
+	}
+	// And it is NOT reported as a missing mount, because it is not one — the
+	// repair is a republish, but the diagnosis has to be right or the next
+	// person debugging looks at the mount table and finds nothing wrong.
+	if len(res.NotReadOnly) != 0 {
+		t.Errorf("an unheld class was also reported as a writable exposure: %v", res.NotReadOnly)
+	}
+}
+
+// systemd being unreachable is not evidence that anything is wrong.
+// Concluding "unheld" from it would schedule the teardown and republish of a
+// perfectly healthy generation — including the unmount that actually frees
+// the memory.
+func TestReconcileRefusesToGuessWhenSystemdIsUnreachable(t *testing.T) {
+	rec, withTable := publishedFixture(t)
+	p, h := withTable(mountedLines(rec)...)
+	h.activeErr = errors.New("failed to connect to bus")
+
+	if _, err := p.Reconcile(ctx(), "op-r"); err == nil {
+		t.Fatal("reconciliation reached a verdict with systemd unreachable")
+	}
+}
+
 // A mount nobody recorded is one nobody can reason about, and it is holding
 // memory. Tear it down.
 func TestReconcileFindsOrphanMounts(t *testing.T) {
 	cfg := testConfig(t)
 	jnl := testJournal(t, cfg)
-	m := &fakeMounter{mountErr: map[string]error{}}
+	log := &opLog{}
+	m := &fakeMounter{log: log, mountErr: map[string]error{}}
 
 	orphanOp := cfg.OpClassDir("op-ancient", "pak")
 	orphanExpose := cfg.ExposeClassDir("testgame", "deadbeef", "pak")
@@ -174,12 +230,12 @@ func TestReconcileFindsOrphanMounts(t *testing.T) {
 		mountLine(41, "/root", orphanExpose, true),
 		mountLine(42, "/", "/elsewhere", false),
 	)
-	p, err := New(cfg, jnl, WithMounter(m), WithMountInfoPath(path))
+	p, err := New(cfg, jnl, WithMounter(m), WithHolder(newFakeHolder(log)), WithMountInfoPath(path))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	res, err := p.Reconcile("op-r")
+	res, err := p.Reconcile(ctx(), "op-r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,14 +263,16 @@ func TestReconcileFindsOrphanMounts(t *testing.T) {
 func TestReconcileOnAnEmptyHost(t *testing.T) {
 	cfg := testConfig(t)
 	jnl := testJournal(t, cfg)
-	m := &fakeMounter{mountErr: map[string]error{}}
-	p, err := New(cfg, jnl, WithMounter(m),
+	log := &opLog{}
+	p, err := New(cfg, jnl,
+		WithMounter(&fakeMounter{log: log, mountErr: map[string]error{}}),
+		WithHolder(newFakeHolder(log)),
 		WithMountInfoPath(writeMountInfo(t, mountLine(40, "/", "/elsewhere", false))))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	res, err := p.Reconcile("op-r")
+	res, err := p.Reconcile(ctx(), "op-r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,15 +285,41 @@ func TestReconcileOnAnEmptyHost(t *testing.T) {
 // skipped: silently ignoring it would classify its live mounts as orphans
 // and tear down a healthy generation.
 func TestReconcileRefusesAnUnreadableRecord(t *testing.T) {
-	_, rec, withTable := publishedFixture(t)
-	p := withTable(mountLine(40, "/", "/elsewhere", false))
+	rec, withTable := publishedFixture(t)
+	p, _ := withTable(mountLine(40, "/", "/elsewhere", false))
 
 	path := p.cfg.PublishedRecord("testgame", rec.Generation)
 	if err := os.WriteFile(path, []byte("{not json}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Reconcile("op-r"); err == nil {
+	if _, err := p.Reconcile(ctx(), "op-r"); err == nil {
 		t.Fatal("reconciliation ignored a record it could not read")
+	}
+}
+
+// The record is the only durable thing that knows which unit holds a class,
+// so a record from an older schema must be refused rather than read with the
+// unit names missing — which would look exactly like a generation with no
+// holds and schedule a republish of a healthy one.
+func TestReconcileRefusesAnOlderRecordSchema(t *testing.T) {
+	rec, withTable := publishedFixture(t)
+	p, _ := withTable(mountedLines(rec)...)
+
+	path := p.cfg.PublishedRecord("testgame", rec.Generation)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := strings.Replace(string(body),
+		fmt.Sprintf(`"schema_version": %d`, RecordSchemaVersion), `"schema_version": 1`, 1)
+	if older == string(body) {
+		t.Fatal("the record does not carry a schema version where this test expects one")
+	}
+	if err := os.WriteFile(path, []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Reconcile(ctx(), "op-r"); err == nil {
+		t.Fatal("reconciliation accepted a record written by an older schema")
 	}
 }
 
