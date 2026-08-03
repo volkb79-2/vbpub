@@ -93,6 +93,7 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 role_default = "review-independent"
 resume = ["fake", "--resume", "{session}", "{prompt}"]
 """

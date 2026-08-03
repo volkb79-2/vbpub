@@ -65,6 +65,7 @@ cli = "fake"
 model = "fake-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 status = "primary"
 
 [routes.opus-cli]
@@ -72,12 +73,14 @@ cli = "fake"
 model = "opus-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 
 [routes.claude-sonnet5-high]
 cli = "fake"
 model = "sonnet5-model"
 probe = ["true"]
 usage_source = "none"
+trust = "operator"          # CR-13a: a local fake script, declared not defaulted
 """
 
 
