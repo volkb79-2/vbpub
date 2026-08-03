@@ -111,27 +111,34 @@ class TestDiscriminatesRealMismatch:
     otherwise it isn't discriminating, just tautological (anti-pattern F)."""
 
     def test_state_backend_mismatch_detected(self, tmp_path):
+        """CR-04b moved this fact's source from a compose env var (a SELECTOR,
+        meaningful only while two backends existed) to whether `storage.py`
+        still selects at all -- which is also CR-04's acceptance, so the
+        standing document check and that acceptance became one mechanism."""
         root = _minimal_project(tmp_path)
+        store = root / "src" / "nyxloom" / "storage.py"
+        _write(store, '"""The store. One implementation, no selector."""\n')
         _write(root / "README.md", "<!-- product-truth:state_backend=sqlite -->\n")
-        declared, actual = product_truth.check_fact(
-            root, product_truth.ProductFact("state_backend", "README.md", "d", product_truth.actual_state_backend)
-        )
+        fact = product_truth.ProductFact(
+            "state_backend", "README.md", "d", product_truth.actual_state_backend)
+        declared, actual = product_truth.check_fact(root, fact)
         assert declared == actual == "sqlite"
 
-        # Flip the MACHINE side only (docs unchanged) -> must now disagree.
-        _write(root / "nyxloomd" / "docker-compose.yml", """\
-            services:
-              nyxloomd:
-                restart: unless-stopped
-                environment:
-                  NYXLOOM_STATE_BACKEND: "files"
-            """)
-        declared2, actual2 = product_truth.check_fact(
-            root, product_truth.ProductFact("state_backend", "README.md", "d", product_truth.actual_state_backend)
-        )
+        # Reintroduce a selector -- the machine side flips, the doc does not.
+        _write(store, 'import os\n\n'
+                       'def enabled():\n'
+                       '    return os.environ.get("NYXLOOM_STATE_BACKEND") == "sqlite"\n')
+        declared2, actual2 = product_truth.check_fact(root, fact)
         assert declared2 == "sqlite"
-        assert actual2 == "files"
+        assert actual2 == "selectable"
         assert declared2 != actual2
+
+    def test_state_backend_is_unavailable_without_a_store_module(self, tmp_path):
+        """A tree with no `storage.py` cannot establish the fact at all, and
+        must say so rather than guessing -- `None` is what the real-repo
+        assertion treats as a hard failure."""
+        root = _minimal_project(tmp_path)
+        assert product_truth.actual_state_backend(root) is None
 
     def test_daemon_mode_mismatch_detected(self, tmp_path):
         root = _minimal_project(tmp_path)

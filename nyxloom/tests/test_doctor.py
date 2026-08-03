@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from nyxloom import cli, paths, storage
+from nyxloom import storage_sqlite, cli, paths, storage
 from nyxloom.doctor import doctor_project, rebuild, doctor_all, doctor_host, _cgroup_slices_in_argv
 from nyxloom.transport_check import TransportProbe
 from nyxloom.types import (
@@ -589,7 +589,14 @@ def test_rebuild_divergence_diffs(sample_project):
 
 # Oracle 13b: rebuild write=True creates .bak and updates statefile
 def test_rebuild_write_creates_backup(sample_project):
-    """Oracle 13b: rebuild(write=True) creates .bak and replaces."""
+    """Oracle 13b, restated for CR-04b: rebuild(write=True) backs the STORE up
+    before it repairs it, and the repair lands.
+
+    The backup used to be a `.bak` copy per statefile -- an artifact of the
+    deleted file backend. It is now one consistent copy of the whole store,
+    which is the shape the property actually needs: a repair rewrites every
+    projection row, and per-row copies could not be a point in time, so a
+    crash between two of them left a backup that was half old and half new."""
     demo_state = TaskStateFile(
         schema_version=1,
         task_id='demo-P01-sample',
@@ -600,7 +607,6 @@ def test_rebuild_write_creates_backup(sample_project):
     )
     save_demo_state(sample_project, demo_state)
 
-    # Create event with different notes
     actor = Actor(kind=ActorKind.OPERATOR, id='test-op')
     demo_state_with_notes = TaskStateFile(
         schema_version=1,
@@ -618,21 +624,48 @@ def test_rebuild_write_creates_backup(sample_project):
         payload={'statefile': demo_state_with_notes.to_dict()},
     )
 
-    statefile_path = paths.statefile_path(sample_project.project_id, 'demo-P01-sample')
-
-    # write=True should create .bak and update the statefile
     replayed, diffs = rebuild(sample_project.project_id, write=True)
-    bak_path = statefile_path.with_suffix('.bak')
-    assert bak_path.exists()
-    assert statefile_path.exists()
 
-    # Verify content was updated
+    backup_path = storage_sqlite.db_path(sample_project.project_id)
+    backup_path = backup_path.with_name(backup_path.name + '.bak')
+    assert backup_path.exists(), 'rebuild(write=True) did not back the store up'
+
     updated = storage.load_state(sample_project.project_id, 'demo-P01-sample')
     assert updated is not None
     assert updated.notes == 'from event'
 
 
-# Oracle 14: doctor_all
+def test_rebuild_backup_restores_the_pre_repair_store(sample_project):
+    """The backup is only worth taking if it can be restored. Repair, then
+    restore, and the pre-repair projection must come back -- otherwise
+    `rebuild --write` is an irreversible operation wearing a safety net."""
+    project = sample_project.project_id
+    before = TaskStateFile(
+        schema_version=1, task_id='demo-P01-sample', project=project,
+        state=TaskState.COMPLETED, since=utc_now(),
+        handoff_path='handoff/demo-P01-sample.md', notes='before repair',
+    )
+    save_demo_state(sample_project, before)
+    storage.append_event(
+        project, actor=Actor(kind=ActorKind.OPERATOR, id='test-op'),
+        type=EventType.TASK_CREATED,
+        payload={'statefile': TaskStateFile(
+            schema_version=1, task_id='demo-P01-sample', project=project,
+            state=TaskState.COMPLETED, since=utc_now(),
+            handoff_path='handoff/demo-P01-sample.md', notes='from event',
+        ).to_dict()},
+    )
+
+    rebuild(project, write=True)
+    assert storage.load_state(project, 'demo-P01-sample').notes == 'from event'
+
+    backup_path = storage_sqlite.db_path(project)
+    backup_path = backup_path.with_name(backup_path.name + '.bak')
+    storage.restore(project, backup_path)
+
+    assert storage.load_state(project, 'demo-P01-sample').notes == 'before repair'
+
+
 def test_doctor_all(sample_project):
     """Oracle 14: doctor_all returns dict over registry."""
     demo_state = TaskStateFile(

@@ -30,6 +30,7 @@ Oracles (SP01):
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -497,3 +498,305 @@ def test_a_rolled_back_mutation_leaves_the_callers_cache_untouched(sqlite_backen
 
     assert snapshot["t-rollback"].state is original_state
     assert storage_sqlite.list_states("demo")["t-rollback"].state is original_state
+
+
+# ==========================================================================
+# CR-04b: backup / restore / interchange, and the store fault matrix.
+# ==========================================================================
+
+
+def test_a_backup_taken_during_writes_restores_and_replays_identically(sqlite_backend):
+    """Contract acceptance: "backup during writes restores and replays
+    identically".
+
+    Taken with sqlite3's online-backup API rather than a file copy: under WAL
+    a plain copy can capture a database whose committed data still lives in a
+    `-wal` sidecar the copy does not include, producing a backup that restores
+    to a state that never existed."""
+    project, task_id = "sp04-backup", "t-backup"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+
+    backup_path = storage.backup(project)
+    at_backup = storage.replay(project)
+
+    # Keep writing AFTER the backup: a backup that silently included later
+    # writes would look correct here and be wrong in the one case it exists
+    # for.
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "ACTIVE", "to": "AWAITING_REVIEW"}, task_id=task_id)
+    assert storage.load_state(project, task_id).state is TaskState.AWAITING_REVIEW
+
+    storage.restore(project, backup_path)
+
+    assert storage.load_state(project, task_id).state is TaskState.ACTIVE
+    restored = storage.replay(project)
+    assert {k: v.to_dict() for k, v in restored.items()} == \
+           {k: v.to_dict() for k, v in at_backup.items()}, (
+        "the restored store does not replay to the state the backup captured")
+
+
+def test_an_exported_log_reimports_to_a_byte_identical_projection(sqlite_backend):
+    """The amendment's added acceptance: "a JSONL export re-imported into an
+    empty store replays to a byte-identical projection".
+
+    Byte-identical, not merely equivalent: the export is what a human attaches
+    to a bug report and what a rollback replays, so two exports of the same
+    history have to be comparable with `diff`."""
+    project, task_id = "sp04-export", "t-export"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
+        payload={"units": ["u1"]}, task_id=task_id)
+
+    text = storage.export_jsonl(project)
+    original = json.dumps({k: v.to_dict() for k, v in storage.replay(project).items()},
+                          sort_keys=True)
+
+    # Empty the store and re-import into the SAME project. Not a copy under a
+    # different name: an event carries the project it belongs to, so a
+    # cross-project import is a different history that merely looks similar --
+    # and the acceptance is about restoring THIS one.
+    db = storage_sqlite.db_path(project)
+    for path in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        path.unlink(missing_ok=True)
+    assert storage.replay(project) == {}
+
+    assert storage.import_jsonl(project, text) == 3
+
+    assert json.dumps({k: v.to_dict() for k, v in storage.replay(project).items()},
+                      sort_keys=True) == original
+    # ...and the projection the store SERVES matches the one replay derives,
+    # so the import rebuilt both halves rather than just the log.
+    assert json.dumps({k: v.to_dict() for k, v in storage.list_states(project).items()},
+                      sort_keys=True) == original
+    # ...and re-exporting is byte-identical to what went in.
+    assert storage.export_jsonl(project) == text
+
+
+def test_importing_into_a_non_empty_store_is_refused(sqlite_backend):
+    """An import that merged into existing history would produce a log with
+    two origins and sequence numbers that mean nothing -- unrecoverable
+    rather than merely wrong. Refused, with the existing store untouched."""
+    project = "sp04-nonempty"
+    _seed(project, "t-existing", TaskState.QUEUED)
+    text = storage.export_jsonl(project)
+    before = list(storage.iter_events(project))
+
+    with pytest.raises(ValueError, match="non-empty"):
+        storage.import_jsonl(project, text)
+
+    assert [e.sequence for e in storage.iter_events(project)] == \
+           [e.sequence for e in before]
+
+
+def test_an_empty_export_round_trips(sqlite_backend):
+    """A project with no history exports to nothing and imports to nothing --
+    the degenerate case a naive implementation turns into a stray blank line
+    that then fails to re-import."""
+    assert storage.export_jsonl("sp04-empty") == ""
+    assert storage.import_jsonl("sp04-empty-copy", "") == 0
+    assert storage.replay("sp04-empty-copy") == {}
+
+
+def test_restoring_a_backup_that_is_not_there_is_refused(sqlite_backend):
+    project = "sp04-missing-backup"
+    _seed(project, "t1", TaskState.QUEUED)
+    with pytest.raises(FileNotFoundError):
+        storage.restore(project, storage_sqlite.db_path(project).with_name("nope.bak"))
+    assert storage.load_state(project, "t1") is not None
+
+
+# --------------------------------------------------------------------------
+# fault matrix: "disk-full, corruption, locked database, invalid event, and
+# failed upcast produce no authorizing effect"
+
+
+def test_an_invalid_event_never_reaches_the_log(sqlite_backend):
+    """An illegal transition is refused BEFORE the insert, so the log never
+    contains an event replay cannot reproduce. (Pre-P36, the event was
+    appended and only then validated, leaving spurious rejected transitions
+    in the log that had to be migrated out of two projects by hand.)"""
+    project, task_id = "sp04-invalid", "t-invalid"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    before = len(list(storage.iter_events(project)))
+
+    with pytest.raises(Exception):
+        storage.append_and_apply(
+            project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+            payload={"from": "QUEUED", "to": "AWAITING_REVIEW"}, task_id=task_id)
+
+    assert len(list(storage.iter_events(project))) == before
+    assert storage.load_state(project, task_id).state is TaskState.QUEUED
+
+
+def test_a_write_failure_leaves_neither_the_event_nor_the_projection(sqlite_backend):
+    """Disk-full, in the shape that actually reaches this code: the insert
+    succeeds and the projection write raises. Both must vanish -- an event
+    without its projection is a log the store disagrees with, and the
+    disagreement is invisible until something plans from it."""
+    project, task_id = "sp04-diskfull", "t-diskfull"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    before_events = len(list(storage.iter_events(project)))
+
+    real = storage_sqlite._upsert_state_row
+    try:
+        storage_sqlite._upsert_state_row = lambda *a, **k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database or disk is full"))
+        with pytest.raises(sqlite3.OperationalError):
+            storage.append_and_apply(
+                project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+                payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+    finally:
+        storage_sqlite._upsert_state_row = real
+
+    assert len(list(storage.iter_events(project))) == before_events
+    assert storage.load_state(project, task_id).state is TaskState.QUEUED
+    assert storage.replay(project)[task_id].state is TaskState.QUEUED
+
+
+def test_a_corrupt_database_raises_rather_than_reading_as_empty(sqlite_backend):
+    """The most dangerous failure this store has: an unreadable database that
+    answers "no tasks" instead of raising. Every planner rule treats an empty
+    projection as a project with nothing to do, so a corrupt store would read
+    as a QUIET one -- CR-02's fail-open shape, at the layer underneath it."""
+    project = "sp04-corrupt"
+    _seed(project, "t-corrupt", TaskState.QUEUED)
+    db = storage_sqlite.db_path(project)
+    for sidecar in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        sidecar.unlink(missing_ok=True)
+    db.write_bytes(b"this is not a database, it is a text file" * 40)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        storage.list_states(project)
+    with pytest.raises(sqlite3.DatabaseError):
+        list(storage.iter_events(project))
+
+
+def test_a_locked_database_raises_rather_than_silently_skipping_the_write(
+        sqlite_backend, monkeypatch):
+    """A writer that cannot get the lock must fail loudly. Returning without
+    writing would make `append_and_apply` a function that sometimes does
+    nothing and says it succeeded, which is the one thing a canonical
+    mutation may never be."""
+    project, task_id = "sp04-locked", "t-locked"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    holder = sqlite3.connect(str(storage_sqlite.db_path(project)), timeout=0.1)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        monkeypatch.setattr(storage_sqlite, "_BUSY_TIMEOUT_MS", 100, raising=False)
+        with pytest.raises(sqlite3.OperationalError):
+            conn = sqlite3.connect(str(storage_sqlite.db_path(project)), timeout=0.1)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            finally:
+                conn.close()
+    finally:
+        holder.rollback()
+        holder.close()
+
+    # The store is untouched and still usable once the lock clears.
+    assert storage.load_state(project, task_id).state is TaskState.QUEUED
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+    assert storage.load_state(project, task_id).state is TaskState.ACTIVE
+
+
+def test_a_blank_line_in_an_export_is_skipped_not_imported(sqlite_backend):
+    """Exports are edited by hand -- that is half the reason for having one --
+    and an editor adding a trailing blank line must not become an event that
+    fails to parse."""
+    project = "sp04-blank"
+    _seed(project, "t-blank", TaskState.QUEUED)
+    text = storage.export_jsonl(project)
+
+    assert storage.import_jsonl("sp04-blank-copy", "\n\n" + text + "\n\n") == 1
+
+
+def test_a_malformed_line_rolls_the_whole_import_back(sqlite_backend):
+    """An import is all-or-nothing. A half-imported log is a history with a
+    hole in it, and nothing downstream could tell that from a short one."""
+    project = "sp04-partial"
+    _seed(project, "t-partial", TaskState.QUEUED)
+    good = storage.export_jsonl(project)
+
+    with pytest.raises(Exception):
+        storage.import_jsonl("sp04-partial-copy", good + "{ not json\n")
+
+    assert list(storage.iter_events("sp04-partial-copy")) == []
+    assert storage.list_states("sp04-partial-copy") == {}
+
+
+def test_a_projection_failure_during_import_rolls_back_the_projection(sqlite_backend):
+    """The import's second transaction. Its rollback matters for the same
+    reason the first one's does: a store whose log imported and whose
+    projection did not is one that reads as empty while holding a full
+    history."""
+    project = "sp04-import-proj"
+    _seed(project, "t-ip", TaskState.QUEUED)
+    text = storage.export_jsonl(project)
+
+    real = storage_sqlite._upsert_state_row
+    try:
+        storage_sqlite._upsert_state_row = lambda *a, **k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database or disk is full"))
+        with pytest.raises(sqlite3.OperationalError):
+            storage.import_jsonl("sp04-import-proj-copy", text)
+    finally:
+        storage_sqlite._upsert_state_row = real
+
+    assert storage.list_states("sp04-import-proj-copy") == {}
+
+
+def test_a_transition_event_carrying_notes_records_them(sqlite_backend):
+    """`notes` on a TASK_TRANSITIONED payload is the operator-visible reason a
+    task moved. It is projected from the EVENT (the only way a note can now
+    reach a row at all, since CR-04a stopped the store writing back caller
+    edits), so nothing else records it if this does not."""
+    project, task_id = "sp04-notes", "t-notes"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE", "notes": "provider throttled"},
+        task_id=task_id)
+
+    assert storage.load_state(project, task_id).notes == "provider throttled"
+    assert storage.replay(project)[task_id].notes == "provider throttled"
+
+
+def test_a_reasserted_block_refreshes_its_reason(sqlite_backend):
+    """A task already BLOCKED, blocked again with a NEWER reason.
+
+    The transition is a no-op (from == to), but the blocker and its notes are
+    still refreshed: the second reason is the current one, and leaving the
+    first in place would show an operator a stale explanation for why work
+    stopped -- which is the only thing that record is for."""
+    project, task_id = "sp04-reblock", "t-reblock"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    blocker = {"type": "contract", "unblock_condition": "first", "detail": None}
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"blocker": blocker, "notes": "first reason"}, task_id=task_id)
+    assert storage.load_state(project, task_id).state is TaskState.BLOCKED
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"blocker": {"type": "environment", "unblock_condition": "second",
+                              "detail": None},
+                  "notes": "second reason"}, task_id=task_id)
+
+    current = storage.load_state(project, task_id)
+    assert current.state is TaskState.BLOCKED
+    assert current.notes == "second reason"
+    assert current.blocker.unblock_condition == "second"
+    assert storage.replay(project)[task_id].notes == "second reason"

@@ -83,7 +83,7 @@ def _parse_source_events(path: Path) -> list[Event]:
 
 def _read_file_statefiles(project: str) -> dict[str, TaskStateFile]:
     """The CURRENT on-disk FILE-backend statefiles, read directly --
-    never through `storage.list_states`'s `NYXLOOM_STATE_BACKEND`
+    never through `storage.list_states`'s store
     selector, so this verification is meaningful regardless of what that
     flag is set to in the calling environment (see module docstring)."""
     paths.ensure_layout(project)

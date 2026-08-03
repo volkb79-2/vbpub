@@ -138,7 +138,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               integrity.md A.3): the greppability bridge --
                               dumps the event store as JSONL to stdout via
                               storage.iter_events, which is backend-agnostic
-                              (file or SQLite, per NYXLOOM_STATE_BACKEND),
+                              (the SQLite store),
                               restoring `| jq` / `| lnav` over the event log
                               regardless of backend. --since/--type filter
                               (--type unchanged from the original P10 debug
@@ -1382,7 +1382,7 @@ def cmd_events(args) -> int:
     PACKAGE SP04 2026-07-21 (docs/plan-state-integrity.md A.3 -- the
     greppability bridge). Dumps the event store as JSONL to stdout via
     storage.iter_events, which is backend-agnostic (file or SQLite, per
-    NYXLOOM_STATE_BACKEND) -- so `nyxloom events P | jq` / `| lnav` works
+    the SQLite store) -- so `nyxloom events P | jq` / `| lnav` works
     unchanged regardless of which backend is selected. Each printed line is
     `Event.to_dict()` JSON-encoded, the exact shape storage.py's file
     backend writes to events.jsonl, so a dump round-trips to the same

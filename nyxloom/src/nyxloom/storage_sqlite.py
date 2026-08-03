@@ -1,7 +1,7 @@
 """SQLite backend for the event/state store. PACKAGE SP01
 (docs/plan-state-integrity.md Part A).
 
-Selected dark, behind `storage.py`'s `NYXLOOM_STATE_BACKEND=sqlite` selector
+THE store implementation (CR-04b removed the selector and the file backend)
 (unset / any other value keeps the file backend the default). Implements the
 SAME public functions as `storage.py`'s file backend
 (`append_event`/`iter_events`/`load_state`/`save_state`/`list_states`/
@@ -45,12 +45,15 @@ writes that CAN diverge on a crash; here they cannot.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterator
 
 from . import paths
-from .storage import SCHEMA_VERSION, apply_event, _validate_before_append
+from .projection import (
+    SCHEMA_VERSION, apply_event, _trace, _validate_before_append,
+)
 from .types import Actor, ActorKind, Event, EventType, TaskStateFile, iso, parse_iso, utc_now
 
 _SCHEMA_SQL = """
@@ -159,6 +162,16 @@ def _insert_event(
             task_id, attempt_id, wave_id, decision_id,
         ),
     )
+    # CR-04b (D-L3 oracle 4): the event-append TRACE moved here with the
+    # append itself. It lived on the deleted file backend, so removing that
+    # backend would have silently dropped a logging contract the daemon's
+    # diagnostics depend on -- the kind of loss a "just delete the old path"
+    # change makes invisibly. Only reachable on the LIVE append path; replay
+    # never calls this, so a replay stays silent.
+    # NB: "event_type", not "event" -- structlog's bound-logger methods take
+    # their message as `event`, so a same-named kwarg collides.
+    _trace("event-append", project=project, event_type=type.value,
+           task=task_id, attempt=attempt_id, sequence=cur.lastrowid)
     return Event(
         schema_version=SCHEMA_VERSION,
         sequence=cur.lastrowid,
@@ -260,6 +273,7 @@ def load_state(project: str, task_id: str) -> TaskStateFile | None:
         conn.close()
     if row is None:
         return None
+    _trace("statefile-read", project=project, task=task_id)
     return TaskStateFile.from_dict(json.loads(row[0]))
 
 
@@ -271,11 +285,142 @@ def save_state(state: TaskStateFile) -> None:
         conn.execute("BEGIN IMMEDIATE")
         _upsert_state_row(conn, state)
         conn.commit()
+        _trace("statefile-write", project=state.project, task=state.task_id)
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def backup(project: str, suffix: str = "bak") -> Path:
+    """A CONSISTENT copy of the whole store, taken while writers may be live.
+
+    CR-04b (contract item 4). Uses sqlite3's own online-backup API rather than
+    copying the file: under WAL a plain file copy can capture a database whose
+    committed data still lives in a `-wal` sidecar the copy does not include,
+    producing a backup that restores to a state that never existed. The API
+    walks the pages under a read lock instead, so the copy is a real point in
+    time.
+
+    Returns the backup path. Replaces `doctor`'s per-statefile `.bak` copies,
+    which backed up an artifact the file backend wrote and this store does not
+    -- deleting that backend without this would have quietly removed the
+    "back up before you repair" step from the one command whose whole job is
+    repairing a divergent projection.
+    """
+    src = db_path(project)
+    dest = src.with_name(src.name + "." + suffix)
+    conn = _connect(project)
+    try:
+        target = sqlite3.connect(str(dest))
+        try:
+            with target:
+                conn.backup(target)
+        finally:
+            target.close()
+    finally:
+        conn.close()
+    return dest
+
+
+def restore(project: str, backup_path: Path) -> None:
+    """Replace the store with a backup taken by :func:`backup`.
+
+    Deliberately a whole-file replace rather than a merge: a partial restore
+    would leave events from two different histories in one log, and there is
+    no rule that could reconcile them afterwards.
+    """
+    if not backup_path.exists():
+        raise FileNotFoundError(f"no such backup: {backup_path}")
+    dest = db_path(project)
+    paths.ensure_layout(project)
+    tmp = dest.with_name(dest.name + ".restore-tmp")
+    conn = sqlite3.connect(str(backup_path))
+    try:
+        target = sqlite3.connect(str(tmp))
+        try:
+            with target:
+                conn.backup(target)
+        finally:
+            target.close()
+    finally:
+        conn.close()
+    os.replace(tmp, dest)
+    # The WAL/SHM sidecars belong to the REPLACED database; leaving them would
+    # let SQLite apply another history's pages over the restored one.
+    for sidecar in (dest.with_name(dest.name + "-wal"), dest.with_name(dest.name + "-shm")):
+        sidecar.unlink(missing_ok=True)
+
+
+def export_jsonl(project: str) -> str:
+    """The event log as JSONL, one event per line, in sequence order.
+
+    The interchange format: it is what a human reads, what a bug report
+    attaches, and what :func:`import_jsonl` re-imports. Deterministic
+    (sorted keys, no incidental whitespace) so two exports of the same history
+    are byte-identical and a diff of them means something.
+    """
+    lines = [json.dumps(ev.to_dict(), separators=(",", ":"), sort_keys=True)
+             for ev in iter_events(project)]
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def import_jsonl(project: str, text: str) -> int:
+    """Load an exported log into an EMPTY store; returns the event count.
+
+    Refuses a non-empty store rather than appending: an import that merged
+    into existing history would produce a log with two origins and sequence
+    numbers that mean nothing, which is unrecoverable rather than merely
+    wrong. Rebuilds the projection by replay, so the imported store is
+    reachable from its own events.
+    """
+    conn = _connect(project)
+    try:
+        existing = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    finally:
+        conn.close()
+    if existing:
+        raise ValueError(
+            f"refusing to import into a non-empty store for {project!r} "
+            f"({existing} events already present)")
+
+    count = 0
+    conn = _connect(project)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            ev = Event.from_dict(json.loads(line))
+            _insert_event(
+                conn, project, actor=ev.actor, type=ev.type, payload=ev.payload,
+                task_id=ev.task_id, attempt_id=ev.attempt_id, wave_id=ev.wave_id,
+                decision_id=ev.decision_id, timestamp=ev.timestamp,
+            )
+            count += 1
+        conn.commit()
+    except Exception:  # census: cleanup/containment (CR-04b)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    # Rebuild the projection from the imported log, in one transaction.
+    states = replay(project)
+    conn = _connect(project)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for state in states.values():
+            _upsert_state_row(conn, state)
+        conn.commit()
+    except Exception:  # census: cleanup/containment (CR-04b)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return count
 
 
 def list_states(project: str) -> dict[str, TaskStateFile]:
@@ -345,6 +490,8 @@ def append_and_apply(
         for tid in affected:
             _upsert_state_row(conn, committed[tid])
         conn.commit()
+        for tid in affected:
+            _trace("statefile-write", project=project, task=tid)
     except Exception:
         conn.rollback()
         raise

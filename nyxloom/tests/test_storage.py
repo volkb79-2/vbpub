@@ -181,8 +181,15 @@ def test_blocked_reassert_apply_is_silent_noop(tmp_state):
     )
     affected = storage.apply_event(states, ev)  # must not raise
 
-    assert affected == []
+    # CR-04b: the re-assert reports the task as AFFECTED. It used to report
+    # nothing, so the refreshed blocker never reached the row -- `replay`
+    # ended with the newer reason while the served projection kept the older
+    # one, two disagreeing answers to "why did this task stop" with the
+    # operator-facing one stale. The property this oracle actually guards is
+    # that a re-assert does not RAISE and does not move the state.
+    assert affected == [task_id]
     assert states[task_id].state is TaskState.BLOCKED
+    assert states[task_id].blocker.unblock_condition == "second"
 
 
 # Oracle O2: replay() over a log with a duplicate TASK_BLOCKED for an
@@ -399,9 +406,16 @@ def test_replay_is_silent_but_live_append_logs(tmp_state, tmp_path):
 
     # Build a real history WITHOUT logging configured yet (simulates the
     # pre-restart history already sitting on disk from a prior daemon run).
-    _seed(project, task_id, TaskState.QUEUED)
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    states = _seed(project, task_id, TaskState.QUEUED)
+    # CR-04b: built through the CANONICAL mutation, not a bare `append_event`.
+    # A raw append writes an event without moving the projection, so the two
+    # diverge -- and since CR-04a validates against COMMITTED state, the next
+    # transition is then judged from a projection the log has already left
+    # behind. That divergence is a real defect (the audit counted 13 such
+    # bypasses); this oracle is about replay SILENCE and must not depend on
+    # one to set itself up.
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
         payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id=task_id,
     )
 

@@ -86,9 +86,28 @@ def _compose_service(root: Path) -> dict:
 # None when the source it needs isn't present.
 
 def actual_state_backend(root: Path) -> str | None:
-    env = _compose_service(root).get("environment") or {}
-    value = env.get("NYXLOOM_STATE_BACKEND")
-    return str(value) if value is not None else None
+    """Which store the CODE actually implements.
+
+    CR-04b changed this fact's source, which is exactly what CR-01's standing
+    rule exists to force. It used to read `NYXLOOM_STATE_BACKEND` out of the
+    compose file -- a SELECTOR, meaningful only while two backends existed.
+    That variable is gone, so reading it would report "unavailable" forever
+    and the check would fail on a tree that is perfectly consistent.
+
+    The fact now is whether `storage.py` still selects at all -- the literal
+    token appearing anywhere in that module, prose included, counts as still
+    selecting, because a reader who finds it there has to go and check. Its
+    presence is
+    also precisely CR-04's acceptance ("no production reference to
+    NYXLOOM_STATE_BACKEND or live file backend remains"), so the standing
+    document check and that acceptance are one mechanism rather than two that
+    can disagree.
+    """
+    store = root / "src" / "nyxloom" / "storage.py"
+    if not store.exists():
+        return None
+    return "selectable" if "NYXLOOM_STATE_BACKEND" in store.read_text(
+        encoding="utf-8") else "sqlite"
 
 
 def actual_daemon_mode(root: Path) -> str | None:
@@ -160,7 +179,7 @@ FACT_REGISTRY: tuple[ProductFact, ...] = (
     ProductFact(
         key="state_backend",
         doc_relpath="README.md",
-        description="the live state backend selector (nyxloomd/docker-compose.yml NYXLOOM_STATE_BACKEND)",
+        description="the store the code implements (src/nyxloom/storage.py: selectable vs sqlite-only)",
         actual=actual_state_backend,
     ),
     ProductFact(

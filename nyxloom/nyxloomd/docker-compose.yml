@@ -80,7 +80,6 @@ services:
       TZ: UTC
       PYTHONPATH: /workspaces/vbpub/nyxloom/src
       PATH: /home/vscode/.local/bin:/usr/local/bin:/usr/bin:/bin
-      NYXLOOM_STATE_BACKEND: "sqlite"  # SP03 cutover LIVE 2026-07-21: authoritative
                                         # state is per-project SQLite (state.db),
                                         # migrated statefile-authoritatively via SP02b
                                         # (storage_sqlite is NOT buggy -- it shares

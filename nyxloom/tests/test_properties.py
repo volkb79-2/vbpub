@@ -567,12 +567,18 @@ def test_sequence_integrity_under_concurrency(tmp_state):
         p.join(timeout=30)
         assert p.exitcode == 0, f"worker exited {p.exitcode}"
 
-    lines = [ln for ln in paths.events_path(project).read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert len(lines) == n_procs * n_each
-
-    seqs = [json.loads(ln)["sequence"] for ln in lines]
-    assert len(seqs) == n_procs * n_each
-    assert set(seqs) == set(range(1, n_procs * n_each + 1))
+    # CR-04b: the OBSERVABLE moved from events.jsonl to the store, the
+    # PROPERTY did not. Four processes appending concurrently must still
+    # produce every sequence exactly once with none lost -- that is what a
+    # sequence is for, and it is the one thing a store swap could silently
+    # break. Read through the public API so this oracle keeps holding
+    # whatever the store is.
+    seqs = [ev.sequence for ev in storage.iter_events(project)]
+    assert len(seqs) == n_procs * n_each, "an append was lost under concurrency"
+    assert set(seqs) == set(range(1, n_procs * n_each + 1)), (
+        "sequences are not contiguous 1..N -- a gap means a lost append, a "
+        "duplicate means two writers were assigned the same slot")
+    assert seqs == sorted(seqs), "iter_events must yield in sequence order"
 
 
 # ---------------------------------------------------------------------------
