@@ -30,6 +30,13 @@ tree already has is worse than an empty one.
   check as degraded. Naming a real container end to end needs a harness with
   the socket mounted — P06 builds the first harness that has containers in
   it at all.
+- **A gate harness with containers in it** (P06). The container half of the
+  propagation precondition — does the Wings container really bind the volume
+  tree `rslave`? — is unit-tested against a stub and injected in e2e, because
+  the gate container has no Docker socket and no Wings. The same harness
+  would close the P05 entry above, and would let oracle 20's "neither
+  failure surfaces as a server start error" be asserted against a server
+  that actually starts.
 - **A durability oracle.** D-008: process kill proves ordering, not
   durability. `dm-flakey` or a VM snapshot in the privileged harness would
   close it.

@@ -17,9 +17,11 @@ import (
 	"strings"
 
 	"srdm/internal/config"
+	"srdm/internal/consumer"
 	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
 	"srdm/internal/store"
+	"srdm/internal/wings"
 )
 
 // Status is a check's verdict.
@@ -56,6 +58,27 @@ type Options struct {
 	// UnitProperty reads one systemd unit property. It defaults to
 	// systemctl show, and returns an error when systemd is unreachable.
 	UnitProperty func(unit, property string) (string, error)
+	// Inspector reads how a container binds a host path. It defaults to the
+	// Docker socket; a nil result marks the container half of the
+	// propagation check as unanswerable rather than failed.
+	Inspector wings.ContainerInspector
+	// ChownWalk reads Wings' pre-boot walk setting. It defaults to scanning
+	// the node config for the one key that matters.
+	ChownWalk func(cfg config.Wings) func() (wings.ChownWalk, error)
+}
+
+func (o Options) inspector() wings.ContainerInspector {
+	if o.Inspector != nil {
+		return o.Inspector
+	}
+	return consumer.NewDocker("")
+}
+
+func (o Options) chownWalk(cfg config.Wings) func() (wings.ChownWalk, error) {
+	if o.ChownWalk != nil {
+		return o.ChownWalk(cfg)
+	}
+	return func() (wings.ChownWalk, error) { return wings.ReadChownWalk(cfg.ConfigPath) }
 }
 
 const (
@@ -101,6 +124,7 @@ func Run(cfg config.Config, p *profile.Profile, opts Options) []Check {
 		checkRecursiveProt(opts),
 		checkParentSlice(cfg, p, opts),
 	}
+	checks = append(checks, checkWings(cfg, opts)...)
 	checks = append(checks, checkStoreIntegrity(cfg)...)
 	return checks
 }

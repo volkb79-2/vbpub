@@ -161,7 +161,7 @@ is still P08's.
 | id | package | state |
 |---|---|---|
 | **P05** | consumer resolution + teardown safety | **done** |
-| **P06** | the `host-bind` exposure driver, `ro`/`rw`, and doctor's mount + Wings preconditions | next (needs P03, P04, P05) |
+| **P06** | the `host-bind` exposure driver, `ro`/`rw`, and doctor's mount + Wings preconditions | **done** |
 
 **What P05 settled.** Teardown now refuses while anything holds the content,
 naming it. Resolution matches on the **superblock**, because a consumer's
@@ -231,12 +231,49 @@ P01 handoff deferred. *Gate*: oracles 19–22, and oracle 20's requirement
 that neither precondition failure is allowed to surface as a server start
 error.
 
+**What P06 settled.** `internal/expose` is the fork: an interface and, for
+now, one driver. `internal/wings` reads the two facts about the node srdm
+neither owns nor configures, and both fail closed (**D-021**) — the node
+config is scanned for one key rather than parsed, because srdm still has no
+YAML dependency, and F1 is asserted by configuration because a patch in a Go
+binary is not detectable.
+
+Every precondition refuses with a fix attached, and a test asserts that no
+refusal ever ships without one — a refusal with no remedy is an outage with
+extra steps.
+
+**D-020**, found by the ephemerality oracle: an `rw` exposure cannot be a
+bind of the published path, because that path is itself a read-only bind and
+a bind inherits its source's flags. The two modes therefore bind different
+mount points of the same superblock. The half left open is who may *write*
+through it: publication seals the tree `a-w`, so root can and a game
+container cannot, and deciding the ownership model belongs with `harvest`
+(P07) — the only reason to write through in the first place.
+
+*Gated*: oracle 19 against a real volume tree (content at exactly the
+declared class paths, `world.db` unchanged across expose and unexpose,
+per-instance state still writable underneath); oracle 20's host half against
+the real mount table, its container half against an injected inspector;
+oracle 21's marking, sharing refusal and doctor drift report; oracle 22 end
+to end — write through `rw`, republish, and the write is gone. 31 privileged
+oracles across the project now, and 44 canaries, none surviving.
+
 ### Wave 3 — acquisition and operations
 
 | id | package | depends on |
 |---|---|---|
 | **P07** | `harvest` — adopt an in-place-updated generation as a release | P06 |
 | **P08** | retention/GC, the daemon, the admin socket, boot restore, doctor online | P06 |
+
+**Inherited from P06**: `harvest` closes **D-020**. An `rw` exposure today
+permits writes at the mount level while the content's modes are still sealed
+`a-w`, so root can write through it and an unprivileged game container
+cannot. Which uid writes, whether unsealing is per-class or per-generation,
+and whether an unsealed tree may be re-sealed or only republished are all
+open — and they are open on purpose, because harvest is the only consumer of
+the answer and deciding without it in front of us is how it gets decided
+wrongly. P07 must also refuse to harvest a generation whose record is
+`DirtyCapable` without re-verifying it first.
 
 **P07** is today's manual procedure automated: refuse if any consumer is
 running → re-walk and re-hash → classify (an unclassified new path blocks

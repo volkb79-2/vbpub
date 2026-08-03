@@ -303,6 +303,97 @@ canary "P05-op-root-is-an-orphan" "TestTheOperationRootIsNotAnOrphan" \
   's#infrastructure := map\[string\]bool{p.cfg.RunDir: true, p.cfg.OpRoot(): true}#infrastructure := map[string]bool{p.cfg.RunDir: true}#' \
   "the operation root is torn down as an orphan mount"
 
+# --- P06: the host-bind exposure driver -----------------------------------
+
+# Expose without checking that the host side can propagate at all. Every
+# mount is then invisible to Wings and every unmount leaves a ghost.
+canary "P06-host-propagation" "TestExposeRefusesWhenTheHostSideIsNotShared" \
+  "internal/expose/hostbind.go" \
+  's#^\tif !prop.HostShared() {$#\tif false {#' \
+  "the host peer group is no longer checked"
+
+# Accept Docker's default rprivate — the 2026-07-31 outage, unrefused.
+canary "P06-rprivate-accepted" "TestExposeRefusesAnRPrivateWingsContainer" \
+  "internal/expose/hostbind.go" \
+  's#^\tcase !prop.ContainerReceives():$#\tcase false:#' \
+  "an rprivate Wings container is accepted"
+
+# Treat "I could not ask Docker" as "it is fine". Not knowing and being
+# wrong call for different things from an operator.
+canary "P06-degraded-is-fine" "TestExposeRefusesWhenTheContainerCannotBeInspected" \
+  "internal/expose/hostbind.go" \
+  's#^\tcase prop.Degraded != "":$#\tcase false:#' \
+  "an uninspectable container is assumed to be correct"
+
+# Expose read-only onto a node that will chown-walk. The walk fails EROFS on
+# a read-only mount even when the owner already matches, so the server never
+# starts — and the operator meets it as an unexplained failure.
+canary "P06-chown-walk-ignored" "TestExposeRefusesReadOnlyWhenTheChownWalkWouldRun" \
+  "internal/expose/hostbind.go" \
+  's#\tif access == AccessRO \&\& !h.cfg.ChownSkipPatch {#\tif false {#' \
+  "a read-only exposure is made onto a node that will chown-walk it"
+
+# Read the node config's ambiguity as permission. Every way of not knowing
+# has to land on "the walk runs", or the guess produces the unstartable
+# server the check exists to prevent.
+canary "P06-chownwalk-fails-open" "TestEverythingAmbiguousFailsClosed" \
+  "internal/wings/wings.go" \
+  's#return ChownWalk{Enabled: true, Source: path}, fmt.Errorf(#return ChownWalk{Enabled: false, Known: true, Source: path}, fmt.Errorf(#' \
+  "an unreadable node config is read as the chown walk being off"
+
+# Let a second consumer onto an rw generation. With two, a write is the
+# 2026-07-29 corruption by construction.
+canary "P06-rw-multi-consumer" "TestExposeRWIsRefusedWhenAnotherConsumerHolds" \
+  "internal/expose/hostbind.go" \
+  's#^\tif access == AccessRW \&\& rep.Held() {$#\tif false {#' \
+  "a second consumer joins a writable generation"
+
+# Share a generation somebody has already written through, so the newcomer
+# reads content nobody verified.
+canary "P06-dirty-shared" "TestASharedGenerationIsRefusedOnceItIsDirty" \
+  "internal/expose/hostbind.go" \
+  's#^\tif rec.DirtyCapable \&\& rep.Held() {$#\tif false {#' \
+  "a written-through generation is shared with a second consumer"
+
+# Never record that a generation was exposed writable, so nothing downstream
+# knows its content no longer matches the release.
+canary "P06-never-marks-dirty" "TestExposeRWMarksTheGenerationBeforeMountingIt" \
+  "internal/expose/hostbind.go" \
+  's#if err := h.marker.MarkDirtyCapable(req.OperationID, rec.Profile, rec.Generation); err != nil {#if err := error(nil); err != nil {#' \
+  "an rw exposure leaves the generation unmarked"
+
+# Bind a class path that covers per-instance state. The mount HIDES what is
+# beneath it, so the saves are not overwritten — they become invisible, and
+# the damage is found only when somebody goes looking for a world that is
+# still on disk underneath.
+canary "P06-shadows-state" "TestPlanRefusesAClassPathThatShadowsExcludedState" \
+  "internal/expose/expose.go" \
+  's#^\t\tif target == ex || strings.HasPrefix(ex, target+"/") || strings.HasPrefix(target, ex+"/") {$#\t\tif target == ex \&\& false {#' \
+  "a class path is allowed to shadow per-instance state"
+
+# Drop the read-only half of the exposure remount. A bind inherits its
+# source's flags, so this leaves a game server able to write into shared
+# content.
+canary "P06-exposure-writable" "TestExposeReadOnlyMakesEachBindReadOnly" \
+  "internal/expose/hostbind.go" \
+  's#syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY#syscall.MS_BIND|syscall.MS_REMOUNT#' \
+  "a read-only exposure is left writable"
+
+# Bind the published read-only path for an rw exposure. A bind inherits its
+# source's flags, so the result is read-only whatever was asked for —
+# measured, and the reason the two modes bind different mount points.
+canary "P06-rw-binds-the-ro-side" "TestExposeReadWriteLeavesTheBindsWritable|TestReadOnlyBindsThePublishedExposure" \
+  "internal/expose/expose.go" \
+  's#\t\treturn path.Join(cr.OpMount, "root")#\t\treturn cr.ExposePath#' \
+  "an rw exposure binds the read-only side and is silently read-only"
+
+# Never re-hash a generation that has been exposed writable, so drift
+# through an rw exposure is invisible until somebody trips over it.
+canary "P06-no-drift-check" "TestADriftedGenerationFailsAndSaysWhere" \
+  "internal/doctor/wings.go" \
+  's#^\t\t\tif err := rel.Manifest.VerifyClass(class.ExposePath, class.Name); err != nil {$#\t\t\tif err := error(nil); err != nil {#' \
+  "a drifted generation is reported as clean"
+
 rm -rf "$WORK"
 
 printf '\n%d canary/canaries rejected, %d survived\n' "$pass" "$fail"

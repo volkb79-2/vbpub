@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"srdm/internal/config"
 	"srdm/internal/consumer"
 	"srdm/internal/journal"
 	"srdm/internal/mountinfo"
@@ -360,9 +361,12 @@ func (p *Publisher) TeardownOrphans(opID string, rec *Reconciliation) error {
 	return errors.Join(errs...)
 }
 
-func (p *Publisher) listRecords() ([]*Record, error) {
+func (p *Publisher) listRecords() ([]*Record, error) { return ListRecordsAt(p.cfg) }
+
+// ListRecordsAt reads every published-state record without a Publisher.
+func ListRecordsAt(cfg config.Config) ([]*Record, error) {
 	var out []*Record
-	profiles, err := os.ReadDir(p.cfg.PublishedDir())
+	profiles, err := os.ReadDir(cfg.PublishedDir())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -373,7 +377,7 @@ func (p *Publisher) listRecords() ([]*Record, error) {
 		if !pe.IsDir() {
 			continue
 		}
-		files, err := os.ReadDir(filepath.Join(p.cfg.PublishedDir(), pe.Name()))
+		files, err := os.ReadDir(filepath.Join(cfg.PublishedDir(), pe.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -382,7 +386,7 @@ func (p *Publisher) listRecords() ([]*Record, error) {
 			if fe.IsDir() || filepath.Ext(name) != ".json" {
 				continue
 			}
-			rec, err := p.LoadRecord(pe.Name(), strings.TrimSuffix(name, ".json"))
+			rec, err := LoadRecordAt(cfg, pe.Name(), strings.TrimSuffix(name, ".json"))
 			if err != nil {
 				return nil, err
 			}

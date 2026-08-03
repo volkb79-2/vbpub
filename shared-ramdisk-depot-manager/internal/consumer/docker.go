@@ -29,6 +29,9 @@ type Mount struct {
 	Source      string
 	Destination string
 	ReadOnly    bool
+	// Propagation is how host-side mount events travel into the container:
+	// rslave, rprivate, and so on. Empty for mounts where it does not apply.
+	Propagation string
 }
 
 // Docker is a minimal client for the parts of the Engine API srdm needs.
@@ -118,6 +121,7 @@ func (d *Docker) RunningContainers(ctx context.Context) ([]Container, error) {
 			Source      string `json:"Source"`
 			Destination string `json:"Destination"`
 			RW          bool   `json:"RW"`
+			Propagation string `json:"Propagation"`
 		} `json:"Mounts"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
@@ -149,10 +153,51 @@ func toMounts(in []struct {
 	Source      string `json:"Source"`
 	Destination string `json:"Destination"`
 	RW          bool   `json:"RW"`
+	Propagation string `json:"Propagation"`
 }) []Mount {
 	out := make([]Mount, 0, len(in))
 	for _, m := range in {
-		out = append(out, Mount{Source: m.Source, Destination: m.Destination, ReadOnly: !m.RW})
+		out = append(out, Mount{Source: m.Source, Destination: m.Destination,
+			ReadOnly: !m.RW, Propagation: m.Propagation})
 	}
 	return out
+}
+
+// BindPropagation reports how a running container binds a host path, and
+// which container that is.
+//
+// It answers the first host-bind precondition: the Wings container must
+// carry rslave on the volume tree, or nothing srdm mounts is visible to it
+// and nothing srdm unmounts goes away. Exactly one container is expected to
+// bind that path; two would mean srdm cannot tell which one Wings is, and
+// refusing beats picking.
+func (d *Docker) BindPropagation(ctx context.Context, hostPath string) (string, string, error) {
+	containers, err := d.RunningContainers(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	var (
+		propagation string
+		name        string
+		matches     int
+	)
+	for _, c := range containers {
+		for _, m := range c.Mounts {
+			if m.Source != hostPath {
+				continue
+			}
+			matches++
+			propagation, name = m.Propagation, c.Name
+		}
+	}
+	switch matches {
+	case 0:
+		return "", "", fmt.Errorf("no running container binds %s, so srdm cannot tell "+
+			"whether Wings would see anything it mounts there", hostPath)
+	case 1:
+		return propagation, name, nil
+	default:
+		return "", "", fmt.Errorf("%d running containers bind %s; srdm will not guess "+
+			"which one is Wings", matches, hostPath)
+	}
 }

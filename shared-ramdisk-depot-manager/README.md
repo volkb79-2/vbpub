@@ -14,18 +14,17 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
-## Status — P01–P05 landed
+## Status — P01–P06 landed
 
-The store, the journal, offline `doctor`, the privileged systemd harness, the
-publication mount topology, the per-class hold units and teardown safety are
-implemented and gated. What is missing is the last step: nothing is exposed
-into a container yet. See
-[`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
+The whole v1 pipeline exists as libraries: store → verified release →
+publication → hold units → exposure into a Wings server's volume. What is
+missing is the operator surface that drives it and the operational loop
+around it. See [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
 
 | | |
 |---|---|
-| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset, CLI; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, mountinfo + unit reconciliation |
-| **Not yet** | the `host-bind` exposure driver and doctor's mount/Wings preconditions (P06), `harvest` (P07), retention/GC, the daemon and boot restore (P08), SteamCMD driver, everything `provider` (v2) |
+| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset plus the Wings preconditions; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw` |
+| **Not yet** | `harvest` (P07), retention/GC, the daemon, boot restore and the CLI verbs that drive any of this (P08), SteamCMD driver, everything `provider` (v2) |
 
 Publication and hold are libraries with no operator entry point yet: the CLI
 verbs that drive them arrive with the daemon (P08).
@@ -100,7 +99,8 @@ shared-ramdisk-depot-manager/
 │   ├── publish/              publication topology, reconciliation  ← P03
 │   ├── hold/                 hold units, class policy, the worker  ← P04
 │   ├── consumer/             who is still holding a generation     ← P05
-│   ├── expose/               exposure drivers                         P06
+│   ├── expose/               exposure drivers: host-bind, ro|rw    ← P06
+│   ├── wings/                the node's propagation and chown walk ← P06
 │   ├── source/steam/         SteamCMD driver (off the MVP path)
 │   ├── providerapi/          v2 only
 │   └── adminapi/             the operator socket

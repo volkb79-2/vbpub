@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"srdm/internal/config"
 	"srdm/internal/profile"
+	"srdm/internal/wings"
 )
 
 // fixture builds a fake host surface: a cgroup root, a mountinfo file and a
@@ -20,6 +22,15 @@ type fixture struct {
 	mountInfo  string
 	props      map[string]string
 	propErr    error
+
+	// The Wings half of the fixture: a node that is set up correctly, which
+	// the individual cases then break one property at a time.
+	rootPropagation      string
+	containerPropagation string
+	containerName        string
+	inspectErr           error
+	chownWalk            wings.ChownWalk
+	chownWalkErr         error
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -33,6 +44,13 @@ func newFixture(t *testing.T) *fixture {
 			"srdm.slice/LoadState": "loaded",
 			"srdm.slice/MemoryMin": "536870912", // 512M, the shipped value
 		},
+		// A correctly set up node: / is shared as it is on any systemd host,
+		// the Wings container binds the volume tree rslave, and the pre-boot
+		// chown walk is off.
+		rootPropagation:      "shared:1",
+		containerPropagation: "rslave",
+		containerName:        "wings",
+		chownWalk:            wings.ChownWalk{Enabled: false, Known: true, Source: "the fixture"},
 	}
 	if err := os.MkdirAll(f.cgroupRoot, 0o755); err != nil {
 		t.Fatal(err)
@@ -56,6 +74,10 @@ func (f *fixture) writeControllers(t *testing.T, body string) {
 func (f *fixture) writeMountInfo(t *testing.T, superOptions string) {
 	t.Helper()
 	body := strings.Join([]string{
+		// / carries the Wings bind root on a stock node — /var/lib is not a
+		// mount point of its own — so its propagation is what decides
+		// whether anything srdm mounts can reach the container.
+		"24 1 0:20 / / rw,relatime " + f.rootPropagation + " - ext4 /dev/sda1 rw",
 		"25 30 0:24 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw",
 		"31 24 0:27 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:9 - cgroup2 cgroup2 " + superOptions,
 		"36 25 0:32 / /run rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,size=1g",
@@ -79,13 +101,30 @@ func (f *fixture) options() Options {
 			}
 			return v, nil
 		},
+		Inspector: f,
+		ChownWalk: func(config.Wings) func() (wings.ChownWalk, error) {
+			return func() (wings.ChownWalk, error) { return f.chownWalk, f.chownWalkErr }
+		},
 	}
+}
+
+// BindPropagation makes the fixture its own container inspector.
+func (f *fixture) BindPropagation(context.Context, string) (string, string, error) {
+	if f.inspectErr != nil {
+		return "", "", f.inspectErr
+	}
+	return f.containerPropagation, f.containerName, nil
 }
 
 func (f *fixture) config() config.Config {
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(f.dir, "state")
 	cfg.RunDir = filepath.Join(f.dir, "run")
+	cfg.Wings = config.Wings{
+		BindRoot:   filepath.Join(f.dir, "pterodactyl"),
+		VolumeRoot: filepath.Join(f.dir, "pterodactyl", "volumes"),
+		ConfigPath: filepath.Join(f.dir, "wings.yml"),
+	}
 	return cfg
 }
 

@@ -652,3 +652,75 @@ Two consequences worth stating plainly:
   refuse the teardown, and srdm will be right — the memory really would not
   come back. The operator is told which process. Whether that wants a
   narrower answer is a question for P06, which owns propagation properly.
+
+---
+
+## D-020 — `access: rw` binds the writable side; who may write through it is open
+
+**Status:** half decided by measurement, half deliberately left open.
+
+**The measured half.** An `rw` exposure cannot be a bind of the published
+path. Publication's exposure is itself a read-only bind, and a bind inherits
+its source's per-mount flags — so binding it and asking for `rw` produces
+something still read-only. Found by the ephemerality oracle on its first run:
+the write returned `EROFS` before it could prove anything about ephemerality.
+
+So the two access modes bind **different mount points of the same
+superblock**: `ro` binds the published read-only exposure, `rw` binds the
+operation tmpfs's own content root. Same pages, same hold unit, same charge —
+only the mount differs. `sourceBase` is the whole of it, and a canary flips it
+back.
+
+**The open half.** Publication seals a class tree `chmod -R a-w` before
+anything binds it, and P06 does not unseal it. So an `rw` exposure permits
+writes at the MOUNT level while the MODES still refuse them: root can write
+through it (root bypasses mode checks), an unprivileged game container
+cannot.
+
+That is enough for the oracles P06 owes — ephemerality is observable, the
+single-consumer rule holds, the generation is marked — and it is not enough
+for a real Soulmask update-in-place. Closing it needs answers srdm does not
+have yet: which uid writes (the store normalizes to `srdm:srdm`, the game
+container runs as something else), whether unsealing is per-class or
+per-generation, and whether an unsealed tree may be re-sealed or only
+republished.
+
+**Deferred to P07 deliberately**, because `harvest` is the only reason to
+write through in the first place — the master plan's oracle 23 is "update in
+place through `rw` → `harvest`". Deciding ownership without the consumer of
+that decision in front of us is how it gets decided wrongly.
+
+---
+
+## D-021 — srdm reads Wings' config with a scanner, and F1 is asserted rather than detected
+
+**Status:** accepted; both halves fail closed.
+
+The host-bind driver needs two facts about a Wings deployment that srdm
+neither owns nor configures.
+
+**`system.check_permissions_on_boot`** lives in Wings' YAML, and srdm has no
+YAML parser — D-005 declined that dependency for the store's own documents,
+and the reason is unchanged: srdm's gate is hermetic because its dependency
+set is empty. What is needed is one boolean at a known place in a document
+srdm does not otherwise care about, so `wings.ReadChownWalk` scans for it
+rather than parsing the file.
+
+A scanner can be defeated by YAML it does not understand — flow mappings,
+anchors, a second `system:` block, an unusual indentation. So it **fails
+closed**: anything that is not an unambiguous `false` is reported as not
+known, the caller treats that as the walk being enabled, and `access: ro` is
+refused. Absence is treated as enabled too, because that is Wings' own
+default. Guessing the other way produces a server that will not start, which
+is the failure the check exists to prevent.
+
+**F1 cannot be detected at all.** It is a patch in a Go binary; there is
+nothing srdm can read to tell a patched Wings from an unpatched one. So it is
+an assertion — `wings.chown_skip_patch` — made by whoever installed that
+build, defaulting to false. A node that has not said otherwise is treated as
+unpatched.
+
+Claiming F1 falsely corrupts nothing: it produces exactly the `EROFS` start
+failure this refusal exists to prevent, with srdm's warning removed from in
+front of it. That asymmetry is why the assertion is acceptable where a guess
+would not be.

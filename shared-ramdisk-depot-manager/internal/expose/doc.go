@@ -7,9 +7,9 @@
 //	           |- host-bind  (stock Wings)   bind into the volume path   v1
 //	           |- provider   (L1 + L1b)      Docker mounts + leases      v2
 //
-// Empty until P03 (host-bind). Everything upstream of the fork is shared,
-// so this package is an interface and two implementations, never two
-// products.
+// P06 shipped the interface and the host-bind driver. Everything upstream of
+// the fork is shared, so this package is an interface and (eventually) two
+// implementations, never two products.
 //
 // host-bind has three hard preconditions. They are refusals, not warnings,
 // and each is a property srdm cannot repair for the operator:
@@ -38,4 +38,9 @@
 // holds the deleted old .pak open, the tmpfs exhausts mid-write, and the
 // generation ends with a new .sig and no .pak — survivable for the process
 // that already mmap'd the old inode, fatal for the next start.
+//
+// rw also binds a different mount point from ro — the operation tmpfs's own
+// content root rather than the published read-only exposure — because a bind
+// inherits its source's flags and the published path is read-only. Who may
+// actually write through it is still open; see D-020.
 package expose

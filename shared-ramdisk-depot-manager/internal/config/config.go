@@ -50,6 +50,98 @@ type Config struct {
 	// Slice is the admin-owned parent slice whose MemoryMin backs the class
 	// floors. srdm verifies it rather than writing it (decision D-003).
 	Slice string
+	// Wings describes the deployment srdm exposes content into. Only the
+	// host-bind driver reads it; provider mode (v2) needs none of it.
+	Wings Wings
+}
+
+// Wings is what srdm needs to know about the Pterodactyl node it shares a
+// host with.
+//
+// All of it is deployment shape rather than srdm's own state, and srdm reads
+// it rather than writing it — the same relationship it has with srdm.slice
+// (D-003). Getting any of it wrong is an outage, not a warning, which is why
+// the host-bind driver refuses rather than proceeds when it cannot confirm
+// what it needs.
+type Wings struct {
+	// BindRoot is the host path the Wings container binds. Its propagation
+	// is the whole precondition: under Docker's default rprivate every mount
+	// srdm makes is invisible to Wings and every unmount leaves a ghost —
+	// the 2026-07-31 outage.
+	BindRoot string
+	// VolumeRoot is where server volumes live beneath BindRoot. host-bind
+	// mounts managed content at the declared class paths under
+	// VolumeRoot/<uuid>/.
+	VolumeRoot string
+	// ConfigPath is Wings' own config.yml, read for exactly one key:
+	// system.check_permissions_on_boot.
+	ConfigPath string
+	// ChownSkipPatch asserts that the RUNNING Wings build carries F1, the
+	// patch that skips the pre-boot chown walk over read-only mounts.
+	//
+	// It is an assertion by whoever installed that build, not something srdm
+	// detects: a patch is not visible in a binary srdm can inspect. It
+	// defaults to false, so a node that has not said otherwise is treated as
+	// unpatched and `access: ro` is refused unless the node config disables
+	// the walk instead. Claiming it falsely does not corrupt anything — it
+	// produces the EROFS start failure this exists to prevent, with srdm's
+	// refusal removed from in front of it.
+	ChownSkipPatch bool
+}
+
+// Wings defaults, as a stock Pterodactyl node lays itself out.
+const (
+	DefaultWingsBindRoot   = "/var/lib/pterodactyl"
+	DefaultWingsVolumeRoot = "/var/lib/pterodactyl/volumes"
+	DefaultWingsConfig     = "/etc/pterodactyl/config.yml"
+)
+
+// DefaultWings returns the stock node layout.
+func DefaultWings() Wings {
+	return Wings{
+		BindRoot:   DefaultWingsBindRoot,
+		VolumeRoot: DefaultWingsVolumeRoot,
+		ConfigPath: DefaultWingsConfig,
+	}
+}
+
+// ServerVolume is one server's volume root.
+func (w Wings) ServerVolume(serverID string) string {
+	return filepath.Join(w.VolumeRoot, serverID)
+}
+
+// Validate reports whether the Wings settings are usable.
+func (w Wings) Validate() error {
+	for _, f := range []struct{ name, val string }{
+		{"wings.bind_root", w.BindRoot},
+		{"wings.volume_root", w.VolumeRoot},
+	} {
+		if f.val == "" {
+			return fmt.Errorf("config: %s is empty", f.name)
+		}
+		if !filepath.IsAbs(f.val) {
+			return fmt.Errorf("config: %s must be an absolute path, got %q", f.name, f.val)
+		}
+	}
+	// The volume root has to be inside the bind root, or the propagation
+	// precondition is checked against a mount that does not carry srdm's
+	// exposures — which would pass while every mount stayed invisible to
+	// Wings.
+	if !withinPath(w.VolumeRoot, w.BindRoot) {
+		return fmt.Errorf("config: wings.volume_root %q is not beneath wings.bind_root %q, "+
+			"so the propagation srdm checks is not the propagation its mounts travel over",
+			w.VolumeRoot, w.BindRoot)
+	}
+	return nil
+}
+
+// withinPath reports whether path is at or beneath root, matching whole
+// components so "/var/lib/pterodactyl-old" is not beneath
+// "/var/lib/pterodactyl".
+func withinPath(path, root string) bool {
+	path = strings.TrimSuffix(path, "/")
+	root = strings.TrimSuffix(root, "/")
+	return path == root || strings.HasPrefix(path, root+"/")
 }
 
 // Default returns the shipped defaults.
@@ -59,6 +151,7 @@ func Default() Config {
 		RunDir:   DefaultRunDir,
 		Owner:    DefaultOwnership(),
 		Slice:    DefaultSlice,
+		Wings:    DefaultWings(),
 	}
 }
 
@@ -93,6 +186,16 @@ func (c Config) Validate() error {
 	}
 	if c.Owner.DirMode&fs.ModeType != 0 || c.Owner.FileMode&fs.ModeType != 0 {
 		return fmt.Errorf("config: ownership modes must be permission bits only")
+	}
+	// Empty Wings settings are valid: everything upstream of the exposure
+	// fork works without a Pterodactyl node at all, and provider mode (v2)
+	// never needs them. The host-bind driver refuses on its own when they
+	// are missing, where the error can say what the operator was trying to
+	// do.
+	if c.Wings != (Wings{}) {
+		if err := c.Wings.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

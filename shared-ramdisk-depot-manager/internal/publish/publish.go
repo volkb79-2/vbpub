@@ -259,8 +259,18 @@ type Record struct {
 	OperationID   string `json:"operation_id"`
 	ContentDigest string `json:"content_digest"`
 	// Slice is the per-generation aggregate the hold units live in.
-	Slice   string        `json:"slice"`
-	Classes []ClassRecord `json:"classes"`
+	Slice string `json:"slice"`
+	// DirtyCapable records that this generation has been exposed writable,
+	// so its content may no longer match the release it was published from.
+	//
+	// It is set when the exposure is made, not when a write happens: srdm
+	// cannot see writes through a bind it does not mediate, so the only
+	// honest moment is the one where writing became possible. A dirty
+	// generation is not shared with a second consumer and is not used as a
+	// source; the repair is to republish it, which is what makes a
+	// generation ephemeral rather than a thing to be mended.
+	DirtyCapable bool          `json:"dirty_capable,omitempty"`
+	Classes      []ClassRecord `json:"classes"`
 }
 
 // ENOSPCError reports a class tmpfs that could not hold its content.
@@ -575,7 +585,16 @@ func (p *Publisher) writeRecord(rec *Record) error {
 
 // LoadRecord reads a published-state record.
 func (p *Publisher) LoadRecord(profileID, generation string) (*Record, error) {
-	body, err := os.ReadFile(p.cfg.PublishedRecord(profileID, generation))
+	return LoadRecordAt(p.cfg, profileID, generation)
+}
+
+// LoadRecordAt reads a published-state record without a Publisher.
+//
+// A package function because doctor reads these too, and doctor has no
+// business constructing something that creates directories and holds a
+// journal in order to read one file.
+func LoadRecordAt(cfg config.Config, profileID, generation string) (*Record, error) {
+	body, err := os.ReadFile(cfg.PublishedRecord(profileID, generation))
 	if err != nil {
 		return nil, err
 	}
@@ -590,6 +609,26 @@ func (p *Publisher) LoadRecord(profileID, generation string) (*Record, error) {
 			profileID, generation, rec.SchemaVersion, RecordSchemaVersion)
 	}
 	return &rec, nil
+}
+
+// MarkDirtyCapable records that a generation has been exposed writable.
+//
+// Durable, and fsync'd, because the whole value of the flag is that it
+// survives the crash during which somebody wrote through the exposure. A
+// flag that only lived in memory would be cleared by exactly the event that
+// makes it matter.
+func (p *Publisher) MarkDirtyCapable(opID, profileID, generation string) error {
+	rec, err := p.LoadRecord(profileID, generation)
+	if err != nil {
+		return fmt.Errorf("publish: marking %s/%s dirty-capable: %w", profileID, generation, err)
+	}
+	if rec.DirtyCapable {
+		return nil
+	}
+	rec.DirtyCapable = true
+	return p.phase(opID, KindPublish, PhaseRecord, recFields(rec), func() error {
+		return p.writeRecord(rec)
+	})
 }
 
 func recFields(rec *Record) map[string]string {
