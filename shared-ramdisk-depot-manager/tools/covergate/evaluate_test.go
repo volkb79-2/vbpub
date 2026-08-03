@@ -67,6 +67,35 @@ func TestEvaluateIgnoresNonExecutableChanges(t *testing.T) {
 	if v.Pct != 100 {
 		t.Errorf("Pct = %v, want 100 for an empty denominator", v.Pct)
 	}
+	// A legitimate 0/0 must not read like a measurement that never happened.
+	report := v.Report()
+	if !strings.Contains(report, "nothing to cover") {
+		t.Errorf("an empty denominator does not explain itself: %s", report)
+	}
+	if !strings.Contains(report, "internal") {
+		t.Errorf("the report does not name the gated prefix: %s", report)
+	}
+}
+
+func TestReportExplainsAnEmptyDenominatorForTestOnlyChanges(t *testing.T) {
+	// The real case: a commit that touches only _test.go files. The verdict
+	// is a legitimate pass, but "0/0 (100.0%)" alone is indistinguishable
+	// from a broken measurement.
+	added := map[string]map[int]bool{
+		"internal/store/store_test.go":     lines(1, 2),
+		"internal/journal/journal_test.go": lines(9),
+	}
+	v := Evaluate(added, nil, "internal", ".go", 75, isGoTestFile, nil)
+
+	if !v.Passed() {
+		t.Fatal("a test-only change failed the coverage gate")
+	}
+	if v.Considered != 0 {
+		t.Errorf("Considered = %d; test files are skipped before the intersection", v.Considered)
+	}
+	if !strings.Contains(v.Report(), "nothing to cover") {
+		t.Errorf("report: %s", v.Report())
+	}
 }
 
 func TestEvaluateIgnoresPathsOutsideTheSourcePrefix(t *testing.T) {

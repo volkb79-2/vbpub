@@ -31,6 +31,14 @@ type Verdict struct {
 	// can produce no cover blocks at all. They are excluded from the ratio
 	// entirely rather than counted as uncovered.
 	NoCode []string
+	// Source is the prefix that was gated, and Considered counts the changed
+	// files that reached the intersection. Together they let an empty
+	// denominator explain itself: "0/0 (100.0%)" is a legitimate verdict for
+	// a test-only or comment-only change, but it is textually identical to
+	// the one a broken measurement produces, and a reader deserves to know
+	// which they are looking at without re-deriving it.
+	Source     string
+	Considered int
 }
 
 // Passed reports the verdict.
@@ -67,7 +75,7 @@ func Evaluate(
 	isTestFile func(string) bool,
 	hasCode func(string) bool,
 ) Verdict {
-	v := Verdict{Uncovered: map[string][]int{}, FailUnder: failUnder}
+	v := Verdict{Uncovered: map[string][]int{}, FailUnder: failUnder, Source: sourcePrefix}
 
 	paths := make([]string, 0, len(added))
 	for p := range added {
@@ -89,6 +97,7 @@ func Evaluate(
 			continue
 		}
 
+		v.Considered++
 		lines := added[p]
 		fc := coverage[norm]
 		if fc == nil {
@@ -155,6 +164,15 @@ func sortedKeys(m map[int]bool) []int {
 func (v Verdict) Report() string {
 	var sb strings.Builder
 	if v.Passed() {
+		if v.ChangedExecutable == 0 {
+			// Say WHY the denominator is empty. This verdict is legitimate
+			// for a test-only or comment-only change, but it is textually
+			// identical to the one a measurement that never happened would
+			// print, and that ambiguity is the whole reason exit 3 exists.
+			fmt.Fprintf(&sb, "diff-coverage OK: nothing to cover — %d changed file(s) under %q, "+
+				"none contributing executable non-test lines (0/0)", v.Considered, v.Source)
+			return sb.String()
+		}
 		fmt.Fprintf(&sb, "diff-coverage OK: %d/%d changed executable lines covered (%.1f%% >= %.1f%% floor)",
 			v.Covered, v.ChangedExecutable, v.Pct, v.FailUnder)
 		return sb.String()

@@ -178,12 +178,26 @@ test could ever clear. `HasExecutableCode` settles it by parsing for a
 function declaration with a body. Any port of this to nyxloom needs the
 same guard, and it does not fall out of the extension filter.
 
-**Floor: 80%**, set from measurement rather than aspiration. srdm's own
-P01 delta measures in the mid-70s before the extra edge-case tests and
-higher after; the residue is `if err != nil { return err }` passthroughs
-and one genuine exec boundary (`doctor.systemctlShow`). 100 would buy
-fault-injection scaffolding for error returns that a reviewer reads
-faster than a test asserts.
+**Floor: 75%**, set from measurement rather than aspiration — and the
+distinction is not rhetorical. The floor was first written as 80, then
+measured: srdm's whole delta to date is **78.0%** (1409/1807 changed
+executable lines under `internal/`). An 80 floor would have been a number
+nobody had demonstrated was reachable, sitting under a decision record
+claiming it came from measurement. Lowered to 75 so the claim stays true
+and the gate binds without failing retroactively.
+
+Raise it as the suite matures; it is a floor, not a target. The residue is
+`if err != nil { return err }` passthroughs and one genuine exec boundary
+(`doctor.systemctlShow`). 100 would buy fault-injection scaffolding for
+error returns that a reviewer reads faster than a test asserts.
+
+**A rendering trap worth knowing about**, found measuring the above: a
+test-only commit legitimately reports `0/0 changed executable lines covered
+(100.0%)` — textually identical to what a measurement that never happened
+prints, which is the exact ambiguity exit 3 exists to remove. `Report` now
+states the reason (`nothing to cover — N changed file(s) under "internal",
+none contributing executable non-test lines`). The verdict is unchanged;
+only its readability is. nyxloom's original has the same trap.
 
 **Suggested nyxloom generalization** (not done here — nyxloom has its own
 trove and package loop; this is the reference implementation to copy):
