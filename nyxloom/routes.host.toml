@@ -38,6 +38,24 @@ revision = "2026-07-23"
 # $XDG_STATE_HOME/nyxloom/routes.toml carries no `trust` key until it is
 # synced, and every route in it will therefore require containment and refuse
 # to launch. Sync before restarting the daemon.
+#
+# SYNC HAZARD, found by the CR-13a review, and it is NOT about containment --
+# it is a pre-existing tier-vocabulary drift that this sync step is the first
+# thing to make matter. The deployed copy still carries the PRE-B16 tier names
+# (`frontier-review`, `sonnet5-high`, `luna-high`, `haiku-low`); this tracked
+# copy carries the POST-B16 ones (`implement-1/2`, `review-3`). Four modules
+# still hard-code the OLD name:
+#     intake_chat.INTAKE_AGENT_TIER
+#     decision_chat.DECISION_AGENT_TIER
+#     onboarding_scan.ASSESSMENT_AGENT_TIER
+#     onboarding_questionnaire.QUESTIONNAIRE_AGENT_TIER   = "frontier-review"
+# They resolve today only because the DEPLOYED file still defines that tier.
+# Syncing this file therefore silently disables all four interactive surfaces:
+# `_pick_route` returns None and each replies "no 'frontier-review' route
+# configured". Decide the rename BEFORE syncing -- either keep a
+# `[tiers.frontier-review]` alias here, or repoint those four constants at
+# `review-3`. Which one is a product call, not a mechanical one, which is why
+# this is a warning rather than an edit.
 
 # 2026-07-23 (operator): added codex-luna-high (gpt-5.6-luna @ high effort via
 # codex) as a medium/band-2 implementation route. Folded into `implement-2`
