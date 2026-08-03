@@ -49,6 +49,7 @@ absent).  Each claim below has a test in ``tests/test_control_auth.py``.
 
 from __future__ import annotations
 
+import email.message
 import getpass
 import hashlib
 import hmac
@@ -59,7 +60,7 @@ import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Mapping
 
 from .log import get_logger
 from .types import Actor, ActorKind, EventType
@@ -187,10 +188,6 @@ def audit_control_refusal(ingress: str, reason: str) -> None:
     except Exception as exc:
         log.error("control-plane refusal could not be audited",
                   control_path=ingress, reason=reason, error=repr(exc)[:200])
-
-
-class HeaderValues(Protocol):
-    def get_all(self, name: str) -> list[str] | None: ...
 
 
 @dataclass(frozen=True)
@@ -353,8 +350,17 @@ class CredentialStore:
             raise CredentialStoreError("operator credential changed while it was read")
         return raw
 
-    def authenticate(self, headers: HeaderValues | Mapping[str, str]) -> Actor | None:
+    def authenticate(self,
+                     headers: email.message.Message | Mapping[str, str]) -> Actor | None:
         """Return the credential's named actor, or None for missing/invalid auth.
+
+        The two REAL argument types, named directly: `http.server` hands over an
+        `email.message.Message` (whose `get_all` is what makes duplicate-header
+        detection possible), and callers without one pass a plain mapping.  A
+        `Protocol` stub stood here and was deleted rather than tested: its body
+        is a bare `...`, which coverage.py excludes by default, and an excluded
+        line on a changed file is exactly what the diff-coverage gate rejects --
+        correctly, since a type that cannot be executed cannot be proven.
 
         Store failures deliberately propagate as ``CredentialStoreError`` so
         callers can distinguish an unavailable trust root from bad credentials

@@ -1835,10 +1835,12 @@ def cmd_auth(args) -> int:
         if args.auth_cmd == "show":
             _print_operator_credential(store.load())
             return 0
-        if args.auth_cmd == "rotate":
-            record = store.rotate(args.operator, force=args.force)
-        else:
-            return 2
+        # `main` dispatches here ONLY for show/bootstrap/rotate (anything else
+        # prints usage and exits 2 there), so rotate is the remaining case. An
+        # `else: return 2` stood here and was deleted rather than tested: it was
+        # unreachable through every entry point, and an unreachable line is a
+        # line no test can honestly cover.
+        record = store.rotate(args.operator, force=args.force)
     except control_auth.CredentialStoreError as exc:
         print(f"error: {exc} ({store.path})", file=sys.stderr)
         if args.auth_cmd == "rotate":

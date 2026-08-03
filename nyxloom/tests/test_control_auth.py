@@ -879,6 +879,104 @@ def test_forced_rotation_is_the_documented_recovery_path(tmp_state):
     assert store.rotate("alice", force=True).operator_id == "alice"
 
 
+def test_bootstrap_losing_the_creation_race_adopts_the_winner_never_a_second_secret(
+        tmp_state):
+    """Two daemons (or a daemon and `nyxloom auth bootstrap`) can reach an
+    absent store at once. The O_EXCL create is what makes that safe: the loser
+    must adopt the winner's credential, NOT mint a second one -- an operator
+    holding the value printed by the first would otherwise be silently locked
+    out. The race is simulated at the syscall seam: the winner's file appears
+    between the existence check and the exclusive create."""
+    store = _store()
+    winner = control_auth.CredentialStore(paths.daemon_dir())
+    real_open = os.open
+    raced: list[str] = []
+
+    def _create_the_winner_first(path, flags, *args, **kwargs):
+        if str(path) == str(store.path) and not raced:
+            raced.append(str(path))
+            winner.ensure("alice")               # the other process gets there
+        return real_open(path, flags, *args, **kwargs)
+
+    original_open = os.open
+    try:
+        os.open = _create_the_winner_first
+        loser = store.ensure("bob")
+    finally:
+        os.open = original_open
+
+    assert raced, "the race was never simulated"
+    assert loser.credential == winner.load().credential
+    assert loser.operator_id == "alice"          # the winner's identity stands
+    assert store.load().credential == loser.credential
+
+
+def test_a_failed_bootstrap_write_leaves_no_half_written_store(tmp_state):
+    """A partially written store would fail the loader's checks forever and
+    could not be told apart from tampering, so a write failure must remove it
+    and fail closed -- leaving the directory clean enough that the next
+    bootstrap can succeed."""
+    store = _store()
+    real_fsync = os.fsync
+
+    def _fail_on_the_new_store(fd):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(28, "No space left on device")
+        return real_fsync(fd)
+
+    original_fsync = os.fsync
+    try:
+        os.fsync = _fail_on_the_new_store
+        with pytest.raises(control_auth.CredentialStoreError):
+            store.ensure("alice")
+    finally:
+        os.fsync = original_fsync
+
+    assert not store.path.exists(), "a half-written credential survived"
+    # ...and the daemon can still bootstrap once the fault clears.
+    assert store.ensure("alice").operator_id == "alice"
+
+
+def test_bootstrap_into_an_unwritable_state_directory_fails_closed(tmp_state):
+    """Every errno reaches the caller as CredentialStoreError, so the daemon's
+    single `except` cannot be bypassed by one nobody thought about. A
+    read-only state directory is the realistic one (a mount gone read-only);
+    the daemon then serves reads and refuses every mutation."""
+    store = _store()
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = stat.S_IMODE(store.path.parent.lstat().st_mode)
+    store.path.parent.chmod(0o500)
+    try:
+        with pytest.raises(control_auth.CredentialStoreError) as exc:
+            store.ensure("alice")
+    finally:
+        store.path.parent.chmod(original_mode)
+
+    assert "could not be created" in str(exc.value)
+    assert not store.path.exists()
+
+
+def test_a_store_owned_by_another_user_is_refused(tmp_state):
+    """Ownership is the check that makes a group- or world-writable parent
+    directory survivable: another user can create a file there, but not one
+    this loader accepts. Simulated by moving the euid the check compares
+    against, since a test cannot chown to a foreign uid."""
+    store = _store()
+    store.ensure("alice")
+    real_geteuid = os.geteuid
+    original_geteuid = os.geteuid
+    try:
+        os.geteuid = lambda: real_geteuid() + 1
+        with pytest.raises(control_auth.CredentialStoreError) as exc:
+            store.load()
+    finally:
+        os.geteuid = original_geteuid
+
+    assert "unexpected owner" in str(exc.value)
+    # The store itself is untouched -- refusing is not repairing.
+    assert store.load().operator_id == "alice"
+
+
 def test_store_io_failures_fail_closed_as_credential_store_errors(tmp_state):
     """Every failure mode reaches callers as CredentialStoreError, so the
     daemon's single `except` and the CLI's error path cannot be bypassed by an
@@ -1218,6 +1316,45 @@ def test_ambiguously_framed_bodies_are_refused_and_the_connection_dropped(
     snapshot.assert_unchanged(why)
 
 
+def test_a_request_with_no_content_length_is_framed_as_an_empty_body(
+        served, sample_project):
+    """A POST with no Content-Length at all is unambiguous, not malformed: it
+    frames a zero-length body. It must reach the endpoint's OWN validation
+    rather than being refused as unframeable -- and it must still change
+    nothing.
+
+    The target is /api/decision/reply because its empty-body verdict is the
+    one that DISCRIMINATES: "missing decision_id" is emitted by nothing else
+    on this server, whereas the pause endpoint answers a missing project with
+    the same 404 `not found` an unrouted path gets before framing is ever
+    reached -- an oracle that would pass without the body having been framed
+    at all. It is also the endpoint the "human owns direction" invariant runs
+    on, so an empty body reaching it and doing nothing is the case worth
+    pinning."""
+    import http.client
+
+    snapshot = _Snapshot(sample_project)
+    # http.client, not the raw helper: this response deliberately does NOT
+    # close the connection (nothing was left unread), so reading to EOF would
+    # block on a healthy keep-alive socket.
+    conn = http.client.HTTPConnection("127.0.0.1", served.http_port, timeout=60)
+    try:
+        conn.putrequest("POST", "/api/decision/reply")
+        conn.putheader("Content-Type", "application/json")
+        for key, value in _bearer().items():
+            conn.putheader(key, value)
+        conn.endheaders()                       # no body, no Content-Length
+        resp = conn.getresponse()
+        assert resp.status == 400
+        error = json.loads(resp.read())["error"]
+    finally:
+        conn.close()
+
+    assert error == "missing decision_id"       # the endpoint's own validation
+    assert error != "ambiguous request framing"
+    snapshot.assert_unchanged("an empty-bodied POST mutated state")
+
+
 def test_a_sign_prefixed_length_cannot_smuggle_a_body_past_the_cap(
         served, sample_project):
     """The cap and the read must agree on ONE parse of Content-Length. When
@@ -1528,11 +1665,31 @@ def test_default_operator_id_prefers_the_env_var_and_falls_back_safely(monkeypat
     # An unusable value must not propagate as an identity, and must not raise
     # during a daemon boot -- it degrades to a fixed, valid name.
     monkeypatch.setenv("NYXLOOM_OPERATOR_ID", "not a valid id")
-    monkeypatch.setattr(control_auth.getpass, "getuser",
-                        lambda: (_ for _ in ()).throw(OSError("no passwd entry")))
     fallback = control_auth.default_operator_id()
     assert fallback == "local-operator"
     assert control_auth._OPERATOR_RE.fullmatch(fallback)
+
+
+@pytest.mark.parametrize("failure", [
+    OSError("no passwd entry for this uid"),
+    KeyError("getpwuid(): uid not found"),
+    ImportError("pwd is unavailable on this platform"),
+])
+def test_default_operator_id_survives_a_host_with_no_resolvable_user(
+        monkeypatch, failure):
+    """The gate container runs as a uid whose passwd entry may be missing --
+    the identity failure DOCTRINE names as producing 108 spurious failures in
+    another project. `getpass.getuser()` raises there, and a daemon boot must
+    still yield a usable operator name rather than propagating the error.
+
+    The env var is cleared so the lookup is actually reached: with
+    NYXLOOM_OPERATOR_ID set to anything non-empty the `try` never runs, which
+    is how this path went untested while looking tested."""
+    monkeypatch.delenv("NYXLOOM_OPERATOR_ID", raising=False)
+    monkeypatch.setattr(control_auth.getpass, "getuser",
+                        lambda: (_ for _ in ()).throw(failure))
+
+    assert control_auth.default_operator_id() == "local-operator"
 
 
 def test_authenticate_accepts_a_plain_mapping_and_a_message_object(tmp_state):
