@@ -15,6 +15,7 @@ import (
 	"srdm/internal/config"
 	"srdm/internal/consumer"
 	"srdm/internal/expose"
+	"srdm/internal/harvest"
 	"srdm/internal/journal"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
@@ -73,7 +74,15 @@ func newRig(t *testing.T) *rig {
 	r.pub = &fakePublisher{rig: r, records: map[string]*publish.Record{}}
 	r.drv = &fakeDriver{rig: r}
 
-	r.ctl, err = New(cfg, jnl, st, r.pub, r.drv)
+	// A real harvester, because it is cheap and needs no privilege: wiring a
+	// fake would only test that the fake was called, while the real one
+	// refuses on its own contract (nothing is mounted) and that refusal is
+	// what a caller actually meets.
+	hrv, err := harvest.New(cfg, jnl, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ctl, err = New(cfg, jnl, st, r.pub, r.drv, WithHarvester(hrv))
 	if err != nil {
 		t.Fatal(err)
 	}
