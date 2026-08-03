@@ -20,8 +20,10 @@ Last updated: 2026-08-03
 | --- | --- | --- |
 | Program preparation | in progress | `e9bf702f` adds a package-scoped exception to the obsolete frozen-file list; it does not generally unfreeze core files. |
 | CR-00 | done | Sonnet implementation `4c995686`; independent Opus review-and-fix `8bdf283f`; authoritative `tester-unified` parallel suite completed at 100% with exit 0 and the coverage gate accepted 0 changed executable production lines (the package changes tests/docs only); merged to `main` as `5a9d441d`. |
-| CR-15 | implementing | Opus implementation `b0bc7dfb`; focused control-auth/UI/invariant and daemon diagnostics are green. Awaiting rebase onto accepted CR-00, a fresh independent Opus security review-and-fix, and the authoritative gate. |
-| CR-01 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
+| CR-15 | done | Opus implementation `b0bc7dfb`; independent Opus security review-and-fix `3aa1ea21` (closed the ntfy feedback mutation ingress and the credential-store/HTTP-framing races); coverage-rejection repair `ef6e1bc7`. The authoritative gate rejected the first attempt at 96.7% changed-line coverage (3 lines behind `pragma: no cover`, 12 unexecuted); both classes were answered by deleting genuinely unreachable code and testing the real failure modes, never by widening the gate. Final `tester-unified` run on `ef6e1bc7`: `diff-coverage OK: 360/360 changed executable lines covered (100.0% >= 100.0% floor)`, `GATE_EXIT=0`. Merged to `main` as `7afc897e`. |
+| CR-01 | reviewing | Sonnet implementation `6295095e` (product-truth fact registry, archive lifecycle model, CFG4/L7/ARC1 lint rules, carve-context archive exclusion). Independent Opus review in progress; awaiting rebase onto accepted CR-15 and the authoritative gate. |
+| CR-02a | implementing | Opus implementation in `.worktrees/nyxloom-cr02` (typed snapshot descriptors, authoritative fan-in, fault matrix). Focused snapshot/fault/characterization suites green; awaiting whole-suite evidence, independent review and the authoritative gate. CR-02b (advisory census + AST allow-list oracle) remains a separate package. |
+| CR-03 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
 
 Program operating decisions:
 
