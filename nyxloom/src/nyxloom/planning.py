@@ -247,12 +247,21 @@ class UnusedGrant(Exception):
 
 
 class MisusedGrant(Exception):
-    """A rule used a grant for the opposite of the purpose it took it for.
+    """A rule used a grant in a way its terms do not allow.
 
-    Two shapes, one name, because they are the same mistake from two sides: a
-    rule that RESERVED the slot ("nothing will be planned this pass") and then
-    emitted, and a rule that tries to change a grant's intent after taking it.
-    Either would make :class:`GrantIntent` a label rather than a commitment.
+    Three shapes, one name, because they are one mistake seen from three
+    sides -- treating an exclusive grant as broader than the single authority
+    it is:
+
+    * a rule that RESERVED the slot ("nothing will be planned this pass") and
+      then emitted under it;
+    * a rule that tries to change a grant's intent after taking it, which
+      would make :class:`GrantIntent` a label rather than a commitment;
+    * a rule that emits a SECOND resource-bound action under one grant. One
+      grant is one authority: the ``carve-slot`` is permission to ask the
+      single strategic carver for work ONCE this pass, so two actions under it
+      are the same double dispatch two grants would have been -- reached from
+      inside one rule instead of across two.
     """
 
 
@@ -659,6 +668,20 @@ class PlanArbiter:
                 f"deliberately plans nothing with the resource; emitting under "
                 f"one is the opposite claim, and every rule below was blocked "
                 f"on the strength of the first one")
+        if held.spent:
+            # ONE grant is ONE authority. Without this, "at most one carve
+            # action per pass" would rest on each rule's internal shape -- the
+            # carver ladder's elif chain appending exactly one action, the
+            # cadences returning after their single emit -- which is precisely
+            # the per-author discipline the arbiter exists to replace. A rule
+            # that wants to plan two of these is asking for two authorities,
+            # and there is one.
+            raise MisusedGrant(
+                f"{spec.name}: emitted a second {resource!r}-bound action "
+                f"({action_kind}) under ONE grant. The grant is the authority "
+                f"to act on the resource once this pass; a second action under "
+                f"it is the same double dispatch a second GRANT would have "
+                f"been, reached from inside one rule instead of across two")
         self._granted[resource] = GrantRecord(
             resource=held.resource, rule=held.rule, intent=held.intent,
             reason=held.reason, spent=True)

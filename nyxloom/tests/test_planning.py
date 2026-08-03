@@ -806,6 +806,34 @@ def test_a_reservation_blocks_a_later_claimant_exactly_as_a_claim_does():
     assert arbiter.grants() == {"carve-slot": "first"}
 
 
+def test_one_grant_authorises_exactly_one_carve_action():
+    """The last way one rule could still plan two carves, closed.
+
+    The arbiter made a SECOND GRANT unrepresentable from CR-06a. It did not
+    make a second ACTION under one grant unrepresentable, so "at most one
+    CarveDispatch per pass" still rested on each rule's internal shape -- the
+    ladder's elif chain appending exactly one action, each cadence returning
+    after its single emit. That is the per-author discipline the arbiter
+    exists to replace, and it is exactly how the eighth copy of
+    `and not carve_dispatch_planned` came to exist.
+
+    Found by trying to break the invariant rather than by reading for it, and
+    it moved zero corpus plans: no shipping rule emits twice today.
+    """
+    def greedy_once_granted(ctx, emit):
+        emit.claim("carve-slot")
+        emit(reconcile.CarveDispatch(project="p"))
+        emit(reconcile.CarveDispatch(project="p", kind="test-health"))
+
+    table = (_probe_spec(rule=greedy_once_granted),)
+    arbiter = PlanArbiter(table)
+    with pytest.raises(MisusedGrant) as exc:
+        run_rules(_context(), table, reconcile.ReconcileTrace(), arbiter)
+    assert "second" in str(exc.value)
+    # the FIRST action was legitimate and the grant records it as spent
+    assert arbiter.ledger()[0].spent is True
+
+
 def test_a_spec_that_can_emit_a_carve_action_must_declare_the_claim():
     with pytest.raises(UndeclaredClaim):
         _probe_spec(claims=frozenset())
