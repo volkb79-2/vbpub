@@ -981,7 +981,8 @@ class CarveEffector:
                 return ev.payload
         return None
 
-    def _execute_carve_via_session_resume(self, project: str, cfg: ProjectConfig,
+    def _execute_carve_via_session_resume(self, ctx: effects.EffectContext,
+                                          project: str, cfg: ProjectConfig,
                                           states: dict[str, TaskStateFile],
                                           action: "reconcile.CarveDispatch",
                                           snap: carver_session.CarverSessionSnapshot
@@ -1168,7 +1169,12 @@ class CarveEffector:
         # EXACT pre-P3c fresh-carve path.
         snap = self._carver._carver_session(project, cfg)
         if snap is not None and snap.status is CarverStatus.WARM and snap.session_id:
-            return self._execute_carve_via_session_resume(project, cfg, states, action, snap)
+            # `ctx` is threaded in (CR-13a review) because the body's own
+            # containment admission needs it: without it that call raised
+            # NameError instead of gating, and the whole pass died on the
+            # normalize branch. See the admission call in that method.
+            return self._execute_carve_via_session_resume(
+                ctx, project, cfg, states, action, snap)
 
         # F018 P3d (concern-3 #2 + checklist #6): close the not-WARM legacy
         # fall-through. When the persistent session is DEGRADED with recovery
