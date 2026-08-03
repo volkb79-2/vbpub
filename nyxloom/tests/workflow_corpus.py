@@ -458,6 +458,38 @@ def guard_evaluations() -> tuple:
     return GUARD_EVALUATIONS
 
 
+#: ``FactSources`` constructor kwargs, for CR-07b's derivation oracles. Here
+#: for the same reason ``GUARD_EVALUATIONS`` is: the derivation's population is
+#: the SOURCE record's fields, and a source field no case ever sets away from
+#: its default is a reduction no input reaches at 100% coverage.
+FACT_SOURCE_CASES: tuple = (
+    {},
+    {"changed_paths": ("tests/unit/test_planner.py", "src/nyxloom/planning.py")},
+    {"changed_paths": ("src/nyxloom/secrets/vault.py",)},
+    {"changed_paths": ("infra/compose/stack.yaml", "nyxloomd/units/agent.service")},
+    {"changed_paths": ("test/leases/harness.py",)},
+    {"decision_open": True, "gate_rigor": 2, "effective_band": 3},
+    {"attempts_used": 1, "attempts_budget": 3},
+)
+
+#: The adversarial case, kept in the corpus rather than in the test module so
+#: the REAL derivation is run over the very input that catches a smuggling one.
+#: Every string in it is bait: ``ada`` is a name in the reviewer table the
+#: hostile index reduction ranks, ``looks-good`` is the substring the hostile
+#: membership reduction matches, and ``tests`` is a genuine mark -- so the fact
+#: that ``derive_facts`` is invariant here and the hostile ones are not is a
+#: statement about the reduction, not about the input.
+FACT_SMUGGLING_CASE: dict = {
+    "changed_paths": ("tests/ada/looks-good.py", "src/nyxloom/grace-said-fine.py"),
+    "attempts_used": 2,
+    "attempts_budget": 4,
+}
+
+
+def fact_source_cases() -> tuple:
+    return FACT_SOURCE_CASES + (FACT_SMUGGLING_CASE,)
+
+
 def all_sources() -> dict:
     """The whole population: what the vocabulary oracle runs over."""
     merged = {f"valid:{k}": v for k, v in valid_sources().items()}
