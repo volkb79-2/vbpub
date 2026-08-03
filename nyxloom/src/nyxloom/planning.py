@@ -56,23 +56,49 @@ THE FOUR PIECES
     and launch an agent for it, and that is a property of the PLAN, so no
     single rule can own it.
 
+WHY A GRANT CARRIES AN INTENT (CR-06c)
+--------------------------------------
+Taking the slot and planning nothing is a LEGITIMATE move, and that is the
+whole difficulty. The carver-session ladder does it deliberately for
+``STARTING``/``COMPACTING``: a carver turn is already in flight for this
+generation, so the pass's carve slot is correctly considered spent and every
+rule below must be blocked. So the arbiter cannot simply forbid a grant that
+emits nothing.
+
+But nothing structural used to distinguish that from a rule that took the
+grant and FORGOT to fire -- and the second silently starves every claimant
+below it, on a resource whose contention is invisible in any single rule's
+source. CR-06a's and CR-06b's reviews both recorded it and deferred it here,
+because the rules that actually contend are this package's.
+
+So a grant is taken for a declared PURPOSE (:class:`GrantIntent`):
+
+* :meth:`RuleEmitter.claim` is a PROMISE to plan a resource-bound action. A
+  pass that ends with an unspent EMIT grant raises :class:`UnusedGrant` --
+  the forgot-to-fire case, named, at the pass that does it;
+* :meth:`RuleEmitter.reserve` CONSUMES the slot and states in one required
+  argument why nothing is being planned. Emitting under a reservation raises
+  :class:`MisusedGrant`, so the two intents cannot quietly become one.
+
+The ledger (:meth:`PlanArbiter.ledger`) is the observable: for every pass it
+says which rule holds which resource, to emit or to reserve, why, and whether
+the promise was kept. "Deliberately consumed" is now a value a test can read,
+not a comment a reviewer has to believe.
+
 THE LEGACY RATCHET
 ------------------
 CR-06a moved the kernel and the concerns that claim no arbitrated resource:
 lifecycle routing, review waves, and the attention/cadence probes. CR-06b moved
-dispatch and the attempt ladder. Carve authority is CR-06c's. Until it moves,
-those rules are registered with :attr:`RuleSpec.legacy_owner` and their bodies
-stay in ``reconcile.py`` -- and ``tests/test_planning.py`` holds the count to
-:data:`LEGACY_RULE_BUDGET` in BOTH directions. Over budget means new debt;
-under budget means debt repaid without recording it. Same ratchet shape as
+dispatch and the attempt ladder; CR-06c moved carve authority to
+``rules_carve.py``, which took :data:`LEGACY_RULE_BUDGET` to 0 -- every rule in
+the table now lives in a rule module. ``tests/test_planning.py`` holds the
+count in BOTH directions. Over budget means new debt; under budget means debt
+repaid without recording it. Same ratchet shape as
 ``effects.LEGACY_HANDLER_BUDGET`` and ``exception_census.LEGACY_BUDGET``, for
 the same reason: a number that only goes down survives a package boundary
-where a hand-maintained list does not.
-
-The legacy carve rules claim the ``carve-slot`` THROUGH the arbiter in THIS
-package, before their internals move. An arbiter with no claimant would be
-decoration, and the invariant it exists to hold is exactly the one the legacy
-rules were the eight copies of.
+where a hand-maintained list does not. At 0 it is no longer a budget to spend
+but a floor: a rule registered with a ``legacy_owner`` from here on is new
+debt, and fails.
 
 PURITY
 ------
@@ -96,13 +122,15 @@ from .stages import effective_concurrency, stage_context
 from .types import Role, TaskState, TERMINAL_TASK_STATES
 
 #: Rules whose bodies still live in ``reconcile.py`` because the concern they
-#: implement belongs to a later package. CR-06c owns what is left: carve
-#: authority (items 9, 12, 14, 15, 17 and the carver-session ladder).
+#: implement belongs to a later package. ZERO: CR-06c moved the last of them
+#: (carve authority -- items 9, 12, 14, 15, 17 and the carver-session ladder)
+#: to ``rules_carve.py``, so every rule in :func:`rule_table` now lives in a
+#: rule module and ``reconcile.py`` holds the vocabulary and the driver only.
 #:
 #: This number may only go DOWN, and it must go down in the same commit that
-#: moves the rule. See the module docstring. 8 -> 6 in CR-06b, which moved
-#: implementer dispatch and the attempt ladder (contract items 3 and 4).
-LEGACY_RULE_BUDGET = 6
+#: moves the rule. See the module docstring. 8 -> 6 in CR-06b (implementer
+#: dispatch and the attempt ladder, contract items 3 and 4); 6 -> 0 in CR-06c.
+LEGACY_RULE_BUDGET = 0
 
 #: The exclusive resources a rule may contend for. A resource is a thing at
 #: most one rule may be granted per pass; naming it here is what lets the
@@ -206,6 +234,37 @@ class UnclaimedResource(Exception):
     """
 
 
+class UnusedGrant(Exception):
+    """A rule promised to plan a resource-bound action and planned none.
+
+    THE STARVATION FOOTGUN, named (CR-06c). The grant is exclusive and the
+    pass has exactly one of it, so a rule that takes it and then falls through
+    every branch has silently blocked every claimant below it -- and the
+    contention is invisible in that rule's own source, which is why nobody
+    notices. Consuming the slot on purpose is a real move and stays available:
+    it is :meth:`RuleEmitter.reserve`, which requires the reason in writing.
+    """
+
+
+class MisusedGrant(Exception):
+    """A rule used a grant in a way its terms do not allow.
+
+    Three shapes, one name, because they are one mistake seen from three
+    sides -- treating an exclusive grant as broader than the single authority
+    it is:
+
+    * a rule that RESERVED the slot ("nothing will be planned this pass") and
+      then emitted under it;
+    * a rule that tries to change a grant's intent after taking it, which
+      would make :class:`GrantIntent` a label rather than a commitment;
+    * a rule that emits a SECOND resource-bound action under one grant. One
+      grant is one authority: the ``carve-slot`` is permission to ask the
+      single strategic carver for work ONCE this pass, so two actions under it
+      are the same double dispatch two grants would have been -- reached from
+      inside one rule instead of across two.
+    """
+
+
 class DuplicateRule(Exception):
     """Two rules registered under one name."""
 
@@ -217,6 +276,88 @@ class TaskLessLifecycleAction(Exception):
     that ``sorted()`` would eventually raise, because the two say completely
     different things to the author who hits it.
     """
+
+
+# ---------------------------------------------------------------------------
+# exclusive grants: who holds what, and WHY
+
+
+class GrantIntent(Enum):
+    """The purpose a rule took an exclusive resource for.
+
+    ``EMIT`` is a promise: this rule will plan a resource-bound action, and
+    :meth:`PlanArbiter.audit` refuses the pass if it does not.
+
+    ``RESERVE`` is the opposite claim, and it is not a loophole -- it is the
+    carver-session ladder's ``STARTING``/``COMPACTING`` reading, where a carver
+    turn is already in flight for this generation, so the pass's carve slot is
+    spent and no rule below may plan one. Reserving requires a reason, and
+    emitting under a reservation raises :class:`MisusedGrant`.
+
+    Fixed when the grant is taken. A rule cannot re-take a resource it already
+    holds under the other intent: that would turn "I am deliberately blocking
+    this pass" into "I forgot to fire" retroactively, which is the exact
+    distinction this enum exists to keep.
+    """
+
+    EMIT = "emit"
+    RESERVE = "reserve"
+
+
+class GrantOutcome(Enum):
+    """How a claim ended. THREE outcomes, because two was one too few.
+
+    ``PlanArbiter.grant`` used to return a bare ``bool``, and ``False`` covered
+    both "another rule holds this" and "you already hold this" -- so the
+    current holder re-claiming read as losing a contest it had already won. A
+    readability trap in the one place a reader most needs to be right.
+
+    ``__bool__`` raises rather than answering, so the ambiguous question cannot
+    be asked at all: ``if emit.claim(r):`` was the shape that made the old
+    return value dangerous, and it now fails loudly instead of quietly meaning
+    the wrong thing. Ask :attr:`holds` -- "may this rule act on the resource
+    now" -- which is what every caller actually wants and is true for both
+    ``GRANTED`` and ``ALREADY_HELD``.
+    """
+
+    #: The resource was free; this rule holds it now.
+    GRANTED = "granted"
+    #: This rule ALREADY held it, for this same purpose. Not a loss.
+    ALREADY_HELD = "already-held"
+    #: Another rule holds it. This one may not act on the resource.
+    REFUSED = "refused"
+
+    @property
+    def holds(self) -> bool:
+        """Whether the asking rule may act on the resource now."""
+        return self is not GrantOutcome.REFUSED
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            f"a {type(self).__name__} is three-valued -- ask `.holds` for "
+            f"'may this rule act on the resource now'. Truth-testing it is "
+            f"how 'you already hold this' got read as 'you lost the contest'")
+
+
+@dataclass(frozen=True)
+class GrantRecord:
+    """One resource, one holder, one declared purpose -- and whether it was kept.
+
+    The pass's grant ledger is DATA (:meth:`PlanArbiter.ledger`) rather than an
+    internal dict, because "this rule consumed the carve slot deliberately and
+    planned nothing" is exactly the state a reviewer and a test need to be able
+    to read. A comment saying so is not checkable; this is.
+    """
+
+    resource: str
+    rule: str
+    intent: GrantIntent
+    #: Why nothing is being planned. Required for ``RESERVE``, empty for
+    #: ``EMIT`` (whose reason is the action it went on to plan).
+    reason: str
+    #: True once the holder emitted a resource-bound action under this grant.
+    #: Always False for a reservation, by construction.
+    spent: bool
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +540,10 @@ class RuleSpec:
     #: entries whose ORDER is a real design call rather than an accident.
     rationale: str = ""
     #: Set to the owning package while the rule's body still lives in
-    #: ``reconcile.py``. Empty means it lives in a rule module.
-    #: See :data:`LEGACY_RULE_BUDGET`.
+    #: ``reconcile.py``. Empty means it lives in a rule module -- which is now
+    #: EVERY rule (CR-06c took :data:`LEGACY_RULE_BUDGET` to 0). Kept rather
+    #: than deleted because the ratchet it feeds is what refuses the next rule
+    #: that would be written back into the monolith.
     legacy_owner: str = ""
 
     def __post_init__(self) -> None:
@@ -435,7 +578,7 @@ class PlanArbiter:
     """
 
     def __init__(self, specs: tuple[RuleSpec, ...] = ()) -> None:
-        self._granted: dict[str, str] = {}
+        self._granted: dict[str, GrantRecord] = {}
         seen: set[str] = set()
         for spec in specs:
             if spec.name in seen:
@@ -450,29 +593,136 @@ class PlanArbiter:
         ready-count, and records why it excluded each task, before it knows it
         wants the slot) ask this; taking the grant early and not using it
         would starve every later claimant.
+
+        A RESERVATION makes the resource unavailable exactly as a claim does --
+        that is the point of one.
         """
         self._require_known(resource)
         return resource not in self._granted
 
-    def grant(self, spec: RuleSpec, resource: str) -> bool:
-        """Grant ``resource`` to ``spec``, or refuse because it is taken."""
+    def grant(self, spec: RuleSpec, resource: str) -> GrantOutcome:
+        """Take ``resource`` for ``spec``, PROMISING to emit under it.
+
+        The promise is enforced: :meth:`audit` refuses a pass that ends with
+        this grant unspent. If the slot is being consumed on purpose with
+        nothing to plan, that is :meth:`reserve` and it wants the reason.
+        """
+        return self._take(spec, resource, GrantIntent.EMIT, "")
+
+    def reserve(self, spec: RuleSpec, resource: str, reason: str) -> GrantOutcome:
+        """Take ``resource`` for ``spec`` in order to plan NOTHING with it.
+
+        ``reason`` is required and is the whole value of this method: it is the
+        difference between "a carver turn is already in flight for this
+        generation, so this pass's carve slot is spent" and a rule that forgot
+        to fire, which are otherwise the same observable.
+        """
+        if not reason:
+            raise ValueError(
+                f"{spec.name}: reserving {resource!r} must say WHY nothing is "
+                f"being planned -- an unexplained reservation is "
+                f"indistinguishable from a rule that forgot to fire, which is "
+                f"the distinction this method exists to make")
+        return self._take(spec, resource, GrantIntent.RESERVE, reason)
+
+    def _take(self, spec: RuleSpec, resource: str, intent: GrantIntent,
+              reason: str) -> GrantOutcome:
         self._require_known(resource)
         if resource not in spec.claims:
             raise UndeclaredClaim(
                 f"{spec.name}: claimed {resource!r}, which its spec does not declare")
-        if resource in self._granted:
-            return False
-        self._granted[resource] = spec.name
-        return True
+        held = self._granted.get(resource)
+        if held is None:
+            self._granted[resource] = GrantRecord(
+                resource=resource, rule=spec.name, intent=intent,
+                reason=reason, spent=False)
+            return GrantOutcome.GRANTED
+        if held.rule != spec.name:
+            return GrantOutcome.REFUSED
+        if held.intent is not intent:
+            raise MisusedGrant(
+                f"{spec.name}: holds {resource!r} to {held.intent.value} "
+                f"({held.reason!r}) and now asks to {intent.value} -- a "
+                f"grant's PURPOSE is fixed when it is taken, or 'deliberately "
+                f"consumed' and 'forgot to fire' become the same state")
+        return GrantOutcome.ALREADY_HELD
+
+    def authorize(self, spec: RuleSpec, resource: str, action_kind: str) -> None:
+        """Authorise ONE resource-bound emission, or refuse it by name.
+
+        Called by :meth:`RuleEmitter.__call__` rather than duplicated there, so
+        every fact about a grant -- who holds it, for what, and whether the
+        promise has been kept -- lives in one object.
+        """
+        self._require_known(resource)
+        held = self._granted.get(resource)
+        if held is None or held.rule != spec.name:
+            raise UnclaimedResource(
+                f"{spec.name}: emitted {action_kind}, which requires the "
+                f"{resource!r} resource, without holding the grant "
+                f"(held by {None if held is None else held.rule!r})")
+        if held.intent is GrantIntent.RESERVE:
+            raise MisusedGrant(
+                f"{spec.name}: emitted {action_kind} under a RESERVATION of "
+                f"{resource!r} ({held.reason!r}). A reservation says this pass "
+                f"deliberately plans nothing with the resource; emitting under "
+                f"one is the opposite claim, and every rule below was blocked "
+                f"on the strength of the first one")
+        if held.spent:
+            # ONE grant is ONE authority. Without this, "at most one carve
+            # action per pass" would rest on each rule's internal shape -- the
+            # carver ladder's elif chain appending exactly one action, the
+            # cadences returning after their single emit -- which is precisely
+            # the per-author discipline the arbiter exists to replace. A rule
+            # that wants to plan two of these is asking for two authorities,
+            # and there is one.
+            raise MisusedGrant(
+                f"{spec.name}: emitted a second {resource!r}-bound action "
+                f"({action_kind}) under ONE grant. The grant is the authority "
+                f"to act on the resource once this pass; a second action under "
+                f"it is the same double dispatch a second GRANT would have "
+                f"been, reached from inside one rule instead of across two")
+        self._granted[resource] = GrantRecord(
+            resource=held.resource, rule=held.rule, intent=held.intent,
+            reason=held.reason, spent=True)
+
+    def audit(self) -> None:
+        """Refuse a pass that took a grant to emit and emitted nothing.
+
+        The forgot-to-fire case, caught at the pass that does it rather than
+        as a starved cadence somebody notices months later. Run by
+        :func:`run_rules` after the last rule, because "was the promise kept"
+        is only answerable once every rule has had its turn.
+        """
+        for resource in sorted(self._granted):
+            held = self._granted[resource]
+            if held.intent is GrantIntent.EMIT and not held.spent:
+                raise UnusedGrant(
+                    f"{held.rule!r} took the {resource!r} grant to EMIT and "
+                    f"emitted nothing, so every rule below it was starved of a "
+                    f"resource this pass never used. If the slot was consumed "
+                    f"DELIBERATELY, say so with reserve(reason=...): that is a "
+                    f"legitimate move and a checkable one")
 
     def holder(self, resource: str) -> str | None:
         """The rule holding ``resource``, or None."""
         self._require_known(resource)
-        return self._granted.get(resource)
+        held = self._granted.get(resource)
+        return None if held is None else held.rule
 
     def grants(self) -> dict[str, str]:
-        """The pass's grant ledger -- resource -> the rule that holds it."""
-        return dict(self._granted)
+        """The pass's grants -- resource -> the rule that holds it."""
+        return {resource: held.rule for resource, held in self._granted.items()}
+
+    def ledger(self) -> tuple[GrantRecord, ...]:
+        """The full grant ledger: holder, purpose, reason, promise kept.
+
+        The observable behind "this rule consumed the slot deliberately". A
+        reviewer reading :meth:`grants` alone cannot tell a reservation from a
+        claim, and that is precisely the confusion that let claim-then-not-fire
+        stay representable through two packages.
+        """
+        return tuple(self._granted[resource] for resource in sorted(self._granted))
 
     @staticmethod
     def _require_known(resource: str) -> None:
@@ -625,11 +875,8 @@ class RuleEmitter:
             raise UndeclaredEmission(
                 f"{self._spec.name}: emitted {kind}, which its spec does not declare")
         resource = EXCLUSIVE_ACTIONS.get(kind)
-        if resource is not None and self._arbiter.holder(resource) != self._spec.name:
-            raise UnclaimedResource(
-                f"{self._spec.name}: emitted {kind}, which requires the "
-                f"{resource!r} resource, without holding the grant "
-                f"(held by {self._arbiter.holder(resource)!r})")
+        if resource is not None:
+            self._arbiter.authorize(self._spec, resource, kind)
         self._channels.add(self._spec.channel, action)
         self._trace.match(RuleMatch(
             rule=self._spec.name, concern=self._spec.concern,
@@ -640,9 +887,27 @@ class RuleEmitter:
         """Record a breadcrumb, attributed to this rule."""
         self._trace.note(kind, task_id, detail, rule=self._spec.name)
 
-    def claim(self, resource: str) -> bool:
-        """Take the pass's grant for ``resource``, or lose it to an earlier rule."""
+    def claim(self, resource: str) -> GrantOutcome:
+        """Take the pass's grant for ``resource``, PROMISING to emit under it.
+
+        Read the outcome's :attr:`GrantOutcome.holds`, never its truthiness --
+        the enum refuses to be truth-tested, because a bare bool here conflated
+        "another rule holds it" with "you already hold it".
+
+        A rule that means to consume the slot and plan NOTHING wants
+        :meth:`reserve` instead; claiming and then not emitting fails the pass
+        (:class:`UnusedGrant`).
+        """
         return self._arbiter.grant(self._spec, resource)
+
+    def reserve(self, resource: str, reason: str) -> GrantOutcome:
+        """Consume the pass's grant for ``resource`` and plan nothing with it.
+
+        The legitimate half of claim-then-not-fire, stated rather than
+        implied. ``reason`` is a short fixed string in the same no-prose
+        vocabulary a breadcrumb detail uses (module contract item 8).
+        """
+        return self._arbiter.reserve(self._spec, resource, reason)
 
     def available(self, resource: str) -> bool:
         """Whether ``resource`` is still free. See :meth:`PlanArbiter.available`."""
@@ -697,6 +962,10 @@ def run_rules(ctx: PlanContext, table: tuple[RuleSpec, ...], trace: Any,
         for task in ctx.tasks():
             for task_spec in batch:
                 task_spec.rule(ctx, emitters[task_spec.name], task)
+    # Every rule has had its turn, so "was the promise kept" is answerable:
+    # a rule that took an exclusive grant to EMIT and emitted nothing starved
+    # every claimant below it, and says so here rather than never.
+    arbiter.audit()
     return channels
 
 
@@ -725,7 +994,7 @@ def rule_table() -> tuple[RuleSpec, ...]:
     Deferring it to first use keeps the graph a DAG in every direction.
     """
     from . import (
-        reconcile, rules_attempts, rules_attention, rules_dispatch,
+        rules_attempts, rules_attention, rules_carve, rules_dispatch,
         rules_lifecycle, rules_review,
     )
 
@@ -794,11 +1063,10 @@ def rule_table() -> tuple[RuleSpec, ...]:
         RuleSpec(
             name="carver-session-ladder", contract_items=(9, 12, 14),
             concern="carve-authority", scope=RuleScope.PLAN, channel=Channel.CARVER,
-            rule=reconcile.carver_session_ladder,
+            rule=rules_carve.carver_session_ladder,
             emits=frozenset({"AdmitCarveProposal", "CompactCarverSession",
                              "ResumeCarverSession", "StartCarverSession"}),
             claims=frozenset({"carve-slot"}),
-            legacy_owner="CR-06c",
             rationale=(
                 "FIRST claimant of the carve slot (plan-long-running-carver "
                 "§3.3 priority 1-4): admitting an already-produced proposal, "
@@ -809,24 +1077,25 @@ def rule_table() -> tuple[RuleSpec, ...]:
         RuleSpec(
             name="ready-to-carve", contract_items=(12, 14),
             concern="carve-authority", scope=RuleScope.PLAN, channel=Channel.LIFECYCLE,
-            rule=reconcile.ready_to_carve,
+            rule=rules_carve.ready_to_carve,
             emits=frozenset({"CarveDispatch"}),
             claims=frozenset({"carve-slot"}),
-            legacy_owner="CR-06c",
             rationale=(
                 "Before BOTH cadence triggers and the headroom refill: "
                 "finishing already-started work (a rejected task re-scoped by "
                 "the carver) outranks starting new work of either kind. Emits "
                 "into the LIFECYCLE channel because the dispatch is attributed "
-                "to the origin task whose context seeds the re-scope packet."),
+                "to the origin task whose context seeds the re-scope packet -- "
+                "the ONE carve rule that names a task, and the only reason it "
+                "may sit on a channel grouped and sorted by task id (CR-06c; "
+                "see `rules_carve`'s own note on that coupling)."),
         ),
         RuleSpec(
             name="carver-human-intake", contract_items=(9, 12, 14),
             concern="carve-authority", scope=RuleScope.PLAN, channel=Channel.CARVER,
-            rule=reconcile.carver_human_intake,
+            rule=rules_carve.carver_human_intake,
             emits=frozenset({"ResumeCarverSession"}),
             claims=frozenset({"carve-slot"}),
-            legacy_owner="CR-06c",
             rationale=(
                 "Plan §3.3 priority 6: queued human intake, evaluated AFTER "
                 "item 12's re-scope but BEFORE the cadence triggers and the "
@@ -907,10 +1176,9 @@ def rule_table() -> tuple[RuleSpec, ...]:
         RuleSpec(
             name="test-health-carve", contract_items=(15,), concern="carve-authority",
             scope=RuleScope.PLAN, channel=Channel.CARVE,
-            rule=reconcile.test_health_carve,
+            rule=rules_carve.test_health_carve,
             emits=frozenset({"CarveDispatch"}),
             claims=frozenset({"carve-slot"}),
-            legacy_owner="CR-06c",
             rationale=(
                 "BEFORE the headroom refill, DELIBERATELY (contract item 15's "
                 "own ORDERING note): item 9's condition holds on essentially "
@@ -921,10 +1189,9 @@ def rule_table() -> tuple[RuleSpec, ...]:
         RuleSpec(
             name="gap-audit-carve", contract_items=(17,), concern="carve-authority",
             scope=RuleScope.PLAN, channel=Channel.CARVE,
-            rule=reconcile.gap_audit_carve,
+            rule=rules_carve.gap_audit_carve,
             emits=frozenset({"CarveDispatch"}),
             claims=frozenset({"carve-slot"}),
-            legacy_owner="CR-06c",
             rationale=(
                 "After test-health and before the headroom refill (contract "
                 "item 17's own ORDERING note) -- the same starvation argument, "
@@ -934,10 +1201,9 @@ def rule_table() -> tuple[RuleSpec, ...]:
         RuleSpec(
             name="headroom-carve", contract_items=(9, 14), concern="carve-authority",
             scope=RuleScope.PLAN, channel=Channel.CARVE,
-            rule=reconcile.headroom_carve,
+            rule=rules_carve.headroom_carve,
             emits=frozenset({"CarveDispatch"}),
             claims=frozenset({"carve-slot"}),
-            legacy_owner="CR-06c",
             rationale=(
                 "LAST claimant of the carve slot. Its condition -- the ready "
                 "queue is below target -- is nearly always true on a draining "

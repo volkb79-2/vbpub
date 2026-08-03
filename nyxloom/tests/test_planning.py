@@ -30,10 +30,12 @@ import pytest
 
 import corpus_profiles
 import planner_corpus
+import planner_synthetic
 from nyxloom import planning, reconcile
 from nyxloom.planning import (
-    Channel, DuplicateRule, PlanArbiter, PlanContext, RuleScope, RuleSpec,
-    UnclaimedResource, UndeclaredClaim, UndeclaredEmission, UnknownResource,
+    Channel, DuplicateRule, GrantIntent, GrantOutcome, MisusedGrant,
+    PlanArbiter, PlanContext, RuleScope, RuleSpec, UnclaimedResource,
+    UndeclaredClaim, UndeclaredEmission, UnknownResource, UnusedGrant,
     run_rules,
 )
 from nyxloom.types import (
@@ -589,13 +591,58 @@ def _context(**overrides) -> PlanContext:
 
 
 def test_a_second_claim_on_one_resource_is_refused():
+    """RESTATED from CR-06b (amendment §5.2): the observable moved.
+
+    `grant` returned a bare `bool`, and `False` covered BOTH "another rule
+    holds this" and "you already hold this" -- so the current holder re-taking
+    its own grant read as losing a contest it had already won. Same
+    projections, same three claims, one more outcome: `GrantOutcome`.
+    """
     arbiter = PlanArbiter()
     first, second = _probe_spec(name="first"), _probe_spec(name="second")
-    assert arbiter.grant(first, "carve-slot") is True
-    assert arbiter.grant(second, "carve-slot") is False
+    assert arbiter.grant(first, "carve-slot") is GrantOutcome.GRANTED
+    assert arbiter.grant(second, "carve-slot") is GrantOutcome.REFUSED
     assert arbiter.holder("carve-slot") == "first"
     assert arbiter.available("carve-slot") is False
     assert arbiter.grants() == {"carve-slot": "first"}
+
+
+def test_the_current_holder_reclaiming_is_not_a_lost_contest():
+    """The readability trap CR-06a and CR-06b both left for this package.
+
+    `grant` answering `False` to the rule that ALREADY HOLDS the resource is
+    not wrong so much as unreadable: the caller's only question is "may I act
+    on this", and the honest answers are three, not two. A rule that read that
+    `False` as "someone else won" would skip its own emission and leave the
+    grant it holds unspent -- which now fails the pass as well, so the two
+    footguns this package owns were the same footgun from both ends.
+    """
+    arbiter = PlanArbiter()
+    spec = _probe_spec(name="only")
+    assert arbiter.grant(spec, "carve-slot") is GrantOutcome.GRANTED
+    again = arbiter.grant(spec, "carve-slot")
+    assert again is GrantOutcome.ALREADY_HELD
+    assert again.holds is True
+    assert arbiter.grants() == {"carve-slot": "only"}
+
+
+@pytest.mark.parametrize("outcome, holds", [
+    (GrantOutcome.GRANTED, True),
+    (GrantOutcome.ALREADY_HELD, True),
+    (GrantOutcome.REFUSED, False),
+])
+def test_a_grant_outcome_answers_holds_and_refuses_to_be_truth_tested(outcome, holds):
+    """`if emit.claim(r):` is the shape that made the old bool dangerous.
+
+    An enum is truthy for every member, so leaving `__bool__` alone would have
+    made that line silently ALWAYS true -- strictly worse than the bool it
+    replaced. It raises instead, which is the only answer that cannot be
+    misread, and `.holds` is the question the caller meant.
+    """
+    assert outcome.holds is holds
+    with pytest.raises(TypeError) as exc:
+        bool(outcome)
+    assert ".holds" in str(exc.value)
 
 
 def test_two_rules_cannot_both_authorize_the_carve_slot_in_one_pass():
@@ -632,9 +679,173 @@ def test_a_rule_that_emits_a_carve_action_without_claiming_is_refused():
         run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter(table))
 
 
+# ---------------------------------------------------------------------------
+# claim-then-not-fire, and the deliberate version of it (CR-06c)
+#
+# The distinction these four tests draw is the one CR-06a and CR-06b both
+# recorded and deferred. A rule may legitimately take the pass's only carve
+# slot and plan NOTHING -- `carver_session_ladder` does exactly that for
+# STARTING/COMPACTING, where a carver turn is already in flight and the slot is
+# correctly spent. So the arbiter cannot forbid it. But a rule that took the
+# grant and FORGOT to fire starves every rule below it identically, and nothing
+# structural told the two apart.
+
+
+def test_a_rule_that_claims_the_slot_and_emits_nothing_fails_the_pass():
+    """The forgot-to-fire half, caught at the pass that does it.
+
+    This is what a ninth carve producer's FIRST bug looks like -- not emitting
+    without the grant (already refused), but taking the grant on a branch that
+    then falls through. Every rule below it is silently starved of a resource
+    the pass never used, and the contention is invisible in this rule's own
+    source, which is why it survives review.
+    """
+    def promises_and_forgets(ctx, emit):
+        emit.claim("carve-slot")
+
+    table = (_probe_spec(rule=promises_and_forgets),)
+    with pytest.raises(UnusedGrant) as exc:
+        run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter(table))
+    assert "probe" in str(exc.value) and "reserve(" in str(exc.value)
+
+
+def test_a_rule_may_consume_the_slot_deliberately_if_it_says_why():
+    """The legitimate half, and the reason the check above cannot just ban it.
+
+    A reservation blocks every later claimant exactly as a claim does -- that
+    is its whole purpose -- and it survives the audit, because the ledger
+    records WHY nothing was planned. "Deliberately consumed" stops being a
+    comment and becomes a value.
+    """
+    def waits_on_a_turn_already_in_flight(ctx, emit):
+        emit.reserve("carve-slot", "wait:starting")
+
+    table = (_probe_spec(rule=waits_on_a_turn_already_in_flight),)
+    arbiter = PlanArbiter(table)
+    run_rules(_context(), table, reconcile.ReconcileTrace(), arbiter)
+    record, = arbiter.ledger()
+    assert record.rule == "probe"
+    assert record.intent is GrantIntent.RESERVE
+    assert record.reason == "wait:starting"
+    assert record.spent is False
+    assert arbiter.available("carve-slot") is False
+
+
+def test_a_reservation_must_name_its_reason():
+    """An unexplained reservation IS the forgot-to-fire case wearing the other
+    method's name, so the reason is a required argument rather than a
+    convention."""
+    with pytest.raises(ValueError) as exc:
+        PlanArbiter().reserve(_probe_spec(), "carve-slot", "")
+    assert "forgot to fire" in str(exc.value)
+
+
+def _reserve_then_claim(ctx, emit):
+    emit.reserve("carve-slot", "wait:starting")
+    emit.claim("carve-slot")
+
+
+def _claim_then_reserve(ctx, emit):
+    emit.claim("carve-slot")
+    emit.reserve("carve-slot", "wait:starting")
+
+
+@pytest.mark.parametrize("flip", [_reserve_then_claim, _claim_then_reserve])
+def test_a_grants_purpose_cannot_be_changed_after_it_is_taken(flip):
+    """The route around both checks, closed, in both directions.
+
+    A rule that reserved ("nothing will be planned") could otherwise re-take
+    the same grant as a claim and emit under it -- or claim, fail to fire, and
+    re-take it as a reservation to escape the audit. Either would make the
+    intent a label instead of a commitment, so a rule holds a resource for the
+    purpose it took it for or not at all.
+    """
+    table = (_probe_spec(rule=flip),)
+    with pytest.raises(MisusedGrant) as exc:
+        run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter(table))
+    assert "fixed when it is taken" in str(exc.value)
+
+
+def test_emitting_under_a_reservation_is_refused():
+    """The other direction: a rule that told the arbiter the slot was
+    deliberately consumed, and then consumed it for real. Every rule below was
+    blocked on the strength of the first claim, so the second one is not a
+    bonus action -- it is the second carve authority this kernel exists to
+    make unrepresentable, reached through the one branch that is allowed to
+    plan nothing."""
+    def reserves_then_emits(ctx, emit):
+        emit.reserve("carve-slot", "wait:compacting")
+        emit(reconcile.CarveDispatch(project="p"))
+
+    table = (_probe_spec(rule=reserves_then_emits),)
+    with pytest.raises(MisusedGrant) as exc:
+        run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter(table))
+    assert "RESERVATION" in str(exc.value)
+
+
+def test_a_reservation_blocks_a_later_claimant_exactly_as_a_claim_does():
+    """Two rules, the first reserving. The second must be refused -- otherwise
+    "the slot is spent because a turn is already in flight" would be a comment
+    the arbiter ignores."""
+    refused: list = []
+
+    def reserves(ctx, emit):
+        emit.reserve("carve-slot", "wait:starting")
+
+    def wants_it(ctx, emit):
+        outcome = emit.claim("carve-slot")
+        refused.append(outcome)
+        assert outcome.holds is False, "a reservation did not block a claim"
+
+    table = (_probe_spec(name="first", rule=reserves),
+             _probe_spec(name="second", rule=wants_it))
+    arbiter = PlanArbiter(table)
+    channels = run_rules(_context(), table, reconcile.ReconcileTrace(), arbiter)
+    assert refused == [GrantOutcome.REFUSED]
+    assert channels.assemble() == []
+    assert arbiter.grants() == {"carve-slot": "first"}
+
+
+def test_one_grant_authorises_exactly_one_carve_action():
+    """The last way one rule could still plan two carves, closed.
+
+    The arbiter made a SECOND GRANT unrepresentable from CR-06a. It did not
+    make a second ACTION under one grant unrepresentable, so "at most one
+    CarveDispatch per pass" still rested on each rule's internal shape -- the
+    ladder's elif chain appending exactly one action, each cadence returning
+    after its single emit. That is the per-author discipline the arbiter
+    exists to replace, and it is exactly how the eighth copy of
+    `and not carve_dispatch_planned` came to exist.
+
+    Found by trying to break the invariant rather than by reading for it, and
+    it moved zero corpus plans: no shipping rule emits twice today.
+    """
+    def greedy_once_granted(ctx, emit):
+        emit.claim("carve-slot")
+        emit(reconcile.CarveDispatch(project="p"))
+        emit(reconcile.CarveDispatch(project="p", kind="test-health"))
+
+    table = (_probe_spec(rule=greedy_once_granted),)
+    arbiter = PlanArbiter(table)
+    with pytest.raises(MisusedGrant) as exc:
+        run_rules(_context(), table, reconcile.ReconcileTrace(), arbiter)
+    assert "second" in str(exc.value)
+    # the FIRST action was legitimate and the grant records it as spent
+    assert arbiter.ledger()[0].spent is True
+
+
 def test_a_spec_that_can_emit_a_carve_action_must_declare_the_claim():
     with pytest.raises(UndeclaredClaim):
         _probe_spec(claims=frozenset())
+
+
+def test_reserving_a_resource_the_spec_does_not_declare_is_refused():
+    """A reservation is a grant, so it answers to the same declaration the
+    arbiter holds a claim to -- otherwise a rule could block the carve slot
+    without ever appearing in the table's list of contenders."""
+    spec = _probe_spec(emits=frozenset({"VerifyGate"}), claims=frozenset())
+    with pytest.raises(UndeclaredClaim):
+        PlanArbiter().reserve(spec, "carve-slot", "why")
 
 
 def test_claiming_a_resource_the_spec_does_not_declare_is_refused():
@@ -1157,7 +1368,14 @@ def test_the_warm_review_session_choice_is_deterministic_under_a_tie():
 @pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
 def test_at_most_one_carve_authority_is_granted_per_pass(profile):
     """Single carve authority over the real corpus: at most one grant, and at
-    most one carve-family action, whichever rules wanted it."""
+    most one carve-family action, whichever rules wanted it.
+
+    CR-06c adds the converse, which is what makes the count meaningful now
+    that all six claimants ship as ordinary rules: a grant that exists is
+    either SPENT on the carve action in the plan, or is a RESERVATION carrying
+    its reason. There is no third state -- an unspent claim never reaches this
+    assertion, because `run_rules`' audit refuses the pass.
+    """
     for case_id, states in planner_corpus.projections():
         inp = corpus_profiles.build(states, profile)
         table = planning.rule_table()
@@ -1172,3 +1390,133 @@ def test_at_most_one_carve_authority_is_granted_per_pass(profile):
         assert len(carve_actions) <= 1, f"{case_id}: {carve_actions}"
         if carve_actions:
             assert arbiter.holder("carve-slot") is not None
+        for record in arbiter.ledger():
+            if record.intent is GrantIntent.EMIT:
+                assert record.spent and carve_actions, f"{case_id}: {record}"
+            else:
+                assert record.reason and not carve_actions, f"{case_id}: {record}"
+
+
+@pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
+def test_at_most_one_carve_authority_over_the_synthetic_states_too(profile):
+    """The same acceptance over the states real history never reached.
+
+    `READY_TO_CARVE` is the one that matters: contract item 12 is a whole
+    carve claimant the HISTORICAL corpus cannot exercise at all, so a corpus
+    green said nothing about the rule most likely to contend with the
+    headroom refill -- `ready-to-carve-pair` reaches it, and
+    `mixed-unreached-states` makes it contend with a dispatchable task in the
+    same pass.
+    """
+    for case_id, states in planner_synthetic.projections():
+        inp = corpus_profiles.build(states, profile)
+        table = planning.rule_table()
+        arbiter = PlanArbiter(table)
+        channels = run_rules(PlanContext.derive(inp), table,
+                             reconcile.ReconcileTrace(), arbiter)
+        carve_actions = [
+            a for a in channels.assemble()
+            if type(a).__name__ in planning.EXCLUSIVE_ACTIONS
+        ]
+        assert len(arbiter.grants()) <= 1, case_id
+        assert len(carve_actions) <= 1, f"{case_id}: {carve_actions}"
+
+
+def test_item_12_is_reached_and_takes_the_slot_from_the_headroom_refill():
+    """Non-vacuity for the acceptance above, and the ordering the contract
+    argues.
+
+    `ready-to-carve-pair` is a projection whose ready queue is also below
+    target, so BOTH item 12 and item 9 want the pass's slot. Item 12 is above
+    item 9 in the table because finishing already-started work outranks
+    starting new work -- so the plan must carry the TARGETED dispatch (naming
+    the lowest READY_TO_CARVE id) and not the untargeted refill. Asserted
+    against the holder as well as the action, because "one carve action" would
+    also be true if the wrong rule had won.
+    """
+    states = dict(next(s for n, s in planner_synthetic.projections()
+                       if n == "ready-to-carve-pair"))
+    inp = corpus_profiles.build(states, "neutral")
+    table = planning.rule_table()
+    arbiter = PlanArbiter(table)
+    channels = run_rules(PlanContext.derive(inp), table,
+                         reconcile.ReconcileTrace(), arbiter)
+    carves = [a for a in channels.assemble()
+              if isinstance(a, reconcile.CarveDispatch)]
+    assert [(a.task_id, a.kind) for a in carves] == [("t-a", "headroom")]
+    assert arbiter.holder("carve-slot") == "ready-to-carve"
+
+
+def test_every_carve_dispatch_on_the_lifecycle_channel_names_its_task():
+    """The channel trap `PlanChannels.add` raises on, pinned where it is
+    actually reachable.
+
+    `CarveDispatch` is emitted by FOUR rules. Three are project-wide and carry
+    `task_id=None`, on the CARVE channel; `ready-to-carve` carries the origin
+    task id and sits on LIFECYCLE, which is GROUPED AND SORTED BY TASK ID -- so
+    a task-less action there raises `TaskLessLifecycleAction`. The channel is
+    declared per RULE and the property that makes it safe is per EMISSION, so
+    the two cannot be made to coincide by declaration: this asserts it instead,
+    over every projection that reaches item 12.
+    """
+    lifecycle_rules = {
+        spec.name for spec in planning.rule_table()
+        if spec.channel is Channel.LIFECYCLE and "CarveDispatch" in spec.emits
+    }
+    assert lifecycle_rules == {"ready-to-carve"}, lifecycle_rules
+
+    reached = 0
+    for case_id, states in planner_synthetic.projections():
+        for profile in ("neutral", "test-health-due", "gap-audit-due"):
+            inp = corpus_profiles.build(states, profile)
+            table = planning.rule_table()
+            channels = run_rules(PlanContext.derive(inp), table,
+                                 reconcile.ReconcileTrace(), PlanArbiter(table))
+            for actions in channels.lifecycle.values():
+                for action in actions:
+                    if isinstance(action, reconcile.CarveDispatch):
+                        assert action.task_id, f"{case_id}/{profile}"
+                        reached += 1
+    assert reached, (
+        "no synthetic projection routed a CarveDispatch onto the LIFECYCLE "
+        "channel -- this assertion is vacuous, so re-read it before trusting it")
+
+
+def test_the_ladder_reserves_the_slot_when_a_carver_turn_is_already_in_flight():
+    """The deliberate claim-and-plan-nothing, in the SHIPPING table.
+
+    `STARTING` and `COMPACTING` both mean a carver turn is already in flight
+    for this generation, so plan §2.4 says every intake/feed/carve decision
+    waits -- the pass's carve authority is spent even though nothing is
+    planned. That reading is now recorded as a RESERVATION with its reason,
+    which is the whole answer to "how do you tell this from a rule that forgot
+    to fire": the forgetful rule leaves an unspent EMIT grant and fails the
+    pass, and no comment has to be believed.
+
+    The contrast is the load-bearing half: the SAME projection with no carver
+    session plans the headroom carve, so the reservation is observably what
+    suppressed it rather than some other guard.
+    """
+    from nyxloom.carver_session import CarverStatus
+
+    states = next(states for _, states in planner_corpus.projections())
+    baseline = corpus_profiles.build(states, "neutral")
+    assert [a for a in reconcile.plan_project(baseline)
+            if isinstance(a, reconcile.CarveDispatch)], (
+        "the control projection no longer plans a carve, so the suppression "
+        "asserted below would be vacuous")
+
+    for status in (CarverStatus.STARTING, CarverStatus.COMPACTING):
+        inp = dataclasses.replace(
+            baseline, carver_session=corpus_profiles._carver(status))
+        table = planning.rule_table()
+        arbiter = PlanArbiter(table)
+        channels = run_rules(PlanContext.derive(inp), table,
+                             reconcile.ReconcileTrace(), arbiter)
+        record, = arbiter.ledger()
+        assert record.rule == "carver-session-ladder"
+        assert record.intent is GrantIntent.RESERVE
+        assert record.reason == f"wait:{status.value.lower()}"
+        assert record.spent is False
+        assert not [a for a in channels.assemble()
+                    if type(a).__name__ in planning.EXCLUSIVE_ACTIONS]

@@ -64,7 +64,7 @@ import legacy_planner
 import planner_corpus
 import planner_synthetic
 from nyxloom import planning, reconcile
-from nyxloom.types import AttemptState, Role
+from nyxloom.types import AttemptState, CarverStatus, Role
 
 
 def _real_states() -> set:
@@ -212,6 +212,97 @@ def test_corpus_projections_cover_every_state_the_planner_branches_on():
         f"no projection reaches {missing} -- add a scenario to "
         "tests/planner_synthetic.py, or the rules owning those states are "
         "differentially unverified")
+
+
+def _carver_status_inputs():
+    """One input per `CarverStatus`, over a real projection.
+
+    THE SECOND ENUM THE PLANNER BRANCHES ON, and the one with no coverage
+    oracle. `TaskState` got one above because a state the corpus never reached
+    hid a defect behind a green; `CarverStatus` is exactly the same shape --
+    the carve ladder's whole slot precedence keys on it -- and FOUR of its
+    seven members appear in no corpus or synthetic input at all. The declared
+    profiles reach WARM, COLD and DEGRADED; `ABSENT` and `ROTATING` share
+    COLD's branch, but `STARTING` and `COMPACTING` are a branch of their own
+    and it is the one CR-06c changed the MECHANISM of, from a
+    `carve_dispatch_planned` flag to `RuleEmitter.reserve`.
+
+    Built here rather than in `planner_synthetic.py` because a carver session
+    is an ENVIRONMENT fact, not a projection: a synthetic scenario supplies
+    `states`, and `tests/corpus_profiles.py` -- which supplies environments --
+    is frozen for this package. `dataclasses.replace` over a built profile is
+    the way to vary it without touching either.
+    """
+    base = corpus_profiles.build(
+        next(states for _, states in planner_corpus.projections()), "carver-warm")
+    for status in CarverStatus:
+        yield status, dataclasses.replace(
+            base, carver_session=dataclasses.replace(base.carver_session, status=status))
+
+
+def test_every_carver_status_is_differentially_verified():
+    """The carve ladder's own enum, swept against the frozen baseline.
+
+    Zero delta for every status, which is the point: CR-06c's report says the
+    move is delta-free, and for two of these statuses no corpus or synthetic
+    input could have told it. `STARTING` and `COMPACTING` are the reservation
+    path -- the ladder consumes the pass's carve slot and plans NOTHING -- so
+    "the differential is clean" was silent about the one branch whose
+    implementation this package replaced.
+    """
+    statuses = 0
+    for status, inp in _carver_status_inputs():
+        found = compare(inp)
+        assert not found, f"{status.value}: {found[0]}"
+        statuses += 1
+    assert statuses == len(set(CarverStatus)), statuses
+
+
+def test_the_reservation_spends_the_slot_and_starves_every_rule_below_it():
+    """What a reservation IS, asserted against its own contrast.
+
+    A reservation is not "this rule planned nothing" -- that is the
+    forgot-to-fire case `UnusedGrant` refuses. It is "a carver turn is already
+    in flight for this generation, so the pass's carve authority is spent" and
+    its whole observable effect is on OTHER rules: item 12, item 15, item 17
+    and item 9 must all find the slot gone.
+
+    The contrast is what makes that non-vacuous, because "no carve action" is
+    also what a rule that silently broke would produce: the SAME projection
+    with the session WARM plans a `CarveDispatch` from `headroom-carve`, and
+    with it STARTING or COMPACTING plans none -- and the ledger says which
+    rule consumed the slot and why, in the no-prose vocabulary a breadcrumb
+    detail uses.
+    """
+    by_status = dict(_carver_status_inputs())
+
+    def plan_with_ledger(inp):
+        table = planning.rule_table()
+        arbiter = planning.PlanArbiter(table)
+        channels = planning.run_rules(
+            planning.PlanContext.derive(inp), table, reconcile.ReconcileTrace(), arbiter)
+        carves = [type(a).__name__ for a in channels.assemble()
+                  if type(a).__name__ in planning.EXCLUSIVE_ACTIONS]
+        return carves, arbiter.ledger()
+
+    warm_carves, warm_ledger = plan_with_ledger(by_status[CarverStatus.WARM])
+    assert warm_carves == ["CarveDispatch"], warm_carves
+    assert [r.rule for r in warm_ledger] == ["headroom-carve"], warm_ledger
+    assert [r.intent for r in warm_ledger] == [planning.GrantIntent.EMIT]
+    assert all(r.spent for r in warm_ledger)
+
+    for status in (CarverStatus.STARTING, CarverStatus.COMPACTING):
+        carves, ledger = plan_with_ledger(by_status[status])
+        assert carves == [], f"{status.value}: {carves}"
+        assert [r.rule for r in ledger] == ["carver-session-ladder"], ledger
+        held = ledger[0]
+        assert held.intent is planning.GrantIntent.RESERVE
+        assert held.spent is False
+        assert held.reason == f"wait:{status.value.lower()}"
+        # the reason is the breadcrumb, in the same closed vocabulary -- not a
+        # second, drifting explanation of the same decision
+        assert ("carver", None, held.reason) in _breadcrumbs(
+            reconcile.plan_project(by_status[status]))
 
 
 def test_corpus_states_are_attributed_to_their_source():

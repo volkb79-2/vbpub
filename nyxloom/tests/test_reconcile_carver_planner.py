@@ -27,9 +27,14 @@ from nyxloom.carver_session import (
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import (
     Action, AdmitCarveProposal, CarveDispatch, CompactCarverSession,
-    ReconcileInput, ResumeCarverSession, StartCarverSession,
-    _compaction_due, plan_project,
+    ReconcileInput, ResumeCarverSession, StartCarverSession, plan_project,
 )
+# RESTATED, not retired (amendment §5.2): CR-06c moved the carver-session
+# ladder -- and with it the pure §6.2 compaction predicate it is the only
+# caller of -- out of the `plan_project` monolith into `rules_carve.py`. Every
+# assertion below is unchanged; the OBSERVABLE moved modules, so the import
+# moves with it.
+from nyxloom.rules_carve import _compaction_due
 from nyxloom.types import (
     Attempt, AttemptState, CarverStatus, Frontmatter, Role, Route, Scope,
     Source, TaskState, TaskStateFile,

@@ -6701,9 +6701,12 @@ def test_carver_ack_O4_proposal_safety_invariant(
     #    `plan_project` would now find neither identifier and the invariant
     #    would pass vacuously -- which is exactly how a structural check
     #    stops checking.
+    #    CR-06c RESTATED again, for the same reason and with the same
+    #    assertion: the rule left `reconcile.py` for `rules_carve.py` when
+    #    carve authority stopped being legacy.
     import inspect
-    from nyxloom import reconcile as reconcile_mod
-    source = inspect.getsource(reconcile_mod.carver_session_ladder)
+    from nyxloom import rules_carve
+    source = inspect.getsource(rules_carve.carver_session_ladder)
     # Slot 1 mentions 'validated_carve_proposals' before slot 3 mentions
     # 'pending_carver_feeds' in the carver pipeline section
     slot1_idx = source.index("validated_carve_proposals")
