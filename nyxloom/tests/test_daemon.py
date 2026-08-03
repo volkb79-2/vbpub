@@ -29,7 +29,7 @@ from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
     adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
-    lint, log, notify, paths, reconcile, render, snapshot, storage, wrapper,
+    lint, log, notify, paths, reconcile, render, results, snapshot, storage, wrapper,
 )
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
@@ -1514,6 +1514,43 @@ def _seed_review_attempt(project, task_id, attempt_id, wave_id="wave-1"):
     return storage.load_state(project, task_id)
 
 
+def _write_typed_result(project, task_id, attempt_id, kind, verdict, *,
+                        summary="", evidence=b"agent stdout\n"):
+    """CR-03 (DR-13): the artifact the daemon now reads for a verdict.
+
+    The wrapper assembles this from the agent's judgement plus the facts; a
+    test that wants a verdict writes the assembled record directly, which is
+    the same document `results.load_result` validates in production. It goes
+    in the ATTEMPT directory, not on the branch: that is what binds it to one
+    attempt and makes a previous attempt's record inert.
+    """
+    attempt_dir = paths.attempt_dir(project, attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / "attempt.log").write_bytes(evidence)
+    record = results.AgentResult(
+        kind=kind, verdict=verdict,
+        identity=results.ResultIdentity(task_id=task_id, attempt_id=attempt_id),
+        evidence=results.Evidence(path="attempt.log",
+                                   sha256=results.digest_bytes(evidence),
+                                   bytes_len=len(evidence)),
+        summary=summary,
+    )
+    (attempt_dir / results.result_filename(task_id)).write_text(
+        record.to_json(), encoding="utf-8")
+
+
+def _approve(project, task_id, attempt_id, summary=""):
+    _write_typed_result(project, task_id, attempt_id,
+                        results.ResultKind.REVIEW_INDEPENDENT,
+                        results.Verdict.APPROVED, summary=summary)
+
+
+def _reject(project, task_id, attempt_id, summary=""):
+    _write_typed_result(project, task_id, attempt_id,
+                        results.ResultKind.REVIEW_INDEPENDENT,
+                        results.Verdict.REJECTED, summary=summary)
+
+
 def _commit_review_report(root, task_id, reports_dir, content):
     """Commit `<reports_dir>/<task_id>-REVIEW.md` onto feat/<task_id> --
     that branch must already exist (see _make_feature_branch)."""
@@ -1545,6 +1582,7 @@ def test_review_independent_done_receipt_rejected_report_yields_review_rejected(
         "VERDICT: REJECTED — daemon-core change is unsafe\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _reject("demo", task_id, attempt_id, summary="daemon-core change is unsafe")
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -1571,6 +1609,7 @@ def test_review_independent_done_receipt_approved_report_yields_merge_ready(
         "# Review\n\nFindings: none. Looks good.\n\nVERDICT: APPROVED\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _approve("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -1632,6 +1671,9 @@ def test_self_review_approved_goes_to_awaiting_review(
     _commit_self_review_report(cfg.root, task_id, cfg.reports_dir,
                                "# Self-review\n\nLooks good.\n\nSELF_REVIEW: APPROVED\n")
     _seed_self_review_attempt("demo", task_id, attempt_id)
+    _write_typed_result("demo", task_id, attempt_id,
+                        results.ResultKind.SELF_REVIEW,
+                        results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -1655,6 +1697,10 @@ def test_self_review_rejected_goes_to_queued(
         cfg.root, task_id, cfg.reports_dir,
         "# Self-review\n\nFound a bug I cannot fix in-session.\n\nSELF_REVIEW: REJECTED\n")
     _seed_self_review_attempt("demo", task_id, attempt_id)
+    _write_typed_result("demo", task_id, attempt_id,
+                        results.ResultKind.SELF_REVIEW,
+                        results.Verdict.REJECTED,
+                        summary="bug I cannot fix in-session")
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -1803,6 +1849,13 @@ def test_review_independent_wave_exit_fans_out_per_member_verdicts(
         _commit_review_report(cfg.root, tid, cfg.reports_dir, f"# Review\n\nVERDICT: {v}\n")
         # the SAME attempt_id recorded on EACH member (option-a wave attempt)
         _seed_review_attempt("demo", tid, attempt_id, wave_id="wave-fan")
+        # CR-03: ONE attempt, one typed result PER MEMBER. Per-task rather
+        # than one document holding a list, so a member whose judgement is
+        # malformed cannot contaminate its siblings' verdicts.
+        _write_typed_result("demo", tid, attempt_id,
+                            results.ResultKind.REVIEW_INDEPENDENT,
+                            results.Verdict.APPROVED if v == "APPROVED"
+                            else results.Verdict.REJECTED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     d = daemon.Daemon({"demo": cfg.root})
 
@@ -1862,16 +1915,35 @@ def test_review_independent_missing_report_fails_safe_to_rejected(
 def test_review_independent_ambiguous_report_fails_safe_to_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
-    """Oracle O3 (ambiguous): a REVIEW.md with conflicting VERDICT lines (no
-    unambiguous single APPROVED) must also fail safe to REVIEW_REJECTED."""
+    """Oracle O3, restated for CR-03: an answer the reader REFUSES must fail
+    safe to REVIEW_REJECTED, never to MERGE_READY.
+
+    The original of this test wrote two conflicting `VERDICT:` lines into one
+    markdown file, because the regex could pool contradictory verdicts out of
+    prose. That ambiguity no longer exists -- there is one typed record per
+    task -- so the mechanism is retired and the SAFETY PROPERTY it protected
+    is re-pinned against the failure that replaced it: a record that does not
+    validate. Here the record claims a different attempt, the exact staleness
+    the old scan needed a special rule for.
+
+    The distinction that matters: refused is not the same as absent. Absent
+    routes to a relaunch of the review LEG; refused means something answered
+    and could not be trusted, which must not merge."""
     cfg = sample_project
     task_id, attempt_id = "t-rev-ambiguous", "att-rev-ambiguous"
     _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    _commit_review_report(
-        cfg.root, task_id, cfg.reports_dir,
-        "# Review\n\nVERDICT: APPROVED\n\nOn reflection:\nVERDICT: REJECTED — actually no\n",
-    )
     _seed_review_attempt("demo", task_id, attempt_id)
+    # An APPROVED record -- but bound to a DIFFERENT attempt, so the reader
+    # refuses it. Without the identity check this would merge.
+    _write_typed_result("demo", task_id, "att-somebody-else",
+                        results.ResultKind.REVIEW_INDEPENDENT,
+                        results.Verdict.APPROVED)
+    stale = (paths.attempt_dir("demo", "att-somebody-else")
+             / results.result_filename(task_id)).read_text(encoding="utf-8")
+    target_dir = paths.attempt_dir("demo", attempt_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "attempt.log").write_bytes(b"agent stdout\n")
+    (target_dir / results.result_filename(task_id)).write_text(stale, encoding="utf-8")
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -1880,6 +1952,9 @@ def test_review_independent_ambiguous_report_fails_safe_to_rejected(
 
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.REVIEW_REJECTED
+    recorded = next(e for e in storage.iter_events("demo")
+                     if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
 
 
 def test_review_independent_nondone_receipt_is_defense_in_depth_rejected(
@@ -1896,6 +1971,7 @@ def test_review_independent_nondone_receipt_is_defense_in_depth_rejected(
         "# Review\n\nVERDICT: APPROVED\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _approve("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.BLOCKED, exit_code=1,
                     blocked_reason="reviewer crashed mid-run")
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
@@ -1945,9 +2021,14 @@ def test_review_independent_limit_receipt_is_incomplete_not_rejected_and_pauses_
 def test_launch_review_packet_requires_machine_readable_verdict_line(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
-    """Oracle O4: the review packet instructs the reviewer to write an
-    unambiguous `VERDICT: APPROVED|REJECTED` line into <task>-REVIEW.md,
-    in addition to the existing BLOCKED: rejected final-line signal."""
+    """Oracle O4, restated for CR-03: the review packet must instruct the
+    reviewer to write the TYPED JUDGEMENT the wrapper reads.
+
+    A packet that asked for prose the controller no longer parses would
+    produce a reviewer whose every verdict is unreadable -- and because an
+    unreadable verdict routes to a relaunch, the factory would loop instead
+    of failing visibly. The packet and the reader have to name the same
+    artifact, so this pins that they do."""
     cfg = sample_project
     paths.routes_path().write_text(
         SAMPLE_ROUTES_TOML + "\nrole_default = \"review-independent\"\n"
@@ -1968,248 +2049,25 @@ def test_launch_review_packet_requires_machine_readable_verdict_line(
     packet_md = (paths.attempt_dir("demo", created.attempt_id) / "packet" / "packet.md").read_text(
         encoding="utf-8")
 
-    assert "VERDICT: APPROVED" in packet_md
-    assert "VERDICT: REJECTED" in packet_md
-    assert "BLOCKED: rejected" in packet_md
+    # The packet names the artifact the wrapper actually reads, and the
+    # attempt id the reviewer must echo -- that echo is what binds a verdict
+    # to this run, so a packet omitting it would produce judgements the
+    # reader must refuse.
+    assert "nyxloom-judgement-<task>.json" in packet_md
+    assert '"kind": "review_independent"' in packet_md
+    assert created.attempt_id in packet_md
+    assert '"verdict": "approved" or "rejected"' in packet_md
 
-    # REVIEW-FIX 2026-07-16: the packet must name the SAME file
-    # _parse_review_verdict reads, or the reviewer writes a verdict the
-    # daemon never sees and the review fail-safes to rejected. The path was
-    # hardcoded to a stale `topos/handoff/reports/` matching no project.
+    # ...and the prose contract it replaced is gone, so a reviewer cannot
+    # satisfy the packet by writing something nothing reads.
+    assert "VERDICT: APPROVED" not in packet_md
+
+    # The human report path stays derived from cfg.reports_dir: it was once
+    # hardcoded to a stale `topos/handoff/reports/` matching no project,
+    # which sent reviewers to write where nobody looked.
     assert f"{cfg.reports_dir}/<task>-REVIEW.md" in packet_md
     assert "topos/handoff/reports" not in packet_md
 
-
-def test_parse_review_verdict_when_project_root_is_a_repo_subdir(tmp_state, tmp_path):
-    """REVIEW-FIX 2026-07-16 regression (O2 in the REAL layout): nyxloom
-    self-hosts with the project root NESTED under the git repo root
-    (nyxloom.toml: worktree_root = "../.worktrees", "vbpub is the git repo;
-    nyxloom is a subdir"). `git show <rev>:<path>` resolves a bare <path>
-    from the REPO ROOT and ignores `-C`, so the APPROVED report was
-    unreadable -> every review, approvals included, fail-safed to rejected
-    and no task could reach MERGE_READY. Every other test git-inits AT
-    cfg.root, so this layout was unexercised and the bug shipped green."""
-    from conftest import SAMPLE_PROJECT_TOML
-    from nyxloom.config import ProjectConfig
-
-    repo = tmp_path / "outer-repo"
-    proj = repo / "proj"                      # cfg.root != git repo root
-    (proj / ".nyxloom").mkdir(parents=True)
-    (proj / "handoff" / "reports").mkdir(parents=True)
-    (proj / ".nyxloom" / "project.toml").write_text(SAMPLE_PROJECT_TOML)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                    "commit", "-qm", "init"], cwd=repo, check=True)
-
-    cfg = ProjectConfig.load(proj)
-    assert cfg.root == proj
-    assert cfg.reports_dir == "handoff/reports"   # relative to cfg.root, not the repo root
-
-    d = daemon.Daemon({"demo": proj})
-
-    def _commit_report(task_id, body):
-        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", f"feat/{task_id}", "main"],
-                        check=True, capture_output=True)
-        # git tracks no empty dirs, so reports/ vanishes on checkout back to main
-        (proj / "handoff" / "reports").mkdir(parents=True, exist_ok=True)
-        (proj / "handoff" / "reports" / f"{task_id}-REVIEW.md").write_text(body, encoding="utf-8")
-        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo),
-                        "add", "-A"], check=True, capture_output=True)
-        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo),
-                        "commit", "-qm", f"review {task_id}"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True, capture_output=True)
-
-    # the regression: an APPROVED report under a nested root must be READ,
-    # not silently missed and fail-safed to rejected.
-    _commit_report("t-nested-approved", "# Review\n\nVERDICT: APPROVED\n")
-    assert d._parse_review_verdict(cfg, "t-nested-approved") == "approved"
-
-    # and the fail-safe still discriminates under the same layout.
-    _commit_report("t-nested-rejected", "# Review\n\nVERDICT: REJECTED — nope\n")
-    assert d._parse_review_verdict(cfg, "t-nested-rejected") == "rejected"
-    # SELF-CORRECT 2026-07-16 (bug 1 fix): no branch/artifact for this task
-    # was ever created -- the distinguishing "missing" signal, not the bare
-    # "rejected" this returned before the fix (see the two tests below for
-    # the full O1 contract under the normal, non-nested layout).
-    assert d._parse_review_verdict(cfg, "t-nested-never-written") == "missing"
-
-
-# --------------------------------------------------------------------------
-# SELF-CORRECT 2026-07-16: robust review-verdict derivation (bug 1) + the
-# REVIEW_REJECTED reject-loop (bug 2). See daemon.py's _parse_review_verdict
-# docstring and reconcile.py's module-contract item 10 for the full design
-# rationale (including the documented, out-of-scope BLOCKED gap).
-
-def test_parse_review_verdict_misnamed_file_still_found_and_approves(
-    tmp_state, sample_project
-):
-    """O1 (bug 1, the live incident this package fixes): a reviewer who
-    commits `P42-REVIEW.md` instead of the documented `<task_id>-REVIEW.md`
-    must still have their APPROVED verdict found -- before this fix, the
-    rigid single-path lookup missed it entirely and fail-safed a
-    genuinely-APPROVED task to REJECTED."""
-    cfg = sample_project
-    task_id = "proj-P42"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    branch = f"feat/{task_id}"
-    subprocess.run(["git", "-C", str(cfg.root), "checkout", branch],
-                    check=True, capture_output=True)
-    report_dir = cfg.root / cfg.reports_dir
-    report_dir.mkdir(parents=True, exist_ok=True)
-    # Misnamed: "P42-REVIEW.md", NOT the documented "proj-P42-REVIEW.md" --
-    # but the content names the full task_id, as a reviewer's own write-up
-    # naturally would.
-    (report_dir / "P42-REVIEW.md").write_text(
-        f"# Review for {task_id}\n\nFindings: none.\n\nVERDICT: APPROVED\n",
-        encoding="utf-8",
-    )
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
-                    "add", "-A"], check=True, capture_output=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
-                    "commit", "-qm", "review (misnamed)"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(cfg.root), "checkout", "main"],
-                    check=True, capture_output=True)
-
-    d = daemon.Daemon({"demo": cfg.root})
-    assert d._parse_review_verdict(cfg, task_id) == "approved"
-
-
-def test_parse_review_verdict_file_present_no_verdict_line_still_rejected(
-    tmp_state, sample_project
-):
-    """O1 (fail-safe preserved): a review file exists (correctly named) but
-    never writes a VERDICT line at all -- a malformed review, not an absent
-    one -- must still fail safe to "rejected", exactly as before this
-    package. Distinct from the "missing" signal (see the next test), which
-    is reserved for NO review artifact existing anywhere."""
-    cfg = sample_project
-    task_id = "t-no-verdict-line"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    _commit_review_report(
-        cfg.root, task_id, cfg.reports_dir,
-        "# Review\n\nFindings: looks fine, forgot to write a verdict line.\n",
-    )
-    d = daemon.Daemon({"demo": cfg.root})
-    assert d._parse_review_verdict(cfg, task_id) == "rejected"
-
-
-def test_parse_review_verdict_no_artifact_anywhere_returns_missing(
-    tmp_state, sample_project
-):
-    """O1 (bug 1 fix): when NO review artifact for this task exists
-    anywhere on the branch (the reviewer never produced any output at all
-    -- a review-LEG failure), the return value is the distinguishing
-    "missing" signal, NOT the same "rejected" string a genuine reviewer
-    REJECTED verdict returns -- so a future reconcile pass or operator can
-    tell "nobody reviewed this" apart from "a reviewer rejected this"."""
-    cfg = sample_project
-    task_id = "t-no-artifact-anywhere"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    # deliberately: no REVIEW.md of any name committed onto feat/<task_id>
-    d = daemon.Daemon({"demo": cfg.root})
-    assert d._parse_review_verdict(cfg, task_id) == "missing"
-
-
-# --------------------------------------------------------------------------
-# P59b 2026-07-20 (A7, M6/I8): verdict-attempt binding. A re-review must bind
-# the verdict to THIS review attempt and ignore any verdict a PRIOR (or other)
-# attempt left committed on the branch -- both a stale REJECTED (which would
-# wrongly re-trigger re-implementation, I8) and, worse, a foreign APPROVED
-# (which would rubber-stamp an unreviewed merge, M6). The first review keeps
-# the unbound-verdict path (no prior attempt => staleness impossible).
-
-_ATT_OLD = "att-aaaaaaaaaaaa"
-_ATT_CUR = "att-bbbbbbbbbbbb"
-_ATT_FOREIGN = "att-cccccccccccc"
-
-
-def test_parse_review_verdict_rereview_ignores_stale_prior_reject(
-    tmp_state, sample_project
-):
-    """I8: on a re-review, a stale `VERDICT: REJECTED (attempt <old>)` left on
-    the branch by a PRIOR review attempt -- with nothing from the current
-    attempt -- must NOT be consumed as this attempt's rejection (which would
-    kick off a full, wasteful re-implementation of possibly-fine work). It is
-    a review-LEG failure of the current attempt => "missing" => relaunch."""
-    cfg = sample_project
-    task_id = "t-rereview-stale-reject"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    _commit_review_report(
-        cfg.root, task_id, cfg.reports_dir,
-        f"# Review\n\nPrior cycle found problems.\n\nVERDICT: REJECTED (attempt {_ATT_OLD})\n",
-    )
-    d = daemon.Daemon({"demo": cfg.root})
-    # current attempt is _ATT_CUR and there WAS a prior review (is_first_review=False):
-    # the stale verdict is bound to att-old, so it is ignored -> "missing" (relaunch),
-    # NOT consumed as this attempt's rejection.
-    assert d._parse_review_verdict(
-        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=False) == "missing"
-
-
-def test_parse_review_verdict_rereview_ignores_foreign_approved(
-    tmp_state, sample_project
-):
-    """M6 (the dangerous one): a `VERDICT: APPROVED (attempt <foreign>)` bound
-    to some OTHER attempt must never rubber-stamp THIS review to MERGE_READY.
-    On a re-review with nothing bound to the current attempt, a foreign
-    approval is ignored => "missing" => relaunch, not "approved"."""
-    cfg = sample_project
-    task_id = "t-rereview-foreign-approve"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    _commit_review_report(
-        cfg.root, task_id, cfg.reports_dir,
-        f"# Review\n\nLooks good.\n\nVERDICT: APPROVED (attempt {_ATT_FOREIGN})\n",
-    )
-    d = daemon.Daemon({"demo": cfg.root})
-    assert d._parse_review_verdict(
-        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=False) == "missing"
-
-
-def test_parse_review_verdict_rereview_consumes_current_attempt_verdict(
-    tmp_state, sample_project
-):
-    """The current attempt's verdict IS authoritative even when a stale prior
-    verdict is still present: a file carrying BOTH a stale REJECTED (old
-    attempt) and the current attempt's APPROVED resolves to "approved" -- only
-    the current-bound verdict is counted, the stale one ignored."""
-    cfg = sample_project
-    task_id = "t-rereview-current-wins"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    # BOTH verdict lines are at line-start so the parser sees both -- the test
-    # only means something if the stale REJECTED is genuinely competing and
-    # must be IGNORED in favour of the current-attempt APPROVED.
-    _commit_review_report(
-        cfg.root, task_id, cfg.reports_dir,
-        f"# Review\n\nVERDICT: REJECTED (attempt {_ATT_OLD})\n\n"
-        f"Re-review after fixes; issues resolved.\n\nVERDICT: APPROVED (attempt {_ATT_CUR})\n",
-    )
-    d = daemon.Daemon({"demo": cfg.root})
-    assert d._parse_review_verdict(
-        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=False) == "approved"
-
-
-def test_parse_review_verdict_first_review_accepts_current_bound_verdict(
-    tmp_state, sample_project
-):
-    """A first review whose reviewer DID stamp the current attempt id is
-    classified from that binding (approved) -- the binding path works on the
-    first cycle too, not only unbound back-compat."""
-    cfg = sample_project
-    task_id = "t-first-bound"
-    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    _commit_review_report(
-        cfg.root, task_id, cfg.reports_dir,
-        f"# Review\n\nAll good.\n\nVERDICT: APPROVED (attempt {_ATT_CUR})\n",
-    )
-    d = daemon.Daemon({"demo": cfg.root})
-    assert d._parse_review_verdict(
-        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=True) == "approved"
-
-
-# --------------------------------------------------------------------------
-# Oracle 4: MarkInterrupted/ResumeAttempt/InterruptAttempt
 
 def test_mark_interrupted_and_resume(tmp_state, sample_project, patch_siblings, monkeypatch):
     task_id, attempt_id = "t-int", "att-int"
@@ -4161,6 +4019,7 @@ def test_review_independent_rejected_stamps_reject_class(
         "VERDICT: REJECTED\nREJECT_CLASS: architectural\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _reject("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
     daemon.Daemon({"demo": cfg.root}).run_pass("demo")
@@ -4187,6 +4046,7 @@ def test_review_independent_rejected_stamps_incapable_reject_class(
         "VERDICT: REJECTED\nREJECT_CLASS: incapable\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _reject("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
     daemon.Daemon({"demo": cfg.root}).run_pass("demo")
@@ -4209,6 +4069,7 @@ def test_review_independent_approved_has_no_reject_class(
         "# Review\n\nLooks good.\n\nVERDICT: APPROVED\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _approve("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
     daemon.Daemon({"demo": cfg.root}).run_pass("demo")
@@ -4232,6 +4093,7 @@ def test_review_independent_rejected_without_class_omits_key(
         "# Review\n\nSomething is off.\n\nVERDICT: REJECTED\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id)
+    _reject("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
     daemon.Daemon({"demo": cfg.root}).run_pass("demo")

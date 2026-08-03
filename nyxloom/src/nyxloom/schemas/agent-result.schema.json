@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/agent-result.schema.json",
+  "title": "nyxloom typed agent result (CR-03, DR-13)",
+  "description": "One agent judgement, bound to the identity it was produced for and to the raw output that evidences it. This document -- never a markdown file -- is what the controller reads. The enums here are generated-consistent with src/nyxloom/results.py and tests/test_results.py fails if they drift.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "verdict", "identity", "evidence"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "kind": {
+      "description": "The discriminator: which leg produced this result.",
+      "enum": [
+        "implement",
+        "self_review",
+        "review_independent",
+        "diagnosis",
+        "carve",
+        "gate",
+        "operator"
+      ]
+    },
+    "verdict": {
+      "description": "The outcome. Which of these a given kind may use is enforced by results.ADMISSIBLE_VERDICTS, not by this schema -- a per-kind conditional here would duplicate that table and the two would drift.",
+      "enum": ["done", "blocked", "approved", "rejected", "declined", "failed"]
+    },
+    "decline_reason": {
+      "description": "Required iff verdict is 'declined'; forbidden otherwise. A capability decline must name a mechanically checkable condition, so it can be corroborated rather than believed.",
+      "enum": [
+        "context-exceeded",
+        "tool-unavailable",
+        "contract-referent-missing",
+        "contract-self-contradictory",
+        "dependency-not-landed"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "attempt_id"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "base_commit": {"type": "string"},
+        "head_commit": {"type": "string"},
+        "workflow_digest": {"type": "string"},
+        "prompt_digest": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "description": "The raw agent output, persisted separately and bound by digest. Separate because raw output is not a contract and must never be parsed for authority; bound because evidence that can be edited afterwards does not support the judgement it accompanies.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "summary": {
+      "description": "One human-readable paragraph. Rendered for people; never read for authority.",
+      "type": "string"
+    },
+    "details": {
+      "description": "Kind-specific structured fields (oracle results, reject class, findings). Open by design: adding a detail must not require a schema bump, because details never carry authority.",
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["verdict"],
+        "properties": {"verdict": {"const": "declined"}}
+      },
+      "then": {"required": ["decline_reason"]},
+      "else": {"not": {"required": ["decline_reason"]}}
+    }
+  ]
+}
