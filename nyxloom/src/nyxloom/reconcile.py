@@ -339,19 +339,18 @@ INTERFACE CONTRACT (frozen). Semantics:
     project with zero code changes must not accrue carve budget on an
     unchanged codebase -- the rationale is activity-scoped, not time-scoped.
 
-WHERE EACH ITEM LIVES (CR-06a, 2026-08-03). The contract above is unchanged
-and still frozen; what changed is that `plan_project` is now a DRIVER over an
-ordered table of registered rules rather than a 1,160-line function, so each
-numbered item is a named rule you can find:
+WHERE EACH ITEM LIVES (CR-06a..CR-06c, 2026-08-03). The contract above is
+unchanged and still frozen; what changed is that `plan_project` is now a DRIVER
+over an ordered table of registered rules rather than a 1,160-line function, so
+each numbered item is a named rule you can find -- and as of CR-06c NONE of
+them is in this module:
 
   * items 1, 2, 10, 11, 13 -> `rules_lifecycle.py`
   * item 5 (and the B5 self-review leg) -> `rules_review.py`
   * items 6, 7, 16 -> `rules_attention.py`
   * item 3 -> `rules_dispatch.py`; item 4 -> `rules_attempts.py` (CR-06b)
-  * items 9, 12, 14, 15, 17 and the carver-session ladder -> this module,
-    `carver_session_ladder` / `ready_to_carve` / `carver_human_intake` /
-    `test_health_carve` / `gap_audit_carve` / `headroom_carve` (legacy,
-    CR-06c)
+  * items 9, 12, 14, 15, 17 and the carver-session ladder -> `rules_carve.py`
+    (CR-06c), which took `planning.LEGACY_RULE_BUDGET` to 0
   * item 8 (actions never embed prose) is a constraint on every action rather
     than a decision, so no rule implements it.
 
@@ -359,7 +358,15 @@ The ORDER those rules run in -- which the items above argue about at length,
 because a rare trigger placed after item 9 would starve -- is data in
 `planning.rule_table()`, with the rationale attached to each entry. The single
 carve authority items 9/12/14/15/17 share is a RESOURCE the arbiter grants,
-not a boolean each of them remembers to check.
+not a boolean each of them remembers to check; and a rule that takes that grant
+and plans nothing must now SAY it meant to (`planning.GrantIntent`), because a
+deliberate block and a forgotten emission starve every rule below identically.
+
+WHAT IS LEFT IN THIS MODULE: the action vocabulary (the frozen wire between
+planning and the daemon's executors), the `ReconcileInput` snapshot, the pure
+`ReconcileTrace` channel, the eligibility predicates shared with the daemon
+(`dispatch_eligible`, `fresh_start_eligible`, `attempts_used`,
+`implementer_record_count`), and the `plan_project` driver.
 """
 
 from __future__ import annotations
@@ -369,17 +376,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+# Every name below is referenced by a `ReconcileInput` field annotation, which
+# is what makes this module the place a rule reads its snapshot vocabulary
+# from. `CarverStatus` left with the carver-session ladder (CR-06c): it was a
+# BRANCH condition, not a field type, and the only reader was that ladder.
 from .carver_session import (
-    CarveRepairRequest, CarverFeed, CarverSessionSnapshot, CarverStatus,
+    CarveRepairRequest, CarverFeed, CarverSessionSnapshot,
     HumanIntake, ValidatedCarveProposal,
 )
 from . import planning, snapshot
 from .config import ProjectConfig, RouteDef, Routes
-from .planning import PlanContext, RuleEmitter, RuleMatch
+from .planning import PlanContext, RuleMatch
 from .stages import effective_concurrency
 from .types import (
     Blocker, Frontmatter, TaskState, TaskStateFile,
-    ReceiptResult, Role, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES
+    ReceiptResult, Role, TERMINAL_ATTEMPT_STATES
 )
 
 # P14 2026-07-15 item 6: per-attempt wall-clock cap default (3h). Policy is
@@ -986,325 +997,26 @@ def _premise_drifted(input_revision: str | None, head_revision: str | None) -> b
     return not (a.startswith(b) or b.startswith(a))
 
 
-# F018 P2b-A1 (plan-long-running-carver.md §6.2): pure compaction-trigger
-# defaults, mirroring DEFAULT_ATTEMPT_MAX_WALL_SECONDS's getattr-fallback
-# convention above. `config.CarveStageConfig` (shipped inert in P1, see
-# `[stage.carve]`) already carries exactly these three knobs
-# (`compact_context_ratio`, `compact_after_turns`, `compact_hard_after_
-# turns`) plus the DEGRADED bounded-recovery budget (`max_resume_
-# failures`) with the SAME §6.2-recommended defaults, so `_compaction_due`
-# below reads `inp.cfg.carve.*` directly (always present -- a dataclass
-# field with a default_factory, never missing); these module constants are
-# a defensive getattr fallback only, never a second source of truth to
-# drift from config.py's. DRIFT and OPERATOR triggers are out of scope for
-# this package -- both need impure inputs (a spine-revision diff, an
-# audited operator request) that only the daemon (A2+) can supply.
-DEFAULT_CARVER_COMPACTION_TURN_THRESHOLD = 24
-DEFAULT_CARVER_COMPACTION_SIZE_RATIO = 0.70
-DEFAULT_CARVER_COMPACTION_HARD_FALLBACK_TURNS = 32
-
-
-def _compaction_due(snapshot: CarverSessionSnapshot, cfg: ProjectConfig) -> str | None:
-    """Pure §6.2 compaction-trigger predicate for a WARM carver session.
-    Reads ONLY the durable snapshot + policy -- no clock, no I/O. Returns
-    the trigger name ("size"|"turns"|"turns-fallback") or None.
-
-    Ratio-known regime (`measured_context_ratio is not None` -- §6.2 "use
-    usage only when the route's usage_source is verified"): the SIZE
-    threshold (>= 70% of context window) is the primary signal, checked
-    first; the ordinary 24-turn threshold is a secondary safety net for
-    when size looks fine but the turn count is climbing regardless.
-
-    Ratio-untrusted regime (`measured_context_ratio is None` -- §6.2 "if
-    the harness exposes no trustworthy context occupancy, rely on the turn
-    threshold"): the size check cannot run at all, so the more
-    conservative 32-turn HARD FALLBACK is the sole applicable check. It
-    deliberately does NOT reuse the 24-turn threshold here -- an
-    unconditional 24-turn check would fire first in every ratio-None case
-    (24 < 32), making the dedicated 32-turn hard-fallback trigger name
-    unreachable dead code; scoping the ordinary 24-turn threshold to the
-    ratio-known branch is what keeps both threshold constants -- and both
-    trigger names -- independently observable, matching this package's
-    oracle ("hard-fallback (32 with ratio None)" as its own scenario,
-    distinct from "turn-threshold (24)")."""
-    turns = snapshot.successful_turns_since_compaction
-    ratio = snapshot.measured_context_ratio
-    size_ratio = getattr(cfg.carve, "compact_context_ratio", DEFAULT_CARVER_COMPACTION_SIZE_RATIO)
-    turn_threshold = getattr(cfg.carve, "compact_after_turns", DEFAULT_CARVER_COMPACTION_TURN_THRESHOLD)
-    hard_fallback_turns = getattr(
-        cfg.carve, "compact_hard_after_turns", DEFAULT_CARVER_COMPACTION_HARD_FALLBACK_TURNS)
-
-    if ratio is not None:
-        if ratio >= size_ratio:
-            return "size"
-        if turns >= turn_threshold:
-            return "turns"
-        return None
-    if turns >= hard_fallback_turns:
-        return "turns-fallback"
-    return None
-
-
-# --- planning rules still owned by a later package -------------------------
+# --- MOVED (CR-06c): carve authority ---------------------------------------
 #
 # CR-06a decomposed `plan_project` into the kernel (`planning.py`) plus rules
-# grouped by concern. The concerns that claim no arbitrated resource moved to
-# `rules_lifecycle.py`, `rules_review.py` and `rules_attention.py`; CR-06b then
-# moved dispatch and the attempt ladder to `rules_dispatch.py` and
-# `rules_attempts.py`. What is left below is ONE concern:
+# grouped by concern, and moved the concerns that claim no arbitrated resource;
+# CR-06b moved dispatch and the attempt ladder. What was left here was ONE
+# concern -- carve authority (items 9, 12, 14, 15, 17 and the carver-session
+# ladder) -- and CR-06c moved it to `rules_carve.py`, taking
+# `planning.LEGACY_RULE_BUDGET` from 6 to 0.
 #
-#   * carve authority (items 9, 12, 14, 15, 17 and the carver-session ladder)
-#     -- CR-06c.
+# `_compaction_due` and its three `DEFAULT_CARVER_COMPACTION_*` fallbacks went
+# with the ladder: nothing else in the package or the daemon ever called them,
+# so leaving them here would have kept a shared-helper shape for a helper that
+# is not shared -- which is how this module accreted in the first place. The
+# predicates that ARE shared with the daemon (`dispatch_eligible`,
+# `fresh_start_eligible`, `attempts_used`, `implementer_record_count`,
+# `_wall_clock_cap_exceeded`) stay below, unchanged.
 #
-# Those six rules are registered in the rule table with an explicit
-# `legacy_owner` and counted by `planning.LEGACY_RULE_BUDGET`, which CR-06b
-# lowered from 8 to 6 in the same commit that moved its two.
-#
-# They claim the `carve-slot` THROUGH the arbiter NOW, before their internals
-# move: an arbiter with no claimant would be decoration, and these rules were
-# the eight hand-written copies of `and not carve_dispatch_planned` that the
-# arbiter exists to replace.
-#
-# THEIR BODIES ARE VERBATIM. The carver-session ladder keeps the monolith's own
-# local names through a short adapter prologue rather than being rewritten
-# against the kernel vocabulary, so the differential compares code that was
-# MOVED against code that was moved -- not against code that was quietly
-# rewritten in the same commit. CR-06c rewrites it when it takes ownership.
-
-
-def carver_session_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Carver-session ladder slots 1-4 (F018 P2b-A1, plan §3.3 priority 1-4).
-
-    Legacy body, owned by CR-06c. The FIRST claimant of the pass's carve slot:
-    finishing or admitting an already-produced proposal, and bootstrapping,
-    recovering, feeding or compacting the persistent strategic session, all
-    outrank starting any new carve.
-    """
-    # --- CR-06a adapter prologue (see the section header above) ------------
-    # `inp` and `trace` are the names the moved body uses. `RuleEmitter.note`
-    # takes exactly the (kind, task_id, detail) that `ReconcileTrace.note`
-    # took and additionally stamps this rule's name, so the moved body records
-    # identical breadcrumbs. `carve_dispatch_planned` is now a LOCAL decision
-    # that the epilogue converts into one arbiter claim -- the flag can no
-    # longer leak into another rule, which is the whole point.
-    inp = ctx.inp
-    trace = emit
-    carve_in_flight = ctx.carve_in_flight
-    frontier_route_available = ctx.frontier_route_available
-    budget_allows = ctx.budget_allows
-    carver_pipeline_gate = ctx.carve_stage_present
-    carve_dispatch_planned = False
-    carver_actions: list[Action] = []
-
-    # === Carver-session ladder, slots 1-4 (plan §3.3 priority 1-4): finish/
-    # admit an already-produced proposal; bootstrap/recover the session;
-    # ingest pending merge digests; perform due compaction. Evaluated
-    # BEFORE item 12's READY_TO_CARVE re-scope -- plan §3.3: "never before
-    # a pending merge feed that may invalidate its premise." Shares
-    # carve_in_flight/frontier_route_available/budget_allows/
-    # project_paused with items 9 & 12 above (same hoisted guards, never a
-    # second copy) and the SAME carve_dispatch_planned mutex: a new-
-    # vocabulary carver action and an old CarveDispatch are mutually
-    # exclusive in one pass -- whichever this ladder or item 12/15/9
-    # selects first wins.
-    if (inp.carver_session is not None and carver_pipeline_gate
-            and not inp.project_paused and not carve_in_flight
-            and frontier_route_available and budget_allows):
-        snap = inp.carver_session
-        status = snap.status
-
-        if status in (CarverStatus.STARTING, CarverStatus.COMPACTING):
-            # §2.4: "planner emits no second carver turn" (STARTING) / "all
-            # intake/feed/carve work waits" (COMPACTING) -- a turn is
-            # already effectively in flight for this generation, so this
-            # pass's single carver slot is considered consumed: neither a
-            # new-vocabulary action NOR the legacy CarveDispatch triggers
-            # (item 12/15/9 below) fire this pass.
-            carve_dispatch_planned = True
-            trace.note("carver", None, f"wait:{status.value.lower()}")
-        elif inp.validated_carve_proposals:
-            # Slot 1 (highest priority): finish/admit an already-produced
-            # proposal. Deterministically sorted so a pass with several
-            # validated proposals always picks the same one.
-            chosen = sorted(inp.validated_carve_proposals, key=lambda p: p.proposal_id)[0]
-            carver_actions.append(AdmitCarveProposal(
-                project=inp.cfg.project_id,
-                proposal_id=chosen.proposal_id,
-                artifact_ids=tuple(sorted(chosen.artifact_ids)),
-            ))
-            carve_dispatch_planned = True
-            trace.note("carver", None, "admit")
-        elif status in (CarverStatus.ABSENT, CarverStatus.COLD, CarverStatus.ROTATING):
-            # Slot 2: cold bootstrap / new-generation launch.
-            carver_actions.append(StartCarverSession(project=inp.cfg.project_id))
-            carve_dispatch_planned = True
-            trace.note("carver", None, "start")
-        elif status is CarverStatus.DEGRADED:
-            # Slot 2 (companion, §2.4 "bounded recovery"): a resume, only
-            # while the recovery budget is not exhausted. Reuses
-            # CarveStageConfig.max_resume_failures (the same §2.2 knob P1
-            # already shipped for this exact concept), never a second,
-            # parallel budget field.
-            if snap.resume_failures < inp.cfg.carve.max_resume_failures:
-                carver_actions.append(ResumeCarverSession(
-                    project=inp.cfg.project_id, mode="recover",
-                    generation=snap.generation,
-                ))
-                carve_dispatch_planned = True
-                trace.note("carver", None, "recover")
-            # else: recovery budget exhausted -- leave DEGRADED for the
-            # daemon/operator (A2+ territory); this package plans no
-            # action and does not consume the mutex, so item 12/15/9 may
-            # still run this pass.
-        elif status is CarverStatus.WARM:
-            if inp.pending_carve_repairs:
-                # Slot (F018 AD3): repair a structurally-invalid proposal BEFORE
-                # ingesting any new merge feed -- a broken premise is fixed
-                # first (plan §3.3's "never before a pending merge feed that may
-                # invalidate its premise" applies doubly to a proposal already
-                # known invalid). NO source_ids -> this is NOT a feed -> the P4a
-                # merge-feed shared cursor (last_consumed_event_sequence) is
-                # untouched. The daemon re-derives the invalid proposal ids for
-                # the packet (keeps this action minimal and the planner pure).
-                # Composes with P3b's escalation: the daemon only populates
-                # pending_carve_repairs while `1 <= invalid < max_proposal_
-                # repairs`, so at/above the ceiling this slot is empty and P3b's
-                # NEEDS_OPERATOR escalation fires instead (mutually exclusive by
-                # a single `<` vs `>=` boundary).
-                carver_actions.append(ResumeCarverSession(
-                    project=inp.cfg.project_id, mode="repair-proposal",
-                    generation=snap.generation,
-                ))
-                carve_dispatch_planned = True
-                trace.note("carver", None, "repair-proposal")
-            elif inp.pending_carver_feeds:
-                # Slot 3: ingest pending merge digests. Plan §3.2: "preserving
-                # event order" -- sort by event_sequence (arrival order), NOT
-                # digest_id (a "merge:{project}:{commit_sha}" string whose sort
-                # order is an arbitrary commit hash, unrelated to when each
-                # merge happened).
-                # source_ids= is §4.2's authoritative arg name (plan §3.2's
-                # "source_sequences" is a stale cross-reference -- do not
-                # rename toward it).
-                ids = tuple(f.digest_id for f in
-                            sorted(inp.pending_carver_feeds, key=lambda f: f.event_sequence))
-                carver_actions.append(ResumeCarverSession(
-                    project=inp.cfg.project_id, mode="merge-feed",
-                    source_ids=ids, generation=snap.generation,
-                ))
-                carve_dispatch_planned = True
-                trace.note("carver", None, "merge-feed")
-            else:
-                trigger = _compaction_due(snap, inp.cfg)
-                if trigger is not None:
-                    # Slot 4: due compaction.
-                    carver_actions.append(CompactCarverSession(
-                        project=inp.cfg.project_id, generation=snap.generation,
-                        trigger=trigger,
-                    ))
-                    carve_dispatch_planned = True
-                    trace.note("carver", None, f"compact:{trigger}")
-            # WARM with no pending feed and no compaction due plans nothing
-            # here -- item 12's READY_TO_CARVE re-scope (slot 5) gets its
-            # chance next, exactly as before this package.
-
-    # --- CR-06a arbitration epilogue ---------------------------------------
-    # The ladder is the FIRST claimant in the rule table, so this grant is
-    # unconditional -- but it still goes through the arbiter, because the
-    # emitter refuses any carve-family action from a rule that does not hold
-    # the grant. Note the claim is made even when the ladder emits NOTHING:
-    # the STARTING/COMPACTING reading is "a turn is already effectively in
-    # flight for this generation", which consumes the pass's slot exactly as a
-    # planned action would.
-    if carve_dispatch_planned:
-        emit.claim("carve-slot")
-    for action in carver_actions:
-        emit(action)
-
-
-def ready_to_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 12 (P45 2026-07-19): the READY_TO_CARVE handler.
-
-    Legacy body, owned by CR-06c. Sorted task-id order for determinism -- if
-    multiple tasks are simultaneously READY_TO_CARVE, only the lowest task_id
-    gets this pass's single carve slot; the rest stay in READY_TO_CARVE,
-    picked up on a later pass.
-
-    P52 2026-07-19 (live incident, dstdns): neither this handler nor item 9's
-    untargeted trigger ever checked project_paused -- a "paused" project
-    (drain-handoffs OR drain-agents) still got a NEW carve dispatch fired
-    against it every pass ready_count sat below carve_ahead_target, completely
-    bypassing the pause. 4 unauthorized carve dispatches fired against dstdns
-    in ~15 minutes before this was caught live. dispatch_eligible (regular
-    implementer dispatch) and item 13 (guarded-automatic merge) already both
-    consult project_paused; carving was the one dispatch path in this module
-    that never did. It reads the SHARED guard (never a second,
-    independently-drifting copy) -- which is now a field of the pass context
-    rather than a local of a 1,160-line function.
-
-    F018 P2b-A1: the carver-session ladder above may already have used this
-    pass's single carver slot (an admission, bootstrap, recovery, feed or
-    compaction outranks a re-scope in plan §3.3's priority order), so this
-    trigger asks the arbiter whether the slot is still free -- the check that
-    used to be `not carve_dispatch_planned`.
-    """
-    inp = ctx.inp
-    if (emit.available("carve-slot") and not inp.project_paused
-            and not ctx.carve_in_flight
-            and ctx.frontier_route_available and ctx.budget_allows):
-        ready_to_carve_ids = [
-            task_id for task_id in ctx.sorted_task_ids
-            if inp.states[task_id].state == TaskState.READY_TO_CARVE
-        ]
-        if ready_to_carve_ids:
-            chosen_id = ready_to_carve_ids[0]
-            emit.claim("carve-slot")
-            # B7 2026-07-20 (P75, critique A10/M20): plan ONLY the CarveDispatch
-            # here. The origin task's SUPERSEDED transition is NO LONGER a separate
-            # planned action -- daemon._execute_carve_dispatch emits it atomically,
-            # and ONLY after the re-scope carve actually launches (with the RESCOPED
-            # outcome + the origin's handoff/verdict/drift folded into the carve
-            # packet). Splitting them here was the M20 bug: per-action isolation
-            # (A10/M12) runs each action independently, so the supersede fired even
-            # when the CarveDispatch early-returned (admission refused / no route),
-            # silently dropping the rejected task's re-carve. Coupling the supersede
-            # to the launch is the only real atomicity. task_id=chosen_id now DRIVES
-            # that path (the origin whose context seeds the re-scope packet), where
-            # for item 9's untargeted trigger it stays None.
-            emit(CarveDispatch(project=inp.cfg.project_id, task_id=chosen_id))
-            emit.note("carve", chosen_id, "ready-to-carve")
-
-
-def carver_human_intake(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Carver-session ladder slot 6 (plan §3.3 priority 6): queued human
-    intake.
-
-    Legacy body, owned by CR-06c. Evaluated AFTER item 12's re-scope but
-    BEFORE item 15 (test-health) and item 9 (headroom refill), matching plan
-    §3.3's explicit order exactly. Same shared guards as slots 1-4; the
-    slot-availability check is REQUIRED here (unlike slots 1-4, which run
-    first and only ever take the grant) because item 12 immediately above may
-    have just used this pass's single slot.
-    """
-    inp = ctx.inp
-    if (inp.carver_session is not None and ctx.carve_stage_present
-            and emit.available("carve-slot")
-            and not inp.project_paused and not ctx.carve_in_flight
-            and ctx.frontier_route_available and ctx.budget_allows
-            and inp.carver_session.status is CarverStatus.WARM
-            and inp.pending_human_intakes):
-        # Arrival (event_sequence) order, not intake_id sort order -- same
-        # rationale as slot 3's merge-feed ordering above. source_ids= is
-        # §4.2's authoritative arg name (plan §3.2's "source_sequences" is a
-        # stale cross-reference -- do not rename toward it).
-        ids = tuple(i.intake_id for i in
-                    sorted(inp.pending_human_intakes, key=lambda i: i.event_sequence))
-        emit.claim("carve-slot")
-        emit(ResumeCarverSession(
-            project=inp.cfg.project_id, mode="targeted-intake",
-            source_ids=ids, generation=inp.carver_session.generation,
-        ))
-        emit.note("carver", None, "targeted-intake")
+# What remains in this module: the action vocabulary the rules emit, the
+# `ReconcileInput` snapshot they read, the pure trace channel, the eligibility
+# predicates, and `plan_project` -- a DRIVER over `planning.rule_table()`.
 
 
 # MOVED (CR-06b): implementer dispatch (contract item 3) to `rules_dispatch.py`
@@ -1320,114 +1032,6 @@ def carver_human_intake(ctx: PlanContext, emit: RuleEmitter) -> None:
 # and the carve cadences. They claim no arbitrated resource, so they moved
 # whole to `rules_review.py` and `rules_attention.py`; their position in the
 # pass is now the rule table's business rather than this file's line order.
-
-
-def test_health_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 15 (D-065, B63 2026-07-20): the test-health carve
-    cadence.
-
-    Legacy body, owned by CR-06c. A seldom-run, project-WIDE sibling of item
-    9: it steps back from per-task work entirely and asks the strategic carver
-    to evaluate the SUITE's standing test debt.
-
-    ORDER: evaluated BEFORE item 9's headroom refill, DELIBERATELY. Item 9's
-    condition (ready_count < carve_ahead_target) holds on essentially every
-    pass of an actively-draining project, so a seldom-run trigger placed after
-    it would lose the pass's single carve slot forever and its cadence would
-    silently never fire. That argument now lives on this rule's table entry as
-    well, where it can be reviewed without reading this body.
-    """
-    inp = ctx.inp
-    test_health_interval = inp.cfg.policy.test_health_interval_days
-    if (test_health_interval > 0
-            and not inp.project_paused
-            and not ctx.carve_in_flight
-            and emit.available("carve-slot")
-            and ctx.budget_allows
-            and ctx.frontier_route_available):
-        age = inp.days_since_test_health_carve
-        if age is None or age >= test_health_interval:
-            emit.claim("carve-slot")
-            emit(CarveDispatch(project=inp.cfg.project_id, kind="test-health"))
-
-
-def gap_audit_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 17 (F007 2026-07-27, gap-engine): the gap-audit
-    carve cadence.
-
-    Legacy body, owned by CR-06c. Evaluates whether features the project
-    CLAIMS are shipped are actually backed by code reality, surfacing gaps as
-    carve candidates. ACTIVITY-counted, not time-counted: an idle project with
-    zero code changes must not accrue carve budget on an unchanged codebase.
-
-    ORDER: after item 15's test-health and before item 9's headroom refill --
-    the same starvation argument item 15's docstring makes.
-    """
-    inp = ctx.inp
-    gap_threshold = inp.cfg.policy.gap_audit_after_changed_lines
-    if (gap_threshold > 0
-            and not inp.project_paused
-            and not ctx.carve_in_flight
-            and emit.available("carve-slot")
-            and ctx.budget_allows
-            and ctx.frontier_route_available):
-        changed = inp.changed_lines_since_gap_audit
-        if changed is None or changed >= gap_threshold:
-            emit.claim("carve-slot")
-            emit(CarveDispatch(project=inp.cfg.project_id, kind="gap-audit"))
-            emit.note("carve", None, "gap-audit")
-
-
-def headroom_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract items 9 and 14: the untargeted headroom-refill carve.
-
-    Legacy body, owned by CR-06c. Counts ADMISSIBLE ready work -- a task with
-    an open D-dep is decision-held and is not ready work regardless of its
-    nominal state -- and asks the carver to refill when the queue is below
-    target.
-
-    ORDER: the LAST claimant of the carve slot, and that is load-bearing
-    rather than incidental. Its condition holds on essentially every pass of
-    an actively-draining project, so every rarer trigger has to precede it or
-    starve.
-
-    P03 (D-L5): the shared guard is an if/elif chain SOLELY to attribute a
-    carve-skip breadcrumb to its actual reason (paused / in-flight) -- the
-    overall truth table (enter the ready_count computation iff paused is False
-    AND carve_in_flight is False AND the carve slot is still free) is
-    byte-identical to the single `and`-chained condition it replaces.
-    """
-    inp = ctx.inp
-    if inp.project_paused:
-        emit.note("carve-skip", None, "paused")
-    elif ctx.carve_in_flight:
-        emit.note("carve-skip", None, "in-flight")
-    elif emit.available("carve-slot"):
-        ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
-        ready_count = 0
-        for fm_id, (fm, _handoff_path) in inp.frontmatters.items():
-            tsf = inp.states.get(fm_id)
-            if tsf is None or tsf.state not in ready_states:
-                continue
-            if any(d in inp.decisions_open for d in fm.decision_deps()):
-                emit.note("guard-exclude", fm_id, "decision-held")
-                continue  # decision-held -- not admissible ready work
-            ready_count += 1
-
-        has_nonterminal_task = any(
-            tsf.state not in TERMINAL_TASK_STATES for tsf in inp.states.values()
-        )
-        milestone_admits_work = has_nonterminal_task or (
-            inp.cfg.policy.carve_ahead_target > 0 and not inp.roadmap_exhausted_open
-        )
-
-        if (ready_count < inp.cfg.policy.carve_ahead_target
-                and milestone_admits_work
-                and ctx.budget_allows
-                and ctx.frontier_route_available):
-            emit.claim("carve-slot")
-            emit(CarveDispatch(project=inp.cfg.project_id))
-            emit.note("carve", None, "headroom")
 
 
 def plan_project(inp: ReconcileInput) -> PlanResult:
