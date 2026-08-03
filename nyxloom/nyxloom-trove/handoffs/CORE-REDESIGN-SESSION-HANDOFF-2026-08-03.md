@@ -12,13 +12,19 @@ This file is the operating manual that sits beside it.
 ## Where the program is
 
 Accepted and merged on `main`: CR-00, CR-15, CR-01, CR-02a, CR-02b, CR-03,
-CR-04a, CR-04b, CR-05a, CR-05b, CR-05c, CR-05d. Every one through the authoritative
+CR-04a, CR-04b, CR-05a, CR-05b, CR-05c, CR-05d, CR-05f. Every one through the authoritative
 `tester-unified` gate at 100% changed-line coverage; gate evidence and commit
 SHAs are in the ledger.
 
-Next by dependency order: **CR-05f** (the carve-dispatch families), then
-**CR-05e** (`EmitAttemptExit` alone, which routes by attempt ROLE and
-therefore depends on every other family having moved).
+Next by dependency order: **CR-05e** — `EmitAttemptExit` alone, the LAST
+effect family on the shell. It routes by attempt ROLE into the implementer
+outcome table, the review verdict consumer, the self-review consumer, and
+carve's two, so it needed every other family to move first. Budget 1 -> 0, at
+which point the readiness audit's final structural oracle applies: reject
+effector imports or effector-owned mutable state on `Daemon`, not merely a
+long `_execute`.
+
+`daemon.py` is 5,275 lines, down from 9,077 when CR-05 started.
 
 **A reader is not a blocker.** The CR-05d row was once marked blocked because
 two of its functions are called by `_build_input` as well as by the effects.
