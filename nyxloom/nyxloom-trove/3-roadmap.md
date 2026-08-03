@@ -54,6 +54,8 @@ milestones:
 
 # nyxloom — roadmap
 
+<!-- product-truth:active_milestone=M3 -->
+
 Milestones group the product-definition features by delivery phase. M1-M2 are
 `done` (trustworthy core + guided onboarding). M3 (gap-engine) is `active`.
 M4-M6 (smart scheduling + capability-matched routing, self-contained runtime +

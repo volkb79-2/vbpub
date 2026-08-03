@@ -938,6 +938,82 @@ def test_build_carve_packet_untargeted_has_no_rescope_section(
     assert "You are proposing NEW handoff packages" in packet
 
 
+# ---------------------------------------------------------------------------
+# _carve_source_note_lines: the daemon's "context collection" surface (CR-01,
+# DR-04) -- default carve-context notes must prefer the adopted direction-
+# spine paths and must never surface an archived document.
+
+def test_carve_source_note_lines_prefers_spine_roadmap_over_legacy_convention(
+        tmp_state, sample_project, patch_siblings):
+    """A project that adopted the direction spine (cfg.roadmap set) must see
+    ITS roadmap, not fall through to the plain nyxloom-trove/roadmap.md
+    convention just because that exact filename doesn't exist -- the bug
+    this fix closes: nyxloom's own config sets `roadmap =
+    "nyxloom-trove/3-roadmap.md"`, which the OLD hardcoded-path chain never
+    consulted."""
+    cfg = sample_project
+    cfg.roadmap = "nyxloom-trove/3-roadmap.md"
+    (cfg.root / "nyxloom-trove").mkdir(parents=True, exist_ok=True)
+    (cfg.root / "nyxloom-trove" / "3-roadmap.md").write_text("spine roadmap\n")
+    d = daemon.Daemon({"demo": cfg.root})
+
+    lines = d._carve_source_note_lines(cfg)
+    roadmap_lines = [ln for ln in lines if ln.startswith("- roadmap:")]
+    assert roadmap_lines == ["- roadmap: nyxloom-trove/3-roadmap.md"]
+
+
+def test_carve_source_note_lines_falls_back_to_legacy_when_spine_unset(
+        tmp_state, sample_project, patch_siblings):
+    """No spine adoption (cfg.roadmap is None): the legacy trove convention
+    still works, unchanged behavior."""
+    cfg = sample_project
+    assert cfg.roadmap is None
+    (cfg.root / "nyxloom-trove").mkdir(parents=True, exist_ok=True)
+    (cfg.root / "nyxloom-trove" / "roadmap.md").write_text("legacy roadmap\n")
+    d = daemon.Daemon({"demo": cfg.root})
+
+    lines = d._carve_source_note_lines(cfg)
+    roadmap_lines = [ln for ln in lines if ln.startswith("- roadmap:")]
+    assert roadmap_lines == ["- roadmap: nyxloom-trove/roadmap.md"]
+
+
+def test_carve_source_note_lines_never_surfaces_an_archived_roadmap(
+        tmp_state, sample_project, patch_siblings):
+    """Fail-closed (CR-01 contract item 6): even a MISCONFIGURED cfg.roadmap
+    pointing straight at an archived doc must never be surfaced -- the
+    daemon skips it and falls through to the next candidate instead."""
+    cfg = sample_project
+    archived = cfg.root / "docs" / "archive" / "product-docs" / "ROADMAP.md"
+    archived.parent.mkdir(parents=True)
+    archived.write_text("archived roadmap\n")
+    cfg.roadmap = "docs/archive/product-docs/ROADMAP.md"
+    (cfg.root / "nyxloom-trove").mkdir(parents=True, exist_ok=True)
+    (cfg.root / "nyxloom-trove" / "roadmap.md").write_text("legacy roadmap\n")
+    d = daemon.Daemon({"demo": cfg.root})
+
+    lines = d._carve_source_note_lines(cfg)
+    joined = "\n".join(lines)
+    assert "docs/archive" not in joined
+    assert "- roadmap: nyxloom-trove/roadmap.md" in lines
+
+
+def test_carve_source_note_lines_reports_none_found_when_only_archive_exists(
+        tmp_state, sample_project, patch_siblings):
+    """No live roadmap/gap-analysis anywhere except an archived doc -> the
+    'none found' line, never a silent empty result that could be mistaken
+    for 'no roadmap needed'."""
+    cfg = sample_project
+    archived = cfg.root / "docs" / "archive" / "product-docs" / "ROADMAP.md"
+    archived.parent.mkdir(parents=True)
+    archived.write_text("archived roadmap\n")
+    cfg.roadmap = "docs/archive/product-docs/ROADMAP.md"
+    d = daemon.Daemon({"demo": cfg.root})
+
+    lines = d._carve_source_note_lines(cfg)
+    assert any("roadmap/gap analysis: none found" in ln for ln in lines)
+    assert not any("docs/archive" in ln for ln in lines)
+
+
 def test_rescope_context_reads_handoff_verdict_and_drift(
         tmp_state, sample_project, patch_siblings):
     """_rescope_context assembles the packet inputs from real state: the origin's

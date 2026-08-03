@@ -1,9 +1,12 @@
 # nyxloom specification
 
-Status: **draft design for pilot validation**. MUST/SHOULD/MAY describe a
-future conforming implementation. Where a section says *inherited*, draft 1's
-[SPEC](../../nyxloom/docs/SPEC.md) text applies with draft-2 storage
-substituted (files for SQLite, tick for daemon, flock for managed lease).
+Status: **design baseline; current authority for §3-§13's contracts (handoff
+frontmatter, state machine, lint rules, review/wave/stop-policy semantics)**.
+MUST/SHOULD/MAY describe a conforming implementation. Where a section says
+*inherited*, draft 1's [SPEC](../../nyxloom/docs/SPEC.md) text applies with
+draft-2 storage substituted (files for SQLite, tick for daemon, flock for
+managed lease) — **except §2.3 below, corrected 2026-08-03 (CR-01/DR-04):
+that substitution direction reversed when SQLite became the live backend.**
 
 ## 1. Terms
 
@@ -26,9 +29,11 @@ Added:
 2. One handoff = **one Markdown file**; its frontmatter is the only machine
    metadata. A second machine representation of the same contract MUST NOT
    exist (no JSON sidecars).
-3. Runtime truth: `events.jsonl` (append-only) is authoritative; statefiles
-   are projections and MUST be reproducible by replay. Any database is a
-   rebuildable index, never an authority.
+3. Runtime truth: **SQLite is authoritative** (`NYXLOOM_STATE_BACKEND=sqlite`,
+   live since 2026-07-21 — corrected 2026-08-03, CR-01/DR-04; the original
+   text here said the reverse: `events.jsonl` authoritative, any database a
+   rebuildable index). Statefiles/projections MUST still be reproducible by
+   replaying the durable event log, whichever store holds it.
 4. Route selection is snapshotted onto the attempt at dispatch; it MUST NOT be
    inferred later from the then-current `routes.toml`.
 5. Chat history is never required to reconstruct workflow truth (inherited).

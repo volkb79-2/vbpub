@@ -43,11 +43,17 @@ worktree_root = "../.worktrees"                       # vbpub is the git repo; n
 
 # --- [refs]: docs nyxloom READS but does not manage (live in the project tree).
 # Declaring them makes the full document surface nyxloom depends on explicit.
+# CR-01 (DR-04, 2026-08-03): `roadmap_tool` (docs/ROADMAP.md) and `evolution`
+# (docs/EVOLUTION.md) were REMOVED here after both docs were archived to
+# docs/archive/product-docs/ -- roadmap_tool's concern (self-dev milestones)
+# is already covered by the `roadmap` spine key below (nyxloom-trove/
+# 3-roadmap.md), and evolution had no current successor (historical, a
+# completed one-time migration). `nyxloom lint` (CFG4) now rejects any [refs]
+# entry that resolves into docs/archive/, so re-adding either key verbatim
+# would fail lint rather than silently reintroducing the ambiguity.
 [refs]
 spec         = "docs/SPEC.md"
 architecture = "docs/ARCHITECTURE.md"
-roadmap_tool = "docs/ROADMAP.md"
-evolution    = "docs/EVOLUTION.md"
 
 # --- the gate: NEVER the devcontainer (cockpit doctrine). tester-unified
 #     container, same python (3.14) the nyxloomd runtime uses. {worktree} = the

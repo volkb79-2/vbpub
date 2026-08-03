@@ -14,11 +14,17 @@ wrong by construction.)
   jsonschema, hypothesis, pytest installed — install NOTHING). Corrected
   2026-08-02: this line named `/workspaces/vbpub/.venv/bin/python` at "3.13",
   a path that does not exist.
+  <!-- product-truth:interpreter=3.14 -->
 - **Gate — the only accepted evidence** is the project's real declared gate,
   `[gates.tester-unified]` in `nyxloom-trove/nyxloom.toml`: pytest under
   `-n auto` with coverage inside the `tester-unified` container, followed by
   the changed-line coverage floor. Run it; paste the tail of its real output
   into your REPORT.
+  <!-- product-truth:authoritative_gate=tester-unified -->
+  (CR-01/DR-04, 2026-08-03: both markers above are asserted against the
+  running interpreter and `nyxloom.toml`'s declared `[gates.*]` by
+  `tests/test_product_truth.py` on every gate run, so this paragraph cannot
+  go stale again the way the corrections above record it once did.)
   Corrected 2026-08-02: this line used to name a cockpit venv `pytest` command
   as "the only accepted evidence", contradicting both `nyxloom.toml` and the
   project's own rule that cockpit runs are diagnostic and are never release
