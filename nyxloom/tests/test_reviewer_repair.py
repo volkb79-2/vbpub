@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import adapters, daemon, lint, notify, paths, reconcile, render, storage, wrapper
+from nyxloom import (adapters, daemon, lint, notify, paths, reconcile, render, snapshot,
+                     storage, wrapper)
 from nyxloom.config import Policy, ProjectConfig
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, EventType, Receipt, ReceiptResult,
@@ -477,17 +478,23 @@ def test_verdict_is_repaired_false_when_no_review_report(tmp_state, sample_proje
     assert d._verdict_is_repaired(cfg, task_id) is False
 
 
-def test_pre_review_sha_returns_none_on_storage_error(tmp_state, sample_project, monkeypatch):
-    """_pre_review_sha's `except Exception` branch: storage.iter_events itself
-    raises (a corrupt/unreadable event log) -- degrades to None (unresolved
-    baseline), never a crashed pass."""
+def test_pre_review_sha_storage_error_is_typed_unavailable(tmp_state, sample_project,
+                                                            monkeypatch):
+    """CR-02a: None is the ARTIFACT BINDING's "no baseline recorded" answer,
+    and it disables the reviewer-repair diff check entirely. An unreadable
+    event log must not be able to produce it -- that is an unreadable store
+    switching off a review-integrity guard.
+
+    The genuine no-baseline case still returns None; see
+    test_pre_review_sha_returns_none_when_no_matching_attempt_created."""
     d = daemon.Daemon({"demo": sample_project.root})
 
     def boom(*_a, **_k):
         raise RuntimeError("store down")
 
     monkeypatch.setattr(storage, "iter_events", boom)
-    assert d._pre_review_sha("demo", "t-x", "att-x") is None
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._pre_review_sha("demo", "t-x", "att-x")
 
 
 def test_pre_review_sha_returns_none_when_no_matching_attempt_created(tmp_state, sample_project):

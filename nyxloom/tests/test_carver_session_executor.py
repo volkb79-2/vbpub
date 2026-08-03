@@ -46,7 +46,7 @@ import pytest
 
 from dataclasses import replace as dc_replace
 
-from nyxloom import carver_session, daemon, lint, paths, reconcile, storage
+from nyxloom import carver_session, daemon, lint, paths, reconcile, snapshot, storage
 from nyxloom.config import ProjectConfig, register_project
 from nyxloom.types import (
     Actor, ActorKind, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
@@ -1061,8 +1061,13 @@ def test_spine_revisions_hashes_existing_paths_and_skips_missing_ones(
     assert "roadmap" not in revisions  # not configured -> skipped
 
 
-def test_recent_merge_digest_ids_zero_limit_and_storage_error_degrade_to_empty(
+def test_recent_merge_digest_ids_zero_limit_short_circuits_storage_error_raises(
         tmp_state, carver_project, monkeypatch):
+    """limit<=0 is an explicit "keep none" and never reads the log.
+
+    CR-02a: an unreadable log no longer degrades to [] -- silently emptying
+    the cold-bootstrap packet's merge-digest pointers gave the carver a
+    falsely-clean picture of project history."""
     d = daemon.Daemon({"demo": carver_project.root})
     assert d._recent_merge_digest_ids("demo", 0) == []
 
@@ -1070,7 +1075,9 @@ def test_recent_merge_digest_ids_zero_limit_and_storage_error_degrade_to_empty(
         raise RuntimeError("simulated storage failure")
 
     monkeypatch.setattr(storage, "iter_events", _boom)
-    assert d._recent_merge_digest_ids("demo", 5) == []
+    assert d._recent_merge_digest_ids("demo", 0) == []   # still short-circuits
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._recent_merge_digest_ids("demo", 5)
 
 
 def test_recent_merge_digest_ids_skips_malformed_digest_without_id(
@@ -2233,14 +2240,19 @@ def test_o7_byte_identical_fresh_carve_dispatch(tmp_state, sample_project, patch
 # Coverage sweeps (P3d uncovered lines — reachable edge cases)
 # ==========================================================================
 
-def test_needs_operator_debounce_storage_error(tmp_state, carver_project, monkeypatch):
-    """Cover daemon.py:1719-1720: when storage.iter_events raises, debounce
-    returns False (allow emission)."""
+def test_needs_operator_debounce_storage_error_is_typed_unavailable(
+        tmp_state, carver_project, monkeypatch):
+    """CR-02a: "returns False (allow emission)" was the fail-open direction.
+
+    False means the episode has not been escalated yet, so an unreadable log
+    re-emits the same NEEDS_OPERATOR page every pass for as long as the fault
+    lasts. The debounce reads an authoritative input now."""
     cfg = carver_project
     d = daemon.Daemon({"demo": cfg.root})
     monkeypatch.setattr(storage, "iter_events",
                         lambda project: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert not d._needs_operator_recently_emitted("demo", "carver-no-route")
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._needs_operator_recently_emitted("demo", "carver-no-route")
 
 
 def test_compact_stale_plan_refuses_cleanly(tmp_state, carver_project):

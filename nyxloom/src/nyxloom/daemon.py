@@ -354,12 +354,13 @@ import time
 import urllib.parse
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Sequence
 
 from . import (
     adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat,
     decisions, doc_lifecycle, frontmatter, gate_canary, gate_runner, intake_chat, leases,
-    lint, merge_digest, notify, paths, reconcile, render, stages, storage, watchdog, wrapper,
+    lint, merge_digest, notify, paths, reconcile, render, snapshot, stages, storage,
+    watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -695,7 +696,10 @@ class Daemon:
         self._http_thread: threading.Thread | None = None
         self._cmd_listener: commands.CommandListener | None = None
         # Daemon memory: disposable, rebuilt on restart.
-        self._probe_memo: dict[str, tuple[float, bool, str]] = {}
+        # (monotonic_ts, ok, bounded_detail, probe_fault_code). CR-02a added
+        # the fourth element: a memoized PROBE FAULT must keep reporting its
+        # degradation, or the TTL alone silently "recovers" it next pass.
+        self._probe_memo: dict[str, tuple[float, bool, str, str]] = {}
         self._stall_cache: dict[str, str | None] = {}
         self._provider_paused: dict[str, float] = {}
         self._decisions_seen: dict[str, dict[str, str]] = {}
@@ -732,6 +736,16 @@ class Daemon:
         # thread, in _drain_post_merge_gate_results, never here.
         self._post_merge_gate_running: dict[str, threading.Thread] = {}
         self._post_merge_gate_results: queue.Queue = queue.Queue()
+        # CR-02a 2026-08-03 (authoritative snapshot fail-closed audit): the
+        # audit produced by the CURRENT pass's fan-in, per project. Set by
+        # _build_input, cleared by run_pass's `finally`. The effect boundary
+        # (_dispatch_admissible) consults it so an authoritative fault refuses
+        # a launch even if some future caller reaches _execute without going
+        # through run_pass's own gate. Absent == "no fan-in has run in this
+        # call stack" (an operator-initiated path such as
+        # dispatch_targeted_carve), which is NOT the same as "clean" -- see
+        # _dispatch_admissible for why absence is permitted there.
+        self._snapshot_audit: dict[str, snapshot.SnapshotAudit] = {}
 
     # -- lifecycle ------------------------------------------------------
 
@@ -862,14 +876,62 @@ class Daemon:
     # -- one reconcile pass -----------------------------------------------
 
     def run_pass(self, project: str) -> int:
-        """One reconcile pass; returns number of actions executed."""
+        """One reconcile pass; returns number of actions executed.
+
+        CR-02a (fail-closed authoritative snapshot): the pass is now built in
+        two acquisition phases around ONE ``snapshot.SnapshotBuilder``.
+
+        Phase A acquires the three facts every later acquisition is expressed
+        in terms of -- project config, projected task state, and the event log
+        -- BEFORE anything mutates state. If any of them is unavailable the
+        pass emits one ``SNAPSHOT_UNAVAILABLE`` and returns 0 having touched
+        nothing at all.
+
+        Phase B (inside ``_build_input``) acquires the remaining authoritative
+        domains -- decisions, handoffs, lint, leases, routes, git facts,
+        receipts, artifact digests -- plus the advisory ones. If ANY
+        authoritative input is not OK, ``plan_project`` is never called, no
+        action is executed, and the pass emits exactly one
+        ``SNAPSHOT_UNAVAILABLE`` naming every failed source with its reason
+        code and provenance.
+
+        The early-mutation helpers between the phases (`_reconcile_decisions`,
+        `_transient_escalate`, `_carve_proposal_repair_escalations`) run on
+        phase-A facts only. They record decision status and requeue a
+        transient-throttled attempt; none of them launches a process, merges,
+        or authorizes a gate, so running them before phase B completes cannot
+        produce an irreversible effect from an incomplete snapshot.
+        """
         try:
             root = self.registry[project]
-            cfg = config.ProjectConfig.load(root)
-            states = storage.list_states(project)
+            builder = snapshot.SnapshotBuilder()
+            cfg_in = builder.authoritative(
+                "config", lambda: config.ProjectConfig.load(root),
+                provenance=snapshot.Provenance("config-file", str(root)))
+            states_in = builder.authoritative(
+                "state", lambda: storage.list_states(project),
+                provenance=snapshot.Provenance("state-store", project))
+            events_in = builder.authoritative(
+                "event_log", lambda: tuple(storage.iter_events(project)),
+                provenance=snapshot.Provenance("event-log", project))
+            phase_a = builder.audit()
+            if not phase_a.permits_effects:
+                # Nothing has been read successfully enough to even notify
+                # from, so this emits the bare event and stops.
+                self._emit_snapshot_unavailable(
+                    project, cfg_in.value if cfg_in.ok else None, {}, phase_a)
+                return 0
+            cfg = cfg_in.require()
+            states = states_in.require()
+            events = events_in.require()
             appended: list[Event] = []
 
-            appended.extend(self._reconcile_decisions(project, cfg, states))
+            appended.extend(self._reconcile_decisions(project, cfg, states,
+                                                       builder=builder, events=events))
+            if not builder.audit().permits_effects:
+                audit = builder.audit()
+                self._emit_snapshot_unavailable(project, cfg, states, audit)
+                return 0
             # B24 2026-07-23 (D-R17, D-B24-5/6): the at-cap escalation for
             # TRANSIENT-classified INTERRUPTED attempts. Runs here (same
             # early-mutation timing as _reconcile_decisions above, BEFORE
@@ -880,9 +942,22 @@ class Daemon:
             # proposals (plan §4.1) -- same early-mutation timing as the two
             # calls above; a no-op ([]) whenever the carver-session feature
             # is off (_carver_session's own MASTER GATE).
-            appended.extend(self._carve_proposal_repair_escalations(project, cfg, states))
+            appended.extend(self._carve_proposal_repair_escalations(project, cfg, states,
+                                                                     events=events))
 
-            inp = self._build_input(project, cfg, states)
+            inp = self._build_input(project, cfg, states, builder=builder, events=events)
+            audit = builder.audit()
+            self._snapshot_audit[project] = audit
+            # Advisory degradation is durable and de-duplicated, and it is
+            # recorded whether or not the pass proceeds -- an advisory fault
+            # alongside an authoritative one must not be swallowed by the
+            # fail-closed return.
+            appended.extend(self._record_snapshot_degradation(project, cfg, states, events, audit))
+            if inp is None or not audit.permits_effects:
+                self._emit_snapshot_unavailable(project, cfg, states, audit)
+                if appended:
+                    render.render_after_event(self.registry)
+                return 0
             actions = reconcile.plan_project(inp)
             # P03 (D-L5): plan_project stays pure (no clock/IO/logger import)
             # but its PlanResult return value optionally carries `.trace` --
@@ -898,7 +973,7 @@ class Daemon:
                     for note in trace.breadcrumbs:
                         log.debug("reconcile-trace", kind=note.kind, task=note.task_id, detail=note.detail)
             actions, watchdog_events = self._apply_watchdog(
-                project, cfg, states, actions, inp.project_paused)
+                project, cfg, states, actions, inp.project_paused, events=events)
             appended.extend(watchdog_events)
             for action in actions:
                 # P62 2026-07-20 (A10, M12): per-action isolation. The action
@@ -960,6 +1035,126 @@ class Daemon:
             except Exception:
                 pass
             return 0
+        finally:
+            # The audit describes THIS pass only. Leaving it behind would let
+            # a later operator-initiated effect consult a stale verdict.
+            self._snapshot_audit.pop(project, None)
+
+    # -- snapshot fan-in reporting (CR-02a) --------------------------------
+
+    def _emit_snapshot_unavailable(
+        self, project: str, cfg: ProjectConfig | None,
+        states: dict[str, TaskStateFile], audit: snapshot.SnapshotAudit,
+    ) -> None:
+        """The ONE actionable durable event a fail-closed pass emits.
+
+        Exactly one per affected pass no matter how many sources failed: the
+        payload carries every failure, each with its stable reason code and
+        provenance, deterministically ordered by source name (see
+        ``SnapshotAudit.event_payload``). Emitting one per failed source would
+        turn a single unreadable state directory into an N-event storm that
+        buries the actionable signal -- the exact shape `watchdog.py` and
+        `reference/DOCTRINE.md` were written to prevent.
+
+        Best-effort by construction: if the event store itself is the thing
+        that is broken, the append cannot succeed and the WARNING log line is
+        the only remaining channel. That is why the log line carries the same
+        summary rather than pointing at the event.
+        """
+        payload = audit.event_payload()
+        log.warning(
+            "snapshot-unavailable", project=project,
+            sources=audit.summary(), digest=payload["digest"],
+        )
+        if cfg is None:
+            # No config means notification routing is unknown too; append
+            # directly rather than going through _append_ev.
+            try:
+                storage.append_and_apply(
+                    project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+                    type=EventType.SNAPSHOT_UNAVAILABLE, payload=payload)
+            except Exception as exc:  # census: cleanup/containment (CR-02a)
+                # The store is unreachable; there is no further channel and
+                # nothing this method could do would make the pass LESS
+                # closed. It has already executed zero effects.
+                log.error("snapshot-unavailable append failed",
+                           project=project, error=snapshot.bounded_detail(repr(exc)))
+            return
+        self._append_ev(project, cfg, states, EventType.SNAPSHOT_UNAVAILABLE, payload,
+                         task_id=None)
+
+    def _event_log(self, project: str) -> snapshot.SnapshotInput[tuple[Event, ...]]:
+        """THE typed acquisition of a project's event log.
+
+        CR-02a: before this, twenty-seven separate helpers each wrapped
+        ``list(storage.iter_events(project))`` in its own broad ``except`` and
+        chose its own fail direction -- ``[]``, ``False``, ``None``, ``0.0``,
+        ``frozenset()``. Several of those directions were fail-OPEN (an
+        unreadable log reported "no runaway escalated yet", "no proposal
+        admitted yet", "no diagnosis in flight"). There is now exactly one
+        acquisition, one class (AUTHORITATIVE), and one reason code.
+        """
+        return snapshot.acquire(
+            "event_log", snapshot.InputClass.AUTHORITATIVE,
+            lambda: tuple(storage.iter_events(project)),
+            provenance=snapshot.Provenance("event-log", project))
+
+    def _require_events(self, project: str,
+                         events: Sequence[Event] | None) -> Sequence[Event]:
+        """The pass's already-acquired event log, or a fresh typed acquisition.
+
+        Callers inside the fan-in pass the tuple they already hold. Callers at
+        the EFFECT boundary (an executor reached outside a reconcile pass, or
+        an operator-initiated verb) pass nothing and get a fresh read that
+        raises :class:`snapshot.SnapshotUnavailable` on failure -- which
+        `run_pass`'s per-action isolation records as a TICK_ERROR and which
+        aborts exactly that one effect. What it can never do is hand back a
+        benign-looking empty log.
+        """
+        if events is not None:
+            return events
+        return self._event_log(project).require()
+
+    def _record_snapshot_degradation(
+        self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
+        events: Sequence[Event], audit: snapshot.SnapshotAudit,
+    ) -> list[Event]:
+        """Emit ``SNAPSHOT_DEGRADED`` when the advisory degradation set CHANGES.
+
+        Advisory faults are allowed to persist while progress continues, so a
+        per-pass event would storm. De-duplication is on the audit digest
+        (name+status+reason only -- never the run-specific detail text), read
+        back from the durable log rather than from daemon memory, so it
+        survives a restart and replays identically.
+
+        The recovery edge is emitted too: when the last recorded digest was a
+        degraded one and the current set is empty, one event with an empty
+        ``degraded`` list records the recovery. Without it the dashboard's
+        last word on the project would remain the stale degradation -- a
+        false-dirty latch, the mirror image of the false-clean latch this
+        package exists to remove.
+        """
+        current = snapshot.SnapshotAudit(audit.degradations())
+        last_digest: str | None = None
+        for ev in events:
+            if ev.type is EventType.SNAPSHOT_DEGRADED:
+                last_digest = str((ev.payload or {}).get("digest") or "")
+        digest = current.digest()
+        if last_digest is None:
+            # Never recorded: only onset is newsworthy, not a clean start.
+            if not current.inputs:
+                return []
+        elif digest == last_digest:
+            return []
+        payload = current.event_payload()
+        payload["summary"] = current.degradation_summary()
+        if current.inputs:
+            log.warning("snapshot-degraded", project=project,
+                         sources=current.degradation_summary(), digest=digest)
+        else:
+            log.info("snapshot-degraded-cleared", project=project, digest=digest)
+        return [self._append_ev(project, cfg, states, EventType.SNAPSHOT_DEGRADED,
+                                 payload, task_id=None)]
 
     def dispatch_targeted_carve(self, project: str, item_id: str) -> list[Event]:
         """P41 2026-07-16: on-demand carve of ONE briefed backlog item --
@@ -981,55 +1176,176 @@ class Daemon:
         return events
 
     def _reconcile_decisions(self, project: str, cfg: ProjectConfig,
-                              states: dict[str, TaskStateFile]) -> list[Event]:
+                              states: dict[str, TaskStateFile],
+                              *, builder: snapshot.SnapshotBuilder | None = None,
+                              events: Sequence[Event] | None = None) -> list[Event]:
+        """Turn decision-inbox status changes into DECISION_* events.
+
+        CR-02a: the inbox is AUTHORITATIVE in both directions and used to fail
+        open in one of them. A `DECISION_RESOLVED` that never fires leaves
+        tasks held (safe); a `DECISION_OPENED` that never fires leaves a task
+        running that a human meant to stop -- and the old
+        ``except Exception: events = []`` produced exactly that from an
+        unreadable or malformed inbox. Both the reconcile pass and the
+        seen-status refresh are now typed acquisitions: on failure this
+        returns [] WITHOUT emitting anything, and the fan-in audit that the
+        caller checks immediately afterwards stops the pass.
+
+        ``builder`` is optional so the method stays directly callable (tests,
+        and any future caller that only wants the events); without it the old
+        signature and a self-contained audit still hold, and a fault simply
+        yields no events.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
         seen = self._decisions_seen.setdefault(project, {})
         out: list[Event] = []
-        try:
-            events = decisions.reconcile_decisions(cfg, states, seen)
-        except Exception:
-            events = []
-        for ev_type_str, decision_id in events:
+        inbox_path = cfg.root / cfg.decisions_inbox
+        prov = snapshot.Provenance("decisions-inbox", str(cfg.decisions_inbox))
+        planned_in = b.authoritative(
+            "decision_reconcile",
+            lambda: decisions.reconcile_decisions(cfg, states, seen),
+            provenance=prov)
+        # The seen-status refresh is the dedup cursor for the NEXT pass; a
+        # failure to update it re-fires every DECISION_OPENED forever, so it
+        # is acquired (and fails closed) rather than swallowed.
+        parsed_in = b.authoritative(
+            "decisions_inbox",
+            lambda: (decisions.parse_inbox(inbox_path.read_text(encoding="utf-8"))
+                     if inbox_path.exists() else []),
+            provenance=prov)
+        if not planned_in.ok or not parsed_in.ok:
+            return out
+        push_failures: list[str] = []
+        for ev_type_str, decision_id in planned_in.require():
             out.append(self._append_ev(project, cfg, states, EventType(ev_type_str), {},
                                         decision_id=decision_id))
             if ev_type_str == "DECISION_OPENED":
                 # P18: additional actionable push to the feedback channel,
                 # in ADDITION to the normal notifications-channel push
                 # notify.notify_event already sent above via _append_ev.
+                # CR-02b census: advisory-degradation -- a feedback-channel
+                # push that fails must not undo the durable DECISION_OPENED
+                # that has already been appended.
                 try:
                     decision_chat.notify_decision_opened(cfg, decision_id)
-                except Exception:
-                    pass
-        inbox_path = cfg.root / cfg.decisions_inbox
-        if inbox_path.exists():
-            try:
-                parsed = decisions.parse_inbox(inbox_path.read_text(encoding="utf-8"))
-                for d in parsed:
-                    seen[d.id] = d.status
-            except Exception:
-                pass
+                except Exception as exc:
+                    push_failures.append(f"{decision_id}:{type(exc).__name__}")
+        if push_failures:
+            # ONE aggregate descriptor: descriptor names are unique per audit,
+            # and N failed pushes are one degradation of one channel.
+            b.add(snapshot.SnapshotInput.failed(
+                "decision_feedback_push", snapshot.InputClass.ADVISORY,
+                snapshot.Reason.SOURCE_ERROR,
+                provenance=snapshot.Provenance("notify", "feedback-channel"),
+                detail=" ".join(sorted(push_failures))))
+        for d in parsed_in.require():
+            seen[d.id] = d.status
         return out
 
     # -- input building ----------------------------------------------------
 
     def _build_input(self, project: str, cfg: ProjectConfig,
-                      states: dict[str, TaskStateFile]) -> reconcile.ReconcileInput:
-        routes = config.Routes.load()
+                      states: dict[str, TaskStateFile],
+                      *, builder: snapshot.SnapshotBuilder | None = None,
+                      events: Sequence[Event] | None = None,
+                      ) -> reconcile.ReconcileInput | None:
+        """Phase B of the fan-in: acquire every remaining domain, then assemble.
+
+        CR-02a. Returns ``None`` -- never a half-built input -- if any
+        AUTHORITATIVE acquisition is not OK. The caller (`run_pass`) reads the
+        builder's audit for the reason set; it does not have to inspect the
+        returned value to know what went wrong.
+
+        Every independently-acquirable authoritative domain is acquired
+        BEFORE the first refusal check, deliberately: short-circuiting on the
+        first fault would report one broken source per pass, so an operator
+        fixes lint, re-runs, and only then discovers the lease store is down
+        too. One outage should produce one complete picture. Only
+        acquisitions that genuinely need an earlier value (the provider
+        probes need `routes`, `lint_clean` needs both the findings and the
+        parsed frontmatters) happen after the check.
+
+        Every authoritative domain named in the CR-02 contract is acquired
+        here or in phase A: config and projected state and the event log
+        (phase A), decisions (`_reconcile_decisions`), handoffs and refs/lint,
+        leases, routes/capabilities, gate evidence, git facts, receipts, and
+        artifact digests. Advisory domains -- provider probes, attempt-log
+        mtimes, /proc CPU signatures, gap-audit activity counting -- are
+        acquired as ADVISORY and may degrade, but the degradation is recorded
+        in the same audit and surfaces as a durable event.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
+        if events is None:
+            events_in = b.authoritative(
+                "event_log", lambda: tuple(storage.iter_events(project)),
+                provenance=snapshot.Provenance("event-log", project))
+            if not events_in.ok:
+                return None
+            events = events_in.require()
+
+        routes_in = b.authoritative(
+            "routes", config.Routes.load,
+            provenance=snapshot.Provenance("routes-file", str(paths.routes_path())))
+        handoffs_in = b.authoritative(
+            "handoffs", lambda: list(frontmatter.discover_handoffs(cfg)),
+            provenance=snapshot.Provenance("handoff-glob", ",".join(cfg.handoff_globs)))
+        lint_in = b.authoritative(
+            "lint", lambda: lint.lint_project(cfg),
+            provenance=snapshot.Provenance("lint", str(cfg.root)))
+        # An unreadable or malformed decisions inbox is not evidence that every
+        # decision has been resolved: a task held on D-007 must stay held.
+        decisions_in = b.authoritative(
+            "decisions_open", lambda: decisions.open_ids(cfg),
+            provenance=snapshot.Provenance("decisions-inbox", str(cfg.decisions_inbox)))
+        merged_in = self._merged_branches(cfg, states, builder=b)
+        head_in = self._head_revision(cfg, builder=b)
+        leases_in = self._leases_free(cfg, builder=b)
+        log_quiet_seconds, pid_alive, receipts_in = self._attempt_scan(
+            project, states, builder=b)
+        if not b.audit().permits_effects:
+            return None
+        routes = routes_in.require()
+        findings = lint_in.require()
+        decisions_open = decisions_in.require()
+        merged_branches = merged_in.require()
+        head_revision = head_in.require()
+        leases_free = leases_in.require()
+        receipts = receipts_in.require()
+
         frontmatters: dict[str, tuple] = {}
-        for path in frontmatter.discover_handoffs(cfg):
+        unparsable: list[str] = []
+        for path in handoffs_in.require():
             try:
                 fm, _body = frontmatter.parse_handoff(path)
-            except Exception:
+            except Exception as exc:  # census: advisory-degradation (CR-02a)
+                # A handoff whose frontmatter will not parse cannot become a
+                # task: it is absent from `frontmatters`, so the planner never
+                # dispatches it. That is already fail-CLOSED for the handoff
+                # itself, so this is not an authoritative fault -- but a
+                # silently-vanishing work package is exactly the invisible
+                # degradation this package exists to remove, so it is recorded
+                # with the file that failed and why.
+                unparsable.append(f"{path.name}:{type(exc).__name__}")
                 continue
             try:
                 relpath = str(path.resolve().relative_to(cfg.root.resolve()))
             except ValueError:
                 relpath = str(path)
             frontmatters[fm.id] = (fm, relpath)
+        if unparsable:
+            b.add(snapshot.SnapshotInput.failed(
+                "handoff_frontmatter", snapshot.InputClass.ADVISORY,
+                snapshot.Reason.MALFORMED_VALUE,
+                provenance=snapshot.Provenance("handoff-file", cfg.project_id),
+                status=snapshot.InputStatus.MALFORMED,
+                detail=" ".join(sorted(unparsable))))
 
-        try:
-            findings = lint.lint_project(cfg)
-        except Exception:
-            findings = {}
+        # lint_clean is DERIVED from a known-good finding set only. Before
+        # CR-02a a lint exception produced `findings = {}`, every lookup
+        # returned [], `has_blocking([])` was False, and every task in the
+        # project was marked lint_clean=True -- an unreadable lint result
+        # authorizing dispatch. There is now no path from a lint fault to a
+        # True here: the acquisition above returns None for the whole pass.
         lint_clean: dict[str, bool] = {}
         for fm_id, (_fm, relpath) in frontmatters.items():
             f = findings.get(relpath, [])
@@ -1037,36 +1353,30 @@ class Daemon:
 
         pause_mode = self._pause_mode(project)
         project_paused = pause_mode != "run"
-        # A corrupt or unreadable decisions inbox is not evidence that every
-        # decision has been resolved.  Let run_pass record TICK_ERROR and stop
-        # this pass instead of silently releasing all decision holds.
-        decisions_open = decisions.open_ids(cfg)
-        merged_branches = self._merged_branches(cfg, states)
-        head_revision = self._head_revision(cfg)
-        triage_class = self._triage_classes(project, states)
+        triage_class = self._triage_classes(project, states, events=events)
         gate_diagnosis_pending, gate_diagnosis_attempts = self._gate_diagnosis_state(
-            project, cfg, states)
-        leases_free = self._leases_free(cfg)
-        provider_ok = self._provider_ok(routes)
-        log_quiet_seconds, pid_alive, receipts = self._attempt_scan(project, states)
+            project, cfg, states, events=events)
+        provider_ok = self._provider_ok(routes, builder=b)
         stall_confirmed = self._confirm_stall(states, log_quiet_seconds, pid_alive, cfg)
         resume_failures = self._resume_failures(project, states, cfg.policy.resume_progress_grace_seconds)
         transient_backoff_ready = self._transient_backoff_ready(project, states)
         budget_remaining = self._budget_remaining(cfg, states)
         merge_history, carve_outcomes, review_rejections_by_area, blocked_underspecified_count = \
-            self._history(project)
-        ratchet_already_open = self._ratchet_already_open(project)
-        roadmap_exhausted_open = self._roadmap_exhausted_open(project)
+            self._history(project, events=events)
+        ratchet_already_open = self._ratchet_already_open(project, events=events)
+        roadmap_exhausted_open = self._roadmap_exhausted_open(project, events=events)
         # P44 2026-07-16 (anti-runaway self-correction): reuse the existing
         # _spec_attention_recently_emitted debounce backstop as the SOURCE of
         # these three dedup flags (it already implements exactly
         # _ratchet_already_open's convention, generalized by reason) -- it
         # remains a belt-and-braces backstop at emission time too (see
         # _execute's SpecAttention branch), but is no longer the ONLY guard.
-        rejections_already_open = self._spec_attention_recently_emitted(project, "rejections")
-        carve_outcome_already_open = self._spec_attention_recently_emitted(project, "carve-outcome")
+        rejections_already_open = self._spec_attention_recently_emitted(
+            project, "rejections", events=events)
+        carve_outcome_already_open = self._spec_attention_recently_emitted(
+            project, "carve-outcome", events=events)
         blocked_underspecified_already_open = self._spec_attention_recently_emitted(
-            project, "blocked-underspecified")
+            project, "blocked-underspecified", events=events)
         # P14 2026-07-15 item 6: config.Policy is frozen for this package
         # (only NotifyConfig.push_classes may be edited), so
         # attempt_max_wall_seconds is NOT a Policy field here -- getattr
@@ -1084,8 +1394,9 @@ class Daemon:
         # ReconcileInput is byte-identical to pre-A2 whenever the feature is
         # off (see reconcile.plan_project's own top-level
         # `if inp.carver_session is not None` gate).
-        carver_session_snap = self._carver_session(project, cfg)
-        pending_carver_feeds = self._pending_carver_feeds(project, cfg, carver_session_snap)
+        carver_session_snap = self._carver_session(project, cfg, events=events)
+        pending_carver_feeds = self._pending_carver_feeds(
+            project, cfg, carver_session_snap, events=events)
         # F018 P3b: validated_carve_proposals is now DERIVED (was hardcoded
         # () by A2) -- see _validated_carve_proposals for the full §4.1
         # validation pipeline, the CONCERN-1 generation filter, and (AD1
@@ -1093,14 +1404,24 @@ class Daemon:
         # is the SOLE authority; the pure planner does not re-check any of
         # it).
         validated_carve_proposals = self._validated_carve_proposals(
-            project, cfg, carver_session_snap)
+            project, cfg, carver_session_snap, builder=b, events=events)
         # F018 AD3: structurally-invalid proposals for the current generation
         # the warm session should REPAIR (re-emit correctly) before ingesting
         # new feeds. Gated to `1 <= invalid < max_proposal_repairs` so it
         # composes with P3b's ceiling escalation (never double-fires).
         pending_carve_repairs = self._pending_carve_repairs(
-            project, cfg, carver_session_snap)
-
+            project, cfg, carver_session_snap, events=events)
+        # NO second `permits_effects` guard here. A trailing re-check stood at
+        # this line and could never fire: every AUTHORITATIVE acquisition
+        # happens at or above the guard that protects the `.require()` calls,
+        # and everything between them (provider probes, handoff frontmatter,
+        # carve-proposal artifacts) is ADVISORY by construction. An unreachable
+        # guard is not free -- it reads as protection that is not there, and it
+        # is a line no test can honestly cover. The invariant it was reaching
+        # for is asserted instead by
+        # test_snapshot_faults.test_the_authoritative_input_set_is_closed,
+        # which fails the moment an acquisition below the guard is classified
+        # authoritative. Add one, and that test tells you to move the guard.
         return reconcile.ReconcileInput(
             now=utc_now(),
             cfg=cfg,
@@ -1135,15 +1456,18 @@ class Daemon:
             triage_class=triage_class,
             gate_diagnosis_pending=gate_diagnosis_pending,
             gate_diagnosis_attempts=gate_diagnosis_attempts,
-            days_since_test_health_carve=self._days_since_test_health_carve(project),
-            days_since_gate_verify=self._days_since_gate_verify(project),
-            changed_lines_since_gap_audit=self._changed_lines_since_gap_audit(project, cfg),
+            days_since_test_health_carve=self._days_since_test_health_carve(
+                project, events=events),
+            days_since_gate_verify=self._days_since_gate_verify(project, events=events),
+            changed_lines_since_gap_audit=self._changed_lines_since_gap_audit(
+                project, cfg, builder=b, events=events),
             carver_session=carver_session_snap,
             pending_carver_feeds=pending_carver_feeds,
             # no source events yet -- human-intake package (#17) will populate this
             pending_human_intakes=(),
             validated_carve_proposals=validated_carve_proposals,
             pending_carve_repairs=pending_carve_repairs,
+            snapshot_audit=b.audit(),
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -1164,50 +1488,85 @@ class Daemon:
             return "drain-agents"
         return "drain-handoffs"
 
-    def _merged_branches(self, cfg: ProjectConfig, states: dict[str, TaskStateFile]) -> set[str]:
-        out: set[str] = set()
-        try:
+    def _merged_branches(self, cfg: ProjectConfig, states: dict[str, TaskStateFile],
+                          *, builder: snapshot.SnapshotBuilder | None = None,
+                          ) -> snapshot.SnapshotInput[set[str]]:
+        """AUTHORITATIVE git fact: which branches are already merged into main.
+
+        CR-02a: was ``except Exception: pass``, which produced a PARTIAL set
+        built only from projected task state. That is fail-open in the
+        direction that matters -- a branch that IS merged but is missing from
+        the set reads as unmerged, and an unmerged branch is a merge
+        candidate. A git failure is now an unavailable authoritative input and
+        the pass stops.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
+
+        def _load() -> set[str]:
+            out: set[str] = set()
             res = subprocess.run(
                 ["git", "-C", str(cfg.root), "branch", "--merged", cfg.default_branch],
                 capture_output=True, text=True, timeout=15,
             )
-            if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    name = line.strip().lstrip("*").strip()
-                    if not name:
-                        continue
-                    out.add(name)
-                    if name.startswith("feat/"):
-                        out.add(name[len("feat/"):])
-        except Exception:
-            pass
-        for tsf in states.values():
-            if tsf.state in (TaskState.MERGED, TaskState.VALIDATING, TaskState.COMPLETED):
-                out.add(tsf.task_id)
-                out.add(f"feat/{tsf.task_id}")
-        return out
+            if res.returncode != 0:
+                raise RuntimeError(
+                    f"git branch --merged exited {res.returncode}")
+            for line in res.stdout.splitlines():
+                name = line.strip().lstrip("*").strip()
+                if not name:
+                    continue
+                out.add(name)
+                if name.startswith("feat/"):
+                    out.add(name[len("feat/"):])
+            for tsf in states.values():
+                if tsf.state in (TaskState.MERGED, TaskState.VALIDATING, TaskState.COMPLETED):
+                    out.add(tsf.task_id)
+                    out.add(f"feat/{tsf.task_id}")
+            return out
 
-    def _head_revision(self, cfg: ProjectConfig) -> str | None:
-        """B4b (critique I4): the current default-branch HEAD sha, so the triage
-        stage's drift-guard (reconcile._premise_drifted) can tell a handoff whose
-        `input_revision` premise has gone STALE against main from one still valid.
-        Returns None on any git failure -- the drift-guard fail-safes to 'no drift'
-        on an unknown base, so a transient git hiccup never spuriously re-carves.
-        Resolves cfg.default_branch (not HEAD): the daemon process may sit on a
-        feat/ worktree, but the premise a handoff is measured against is always
-        main -- exactly the ref _merged_branches already uses."""
-        try:
+        return b.authoritative(
+            "git_merged_branches", _load,
+            provenance=snapshot.Provenance("git", f"{cfg.root}#{cfg.default_branch}"),
+            reason=snapshot.Reason.PROBE_FAILED)
+
+    def _head_revision(self, cfg: ProjectConfig,
+                        *, builder: snapshot.SnapshotBuilder | None = None,
+                        ) -> snapshot.SnapshotInput[str]:
+        """AUTHORITATIVE git fact: the current default-branch HEAD sha.
+
+        The triage stage's drift-guard (``reconcile._premise_drifted``) tells a
+        handoff whose ``input_revision`` premise has gone stale against main
+        from one still valid. Before CR-02a a git failure returned None and the
+        drift-guard fail-safed to "no drift" -- so an unreadable repository
+        silently asserted that every premise was still current and re-dispatched
+        work against a base that may have moved (P40's own root cause). An
+        unknown HEAD is now an unavailable authoritative input.
+
+        Resolves ``cfg.default_branch`` (not HEAD): the daemon process may sit
+        on a feat/ worktree, but the premise a handoff is measured against is
+        always main -- exactly the ref ``_merged_branches`` already uses.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
+
+        def _load() -> str:
             res = subprocess.run(
                 ["git", "-C", str(cfg.root), "rev-parse", cfg.default_branch],
                 capture_output=True, text=True, timeout=15,
             )
-            if res.returncode == 0:
-                return res.stdout.strip() or None
-        except Exception:
-            pass
-        return None
+            if res.returncode != 0:
+                raise RuntimeError(f"git rev-parse exited {res.returncode}")
+            sha = res.stdout.strip()
+            if not sha:
+                raise ValueError("git rev-parse produced no revision")
+            return sha
 
-    def _triage_classes(self, project: str, states: dict[str, TaskStateFile]) -> dict[str, str]:
+        return b.authoritative(
+            "git_head_revision", _load,
+            provenance=snapshot.Provenance("git", f"{cfg.root}#{cfg.default_branch}"),
+            reason=snapshot.Reason.PROBE_FAILED)
+
+    def _triage_classes(self, project: str, states: dict[str, TaskStateFile],
+                         *, events: Sequence[Event] | None = None) -> dict[str, str]:
         """B4b (D-060 triage Tier-2; D-066): for each task CURRENTLY in
         REVIEW_REJECTED, the frontier reviewer's self-classification of the
         rejection ("fixable"|"architectural"|"incapable"|"product"), read from
@@ -1223,11 +1582,13 @@ class Daemon:
         falls to reconcile's mechanical attempt-budget path (graceful degradation)
         rather than inheriting a class from a superseded earlier cycle. Events are
         append-only and ordered, so 'latest event' is an inherently current binding
-        (no committed-file staleness to guard, unlike _parse_review_verdict)."""
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return {}
+        (no committed-file staleness to guard, unlike _parse_review_verdict).
+
+        CR-02a: the event log is an AUTHORITATIVE input acquired once by the
+        fan-in. The former ``except Exception: return {}`` reported "no task
+        carries a triage class" from an unreadable log, silently routing every
+        rejected task to the mechanical retry path."""
+        events = self._require_events(project, events)
         latest_payload: dict[str, dict] = {}
         for ev in events:
             if ev.type is EventType.REVIEW_RECORDED and ev.task_id:
@@ -1253,7 +1614,8 @@ class Daemon:
         return out
 
     def _gate_diagnosis_state(
-        self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile]
+        self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
+        *, events: Sequence[Event] | None = None,
     ) -> tuple[frozenset[str], frozenset[str]]:
         """F019 P1b (plan-f019-failure-diagnosis.md §P1): compute the two
         gate-diagnosis inputs the pure planner consumes -- (pending_task_ids,
@@ -1276,12 +1638,17 @@ class Daemon:
         own {approved} binding, so it is never mistaken for an unconsumed
         diagnosis; that invariant is what lets the receipt-exit scan add a
         REVIEW_REJECTED+REVIEW_INDEPENDENT clause without re-consuming a normal
-        review (O5)."""
+        review (O5).
+
+        CR-02a: gate evidence is AUTHORITATIVE. The former
+        ``except Exception: return frozenset(), frozenset()`` reported "no
+        diagnosis pending and none in flight" from an unreadable log, which
+        both suppressed the diagnosis dispatch and un-suppressed the blind
+        mechanical retry it exists to replace -- fail-open in the expensive
+        direction.
+        """
         threshold = getattr(cfg.policy, "gate_diagnosis_after_failures", 1)
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return frozenset(), frozenset()
+        events = self._require_events(project, events)
         streak: dict[str, int] = {}
         cause_is_gate: dict[str, bool] = {}
         recorded_attempts: set[str] = set()
@@ -1332,64 +1699,92 @@ class Daemon:
                 pending.add(task_id)
         return frozenset(pending), frozenset(diag_attempts)
 
-    def _attempt_has_review_recorded(self, project: str, attempt_id: str) -> bool:
+    def _attempt_has_review_recorded(self, project: str, attempt_id: str,
+                                      *, events: Sequence[Event] | None = None) -> bool:
         """F019 P1b: True when a REVIEW_RECORDED event is already bound to this
         attempt id -- i.e. this review/diagnosis leg was already consumed. Makes
         the gate-diagnosis consumption idempotent, and (with the task's
         REVIEW_REJECTED state) distinguishes a fresh, unconsumed diagnosis leg
         (no binding) from an already-consumed normal review whose members also
         sit in REVIEW_REJECTED -- so the consumption never re-records a normal
-        review's verdict (O5)."""
-        try:
-            for ev in storage.iter_events(project):
-                if (ev.type is EventType.REVIEW_RECORDED
-                        and ev.attempt_id == attempt_id):
-                    return True
-        except Exception:
-            return False
-        return False
+        review's verdict (O5).
 
-    def _latest_gate_failure(self, project: str, task_id: str) -> tuple[str, str]:
+        CR-02a: the former ``except Exception: return False`` reported "this
+        leg has NOT been consumed" from an unreadable log -- the answer that
+        re-consumes a verdict."""
+        return any(ev.type is EventType.REVIEW_RECORDED and ev.attempt_id == attempt_id
+                    for ev in self._require_events(project, events))
+
+    def _latest_gate_failure(self, project: str, task_id: str,
+                              *, events: Sequence[Event] | None = None) -> tuple[str, str]:
         """F019 P1b: (output_tail, phase) of the task's most recent FAILED
         pre-merge/mutation gate -- the evidence the gate-diagnosis reviewer reads
         (P1a persisted it into GateResult.output_tail). ("", "") when none is
         found (degrades gracefully: the reviewer still classifies from the diff +
         handoff)."""
         out_tail, phase = "", ""
-        try:
-            for ev in storage.iter_events(project):
-                if (ev.type is EventType.GATE_FINISHED and ev.task_id == task_id):
-                    gr = (ev.payload or {}).get("gate_result") or {}
-                    if (gr.get("phase") in ("pre-merge", "mutation")
-                            and gr.get("exit_code", 0) != 0):
-                        out_tail = gr.get("output_tail", "") or ""
-                        phase = gr.get("phase", "") or ""
-        except Exception:
-            return "", ""
+        for ev in self._require_events(project, events):
+            if (ev.type is EventType.GATE_FINISHED and ev.task_id == task_id):
+                gr = (ev.payload or {}).get("gate_result") or {}
+                if (gr.get("phase") in ("pre-merge", "mutation")
+                        and gr.get("exit_code", 0) != 0):
+                    out_tail = gr.get("output_tail", "") or ""
+                    phase = gr.get("phase", "") or ""
         return out_tail, phase
 
-    def _leases_free(self, cfg: ProjectConfig) -> dict[str, bool]:
-        out: dict[str, bool] = {}
-        for mdef in cfg.mutexes.values():
-            lease_name = mdef.lease_name(cfg.project_id)
-            try:
+    def _leases_free(self, cfg: ProjectConfig,
+                      *, builder: snapshot.SnapshotBuilder | None = None,
+                      ) -> snapshot.SnapshotInput[dict[str, bool]]:
+        """AUTHORITATIVE: per-mutex "is a slot available".
+
+        A failed exclusivity probe is not evidence that the shared resource is
+        free. Before CR-02a this fell back to ``False`` per lease and logged a
+        warning -- fail-closed for the tasks that declare that mutex, but
+        invisible to the planner, to the event log, and to the operator, and it
+        left the *rest* of the pass planning against a snapshot one of whose
+        authoritative facts was a guess. It is now a typed authoritative fault:
+        the pass stops and says which lease could not be probed.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
+        names = [mdef.lease_name(cfg.project_id) for mdef in cfg.mutexes.values()]
+
+        def _load() -> dict[str, bool]:
+            out: dict[str, bool] = {}
+            for mdef in cfg.mutexes.values():
+                lease_name = mdef.lease_name(cfg.project_id)
                 info = leases.holder_info(lease_name, capacity=mdef.capacity)
                 out[lease_name] = any(not slot["held"] for slot in info)
-            except Exception as exc:
-                # A failed exclusivity probe is not evidence that the shared
-                # resource is free.  Fail closed and leave the task queued;
-                # the next reconcile pass can retry the read safely.
-                out[lease_name] = False
-                log.warning(
-                    "lease availability probe failed",
-                    lease=lease_name,
-                    error=repr(exc)[:200],
-                )
-        return out
+            return out
 
-    def _provider_ok(self, routes: config.Routes) -> dict[str, bool]:
+        return b.authoritative(
+            "leases", _load,
+            provenance=snapshot.Provenance("lease-store", ",".join(sorted(names))),
+            reason=snapshot.Reason.PROBE_FAILED)
+
+    def _provider_ok(self, routes: config.Routes,
+                      *, builder: snapshot.SnapshotBuilder | None = None,
+                      ) -> dict[str, bool]:
+        """ADVISORY: per-route provider preflight.
+
+        A probe that cannot run marks the route NOT ok, which only ever
+        *removes* a dispatch option -- it can never authorize one. That is why
+        this is advisory rather than authoritative: the degradation reduces
+        progress instead of manufacturing it. It must still be visible, so a
+        failed probe is recorded as a typed degradation carrying the route ids
+        and the exception type (never the probe's raw output, which is a
+        provider CLI's stderr and can quote credentials).
+
+        The memo records WHETHER the reading was a probe fault, not just its
+        boolean result, so a memoized fault keeps reporting the degradation
+        for as long as it is in force. Without that, the degradation appeared
+        once and then "recovered" on the very next pass purely because the
+        memo answered instead of the probe -- a false recovery, which is the
+        same class of lie as a false clean.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
         now = time.monotonic()
         out: dict[str, bool] = {}
+        failed: list[str] = []
         for route_id, route in routes.routes.items():
             paused_until = self._provider_paused.get(route_id)
             if paused_until is not None and now < paused_until:
@@ -1398,19 +1793,49 @@ class Daemon:
             memo = self._probe_memo.get(route_id)
             if memo is not None and (now - memo[0]) < PROBE_TTL_SECONDS:
                 out[route_id] = memo[1]
+                if memo[3]:
+                    failed.append(f"{route_id}:{memo[3]}")
                 continue
-            try:
-                ok, detail = adapters.probe(route)
-            except Exception as exc:
-                ok, detail = False, repr(exc)[:200]
-            self._probe_memo[route_id] = (now, ok, detail)
+            probed = snapshot.acquire(
+                f"provider_probe:{route_id}", snapshot.InputClass.ADVISORY,
+                lambda route=route: adapters.probe(route),
+                provenance=snapshot.Provenance("provider-probe", route_id),
+                reason=snapshot.Reason.PROBE_FAILED)
+            fault_code = ""
+            if probed.ok:
+                ok, detail = probed.require()
+            else:
+                # A probe that RAISED is a degradation. A probe that cleanly
+                # returned False is a healthy reading of an unhealthy
+                # provider, and is deliberately NOT recorded here.
+                ok, detail = False, probed.detail
+                fault_code = probed.reason.value
+                failed.append(f"{route_id}:{fault_code}")
+            self._probe_memo[route_id] = (
+                now, ok, snapshot.bounded_detail(detail), fault_code)
             out[route_id] = ok
+        if failed:
+            b.add(snapshot.SnapshotInput.failed(
+                "provider_probe", snapshot.InputClass.ADVISORY,
+                snapshot.Reason.PROBE_FAILED,
+                provenance=snapshot.Provenance("provider-probe", "routes"),
+                detail=" ".join(sorted(failed))))
         return out
 
-    def _attempt_scan(self, project: str, states: dict[str, TaskStateFile]):
+    def _attempt_scan(self, project: str, states: dict[str, TaskStateFile],
+                       *, builder: snapshot.SnapshotBuilder | None = None):
+        """Per-attempt disk scan: log quiet time, liveness, and receipts.
+
+        Returns ``(log_quiet, pid_alive, receipts_input)``. The receipts half
+        is AUTHORITATIVE and typed -- it decides whether an attempt's verdict
+        is consumed -- while log mtimes and pid liveness are advisory stall
+        heuristics that only ever make the daemon *less* willing to act.
+        """
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
         log_quiet: dict[str, float | None] = {}
         pid_alive: dict[str, bool] = {}
         receipts: dict[str, dict | None] = {}
+        malformed_receipts: list[str] = []
         now = time.time()
         for tsf in states.values():
             for att in tsf.attempts:
@@ -1448,9 +1873,20 @@ class Daemon:
                 attempt_dir = paths.attempt_dir(project, att.attempt_id)
                 receipt_path = attempt_dir / "receipt.json"
                 if receipt_path.exists():
+                    # CR-02a: an UNREADABLE receipt used to be stored as the
+                    # same `None` an ABSENT receipt gets. Downstream, `None`
+                    # means "the attempt has not reported yet" -- so a
+                    # truncated or half-written receipt read as a still-running
+                    # attempt, and its real result (BLOCKED, LIMIT, a scope
+                    # amendment) was silently discarded. The two are now
+                    # distinguished: absent stays None, malformed becomes an
+                    # authoritative fault naming the attempt.
                     try:
-                        receipts[att.attempt_id] = json.loads(receipt_path.read_text(encoding="utf-8"))
-                    except (json.JSONDecodeError, OSError):
+                        receipts[att.attempt_id] = json.loads(
+                            receipt_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+                        malformed_receipts.append(
+                            f"{att.attempt_id}:{type(exc).__name__}")
                         receipts[att.attempt_id] = None
                 else:
                     receipts[att.attempt_id] = None
@@ -1475,7 +1911,20 @@ class Daemon:
                     log_quiet[att.attempt_id] = max(0.0, now - log_path.stat().st_mtime)
                 else:
                     log_quiet[att.attempt_id] = None
-        return log_quiet, pid_alive, receipts
+        if malformed_receipts:
+            receipts_in: snapshot.SnapshotInput[dict[str, dict | None]] = (
+                snapshot.SnapshotInput.failed(
+                    "receipts", snapshot.InputClass.AUTHORITATIVE,
+                    snapshot.Reason.MALFORMED_VALUE,
+                    provenance=snapshot.Provenance("receipt-file", project),
+                    status=snapshot.InputStatus.MALFORMED,
+                    detail=" ".join(sorted(malformed_receipts))))
+        else:
+            receipts_in = snapshot.SnapshotInput.ok_value(
+                "receipts", snapshot.InputClass.AUTHORITATIVE, receipts,
+                provenance=snapshot.Provenance("receipt-file", project))
+        b.add(receipts_in)
+        return log_quiet, pid_alive, receipts_in
 
     def _resume_failures(self, project: str, states: dict[str, TaskStateFile],
                           grace_seconds: int) -> dict[str, int]:
@@ -1753,6 +2202,19 @@ class Daemon:
         onboarding); the fully structural form (an AdmissionToken minted only
         here and required by wrapper.launch_detached) is a follow-up -- this
         package closes the R5 gap for every launch the AUTONOMOUS loop makes."""
+        # CR-02a: the snapshot audit is checked FIRST, at the effect boundary,
+        # for the same reason P55 put pause/budget here -- a guard evaluated
+        # only at plan time is a guard with a window. `run_pass` already
+        # refuses to plan on a failed audit, so in the autonomous loop this is
+        # belt-and-braces; it becomes load-bearing the moment CR-05 moves
+        # execution behind a handler registry that can be driven from
+        # elsewhere. Absence of an audit means no fan-in ran in this call
+        # stack (an operator-initiated verb such as dispatch_targeted_carve,
+        # which is an explicit human instruction rather than an autonomous
+        # decision) and is permitted.
+        audit = self._snapshot_audit.get(project)
+        if audit is not None and not audit.permits_effects:
+            return (False, f"snapshot-unavailable:{audit.summary()}")
         pause_mode = self._pause_mode(project)
         if pause_mode == "drain-agents":
             return (False, "paused:drain-agents")
@@ -1763,7 +2225,7 @@ class Daemon:
             return (False, "budget-exhausted")
         return (True, "")
 
-    def _history(self, project: str):
+    def _history(self, project: str, *, events: Sequence[Event] | None = None):
         """P44 2026-07-16 (anti-runaway self-correction): review_rejections_by_area
         is now WINDOWED (only rejections within HISTORY_REJECTION_WINDOW_SECONDS of
         'now' count) -- the root cause of the 2026-07-16 notification storm. Before
@@ -1782,10 +2244,7 @@ class Daemon:
         carve_outcomes: list[dict] = []
         review_rejections_by_area: dict[str, int] = {}
         blocked_underspecified_count = 0
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
+        events = self._require_events(project, events)
         now = utc_now()
         for ev in events:
             if ev.type is EventType.MERGE_RECORDED and ev.task_id:
@@ -1815,15 +2274,18 @@ class Daemon:
         merge_history.reverse()  # most recent first
         return merge_history[:50], carve_outcomes[-20:], review_rejections_by_area, blocked_underspecified_count
 
-    def _ratchet_already_open(self, project: str) -> bool:
-        try:
-            recent = list(storage.iter_events(project))[-500:]
-        except Exception:
-            return False
+    def _ratchet_already_open(self, project: str,
+                               *, events: Sequence[Event] | None = None) -> bool:
+        """Recent-window dedup flag for SpecAttention('ratchet').
+
+        CR-02a: ``except Exception: return False`` said "not open yet" from an
+        unreadable log -- the answer that re-fires the escalation."""
+        recent = list(self._require_events(project, events))[-500:]
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "ratchet"
                    for ev in recent)
 
-    def _scope_amendments_approved(self, project: str, task_id: str) -> list[dict]:
+    def _scope_amendments_approved(self, project: str, task_id: str,
+                                    *, events: Sequence[Event] | None = None) -> list[dict]:
         """B21 2026-07-23 (D-R16 §3): every SCOPE_AMENDMENT_APPROVED event
         payload recorded for this task, in log order. SCOPE_AMENDMENT_APPROVED
         has no TaskStateFile projection (storage.apply_event does not
@@ -1834,15 +2296,16 @@ class Daemon:
         above. Unlike that helper's 500-event recent window, this is NOT
         windowed: MAX_SCOPE_AMENDMENTS_PER_TASK is a per-task LIFETIME cap
         (the whole point of D-B21-2's bound), so an old approval scrolling
-        out of a recent-N window must never let the cap silently re-open."""
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return []
-        return [ev.payload for ev in events
+        out of a recent-N window must never let the cap silently re-open.
+
+        CR-02a: ``except Exception: return []`` reported ZERO prior approvals
+        from an unreadable log -- which re-opens the per-task lifetime cap the
+        count exists to enforce, the single worst direction for this helper."""
+        return [ev.payload for ev in self._require_events(project, events)
                 if ev.type is EventType.SCOPE_AMENDMENT_APPROVED and ev.task_id == task_id]
 
-    def _scope_amendment_files(self, project: str, task_id: str) -> list[str]:
+    def _scope_amendment_files(self, project: str, task_id: str,
+                                *, events: Sequence[Event] | None = None) -> list[str]:
         """B21: the granted file path(s) from every approved amendment for
         this task, in approval order, de-duplicated. Fed to build_dispatch's
         `approved_amendments` kwarg -- both the IMPLEMENTER re-dispatch (D-
@@ -1851,13 +2314,16 @@ class Daemon:
         REVIEW dispatch (so the reviewer does not reject the now-legitimate
         out-of-scope edit)."""
         files: list[str] = []
-        for payload in self._scope_amendments_approved(project, task_id):
+        for payload in self._scope_amendments_approved(project, task_id, events=events):
             f = payload.get("file")
             if f and f not in files:
                 files.append(f)
         return files
 
-    def _days_since_test_health_carve(self, project: str) -> float | None:
+    def _days_since_test_health_carve(self, project: str,
+                                       *, events: Sequence[Event] | None = None,
+                                       builder: snapshot.SnapshotBuilder | None = None,
+                                       ) -> float | None:
         """D-065 (B63 2026-07-20): age in days of the most recent test-health
         carve, feeding ReconcileInput.days_since_test_health_carve so module
         contract item 15's cadence is durable across daemon restarts (the
@@ -1875,28 +2341,52 @@ class Daemon:
         (payload-additive; storage's replay reads only payload["statefile"],
         so it cannot cause divergence).
 
-        Fail-safe on an unreadable log is 0.0 ("just carved"), NOT None: this
-        value gates spawning a real agent process, so an I/O error must never
-        be the thing that authorizes spend. A permanently unreadable event log
-        is a far larger failure that doctor surfaces on its own.
+        CR-02a: the log read and the age arithmetic are both AUTHORITATIVE.
+        The old code answered 0.0 ("just carved") for BOTH an unreadable log
+        and a marker whose timestamp will not subtract. 0.0 suppresses spend,
+        which sounds safe -- but it is a PERMANENT false-clean latch: a single
+        corrupt marker timestamp silently disables the cadence forever, with
+        no event and no operator signal. The log read now fails the pass
+        closed; a malformed marker timestamp is recorded as a typed
+        MALFORMED authoritative fault (and still answers 0.0, which is
+        irrelevant because the pass will not proceed).
         """
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return 0.0
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
         latest = None
-        for ev in events:
+        for ev in self._require_events(project, events):
             if ev.type is EventType.TASK_CREATED and ev.payload.get("carve_kind") == "test-health":
                 if latest is None or ev.timestamp > latest:
                     latest = ev.timestamp
         if latest is None:
             return None
-        try:
-            return max(0.0, (utc_now() - latest).total_seconds() / 86400.0)
-        except Exception:
-            return 0.0
+        age = self._marker_age_days("test_health_carve_marker", latest, b)
+        return 0.0 if age is None else age
 
-    def _days_since_gate_verify(self, project: str) -> float | None:
+    @staticmethod
+    def _marker_age_days(name: str, stamp: "Any",
+                          b: snapshot.SnapshotBuilder) -> float | None:
+        """Age in days of a cadence marker, or None with a typed fault.
+
+        A naive/aware datetime mix (or any other unsubtractable timestamp) is
+        a MALFORMED authoritative reading of a cadence anchor, not a reason to
+        report "just done". Shared by the two cadence helpers so both report
+        the same reason code and the same provenance shape.
+        """
+        try:
+            return max(0.0, (utc_now() - stamp).total_seconds() / 86400.0)
+        except Exception as exc:  # census: process-boundary translation (CR-02a)
+            b.add(snapshot.SnapshotInput.failed(
+                name, snapshot.InputClass.AUTHORITATIVE,
+                snapshot.Reason.MALFORMED_VALUE,
+                provenance=snapshot.Provenance("event-log", name),
+                status=snapshot.InputStatus.MALFORMED,
+                detail=f"{type(exc).__name__}: {exc}"))
+            return None
+
+    def _days_since_gate_verify(self, project: str,
+                                 *, events: Sequence[Event] | None = None,
+                                 builder: snapshot.SnapshotBuilder | None = None,
+                                 ) -> float | None:
         """GA4 2026-07-25 (module contract item 16): age in days of the most
         recent GATE_VERIFY_RECORDED, feeding
         ReconcileInput.days_since_gate_verify so the cadence is durable across
@@ -1909,27 +2399,26 @@ class Daemon:
         project-wide event (task_id=None) -- so this scans for the event TYPE
         itself, using the event's own timestamp.
 
-        Fail-safe on an unreadable log is 0.0 ("just verified"), NOT None:
-        this value gates spawning a real gate-verify subprocess, so an I/O
-        error must never be the thing that authorizes spend.
+        CR-02a: same treatment as _days_since_test_health_carve above -- an
+        unreadable log fails the pass closed, and a marker timestamp that will
+        not subtract is a typed MALFORMED authoritative fault rather than a
+        silent "just verified" that would disable the cadence forever.
         """
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return 0.0
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
         latest = None
-        for ev in events:
+        for ev in self._require_events(project, events):
             if ev.type is EventType.GATE_VERIFY_RECORDED:
                 if latest is None or ev.timestamp > latest:
                     latest = ev.timestamp
         if latest is None:
             return None
-        try:
-            return max(0.0, (utc_now() - latest).total_seconds() / 86400.0)
-        except Exception:
-            return 0.0
+        age = self._marker_age_days("gate_verify_marker", latest, b)
+        return 0.0 if age is None else age
 
-    def _changed_lines_since_gap_audit(self, project: str, cfg: ProjectConfig) -> int | None:
+    def _changed_lines_since_gap_audit(self, project: str, cfg: ProjectConfig,
+                                        *, events: Sequence[Event] | None = None,
+                                        builder: snapshot.SnapshotBuilder | None = None,
+                                        ) -> int | None:
         """F007 2026-07-27 (gap-engine, module contract item 17): accumulated
         changed production lines (added+deleted via git diff --numstat) since the
         most recent gap-audit carve, feeding ReconcileInput.changed_lines_since_gap_audit
@@ -1950,17 +2439,28 @@ class Daemon:
         gates spawning a real carver process, so an I/O error must never be the
         thing that authorizes spend. A missing head_sha is structurally an old
         carve (pre-item-17); returning 0 means "no measurable activity since then",
-        which is the safe answer when we cannot measure. On degrade paths, logs a
-        warning so production can diagnose activity-counting issues.
+        which is the safe answer when we cannot measure.
+
+        CR-02a: 0 remains the value, and this stays ADVISORY -- unlike the two
+        cadence helpers above, "cannot measure activity" here only ever
+        SUPPRESSES a carve and cannot latch: the very next pass re-runs the
+        same git diff from the same durable marker, so a transient git failure
+        self-heals with no state to unstick. What changes is that the
+        suppression is now recorded as a typed degradation instead of only a
+        log line, so an operator can see why the gap-audit cadence went quiet.
         """
-        try:
-            events = list(storage.iter_events(project))
-        except Exception as e:
-            log.warning("gap_audit: cannot read event log", project=project, exc=e)
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
+
+        def _degrade(reason: snapshot.Reason, detail: str) -> int:
+            b.add(snapshot.SnapshotInput.failed(
+                "gap_audit_activity", snapshot.InputClass.ADVISORY, reason,
+                provenance=snapshot.Provenance("git", f"{cfg.root}#gap-audit"),
+                detail=detail))
             return 0
+
         latest = None
         latest_sha = None
-        for ev in events:
+        for ev in self._require_events(project, events):
             if ev.type is EventType.TASK_CREATED and ev.payload.get("carve_kind") == "gap-audit":
                 if latest is None or ev.timestamp > latest:
                     latest = ev.timestamp
@@ -1970,7 +2470,8 @@ class Daemon:
         if not latest_sha:
             # Old carve without head_sha, or payload corruption.
             log.warning("gap_audit: marker present but head_sha missing", project=project)
-            return 0
+            return _degrade(snapshot.Reason.MALFORMED_VALUE,
+                             "gap-audit marker carries no head_sha")
         try:
             # git diff --numstat <sha>..HEAD [--] <paths...>
             # Returns lines with: <added>\t<deleted>\t<path>
@@ -1992,7 +2493,8 @@ class Daemon:
                 # git diff failed (invalid sha, not a repo, etc.)
                 log.warning("gap_audit: git diff failed", project=project,
                            head_sha=latest_sha[:8], returncode=result.returncode)
-                return 0
+                return _degrade(snapshot.Reason.PROBE_FAILED,
+                                 f"git diff exited {result.returncode}")
             total = 0
             for line in result.stdout.splitlines():
                 parts = line.split("\t")
@@ -2012,10 +2514,10 @@ class Daemon:
             return total
         except subprocess.TimeoutExpired:
             log.warning("gap_audit: git diff timeout", project=project, head_sha=latest_sha[:8])
-            return 0
-        except Exception as e:
+            return _degrade(snapshot.Reason.TIMEOUT, "git diff --numstat timed out")
+        except Exception as e:  # census: advisory-degradation (CR-02a)
             log.warning("gap_audit: git diff error", project=project, exc=e)
-            return 0
+            return _degrade(snapshot.Reason.SOURCE_ERROR, f"{type(e).__name__}: {e}")
 
     @staticmethod
     def _carve_kind(states: dict[str, TaskStateFile], task_id: str | None) -> str:
@@ -2035,21 +2537,23 @@ class Daemon:
                 return token[len("kind="):]
         return "headroom"
 
-    def _roadmap_exhausted_open(self, project: str) -> bool:
+    def _roadmap_exhausted_open(self, project: str,
+                                 *, events: Sequence[Event] | None = None) -> bool:
         """P16 2026-07-15: mirrors _ratchet_already_open's convention (a
         recent-window dedup flag, not a true clear/reset state machine) --
         feeds ReconcileInput.roadmap_exhausted_open, which the carve
         trigger (module contract item 9) consults so it stops requesting
         more carvers once the carver itself has already reported the
-        roadmap exhausted."""
-        try:
-            recent = list(storage.iter_events(project))[-500:]
-        except Exception:
-            return False
+        roadmap exhausted.
+
+        CR-02a: ``except Exception: return False`` said "not exhausted" from
+        an unreadable log -- the answer that keeps requesting more carvers."""
+        recent = list(self._require_events(project, events))[-500:]
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "roadmap-exhausted"
                    for ev in recent)
 
-    def _spec_attention_recently_emitted(self, project: str, reason: str | None) -> bool:
+    def _spec_attention_recently_emitted(self, project: str, reason: str | None,
+                                          *, events: Sequence[Event] | None = None) -> bool:
         """Debounce backstop (prod-bleed fix 2026-07-16). Suppress re-emitting a
         SPEC_ATTENTION whose reason already appears in the recent window --
         otherwise a PERSISTENT condition re-emits + notifies EVERY reconcile
@@ -2063,25 +2567,28 @@ class Daemon:
         carve_outcome_already_open / blocked_underspecified_already_open (see
         _build_input) -- the durable fix -- so it is no longer the only guard,
         just a belt-and-braces backstop at emission time too. See watchdog.py
-        for the general runaway backstop (not tied to any specific reason)."""
-        try:
-            recent = list(storage.iter_events(project))[-500:]
-        except Exception:
-            return False
+        for the general runaway backstop (not tied to any specific reason).
+
+        CR-02a: ``except Exception: return False`` said "nothing emitted yet"
+        from an unreadable log -- the answer that reproduces the very
+        notification storm this debounce was written to stop.
+        """
+        recent = list(self._require_events(project, events))[-500:]
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == reason
                    for ev in recent)
 
-    def _needs_operator_recently_emitted(self, project: str, reason: str) -> bool:
+    def _needs_operator_recently_emitted(self, project: str, reason: str,
+                                          *, events: Sequence[Event] | None = None) -> bool:
         """F018 P3d (concern-5 #4): debounce for NEEDS_OPERATOR{reason} --
         suppress re-emitting the same unresolved episode. Scans the event log
         for an already-emitted NEEDS_OPERATOR with matching reason since the
         most recent CARVER_SESSION_ROTATED or CARVER_SESSION_STARTED for this
         project (a rotation/new-generation clears the episode). Pure log-
-        derived, no durable marker needed."""
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return False
+        derived, no durable marker needed.
+
+        CR-02a: ``except Exception: return False`` said "not yet escalated"
+        from an unreadable log, re-firing the operator page every pass."""
+        events = list(self._require_events(project, events))
         # Walk backwards to find the most recent clear marker.
         clear_idx = -1
         for i in range(len(events) - 1, -1, -1):
@@ -2219,7 +2726,8 @@ class Daemon:
                         {"reason": reason, "gate_id": gate_id}, task_id=None))
         return events
 
-    def _carver_session(self, project: str, cfg: ProjectConfig
+    def _carver_session(self, project: str, cfg: ProjectConfig,
+                        *, events: Sequence[Event] | None = None,
                         ) -> carver_session.CarverSessionSnapshot | None:
         """F018 P2b-A2: the MASTER GATE for the whole carver-snapshot input
         surface. `cfg.carve.session` defaults to "fresh" ("feature off") --
@@ -2256,14 +2764,16 @@ class Daemon:
                        "is fully clear. Operator-acknowledged pilot -- monitor "
                        "merge-feed cadence and context growth."),
             )
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
-        return carver_session.project_session(events)
+        # CR-02a: the log is AUTHORITATIVE. The former fail-safe-to-[] made
+        # an unreadable log project a BRAND NEW session -- generation 0, no
+        # consumed cursor -- which re-ingests every merge feed and re-admits
+        # every proposal.
+        return carver_session.project_session(
+            list(self._require_events(project, events)))
 
     def _pending_carver_feeds(self, project: str, cfg: ProjectConfig,
-                              snap: carver_session.CarverSessionSnapshot | None
+                              snap: carver_session.CarverSessionSnapshot | None,
+                              *, events: Sequence[Event] | None = None,
                               ) -> tuple[carver_session.CarverFeed, ...]:
         """F018 P2b-A2: pending merge digests the carver session hasn't
         consumed yet -- sourced from the P2a `carver_digest` payload the
@@ -2285,10 +2795,7 @@ class Daemon:
         (default 10)."""
         if snap is None:
             return ()
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
+        events = list(self._require_events(project, events))
         feeds: list[carver_session.CarverFeed] = []
         for ev in events:
             if ev.type is not EventType.MERGE_RECORDED:
@@ -2318,6 +2825,8 @@ class Daemon:
 
     def _validated_carve_proposals(self, project: str, cfg: ProjectConfig,
                                     snap: carver_session.CarverSessionSnapshot | None,
+                                    *, builder: snapshot.SnapshotBuilder | None = None,
+                                    events: Sequence[Event] | None = None,
                                     ) -> tuple[carver_session.ValidatedCarveProposal, ...]:
         """F018 P3b (plan-long-running-carver.md §4.1-§4.3): the SOLE
         validation authority for a carver turn's proposal envelope --
@@ -2357,43 +2866,59 @@ class Daemon:
         """
         if snap is None:
             return ()
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
+        b = builder if builder is not None else snapshot.SnapshotBuilder()
+        events = list(self._require_events(project, events))
 
         candidates: list[carver_session.ValidatedCarveProposal] = []
+        rejected: list[str] = []
         for ev in events:
             if ev.type is not EventType.CARVER_PROPOSAL_RECORDED:
                 continue
             if ev.sequence <= snap.last_consumed_event_sequence:
                 continue
-            vp = self._validate_carve_proposal_payload(cfg, snap, ev.payload or {})
+            vp, reject_reason = self._validate_carve_proposal_payload(
+                cfg, snap, ev.payload or {})
             if vp is None:
+                # CR-02a: rejection was already fail-CLOSED (no proposal, no
+                # task) but entirely invisible -- an operator watching a warm
+                # carver produce nothing had no way to tell a clean "nothing
+                # to carve" turn from a systematically malformed one. The
+                # reason is now recorded as a bounded advisory degradation.
+                # It stays advisory, not authoritative: refusing an invalid
+                # proposal IS the correct outcome, and F018's own bounded
+                # repair/escalation ladder already handles persistence.
+                rejected.append(f"{ev.sequence}:{reject_reason}")
                 continue
-            if self._proposal_already_admitted(project, vp.proposal_id):
+            if self._proposal_already_admitted(project, vp.proposal_id, events=events):
                 continue
             candidates.append(vp)
 
+        if rejected:
+            b.add(snapshot.SnapshotInput.failed(
+                "carve_proposal_artifacts", snapshot.InputClass.ADVISORY,
+                snapshot.Reason.MALFORMED_VALUE,
+                provenance=snapshot.Provenance("artifact-digest", cfg.project_id),
+                status=snapshot.InputStatus.MALFORMED,
+                detail=" ".join(rejected)))
         candidates.sort(key=lambda p: p.proposal_id)
         return tuple(candidates)
 
-    def _proposal_already_admitted(self, project: str, proposal_id: str) -> bool:
+    def _proposal_already_admitted(self, project: str, proposal_id: str,
+                                    *, events: Sequence[Event] | None = None) -> bool:
         """True iff a CARVER_PROPOSAL_ADMITTED event for this exact
         proposal_id already exists in the event log -- the durable
         'consumed' cursor _validated_carve_proposals uses (AD1 fix; see
         its own docstring for why a states-membership check is
-        insufficient). Never raises; a storage read failure fails safe to
-        False (not-yet-admitted) -- the same conservative direction every
-        other _build_input-adjacent read in this class takes on error."""
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return False
+        insufficient).
+
+        CR-02a: the old ``except Exception: return False`` was described as
+        "the conservative direction", and it is not -- False means NOT yet
+        admitted, so an unreadable log RE-ADMITS an already-admitted proposal
+        and re-runs its supersession. The log is now authoritative here too."""
         return any(
             ev.type is EventType.CARVER_PROPOSAL_ADMITTED
             and ev.payload.get("proposal_id") == proposal_id
-            for ev in events
+            for ev in self._require_events(project, events)
         )
 
     def _parse_proposal_id(self, cfg: ProjectConfig, proposal_id: Any
@@ -2445,7 +2970,7 @@ class Daemon:
     def _validate_carve_proposal_payload(self, cfg: ProjectConfig,
                                           snap: carver_session.CarverSessionSnapshot,
                                           payload: dict[str, Any],
-                                          ) -> carver_session.ValidatedCarveProposal | None:
+                                          ) -> tuple[carver_session.ValidatedCarveProposal | None, str]:
         """Plan §4.1's full per-artifact validation pipeline for ONE
         CARVER_PROPOSAL_RECORDED payload (a CarverTurnResult envelope, see
         carver_session.CarverTurnResult): proposal_id/turn_id structure and
@@ -2453,60 +2978,78 @@ class Daemon:
         resolution, content-hash verification, frontmatter parse,
         `nyxloom lint`, `input_revision == source.base_revision`, and
         every oracle satisfiable within scope.touch (L13) or a named
-        mechanical escalation (L8 -- already lint-error severity). Returns
-        None (never raises) the instant ANY dimension fails -- an invalid
-        proposal creates no ValidatedCarveProposal and no task, only a
-        bounded repair signal counted by
-        _carve_proposal_repair_escalations."""
+        mechanical escalation (L8 -- already lint-error severity).
+
+        Returns ``(None, <stable reject code>)`` (never raises) the instant
+        ANY dimension fails -- an invalid proposal creates no
+        ValidatedCarveProposal and no task, only a bounded repair signal
+        counted by _carve_proposal_repair_escalations.
+
+        CR-02a: the reject CODE is new. Behaviour is unchanged (still None,
+        still fail-closed) but the reason is no longer discarded: this is
+        untrusted model output claiming a content digest for a file that will
+        become a dispatched work package, so "the digest did not match" and
+        "the file is not under handoff_globs" and "lint rejected it" must be
+        distinguishable to an operator. The codes are short and closed; no
+        artifact CONTENT is ever included.
+        """
         parsed = self._parse_proposal_id(cfg, payload.get("proposal_id"))
         if parsed is None:
-            return None
+            return None, "proposal-id-malformed"
         generation, turn_seg = parsed
         if generation != snap.generation:
-            return None
+            return None, "generation-mismatch"
 
         turn_id = payload.get("turn_id")
         if not isinstance(turn_id, str) or turn_id != turn_seg:
-            return None  # absent, or inconsistent with proposal_id's own turn segment
+            # absent, or inconsistent with proposal_id's own turn segment
+            return None, "turn-id-mismatch"
 
         source = payload.get("source")
         if not isinstance(source, dict):
-            return None
+            return None, "source-malformed"
         base_revision = source.get("base_revision")
 
         artifacts = payload.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
-            return None
+            return None, "artifacts-empty"
 
         artifact_ids: list[str] = []
         artifact_paths: list[str] = []
         artifact_hashes: list[str] = []
         for art in artifacts:
             if not isinstance(art, dict):
-                return None
+                return None, "artifact-malformed"
             declared_hash = art.get("sha256")
             if not isinstance(declared_hash, str) or not declared_hash:
-                return None
+                return None, "artifact-digest-absent"
             resolved = self._resolve_carve_proposal_artifact(cfg, art.get("path"))
             if resolved is None:
-                return None
+                return None, "artifact-path-rejected"
             try:
                 content = resolved.read_bytes()
             except OSError:
-                return None
+                return None, "artifact-unreadable"
             actual_hash = hashlib.sha256(content).hexdigest()
             if actual_hash != declared_hash:
-                return None
+                return None, "artifact-digest-mismatch"
             try:
                 fm, _body = frontmatter.parse_handoff(resolved)
-            except Exception:
-                return None
+            except Exception:  # census: authority-bearing, fail-closed (CR-02a)
+                # Untrusted model-authored frontmatter: ANY parse failure is a
+                # rejection, and the rejection is what makes it safe. Narrowing
+                # this to a specific exception type would let an unanticipated
+                # parser error propagate and abort the whole validation loop,
+                # which is LESS closed than rejecting this one proposal.
+                return None, "artifact-frontmatter-unparsable"
             if fm.input_revision != base_revision:
-                return None
+                return None, "artifact-base-revision-mismatch"
             try:
                 findings = lint.lint_file(resolved, cfg)
-            except Exception:
-                return None
+            except Exception:  # census: authority-bearing, fail-closed (CR-02a)
+                # Same shape as the frontmatter parse above: a lint that
+                # cannot run is not a lint that passed.
+                return None, "artifact-lint-error"
             # L13 ('oracle satisfiable within scope.touch') is warning-
             # severity in lint.py's own general policy (deliberately, to
             # avoid gating the pre-existing CARVED->QUEUED corpus-wide --
@@ -2516,7 +3059,7 @@ class Daemon:
             # own error-severity findings (which already include L8,
             # 'escalate_if triggers are mechanical').
             if lint.has_blocking(findings) or any(f.rule == "L13" for f in findings):
-                return None
+                return None, "artifact-lint-blocking"
             artifact_ids.append(fm.id)
             artifact_paths.append(str(resolved.relative_to(cfg.root.resolve())))
             artifact_hashes.append(actual_hash)
@@ -2526,26 +3069,28 @@ class Daemon:
             source_mode=str(source.get("mode", "")),
             artifact_ids=artifact_ids, artifact_paths=artifact_paths,
             artifact_hashes=artifact_hashes, outcome=str(payload.get("outcome", "")),
-        )
+        ), ""
 
-    def _carve_proposal_recorded_payload(self, project: str, proposal_id: str) -> dict | None:
+    def _carve_proposal_recorded_payload(self, project: str, proposal_id: str,
+                                          *, events: Sequence[Event] | None = None
+                                          ) -> dict | None:
         """The raw CARVER_PROPOSAL_RECORDED payload for `proposal_id`, or
-        None if never recorded / on a storage read error. Used by
-        _execute_admit_carve_proposal to read `dispositions` (not carried
-        by the bounded ValidatedCarveProposal snapshot) for the re-scope
-        supersession step (§4.2 item 4)."""
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return None
-        for ev in events:
+        None if never recorded. Used by _execute_admit_carve_proposal to read
+        `dispositions` (not carried by the bounded ValidatedCarveProposal
+        snapshot) for the re-scope supersession step (§4.2 item 4).
+
+        CR-02a: an unreadable log used to be indistinguishable from "never
+        recorded", which silently skipped supersession."""
+        for ev in self._require_events(project, events):
             if (ev.type is EventType.CARVER_PROPOSAL_RECORDED
                     and (ev.payload or {}).get("proposal_id") == proposal_id):
                 return ev.payload
         return None
 
     def _carve_proposal_repair_escalations(self, project: str, cfg: ProjectConfig,
-                                            states: dict[str, TaskStateFile]) -> list[Event]:
+                                            states: dict[str, TaskStateFile],
+                                            *, events: Sequence[Event] | None = None,
+                                            ) -> list[Event]:
         """F018 P3b (plan §4.1): 'Invalid output creates a bounded repair
         input for the same warm session... After the configured repair
         count, emit a typed NEEDS_OPERATOR{reason: carver-proposal-
@@ -2566,13 +3111,10 @@ class Daemon:
         persistent condition escalates ONCE per generation, not every
         pass forever (mirrors _spec_attention_recently_emitted /
         _runaway_recently_escalated's own recent-window convention)."""
-        snap = self._carver_session(project, cfg)
+        events = list(self._require_events(project, events))
+        snap = self._carver_session(project, cfg, events=events)
         if snap is None:
             return []
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
         invalid = 0
         for ev in events:
             if ev.type is not EventType.CARVER_PROPOSAL_RECORDED:
@@ -2581,11 +3123,11 @@ class Daemon:
             parsed = self._parse_proposal_id(cfg, payload.get("proposal_id"))
             if parsed is None or parsed[0] != snap.generation:
                 continue
-            if self._validate_carve_proposal_payload(cfg, snap, payload) is None:
+            if self._validate_carve_proposal_payload(cfg, snap, payload)[0] is None:
                 invalid += 1
         if invalid < cfg.carve.max_proposal_repairs:
             return []
-        if self._carve_proposal_repair_escalated(project, snap.generation):
+        if self._carve_proposal_repair_escalated(project, snap.generation, events=events):
             return []
         return [self._append_ev(
             project, cfg, states, EventType.NEEDS_OPERATOR,
@@ -2593,14 +3135,15 @@ class Daemon:
              "invalid_count": invalid},
             task_id=None)]
 
-    def _carve_proposal_repair_escalated(self, project: str, generation: int) -> bool:
+    def _carve_proposal_repair_escalated(self, project: str, generation: int,
+                                          *, events: Sequence[Event] | None = None) -> bool:
         """Same recent-window debounce convention as
         _runaway_recently_escalated -- keyed on generation so a NEW
-        generation (post-rotation) gets its own fresh repair budget."""
-        try:
-            recent = list(storage.iter_events(project))[-500:]
-        except Exception:
-            return False
+        generation (post-rotation) gets its own fresh repair budget.
+
+        CR-02a: ``except Exception: return False`` said "not yet escalated"
+        from an unreadable log, re-paging the operator every pass."""
+        recent = list(self._require_events(project, events))[-500:]
         return any(
             ev.type is EventType.NEEDS_OPERATOR
             and ev.payload.get("reason") == "carver-proposal-invalid"
@@ -2610,6 +3153,7 @@ class Daemon:
 
     def _pending_carve_repairs(self, project: str, cfg: ProjectConfig,
                                snap: carver_session.CarverSessionSnapshot | None,
+                               *, events: Sequence[Event] | None = None,
                                ) -> tuple[carver_session.CarveRepairRequest, ...]:
         """F018 AD3 (docs/handoff/f018-ad3-carve-repair-proposal.md): the
         structurally-invalid carve proposals for the CURRENT generation that
@@ -2646,12 +3190,8 @@ class Daemon:
         that."""
         if snap is None:
             return ()
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
         invalid_ids: list[str] = []
-        for ev in events:
+        for ev in self._require_events(project, events):
             if ev.type is not EventType.CARVER_PROPOSAL_RECORDED:
                 continue
             payload = ev.payload or {}
@@ -2659,7 +3199,7 @@ class Daemon:
             parsed = self._parse_proposal_id(cfg, proposal_id)
             if parsed is None or parsed[0] != snap.generation:
                 continue
-            if self._validate_carve_proposal_payload(cfg, snap, payload) is None:
+            if self._validate_carve_proposal_payload(cfg, snap, payload)[0] is None:
                 invalid_ids.append(proposal_id)
         invalid = len(invalid_ids)
         if invalid == 0 or invalid >= cfg.carve.max_proposal_repairs:
@@ -2673,7 +3213,8 @@ class Daemon:
     # -- runaway watchdog (P44 2026-07-16) ------------------------------
 
     def _apply_watchdog(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
-                        actions: list[reconcile.Action], project_paused: bool
+                        actions: list[reconcile.Action], project_paused: bool,
+                        *, events: Sequence[Event] | None = None,
                         ) -> tuple[list[reconcile.Action], list[Event]]:
         """Run watchdog.detect_runaways over the recent event window BEFORE
         this pass's actions execute. For each detected RunawaySignal:
@@ -2718,14 +3259,24 @@ class Daemon:
         genuinely still active rather than silently disabling the
         watchdog.
         Returns (filtered_actions, new_events) -- both empty/unchanged when
-        no runaway is detected (the overwhelmingly common case)."""
-        try:
-            recent_events = list(storage.iter_events(project))[-500:]
-        except Exception:
-            recent_events = []
+        no runaway is detected (the overwhelmingly common case).
+
+        CR-02a: the event read is the fan-in's authoritative one. The
+        detector itself keeps a broad catch -- census class
+        advisory-degradation, justified in the handler comment -- because a
+        detector crash must not become a reason to skip the actions the
+        planner already decided are correct."""
+        recent_events = list(self._require_events(project, events))[-500:]
         try:
             signals = watchdog.detect_runaways(recent_events, watchdog.WatchdogConfig())
-        except Exception:
+        except Exception as exc:  # census: advisory-degradation (CR-02a)
+            # The watchdog SUPPRESSES actions; it never authorizes one. A
+            # detector fault therefore removes a safety net rather than
+            # opening a gate, so it degrades rather than failing the pass --
+            # but it is logged, because a permanently-crashing watchdog is a
+            # silently disabled watchdog, which is RISK-007's whole shape.
+            log.warning("watchdog detector failed", project=project,
+                         error=snapshot.bounded_detail(repr(exc)))
             signals = []
         if not signals:
             return actions, []
@@ -2742,7 +3293,8 @@ class Daemon:
             streak = self._runaway_streak.get(streak_key, 0) + 1
             self._runaway_streak[streak_key] = streak
 
-            if not self._runaway_recently_escalated(project, sig.key):
+            if not self._runaway_recently_escalated(project, sig.key,
+                                                     events=recent_events):
                 new_events.append(self._append_ev(
                     project, cfg, states, EventType.NEEDS_OPERATOR,
                     {"reason": "runaway", "pattern": sig.pattern, "key": sig.key,
@@ -2758,15 +3310,16 @@ class Daemon:
 
         return filtered, new_events
 
-    def _runaway_recently_escalated(self, project: str, key: str) -> bool:
+    def _runaway_recently_escalated(self, project: str, key: str,
+                                     *, events: Sequence[Event] | None = None) -> bool:
         """Same recent-window convention as _spec_attention_recently_emitted,
         keyed on RunawaySignal.key (not just pattern -- multiple distinct
         conditions can share one pattern, e.g. two different
-        'reconcile-thrash:<reason>' keys)."""
-        try:
-            recent = list(storage.iter_events(project))[-500:]
-        except Exception:
-            return False
+        'reconcile-thrash:<reason>' keys).
+
+        CR-02a: ``except Exception: return False`` said "not yet escalated"
+        from an unreadable log, which re-pages on every pass of a runaway."""
+        recent = list(self._require_events(project, events))[-500:]
         return any(
             ev.type is EventType.NEEDS_OPERATOR
             and ev.payload.get("reason") == "runaway"
@@ -3558,35 +4111,35 @@ class Daemon:
 
     # -- carve automation (P16 2026-07-15) --------------------------------
 
-    def _next_carve_seq(self, project: str) -> int:
+    def _next_carve_seq(self, project: str,
+                         *, events: Sequence[Event] | None = None) -> int:
         """Monotonic per-project carve sequence: count of past
         ATTEMPT_CREATED events whose attempt.role == 'carver', + 1.
         Recomputed from the event log every call (never in-memory-only, per
         this codebase's "residency is never authority" rule) so a daemon
         restart, or a prior carve that never produced a CARVE_OUTCOME
         (parse failure), still never collides with the next dispatch's
-        branch/worktree/report path."""
+        branch/worktree/report path.
+
+        CR-02a: ``except Exception: events = []`` reset the sequence to 1 on
+        an unreadable log -- COLLIDING with an existing carve branch,
+        worktree and report path, i.e. the exact failure the whole-log recount
+        exists to prevent."""
         count = 0
-        try:
-            events = storage.iter_events(project)
-        except Exception:
-            events = []
-        for ev in events:
+        for ev in self._require_events(project, events):
             if ev.type is EventType.ATTEMPT_CREATED:
                 att = ev.payload.get("attempt") or {}
                 if att.get("role") == Role.CARVER.value:
                     count += 1
         return count + 1
 
-    def _recent_review_follow_ups(self, project: str, limit: int = 10) -> list[tuple[str, str]]:
+    def _recent_review_follow_ups(self, project: str, limit: int = 10,
+                                   *, events: Sequence[Event] | None = None
+                                   ) -> list[tuple[str, str]]:
         """Carve source #1: recent REVIEW_RECORDED (task_id, result) pairs,
         newest first, capped at `limit`."""
         out: list[tuple[str, str]] = []
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
-        for ev in reversed(events):
+        for ev in reversed(list(self._require_events(project, events))):
             if ev.type is EventType.REVIEW_RECORDED and ev.task_id:
                 out.append((ev.task_id, ev.payload.get("result", "?")))
                 if len(out) >= limit:
@@ -4422,7 +4975,13 @@ class Daemon:
         # F007: gap-audit carves also stamp head_sha so the next gap-audit trigger
         # can compute changed lines since this carve.
         if kind == "gap-audit":
-            head_sha = self._head_revision(cfg)
+            # CR-02a: this is the PROMPT/marker side, not the planner's
+            # drift guard. An unresolvable HEAD here means the marker
+            # carries no head_sha, which _changed_lines_since_gap_audit
+            # already treats as an advisory "cannot measure" degradation --
+            # it can never authorize anything, so .value (None on failure)
+            # is the correct read.
+            head_sha = self._head_revision(cfg).value
             if head_sha:
                 created_payload["head_sha"] = head_sha
         events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
@@ -4741,7 +5300,8 @@ class Daemon:
             out[level] = hashlib.sha256(content).hexdigest()
         return out
 
-    def _recent_merge_digest_ids(self, project: str, limit: int) -> list[str]:
+    def _recent_merge_digest_ids(self, project: str, limit: int,
+                                  *, events: Sequence[Event] | None = None) -> list[str]:
         """F018 P3a (plan §2.5 item 4): the most recent `limit` merge-digest
         ids, newest first -- named by POINTER only in the bootstrap packet
         (never the full digest body). Mirrors _pending_carver_feeds' own
@@ -4749,10 +5309,7 @@ class Daemon:
         bootstrap has no session yet to have consumed anything)."""
         if limit <= 0:
             return []
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            events = []
+        events = list(self._require_events(project, events))
         # A malformed carver_digest (present but missing digest_id) is skipped
         # rather than raising KeyError -- matching A2's `_pending_carver_feeds`
         # (digest.get("digest_id", "")) and P4a's _highest_consumed_feed_sequence
@@ -4772,22 +5329,22 @@ class Daemon:
 
     def _highest_consumed_feed_sequence(self, project: str,
                                         source_ids: tuple[str, ...],
+                                        *, events: Sequence[Event] | None = None,
                                         ) -> int | None:
         """F018 P4a: scan MERGE_RECORDED events for the highest
         event_sequence whose carver_digest.digest_id appears in
         source_ids -- so the emit can acknowledge exactly which feeds
         were consumed and stop re-firing them every pass. Returns None
-        if no match (nothing to acknowledge), mirroring the try/except
-        pattern of the other carver helpers."""
+        if no match (nothing to acknowledge).
+
+        CR-02a: the former ``except Exception: return None`` reported "no
+        feed consumed" from an unreadable log, so the consumed cursor never
+        advanced and every feed re-fired every pass."""
         if not source_ids:
             return None
         id_set = set(source_ids)
         highest: int | None = None
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return None
-        for ev in events:
+        for ev in self._require_events(project, events):
             if ev.type is not EventType.MERGE_RECORDED:
                 continue
             digest = ev.payload.get("carver_digest")
@@ -5323,7 +5880,9 @@ class Daemon:
         prompt = self._build_carver_carve_prompt(
             cfg, project, task_id, seq, states, generation=snap.generation, sub_mode=sub_mode,
             item_id=action.item_id, rescope=rescope_ctx, kind=kind,
-            base_revision=self._head_revision(cfg))
+            # Prompt context only (see the gap-audit marker above): None
+            # simply omits the base-revision line from the carver packet.
+            base_revision=self._head_revision(cfg).value)
         argv = adapters.build_resume(route_def, session=snap.session_id,
                                      worktree=str(carve_cwd), prompt=prompt)
         spec = wrapper.WrapperSpec(
@@ -6072,7 +6631,8 @@ class Daemon:
             text, re.IGNORECASE | re.MULTILINE,
         ))
 
-    def _pre_review_sha(self, project: str, task_id: str, attempt_id: str) -> str | None:
+    def _pre_review_sha(self, project: str, task_id: str, attempt_id: str,
+                         *, events: Sequence[Event] | None = None) -> str | None:
         """DR8: read back the pre-review baseline sha THIS review attempt's
         ATTEMPT_CREATED event recorded for `task_id` (see LaunchReview's
         per-member created_payload) -- everything committed on feat/<task_id>
@@ -6082,12 +6642,12 @@ class Daemon:
         has no TaskStateFile projection field of its own). Returns None when
         no ATTEMPT_CREATED for this exact (task_id, attempt_id) pair carries
         the key -- an unresolved baseline (_task_branch_head_sha returned
-        None) or a pre-DR8/policy-off review."""
-        try:
-            events = list(storage.iter_events(project))
-        except Exception:
-            return None
-        for ev in events:
+        None) or a pre-DR8/policy-off review.
+
+        CR-02a: the artifact BINDING for a review is authority-bearing --
+        None disables the reviewer-repair diff check entirely -- so an
+        unreadable log must not be able to produce it."""
+        for ev in self._require_events(project, events):
             if (ev.type is EventType.ATTEMPT_CREATED and ev.task_id == task_id
                     and ev.attempt_id == attempt_id):
                 sha = ev.payload.get("pre_review_sha")
@@ -6330,7 +6890,11 @@ class Daemon:
             except Exception:
                 input_revision = None
                 origin_tier = None
-        head_revision = self._head_revision(cfg)
+        # Re-scope PROMPT context. The planner's own drift guard reads the
+        # authoritative ReconcileInput.head_revision, which the fan-in has
+        # already proven available before any action was planned; this copy
+        # only decorates the carver packet, so .value is the right read.
+        head_revision = self._head_revision(cfg).value
         return {
             "origin_task_id": origin_task_id,
             "handoff_path": handoff_path,

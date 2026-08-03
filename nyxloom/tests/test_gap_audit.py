@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, storage
+from nyxloom import daemon, lint, paths, reconcile, snapshot, storage
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import CarveDispatch, ReconcileInput, plan_project
 from nyxloom.types import (
@@ -322,8 +322,15 @@ def test_oracle_7_binary_rows_contribute_zero(tmp_state, sample_project, monkeyp
     assert result == 8  # 5 + 3, binary counts 0
 
 
-def test_oracle_7_storage_read_failure_returns_zero(monkeypatch):
-    """Oracle 7: Storage read failure returns 0 (fail-safe)."""
+def test_oracle_7_storage_read_failure_is_typed_unavailable(monkeypatch):
+    """Oracle 7, revised by CR-02a: the event log is one AUTHORITATIVE input
+    with one failure mode, so an unreadable log raises here too rather than
+    reporting 0 changed lines.
+
+    The advisory half of this helper survives unchanged and is asserted
+    separately: once the log HAS been read, a git failure while measuring
+    activity is a recorded degradation that still answers 0 (see
+    test_oracle_7_generic_exception_returns_zero below)."""
     d = daemon.Daemon({"demo": Path("/tmp/test-demo")})
 
     def mock_iter_events(project):
@@ -333,8 +340,8 @@ def test_oracle_7_storage_read_failure_returns_zero(monkeypatch):
 
     cfg = _cfg()
     cfg.root = Path("/tmp/test-demo")
-    result = d._changed_lines_since_gap_audit("demo", cfg)
-    assert result == 0
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._changed_lines_since_gap_audit("demo", cfg)
 
 
 def test_oracle_7_generic_exception_returns_zero(tmp_state, sample_project, monkeypatch):
@@ -568,7 +575,13 @@ def test_head_sha_checkpoint_is_written_by_the_dispatch_END_TO_END(
     sibling kind: a test-health carve must NOT stamp head_sha, since only
     gap-audit consumes it."""
     expected = "deadbeefcafebabe0123456789abcdef01234567"
-    monkeypatch.setattr(daemon.Daemon, "_head_revision", lambda self, cfg: expected)
+    # CR-02a: _head_revision is a typed authoritative acquisition now, so the
+    # stub returns a descriptor rather than a bare sha.
+    monkeypatch.setattr(
+        daemon.Daemon, "_head_revision",
+        lambda self, cfg, **_kw: snapshot.SnapshotInput.ok_value(
+            "git_head_revision", snapshot.InputClass.AUTHORITATIVE, expected,
+            provenance=snapshot.Provenance("git", "test")))
 
     task_id = _dispatch_carve(monkeypatch, sample_project, "gap-audit")
 
@@ -603,7 +616,11 @@ def test_test_health_carve_does_not_stamp_head_sha_NEGATIVE(
     stamping were unconditional, a test-health carve would silently reset the
     gap-audit activity checkpoint and the audit would never accumulate enough
     changed lines to fire."""
-    monkeypatch.setattr(daemon.Daemon, "_head_revision", lambda self, cfg: "f" * 40)
+    monkeypatch.setattr(
+        daemon.Daemon, "_head_revision",
+        lambda self, cfg, **_kw: snapshot.SnapshotInput.ok_value(
+            "git_head_revision", snapshot.InputClass.AUTHORITATIVE, "f" * 40,
+            provenance=snapshot.Provenance("git", "test")))
 
     task_id = _dispatch_carve(monkeypatch, sample_project, "test-health")
 

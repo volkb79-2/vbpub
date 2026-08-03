@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, notify, reconcile, storage
+from nyxloom import daemon, lint, notify, reconcile, snapshot, storage
 from nyxloom.config import GateDef, MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import ReconcileInput, VerifyGate, plan_project
 from nyxloom.types import (
@@ -304,22 +304,47 @@ def test_days_since_gate_verify_takes_the_most_recent_of_several(
     assert d._days_since_gate_verify("demo") == pytest.approx(3.0, abs=0.01)
 
 
-def test_days_since_gate_verify_bad_timestamp_is_zero_not_none_FAIL_SAFE(
+def test_days_since_gate_verify_bad_timestamp_is_recorded_as_malformed(
         tmp_state, sample_project, monkeypatch):
+    """CR-02a: 0.0 stays as the arithmetic answer (never spend on a corrupt
+    marker) but is no longer the WHOLE answer -- it is indistinguishable from
+    a genuine recent verify, so one bad timestamp used to disable the
+    gate-verify cadence silently and indefinitely. The marker read is now a
+    typed MALFORMED authoritative fault."""
     ev = _gv_ev(age_days=5.0, sequence=1)
     ev.timestamp = ev.timestamp.replace(tzinfo=None)
     monkeypatch.setattr(storage, "iter_events", lambda project: [ev])
     d = daemon.Daemon({"demo": sample_project.root})
-    assert d._days_since_gate_verify("demo") == 0.0
+
+    builder = snapshot.SnapshotBuilder()
+    assert d._days_since_gate_verify("demo", builder=builder) == 0.0
+    audit = builder.audit()
+    assert not audit.permits_effects
+    fault = audit.get("gate_verify_marker")
+    assert fault is not None
+    assert fault.status is snapshot.InputStatus.MALFORMED
+
+    # NEGATIVE control: a well-formed marker records no fault.
+    good = snapshot.SnapshotBuilder()
+    monkeypatch.setattr(storage, "iter_events",
+                        lambda project: [_gv_ev(age_days=5.0, sequence=1)])
+    assert d._days_since_gate_verify("demo", builder=good) == pytest.approx(5.0, abs=0.01)
+    assert good.audit().permits_effects
 
 
-def test_days_since_gate_verify_unreadable_log_is_zero_not_none_FAIL_SAFE(
+def test_days_since_gate_verify_unreadable_log_is_typed_unavailable(
         tmp_state, sample_project, monkeypatch):
+    """CR-02a: 0.0 ("just verified") suppresses the cadence, which reads as
+    safe -- but it is a PERMANENT false-clean latch while the fault lasts,
+    with no event and no operator signal, and the gate-verify cadence is the
+    thing that proves the project's gate can still reject bad code. The log
+    is authoritative; a fault stops the pass and says so."""
     def boom(project):
         raise OSError("event log unreadable")
     monkeypatch.setattr(storage, "iter_events", boom)
     d = daemon.Daemon({"demo": sample_project.root})
-    assert d._days_since_gate_verify("demo") == 0.0
+    with pytest.raises(snapshot.SnapshotUnavailable):
+        d._days_since_gate_verify("demo")
 
 
 # ==========================================================================

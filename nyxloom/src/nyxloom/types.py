@@ -333,6 +333,29 @@ class EventType(enum.Enum):
     # verdict (TRUSTWORTHY/LAUNDERS/BROKEN/INCONCLUSIVE/NO_GATE) and which
     # gate_id was probed.
     GATE_VERIFY_RECORDED = "GATE_VERIFY_RECORDED"
+    # CR-02a 2026-08-03 (authoritative snapshot fail-closed audit; DR-03):
+    # the two durable records of the snapshot fan-in's verdict. Audit-only,
+    # no TaskStateFile projection (same no-op shape as the CARVER_* members
+    # above; registered in test_invariants.KNOWN_IGNORED_EVENT_TYPES). They
+    # are the ONLY thing a fail-closed pass emits, so they must be durable
+    # rather than a log line: an operator has to be able to see, after the
+    # fact and after replay, exactly which authoritative source was missing
+    # when the factory stopped making progress.
+    #
+    # SNAPSHOT_UNAVAILABLE: at least one AUTHORITATIVE input was
+    # unavailable/malformed/stale, so the pass performed zero launch, merge,
+    # gate-authorizing or other irreversible effect. Emitted exactly ONCE per
+    # affected reconcile pass, regardless of how many sources failed -- the
+    # payload lists them all, deterministically ordered (snapshot.py's
+    # SnapshotAudit.event_payload).
+    SNAPSHOT_UNAVAILABLE = "SNAPSHOT_UNAVAILABLE"
+    # SNAPSHOT_DEGRADED: the ADVISORY degradation set CHANGED. Allowed
+    # progress continues, but the degradation is visible and replayable.
+    # De-duplicated on the audit digest so a persistent degradation records
+    # once (onset), once on any change, and once on recovery (an empty
+    # `degraded` list) -- never one per pass, which is the notification-storm
+    # shape reference/DOCTRINE.md and watchdog.py both exist to prevent.
+    SNAPSHOT_DEGRADED = "SNAPSHOT_DEGRADED"
 
 
 class ActorKind(enum.Enum):

@@ -654,6 +654,14 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     # no-op shape as the CARVER_* family above). See gate_canary.py /
     # daemon._drain_gate_verify_results.
     EventType.GATE_VERIFY_RECORDED,
+    # CR-02a 2026-08-03 (authoritative snapshot fail-closed audit): the
+    # snapshot fan-in's two durable verdict records. Audit-only by
+    # construction -- a snapshot fault must NEVER mutate task state, because
+    # "we could not read the world" is precisely the situation in which the
+    # projection must not move. Their whole job is to make the fault visible
+    # and replayable while the pass performs zero effects. See snapshot.py.
+    EventType.SNAPSHOT_UNAVAILABLE,
+    EventType.SNAPSHOT_DEGRADED,
 })
 
 
