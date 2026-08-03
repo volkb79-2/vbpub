@@ -347,8 +347,7 @@ numbered item is a named rule you can find:
   * items 1, 2, 10, 11, 13 -> `rules_lifecycle.py`
   * item 5 (and the B5 self-review leg) -> `rules_review.py`
   * items 6, 7, 16 -> `rules_attention.py`
-  * items 3, 4 -> this module, `implementer_dispatch` / `attempt_ladder`
-    (legacy, CR-06b)
+  * item 3 -> `rules_dispatch.py`; item 4 -> `rules_attempts.py` (CR-06b)
   * items 9, 12, 14, 15, 17 and the carver-session ladder -> this module,
     `carver_session_ladder` / `ready_to_carve` / `carver_human_intake` /
     `test_health_carve` / `gap_audit_carve` / `headroom_carve` (legacy,
@@ -379,7 +378,7 @@ from .config import ProjectConfig, RouteDef, Routes
 from .planning import PlanContext, RuleEmitter, RuleMatch
 from .stages import effective_concurrency
 from .types import (
-    Blocker, BlockerType, Frontmatter, TaskState, TaskStateFile, AttemptState,
+    Blocker, Frontmatter, TaskState, TaskStateFile,
     ReceiptResult, Role, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES
 )
 
@@ -1050,26 +1049,27 @@ def _compaction_due(snapshot: CarverSessionSnapshot, cfg: ProjectConfig) -> str 
 #
 # CR-06a decomposed `plan_project` into the kernel (`planning.py`) plus rules
 # grouped by concern. The concerns that claim no arbitrated resource moved to
-# `rules_lifecycle.py`, `rules_review.py` and `rules_attention.py`. The three
-# below did NOT move, and are registered in the rule table with an explicit
-# `legacy_owner`, counted by `planning.LEGACY_RULE_BUDGET`:
+# `rules_lifecycle.py`, `rules_review.py` and `rules_attention.py`; CR-06b then
+# moved dispatch and the attempt ladder to `rules_dispatch.py` and
+# `rules_attempts.py`. What is left below is ONE concern:
 #
-#   * implementer dispatch and the attempt ladder (contract items 3 and 4) --
-#     CR-06b, which owns the attempt ladder's own internal ordering;
 #   * carve authority (items 9, 12, 14, 15, 17 and the carver-session ladder)
 #     -- CR-06c.
 #
-# They claim the `carve-slot` THROUGH the arbiter NOW, in this package, even
-# though their internals move later: an arbiter with no claimant would be
-# decoration, and these rules were the eight hand-written copies of
-# `and not carve_dispatch_planned` that the arbiter exists to replace.
+# Those six rules are registered in the rule table with an explicit
+# `legacy_owner` and counted by `planning.LEGACY_RULE_BUDGET`, which CR-06b
+# lowered from 8 to 6 in the same commit that moved its two.
 #
-# THEIR BODIES ARE VERBATIM. Two of them (the carver-session ladder and the
-# attempt ladder) keep the monolith's own local names through a short adapter
-# prologue rather than being rewritten against the kernel vocabulary, so the
-# differential compares code that was MOVED against code that was moved --
-# not against code that was quietly rewritten in the same commit. CR-06b and
-# CR-06c rewrite them when they take ownership.
+# They claim the `carve-slot` THROUGH the arbiter NOW, before their internals
+# move: an arbiter with no claimant would be decoration, and these rules were
+# the eight hand-written copies of `and not carve_dispatch_planned` that the
+# arbiter exists to replace.
+#
+# THEIR BODIES ARE VERBATIM. The carver-session ladder keeps the monolith's own
+# local names through a short adapter prologue rather than being rewritten
+# against the kernel vocabulary, so the differential compares code that was
+# MOVED against code that was moved -- not against code that was quietly
+# rewritten in the same commit. CR-06c rewrites it when it takes ownership.
 
 
 def carver_session_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
@@ -1307,321 +1307,14 @@ def carver_human_intake(ctx: PlanContext, emit: RuleEmitter) -> None:
         emit.note("carver", None, "targeted-intake")
 
 
-def implementer_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 3: dispatch eligible QUEUED tasks, up to capacity.
-
-    Legacy body, owned by CR-06b. PLAN-scoped rather than per-task because the
-    capacity budget is shared across tasks and spent in sorted task-id order:
-    a per-task rule would have to carry the count somewhere, and "somewhere"
-    is what CR-06 exists to remove.
-    """
-    inp = ctx.inp
-
-    # Find all eligible QUEUED tasks, sorted by task_id
-    queued_tasks = []
-    for fm_id, (fm, handoff_path) in inp.frontmatters.items():
-        if fm_id not in inp.states:
-            continue
-        tsf = inp.states[fm_id]
-        if tsf.state == TaskState.QUEUED:
-            queued_tasks.append((fm_id, fm, tsf))
-    queued_tasks.sort(key=lambda x: x[0])  # Sort by task_id
-
-    # Dispatch up to capacity (resolved once, in the pass context: the
-    # implement stage's own concurrency -- a [stage.implement] override, else
-    # policy.max_active_tasks -> parity -- less the tasks already occupying a
-    # slot).
-    dispatched = 0
-    for fm_id, fm, tsf in queued_tasks:
-        if dispatched >= ctx.dispatch_capacity:
-            break
-
-        eligible, reason = dispatch_eligible(fm, tsf, inp)
-        if eligible:
-            # Find first healthy route
-            routes_for_tier = inp.routes.for_tier(fm.tier)
-            for route_def in routes_for_tier:
-                if inp.provider_ok.get(route_def.route_id, False):
-                    emit(DispatchImplementer(task_id=fm_id, route_id=route_def.route_id))
-                    dispatched += 1
-                    emit.note("dispatch", fm_id, f"route:{route_def.route_id}")
-                    break
-        else:
-            emit.note("dispatch-skip", fm_id, reason)
-
-
-def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 4: the attempt-recovery ladder.
-
-    Legacy body, owned by CR-06b -- verbatim, through the adapter prologue
-    described in this section's header. This is the single largest concern
-    left in the monolith and the one whose internal ordering is genuinely
-    intricate (receipt, dead pid, wall-clock cap, confirmed stall, failed
-    start, interrupted-and-poisoned), which is exactly why it moves under its
-    own package rather than being reshaped in passing here.
-    """
-    # --- CR-06a adapter prologue (see the section header above) ------------
-    inp = ctx.inp
-    attempt_actions: list[Action] = []
-    _INTERRUPTIBLE_STATES = (AttemptState.RUNNING, AttemptState.PREFLIGHTING, AttemptState.STALLED)
-
-    for task_id, tsf in inp.states.items():
-        # 2026-07-15: never apply attempt lifecycle logic (stall, dead-end
-        # BLOCKED, wall-clock cap) to a terminal task — a lingering
-        # INTERRUPTED attempt on a COMPLETED task was emitting a
-        # COMPLETED->BLOCKED transition every pass (guard rejects it, but
-        # it spammed TICK_ERROR).
-        if tsf.state in TERMINAL_TASK_STATES:
-            continue
-        fm_entry = inp.frontmatters.get(task_id)
-        fm_for_task = fm_entry[0] if fm_entry is not None else None
-
-        for attempt in tsf.attempts:
-            has_receipt = inp.receipts.get(attempt.attempt_id) is not None
-            alive = inp.pid_alive.get(attempt.attempt_id, False)
-
-            # Receipt handling: RUNNING/PREFLIGHTING/STALLED with receipt (or
-            # an already-EXITED attempt whose task transition is pending) ->
-            # EmitAttemptExit.
-            if (has_receipt
-                    and (attempt.state in _INTERRUPTIBLE_STATES
-                         or (attempt.state == AttemptState.EXITED
-                             and tsf.state == TaskState.ACTIVE
-                             and attempt.role == Role.IMPLEMENTER)
-                         # 2026-07-15 live deadlock: a FINISHED frontier
-                         # review receipt was never consumed (only
-                         # implementer receipts were mapped) — the task sat
-                         # in AWAITING_REVIEW forever while the wave guard
-                         # correctly refused to relaunch.
-                         or (attempt.state == AttemptState.EXITED
-                             and tsf.state == TaskState.AWAITING_REVIEW
-                             and attempt.role == Role.REVIEW_INDEPENDENT)
-                         # F019 P1b 2026-07-25: a GATE-DIAGNOSIS reviewer leg is a
-                         # REVIEW_INDEPENDENT attempt on a task STILL in
-                         # REVIEW_REJECTED (not AWAITING_REVIEW). If the wrapper
-                         # pre-emitted its EXITED, none of the clauses above match
-                         # and the diagnosis verdict would strand -- the exact gap
-                         # the AWAITING_REVIEW clause above closes for normal
-                         # reviews. Gate on the daemon-precomputed unconsumed set
-                         # (a REVIEW_INDEPENDENT attempt with no REVIEW_RECORDED
-                         # bound) so an already-consumed normal review -- which
-                         # also lands in REVIEW_REJECTED but carries a binding --
-                         # is NOT re-consumed here (O5).
-                         or (attempt.state == AttemptState.EXITED
-                             and attempt.attempt_id in inp.gate_diagnosis_attempts)
-                         # P32 2026-07-16: a carver's EXITED attempt whose
-                         # live pass was missed (daemon restart landing on
-                         # the exit) left the synthetic carve task ACTIVE
-                         # forever, permanently eating a wip slot — the
-                         # daemon's _consume_carve_exit handler already
-                         # retires it to SUPERSEDED, but only ever ran off
-                         # this same re-scan, which didn't cover CARVER.
-                         or (attempt.state == AttemptState.EXITED
-                             and tsf.state == TaskState.ACTIVE
-                             and attempt.role == Role.CARVER)
-                         # B5 2026-07-20: a self_review attempt's EXITED receipt
-                         # is consumed ONLY while the task is SELF_REVIEWING. The
-                         # state scope (not the role alone) is load-bearing: a
-                         # SELF_REVIEW attempt lingering in any other state (e.g.
-                         # ACTIVE) stays unconsumed, so every non-SELF_REVIEWING
-                         # path is byte-identical to today (see
-                         # test_non_carver_exited_active_task_no_exit).
-                         or (attempt.state == AttemptState.EXITED
-                             and tsf.state == TaskState.SELF_REVIEWING
-                             and attempt.role == Role.SELF_REVIEW))):
-                # Receipt present and either the attempt record hasn't caught
-                # up (wrapper died pre-event, or an event race) or the wrapper
-                # emitted EXITED itself and only the TASK transition remains.
-                attempt_actions.append(EmitAttemptExit(task_id=task_id, attempt_id=attempt.attempt_id))
-
-            # No receipt, pid dead -> MarkInterrupted
-            elif attempt.state in _INTERRUPTIBLE_STATES and not alive:
-                attempt_actions.append(MarkInterrupted(task_id=task_id, attempt_id=attempt.attempt_id))
-
-            # P14 2026-07-15 item 6: no receipt, pid alive, but the attempt
-            # has been running longer than its wall-clock cap -> interrupt
-            # UNCONDITIONALLY, regardless of log activity (bypasses the
-            # log-quiet/stall-confirm gate below entirely).
-            elif (attempt.state in _INTERRUPTIBLE_STATES and alive
-                  and _wall_clock_cap_exceeded(attempt, fm_for_task, inp)):
-                attempt_actions.append(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-
-            # Already tier-2-confirmed stalled (ATTEMPT_STALLED already
-            # emitted a prior pass) and still no receipt -> interrupt now.
-            elif attempt.state == AttemptState.STALLED:
-                attempt_actions.append(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-
-            # Stall handling: no receipt, pid alive, log quiet > threshold
-            elif attempt.state == AttemptState.RUNNING and alive:
-                log_quiet = inp.log_quiet_seconds.get(attempt.attempt_id)
-                if log_quiet is not None and log_quiet > inp.cfg.policy.stall_log_quiet_seconds:
-                    if inp.stall_confirmed.get(attempt.attempt_id, False):
-                        # P14 2026-07-15 item 2: make the confirmed stall
-                        # VISIBLE (ATTEMPT_STALLED) before ever interrupting;
-                        # InterruptAttempt now only fires once the attempt's
-                        # persisted state is actually STALLED (branch above).
-                        attempt_actions.append(MarkStalled(task_id=task_id, attempt_id=attempt.attempt_id))
-                    else:
-                        attempt_actions.append(StallCheck(task_id=task_id, attempt_id=attempt.attempt_id))
-
-            # P54 2026-07-19 (M2, CRITICAL -- attempt-state closure). A FAILED
-            # attempt is TERMINAL: the wrapper writes ATTEMPT_FAILED for a
-            # lease-lost-race (exit 75) or a spawn failure -- neither ran real
-            # work -- but the loop had NO branch for FAILED, so the task was
-            # never moved off its non-terminal state. Consequence: an
-            # IMPLEMENTER task stuck ACTIVE forever (eats a wip slot); a CARVER
-            # synthetic task stuck ACTIVE forever -> carve_in_flight permanently
-            # True (any non-terminal task carrying a CARVER attempt) -> ALL
-            # carving deadlocks silently, with nothing in the log but one
-            # ATTEMPT_FAILED. And the planner CREATES same-pass capacity-1 lease
-            # collisions itself (it plans dispatches against the snapshot
-            # leases_free and never decrements it while planning), so a FAILED
-            # race-loser is routine operation, not adversarial input. Guard on
-            # is-latest so an older FAILED attempt behind a newer one is
-            # ignored; self-limiting (the transition moves the task off its
-            # current state, so this does not refire next pass).
-            elif (attempt.state == AttemptState.FAILED
-                  and bool(tsf.attempts) and tsf.attempts[-1].attempt_id == attempt.attempt_id
-                  and tsf.state not in TERMINAL_TASK_STATES):
-                if attempt.role == Role.CARVER:
-                    # Free the single carve slot; a later untargeted trigger
-                    # re-carves if still below carve_ahead_target.
-                    attempt_actions.append(Transition(
-                        task_id=task_id, to=TaskState.SUPERSEDED,
-                        notes="carve attempt failed (lease-race/spawn) -- freeing carve slot"))
-                elif attempt.role == Role.IMPLEMENTER and tsf.state == TaskState.ACTIVE:
-                    # The attempt never ran real work -> re-queue to re-dispatch
-                    # once the transient lease/spawn condition clears. (The
-                    # FAILED receipt still counts toward max_attempts today;
-                    # excluding never-ran races is A8/M8's unified accessor.)
-                    attempt_actions.append(Transition(
-                        task_id=task_id, to=TaskState.QUEUED,
-                        notes="implementer attempt failed to start (lease-race/spawn) -- re-queued"))
-
-            # INTERRUPTED attempt handling
-            elif attempt.state == AttemptState.INTERRUPTED and inp.pause_mode == "drain-agents":
-                # P15 2026-07-15: draining agents -- no NEW agent process may
-                # start (a resume IS a new process, and so is the P34
-                # fresh-start below). Leave the attempt parked INTERRUPTED;
-                # do not transition to BLOCKED either, since that would
-                # misrepresent a temporary drain as a genuine dead end. A
-                # later pass (run/drain-handoffs) re-evaluates normally.
-                pass
-
-            elif attempt.state == AttemptState.INTERRUPTED and tsf.state != TaskState.BLOCKED:
-                # (2026-07-15) the `!= BLOCKED` guard: once a dead-end has
-                # already blocked the task, don't re-emit BLOCKED->BLOCKED
-                # every pass (TICK_ERROR spam). A BLOCKED task leaves via the
-                # QUEUED re-dispatch path, not here.
-                #
-                # P34 2026-07-16 (resume-safety re-cut, decision table in
-                # nyxloom-trove/handoffs/nyxloom-P34-resume-safety-guarded.md):
-                # a "poisoned" attempt (resume_failures at/over
-                # max_resume_failures) never resumes again -- it is either
-                # parked, typed-BLOCKED on a spent record budget, or
-                # fresh-started through the ordinary dispatch guards.
-                poisoned = (inp.resume_failures.get(attempt.attempt_id, 0)
-                            >= inp.cfg.policy.max_resume_failures)
-                # B24 2026-07-23 (D-R17, D-B24-2): a TRANSIENT-classified
-                # attempt's backoff-not-yet-elapsed reading is a THIRD case
-                # here -- neither "resume now" nor "genuine dead end" -- so
-                # it must gate BOTH branches below, not just the
-                # ResumeAttempt one: gating only the resume line would let a
-                # merely-still-backing-off attempt fall through to the
-                # BLOCKED branch and misreport a transient wait as "no
-                # resume handle or attempts exhausted." Missing entries
-                # default to True (today's ordinary INTERRUPTED attempts are
-                # unaffected). Once the daemon's own resume count for this
-                # attempt reaches MAX_TRANSIENT_RESUMES, the helper returns
-                # False FOREVER -- daemon.py's _transient_escalate is what
-                # actually moves the task off this dead attempt (pause
-                # provider + requeue); this branch just correctly parks
-                # meanwhile instead of BLOCKing a task that is really just
-                # waiting its turn / about to be requeued.
-                ready = inp.transient_backoff_ready.get(attempt.attempt_id, True)
-                if not poisoned:
-                    # unchanged (O2): today's ResumeAttempt-or-BLOCKED branch.
-                    if (attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task
-                            and attempt.session_handle and ready):  # P60 (M8): was this same formula inline
-                        attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-                    elif tsf.state == TaskState.ACTIVE and ready:
-                        # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
-                        # handle, or the attempt budget is exhausted -- either
-                        # way there is no path forward. The prior code silently
-                        # did nothing here ("handled in lifecycle" was never
-                        # true: lifecycle only dispatches QUEUED tasks, and
-                        # nothing ever requeued this one) leaving the task
-                        # ACTIVE forever with zero events. Surface it.
-                        #
-                        # P62 2026-07-20 (A10, M10): SCOPED to ACTIVE (implementer
-                        # dead-end) only. For an AWAITING_REVIEW task whose review
-                        # attempt is INTERRUPTED with no handle, the WAVE loop
-                        # already plans a relaunch (has_review_in_flight is False
-                        # for a no-handle INTERRUPTED review) -- emitting BLOCKED
-                        # here too made a single pass plan BOTH a dead-end AND a
-                        # LaunchReview for the same task, so execution blocked it
-                        # and then wasted a frontier session on the now-BLOCKED
-                        # task whose exit receipt is never consumed. Deferring to
-                        # the wave loop (park here) removes the contradiction; a
-                        # genuinely unrecoverable review still surfaces via the
-                        # review budget / smart-triage, not a spurious block.
-                        blocker = Blocker(
-                            type=BlockerType.ENVIRONMENT,
-                            unblock_condition="operator: inspect attempts",
-                            detail="interrupted attempt has no resume handle or attempts are exhausted",
-                        )
-                        attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
-                                                           notes="interrupted-dead-end", blocker=blocker))
-                    # else (e.g. AWAITING_REVIEW, or a transient attempt still
-                    # backing off / at its resume cap awaiting the daemon's own
-                    # escalation): park -- no dead-end here (M10 contradiction
-                    # fix; B24 backoff/cap parking).
-                else:
-                    is_latest = bool(tsf.attempts) and tsf.attempts[-1].attempt_id == attempt.attempt_id
-                    if not is_latest:
-                        # park -- a newer attempt already supersedes this one
-                        pass
-                    elif tsf.state != TaskState.ACTIVE:
-                        # park -- e.g. AWAITING_REVIEW: a review is in flight
-                        pass
-                    elif implementer_record_count(tsf) >= inp.cfg.policy.max_attempts_per_task:
-                        # distinct-record budget gone -- the same typed
-                        # dead-end as the non-poisoned branch above (O6).
-                        blocker = Blocker(
-                            type=BlockerType.ENVIRONMENT,
-                            unblock_condition="operator: inspect attempts",
-                            detail="resume-poisoned attempt has no attempts budget remaining",
-                        )
-                        attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
-                                                           notes="interrupted-dead-end", blocker=blocker))
-                    elif fm_for_task is None:
-                        # park -- no frontmatter to dispatch from; retry next pass
-                        pass
-                    else:
-                        eligible, _reason = fresh_start_eligible(fm_for_task, tsf, inp)
-                        if not eligible:
-                            # park -- a transient guard (paused/budget/lease/
-                            # route) refused; retry next pass.
-                            pass
-                        else:
-                            # fresh DispatchImplementer, no session_handle
-                            # carried -- mirrors the lifecycle dispatch's
-                            # "first healthy route" selection (item 3 above).
-                            routes_for_tier = inp.routes.for_tier(fm_for_task.tier)
-                            for route_def in routes_for_tier:
-                                if inp.provider_ok.get(route_def.route_id, False):
-                                    attempt_actions.append(
-                                        DispatchImplementer(task_id=task_id, route_id=route_def.route_id)
-                                    )
-                                    break
-
-    # --- CR-06a adapter epilogue -------------------------------------------
-    # One channel, one order: the moved body appended in decision order and
-    # this hands that same list to the kernel unchanged.
-    for action in attempt_actions:
-        emit(action)
-
-
+# MOVED (CR-06b): implementer dispatch (contract item 3) to `rules_dispatch.py`
+# and the attempt-recovery ladder (item 4) to `rules_attempts.py`. The ladder
+# moved verbatim -- every guard and every dated incident comment with it -- and
+# gained exactly one behavioural repair, declared in the differential's
+# `KNOWN_DIVERGENCES`: it walks `PlanContext.sorted_task_ids` rather than
+# `inp.states.items()` raw, so the attempt channel no longer orders itself by
+# whatever order the daemon's directory scan produced.
+#
 # MOVED (CR-06a): the wave batching and review launch, the self-review leg and
 # the three spec-attention signals used to sit here, between the attempt ladder
 # and the carve cadences. They claim no arbitrated resource, so they moved

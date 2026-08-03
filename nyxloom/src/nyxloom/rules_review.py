@@ -156,6 +156,20 @@ def review_waves(ctx: PlanContext, emit: RuleEmitter) -> None:
     # is serial, so in practice at most one review is in flight and a second
     # wave planned the same pass simply shares the same warm handle (each still
     # gets its own fresh attempt id downstream).
+    #
+    # CR-06b: the tie is broken on `attempt_id`. `max(key=started)` returns
+    # the FIRST maximal element, and `prior_review_sessions` is built by
+    # scanning `inp.states` -- which the daemon builds by scanning a directory
+    # -- so when two EXITED review attempts share a `started` timestamp, which
+    # warm handle a wave resumed depended on the filesystem. This is the
+    # parent's permutation acceptance ("permuting input-map order cannot
+    # change planned actions") and it was the ONE remaining case where the
+    # order decided a FIELD VALUE rather than an order. The tie-break only
+    # ever discriminates among candidates the policy itself calls equal --
+    # `started`-maximal, all of them "the warmest prior session" -- so it can
+    # never reach past a tie to an older one. Declared as a divergence from
+    # the frozen baseline in `tests/test_planner_differential.py`, where that
+    # "never reaches past a tie" claim is what the pin actually checks.
     resume_session: str | None = None
     if needs_review_by_wave and ctx.review_session_reuse:
         prior_review_sessions = [
@@ -166,7 +180,8 @@ def review_waves(ctx: PlanContext, emit: RuleEmitter) -> None:
         ]
         if prior_review_sessions:
             resume_session = max(
-                prior_review_sessions, key=lambda a: a.started).session_handle
+                prior_review_sessions,
+                key=lambda a: (a.started, a.attempt_id)).session_handle
 
     # One LaunchReview per wave, carrying all its members (sorted for a
     # deterministic plan / stable first_task anchor).
@@ -194,11 +209,11 @@ def self_review_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
     depended on the filesystem. That is the parent acceptance "permuting
     input-map order cannot change planned actions", and it was met only
     vacuously: no corpus projection has even ONE SELF_REVIEWING task, so the
-    permutation oracle asserted an order it never observed. Sorting is free
-    here (unlike the attempt ladder's identical gap, which CR-06b owns and
-    which moves 543 of 877 corpus projections) -- it changes WHICH actions are
-    planned not at all, only their order among themselves, and no differential
-    input distinguishes the two. See
+    permutation oracle asserted an order it never observed. Sorting was free
+    here -- it changes WHICH actions are planned not at all, only their order
+    among themselves, and no differential input distinguishes the two. The
+    attempt ladder's identical gap was NOT free (it moves real corpus plans),
+    which is why CR-06b closed it against a DECLARED divergence instead. See
     ``tests/test_planning.py::test_two_self_reviewing_tasks_launch_in_sorted_order``.
     """
     for task_id in sorted(ctx.inp.states):

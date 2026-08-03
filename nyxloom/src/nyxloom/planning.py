@@ -58,9 +58,9 @@ THE FOUR PIECES
 
 THE LEGACY RATCHET
 ------------------
-CR-06a moves the kernel and the concerns that claim no arbitrated resource:
-lifecycle routing, review waves, and the attention/cadence probes. Dispatch and
-the attempt ladder are CR-06b's; carve authority is CR-06c's. Until they move,
+CR-06a moved the kernel and the concerns that claim no arbitrated resource:
+lifecycle routing, review waves, and the attention/cadence probes. CR-06b moved
+dispatch and the attempt ladder. Carve authority is CR-06c's. Until it moves,
 those rules are registered with :attr:`RuleSpec.legacy_owner` and their bodies
 stay in ``reconcile.py`` -- and ``tests/test_planning.py`` holds the count to
 :data:`LEGACY_RULE_BUDGET` in BOTH directions. Over budget means new debt;
@@ -96,13 +96,13 @@ from .stages import effective_concurrency, stage_context
 from .types import Role, TaskState, TERMINAL_TASK_STATES
 
 #: Rules whose bodies still live in ``reconcile.py`` because the concern they
-#: implement belongs to a later package. CR-06b owns implementer dispatch and
-#: the attempt ladder (contract items 3 and 4); CR-06c owns carve authority
-#: (items 9, 12, 14, 15, 17 and the carver-session ladder).
+#: implement belongs to a later package. CR-06c owns what is left: carve
+#: authority (items 9, 12, 14, 15, 17 and the carver-session ladder).
 #:
 #: This number may only go DOWN, and it must go down in the same commit that
-#: moves the rule. See the module docstring.
-LEGACY_RULE_BUDGET = 8
+#: moves the rule. See the module docstring. 8 -> 6 in CR-06b, which moved
+#: implementer dispatch and the attempt ladder (contract items 3 and 4).
+LEGACY_RULE_BUDGET = 6
 
 #: The exclusive resources a rule may contend for. A resource is a thing at
 #: most one rule may be granted per pass; naming it here is what lets the
@@ -208,6 +208,15 @@ class UnclaimedResource(Exception):
 
 class DuplicateRule(Exception):
     """Two rules registered under one name."""
+
+
+class TaskLessLifecycleAction(Exception):
+    """A LIFECYCLE-channel action named no task, so it has no plan position.
+
+    See :meth:`PlanChannels.add`. Named rather than left as the ``TypeError``
+    that ``sorted()`` would eventually raise, because the two say completely
+    different things to the author who hits it.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +566,23 @@ class PlanChannels:
 
     def add(self, channel: Channel, action: Any) -> None:
         if channel is Channel.LIFECYCLE:
-            self.lifecycle.setdefault(action.task_id, []).append(action)
+            task_id = getattr(action, "task_id", None)
+            if task_id is None:
+                # CR-06b (CR-06a review). The LIFECYCLE channel is GROUPED BY
+                # TASK ID and sorted, so a lifecycle action that names no task
+                # has no defined position in the plan. The monolith could not
+                # produce one -- it keyed on the frontmatter id it was
+                # processing -- and no rule can today. Refused HERE, by name,
+                # rather than left to die inside `sorted(self.lifecycle)` with
+                # a TypeError about NoneType and str: the fix for this is a
+                # design decision (does a task-less lifecycle action sort
+                # first, last, or belong in another channel?), and a rule
+                # author deserves to be told that rather than to debug a sort.
+                raise TaskLessLifecycleAction(
+                    f"{type(action).__name__} was planned into the LIFECYCLE "
+                    f"channel with no task_id; that channel is grouped and "
+                    f"sorted by task id, so the action has no position")
+            self.lifecycle.setdefault(task_id, []).append(action)
         else:
             self.other[channel].append(action)
 
@@ -699,7 +724,10 @@ def rule_table() -> tuple[RuleSpec, ...]:
     make the package's import graph cyclic and its load order significant.
     Deferring it to first use keeps the graph a DAG in every direction.
     """
-    from . import reconcile, rules_attention, rules_lifecycle, rules_review
+    from . import (
+        reconcile, rules_attempts, rules_attention, rules_dispatch,
+        rules_lifecycle, rules_review,
+    )
 
     return (
         # === lifecycle: one shared pass over the handoffs ===================
@@ -805,13 +833,12 @@ def rule_table() -> tuple[RuleSpec, ...]:
                 "headroom refill."),
         ),
 
-        # === dispatch and the attempt ladder (CR-06b) =======================
+        # === dispatch and the attempt ladder ================================
         RuleSpec(
             name="implementer-dispatch", contract_items=(3,), concern="dispatch",
             scope=RuleScope.PLAN, channel=Channel.LIFECYCLE,
-            rule=reconcile.implementer_dispatch,
+            rule=rules_dispatch.implementer_dispatch,
             emits=frozenset({"DispatchImplementer"}),
-            legacy_owner="CR-06b",
             rationale=(
                 "After the lifecycle rules, so a task transitioned this pass "
                 "is planned from the state the transition leaves it in. PLAN "
@@ -821,11 +848,10 @@ def rule_table() -> tuple[RuleSpec, ...]:
         RuleSpec(
             name="attempt-ladder", contract_items=(4,), concern="attempts",
             scope=RuleScope.PLAN, channel=Channel.ATTEMPT,
-            rule=reconcile.attempt_ladder,
+            rule=rules_attempts.attempt_ladder,
             emits=frozenset({"DispatchImplementer", "EmitAttemptExit",
                              "InterruptAttempt", "MarkInterrupted", "MarkStalled",
                              "ResumeAttempt", "StallCheck", "Transition"}),
-            legacy_owner="CR-06b",
             rationale=(
                 "After dispatch, so a fresh-start re-cut of a poisoned attempt "
                 "sees the same capacity picture the dispatch rule planned "
