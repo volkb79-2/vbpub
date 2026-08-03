@@ -800,3 +800,78 @@ def test_a_reasserted_block_refreshes_its_reason(sqlite_backend):
     assert current.notes == "second reason"
     assert current.blocker.unblock_condition == "second"
     assert storage.replay(project)[task_id].notes == "second reason"
+
+
+# ---------------------------------------------------------------------------
+# CR-04c: the schema-DDL race (found by CR-16's review)
+
+
+def test_an_empty_database_file_still_gets_its_schema(sqlite_backend):
+    """The losing half of the first-open race, reproduced deterministically.
+
+    `sqlite3.connect` creates the database file BEFORE any DDL runs, so a
+    second process that first-opens the same project sees a file that exists
+    and is empty. Guarding the DDL on FILE presence made that process skip
+    schema creation and then fail on the first query.
+
+    Racing two processes to reproduce it is a ~1-in-6 coin flip; the state
+    they race INTO is not. An empty file at the db path IS what the loser
+    observes, so creating one directly tests the same defect every time.
+    """
+    project = "cr04c-empty-file"
+    storage_sqlite.db_path(project).parent.mkdir(parents=True, exist_ok=True)
+    storage_sqlite.db_path(project).touch()
+    assert storage_sqlite.db_path(project).stat().st_size == 0
+
+    # Would raise sqlite3.OperationalError: no such table: events
+    assert list(storage.iter_events(project)) == []
+    storage.append_event(project, actor=ACTOR, type=EventType.DAEMON_STARTED,
+                         payload={})
+    assert len(list(storage.iter_events(project))) == 1
+
+
+def test_schema_creation_is_idempotent_across_many_connections(sqlite_backend):
+    """Both racers may run the DDL; `IF NOT EXISTS` makes that a no-op.
+
+    The fix deliberately allows a redundant `executescript` rather than
+    trying to elect a single creator, so this pins that the redundancy is
+    harmless -- and that a reconnect does NOT wipe or duplicate anything.
+    """
+    project = "cr04c-idempotent"
+    storage.append_event(project, actor=ACTOR, type=EventType.DAEMON_STARTED,
+                         payload={})
+    for _ in range(5):
+        conn = storage_sqlite._connect(project)
+        try:
+            conn.executescript(storage_sqlite._SCHEMA_SQL)
+        finally:
+            conn.close()
+    assert len(list(storage.iter_events(project))) == 1
+
+
+def test_the_ddl_is_skipped_once_the_schema_exists(sqlite_backend, monkeypatch):
+    """The original intent is preserved: steady-state connects issue no DDL.
+
+    The guard moved from file presence to schema presence, which would be a
+    silent regression if it then ran `CREATE TABLE IF NOT EXISTS` on every
+    connect -- the incidental schema-lock contention the docstring exists to
+    avoid, on every one of the ~2,880 store opens a day this daemon makes.
+
+    Poisoning the script rather than counting calls: `sqlite3.Connection` is
+    an immutable C type and cannot be patched, and a spy on the module would
+    only prove the guard was consulted. An unparseable `_SCHEMA_SQL` proves
+    the stronger thing -- that it is never HANDED to SQLite -- because a
+    connect that ran it could not survive.
+    """
+    project = "cr04c-no-redundant-ddl"
+    storage.append_event(project, actor=ACTOR, type=EventType.DAEMON_STARTED,
+                         payload={})
+    conn = storage_sqlite._connect(project)
+    try:
+        assert storage_sqlite._schema_present(conn) is True
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(storage_sqlite, "_SCHEMA_SQL", "this is not valid SQL;")
+    storage_sqlite._connect(project).close()          # must not raise
+    assert len(list(storage.iter_events(project))) == 1
