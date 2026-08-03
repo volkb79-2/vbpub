@@ -192,6 +192,37 @@ class TestThisRepo:
             reconcile.Transition(task_id="t1", to=TaskState.BLOCKED))
         assert queued != blocked
 
+    def test_the_legacy_ladder_matches_the_legacy_registrations(self, registry):
+        """The ladder and the registry must name the SAME action types.
+
+        A branch for a type that is no longer registered legacy is DEAD --
+        the registry routes that action to its effector and the branch can
+        never run -- and dead code that calls a method the same package
+        deleted is a landmine rather than clutter. CR-05d shipped exactly
+        that: three branches survived the move because deleting the METHODS
+        and the REGISTRATIONS looked like the whole job, and nothing tied the
+        two together. This is what ties them.
+        """
+        source = (SRC / "daemon.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        legacy_fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_execute_legacy")
+        in_ladder = set()
+        for node in ast.walk(legacy_fn):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "isinstance"
+                    and len(node.args) == 2
+                    and isinstance(node.args[1], ast.Attribute)):
+                in_ladder.add(node.args[1].attr)
+        registered = {s.action_type.__name__ for s in registry.legacy_specs()}
+        assert in_ladder == registered, (
+            f"the legacy ladder branches on {sorted(in_ladder)} but the "
+            f"registry declares {sorted(registered)} legacy. A branch with no "
+            "registration is unreachable dead code; a registration with no "
+            "branch reaches a ladder that cannot handle it.")
+
     def test_no_effector_module_can_reach_the_daemon(self):
         """The amendment's §3.3 rule made structural. Six modules that all
         reach back into one god object would pass every behavioural test and
