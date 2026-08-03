@@ -54,12 +54,22 @@ one checkable property rather than three claims:
    nobody anticipated -- a dataclass of review results, a mapping of receipts,
    a nested tuple -- is refused without anyone having had to enumerate it.
    A ``str`` FIELD is refused outright: there is no place to put a body.
-2. **A tuple can be read exactly two ways.** :class:`Reducer` is a closed
-   vocabulary of three reductions, and only two of them accept a tuple:
-   :attr:`Reducer.COUNT` (its cardinality) and :attr:`Reducer.ANY_OF_CLASS`
-   (does any element carry a :class:`PathClass`). Neither can return an
-   element. The third, :attr:`Reducer.SCALAR`, passes through a reading that
-   was already a ``bool``/``int`` and never sees a string at all.
+2. **A tuple can be read only in ways that lose it.** :class:`Reducer` is a
+   closed vocabulary of four reductions, and the three that accept a tuple are
+   :attr:`Reducer.COUNT` (its cardinality), :attr:`Reducer.NON_EMPTY` (whether
+   it has one) and :attr:`Reducer.ANY_OF_CLASS` (does any element carry a
+   :class:`PathClass`). None can return an element. The fourth,
+   :attr:`Reducer.SCALAR`, passes through a reading that was already a
+   ``bool``/``int`` and never sees a string at all.
+
+   Which facts are SCALAR is therefore the interesting question, and the answer
+   is deliberately narrow: ``gate_rigor``, ``effective_band`` and
+   ``attempts_budget``, all three of them CONFIGURATION integers. The two facts
+   that could plausibly have been pass-through -- "is a decision open" and "how
+   many attempts have been spent" -- are instead a ``NON_EMPTY`` and a
+   ``COUNT`` over the collections themselves, which is what pulls them inside
+   the property below rather than leaving them to be reduced at an acquisition
+   site no oracle here can see.
 3. **Every fact is produced by the table, not by hand.** :data:`FACT_RULES`
    has one rule per ``GuardFacts`` field and :func:`derive_facts` is a loop
    over it -- so the table is the derivation rather than a description of one.
@@ -217,6 +227,9 @@ class Reducer(Enum):
     #: The cardinality of a tuple. Invariant under any substitution of the
     #: elements, so it provably carries none of them.
     COUNT = "count"
+    #: Whether a tuple has any element at all -- ``COUNT`` with all but one bit
+    #: thrown away, and the weakest reading of a collection there is.
+    NON_EMPTY = "non_empty"
     #: Does any element of a tuple carry a :class:`PathClass`. Factors through
     #: :func:`path_classes`, so it carries a class and not an element.
     ANY_OF_CLASS = "any_of_class"
@@ -242,10 +255,10 @@ FACT_RULES: tuple = (
              PathClass.SECURITY),
     FactRule("touches_infra", "changed_paths", Reducer.ANY_OF_CLASS, PathClass.INFRA),
     FactRule("changed_file_count", "changed_paths", Reducer.COUNT),
-    FactRule("decision_open", "decision_open", Reducer.SCALAR),
+    FactRule("decision_open", "open_decisions", Reducer.NON_EMPTY),
+    FactRule("attempts_used", "attempt_ids", Reducer.COUNT),
     FactRule("gate_rigor", "gate_rigor", Reducer.SCALAR),
     FactRule("effective_band", "effective_band", Reducer.SCALAR),
-    FactRule("attempts_used", "attempts_used", Reducer.SCALAR),
     FactRule("attempts_budget", "attempts_budget", Reducer.SCALAR),
 )
 
@@ -260,22 +273,23 @@ class FactSources:
     """The LAST text-bearing record on the path from a snapshot to a guard.
 
     Every field name is also the snapshot input name it is acquired under.
-    ``changed_paths`` is the only field that may contain a string at all, and
-    :data:`FACT_RULES` reads it only through :attr:`Reducer.COUNT` and
-    :attr:`Reducer.ANY_OF_CLASS`.
+    Three fields may hold a string -- ``changed_paths``, ``open_decisions`` and
+    ``attempt_ids`` -- and every one of them is a COLLECTION, which is the
+    shape the reducer vocabulary can only count or classify.
 
-    Note that ``decision_open`` is NOT the ``decisions_open`` inbox reading: it
-    is the mechanical "an operator decision is open against THIS task" flag,
-    and the singular name is the difference. The reduction from an inbox to a
-    flag belongs at the acquisition site; what this record guarantees is that
-    the reduction has already happened, because an inbox cannot be put here.
+    The three that are not collections are ``gate_rigor``, ``effective_band``
+    and ``attempts_budget``: configuration integers. That is the line. A
+    reading arrives here either as an integer somebody configured, or as a
+    collection whose elements this module reduces itself -- an acquisition site
+    is never asked to hand over a judgement it made about prose, because there
+    is no field shaped like one.
     """
 
     changed_paths: tuple = ()
-    decision_open: bool = False
+    open_decisions: tuple = ()
+    attempt_ids: tuple = ()
     gate_rigor: int = 0
     effective_band: int = 0
-    attempts_used: int = 0
     attempts_budget: int = 0
 
     def __post_init__(self) -> None:
@@ -299,6 +313,8 @@ def _reduce(rule: FactRule, sources: FactSources) -> object:
         return value
     if rule.reducer is Reducer.COUNT:
         return len(value)
+    if rule.reducer is Reducer.NON_EMPTY:
+        return len(value) > 0
     return any(rule.path_class in path_classes(item) for item in value)
 
 

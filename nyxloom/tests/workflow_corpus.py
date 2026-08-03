@@ -468,20 +468,23 @@ FACT_SOURCE_CASES: tuple = (
     {"changed_paths": ("src/nyxloom/secrets/vault.py",)},
     {"changed_paths": ("infra/compose/stack.yaml", "nyxloomd/units/agent.service")},
     {"changed_paths": ("test/leases/harness.py",)},
-    {"decision_open": True, "gate_rigor": 2, "effective_band": 3},
-    {"attempts_used": 1, "attempts_budget": 3},
+    {"open_decisions": ("D-071",), "gate_rigor": 2, "effective_band": 3},
+    {"attempt_ids": ("T-4/a1",), "attempts_budget": 3},
 )
 
 #: The adversarial case, kept in the corpus rather than in the test module so
 #: the REAL derivation is run over the very input that catches a smuggling one.
-#: Every string in it is bait: ``ada`` is a name in the reviewer table the
+#: Every string in it is bait: ``grace`` is a name in the reviewer table the
 #: hostile index reduction ranks, ``looks-good`` is the substring the hostile
 #: membership reduction matches, and ``tests`` is a genuine mark -- so the fact
 #: that ``derive_facts`` is invariant here and the hostile ones are not is a
-#: statement about the reduction, not about the input.
+#: statement about the reduction, not about the input. The bait is spread
+#: across TWO collections on purpose: the property is about the reducers, not
+#: about paths, and a decision record's text is the more likely carrier.
 FACT_SMUGGLING_CASE: dict = {
-    "changed_paths": ("tests/ada/looks-good.py", "src/nyxloom/grace-said-fine.py"),
-    "attempts_used": 2,
+    "changed_paths": ("tests/ada/looks-good.py", "src/nyxloom/planning.py"),
+    "open_decisions": ("D-9: grace flagged the auth change as risky",),
+    "attempt_ids": ("T-9/a1", "T-9/a2"),
     "attempts_budget": 4,
 }
 

@@ -254,8 +254,12 @@ def _an_int_index_into_a_reviewer_table(sources: FactSources) -> GuardFacts:
     Every one of CR-07a's layers passes -- the annotation is ``int``, the value
     is exactly ``int``, and a guard reading ``facts.gate_rigor`` is inside the
     AST allow-list. Only the substitution property sees it.
+
+    It reads the DECISION records rather than the paths, because the reducer
+    vocabulary is what the property constrains, not the field that happens to
+    hold paths.
     """
-    joined = " ".join(sources.changed_paths)
+    joined = " ".join(sources.open_decisions)
     rank = next((i + 1 for i, name in enumerate(_REVIEWER_TABLE) if name in joined), 0)
     return replace(derive_facts(sources), gate_rigor=rank)
 
