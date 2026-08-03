@@ -1,0 +1,24 @@
+# Runs nyxloom-liveness.service on a cadence, and -- more importantly --
+# gives it somewhere to escalate when it fails.
+#
+# The interval is deliberately much longer than the 30s reconcile interval.
+# The deadman's own threshold is `reconcile_interval_seconds` x the configured
+# multiple, so probing far more often than that only produces duplicate
+# reports of the same condition. Detection latency is bounded by
+# `OnUnitActiveSec` plus that threshold, not by this value alone.
+
+[Unit]
+Description=nyxloom liveness deadman -- periodic host-side probe
+
+[Timer]
+# Not OnBootSec=0: a host that just booted has a daemon that legitimately has
+# not reconciled yet, and an alarm during every reboot is an alarm nobody
+# reads by the second week.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=nyxloom-liveness.service
+
+[Install]
+WantedBy=timers.target

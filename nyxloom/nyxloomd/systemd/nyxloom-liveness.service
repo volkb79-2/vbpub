@@ -1,0 +1,53 @@
+# nyxloom deadman -- the HOST-SIDE invoker for CR-16's liveness check.
+#
+# WHY THIS EXISTS AT ALL. CR-16 gave nyxloom a durable heartbeat and a reader
+# that needs no live daemon: `nyxloom doctor --liveness` opens the store
+# directly and reports how long it has been since any project completed a
+# reconcile pass. That mechanism was verified against the real production
+# stores with the daemon stopped.
+#
+# But CR-16 shipped only ONE invoker: the container healthcheck. Docker does
+# not run healthchecks on a stopped container, so the exact incident the
+# package exists to prevent -- nyxloom-prod-nyxloomd sitting Exited(143) for
+# ten days -- would still have been silent. An alarm that only runs while the
+# thing it watches is alive is not an alarm.
+#
+# This unit is that missing invoker, and it deliberately runs on the HOST:
+# nothing inside the container can survive the container being gone.
+#
+# NOT INSTALLED BY ANYTHING IN THIS REPO. Installing it is an operator action
+# (see nyxloomd/systemd/README.md). It is shipped so the decision is a
+# one-command install rather than a design exercise during an outage.
+
+[Unit]
+Description=nyxloom liveness deadman (host-side, survives the container)
+Documentation=file:/workspaces/vbpub/nyxloom/nyxloomd/systemd/README.md
+
+# The escalation. Without this the unit merely goes `failed` in systemctl,
+# which is the same dead end as Docker's `unhealthy`: a state nobody watches.
+# The handler is deliberately NOT the daemon's own ntfy -- CR-16's acceptance
+# is that a broken transport is reported "through a different path", and a
+# channel that cannot report its own failure is not an alarm channel.
+OnFailure=nyxloom-liveness-alarm@%n.service
+
+[Service]
+Type=oneshot
+
+# The state root as the HOST sees it -- the same directory the daemon
+# container bind-mounts. Reading it needs no container and no daemon.
+Environment=NYXLOOM_STATE=%h/.local/state/nyxloom
+
+# --liveness exits non-zero when a project's deadman or tick-error-streak
+# fires. Output goes to the journal so the reason survives the exit code;
+# CR-16's review specifically fixed the container healthcheck discarding it,
+# and repeating that mistake here would leave an operator with a failed unit
+# and no cause attached.
+ExecStart=/usr/local/bin/nyxloom doctor --liveness
+
+# Bound the run. CR-16 measured 0.36-0.39s against copies of all five real
+# production stores after the heartbeat became a gauge; 60s is slack for a
+# cold page cache, not a budget anyone should need.
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
