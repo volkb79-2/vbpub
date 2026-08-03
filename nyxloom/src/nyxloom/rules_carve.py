@@ -417,6 +417,19 @@ def test_health_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
         if age is None or age >= test_health_interval:
             emit.claim("carve-slot")
             emit(CarveDispatch(project=inp.cfg.project_id, kind="test-health"))
+            # CR-06c review: item 15 was the ONE carve trigger that spent the
+            # pass's slot and recorded nothing. Item 12 notes
+            # `carve/ready-to-carve`, item 17 `carve/gap-audit`, item 9
+            # `carve/headroom`, and the session ladder notes every slot it
+            # takes -- so the trace answered "which trigger consumed the carve
+            # authority this pass" for four of five producers, and the fifth
+            # was silent for no reason anybody chose. Faithfully moved that
+            # way from the monolith, where the omission originated. A pure
+            # ADDITION to the breadcrumb stream: the differential's trace
+            # check is a subsequence against the frozen baseline, so a new
+            # note is admissible where a reordered one would not be, and the
+            # kind is one `TRACE_KINDS` already declares.
+            emit.note("carve", None, "test-health")
 
 
 def gap_audit_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
@@ -459,9 +472,10 @@ def headroom_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
     starve.
 
     P03 (D-L5): the shared guard is an if/elif chain SOLELY to attribute a
-    carve-skip breadcrumb to its actual reason (paused / in-flight) -- the
-    overall truth table (enter the ready_count computation iff paused is False
-    AND carve_in_flight is False AND the carve slot is still free) is
+    carve-skip breadcrumb to its actual reason (paused / in-flight / the slot
+    is already taken -- the third added by CR-06c's review) -- the overall
+    truth table (enter the ready_count computation iff paused is False AND
+    carve_in_flight is False AND the carve slot is still free) is
     byte-identical to the single `and`-chained condition it replaces.
 
     THE `guard-exclude` BREADCRUMBS ARE NOT SORTED, and must not be. They are
@@ -480,7 +494,20 @@ def headroom_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
         emit.note("carve-skip", None, "paused")
     elif ctx.carve_in_flight:
         emit.note("carve-skip", None, "in-flight")
-    elif emit.available("carve-slot"):
+    elif not emit.available("carve-slot"):
+        # CR-06c review: CONTENTION, which was the one reason this rule
+        # declined that the trace never recorded. It records `paused` and
+        # `in-flight` and then falls silent on the case the whole ordering
+        # argument exists to manage -- item 15 and item 17 sit ABOVE this rule
+        # precisely because its condition holds on nearly every pass of a
+        # draining project, so "a rarer trigger took the slot" is the expected
+        # outcome, not an anomaly, and an operator asking why the headroom
+        # refill did not fire saw nothing at all. The arbiter's ledger has
+        # carried the holder's name since CR-06a; this puts the same fact in
+        # the channel the daemon already flushes. A pure addition, on a kind
+        # `TRACE_KINDS` already declares.
+        emit.note("carve-skip", None, "slot-taken")
+    else:
         ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
         ready_count = 0
         for fm_id, (fm, _handoff_path) in inp.frontmatters.items():
