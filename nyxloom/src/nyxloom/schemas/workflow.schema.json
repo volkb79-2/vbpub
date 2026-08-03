@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nyxloom.dev/schemas/workflow.schema.json",
+  "title": "nyxloom workflow source (nyxloom.workflow/v1)",
+  "description": "Operator-managed workflow definition. Carries NO executable code and NO expression language: an outcome names a node, a kernel outcome names a kernel verb, and a guard names a registered pure predicate. Kernel transition targets are absent from this vocabulary by construction -- see src/nyxloom/workflow_ir.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "version", "start", "nodes"],
+  "properties": {
+    "schema": {"const": "nyxloom.workflow/v1"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"},
+    "version": {"type": "integer", "minimum": 1},
+    "start": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "nodes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"$ref": "#/$defs/node"}
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_state"],
+      "properties": {
+        "handler": {"type": "string"},
+        "role": {"type": "string"},
+        "prompt": {"type": "string"},
+        "entry_state": {"type": "string"},
+        "exit_state": {"type": "string"},
+        "concurrency": {
+          "oneOf": [
+            {"type": "integer", "minimum": 1},
+            {"enum": ["serial", "inherit"]}
+          ]
+        },
+        "context": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "budget": {"type": "integer", "minimum": 1},
+        "join": {"$ref": "#/$defs/join"},
+        "outcomes": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "kernel_outcomes": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "guards": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/guard"}
+        }
+      }
+    },
+    "join": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group", "mode", "on_cancel"],
+      "properties": {
+        "group": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "mode": {"enum": ["all", "any"]},
+        "on_cancel": {"enum": ["cancel_siblings", "leave_siblings"]}
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string"},
+        "arg": {"type": "integer"}
+      }
+    }
+  }
+}
