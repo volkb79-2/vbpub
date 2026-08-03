@@ -428,6 +428,36 @@ def _duplicate_owner() -> dict:
     return src
 
 
+#: Guard evaluation inputs, shared by ``tests/test_workflow_guards.py``'s
+#: truth table and by the vocabulary oracle. They live here for the same reason
+#: the manifests do: a fact field that no evaluation input ever sets away from
+#: its default is a branch no input reaches, at 100% coverage -- exactly
+#: CR-06c's shape. Keeping the population in one place is what lets the oracle
+#: NAME such a field instead of the suite quietly passing over it.
+GUARD_EVALUATIONS: tuple = (
+    ("touches_tests", None, {"touches_tests": True}, True),
+    ("touches_tests", None, {}, False),
+    ("touches_security_boundary", None, {"touches_security_boundary": True}, True),
+    ("touches_security_boundary", None, {}, False),
+    ("touches_infra", None, {"touches_infra": True}, True),
+    ("touches_infra", None, {}, False),
+    ("decision_open", None, {"decision_open": True}, True),
+    ("decision_open", None, {}, False),
+    ("gate_rigor_below", 3, {"gate_rigor": 1}, True),
+    ("gate_rigor_below", 3, {"gate_rigor": 5}, False),
+    ("effective_band_at_least", 2, {"effective_band": 4}, True),
+    ("effective_band_at_least", 2, {"effective_band": 1}, False),
+    ("attempts_remaining", None, {"attempts_used": 1, "attempts_budget": 3}, True),
+    ("attempts_remaining", None, {"attempts_used": 3, "attempts_budget": 3}, False),
+    ("diff_larger_than", 4, {"changed_file_count": 9}, True),
+    ("diff_larger_than", 4, {"changed_file_count": 2}, False),
+)
+
+
+def guard_evaluations() -> tuple:
+    return GUARD_EVALUATIONS
+
+
 def all_sources() -> dict:
     """The whole population: what the vocabulary oracle runs over."""
     merged = {f"valid:{k}": v for k, v in valid_sources().items()}
