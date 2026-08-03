@@ -1,0 +1,796 @@
+"""CR-06a: the planning kernel -- the rule table, the arbiter, and the two
+structural oracles over both.
+
+Three kinds of test, for the same reason ``test_effects.py`` has three:
+
+* ``TestThisRepo`` runs the structural rules against the REAL rule table the
+  planner ships, so they bind the code that runs;
+* the synthetic-table tests drive the arbiter and the emitter over made-up
+  rules, so every refusal is seen to FAIL as well as pass. An arbiter that has
+  never refused a second claim is not known to refuse one;
+* the corpus tests assert the parent plan's two remaining acceptances --
+  permutation invariance and single carve authority -- over the real
+  historical projections rather than one hand-built input.
+
+THE TWO ORACLES ARE THE POINT. ``emits`` and "rules are pure" are both
+DERIVED from the code by walking each rule's own call graph with ``ast``, and
+required to match the declaration exactly. A declaration that is not verified
+is decoration, and the purity claim in particular had been FALSE transitively
+for four packages before this oracle was written: ``plan_project`` reached
+``stages.effective_concurrency``, which logged on every invocation.
+"""
+
+from __future__ import annotations
+
+import ast
+import dataclasses
+from pathlib import Path
+
+import pytest
+
+import corpus_profiles
+import planner_corpus
+from nyxloom import planning, reconcile
+from nyxloom.planning import (
+    Channel, DuplicateRule, PlanArbiter, PlanContext, RuleScope, RuleSpec,
+    UnclaimedResource, UndeclaredClaim, UndeclaredEmission, UnknownResource,
+    run_rules,
+)
+from nyxloom.types import TaskState
+
+SRC = Path(__file__).resolve().parent.parent / "src" / "nyxloom"
+
+#: Every action class the planner can emit, derived from the module rather
+#: than listed, so a new action joins the `emits` oracle the moment it exists.
+ACTION_NAMES = frozenset(
+    name for name, obj in vars(reconcile).items()
+    if isinstance(obj, type) and issubclass(obj, reconcile.Action)
+    and obj is not reconcile.Action
+)
+
+
+# ---------------------------------------------------------------------------
+# the call graph both oracles walk
+
+
+class CallGraph:
+    """Module-level call graph over a set of Python sources.
+
+    Follows a call when it can RESOLVE it: a function in the same module, a
+    name imported from a sibling package module, or an attribute on a
+    module alias (``stages.effective_concurrency``). It does not resolve
+    method calls on values, which is the same limitation
+    ``tests/test_effects.py`` accepts for the same reason -- the planner's
+    shared helpers are module-level functions, which is exactly the population
+    that can hide a capability from a reader.
+    """
+
+    def __init__(self, sources: dict[str, str]) -> None:
+        self.functions: dict[tuple[str, str], ast.AST] = {}
+        self.imports: dict[str, dict[str, tuple[str, str | None]]] = {}
+        for module, source in sources.items():
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    self.functions.setdefault((module, node.name), node)
+            imports: dict[str, tuple[str, str | None]] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.level == 1:
+                    for alias in node.names:
+                        local = alias.asname or alias.name
+                        if node.module:
+                            imports[local] = (node.module.split(".")[0], alias.name)
+                        else:
+                            imports[local] = (alias.name, None)   # module alias
+            self.imports[module] = imports
+
+    def _resolve(self, module: str, name: str) -> tuple[str, str] | None:
+        if (module, name) in self.functions:
+            return (module, name)
+        target = self.imports.get(module, {}).get(name)
+        if target and target[1] is not None and (target[0], target[1]) in self.functions:
+            return (target[0], target[1])
+        return None
+
+    def reachable(self, module: str, name: str) -> list[tuple[tuple[str, str], ast.AST]]:
+        pending = [(module, name)]
+        seen: set[tuple[str, str]] = set()
+        found: list[tuple[tuple[str, str], ast.AST]] = []
+        while pending:
+            key = pending.pop()
+            if key in seen:
+                continue
+            seen.add(key)
+            node = self.functions.get(key)
+            if node is None:
+                continue
+            found.append((key, node))
+            for call in ast.walk(node):
+                if not isinstance(call, ast.Call):
+                    continue
+                func = call.func
+                if isinstance(func, ast.Name):
+                    target = self._resolve(key[0], func.id)
+                    if target is not None:
+                        pending.append(target)
+                elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    alias = self.imports.get(key[0], {}).get(func.value.id)
+                    if (alias is not None and alias[1] is None
+                            and (alias[0], func.attr) in self.functions):
+                        pending.append((alias[0], func.attr))
+        return found
+
+
+def _package_sources() -> dict[str, str]:
+    return {path.stem: path.read_text(encoding="utf-8") for path in SRC.glob("*.py")}
+
+
+def _graph() -> CallGraph:
+    return CallGraph(_package_sources())
+
+
+def _root_of(spec: RuleSpec) -> tuple[str, str]:
+    return (spec.rule.__module__.rsplit(".", 1)[-1], spec.rule.__name__)
+
+
+# ---------------------------------------------------------------------------
+# oracle 1: what a rule can emit
+
+
+def derive_emits(graph: CallGraph, module: str, name: str) -> frozenset[str]:
+    """Action classes the call graph rooted at ``module.name`` can construct.
+
+    CONSTRUCTION, not emission: an action built in a helper and handed back to
+    be emitted is still that rule's to declare, and a rule that merely names
+    an action class in a comparison is not emitting it.
+    """
+    found: set[str] = set()
+    for _key, node in graph.reachable(module, name):
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            if isinstance(func, ast.Name) and func.id in ACTION_NAMES:
+                found.add(func.id)
+            elif isinstance(func, ast.Attribute) and func.attr in ACTION_NAMES:
+                found.add(func.attr)
+    return frozenset(found)
+
+
+# ---------------------------------------------------------------------------
+# oracle 2: what a rule may NOT reach
+#
+# The parent's acceptance is "rules perform no I/O, clock read, logging,
+# environment read, or global mutation". Each entry below is one way to break
+# that, named by what it would break.
+
+#: Calls on these module names are the capability, whatever the attribute.
+_FORBIDDEN_BASES = {
+    "log": "logging", "logger": "logging", "logging": "logging",
+    "subprocess": "subprocess", "os": "environment/process",
+    "storage": "store append", "shutil": "file I/O", "socket": "network",
+    "requests": "network", "urllib": "network", "sys": "process state",
+}
+#: Bare-name calls that are the capability by themselves.
+_FORBIDDEN_NAMES = {
+    "open": "file I/O", "print": "logging", "input": "console I/O",
+    "utc_now": "clock read", "get_logger": "logging",
+}
+#: Clock reads, which are only impure on a clock-bearing base.
+_CLOCK_BASES = {"datetime", "time", "clock"}
+_CLOCK_ATTRS = {"now", "utcnow", "monotonic", "time"}
+#: Path/file operations, recognised by method name because the receiver is a
+#: value the walker cannot resolve.
+_FORBIDDEN_METHODS = {
+    "read_text": "file I/O", "write_text": "file I/O", "read_bytes": "file I/O",
+    "write_bytes": "file I/O", "mkdir": "file I/O", "unlink": "file I/O",
+    "iterdir": "file I/O", "glob": "file I/O", "rglob": "file I/O",
+    "touch": "file I/O", "append_and_apply": "store append",
+    "apply_event": "store append", "iter_events": "store read",
+}
+
+
+def _impure_uses(node: ast.AST) -> list[str]:
+    hits: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name):
+            capability = _FORBIDDEN_BASES.get(child.value.id)
+            if capability is not None:
+                hits.append(f"{child.value.id}.{child.attr} ({capability})")
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        if isinstance(func, ast.Name):
+            capability = _FORBIDDEN_NAMES.get(func.id)
+            if capability is not None:
+                hits.append(f"{func.id}() ({capability})")
+        elif isinstance(func, ast.Attribute):
+            if func.attr in _FORBIDDEN_METHODS:
+                hits.append(f".{func.attr}() ({_FORBIDDEN_METHODS[func.attr]})")
+            if (isinstance(func.value, ast.Name) and func.value.id in _CLOCK_BASES
+                    and func.attr in _CLOCK_ATTRS):
+                hits.append(f"{func.value.id}.{func.attr}() (clock read)")
+    return hits
+
+
+def impurities(graph: CallGraph, module: str, name: str) -> list[str]:
+    """Every impure capability reachable from ``module.name``."""
+    found: list[str] = []
+    for (mod, fn), node in graph.reachable(module, name):
+        found.extend(f"{mod}.{fn} -> {hit}" for hit in _impure_uses(node))
+    return sorted(set(found))
+
+
+# ---------------------------------------------------------------------------
+# the rules that bind the shipping table
+
+
+class TestThisRepo:
+
+    @pytest.fixture(scope="class")
+    def table(self):
+        return planning.rule_table()
+
+    @pytest.fixture(scope="class")
+    def graph(self):
+        return _graph()
+
+    def test_declared_emissions_match_what_each_rule_can_actually_emit(
+            self, table, graph):
+        """`emits` is derived from the code, not trusted.
+
+        Over-broad fails exactly like missing: a declaration listing an action
+        the rule cannot plan is not a permission, it is noise that makes the
+        real permission unreadable -- and it is also how the resource-claim
+        check below gets quietly widened, since a spec must claim the resource
+        for every resource-bound action it declares.
+        """
+        mismatches = []
+        for spec in table:
+            actual = derive_emits(graph, *_root_of(spec))
+            if actual != spec.emits:
+                mismatches.append(
+                    f"{spec.name}: declared {sorted(spec.emits)}, "
+                    f"code can emit {sorted(actual)}")
+        assert not mismatches, "\n".join(mismatches)
+
+    def test_no_rule_can_reach_an_impure_capability(self, table, graph):
+        """The parent's acceptance, made structural.
+
+        `PlanContext.derive` is a root too: an impure context derivation would
+        make the pass impure whatever the rules themselves do, and it is where
+        the one real violation lived -- `stages.effective_concurrency` logged
+        on every call, so a pass emitted a DEBUG record twice plus once per
+        queued task while `reconcile.py`'s docstring claimed no logger was
+        reachable from it.
+        """
+        roots = [_root_of(spec) for spec in table]
+        roots += [("planning", "derive"), ("planning", "tasks"),
+                  ("reconcile", "plan_project")]
+        offenders = []
+        for module, name in roots:
+            for hit in impurities(graph, module, name):
+                offenders.append(f"{module}.{name}: {hit}")
+        assert not offenders, (
+            "a planning rule can reach an impure capability:\n"
+            + "\n".join(sorted(set(offenders))))
+
+    def test_the_legacy_rule_budget_is_exact_in_both_directions(self, table):
+        """Over budget means new debt; under budget means debt repaid without
+        recording it. The second half is what keeps the ratchet a ratchet."""
+        legacy = [spec for spec in table if spec.legacy_owner]
+        assert len(legacy) == planning.LEGACY_RULE_BUDGET, (
+            f"legacy rules are {sorted(s.name for s in legacy)}; "
+            f"LEGACY_RULE_BUDGET says {planning.LEGACY_RULE_BUDGET}")
+        assert {spec.legacy_owner for spec in legacy} <= {"CR-06b", "CR-06c"}
+
+    def test_every_rule_names_a_real_contract_item(self, table):
+        """The module contract is the frozen interface. Item 8 (actions never
+        embed prose) is a constraint on every action rather than a decision,
+        so it is the one numbered item no rule implements."""
+        covered = {item for spec in table for item in spec.contract_items}
+        assert covered <= set(range(1, 18))
+        assert covered == set(range(1, 18)) - {8}, (
+            f"contract items with no owning rule: "
+            f"{sorted(set(range(1, 18)) - {8} - covered)}")
+
+    def test_rule_names_and_ordering_are_unambiguous(self, table):
+        names = [spec.name for spec in table]
+        assert len(set(names)) == len(names)
+        assert all(spec.rationale for spec in table)
+        # Every TASK rule runs in the kernel's shared loop, so they must be
+        # contiguous or the interleaving they preserve is not preserved.
+        scopes = [spec.scope for spec in table]
+        first_plan = scopes.index(RuleScope.PLAN)
+        assert all(s is RuleScope.TASK for s in scopes[:first_plan])
+        assert all(s is RuleScope.PLAN for s in scopes[first_plan:])
+
+    def test_every_carve_family_action_is_claimed_by_its_rule(self, table):
+        """The declaration side of single carve authority: a rule that can
+        emit a carve-family action declares the claim, so the set of
+        contenders is readable from the table rather than from eight `and not`
+        clauses scattered through a function body."""
+        claimants = {spec.name for spec in table if "carve-slot" in spec.claims}
+        emitters = {
+            spec.name for spec in table
+            if spec.emits & set(planning.EXCLUSIVE_ACTIONS)
+        }
+        assert emitters <= claimants
+        assert len(claimants) >= 5, "the arbiter has too few claimants to be real"
+
+    def test_the_gate_verify_cadence_claims_nothing(self, table):
+        """Contract item 16 is deliberately OUTSIDE the carve mutex, and this
+        is where that is written down rather than inferred from which locals a
+        branch happens not to mention. A gate verify runs a subprocess against
+        canary commits: no frontier route, no carve budget, no agent turn. If
+        it contended for the carve slot, a busy carve queue would silently
+        suppress the one probe that notices a gate has stopped rejecting."""
+        spec = next(s for s in table if s.name == "gate-verify")
+        assert spec.claims == frozenset()
+        assert "VerifyGate" not in planning.EXCLUSIVE_ACTIONS
+
+
+# ---------------------------------------------------------------------------
+# the oracles, seen to fail
+
+
+def test_the_emissions_oracle_rejects_a_declaration_the_code_contradicts():
+    """Negative control: narrowing and widening a real declaration must both
+    disagree with the derivation, or a walk that silently found nothing would
+    let every declaration pass."""
+    graph = _graph()
+    spec = next(s for s in planning.rule_table() if s.name == "reject-triage")
+    actual = derive_emits(graph, *_root_of(spec))
+    assert actual == spec.emits
+    assert actual != spec.emits - {"Transition"}
+    assert actual != spec.emits | {"CarveDispatch"}
+
+
+def test_the_purity_oracle_sees_a_direct_impurity():
+    """`stages.compose` logs directly. If the oracle cannot see that, its
+    silence about the rules means nothing."""
+    graph = _graph()
+    assert any("logging" in hit for hit in impurities(graph, "stages", "compose"))
+
+
+def test_the_purity_oracle_follows_a_call_into_another_module():
+    """The control that matters, in the exact shape of the violation this
+    package found: the impurity is not in the rule, it is two modules away
+    behind an ordinary helper call.
+
+    Synthetic sources rather than production ones, so the control keeps
+    working after the production violation is fixed -- a negative control that
+    depends on a bug surviving is not a control.
+    """
+    graph = CallGraph({
+        "rules_probe": (
+            "from .helpers_probe import resolve\n"
+            "def a_rule(ctx, emit):\n"
+            "    return resolve(1, 2)\n"
+        ),
+        "helpers_probe": (
+            "from .log import get_logger\n"
+            "log = get_logger('probe')\n"
+            "def resolve(a, b):\n"
+            "    result = a + b\n"
+            "    log.debug('resolved', result=result)\n"
+            "    return result\n"
+        ),
+    })
+    hits = impurities(graph, "rules_probe", "a_rule")
+    assert hits == ["helpers_probe.resolve -> log.debug (logging)"]
+    # and the same graph with the log line gone is clean
+    clean = CallGraph({
+        "rules_probe": (
+            "from .helpers_probe import resolve\n"
+            "def a_rule(ctx, emit):\n"
+            "    return resolve(1, 2)\n"
+        ),
+        "helpers_probe": "def resolve(a, b):\n    return a + b\n",
+    })
+    assert impurities(clean, "rules_probe", "a_rule") == []
+
+
+@pytest.mark.parametrize("body, expected", [
+    ("    return open('/etc/passwd').read()", "file I/O"),
+    ("    import datetime\n    return datetime.now()", "clock read"),
+    ("    return os.environ.get('X')", "environment/process"),
+    ("    return subprocess.run(['ls'])", "subprocess"),
+    ("    return ctx.path.read_text()", "file I/O"),
+    ("    return storage.append_and_apply('p', {})", "store append"),
+])
+def test_the_purity_oracle_names_each_forbidden_capability(body, expected):
+    """One case per capability the acceptance lists, so none of them is
+    covered only by a pattern that happens to overlap another."""
+    graph = CallGraph({"probe": f"def a_rule(ctx, emit):\n{body}\n"})
+    hits = impurities(graph, "probe", "a_rule")
+    assert any(expected in hit for hit in hits), hits
+
+
+# ---------------------------------------------------------------------------
+# the arbiter, seen to fail
+#
+# These build synthetic rules rather than using the real table, because the
+# rule that matters is about a producer NOBODY HAS WRITTEN YET -- the ninth
+# carve producer that forgets the check. A test over only the existing rules
+# could not express it.
+
+
+def _probe_spec(**overrides) -> RuleSpec:
+    base = dict(
+        name="probe", contract_items=(9,), concern="probe",
+        scope=RuleScope.PLAN, channel=Channel.CARVE,
+        rule=lambda ctx, emit: None, emits=frozenset({"CarveDispatch"}),
+        claims=frozenset({"carve-slot"}), rationale="probe",
+    )
+    base.update(overrides)
+    return RuleSpec(**base)
+
+
+def _context(**overrides) -> PlanContext:
+    states = next(states for _, states in planner_corpus.projections())
+    return PlanContext.derive(corpus_profiles.build(states, "neutral"))
+
+
+def test_a_second_claim_on_one_resource_is_refused():
+    arbiter = PlanArbiter()
+    first, second = _probe_spec(name="first"), _probe_spec(name="second")
+    assert arbiter.grant(first, "carve-slot") is True
+    assert arbiter.grant(second, "carve-slot") is False
+    assert arbiter.holder("carve-slot") == "first"
+    assert arbiter.available("carve-slot") is False
+    assert arbiter.grants() == {"carve-slot": "first"}
+
+
+def test_two_rules_cannot_both_authorize_the_carve_slot_in_one_pass():
+    """The parent's acceptance, driven through the real kernel.
+
+    Both rules WANT the slot and both try to emit. The second one's emission
+    raises rather than landing in the plan -- which is the difference between
+    an arbiter and a boolean: a flag can only stop a producer that consults
+    it, and this stops one that does not.
+    """
+    def greedy(ctx, emit):
+        emit.claim("carve-slot")
+        emit(reconcile.CarveDispatch(project="p"))
+
+    table = (_probe_spec(name="first", rule=greedy),
+             _probe_spec(name="second", rule=greedy))
+    arbiter = PlanArbiter(table)
+    with pytest.raises(UnclaimedResource) as exc:
+        run_rules(_context(), table, reconcile.ReconcileTrace(), arbiter)
+    assert "second" in str(exc.value) and "first" in str(exc.value)
+    assert arbiter.grants() == {"carve-slot": "first"}
+
+
+def test_a_rule_that_emits_a_carve_action_without_claiming_is_refused():
+    """The ninth producer. It never consults the mutex at all -- exactly the
+    failure a `carve_dispatch_planned` boolean cannot detect -- and it is
+    refused because the EMISSION requires the grant, not because the author
+    remembered to check."""
+    def forgetful(ctx, emit):
+        emit(reconcile.CarveDispatch(project="p"))
+
+    table = (_probe_spec(rule=forgetful),)
+    with pytest.raises(UnclaimedResource):
+        run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter(table))
+
+
+def test_a_spec_that_can_emit_a_carve_action_must_declare_the_claim():
+    with pytest.raises(UndeclaredClaim):
+        _probe_spec(claims=frozenset())
+
+
+def test_claiming_a_resource_the_spec_does_not_declare_is_refused():
+    spec = _probe_spec(emits=frozenset({"VerifyGate"}), claims=frozenset())
+    with pytest.raises(UndeclaredClaim):
+        PlanArbiter().grant(spec, "carve-slot")
+
+
+def test_an_unknown_resource_is_refused_in_every_direction():
+    spec = _probe_spec(emits=frozenset({"VerifyGate"}), claims=frozenset())
+    arbiter = PlanArbiter()
+    with pytest.raises(UnknownResource):
+        arbiter.available("gpu")
+    with pytest.raises(UnknownResource):
+        arbiter.holder("gpu")
+    with pytest.raises(UnknownResource):
+        arbiter.grant(spec, "gpu")
+    with pytest.raises(UnknownResource):
+        _probe_spec(claims=frozenset({"gpu"}))
+
+
+def test_emitting_an_undeclared_action_type_is_refused():
+    def wrong(ctx, emit):
+        emit(reconcile.OpenWave(task_ids=["t1"]))
+
+    table = (_probe_spec(emits=frozenset({"VerifyGate"}), claims=frozenset(),
+                         rule=wrong),)
+    with pytest.raises(UndeclaredEmission):
+        run_rules(_context(), table, reconcile.ReconcileTrace(), PlanArbiter(table))
+
+
+def test_two_rules_may_not_share_a_name():
+    with pytest.raises(DuplicateRule):
+        PlanArbiter((_probe_spec(), _probe_spec()))
+
+
+def test_a_spec_must_state_its_contract_items_and_its_rationale():
+    with pytest.raises(ValueError):
+        _probe_spec(contract_items=())
+    with pytest.raises(ValueError):
+        _probe_spec(rationale="")
+
+
+# ---------------------------------------------------------------------------
+# the kernel's own mechanics
+
+
+def test_task_rules_share_one_pass_over_the_handoffs():
+    """The interleaving guarantee. Running each task rule to completion over
+    all tasks would group the trace by RULE; the monolith grouped it by TASK,
+    and the differential's subsequence check would call the difference a lost
+    trace."""
+    seen: list[str] = []
+
+    def first(ctx, emit, task):
+        seen.append(f"first:{task.task_id}")
+
+    def second(ctx, emit, task):
+        seen.append(f"second:{task.task_id}")
+
+    table = (
+        _probe_spec(name="first", scope=RuleScope.TASK, rule=first,
+                    emits=frozenset(), claims=frozenset()),
+        _probe_spec(name="second", scope=RuleScope.TASK, rule=second,
+                    emits=frozenset(), claims=frozenset()),
+    )
+    ctx = _context()
+    run_rules(ctx, table, reconcile.ReconcileTrace(), PlanArbiter(table))
+    ids = [t.task_id for t in ctx.tasks()]
+    assert seen == [f"{rule}:{tid}" for tid in ids for rule in ("first", "second")]
+
+
+def test_the_lifecycle_channel_is_grouped_by_task_and_sorted():
+    channels = planning.PlanChannels()
+    channels.add(Channel.LIFECYCLE, reconcile.Transition(task_id="b", to=TaskState.QUEUED))
+    channels.add(Channel.LIFECYCLE, reconcile.CreateTask(task_id="a"))
+    channels.add(Channel.SPEC, reconcile.SpecAttention(reason="ratchet"))
+    channels.add(Channel.LIFECYCLE, reconcile.RunPostMergeGate(task_id="b"))
+    assert [type(a).__name__ for a in channels.assemble()] == [
+        "CreateTask", "Transition", "RunPostMergeGate", "SpecAttention"]
+
+
+def test_the_context_derives_each_shared_fact_exactly_once():
+    """A frozen context is the structural half of "computed ONCE and shared":
+    if a fact is not a field here, no two rules can be sharing it."""
+    ctx = _context()
+    assert dataclasses.is_dataclass(ctx)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ctx.carve_in_flight = True
+    assert ctx.dispatch_capacity == ctx.implement_concurrency - ctx.active_count
+    assert ctx.review_session_reuse == ("session-reuse" in ctx.review_stage_context)
+    assert ctx.sorted_task_ids == tuple(sorted(ctx.inp.states))
+
+
+# ---------------------------------------------------------------------------
+# the arbiter's cross-rule consistency step
+
+
+def _blocked(task_id: str) -> reconcile.Transition:
+    return reconcile.Transition(task_id=task_id, to=TaskState.BLOCKED,
+                                notes="interrupted-dead-end")
+
+
+@pytest.mark.parametrize("launch", [
+    reconcile.DispatchImplementer(task_id="t1", route_id="r"),
+    reconcile.ResumeAttempt(task_id="t1", attempt_id="a1"),
+    reconcile.LaunchSelfReview(task_id="t1", source_attempt_id="a1"),
+])
+def test_a_launch_for_a_task_this_plan_dead_ends_is_dropped(launch):
+    """Executing both blocks the task and then wastes an agent session on the
+    now-BLOCKED task whose exit receipt is never consumed. The dead-end is
+    kept -- it is the inspectable half."""
+    plan = PlanArbiter().deconflict([_blocked("t1"), launch])
+    assert [type(a).__name__ for a in plan] == ["Transition"]
+
+
+def test_a_wave_launch_keeps_the_members_that_are_not_being_blocked():
+    plan = PlanArbiter().deconflict([
+        _blocked("t1"),
+        reconcile.LaunchReview(wave_id="w1", task_ids=["t1", "t2"]),
+    ])
+    assert len(plan) == 2
+    assert plan[1].task_ids == ["t2"]
+    assert plan[1].wave_id == "w1"
+
+
+def test_a_wave_launch_whose_every_member_is_blocked_is_dropped():
+    plan = PlanArbiter().deconflict([
+        _blocked("t1"),
+        reconcile.LaunchReview(wave_id="w1", task_ids=["t1"]),
+    ])
+    assert [type(a).__name__ for a in plan] == ["Transition"]
+
+
+def test_a_plan_with_no_dead_end_is_returned_untouched():
+    actions = [reconcile.DispatchImplementer(task_id="t1", route_id="r"),
+               reconcile.Transition(task_id="t2", to=TaskState.QUEUED)]
+    assert PlanArbiter().deconflict(actions) is actions
+
+
+# ---------------------------------------------------------------------------
+# structured explanations (parent work item 3)
+
+
+def test_every_planned_action_is_attributable_to_the_rule_that_decided_it():
+    checked = 0
+    for _case_id, states in planner_corpus.projections()[:40]:
+        for profile in ("neutral", "test-health-due", "carver-cold"):
+            plan = reconcile.plan_project(corpus_profiles.build(states, profile))
+            kinds = [type(a).__name__ for a in plan]
+            matches = plan.trace.matches
+            # deconfliction may DROP an action, so the plan is a sub-multiset
+            # of what the rules decided -- never a superset.
+            for kind in kinds:
+                assert kind in [m.action_kind for m in matches]
+            assert len(matches) >= len(kinds)
+            for match in matches:
+                assert match.rule and match.concern and match.contract_items
+            checked += 1
+    assert checked >= 30
+
+
+def test_every_breadcrumb_names_the_rule_that_recorded_it():
+    for _case_id, states in planner_corpus.projections()[:40]:
+        plan = reconcile.plan_project(corpus_profiles.build(states, "neutral"))
+        for note in plan.trace.breadcrumbs:
+            assert note.rule, f"unattributed breadcrumb {note!r}"
+
+
+# ---------------------------------------------------------------------------
+# the corpus acceptances
+
+
+def _normalise(action) -> tuple:
+    """(class, fields) with the KNOWN-nondeterministic field removed.
+
+    `LaunchReview.resume_session` is chosen by `max(..., key=started)` over an
+    unordered scan, so ties are broken by snapshot iteration order -- a real
+    pre-existing gap, pinned by its own test below rather than hidden here.
+    """
+    return (
+        type(action).__name__,
+        tuple(sorted(
+            (f.name, repr(getattr(action, f.name)))
+            for f in dataclasses.fields(action)
+            if not (type(action).__name__ == "LaunchReview"
+                    and f.name == "resume_session")
+        )),
+    )
+
+
+def _channels(inp) -> dict:
+    table = planning.rule_table()
+    channels = run_rules(PlanContext.derive(inp), table,
+                         reconcile.ReconcileTrace(), PlanArbiter(table))
+    result = {channel: [_normalise(a) for a in actions]
+              for channel, actions in channels.other.items()}
+    result[Channel.LIFECYCLE] = [
+        _normalise(a) for task_id in sorted(channels.lifecycle)
+        for a in channels.lifecycle[task_id]
+    ]
+    return result
+
+
+def _permuted(inp):
+    return dataclasses.replace(
+        inp,
+        states=dict(reversed(list(inp.states.items()))),
+        frontmatters=dict(reversed(list(inp.frontmatters.items()))),
+    )
+
+
+@pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
+def test_permuting_the_snapshot_key_order_cannot_change_the_plan(profile):
+    """The parent's permutation acceptance, over the real corpus.
+
+    A `ReconcileInput`'s maps are unordered by intent -- the daemon builds
+    them by scanning a directory -- so a plan that depends on their iteration
+    order depends on the filesystem. Asserted per CHANNEL, which is sharper
+    than asserting over the flat plan: it says WHICH decisions are
+    order-independent rather than only that the total is.
+
+    The attempt channel is compared as a multiset, not in order, and that is
+    a REAL pre-existing gap rather than a concession: the attempt ladder walks
+    `inp.states.items()` raw where every other rule sorts. Contract item 3
+    promises "sorted task-id order (determinism)" for dispatch and the module
+    docstring claims determinism generally; the ladder never did. It is
+    CR-06b's, and `test_the_attempt_channels_order_follows_the_snapshot`
+    below pins it so it cannot be repaired silently or lost.
+    """
+    differences = []
+    for case_id, states in planner_corpus.projections():
+        first = _channels(corpus_profiles.build(states, profile))
+        second = _channels(_permuted(corpus_profiles.build(states, profile)))
+        for channel in first:
+            if channel is Channel.ATTEMPT:
+                if sorted(first[channel]) != sorted(second[channel]):
+                    differences.append(f"{case_id}/{channel}: contents differ")
+            elif first[channel] != second[channel]:
+                differences.append(f"{case_id}/{channel}: order or contents differ")
+        if len(differences) >= 5:
+            break
+    assert not differences, "\n".join(differences)
+
+
+def test_the_attempt_channels_order_follows_the_snapshot():
+    """Pins the gap the permutation test names, so it is visible and owned.
+
+    Not a wish: this asserts the CURRENT behaviour, so CR-06b fixing it fails
+    this test and has to say so in its report. Left unfixed here because
+    sorting the channel would change the planned action ORDER, which the
+    differential would correctly report as a delta -- CR-06a changes no
+    planning policy.
+    """
+    found = False
+    for _case_id, states in planner_corpus.projections():
+        inp = corpus_profiles.build(states, "neutral")
+        first = _channels(inp)[Channel.ATTEMPT]
+        second = _channels(_permuted(inp))[Channel.ATTEMPT]
+        if len(first) > 1 and first != second:
+            assert sorted(first) == sorted(second)
+            found = True
+            break
+    assert found, (
+        "no corpus projection plans two attempt actions -- the gap this test "
+        "pins can no longer be demonstrated, so re-read it before deleting")
+
+
+def test_the_warm_review_session_choice_is_ambiguous_under_a_tie():
+    """The second pre-existing gap, pinned the same way.
+
+    `resume_session` is `max(prior_sessions, key=lambda a: a.started)`, and
+    `max` returns the FIRST maximal element -- so when two EXITED review
+    attempts share a `started` timestamp, which warm session a wave resumes
+    depends on `inp.states` iteration order. Harmless in effect (the wrong
+    guess is a prompt-cache MISS, which is exactly the pre-B6 cost, and the
+    executor stamps a fresh attempt id either way, so the A7 verdict-attempt
+    binding is untouched) but it is still a plan that depends on map order.
+    Owner: whichever package next touches B6/D-R10 session reuse. NOT fixed
+    here: a deterministic tie-break would pick a different handle than the
+    frozen baseline does, which the differential would report as a delta.
+    """
+    ambiguous = []
+    for case_id, states in planner_corpus.projections():
+        inp = corpus_profiles.build(states, "neutral")
+        first = [a for a in reconcile.plan_project(inp)
+                 if isinstance(a, reconcile.LaunchReview)]
+        second = [a for a in reconcile.plan_project(_permuted(inp))
+                  if isinstance(a, reconcile.LaunchReview)]
+        if [a.resume_session for a in first] != [a.resume_session for a in second]:
+            ambiguous.append(case_id)
+            break
+    assert ambiguous, (
+        "no corpus projection has two review sessions tied on `started` -- "
+        "the gap this test pins can no longer be demonstrated")
+
+
+@pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
+def test_at_most_one_carve_authority_is_granted_per_pass(profile):
+    """Single carve authority over the real corpus: at most one grant, and at
+    most one carve-family action, whichever rules wanted it."""
+    for case_id, states in planner_corpus.projections():
+        inp = corpus_profiles.build(states, profile)
+        table = planning.rule_table()
+        arbiter = PlanArbiter(table)
+        channels = run_rules(PlanContext.derive(inp), table,
+                             reconcile.ReconcileTrace(), arbiter)
+        assert len(arbiter.grants()) <= 1, case_id
+        carve_actions = [
+            a for a in channels.assemble()
+            if type(a).__name__ in planning.EXCLUSIVE_ACTIONS
+        ]
+        assert len(carve_actions) <= 1, f"{case_id}: {carve_actions}"
+        if carve_actions:
+            assert arbiter.holder("carve-slot") is not None
