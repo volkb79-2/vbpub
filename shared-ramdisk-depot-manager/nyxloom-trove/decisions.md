@@ -66,6 +66,15 @@ node up front.
 
 ## D-004 — the `privileged-e2e` gate is declared but empty until P02
 
+**Status:** **closed by P02.** The gate now carries four oracles that
+measure real kernel and systemd behaviour (O6a, O6b, O7, O8, O9), and one of
+them immediately falsified a design assumption — see D-011. The guard below
+is kept for the record of why it was declared empty in the first place.
+
+---
+
+### Original entry (P01)
+
 **Status:** accepted, with a guard.
 
 The handoff requires `nyxloom.toml` to declare a `privileged-e2e` gate. P01
@@ -230,3 +239,131 @@ injecting block device distinguishes "written" from "durable".
 directory), and records the gap here rather than implying the gate covers
 it. A `dm-flakey`-style oracle belongs with the privileged e2e harness
 (D-004), where a device can be made to lie.
+
+**Update (P02):** that harness now exists and runs privileged, so the
+`dm-flakey` oracle is buildable. Still not built — it is its own package,
+not a rider on P02.
+
+---
+
+## D-009 — srdm drives systemd through its CLI, not D-Bus
+
+**Status:** accepted for v1, revisit if the CLI proves insufficient.
+
+The master plan's privilege table names "systemd D-Bus (transient units)".
+Every Go D-Bus client is a third-party dependency, and srdm's zero-dependency
+property is what keeps its gate hermetic: no module downloads at gate time,
+nothing vendored, an offline build.
+
+**Decided:** `internal/systemdx` shells out to `systemd-run` and `systemctl`,
+which are stable, documented interfaces. The runner is injected, so argv
+construction and output parsing are unit-tested with no systemd present, and
+swapping in a D-Bus implementation later changes that one file and nothing
+above it.
+
+**The cost, stated:** parsing CLI output is looser than a typed API, and
+`systemctl show` reports a property as an empty string both when it is unset
+and when it does not exist. `Property` therefore distinguishes absent from
+empty, and the e2e oracles read the **cgroup files** rather than
+`systemctl show` wherever the question is "did the kernel apply this" — show
+reports what was requested.
+
+---
+
+## D-010 — the e2e harness runs `--cgroupns=private`
+
+**Status:** accepted.
+
+The roadmap first said `--cgroupns=host`. The recipe already proven on this
+host (`wings-cgroups/v1-legacy/test/e2e-systemd/run-e2e.sh`) uses
+`private`, and it is the right choice for two reasons: systemd wants its own
+cgroup namespace root, and a private namespace keeps the measurement
+self-contained instead of reading a tree that other containers are moving
+under it.
+
+`tools/cgroup-parent.sh` still uses `--cgroupns=host` — deliberately, and
+for the opposite reason: its whole job is to inspect the **host's** tree.
+
+---
+
+## D-011 — populate-and-hold needs a parked worker, not `RemainAfterExit`
+
+**Status:** **decided by measurement.** This is the branch the master plan
+left open, and it went the other way.
+
+The plan specifies one transient unit per class, `Type=oneshot` with
+`RemainAfterExit=yes`, so that "populate and hold are the *same* unit
+precisely so the charge and the policy can never separate" — and it named
+the fallback in advance:
+
+> if any systemd version fails to keep an active-but-empty service's cgroup
+> alive, the fallback is an explicit minimal hold process — **the oracle
+> decides**, the spec allows both.
+
+**Measured on systemd 257 (Debian trixie), 2026-08-03.** The oneshot unit
+behaves as advertised at the *unit* level and not at the *cgroup* level:
+
+| | oneshot + RemainAfterExit | Type=exec, worker parks |
+|---|---|---|
+| `ActiveState` | `active` | `active` |
+| `SubState` | `exited` | `running` |
+| `MemoryMin` accepted by systemd | yes (`33554432`) | yes |
+| `ControlGroup` | **empty** | `/system.slice/<unit>` |
+| cgroup directory | **gone** | present |
+| `MemoryCurrent` | **`[not set]`** | `67465216` |
+| the 64 MiB of content | **reparented to `system.slice`** | `shmem 67108864` on the unit |
+| `memory.min` in the cgroup | n/a — no cgroup | `33554432` |
+| `memory.zswap.max` in the cgroup | n/a | `0` |
+
+systemd reaps the cgroup as soon as the last process exits. The charge then
+lands on the parent slice, where the class floor does not apply — the floor
+would be **arithmetically dead**, which is the exact failure the
+single-token slice name (decision 9) exists to prevent, arriving by a
+different route.
+
+**Decided:** the hold worker **must not exit after populating**. It
+populates, verifies, then parks; `systemdx.HoldBaseProperties` returns
+`Type=exec` and says why. P04 builds the real worker to that shape.
+
+**Consequences to carry into P04:**
+
+- The worker is a long-lived process, so it needs a shutdown path and its
+  own memory footprint is charged to the class cgroup alongside the content.
+  Keep it minimal — after populating it should hold nothing but a wait.
+- `SubState` for a healthy hold unit is `running`, not `exited`. Anything
+  that waits for `exited` is waiting for a failure.
+- Teardown still unmounts before stopping the unit, and that ordering is now
+  measured rather than assumed (O7).
+
+**Both halves are pinned by oracles.** `TestOneshotRemainAfterExitDoesNotKeepItsCgroup`
+asserts the negative, so a future systemd that *does* keep the cgroup makes
+that test fail — which is good news and means re-opening this decision to
+drop the parked worker, not editing the test.
+
+---
+
+## D-012 — an open file descriptor is not the teardown hazard; a surviving mount is
+
+**Status:** accepted, and it confirms an existing design choice.
+
+Written up because the first version of oracle O8 was built on a wrong
+premise and the harness caught it.
+
+The design's teardown rule exists because "a game container that still has
+the bind in its own `rprivate` namespace keeps the superblock — and every
+page — alive across the host unmount". The obvious way to model that is an
+open file descriptor. **It does not work:** an open file makes the mount
+busy, so the unmount fails outright with `EBUSY` rather than succeeding and
+leaving a ghost.
+
+The mechanism is a **second mount** of the same superblock. Two mounts, one
+superblock: dropping the host-side one leaves the consumer's alive, the
+pages stay charged, and only the last unmount frees them. Measured:
+`shmem` stayed at exactly 67108864 across the host unmount and went to 0
+when the consumer's bind went away.
+
+**Why this matters beyond the test:** it is why holder resolution reads
+`/proc/*/mountinfo` rather than scanning for open descriptors — the master
+plan already specifies mountinfo, and this is the measurement behind that
+choice. It also explains the production symptom of the 2026-07-31 outage: a
+**ghost mount**, not a failed `umount`.

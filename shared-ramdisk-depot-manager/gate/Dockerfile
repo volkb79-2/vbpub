@@ -63,21 +63,40 @@ RUN go build std
 WORKDIR /src
 
 # ----------------------------------------------------------------- e2e ----
-# The privileged harness for P02+ (publication topology, per-class hold
-# services, charging, teardown). P01 declares the gate and ships the image
-# so the declaration is backed by something real; its case set is empty
-# until P02 adds one — see decision D-004, and do not read a green
-# privileged-e2e as evidence of anything before then.
+# The privileged harness: systemd as PID 1, so the claims that are about the
+# kernel and systemd rather than about Go can actually be measured — that a
+# Type=oneshot RemainAfterExit=yes unit keeps its cgroup alive and its pages
+# charged after ExecStart exits, that unmounting uncharges them, that it
+# does NOT while a reference is held.
+#
+# Mechanics follow the recipe already proven on this host
+# (wings-cgroups/v1-legacy/test/e2e-systemd). Notably --cgroupns=PRIVATE,
+# not host: systemd wants its own cgroup namespace root, and a private one
+# also keeps the probe self-contained rather than measuring against a tree
+# other containers are moving.
 FROM unit AS e2e
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       systemd \
+      systemd-sysv \
       dbus \
       util-linux \
       mount \
- && rm -rf /var/lib/apt/lists/*
+      procps \
+      coreutils \
+ && rm -rf /var/lib/apt/lists/* \
+ # Units that make no sense in a container and only add noise to
+ # `systemctl is-system-running`, which the readiness loop reads.
+ && rm -f /etc/systemd/system/*.wants/* \
+          /lib/systemd/system/multi-user.target.wants/getty* 2>/dev/null; \
+    :
 
-# systemd as PID 1 needs a real cgroup namespace and a writable /run; the
-# invocation supplies --privileged --cgroupns=host and a tmpfs /run.
+# The suite mounts tmpfs and drives systemd, so it runs as root here. The Go
+# caches are inherited from the unit stage and are root-writable.
+ENV HOME=/root
+
+# SIGRTMIN+3 is systemd's shutdown signal; without it `docker stop` waits
+# out the full timeout on every teardown.
 STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

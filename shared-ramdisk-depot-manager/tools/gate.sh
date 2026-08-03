@@ -105,16 +105,72 @@ exec go run ./tools/covergate \
   -source internal \
   -fail-under "'"${SRDM_COVERAGE_FLOOR:-75}"'"'
   run_args=()
-else
-  # P02 fills this in. Declared and buildable now so the gate declaration is
-  # backed by a real image rather than a promise (decision D-004).
-  cmd='set -euo pipefail
-cd "$0"
-go test ./... -count=1 -tags=e2e -run TestE2E'
-  run_args=(--privileged --cgroupns=host)
 fi
 
-# Detached run: the verdict comes from `docker wait`, never from the stream.
+# --- e2e: boot systemd, then exec the suite into it ----------------------
+#
+# Structurally different from the other targets: the container's job is to
+# BE a systemd host, so the suite cannot be its command. It boots detached,
+# the harness waits for systemd to come up, and the suite runs via exec.
+if [ "$target" = "e2e" ]; then
+  # A daemon that refuses privileged containers cannot run this harness.
+  # That is a property of the host, not a failing change — skip loudly, at
+  # the one level where it is visible, and never from inside the suite.
+  if ! docker run --rm --privileged --cgroup-parent="$cgroup_parent" \
+        --network=none alpine:latest true >/dev/null 2>&1; then
+    printf 'gate: SKIP — this Docker daemon refuses privileged containers, so the\n' >&2
+    printf '      e2e harness cannot run here. The unit and canary gates still apply.\n' >&2
+    exit 0
+  fi
+
+  # --cgroupns=private: systemd wants its own cgroup namespace root, and a
+  # private one also keeps the measurement self-contained rather than
+  # reading a tree other containers are moving under it.
+  # /tmp needs exec and room: the suite builds test binaries and mounts
+  # 64 MiB tmpfs blobs beneath it.
+  cid="$(docker run -d \
+    --cgroup-parent="$cgroup_parent" \
+    --privileged --cgroupns=private \
+    --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec,size=2g \
+    -v "$host_repo_root:$repo_root" \
+    "$image")"
+  trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+  printf 'gate: waiting for systemd in %s\n' "${cid:0:12}" >&2
+  state=""
+  for _ in $(seq 60); do
+    state="$(docker exec "$cid" systemctl is-system-running 2>/dev/null || true)"
+    case "$state" in running|degraded) break ;; esac
+    sleep 1
+  done
+  case "$state" in
+    running|degraded) printf 'gate: systemd is %s\n' "$state" >&2 ;;
+    *)
+      printf 'gate: systemd did not boot (state=%s)\n' "${state:-unknown}" >&2
+      docker logs "$cid" 2>&1 | tail -30 >&2
+      exit 1
+      ;;
+  esac
+
+  # The verdict is written to a file by the run and read back in a SEPARATE
+  # step. An exec stream can be truncated or its status forged by a relay;
+  # a file the suite wrote cannot be.
+  docker exec "$cid" bash -c \
+    "cd '$work_in_container' && go test ./... -count=1 -tags=e2e -v; echo \$? > /tmp/srdm-e2e.rc" || true
+  code="$(docker exec "$cid" cat /tmp/srdm-e2e.rc 2>/dev/null || true)"
+  case "$code" in
+    ''|*[!0-9]*)
+      printf 'gate: the e2e suite left no readable verdict (%s) — treating as failure\n' "${code:-empty}" >&2
+      exit 1
+      ;;
+  esac
+
+  printf 'gate: e2e exited %s\n' "$code" >&2
+  exit "$code"
+fi
+
+# --- unit and coverage: the container's command IS the run ----------------
+# Detached: the verdict comes from `docker wait`, never from the stream.
 cid="$(docker run -d \
   --cgroup-parent="$cgroup_parent" \
   "${run_args[@]}" \

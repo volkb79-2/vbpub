@@ -43,28 +43,33 @@ Packages inside a wave may run in parallel worktrees; waves are serial.
 
 ### Wave 0 — prove the ground
 
-| id | package | why now |
+| id | package | state |
 |---|---|---|
-| **P02** | privileged systemd-in-Docker harness + the hold-unit probe | Unblocks every later oracle; answers the spec's open fallback branch with a measurement instead of a guess. |
+| **P02** | privileged systemd harness + the hold-unit probe | **done** |
 
-**P02 contract.** Make `gate/Dockerfile`'s `e2e` target actually boot systemd
-as PID 1 under `--privileged --cgroupns=host`; add an `e2e` build tag and the
-helpers to start and inspect transient units; then run the decisive probe:
-start a `Type=oneshot`, `RemainAfterExit=yes` transient unit whose
-`ExecStart` faults a known number of tmpfs pages and exits, and read back
-`memory.current`, the unit's active state, and its cgroup properties.
+**What it settled.** The probe went the way the spec allowed for but did not
+expect. On systemd 257, a `Type=oneshot` `RemainAfterExit=yes` unit stays
+`active` and accepts its `MemoryMin` — but systemd **reaps its cgroup** the
+moment the last process exits, and the content reparents to `system.slice`
+where the class floor does not apply. The plan's "populate and hold are the
+same unit" shape does not survive contact with this systemd.
 
-*Observable*: the unit is `active`, its cgroup exists, `memory.current` ≈ the
-faulted size, and the declared `MemoryMin`/`MemoryZSwapMax` read back.
-*Negative*: the cgroup is reaped when `ExecStart` exits, or the charge lands
-on the daemon's cgroup instead. Either negative is a **product decision**
-(`D-<NNN>`: fall back to an explicit minimal hold process), not a BLOCKED —
-the spec already allows both shapes.
+The fallback the plan named does work: with `Type=exec` and a worker that
+parks after populating, the cgroup persists, `shmem` is exactly the written
+size, and `memory.min` / `memory.zswap.max` reach the kernel. **D-011**
+records both halves; both are pinned by oracles, so a future systemd that
+keeps the cgroup fails the negative test and re-opens the decision rather
+than being silently missed.
 
-Also in P02, because they cost little once the harness exists and every
-later package leans on them: a helper that reads a cgroup's `memory.current`
-and `cgroup.stat nr_dying_descendants`, and one that parses
-`/proc/self/mountinfo`. **Closes D-004.**
+Two smaller corrections came out of it: the harness runs `--cgroupns=private`,
+not `host` (**D-010**), and the teardown hazard is a surviving **mount**, not
+an open file descriptor — an open fd makes the unmount fail `EBUSY` instead
+of leaving a ghost, which is why holder resolution reads `/proc/*/mountinfo`
+(**D-012**). Also **D-009**: systemd is driven through its CLI, not D-Bus,
+to keep the module dependency-free.
+
+Shipped: `internal/cgroupfs`, `internal/systemdx`, the `e2e` image target and
+run path, and four privileged oracles. **Closes D-004.**
 
 Confirm **D-003** (srdm verifies rather than writes `srdm.slice`) before
 Wave 1 — it decides whether srdm ever needs host root at install time.
@@ -95,7 +100,12 @@ state and unit state. A published record without its mounts triggers
 republish; mounts without a record are torn down as orphans.
 
 P04 carries the per-class policy (`MemoryMin`, `MemoryZSwapMax`,
-`MemoryZSwapWriteback`) and the `srdm-gen-<g8>.slice` aggregate.
+`MemoryZSwapWriteback`) and the `srdm-gen-<g8>.slice` aggregate — and, per
+**D-011**, a worker that **parks after populating** rather than exiting.
+`SubState` for a healthy hold unit is `running`, not `exited`; anything
+waiting for `exited` is waiting for a failure. Keep the parked worker's own
+footprint minimal, since it is charged to the class cgroup alongside the
+content.
 
 *Gates*: master-plan oracle 12 (charging, properties read back, teardown
 leaves `nr_dying_descendants` stable), topology recovery, ENOSPC quarantine.
