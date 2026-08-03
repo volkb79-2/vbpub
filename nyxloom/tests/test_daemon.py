@@ -6650,13 +6650,19 @@ def test_carver_ack_O4_proposal_safety_invariant(
     feeds = d._pending_carver_feeds(project, cfg, snap)
     assert [f.event_sequence for f in feeds] == [4]
 
-    # -- verify the ladder priority structurally: reconcile.py's
-    #    plan_project uses an elif chain where validated_carve_proposals
-    #    (slot 1) is checked before pending_carver_feeds (slot 3).
-    #    When both are non-empty, only slot 1 fires.
+    # -- verify the ladder priority structurally: the carver-session ladder
+    #    uses an elif chain where validated_carve_proposals (slot 1) is
+    #    checked before pending_carver_feeds (slot 3). When both are
+    #    non-empty, only slot 1 fires.
+    #    CR-06a RESTATED (not retired): the property and the assertion are
+    #    unchanged; the ladder moved out of `plan_project` into its own
+    #    registered rule, so the source this reads moves with it. Reading
+    #    `plan_project` would now find neither identifier and the invariant
+    #    would pass vacuously -- which is exactly how a structural check
+    #    stops checking.
     import inspect
     from nyxloom import reconcile as reconcile_mod
-    source = inspect.getsource(reconcile_mod.plan_project)
+    source = inspect.getsource(reconcile_mod.carver_session_ladder)
     # Slot 1 mentions 'validated_carve_proposals' before slot 3 mentions
     # 'pending_carver_feeds' in the carver pipeline section
     slot1_idx = source.index("validated_carve_proposals")

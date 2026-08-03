@@ -988,6 +988,22 @@ def test_self_reviewing_drain_agents_parks():
     assert [a for a in plan_project(inp) if isinstance(a, LaunchSelfReview)] == []
 
 
+def test_self_reviewing_with_no_implementer_attempt_plans_nothing():
+    """The self-review leg BORROWS the implementer's warm session, so a
+    SELF_REVIEWING task carrying no implementer attempt has nothing to borrow
+    and must park rather than launch a session-less leg.
+
+    Unreachable through the normal flow -- SELF_REVIEWING is only entered via
+    an implement-done exit -- but reachable through a hand-edited or
+    partially-replayed statefile, which is exactly the population the planner
+    must not crash on. CR-06a added this case: the branch existed and was
+    never exercised, so nothing said whether it parked or raised."""
+    orphan = make_attempt(attempt_id="att-rev", state=AttemptState.EXITED,
+                          role=Role.REVIEW_INDEPENDENT)
+    inp = _self_reviewing_inp([orphan])
+    assert [a for a in plan_project(inp) if isinstance(a, LaunchSelfReview)] == []
+
+
 def test_receipt_pid_dead_no_receipt_mark_interrupted():
     """Oracle 7: no receipt, pid dead -> MarkInterrupted."""
     cfg = make_config()
@@ -4034,8 +4050,15 @@ def test_review_cold_when_stage_context_lacks_session_reuse(monkeypatch):
     stage's context stripped of "session-reuse", resume_session is None. Proves
     B6 consults stages-as-data -- a project could compose a cold reviewer and the
     reuse would correctly not fire. Neutering the context check would make this
-    resume the handle and fail."""
-    monkeypatch.setattr("nyxloom.reconcile.stage_context", lambda name: frozenset())
+    resume the handle and fail.
+
+    CR-06a RESTATED (not retired): the property is unchanged and so are the
+    assertions; only the seam moved. The stage context is now read ONCE per
+    pass into `PlanContext` instead of being re-read inside the wave rule, so
+    the patch target moves with it -- which is exactly the observable this
+    test was always about (the planner consults stages-as-data), now at the
+    single place that consults it."""
+    monkeypatch.setattr("nyxloom.planning.stage_context", lambda name: frozenset())
     states = {"demo-P01": _awaiting_task(), "demo-P00": _prior_review_session()}
     reviews = [a for a in plan_project(_review_reuse_input(states))
                if isinstance(a, LaunchReview)]

@@ -94,6 +94,22 @@ from nyxloom.types import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RECONCILE_SRC = (REPO_ROOT / "src" / "nyxloom" / "reconcile.py").read_text()
+# CR-06a: the planner is no longer one file. The lifecycle, review and
+# attention concerns moved to `rules_*.py` and the pass machinery to
+# `planning.py`, so a scanner that reads only `reconcile.py` would stop seeing
+# the MERGED / VALIDATING / REVIEW_REJECTED branches and report them as
+# unplanned dead-ends. Same fix, and same reason, as CR-04b's `projection.py`
+# note above and the `effects*.py` glob further down: read the modules that
+# DEFINE the thing, and glob them so a concern that moves between rule modules
+# (CR-06b and CR-06c still have three to move) does not silently drop out.
+PLANNER_SRC = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted(
+        [REPO_ROOT / "src" / "nyxloom" / "reconcile.py",
+         REPO_ROOT / "src" / "nyxloom" / "planning.py",
+         *(REPO_ROOT / "src" / "nyxloom").glob("rules_*.py")]
+    )
+)
 # CR-04b: `apply_event` and the transition tuple moved to projection.py when
 # the pure functions were extracted to break the store's import cycle. This
 # scanner reads the module that DEFINES them; reading storage.py would now
@@ -234,9 +250,9 @@ _TASKSTATE_REF_RE = re.compile(r"TaskState\.(\w+)")
 
 def _states_referenced_in_reconcile() -> frozenset[TaskState]:
     """Grep-based coverage scan (mirrors P43's Role dispatch scan in
-    test_types.py): the set of TaskStates that reconcile.py's plan_project
-    has SOME branch keyed on."""
-    names = set(_TASKSTATE_REF_RE.findall(RECONCILE_SRC))
+    test_types.py): the set of TaskStates that the planner has SOME branch
+    keyed on. Scans the whole planner surface (CR-06a) -- see PLANNER_SRC."""
+    names = set(_TASKSTATE_REF_RE.findall(PLANNER_SRC))
     return frozenset(TaskState[n] for n in names if n in TaskState.__members__)
 
 
@@ -519,7 +535,7 @@ _ROLE_DISPATCH_RE = re.compile(r"role=Role\.(\w+)")
 
 def _dispatched_roles() -> frozenset[Role]:
     names = (set(_ROLE_DISPATCH_RE.findall(DAEMON_SRC))
-             | set(_ROLE_DISPATCH_RE.findall(RECONCILE_SRC))
+             | set(_ROLE_DISPATCH_RE.findall(PLANNER_SRC))
              | set(_ROLE_DISPATCH_RE.findall(CONTROL_PLANE_SRC)))
     return frozenset(Role[n] for n in names)
 

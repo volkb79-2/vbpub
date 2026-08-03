@@ -1,4 +1,33 @@
-"""Pure reconcile planner (SPEC §5, §8, §9). PACKAGE P02.
+"""FROZEN LEGACY PLANNER -- the CR-06 differential baseline (amendment §5.1).
+
+DO NOT EDIT THIS MODULE TO MAKE A TEST PASS. It is a verbatim copy of
+``src/nyxloom/reconcile.py`` as it stood at `052857ae` (the commit CR-06
+branched from), taken with ``git show`` rather than transcribed so that no
+hand-edit can silently weaken the baseline. Only two mechanical changes were
+made, both required for it to import from ``tests/``:
+
+  * this header, prepended to the original module docstring; and
+  * the relative imports below rewritten as absolute ``nyxloom.*`` imports.
+
+The amendment requires CR-06 to prove more than "the tests we wrote still
+pass": the old and new planner must produce identical plans over identical
+snapshots. Because this file duplicates the ENGINE and imports none of it,
+a change to the new planner cannot reach the baseline -- which is exactly
+what makes ``tests/planner_differential.py`` a check and not a mirror.
+
+It is duck-typed against the production ``ReconcileInput``: it reads only
+attributes, so the same input object drives both planners. Its own action
+dataclasses are distinct classes from production's, so the differential
+compares NORMALIZED plans (class name plus fields), which is the observable
+the amendment names.
+
+This module retires when CR-07 replaces the planner it baselines; until then
+`test_planner_differential.py::test_legacy_baseline_is_the_committed_branch_point`
+fails if it stops matching that commit.
+
+The original docstring follows verbatim -- it is the contract as it stood.
+
+Pure reconcile planner (SPEC §5, §8, §9). PACKAGE P02.
 
 The daemon (or `tick --once`) builds a ReconcileInput snapshot from disk,
 calls plan_project(), and EXECUTES the returned actions. This module is pure:
@@ -338,29 +367,6 @@ INTERFACE CONTRACT (frozen). Semantics:
     carve, and fires when accumulated changes exceed the threshold. An idle
     project with zero code changes must not accrue carve budget on an
     unchanged codebase -- the rationale is activity-scoped, not time-scoped.
-
-WHERE EACH ITEM LIVES (CR-06a, 2026-08-03). The contract above is unchanged
-and still frozen; what changed is that `plan_project` is now a DRIVER over an
-ordered table of registered rules rather than a 1,160-line function, so each
-numbered item is a named rule you can find:
-
-  * items 1, 2, 10, 11, 13 -> `rules_lifecycle.py`
-  * item 5 (and the B5 self-review leg) -> `rules_review.py`
-  * items 6, 7, 16 -> `rules_attention.py`
-  * items 3, 4 -> this module, `implementer_dispatch` / `attempt_ladder`
-    (legacy, CR-06b)
-  * items 9, 12, 14, 15, 17 and the carver-session ladder -> this module,
-    `carver_session_ladder` / `ready_to_carve` / `carver_human_intake` /
-    `test_health_carve` / `gap_audit_carve` / `headroom_carve` (legacy,
-    CR-06c)
-  * item 8 (actions never embed prose) is a constraint on every action rather
-    than a decision, so no rule implements it.
-
-The ORDER those rules run in -- which the items above argue about at length,
-because a rare trigger placed after item 9 would starve -- is data in
-`planning.rule_table()`, with the rationale attached to each entry. The single
-carve authority items 9/12/14/15/17 share is a RESOURCE the arbiter grants,
-not a boolean each of them remembers to check.
 """
 
 from __future__ import annotations
@@ -370,15 +376,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .carver_session import (
+from nyxloom.carver_session import (
     CarveRepairRequest, CarverFeed, CarverSessionSnapshot, CarverStatus,
     HumanIntake, ValidatedCarveProposal,
 )
-from . import planning, snapshot
-from .config import ProjectConfig, RouteDef, Routes
-from .planning import PlanContext, RuleEmitter, RuleMatch
-from .stages import effective_concurrency
-from .types import (
+from nyxloom import snapshot
+from nyxloom.config import ProjectConfig, RouteDef, Routes
+from nyxloom.stages import effective_concurrency, stage_context
+from nyxloom.types import (
     Blocker, BlockerType, Frontmatter, TaskState, TaskStateFile, AttemptState,
     ReceiptResult, Role, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES
 )
@@ -694,19 +699,6 @@ TRACE_KINDS = frozenset({
     # GA4 2026-07-25 (module contract item 16): the gate-verify cadence
     # trigger's own breadcrumb ("fire"/"paused") -- same "no prose" rule.
     "gate-verify",
-    # F019 P1b 2026-07-25 (module contract item 10): the gate-failure
-    # diagnosis routing's breadcrumb ("dispatch"/"skip:drain-agents").
-    #
-    # REGISTERED LATE, in CR-06a's review, and the delay is the point: the
-    # planner emitted this kind from the day F019 landed while this frozenset
-    # -- which the docstring below calls the vocabulary a `kind` is one of --
-    # did not list it, and NOTHING checked, because this declaration had no
-    # consumer at all. `tests/test_planning.py::
-    # test_the_breadcrumb_vocabulary_is_exactly_what_the_rules_can_record`
-    # now DERIVES the vocabulary from the rules' own call graphs and requires
-    # it to match this set exactly in both directions, so the next kind added
-    # to a rule fails here instead of drifting for four months.
-    "gate-diagnosis",
 })
 
 
@@ -720,12 +712,6 @@ class TraceNote:
     kind: str
     task_id: str | None
     detail: str
-    # CR-06a: the planning rule that recorded this breadcrumb, stamped by the
-    # kernel's emitter rather than passed by the rule -- so attribution cannot
-    # drift from the rule table. Defaulted, because a breadcrumb constructed
-    # outside a pass (a test, the daemon's own trace fixtures) has no rule and
-    # every existing reader keys on (kind, task_id, detail) alone.
-    rule: str = ""
 
 
 @dataclass(frozen=True)
@@ -734,25 +720,11 @@ class ReconcileTrace:
     plan_project made each decision this pass. No clock, no I/O -- `note()`
     is a plain in-memory list append (legal on a frozen dataclass: frozen
     blocks reassigning `self.breadcrumbs`, not mutating the list object it
-    already points at).
-
-    CR-06a adds `matches`, the STRUCTURED half of the same channel (the
-    parent plan's work item 3). A breadcrumb says WHY in a closed vocabulary
-    a reader must already know; a `RuleMatch` says which RULE and which
-    numbered contract item produced a given action -- the question an operator
-    looking at an unexpected plan actually has. Both are appended, never
-    restated: every breadcrumb keeps its exact (kind, task_id, detail), which
-    is what the CR-00 corpus classifies waits from verbatim."""
+    already points at)."""
     breadcrumbs: list[TraceNote] = field(default_factory=list)
-    matches: list[RuleMatch] = field(default_factory=list)
 
-    def note(self, kind: str, task_id: str | None, detail: str,
-             rule: str = "") -> None:
-        self.breadcrumbs.append(
-            TraceNote(kind=kind, task_id=task_id, detail=detail, rule=rule))
-
-    def match(self, match: RuleMatch) -> None:
-        self.matches.append(match)
+    def note(self, kind: str, task_id: str | None, detail: str) -> None:
+        self.breadcrumbs.append(TraceNote(kind=kind, task_id=task_id, detail=detail))
 
 
 class PlanResult(list):
@@ -1046,55 +1018,301 @@ def _compaction_due(snapshot: CarverSessionSnapshot, cfg: ProjectConfig) -> str 
     return None
 
 
-# --- planning rules still owned by a later package -------------------------
-#
-# CR-06a decomposed `plan_project` into the kernel (`planning.py`) plus rules
-# grouped by concern. The concerns that claim no arbitrated resource moved to
-# `rules_lifecycle.py`, `rules_review.py` and `rules_attention.py`. The three
-# below did NOT move, and are registered in the rule table with an explicit
-# `legacy_owner`, counted by `planning.LEGACY_RULE_BUDGET`:
-#
-#   * implementer dispatch and the attempt ladder (contract items 3 and 4) --
-#     CR-06b, which owns the attempt ladder's own internal ordering;
-#   * carve authority (items 9, 12, 14, 15, 17 and the carver-session ladder)
-#     -- CR-06c.
-#
-# They claim the `carve-slot` THROUGH the arbiter NOW, in this package, even
-# though their internals move later: an arbiter with no claimant would be
-# decoration, and these rules were the eight hand-written copies of
-# `and not carve_dispatch_planned` that the arbiter exists to replace.
-#
-# THEIR BODIES ARE VERBATIM. Two of them (the carver-session ladder and the
-# attempt ladder) keep the monolith's own local names through a short adapter
-# prologue rather than being rewritten against the kernel vocabulary, so the
-# differential compares code that was MOVED against code that was moved --
-# not against code that was quietly rewritten in the same commit. CR-06b and
-# CR-06c rewrite them when they take ownership.
+def plan_project(inp: ReconcileInput) -> PlanResult:
+    """Deterministic action plan for one project (see module contract).
 
+    Output order: task lifecycle actions (sorted by task id), then attempt
+    actions, then waves, then SpecAttention — so tests can assert exactly.
 
-def carver_session_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Carver-session ladder slots 1-4 (F018 P2b-A1, plan §3.3 priority 1-4).
-
-    Legacy body, owned by CR-06c. The FIRST claimant of the pass's carve slot:
-    finishing or admitting an already-produced proposal, and bootstrapping,
-    recovering, feeding or compacting the persistent strategic session, all
-    outrank starting any new carve.
+    Returns a `PlanResult` (P03, D-L5): IS the actions list (back-compat --
+    see PlanResult's own docstring) and additionally carries `.trace`, a
+    pure `ReconcileTrace` of breadcrumbs recording WHY key decisions were
+    made this pass. Building the trace is itself pure in-memory bookkeeping
+    -- no clock, no I/O, no logger import -- so this function's purity is
+    unchanged; only the daemon ever flushes `.trace` to the logger.
     """
-    # --- CR-06a adapter prologue (see the section header above) ------------
-    # `inp` and `trace` are the names the moved body uses. `RuleEmitter.note`
-    # takes exactly the (kind, task_id, detail) that `ReconcileTrace.note`
-    # took and additionally stamps this rule's name, so the moved body records
-    # identical breadcrumbs. `carve_dispatch_planned` is now a LOCAL decision
-    # that the epilogue converts into one arbiter claim -- the flag can no
-    # longer leak into another rule, which is the whole point.
-    inp = ctx.inp
-    trace = emit
-    carve_in_flight = ctx.carve_in_flight
-    frontier_route_available = ctx.frontier_route_available
-    budget_allows = ctx.budget_allows
-    carver_pipeline_gate = ctx.carve_stage_present
+    trace = ReconcileTrace()
+
+    # === Task lifecycle actions (sorted by task_id) ===
+    lifecycle_by_id: dict[str, list[Action]] = {}
+
+    # 1. NEW HANDOFFS: frontmatter id absent from states -> CreateTask
+    for fm_id, (fm, handoff_path) in inp.frontmatters.items():
+        if fm_id not in inp.states:
+            lifecycle_by_id.setdefault(fm_id, []).append(
+                CreateTask(task_id=fm_id, fm=fm, handoff_path=handoff_path)
+            )
+
+    # 2. Existing tasks: process state transitions
+    for fm_id, (fm, handoff_path) in inp.frontmatters.items():
+        if fm_id not in inp.states:
+            continue
+
+        tsf = inp.states[fm_id]
+        task_actions: list[Action] = lifecycle_by_id.setdefault(fm_id, [])
+
+        # CARVED -> QUEUED transition: check lint_clean
+        if tsf.state == TaskState.CARVED and inp.lint_clean.get(fm_id, False):
+            task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+            trace.note("state-transition", fm_id, "CARVED->QUEUED")
+
+        # Decision hold logic
+        d_deps = fm.decision_deps()
+        open_d_deps = [d for d in d_deps if d in inp.decisions_open]
+
+        if tsf.state == TaskState.QUEUED and open_d_deps:
+            # Transition to NEEDS_DECISION
+            notes = ", ".join(open_d_deps)
+            task_actions.append(Transition(task_id=fm_id, to=TaskState.NEEDS_DECISION, notes=notes))
+            trace.note("state-transition", fm_id, "QUEUED->NEEDS_DECISION")
+        elif tsf.state == TaskState.NEEDS_DECISION and not open_d_deps:
+            # Transition back to QUEUED
+            task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+            trace.note("state-transition", fm_id, "NEEDS_DECISION->QUEUED")
+
+        # SELF-CORRECT 2026-07-16 (bug 2 of the review-verdict + reject-loop
+        # package): REVIEW_REJECTED had NO handler at all. The state machine
+        # permits REVIEW_REJECTED->QUEUED (types.py TASK_TRANSITIONS) and the
+        # reject CLI/UI imply re-work, but nothing here ever planned it, so a
+        # rejected task STRANDED forever (required a manual re-queue by an
+        # operator). Mirrors the attempts-budget accounting dispatch_eligible
+        # already uses below (exclude LIMIT receipts, same formula as the
+        # daemon's own ERROR-path count) -- attempts remaining -> re-queue
+        # for another implementer pass; this is self-limiting the same way
+        # CARVED->QUEUED above is: once applied, tsf.state is QUEUED and this
+        # branch no longer matches on the next pass, so it fires once per
+        # rejection, not every tick.
+        #
+        # P45 2026-07-19 (closes the KNOWN GAP the pre-P45 code left here):
+        # the exhausted-budget half of this handoff's original contract
+        # asked for REVIEW_REJECTED -> BLOCKED with a typed blocker
+        # (mirroring the INTERRUPTED-exhausted typed-blocker path elsewhere
+        # in this module). That specific transition is NOT legal:
+        # types.py's TASK_TRANSITIONS[REVIEW_REJECTED] is {QUEUED,
+        # READY_TO_CARVE, NEEDS_DECISION, SUPERSEDED, CANCELLED} -- BLOCKED
+        # is absent -- so planning it would raise TransitionError the moment
+        # the daemon executed it (check_task_transition runs for BOTH
+        # TASK_TRANSITIONED and TASK_BLOCKED events -- storage.apply_event,
+        # no bypass; verified empirically), and types.py is FROZEN CORE /
+        # out of scope for this package. READY_TO_CARVE IS a legal edge in
+        # that same frozen table, and the two absence bugs turned out to be
+        # the same gap: routing the exhausted case there, and giving
+        # READY_TO_CARVE a real handler (module contract item 12, below)
+        # that re-dispatches the SAME single strategic carver, closes both
+        # at once with zero new dispatch machinery. Self-limiting the same
+        # way the attempts-remaining branch above is.
+        if tsf.state == TaskState.REVIEW_REJECTED:
+            # F019 P1b 2026-07-25 (gate-failure diagnosis routing): a pre-merge/
+            # mutation gate failure ALSO lands a task here (daemon.py "... gate
+            # failed; not published"), but carries no reviewer class, so without
+            # this it always falls into the blind mechanical-retry branch below.
+            # When the daemon flags this task gate-diagnosis-pending (gate-caused,
+            # unclassified, streak >= policy.gate_diagnosis_after_failures, none
+            # in flight), dispatch the warm reviewer in gate-diagnosis mode to
+            # CLASSIFY the failure and SUPPRESS the blind retry this pass (the
+            # `continue`) -- once the reviewer's REVIEW_RECORDED{reject_class}
+            # lands, the task re-enters this branch UNflagged and the triage table
+            # below routes it exactly as a review rejection already is. Skipped
+            # under drain-agents (no new agent process of any kind, mirroring the
+            # wave-review pause rule); the task parks REVIEW_REJECTED for a later
+            # run/drain-handoffs pass. The task NEVER leaves REVIEW_REJECTED during
+            # diagnosis -- un-gated code can never reach the merge path.
+            if fm_id in inp.gate_diagnosis_pending:
+                if inp.pause_mode != "drain-agents":
+                    task_actions.append(LaunchGateDiagnosis(task_id=fm_id))
+                    trace.note("gate-diagnosis", fm_id, "dispatch")
+                else:
+                    trace.note("gate-diagnosis", fm_id, "skip:drain-agents")
+                continue
+            # B4b 2026-07-20 (D-060 triage stage; critique CRITIQUE.md:207 two
+            # tiers + the {infra, stale-premise, fixable, architectural, product}
+            # matrix). The infra class ("incomplete" leg failure) is already split
+            # off upstream (A4/M7: a non-DONE review receipt records "incomplete",
+            # never "rejected", so it carries no triage_class and never reaches the
+            # semantic routing here). The remaining four are decided in a fixed
+            # PRECEDENCE, most-terminal first, so a task that trips several signals
+            # takes the safest single route:
+            #   product        -> NEEDS_DECISION  (a human must decide direction;
+            #                      no retry or re-carve resolves a product question)
+            #   stale-premise  -> READY_TO_CARVE  (I4: input_revision drifted from
+            #                      main; re-work would build on a moved base)
+            #   architectural  -> READY_TO_CARVE  (design/scope wrong; same-base
+            #                      retries cannot fix it -> re-scope via the carver)
+            #   incapable      -> READY_TO_CARVE  (D-R3, 2026-07-26 refined: scope was
+            #                      fine, the MODEL wasn't capable of it -- same
+            #                      destination as architectural, but a DISTINCT
+            #                      transition note so the daemon-side rescope-dict
+            #                      builder can tell which one fired and bump the
+            #                      tier instead of re-scoping; see
+            #                      daemon._carve_packet_body_lines)
+            #   fixable / none -> the mechanical attempt-budget path (below), a
+            #                      TARGETED re-queue whose re-dispatch packet embeds
+            #                      the review verdict (daemon build_dispatch
+            #                      prior_verdict) so it is never the bare
+            #                      context-free same-model retry the critique bans.
+            # Drift & architectural/incapable all re-carve, so in a carve-less
+            # pipeline (gated/lean) they share the exhausted case's terminating
+            # escalation to NEEDS_DECISION -- never a dead-end in READY_TO_CARVE
+            # with no owner.
+            tclass = inp.triage_class.get(fm_id)
+            has_carve = "carve" in inp.cfg.pipeline
+            drifted = _premise_drifted(fm.input_revision, inp.head_revision)
+            if tclass == "product":
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.NEEDS_DECISION,
+                    notes="review rejected -- triage: product decision required; escalating to operator",
+                ))
+            elif drifted and has_carve:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.READY_TO_CARVE,
+                    notes=(f"review rejected -- stale premise (input_revision "
+                           f"{fm.input_revision} != main {inp.head_revision[:7]}); routed for re-carve"),
+                ))
+            elif tclass in ("architectural", "incapable") and has_carve:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.READY_TO_CARVE,
+                    notes=f"review rejected -- triage: {tclass}; routed for re-scope",
+                ))
+            elif (drifted or tclass in ("architectural", "incapable")) and not has_carve:
+                # Stale-premise, architectural, or incapable, but the composed
+                # pipeline has no carve stage to re-scope the work (gated/lean).
+                # Escalate to a human -- same terminating logic B4a uses for the
+                # exhausted case, so the reject loop still closes rather than
+                # dead-ending in READY_TO_CARVE. When not drifted, this branch's
+                # own condition guarantees tclass is one of the two carve-routed
+                # classes, so using it directly (rather than hardcoding
+                # "architectural") preserves that class's own name in the note.
+                reason = "stale premise" if drifted else tclass
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.NEEDS_DECISION,
+                    notes=f"review rejected -- triage: {reason}; no carve stage, escalating to operator",
+                ))
+            # P60 (M8): attempts_used counts only IMPLEMENTER attempts -- the
+            # old role-blind formula here counted the review attempt too, so a
+            # reject cycle burned 2 units and exhausted the task a rejection early.
+            elif attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.QUEUED,
+                    notes="review rejected -- re-queued for re-work (attempt budget remains)",
+                ))
+            elif "carve" in inp.cfg.pipeline:
+                # Attempts exhausted, and the pipeline has a carve stage: route
+                # to READY_TO_CARVE so item 12's handler (below) re-dispatches
+                # it to the single strategic carver for a fresh, re-scoped
+                # package instead of stranding it forever.
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.READY_TO_CARVE,
+                    notes="review rejected -- attempt budget exhausted; routed for re-carve",
+                ))
+            else:
+                # B4a/D-060: attempts exhausted and the composed pipeline has NO
+                # carve stage to re-scope the work (the `gated`/`lean` presets).
+                # Escalate to a human decision instead -- NEEDS_DECISION is a
+                # legal REVIEW_REJECTED edge and a lifecycle state, so the reject
+                # loop still terminates rather than dead-ending in READY_TO_CARVE
+                # with no owner. This is exactly what makes a carve-less pipeline
+                # safe (and is why stages.validate_pipeline can now accept one).
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.NEEDS_DECISION,
+                    notes="review rejected -- attempt budget exhausted; no carve stage, escalating to operator",
+                ))
+
+        # POST-MERGE VALIDATION (module contract item 11): MERGED ->
+        # VALIDATING is pure bookkeeping (self-limiting, same pattern as
+        # CARVED->QUEUED above); VALIDATING itself just re-emits the trigger
+        # every pass until the daemon's execution of RunPostMergeGate
+        # transitions the task onward to COMPLETED or BLOCKED.
+        #
+        # D-060 (B2, docs/spec-flow-stages.md): the VALIDATING handler honours
+        # the composed pipeline. `post_merge_gate` in the pipeline (the default,
+        # and every project with no `pipeline` key -> parity) -> RunPostMergeGate
+        # exactly as before. A pipeline that omits the gate stage (e.g. the
+        # `lean` preset) auto-advances VALIDATING -> COMPLETED immediately -- the
+        # frozen graph already permits that edge, and MERGED still transits
+        # through VALIDATING first (never MERGED -> COMPLETED directly), so no
+        # new transition edge is introduced.
+        if tsf.state == TaskState.MERGED:
+            task_actions.append(Transition(
+                task_id=fm_id, to=TaskState.VALIDATING,
+                notes="post-merge validation started",
+            ))
+        elif tsf.state == TaskState.VALIDATING:
+            if "post_merge_gate" in inp.cfg.pipeline:
+                task_actions.append(RunPostMergeGate(task_id=fm_id))
+            else:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.COMPLETED,
+                    notes="no post_merge_gate stage -- auto-validated",
+                ))
+
+        # GUARDED-AUTOMATIC MERGE (module contract item 13, P48 2026-07-19):
+        # a MERGE_READY task only ever gets here via an 'approved' review
+        # verdict (daemon.py's REVIEW_RECORDED-consuming branch is the sole
+        # writer of this transition), so no separate verdict check is
+        # needed here -- reaching this state already IS the guard. The
+        # remaining guard this module CAN express purely is project_paused:
+        # if the runaway watchdog (or an operator) has paused the project
+        # for ANY reason (drain-handoffs or drain-agents), guarded-automatic
+        # must not merge blind -- unattended merging during a flagged
+        # condition is exactly backwards from the safety intent. Self-
+        # limiting like every other item here: the daemon's execution of
+        # AutoMergeTask transitions the task off MERGE_READY (to MERGED on
+        # success, back to REVIEW_REJECTED-adjacent NEEDS_OPERATOR escalation
+        # on a real git conflict -- see daemon.py's _execute_auto_merge), so
+        # this does not refire for the same task once acted on.
+        elif (tsf.state == TaskState.MERGE_READY
+              and inp.cfg.policy.merge_mode == "guarded-automatic"
+              and not inp.project_paused):
+            task_actions.append(AutoMergeTask(task_id=fm_id))
+            trace.note("merge", fm_id, "auto-merge")
+
+    # Shared single-carve-authority guard (module contract items 9 & 12,
+    # P45 2026-07-19): computed ONCE, reused verbatim by BOTH item 12's
+    # READY_TO_CARVE handler (immediately below) and item 9's untargeted
+    # headroom-refill trigger (further down, past dispatch/attempts/waves/
+    # spec) -- never two independently-drifting copies of either check.
+    carve_in_flight = any(
+        tsf.state not in TERMINAL_TASK_STATES
+        and any(a.role is Role.CARVER for a in tsf.attempts)
+        for tsf in inp.states.values()
+    )
+    frontier_routes = inp.routes.for_role(Role.REVIEW_INDEPENDENT.value)
+    frontier_route_available = any(
+        inp.provider_ok.get(r.route_id, False) for r in frontier_routes
+    )
+    # Reviewer addendum (2026-07-19, post-P45 merge review): also hoisted
+    # here and shared, so the READY_TO_CARVE handler respects the same
+    # budget-exhaustion stop every other dispatch path in this module
+    # already honors (dispatch_eligible's own check 5, and item 9's
+    # untargeted trigger below) -- a rejected task's re-carve is not exempt
+    # from "no budget left, no new agent process starts."
+    budget_allows = inp.budget_remaining is None or inp.budget_remaining > 0
+    # True once EITHER trigger has planned the pass's single CarveDispatch
+    # -- the operator's explicit ask: the single strategic carver remains
+    # the sole carve authority, so at most one CarveDispatch is ever planned
+    # in a pass no matter which of the two triggers wants one.
     carve_dispatch_planned = False
+    # F018 P2b-A1: `carve_actions` moved up from its old position (just
+    # before item 15, module contract item 9's comment block) so slot 6
+    # below (queued human intake -- planned AFTER item 12 but BEFORE item
+    # 15/9) can share the same list; still appended to ONLY by item 12 (via
+    # lifecycle_by_id, unaffected), item 15, and item 9, exactly as before
+    # this package.
+    carve_actions: list[Action] = []
+    # F018 P2b-A1 (plan §4.2, §3.3): the new-vocabulary carver-session
+    # actions this pass may plan (Admit/Start/Resume/Compact). Always empty
+    # when inp.carver_session is None or the pipeline has no carve stage --
+    # the MASTER GATE (byte-identical-when-off invariant: a pass with no
+    # carver_session falls through to the exact pre-P2b CarveDispatch paths
+    # below, unchanged).
     carver_actions: list[Action] = []
+    # F018 P2b-A1: pipeline-carve-stage gate, reusing the EXACT predicate
+    # the REVIEW_REJECTED triage branch (module contract item 10, above)
+    # already uses for "does this project's pipeline include a carve
+    # stage" -- never a second, independently-drifting copy. gated/lean
+    # (no carve stage) must never plan carver-session work even if a
+    # carver_session were somehow present.
+    carver_pipeline_gate = "carve" in inp.cfg.pipeline
 
     # === Carver-session ladder, slots 1-4 (plan §3.3 priority 1-4): finish/
     # admit an already-produced proposal; bootstrap/recover the session;
@@ -1208,57 +1426,40 @@ def carver_session_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
             # here -- item 12's READY_TO_CARVE re-scope (slot 5) gets its
             # chance next, exactly as before this package.
 
-    # --- CR-06a arbitration epilogue ---------------------------------------
-    # The ladder is the FIRST claimant in the rule table, so this grant is
-    # unconditional -- but it still goes through the arbiter, because the
-    # emitter refuses any carve-family action from a rule that does not hold
-    # the grant. Note the claim is made even when the ladder emits NOTHING:
-    # the STARTING/COMPACTING reading is "a turn is already effectively in
-    # flight for this generation", which consumes the pass's slot exactly as a
-    # planned action would.
-    if carve_dispatch_planned:
-        emit.claim("carve-slot")
-    for action in carver_actions:
-        emit(action)
-
-
-def ready_to_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 12 (P45 2026-07-19): the READY_TO_CARVE handler.
-
-    Legacy body, owned by CR-06c. Sorted task-id order for determinism -- if
-    multiple tasks are simultaneously READY_TO_CARVE, only the lowest task_id
-    gets this pass's single carve slot; the rest stay in READY_TO_CARVE,
-    picked up on a later pass.
-
-    P52 2026-07-19 (live incident, dstdns): neither this handler nor item 9's
-    untargeted trigger ever checked project_paused -- a "paused" project
-    (drain-handoffs OR drain-agents) still got a NEW carve dispatch fired
-    against it every pass ready_count sat below carve_ahead_target, completely
-    bypassing the pause. 4 unauthorized carve dispatches fired against dstdns
-    in ~15 minutes before this was caught live. dispatch_eligible (regular
-    implementer dispatch) and item 13 (guarded-automatic merge) already both
-    consult project_paused; carving was the one dispatch path in this module
-    that never did. It reads the SHARED guard (never a second,
-    independently-drifting copy) -- which is now a field of the pass context
-    rather than a local of a 1,160-line function.
-
-    F018 P2b-A1: the carver-session ladder above may already have used this
-    pass's single carver slot (an admission, bootstrap, recovery, feed or
-    compaction outranks a re-scope in plan §3.3's priority order), so this
-    trigger asks the arbiter whether the slot is still free -- the check that
-    used to be `not carve_dispatch_planned`.
-    """
-    inp = ctx.inp
-    if (emit.available("carve-slot") and not inp.project_paused
-            and not ctx.carve_in_flight
-            and ctx.frontier_route_available and ctx.budget_allows):
-        ready_to_carve_ids = [
-            task_id for task_id in ctx.sorted_task_ids
-            if inp.states[task_id].state == TaskState.READY_TO_CARVE
-        ]
+    # 12. READY_TO_CARVE handler (P45 2026-07-19): see module contract item
+    # 12 docstring above for the full rationale. Sorted task-id order for
+    # determinism (mirrors item 3's dispatch-capacity loop below) -- if
+    # multiple tasks are simultaneously READY_TO_CARVE, only the lowest
+    # task_id gets this pass's single carve slot; the rest stay in
+    # READY_TO_CARVE, picked up on a later pass.
+    #
+    # P52 2026-07-19 (live incident, dstdns): neither this handler nor item
+    # 9's untargeted trigger below ever checked project_paused -- a
+    # "paused" project (drain-handoffs OR drain-agents) still got a NEW
+    # carve dispatch fired against it every pass ready_count sat below
+    # carve_ahead_target, completely bypassing the pause. 4 unauthorized
+    # carve dispatches fired against dstdns in ~15 minutes before this was
+    # caught live. dispatch_eligible (regular implementer dispatch) and
+    # item 13 (guarded-automatic merge) already both consult
+    # project_paused; carving was the one dispatch path in this whole
+    # module that never did. Added to the shared guard (not two
+    # independently-drifting copies), same convention as carve_in_flight/
+    # frontier_route_available/budget_allows above.
+    #
+    # F018 P2b-A1: `not carve_dispatch_planned` added to this guard --
+    # slots 1-4 above may already have used this pass's single carver slot
+    # (an admission, bootstrap, recovery, feed, or compaction outranks a
+    # re-scope in plan §3.3's priority order), so this legacy trigger must
+    # now also respect the shared mutex it previously always set first.
+    if (not carve_dispatch_planned and not inp.project_paused and not carve_in_flight
+            and frontier_route_available and budget_allows):
+        ready_to_carve_ids = sorted(
+            task_id for task_id, tsf in inp.states.items()
+            if tsf.state == TaskState.READY_TO_CARVE
+        )
         if ready_to_carve_ids:
             chosen_id = ready_to_carve_ids[0]
-            emit.claim("carve-slot")
+            chosen_actions = lifecycle_by_id.setdefault(chosen_id, [])
             # B7 2026-07-20 (P75, critique A10/M20): plan ONLY the CarveDispatch
             # here. The origin task's SUPERSEDED transition is NO LONGER a separate
             # planned action -- daemon._execute_carve_dispatch emits it atomically,
@@ -1271,26 +1472,23 @@ def ready_to_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
             # to the launch is the only real atomicity. task_id=chosen_id now DRIVES
             # that path (the origin whose context seeds the re-scope packet), where
             # for item 9's untargeted trigger it stays None.
-            emit(CarveDispatch(project=inp.cfg.project_id, task_id=chosen_id))
-            emit.note("carve", chosen_id, "ready-to-carve")
+            chosen_actions.append(
+                CarveDispatch(project=inp.cfg.project_id, task_id=chosen_id)
+            )
+            carve_dispatch_planned = True
+            trace.note("carve", chosen_id, "ready-to-carve")
 
-
-def carver_human_intake(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Carver-session ladder slot 6 (plan §3.3 priority 6): queued human
-    intake.
-
-    Legacy body, owned by CR-06c. Evaluated AFTER item 12's re-scope but
-    BEFORE item 15 (test-health) and item 9 (headroom refill), matching plan
-    §3.3's explicit order exactly. Same shared guards as slots 1-4; the
-    slot-availability check is REQUIRED here (unlike slots 1-4, which run
-    first and only ever take the grant) because item 12 immediately above may
-    have just used this pass's single slot.
-    """
-    inp = ctx.inp
-    if (inp.carver_session is not None and ctx.carve_stage_present
-            and emit.available("carve-slot")
-            and not inp.project_paused and not ctx.carve_in_flight
-            and ctx.frontier_route_available and ctx.budget_allows
+    # === Carver-session ladder, slot 6 (plan §3.3 priority 6): queued
+    # human intake -- evaluated AFTER item 12's re-scope but BEFORE item 15
+    # (test-health) and item 9 (headroom refill), matching plan §3.3's
+    # explicit order exactly. Same hoisted guards + shared mutex as slots
+    # 1-4 above; `not carve_dispatch_planned` is REQUIRED here (unlike
+    # slots 1-4, which run first and only ever set the flag) because item
+    # 12 immediately above may have just used this pass's single slot.
+    if (inp.carver_session is not None and carver_pipeline_gate
+            and not carve_dispatch_planned
+            and not inp.project_paused and not carve_in_flight
+            and frontier_route_available and budget_allows
             and inp.carver_session.status is CarverStatus.WARM
             and inp.pending_human_intakes):
         # Arrival (event_sequence) order, not intake_id sort order -- same
@@ -1299,23 +1497,24 @@ def carver_human_intake(ctx: PlanContext, emit: RuleEmitter) -> None:
         # stale cross-reference -- do not rename toward it).
         ids = tuple(i.intake_id for i in
                     sorted(inp.pending_human_intakes, key=lambda i: i.event_sequence))
-        emit.claim("carve-slot")
-        emit(ResumeCarverSession(
+        carver_actions.append(ResumeCarverSession(
             project=inp.cfg.project_id, mode="targeted-intake",
             source_ids=ids, generation=inp.carver_session.generation,
         ))
-        emit.note("carver", None, "targeted-intake")
+        carve_dispatch_planned = True
+        trace.note("carver", None, "targeted-intake")
 
-
-def implementer_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 3: dispatch eligible QUEUED tasks, up to capacity.
-
-    Legacy body, owned by CR-06b. PLAN-scoped rather than per-task because the
-    capacity budget is shared across tasks and spent in sorted task-id order:
-    a per-task rule would have to carry the count somewhere, and "somewhere"
-    is what CR-06 exists to remove.
-    """
-    inp = ctx.inp
+    # 3. Dispatch eligible QUEUED tasks (with capacity limit)
+    # Count current active tasks
+    active_count = sum(
+        1 for tsf in inp.states.values()
+        if tsf.state in (TaskState.ACTIVE, TaskState.AWAITING_REVIEW)
+    )
+    # B3/P71: the implement stage's concurrency (a per-project [stage.implement]
+    # override, else policy.max_active_tasks by default -> parity).
+    implement_cap = effective_concurrency(
+        "implement", inp.cfg.stage_overrides, inp.cfg.policy.max_active_tasks)
+    dispatch_capacity = implement_cap - active_count
 
     # Find all eligible QUEUED tasks, sorted by task_id
     queued_tasks = []
@@ -1327,13 +1526,10 @@ def implementer_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
             queued_tasks.append((fm_id, fm, tsf))
     queued_tasks.sort(key=lambda x: x[0])  # Sort by task_id
 
-    # Dispatch up to capacity (resolved once, in the pass context: the
-    # implement stage's own concurrency -- a [stage.implement] override, else
-    # policy.max_active_tasks -> parity -- less the tasks already occupying a
-    # slot).
+    # Dispatch up to capacity
     dispatched = 0
     for fm_id, fm, tsf in queued_tasks:
-        if dispatched >= ctx.dispatch_capacity:
+        if dispatched >= dispatch_capacity:
             break
 
         eligible, reason = dispatch_eligible(fm, tsf, inp)
@@ -1342,26 +1538,16 @@ def implementer_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
             routes_for_tier = inp.routes.for_tier(fm.tier)
             for route_def in routes_for_tier:
                 if inp.provider_ok.get(route_def.route_id, False):
-                    emit(DispatchImplementer(task_id=fm_id, route_id=route_def.route_id))
+                    lifecycle_by_id[fm_id].append(
+                        DispatchImplementer(task_id=fm_id, route_id=route_def.route_id)
+                    )
                     dispatched += 1
-                    emit.note("dispatch", fm_id, f"route:{route_def.route_id}")
+                    trace.note("dispatch", fm_id, f"route:{route_def.route_id}")
                     break
         else:
-            emit.note("dispatch-skip", fm_id, reason)
+            trace.note("dispatch-skip", fm_id, reason)
 
-
-def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 4: the attempt-recovery ladder.
-
-    Legacy body, owned by CR-06b -- verbatim, through the adapter prologue
-    described in this section's header. This is the single largest concern
-    left in the monolith and the one whose internal ordering is genuinely
-    intricate (receipt, dead pid, wall-clock cap, confirmed stall, failed
-    start, interrupted-and-poisoned), which is exactly why it moves under its
-    own package rather than being reshaped in passing here.
-    """
-    # --- CR-06a adapter prologue (see the section header above) ------------
-    inp = ctx.inp
+    # === Attempt actions (no specific sort within category) ===
     attempt_actions: list[Action] = []
     _INTERRUPTIBLE_STATES = (AttemptState.RUNNING, AttemptState.PREFLIGHTING, AttemptState.STALLED)
 
@@ -1615,101 +1801,284 @@ def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
                                     )
                                     break
 
-    # --- CR-06a adapter epilogue -------------------------------------------
-    # One channel, one order: the moved body appended in decision order and
-    # this hands that same list to the kernel unchanged.
-    for action in attempt_actions:
-        emit(action)
+    # === Waves ===
+    wave_actions: list[Action] = []
+    awaiting_review = [
+        (task_id, tsf) for task_id, tsf in inp.states.items()
+        if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is None
+    ]
+    awaiting_review.sort(key=lambda x: x[0])  # Sort by task_id
 
+    if awaiting_review:
+        # Batch into waves
+        wave_max = inp.cfg.policy.wave_max_diffs
+        task_ids_to_batch = [tid for tid, _ in awaiting_review]
+        now_timestamp = inp.now.timestamp()
 
-# MOVED (CR-06a): the wave batching and review launch, the self-review leg and
-# the three spec-attention signals used to sit here, between the attempt ladder
-# and the carve cadences. They claim no arbitrated resource, so they moved
-# whole to `rules_review.py` and `rules_attention.py`; their position in the
-# pass is now the rule table's business rather than this file's line order.
+        # Check if we should open a wave
+        should_open = len(task_ids_to_batch) >= wave_max
+        if not should_open and task_ids_to_batch:
+            # P65 2026-07-20 (M11): the age trigger must read the age of the
+            # GENUINELY oldest waiting task. task_ids_to_batch is sorted by
+            # task_id, so [0] is the lexicographically-first task -- which need
+            # not be the oldest. An old task sorted after a fresh one would
+            # otherwise never trip the timeout, stranding a review unboundedly
+            # under low throughput. Take the minimum `since` across the batch.
+            oldest_since = min(
+                inp.states[t].since.timestamp() for t in task_ids_to_batch)
+            age = now_timestamp - oldest_since
+            if age > inp.wave_open_after_seconds:
+                should_open = True
 
+        if should_open:
+            batched = task_ids_to_batch[:wave_max]
+            wave_actions.append(OpenWave(task_ids=batched))
 
-def test_health_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 15 (D-065, B63 2026-07-20): the test-health carve
-    cadence.
+    # Check for LaunchReview for already-open waves.
+    # 2026-07-15 live incident: checking only RUNNING re-launched the review
+    # every pass while the fresh attempt sat in CREATED/PREFLIGHTING (five
+    # duplicate Opus launches in three minutes). ANY non-terminal
+    # frontier-review attempt means the wave's review is in flight; a
+    # terminal-but-INTERRUPTED one is retried via the normal resume path,
+    # so it too must not trigger a duplicate cold launch here.
+    #
+    # 2026-07-17 fix (stale-wave_id strand, second review cycle never
+    # relaunches): the check above previously scanned ALL of tsf.attempts
+    # for ANY REVIEW_INDEPENDENT attempt in these states, including terminal
+    # EXITED -- with no scoping to "is this attempt still current". Once a
+    # task's first review attempt reaches EXITED (approved OR rejected),
+    # it stayed in tsf.attempts forever, so has_review_in_flight was
+    # permanently True from that point on. Combined with the reject-loop
+    # (REVIEW_REJECTED -> QUEUED -> a fresh implementer -> AWAITING_REVIEW
+    # a SECOND time), that meant a second review could never be launched --
+    # the task silently stranded AWAITING_REVIEW forever.
+    #
+    # Scoping by tsf.wave_id doesn't help on its own: tsf.wave_id is set
+    # once by OpenWave/WAVE_OPENED and never reset (REVIEW_RECORDED is a
+    # true audit-only no-op in storage.apply_event -- see
+    # test_invariants.py's test_known_ignored_event_types_are_true_noops --
+    # so it cannot clear it, and every review attempt for this task is
+    # dispatched with that SAME wave_id forever). The actual discriminator
+    # is RECENCY: only the task's LATEST attempt can meaningfully be "the
+    # review in flight" -- a stale EXITED review from a prior cycle that
+    # has since been superseded by a fresh implementer attempt (the
+    # reject-loop's re-work) is provably no longer in flight, because
+    # something newer already ran after it. This mirrors the is_latest
+    # check already used above (interrupted-poisoned handling).
+    # P61 2026-07-20 (A9, M3 -- real wave batching). A wave's review is ONE
+    # frontier session over ALL its members, not one session per task. The
+    # per-task in-flight recency check below is unchanged (it still decides,
+    # task by task, "does THIS task still need a review launched") -- but the
+    # tasks that pass it are GROUPED BY wave_id and launched together, so a
+    # 3-task wave pays the ~35-40k frontier startup tax ONCE, not three times,
+    # and (with the executor recording the shared attempt on every member) each
+    # member's LATEST attempt is that review, so the next pass sees it in
+    # flight for all of them and does not relaunch. The reject-loop still works
+    # per task: a rejected member re-queues, gets a fresh implementer attempt
+    # (its new LATEST, role IMPLEMENTER), and on returning to AWAITING_REVIEW
+    # is the sole member of its own re-review launch -- preserving the
+    # 2026-07-17 recency fix.
+    needs_review_by_wave: dict[str, list[str]] = {}
+    for task_id, tsf in inp.states.items():
+        if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is not None:
+            if inp.pause_mode == "drain-agents":
+                # P15 2026-07-15: no new agent process (a review launch IS
+                # one) while draining agents; the task stays parked
+                # AWAITING_REVIEW until a later pass sees run/drain-handoffs.
+                continue
+            latest = tsf.attempts[-1] if tsf.attempts else None
+            has_review_in_flight = (
+                latest is not None
+                and latest.role == Role.REVIEW_INDEPENDENT
+                and (
+                    latest.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
+                                      AttemptState.RUNNING, AttemptState.STALLED,
+                                      AttemptState.EXITED)
+                    or (latest.state == AttemptState.INTERRUPTED
+                        and latest.session_handle is not None)
+                )
+            )
+            if not has_review_in_flight:
+                needs_review_by_wave.setdefault(tsf.wave_id, []).append(task_id)
 
-    Legacy body, owned by CR-06c. A seldom-run, project-WIDE sibling of item
-    9: it steps back from per-task work entirely and asks the strategic carver
-    to evaluate the SUITE's standing test debt.
+    # B6/P74 (D-R10): reviewer session-reuse. If the review_independent stage's
+    # context declares "session-reuse", every review launched THIS pass resumes
+    # the warmest prior review session -- the most-recent EXITED REVIEW_INDEPENDENT
+    # attempt that captured a session_handle (max by `started`). A cold first wave
+    # (no such prior) leaves this None -> the executor cold-dispatches, exactly as
+    # before. Resuming an old/cache-expired session is harmless (a cache MISS, the
+    # pre-B6 cost), and A7 binding is preserved by the executor stamping a fresh
+    # attempt id -- so the only precondition is "a resumable review session
+    # exists", nothing about which wave it reviewed. review_independent is serial, so
+    # in practice at most one review is in flight and a second wave planned the
+    # same pass simply shares the same warm handle (each still gets its own fresh
+    # attempt id downstream).
+    resume_session: str | None = None
+    if needs_review_by_wave and "session-reuse" in stage_context("review_independent"):
+        prior_review_sessions = [
+            a for tsf in inp.states.values() for a in tsf.attempts
+            if a.role == Role.REVIEW_INDEPENDENT
+            and a.state == AttemptState.EXITED
+            and a.session_handle
+        ]
+        if prior_review_sessions:
+            resume_session = max(
+                prior_review_sessions, key=lambda a: a.started).session_handle
 
-    ORDER: evaluated BEFORE item 9's headroom refill, DELIBERATELY. Item 9's
-    condition (ready_count < carve_ahead_target) holds on essentially every
-    pass of an actively-draining project, so a seldom-run trigger placed after
-    it would lose the pass's single carve slot forever and its cadence would
-    silently never fire. That argument now lives on this rule's table entry as
-    well, where it can be reviewed without reading this body.
-    """
-    inp = ctx.inp
+    # One LaunchReview per wave, carrying all its members (sorted for a
+    # deterministic plan / stable first_task anchor).
+    for wave_id in sorted(needs_review_by_wave):
+        wave_actions.append(
+            LaunchReview(wave_id=wave_id, task_ids=sorted(needs_review_by_wave[wave_id]),
+                         resume_session=resume_session))
+
+    # === Self-review dispatch (B5 2026-07-20) ===
+    # A SELF_REVIEWING task needs its self_review leg launched ONCE: a warm
+    # resume of the implementer's session under Role.SELF_REVIEW. Mirrors the
+    # wave review's in-flight recency guard -- a SELF_REVIEW attempt that is the
+    # task's LATEST and still live/pending (or EXITED-pending-consumption) means
+    # the leg is already running, so do not relaunch. The daemon reads the source
+    # implementer attempt's session_handle; if absent it degrades to
+    # AWAITING_REVIEW (skip). Inert unless the `self_review` stage is composed
+    # into the pipeline -- nothing routes a task into SELF_REVIEWING otherwise, so
+    # a pipeline without self_review plans byte-identically to today.
+    self_review_actions: list[Action] = []
+    for task_id, tsf in inp.states.items():
+        if tsf.state != TaskState.SELF_REVIEWING:
+            continue
+        if inp.pause_mode == "drain-agents":
+            # no NEW agent process while draining (a self-review IS one); the
+            # task parks in SELF_REVIEWING until a later run/drain-handoffs pass.
+            continue
+        latest = tsf.attempts[-1] if tsf.attempts else None
+        self_review_in_flight = (
+            latest is not None
+            and latest.role == Role.SELF_REVIEW
+            and (
+                latest.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
+                                 AttemptState.RUNNING, AttemptState.STALLED,
+                                 AttemptState.EXITED)
+                or (latest.state == AttemptState.INTERRUPTED
+                    and latest.session_handle is not None)
+            )
+        )
+        if self_review_in_flight:
+            continue
+        # the implementer attempt whose done-exit routed the task here -- its
+        # warm session_handle is what the self-review borrows.
+        source = next(
+            (a for a in reversed(tsf.attempts) if a.role == Role.IMPLEMENTER), None)
+        if source is None:
+            continue  # unreachable in practice: SELF_REVIEWING is only entered via implement-done
+        self_review_actions.append(
+            LaunchSelfReview(task_id=task_id, source_attempt_id=source.attempt_id))
+
+    # === Spec attention ===
+    spec_actions: list[Action] = []
+
+    # Ratchet check
+    if not inp.ratchet_already_open and inp.merge_history:
+        # Get last N merges where N = max_consecutive_zero_progress_merges
+        n = inp.cfg.policy.max_consecutive_zero_progress_merges
+        recent_merges = inp.merge_history[:n]
+        if len(recent_merges) == n:
+            all_zero_review = all(
+                units == 0 and source == 'review'
+                for _, units, source in recent_merges
+            )
+            if all_zero_review:
+                spec_actions.append(SpecAttention(reason='ratchet', detail=None))
+
+    # Spec health: carve outcomes (P44 2026-07-16: dedup via
+    # carve_outcome_already_open -- see module contract item 7)
+    if not inp.carve_outcome_already_open:
+        for outcome in inp.carve_outcomes:
+            outcome_type = outcome.get('outcome')
+            if outcome_type == 'SPEC_GAP':
+                spec_actions.append(SpecAttention(reason='carve-outcome', detail=None))
+                break
+
+    # Spec health: review rejections (P44 2026-07-16: dedup via
+    # rejections_already_open -- this was the actual notification-storm
+    # root cause: review_rejections_by_area never decreased AND this
+    # branch never deduped, so 2 rejections re-emitted every pass forever)
+    if not inp.rejections_already_open:
+        for area, count in inp.review_rejections_by_area.items():
+            if count >= 2:
+                spec_actions.append(SpecAttention(reason='rejections', detail=None))
+                break
+
+    # Spec health: blocked underspecified (P44 2026-07-16: dedup via
+    # blocked_underspecified_already_open -- see module contract item 7)
+    if not inp.blocked_underspecified_already_open and inp.blocked_underspecified_count >= 3:
+        spec_actions.append(SpecAttention(reason='blocked-underspecified', detail=None))
+
+    # === Carve dispatch (P16 2026-07-15, module contract item 9) ===
+    # carve_in_flight / frontier_route_available computed once, above
+    # (shared with item 12's READY_TO_CARVE handler); carve_dispatch_planned
+    # is True if that handler (or F018 P2b-A1's carver-session ladder,
+    # slots 1-4/6 above) already used this pass's single carve slot --
+    # P45 2026-07-19: at most one CarveDispatch is ever planned in a pass,
+    # shared across both triggers (the single strategic carver is the sole
+    # carve authority). P52 2026-07-19: not inp.project_paused added here
+    # too -- see item 12's guard above for the live incident this closes.
+    # (`carve_actions` itself is declared once, earlier, above item 12 --
+    # F018 P2b-A1 -- so slot 6 can append to the same list.)
+
+    # === Test-health carve (D-065, module contract item 15, B63 2026-07-20) ===
+    # Evaluated BEFORE item 9's headroom refill DELIBERATELY: item 9's condition
+    # (ready_count < carve_ahead_target) holds on essentially every pass of an
+    # actively-draining project, so a seldom-run trigger placed after it would
+    # lose the pass's single carve slot forever and its cadence would silently
+    # never fire. Item 12's re-scope still precedes both (finishing started work
+    # outranks starting new work of either kind). Same shared guards as item 9 --
+    # never a second, independently-drifting copy of pause/in-flight/budget/route.
     test_health_interval = inp.cfg.policy.test_health_interval_days
     if (test_health_interval > 0
             and not inp.project_paused
-            and not ctx.carve_in_flight
-            and emit.available("carve-slot")
-            and ctx.budget_allows
-            and ctx.frontier_route_available):
+            and not carve_in_flight
+            and not carve_dispatch_planned
+            and budget_allows
+            and frontier_route_available):
         age = inp.days_since_test_health_carve
         if age is None or age >= test_health_interval:
-            emit.claim("carve-slot")
-            emit(CarveDispatch(project=inp.cfg.project_id, kind="test-health"))
+            carve_actions.append(
+                CarveDispatch(project=inp.cfg.project_id, kind="test-health")
+            )
+            carve_dispatch_planned = True
 
-
-def gap_audit_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract item 17 (F007 2026-07-27, gap-engine): the gap-audit
-    carve cadence.
-
-    Legacy body, owned by CR-06c. Evaluates whether features the project
-    CLAIMS are shipped are actually backed by code reality, surfacing gaps as
-    carve candidates. ACTIVITY-counted, not time-counted: an idle project with
-    zero code changes must not accrue carve budget on an unchanged codebase.
-
-    ORDER: after item 15's test-health and before item 9's headroom refill --
-    the same starvation argument item 15's docstring makes.
-    """
-    inp = ctx.inp
+    # === Gap-audit carve (F007, module contract item 17, 2026-07-27) ===
+    # Evaluated BEFORE item 9's headroom refill DELIBERATELY: same rationale as
+    # item 15 (test-health). Item 9's condition (ready_count < carve_ahead_target)
+    # holds on essentially every pass of an actively-draining project, so a
+    # seldom-run trigger placed after it would lose the pass's single carve slot
+    # forever and its cadence would silently never fire.
     gap_threshold = inp.cfg.policy.gap_audit_after_changed_lines
     if (gap_threshold > 0
             and not inp.project_paused
-            and not ctx.carve_in_flight
-            and emit.available("carve-slot")
-            and ctx.budget_allows
-            and ctx.frontier_route_available):
+            and not carve_in_flight
+            and not carve_dispatch_planned
+            and budget_allows
+            and frontier_route_available):
         changed = inp.changed_lines_since_gap_audit
         if changed is None or changed >= gap_threshold:
-            emit.claim("carve-slot")
-            emit(CarveDispatch(project=inp.cfg.project_id, kind="gap-audit"))
-            emit.note("carve", None, "gap-audit")
+            carve_actions.append(
+                CarveDispatch(project=inp.cfg.project_id, kind="gap-audit")
+            )
+            carve_dispatch_planned = True
+            trace.note("carve", None, "gap-audit")
 
-
-def headroom_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Module contract items 9 and 14: the untargeted headroom-refill carve.
-
-    Legacy body, owned by CR-06c. Counts ADMISSIBLE ready work -- a task with
-    an open D-dep is decision-held and is not ready work regardless of its
-    nominal state -- and asks the carver to refill when the queue is below
-    target.
-
-    ORDER: the LAST claimant of the carve slot, and that is load-bearing
-    rather than incidental. Its condition holds on essentially every pass of
-    an actively-draining project, so every rarer trigger has to precede it or
-    starve.
-
-    P03 (D-L5): the shared guard is an if/elif chain SOLELY to attribute a
-    carve-skip breadcrumb to its actual reason (paused / in-flight) -- the
-    overall truth table (enter the ready_count computation iff paused is False
-    AND carve_in_flight is False AND the carve slot is still free) is
-    byte-identical to the single `and`-chained condition it replaces.
-    """
-    inp = ctx.inp
+    # P03 (D-L5): the shared guard is restructured into an if/elif chain
+    # SOLELY to attribute a carve-skip breadcrumb to its actual reason
+    # (paused / in-flight) -- the overall truth table (enter the ready_count
+    # computation iff paused is False AND carve_in_flight is False AND
+    # carve_dispatch_planned is False) is byte-identical to the original
+    # single `and`-chained condition it replaces.
     if inp.project_paused:
-        emit.note("carve-skip", None, "paused")
-    elif ctx.carve_in_flight:
-        emit.note("carve-skip", None, "in-flight")
-    elif emit.available("carve-slot"):
+        trace.note("carve-skip", None, "paused")
+    elif carve_in_flight:
+        trace.note("carve-skip", None, "in-flight")
+    elif not carve_dispatch_planned:
         ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
         ready_count = 0
         for fm_id, (fm, _handoff_path) in inp.frontmatters.items():
@@ -1717,7 +2086,7 @@ def headroom_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
             if tsf is None or tsf.state not in ready_states:
                 continue
             if any(d in inp.decisions_open for d in fm.decision_deps()):
-                emit.note("guard-exclude", fm_id, "decision-held")
+                trace.note("guard-exclude", fm_id, "decision-held")
                 continue  # decision-held -- not admissible ready work
             ready_count += 1
 
@@ -1727,50 +2096,88 @@ def headroom_carve(ctx: PlanContext, emit: RuleEmitter) -> None:
         milestone_admits_work = has_nonterminal_task or (
             inp.cfg.policy.carve_ahead_target > 0 and not inp.roadmap_exhausted_open
         )
+        # budget_allows computed once, shared with item 12 above.
 
         if (ready_count < inp.cfg.policy.carve_ahead_target
                 and milestone_admits_work
-                and ctx.budget_allows
-                and ctx.frontier_route_available):
-            emit.claim("carve-slot")
-            emit(CarveDispatch(project=inp.cfg.project_id))
-            emit.note("carve", None, "headroom")
+                and budget_allows
+                and frontier_route_available):
+            carve_actions.append(CarveDispatch(project=inp.cfg.project_id))
+            carve_dispatch_planned = True
+            trace.note("carve", None, "headroom")
 
+    # === Gate verify cadence (GA4 2026-07-25, module contract item 16) ===
+    # Mirrors item 15's cadence SHAPE (interval > 0, not paused,
+    # days_since_* None-or->=interval fires) but deliberately OUTSIDE the
+    # single-carve-authority mutex above: a gate verify runs a subprocess
+    # against a few disposable canary commits, needs no LLM frontier route
+    # and no carve slot, so it never reads/sets carve_dispatch_planned and
+    # never consults carve_in_flight / frontier_route_available /
+    # budget_allows -- only project_paused gates it (a paused project starts
+    # no new process of any kind, the same invariant item 14 closed for
+    # carving). The daemon's executor is idempotent while a verify is
+    # already running for this project (see daemon._execute_verify_gate), so
+    # replanning the identical VerifyGate every pass until the drain step
+    # appends GATE_VERIFY_RECORDED is harmless, not a runaway.
+    gate_verify_actions: list[Action] = []
+    gate_verify_interval = inp.cfg.policy.gate_verify_interval_days
+    if gate_verify_interval > 0:
+        if inp.project_paused:
+            trace.note("gate-verify", None, "paused")
+        else:
+            gv_age = inp.days_since_gate_verify
+            if gv_age is None or gv_age >= gate_verify_interval:
+                gate_verify_actions.append(VerifyGate(project=inp.cfg.project_id))
+                trace.note("gate-verify", None, "fire")
 
-def plan_project(inp: ReconcileInput) -> PlanResult:
-    """Deterministic action plan for one project (see module contract).
+    # === Combine results in order ===
+    actions = []
+    for task_id in sorted(lifecycle_by_id.keys()):
+        actions.extend(lifecycle_by_id[task_id])
+    actions.extend(attempt_actions)
+    actions.extend(wave_actions)
+    actions.extend(self_review_actions)
+    actions.extend(spec_actions)
+    actions.extend(carve_actions)
+    # F018 P2b-A1: new-vocabulary carver-session actions (mutually exclusive
+    # with carve_actions by construction -- the shared carve_dispatch_planned
+    # mutex guarantees at most one of the two lists is ever non-empty).
+    # Always empty when carver_session is None (MASTER GATE), so this line
+    # is a byte-identical no-op for every pre-P2b plan.
+    actions.extend(carver_actions)
+    # GA4 2026-07-25: the gate-verify cadence action, always empty when
+    # policy.gate_verify_interval_days == 0 (the default) -- byte-identical
+    # to every pre-GA4 plan whenever the feature is off.
+    actions.extend(gate_verify_actions)
 
-    Output order: task lifecycle actions (sorted by task id), then attempt
-    actions, then waves, then SpecAttention -- so tests can assert exactly.
+    # P62 2026-07-20 (A10, M10): whole-plan consistency guard (defense in depth
+    # alongside the source fix in the INTERRUPTED branch). A single pass must
+    # NEVER both dead-end a task (Transition -> BLOCKED) AND launch an agent for
+    # it: executing both blocks the task and then wastes an agent session on the
+    # now-BLOCKED task whose exit receipt is never consumed (an orphan attempt).
+    # If any launch targets a task this same plan is blocking, drop that task
+    # from the launch (and drop a launch left empty); keep the dead-end -- it is
+    # the inspectable half. This guarantees the invariant regardless of which
+    # producing branch introduced the contradiction.
+    blocked_here = {
+        a.task_id for a in actions
+        if isinstance(a, Transition) and a.to == TaskState.BLOCKED
+    }
+    if blocked_here:
+        deconflicted: list[Action] = []
+        for a in actions:
+            if isinstance(a, (DispatchImplementer, ResumeAttempt, LaunchSelfReview)) and a.task_id in blocked_here:
+                continue  # drop: this task is being dead-ended this pass
+            if isinstance(a, LaunchReview):
+                keep = [t for t in a.task_ids if t not in blocked_here]
+                if not keep:
+                    continue  # every member was being blocked -> drop the launch
+                if len(keep) != len(a.task_ids):
+                    a = LaunchReview(wave_id=a.wave_id, task_ids=keep)
+            deconflicted.append(a)
+        actions = deconflicted
 
-    Returns a `PlanResult` (P03, D-L5): IS the actions list (back-compat --
-    see PlanResult's own docstring) and additionally carries `.trace`, a pure
-    `ReconcileTrace` of breadcrumbs recording WHY key decisions were made this
-    pass, plus (CR-06a) the rule-match explanations behind each action.
-    Building both is pure in-memory bookkeeping -- no clock, no I/O, no logger
-    import -- so this function's purity is unchanged; only the daemon ever
-    flushes `.trace` to the logger.
-
-    CR-06a: this is now a DRIVER, not a decision-maker. It derives the pass
-    context once, runs the ordered rule table through the arbiter, assembles
-    the channels in the plan's declared output order, and lets the arbiter
-    deconflict the result. Every decision it used to make itself is a
-    registered rule -- see `planning.rule_table()` for the order and the
-    reason for it.
-    """
-    trace = ReconcileTrace()
-    ctx = PlanContext.derive(inp)
-    table = planning.rule_table()
-    arbiter = planning.PlanArbiter(table)
-    channels = planning.run_rules(ctx, table, trace, arbiter)
-    return PlanResult(arbiter.deconflict(channels.assemble()), trace=trace)
-
-
-# MOVED (CR-06a): the gate-verify cadence to `rules_attention.py`, the
-# output-order assembly to `planning.PlanChannels`, and the whole-plan
-# deconfliction to `planning.PlanArbiter.deconflict` -- the last of these
-# because a plan that both dead-ends a task and launches an agent for it is a
-# property of the PLAN, so no single rule can own it.
+    return PlanResult(actions, trace=trace)
 
 
 def _wall_clock_cap_exceeded(attempt, fm: Frontmatter | None, inp: ReconcileInput) -> bool:

@@ -333,18 +333,30 @@ def effective_concurrency(stage_name: str, overrides: dict, max_active_tasks: in
     exact parity with the old single global knob. `"serial"` resolves to 1.
     Values are validated at config load (validate_stage_overrides), so this is a
     pure resolver.
+
+    LOG-FREE, and that is load-bearing rather than tidiness (CR-06a). This is
+    the ONE helper the pure planner reaches that is not itself part of the
+    planner, so it sits inside `plan_project`'s call graph -- and it used to
+    emit a DEBUG record on every invocation: twice per reconcile pass plus once
+    per queued task. `reconcile.py`'s own docstring claims "no `log`/
+    `nyxloom.log` import reachable from this module -- a load-bearing invariant
+    the doctor replay-divergence guard and this module's property-testability
+    both rely on", and that claim was FALSE transitively from the day this
+    resolver landed. CR-06a's purity oracle
+    (`tests/test_planning.py::test_no_rule_can_reach_an_impure_capability`)
+    found it and this is the fix: the answer is a pure function of three
+    arguments a caller already has, so a record of having computed it carries
+    no information the caller could not log itself. Adding logging back here
+    re-breaks planner purity, and the oracle will say so.
     """
     raw = overrides.get(stage_name, {}).get("concurrency")
     if raw is None:
         raw = STAGE_REGISTRY[stage_name].concurrency
     if raw is None:                      # implement's inherit-the-policy default
-        result = max_active_tasks
-    elif raw == "serial":
-        result = 1
-    else:
-        result = int(raw)
-    log.debug("stage concurrency resolved", stage=stage_name, concurrency=result)
-    return result
+        return max_active_tasks
+    if raw == "serial":
+        return 1
+    return int(raw)
 
 
 def validate_stage_overrides(overrides: dict) -> None:
