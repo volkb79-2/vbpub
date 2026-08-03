@@ -104,7 +104,7 @@ log = get_logger("effects")
 #:
 #: This number may only go DOWN, and it must go down in the same commit that
 #: moves the handler. See the module docstring.
-LEGACY_HANDLER_BUDGET = 3
+LEGACY_HANDLER_BUDGET = 1
 
 
 # ---------------------------------------------------------------------------

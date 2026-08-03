@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, snapshot, storage
+from nyxloom import (
+    daemon, effects_carve, lint, paths, reconcile, snapshot, storage,
+)
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import CarveDispatch, ReconcileInput, plan_project
 from nyxloom.types import (
@@ -451,7 +453,7 @@ def test_oracle_9_carve_packet_includes_shipped_features(sample_project):
     cfg.root = sample_project.root
     cfg.product_definition = "2-product-definition.md"
 
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
     body = "\n".join(lines)
 
     assert "shipped" in body.lower()
@@ -464,7 +466,7 @@ def test_oracle_9_carve_packet_excludes_planned_features_negative(sample_project
     cfg = _cfg()
     cfg.root = sample_project.root
 
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
     body = "\n".join(lines)
 
     # Explicit instruction not to audit planned features
@@ -477,7 +479,7 @@ def test_oracle_9_carve_packet_authorizes_empty_carve(sample_project):
     cfg = _cfg()
     cfg.root = sample_project.root
 
-    lines = d._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
+    lines = d._carve._carve_packet_body_lines(cfg, "demo", seq=1, states={}, kind="gap-audit")
     body = "\n".join(lines)
 
     # Explicit authorization
@@ -578,7 +580,7 @@ def test_head_sha_checkpoint_is_written_by_the_dispatch_END_TO_END(
     # CR-02a: _head_revision is a typed authoritative acquisition now, so the
     # stub returns a descriptor rather than a bare sha.
     monkeypatch.setattr(
-        daemon.Daemon, "_head_revision",
+        effects_carve.CarveEffector, "_head_revision",
         lambda self, cfg, **_kw: snapshot.SnapshotInput.ok_value(
             "git_head_revision", snapshot.InputClass.AUTHORITATIVE, expected,
             provenance=snapshot.Provenance("git", "test")))
@@ -617,7 +619,7 @@ def test_test_health_carve_does_not_stamp_head_sha_NEGATIVE(
     gap-audit activity checkpoint and the audit would never accumulate enough
     changed lines to fire."""
     monkeypatch.setattr(
-        daemon.Daemon, "_head_revision",
+        effects_carve.CarveEffector, "_head_revision",
         lambda self, cfg, **_kw: snapshot.SnapshotInput.ok_value(
             "git_head_revision", snapshot.InputClass.AUTHORITATIVE, "f" * 40,
             provenance=snapshot.Provenance("git", "test")))

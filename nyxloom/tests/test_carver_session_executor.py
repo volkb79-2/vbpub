@@ -1206,7 +1206,7 @@ def test_carve_dispatch_normalizes_to_session_resume_when_warm(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     types = [e.type for e in events]
     assert types == [EventType.TASK_CREATED, EventType.ATTEMPT_CREATED,
@@ -1255,7 +1255,7 @@ def test_carve_dispatch_normalize_rescope_carries_context_no_launch_time_superse
     states = _seed_ready_to_carve_origin("demo")
 
     action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     created = next(e for e in events if e.type is EventType.TASK_CREATED)
     task_id = created.task_id
@@ -1289,7 +1289,7 @@ def test_ad1_empty_proposal_from_normalized_rescope_leaves_origin_ready_to_carve
 
     states = _seed_ready_to_carve_origin("demo")
     action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 
@@ -1324,7 +1324,7 @@ def test_ad1_valid_rescope_proposal_supersedes_origin_only_on_admission(
 
     states = _seed_ready_to_carve_origin("demo")
     action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
 
@@ -1371,7 +1371,7 @@ def test_carve_dispatch_normalize_targeted_intake_sub_mode(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", item_id="B27")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     task_id = events[0].task_id
     tsf = states[task_id]
@@ -1393,7 +1393,7 @@ def test_carve_dispatch_normalize_test_health_sub_mode(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="test-health")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert "TEST-HEALTH" in patch_launch[0].argv[-1]
 
@@ -1409,7 +1409,7 @@ def test_carve_dispatch_falls_back_to_fresh_carve_when_no_session_yet(
     states: dict = {}
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
 
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     # Feature-on with ABSENT session: no legacy carve, no TASK_CREATED.
     assert not any(e.type is EventType.TASK_CREATED for e in events)
@@ -1435,7 +1435,7 @@ def test_carve_dispatch_rotates_when_session_degraded_exhausted(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     # Rotates, no legacy carve task minted.
     rotated = [e for e in events if e.type is EventType.CARVER_SESSION_ROTATED]
@@ -1468,7 +1468,7 @@ def test_carve_dispatch_byte_identical_when_feature_off(
     states: dict = {}
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
 
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     task_id = next(e.task_id for e in events if e.type is EventType.TASK_CREATED)
     assert task_id.startswith("carve-demo-")
@@ -1495,7 +1495,7 @@ def test_normalize_branch_unresolvable_pinned_route_needs_operator(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert len(events) == 1
     assert events[0].type is EventType.NEEDS_OPERATOR
@@ -1516,7 +1516,7 @@ def test_branch_authority_normalize_reads_envelope_at_worktree_report_path(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     worktree = Path(states[task_id].attempts[0].worktree)
     assert worktree.resolve() != cfg.root.resolve()
@@ -1563,7 +1563,7 @@ def test_write_authority_turn_missing_envelope_degrades_no_proposal(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     attempt_id = states[task_id].attempts[0].attempt_id
     _mark_turn_outcome("demo", task_id, attempt_id, session_handle="S1",
@@ -1593,7 +1593,7 @@ def test_write_authority_turn_malformed_envelope_degrades_no_proposal(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     seq = task_id.rsplit("-", 1)[-1]
     # Missing required fields (artifacts/dispositions/outcome/source/...) --
@@ -1662,7 +1662,7 @@ def test_ad2_carved_nothing_turn_records_resumed_not_proposal_stays_warm(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     seq = task_id.rsplit("-", 1)[-1]
     envelope = _carve_envelope(task_id, artifacts=[], dispositions=[],
@@ -1710,7 +1710,7 @@ def test_full_loop_normalize_record_validate_admit_end_to_end(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    launch_events = d._execute_carve_dispatch("demo", cfg, states, action)
+    launch_events = d._execute("demo", cfg, states, action)
     task_id = launch_events[0].task_id
     assert task_id.startswith("carver-session-demo-")
     attempt_id = states[task_id].attempts[0].attempt_id
@@ -1855,7 +1855,7 @@ def test_o3_degraded_exhausted_rotates_no_carve_task(
 
     states = storage.list_states("demo")
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     rotated = [e for e in events if e.type is EventType.CARVER_SESSION_ROTATED]
     assert len(rotated) == 1
@@ -1881,7 +1881,7 @@ def test_o3_rescope_stays_ready_to_carve_on_degraded_rotation(
 
     states = _seed_ready_to_carve_origin("demo")
     action = reconcile.CarveDispatch(project="demo", task_id="demo-origin")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert any(e.type is EventType.CARVER_SESSION_ROTATED for e in events)
     assert not any(e.type is EventType.TASK_CREATED for e in events)
@@ -1902,7 +1902,7 @@ def test_o3_feature_off_fresh_carve_unchanged(
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     # Legacy path: a TASK_CREATED with carve- prefix is minted.
     task_ids = [e.task_id for e in events if e.type is EventType.TASK_CREATED]
@@ -2198,7 +2198,7 @@ def test_o7_byte_identical_fresh_carve_dispatch(tmp_state, sample_project, patch
     d = daemon.Daemon({"demo": cfg.root})
     states: dict = {}
     action = reconcile.CarveDispatch(project="demo", kind="headroom")
-    events = d._execute_carve_dispatch("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     task_ids = [e.task_id for e in events if e.type is EventType.TASK_CREATED]
     assert len(task_ids) == 1

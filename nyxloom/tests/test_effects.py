@@ -165,6 +165,10 @@ class TestThisRepo:
                 generation=1),
             "compact-carver-session": reconcile.CompactCarverSession(
                 project="demo", generation=1, trigger="turns"),
+            "carve-dispatch": reconcile.CarveDispatch(project="demo",
+                                                      kind="headroom"),
+            "admit-carve-proposal": reconcile.AdmitCarveProposal(
+                project="demo", proposal_id="p1"),
         }
         keys = {}
         for spec in registry.specs:

@@ -387,6 +387,25 @@ def _scenarios() -> list[dict]:
             "teardown": _unpause,
         },
         {
+            "name": "carve-dispatch-feature-off",
+            "seed": lambda p, cfg: None,
+            "action": lambda: reconcile.CarveDispatch(project="demo",
+                                                      kind="headroom"),
+        },
+        {
+            "name": "carve-dispatch-admission-refused",
+            "seed": lambda p, cfg: _pause(p, "drain-handoffs"),
+            "action": lambda: reconcile.CarveDispatch(project="demo",
+                                                      kind="headroom"),
+            "teardown": _unpause,
+        },
+        {
+            "name": "admit-carve-proposal-feature-off",
+            "seed": lambda p, cfg: None,
+            "action": lambda: reconcile.AdmitCarveProposal(project="demo",
+                                                           proposal_id="p1"),
+        },
+        {
             "name": "auto-merge-conflict",
             "seed": lambda p, cfg: (
                 _branch_with_file(cfg.root, "feat/demo-D24",

@@ -1,5 +1,6 @@
 {
   "scenarios": {
+    "admit-carve-proposal-feature-off": [],
     "auto-merge-clean": [
       {
         "attempt_id": null,
@@ -101,6 +102,100 @@
         },
         "task_id": "demo-D22",
         "type": "NEEDS_OPERATOR",
+        "wave_id": null
+      }
+    ],
+    "carve-dispatch-admission-refused": [],
+    "carve-dispatch-feature-off": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "statefile": {
+            "attempts": [],
+            "blocker": null,
+            "gate_results": [],
+            "handoff_path": null,
+            "leases_held": [],
+            "merge_commit": null,
+            "notes": "carve seq=1 authority=branch",
+            "paused": false,
+            "progress_units": [],
+            "project": "demo",
+            "schema_version": 1,
+            "since": "<ts>",
+            "state": "ACTIVE",
+            "task_id": "carve-demo-1",
+            "wave_id": null
+          }
+        },
+        "task_id": "carve-demo-1",
+        "type": "TASK_CREATED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": "carve/demo-1",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "carver",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-review-model",
+              "route_id": "fake-review",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "CREATED",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>/.worktrees/carve/demo-1"
+          }
+        },
+        "task_id": "carve-demo-1",
+        "type": "ATTEMPT_CREATED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": "carve/demo-1",
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": 4242,
+            "receipt": null,
+            "role": "carver",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-review-model",
+              "route_id": "fake-review",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "PREFLIGHTING",
+            "usage": null,
+            "wave_id": null,
+            "worktree": "<root>/.worktrees/carve/demo-1"
+          }
+        },
+        "task_id": "carve-demo-1",
+        "type": "ATTEMPT_PREFLIGHTED",
         "wave_id": null
       }
     ],

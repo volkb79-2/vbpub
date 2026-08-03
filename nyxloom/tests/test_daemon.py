@@ -28,6 +28,7 @@ import pytest
 from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
+    effects_carve,
     adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
     effects_dispatch, effects_gates, effects_review, lint, log, notify, paths, reconcile,
     render, results, snapshot, storage, wrapper,
@@ -800,7 +801,7 @@ def test_build_carve_packet_rescope_embeds_verdict_and_drift(
         "verdict": "Findings: the design is architecturally wrong.\nSecond finding.",
         "input_revision": "deadbeef", "head_revision": "abc1234567", "drifted": True,
     }
-    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert "RE-SCOPING" in packet
     assert "Re-scope source: the rejected task" in packet
     assert "handoff/P01.md" in packet
@@ -822,7 +823,7 @@ def test_build_carve_packet_rescope_no_drift_no_verdict_negative(
         "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
         "drifted": False,
     }
-    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert "RE-SCOPING" in packet
     assert "current --" in packet
     assert "DRIFTED" not in packet
@@ -865,7 +866,7 @@ def test_carve_packet_rescope_intro_byte_identical_for_architectural(
         "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
         "drifted": False, "reject_class": "architectural", "origin_tier": "flash-high",
     }
-    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert _PRE_INCAPABLE_RESCOPE_INTRO in packet
 
 
@@ -881,7 +882,7 @@ def test_carve_packet_rescope_intro_byte_identical_when_reject_class_absent(
         "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
         "drifted": False,
     }
-    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert _PRE_INCAPABLE_RESCOPE_INTRO in packet
 
 
@@ -898,7 +899,7 @@ def test_carve_packet_rescope_intro_byte_identical_when_origin_tier_missing(
         "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
         "drifted": False, "reject_class": "incapable", "origin_tier": None,
     }
-    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert _PRE_INCAPABLE_RESCOPE_INTRO in packet
 
 
@@ -917,7 +918,7 @@ def test_carve_packet_rescope_incapable_intro_instructs_tier_bump(
         "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
         "drifted": False, "reject_class": "incapable", "origin_tier": "flash-high",
     }
-    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert "flash-high" in packet
     assert "HIGHER" in packet
     assert "Do NOT redesign the scope" in packet
@@ -933,7 +934,7 @@ def test_build_carve_packet_untargeted_has_no_rescope_section(
     re-scope section into every headroom carve."""
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
-    packet = d._build_carve_packet(cfg, "demo", 1, {})
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {})
     assert "RE-SCOPING" not in packet
     assert "Re-scope source" not in packet
     assert "You are proposing NEW handoff packages" in packet
@@ -958,7 +959,7 @@ def test_carve_source_note_lines_prefers_spine_roadmap_over_legacy_convention(
     (cfg.root / "nyxloom-trove" / "3-roadmap.md").write_text("spine roadmap\n")
     d = daemon.Daemon({"demo": cfg.root})
 
-    lines = d._carve_source_note_lines(cfg)
+    lines = d._carve._carve_source_note_lines(cfg)
     roadmap_lines = [ln for ln in lines if ln.startswith("- roadmap:")]
     assert roadmap_lines == ["- roadmap: nyxloom-trove/3-roadmap.md"]
 
@@ -973,7 +974,7 @@ def test_carve_source_note_lines_falls_back_to_legacy_when_spine_unset(
     (cfg.root / "nyxloom-trove" / "roadmap.md").write_text("legacy roadmap\n")
     d = daemon.Daemon({"demo": cfg.root})
 
-    lines = d._carve_source_note_lines(cfg)
+    lines = d._carve._carve_source_note_lines(cfg)
     roadmap_lines = [ln for ln in lines if ln.startswith("- roadmap:")]
     assert roadmap_lines == ["- roadmap: nyxloom-trove/roadmap.md"]
 
@@ -992,7 +993,7 @@ def test_carve_source_note_lines_never_surfaces_an_archived_roadmap(
     (cfg.root / "nyxloom-trove" / "roadmap.md").write_text("legacy roadmap\n")
     d = daemon.Daemon({"demo": cfg.root})
 
-    lines = d._carve_source_note_lines(cfg)
+    lines = d._carve._carve_source_note_lines(cfg)
     joined = "\n".join(lines)
     assert "docs/archive" not in joined
     assert "- roadmap: nyxloom-trove/roadmap.md" in lines
@@ -1010,7 +1011,7 @@ def test_carve_source_note_lines_reports_none_found_when_only_archive_exists(
     cfg.roadmap = "docs/archive/product-docs/ROADMAP.md"
     d = daemon.Daemon({"demo": cfg.root})
 
-    lines = d._carve_source_note_lines(cfg)
+    lines = d._carve._carve_source_note_lines(cfg)
     assert any("roadmap/gap analysis: none found" in ln for ln in lines)
     assert not any("docs/archive" in ln for ln in lines)
 
@@ -1031,7 +1032,7 @@ def test_rescope_context_reads_handoff_verdict_and_drift(
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
-    ctx = d._rescope_context(cfg, states, "demo-P01")
+    ctx = d._carve._rescope_context(cfg, states, "demo-P01")
     assert ctx["origin_task_id"] == "demo-P01"
     assert ctx["handoff_path"] == rel
     assert ctx["input_revision"] == "deadbeefdeadbeef"
@@ -1051,7 +1052,7 @@ def test_rescope_context_graceful_when_no_handoff_and_no_review(
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
-    ctx = d._rescope_context(cfg, states, "demo-P09")
+    ctx = d._carve._rescope_context(cfg, states, "demo-P09")
     assert ctx["handoff_path"] is None
     assert ctx["input_revision"] is None
     assert ctx["verdict"] is None
@@ -1074,7 +1075,7 @@ def test_rescope_context_graceful_when_handoff_unparsable(
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
-    ctx = d._rescope_context(cfg, states, "demo-P10")
+    ctx = d._carve._rescope_context(cfg, states, "demo-P10")
     assert ctx["input_revision"] is None
     assert ctx["origin_tier"] is None
     assert ctx["drifted"] is False
@@ -1099,7 +1100,7 @@ def test_rescope_context_reads_reject_class_and_origin_tier(
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
-    ctx = d._rescope_context(cfg, states, "demo-P01")
+    ctx = d._carve._rescope_context(cfg, states, "demo-P01")
     assert ctx["reject_class"] == "incapable"
     assert ctx["origin_tier"] == "flash-high"
 
@@ -1265,11 +1266,13 @@ def test_execute_carve_dispatch_rescope_no_supersede_when_admission_refused(
     rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef")
     _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
     d = daemon.Daemon({"demo": cfg.root})
-    monkeypatch.setattr(d, "_dispatch_admissible", lambda *a, **k: (False, "paused"))
+    # CR-05f: the carve effector calls the shared admission primitive, not the
+    # shell's delegate -- patch the seam the effect actually consults.
+    monkeypatch.setattr(effects_dispatch, "admissible",
+                        lambda ctx, kind: (False, "paused"))
     states = storage.list_states("demo")
 
-    events = d._execute_carve_dispatch(
-        "demo", cfg, states, reconcile.CarveDispatch(project="demo", task_id="demo-P01"))
+    events = d._execute("demo", cfg, states, reconcile.CarveDispatch(project="demo", task_id="demo-P01"))
 
     assert events == []                                  # refused before any effect
     assert storage.load_state("demo", "demo-P01").state is TaskState.READY_TO_CARVE
@@ -1291,8 +1294,7 @@ def test_execute_carve_dispatch_untargeted_supersedes_nothing(
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
-    events = d._execute_carve_dispatch(
-        "demo", cfg, states, reconcile.CarveDispatch(project="demo"))
+    events = d._execute("demo", cfg, states, reconcile.CarveDispatch(project="demo"))
 
     assert any(e.type is EventType.ATTEMPT_PREFLIGHTED for e in events)  # carve launched
     assert [e for e in events if e.type is EventType.TASK_SUPERSEDED] == []
@@ -4180,13 +4182,13 @@ def test_head_revision_resolves_main(tmp_state, sample_project):
         ["git", "-C", str(cfg.root), "rev-parse", cfg.default_branch],
         capture_output=True, text=True,
     ).stdout.strip()
-    ok = d._head_revision(cfg)
+    ok = d._carve._head_revision(cfg)
     assert ok.ok and ok.require() == expected
     assert len(expected) == 40                       # a real full sha, not a placeholder
 
     from dataclasses import replace as _replace
     bogus = _replace(cfg, root=cfg.root / "does-not-exist")
-    bad = d._head_revision(bogus)
+    bad = d._carve._head_revision(bogus)
     assert not bad.ok
     assert bad.input_class is snapshot.InputClass.AUTHORITATIVE
     assert bad.reason is snapshot.Reason.PROBE_FAILED
@@ -4403,7 +4405,7 @@ def test_carve_packet_references_spine_digest_by_pointer_and_maintains_it(
     digest = cfg.root / cfg.reports_dir / "SPINE-DIGEST.md"
     digest.parent.mkdir(parents=True, exist_ok=True)
     digest.write_text("CARVE_SPINE_SENTINEL_DO_NOT_SLURP\n", encoding="utf-8")
-    packet = d._build_carve_packet(cfg, "demo", 1, storage.list_states("demo"))
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, storage.list_states("demo"))
     assert "SPINE-DIGEST.md" in packet                          # referenced
     assert "MAINTAIN it" in packet                              # carver owns/maintains it
     assert "CARVE_SPINE_SENTINEL_DO_NOT_SLURP" not in packet    # NOT slurped
@@ -4417,7 +4419,7 @@ def test_carve_packet_omits_spine_digest_when_context_lacks_flag(
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
     monkeypatch.setattr(daemon.stages, "stage_context", lambda name: frozenset())
-    packet = d._build_carve_packet(cfg, "demo", 1, storage.list_states("demo"))
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, storage.list_states("demo"))
     assert "SPINE-DIGEST.md" not in packet
 
 

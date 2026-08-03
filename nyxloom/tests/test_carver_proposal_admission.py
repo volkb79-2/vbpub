@@ -464,7 +464,7 @@ def test_race_with_ordinary_scan_does_not_suppress_validation(tmp_state, carver_
     # therefore step-4 re-scope -- still runs).
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=proposals[0].proposal_id, artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, raced_states, action)
+    events = d._execute("demo", cfg, raced_states, action)
     assert any(e.type is EventType.CARVER_PROPOSAL_ADMITTED for e in events)
     assert not any(e.type is EventType.TASK_CREATED for e in events)  # already existed
 
@@ -485,7 +485,7 @@ def test_admission_creates_task_once_and_emits_admitted_marker(tmp_state, carver
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
 
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     types = [e.type for e in events]
     assert EventType.TASK_CREATED in types
@@ -501,7 +501,7 @@ def test_admission_creates_task_once_and_emits_admitted_marker(tmp_state, carver
     # (the proposal is already fully admitted -- _validated_carve_proposals
     # excludes it, so _execute_admit_carve_proposal finds no `chosen` match
     # and creates ZERO further events, never a duplicate task).
-    events2 = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events2 = d._execute("demo", cfg, states, action)
     assert events2 == []
 
 
@@ -519,7 +519,7 @@ def test_multi_artifact_proposal_creates_each_task_once(tmp_state, carver_projec
         project="demo", proposal_id=payload["proposal_id"],
         artifact_ids=("demo-P901", "demo-P902"))
 
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     created_ids = {e.task_id for e in events if e.type is EventType.TASK_CREATED}
     assert created_ids == {"demo-P901", "demo-P902"}
@@ -535,7 +535,7 @@ def test_admission_no_longer_validated_proposal_id_refuses_cleanly(tmp_state, ca
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id="demo:carve:1:never-recorded", artifact_ids=("x",))
 
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert events == []
     assert states == {}
@@ -565,7 +565,7 @@ def test_effect_boundary_recheck_refuses_on_changed_artifact(tmp_state, carver_p
     states: dict = {}
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert events == []
     assert states == {}
@@ -598,7 +598,7 @@ def test_rescope_supersedes_origin_only_on_successful_admission(tmp_state, carve
 
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     superseded = [e for e in events if e.type is EventType.TASK_SUPERSEDED]
     assert len(superseded) == 1
@@ -629,7 +629,7 @@ def test_non_handoff_disposition_leaves_origin_untouched(tmp_state, carver_proje
     })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
@@ -1138,7 +1138,7 @@ def test_carve_proposal_recorded_payload_storage_error_is_typed_unavailable(
 
     monkeypatch.setattr(storage, "iter_events", _boom)
     with pytest.raises(snapshot.SnapshotUnavailable):
-        d._carve_proposal_recorded_payload("demo", "demo:carve:1:att-1")
+        d._carve._carve_proposal_recorded_payload("demo", "demo:carve:1:att-1")
 
 
 def test_carve_proposal_recorded_payload_not_found_returns_none(tmp_state, carver_project):
@@ -1148,7 +1148,7 @@ def test_carve_proposal_recorded_payload_not_found_returns_none(tmp_state, carve
     _record("demo", _proposal_payload(artifacts=[_artifact(relpath, sha)]))
 
     d = daemon.Daemon({"demo": cfg.root})
-    assert d._carve_proposal_recorded_payload("demo", "demo:carve:1:does-not-exist") is None
+    assert d._carve._carve_proposal_recorded_payload("demo", "demo:carve:1:does-not-exist") is None
 
 
 def test_repair_escalations_storage_error_is_typed_unavailable(
@@ -1209,7 +1209,7 @@ def test_execute_admit_feature_off_returns_no_events(tmp_state, sample_project):
     d = daemon.Daemon({"demo": cfg.root})
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id="demo:carve:1:att-1", artifact_ids=("x",))
-    events = d._execute_admit_carve_proposal("demo", cfg, {}, action)
+    events = d._execute("demo", cfg, {}, action)
     assert events == []
 
 
@@ -1233,7 +1233,7 @@ def test_partial_admission_creates_only_missing_task(tmp_state, carver_project):
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"],
         artifact_ids=("demo-P901", "demo-P902"))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     created_ids = {e.task_id for e in events if e.type is EventType.TASK_CREATED}
     assert created_ids == {"demo-P902"}
@@ -1258,7 +1258,7 @@ def test_disposition_missing_or_unknown_origin_ref_skipped(tmp_state, carver_pro
     states: dict = {}
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
 
@@ -1281,7 +1281,7 @@ def test_disposition_origin_not_ready_to_carve_skipped(tmp_state, carver_project
     }
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
     assert states["demo-origin"].state is TaskState.ACTIVE
@@ -1306,7 +1306,7 @@ def test_disposition_artifact_ref_mismatch_skipped(tmp_state, carver_project):
     })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
@@ -1335,7 +1335,7 @@ def test_disposition_artifact_ref_normalized_match_supersedes(tmp_state, carver_
     })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     superseded = [e for e in events if e.type is EventType.TASK_SUPERSEDED]
     assert len(superseded) == 1
@@ -1363,7 +1363,7 @@ def test_disposition_missing_artifact_ref_skipped(tmp_state, carver_project):
     })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
-    events = d._execute_admit_carve_proposal("demo", cfg, states, action)
+    events = d._execute("demo", cfg, states, action)
 
     assert not any(e.type is EventType.TASK_SUPERSEDED for e in events)
     assert states["demo-origin"].state is TaskState.READY_TO_CARVE
