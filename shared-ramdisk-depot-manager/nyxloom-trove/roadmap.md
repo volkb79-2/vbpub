@@ -263,7 +263,28 @@ oracles across the project now, and 44 canaries, none surviving.
 | id | package | state |
 |---|---|---|
 | **P07** | `harvest` — adopt an in-place-updated generation as a release | **done** |
-| **P08** | retention/GC, the daemon, the admin socket, boot restore, doctor online | next |
+| **P08** | the operator surface: assignments, `activate`/`rollback`, retention/GC, the CLI verbs | **done** |
+| **P08b** | boot restore, reconciliation acting, adoption and quarantine, doctor online | next |
+
+**Why P08 is two packages.** It was carved as one, and the bullet list it
+carried — retention, the daemon, the admin socket, boot restore, adoption and
+quarantine, doctor online, and every CLI verb the master plan names — is not
+one package. The seam is not size, though: it is that **the boot path replays
+something that does not exist yet.**
+
+`srdm-restore.service` republishes "assigned generations". Nothing in P01–P07
+records an assignment. `expose` is called with a server id and remembers
+nothing; a published record names a release and no consumers. So the boot
+path has no input until somebody writes down what an operator asked for —
+and that record is also exactly what `activate` re-points and what `gc` must
+not collect. It is the first thing, not a detail of the last.
+
+So **P08** is the operator surface: the durable statement of intent, the
+operations that change it, and the verbs that drive them, all synchronous in
+a one-shot root process. **P08b** is what makes that survive a reboot and a
+crash: the boot unit, reconciliation acting on its own findings rather than
+reporting them, adoption and quarantine of operations whose units outlived
+the process that started them, and doctor's online half.
 
 **P07** is today's manual procedure automated: refuse if any consumer is
 running → re-walk and re-hash → classify (an unclassified new path blocks
@@ -312,58 +333,86 @@ namespace and lifting when it stops; harvest refused once the generation is
 torn down, against the real mount table. Plus 15 unit oracles and 16 new
 canaries, none surviving.
 
-**P08** closes the operational loop: `srdm-restore.service`
+**What P08 settled.** `internal/assign` is the record that did not exist:
+one document per profile naming the active release, the release before it,
+and the servers. **D-024** states why that is not the consumer registry
+D-018 refused — they answer different questions, and the pair is the design.
+Intent is recorded because nothing else knows it; reality is measured because
+the kernel owns it; reconciliation is the comparison.
+
+`internal/opctl` is the order, and the order is the content. Activate
+publishes the new generation, moves every assigned server onto it one at a
+time, records the assignment, and only then tears the old one down — the one
+position with no bad crash in it. Written earlier, a crash leaves an
+assignment naming a release nothing has mounted; written later, a crash after
+the teardown leaves one naming a generation that no longer exists. Attach and
+detach use the opposite order from each other for the same reason, and both
+are pinned by oracles.
+
+Every operation runs under an `flock`, and **D-025** proposes what that
+implies: v1 has no daemon. Serialization was the only live purpose one would
+serve — the provider socket and lease resolution are v2, boot restore is a
+`oneshot` unit — and a lock buys it without a "refuses when the daemon is
+down" mode that would refuse exactly the operations needed to fix a node
+whose daemon has died. **Confirm before P08b.**
+
+**D-002 closes**: retention 3, from configuration, and a floor on what is
+kept rather than a cap on what exists. Four pins come first — assigned,
+rollback target, published, channel target — and retention only chooses among
+what is left. The master plan's "no live lease, no labeled container in any
+state" is v2 in both terms; in v1 a container never references a release at
+all, and `published` is what replaces them.
+
+*Gated*: the swap end to end on a real node — activate, attach, activate a
+second release, and the server's volume holds the new bytes with nothing left
+of the old, its own `WS/Saved` untouched throughout; rollback putting the
+actual bytes back; oracle 24 for activate against a real second mount
+namespace, refused with the holder named and lifting after a clean stop;
+detach removing one server's mounts and not the other's; teardown leaving a
+profile assigned-but-unpublished, which is the state P08b is defined against.
+Plus 27 unit oracles and 9 new canaries, none surviving.
+
+**P08b** closes the operational loop: `srdm-restore.service`
 (`After=local-fs.target`, no Docker dependency) republishing assigned
-generations at boot; retention (**resolves D-002**, default 3, leased always
-kept); `internal/adminapi` on `/run/srdm/admin.sock` (0600, root) and the
-`daemon` subcommand; the worker-contract rules for adoption and quarantine
-of operations whose units outlived the daemon. *Gate*: reboot republish
-before consumer starts; orphan adoption and quarantine.
+generations at boot; reconciliation acting on `NeedsRepublish`, `NotReadOnly`
+and `Unheld` rather than reporting them; the worker-contract rules for
+adoption and quarantine of operations whose hold units outlived the process
+that started them; `doctor`'s online half, including acting on the drift it
+already reports. *Gate*: reboot republish before a consumer starts; orphan
+adoption and quarantine.
 
-**Inherited from P07.** Two things harvest needs from the operator surface,
-and one it deliberately did not build:
+**Inherited obligations**, each already built but unreachable until P08b
+gives it a loop:
 
-- **`harvest` has no CLI verb**, like publication, hold and exposure before
-  it. It is a library; `cmd/srdm` says so by name.
-- **The procedure has an order, and nothing enforces it.** Harvest reads a
-  generation's own tmpfs and needs no exposure to do it — which is
-  fortunate, because a live exposure IS a hold: the volume binds propagate
-  into the Wings container's namespace, so the generation is held until they
-  are removed. The order is stop the server → unexpose → harvest → teardown
-  → publish the harvested release → expose. P08 owns whatever drives that,
-  and the refusal names the next step rather than assuming somebody knows it.
-- **Re-verifying a `DirtyCapable` generation is harvest's re-hash**, not a
-  separate step: harvest never trusts the record's manifest and always
-  rebuilds one from the tree. What is still open is `doctor`'s side — it
-  reports drift, and nothing acts on the report.
-
-**Inherited obligations**, each already built but unreachable until P08 gives
-it a verb or a loop:
-
-- `activate` and `rollback` must call `Publisher.Holders` and refuse exactly
-  as teardown does (P05). They swap what a consumer is reading underneath it,
-  which is the same hazard by a different route.
+- ~~`activate` and `rollback` must call `Publisher.Holders` and refuse
+  exactly as teardown does~~ — **done in P08**, and gated against a real
+  second mount namespace.
+- ~~Publication, hold, exposure and harvest have no operator entry point~~ —
+  **done in P08**. `daemon`, `stage` and `operation` remain unimplemented and
+  each says by name what it is waiting for: `daemon` on D-025, `stage` on
+  `srdm store promote` already being it, `operation` on the journal already
+  holding what it would print.
 - Reconciliation reports and does not repair. `NeedsRepublish`, `NotReadOnly`
   and `Unheld` are surfaced by P03/P04 and acted on by nobody; the boot path
   is where acting on them belongs.
-- Generation GC needs the stricter rule the master plan states — removable
-  when not assigned, no live lease, **no labeled container in any state**.
-  P05 deliberately implements only the narrower running-container question,
-  because that is what teardown safety is about; a stopped definition holds
-  no pages but still pins what it will need on its next start.
-- Publication, hold, exposure and harvest have no operator entry point at
-  all. They are libraries; `cmd/srdm` says so by name rather than pretending
-  otherwise. Every verb the master plan names —
-  `daemon, stage, harvest, status, activate, rollback, gc, operation` — is
-  P08's, and `harvest` needs one more input than the others: which release id
-  the harvest becomes, since a harvested release is first-class and its
-  identity is the operator's to choose.
+- **Generation GC's remaining term** (D-002 is otherwise closed). The master
+  plan's rule includes "no labeled container in **any state**", and P05
+  answers only the narrower running-container question, because that is what
+  teardown safety is about. A stopped definition holds no pages but still
+  pins what it will need on its next start, and `consumer.DockerLister`
+  offers `RunningContainers` alone. In v1 this is latent rather than urgent —
+  labels are v2, and gc collects releases while a container references a
+  generation — but the boot path is where a stopped-but-configured consumer
+  first matters, because it is the one that will start.
+- **The lock is per node, not per profile** (D-025's stated cost). Two
+  profiles cannot be operated on concurrently. Free on a node with one game;
+  the fix is a per-profile lock file rather than a daemon.
 
 ### Wave 4 — the real acceptance test
 
 | id | package | depends on |
 |---|---|---|
-| **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | P07, P08, and F1 or `check_permissions_on_boot: false` |
+| **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | P08b, and F1 or `check_permissions_on_boot: false` |
 
 Master-plan Phase 3. This is where **D-001** (`WS/Config` shared or
 per-instance) is answered by the runtime write audit rather than assumed,

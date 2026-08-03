@@ -61,24 +61,68 @@ func run(args []string) error {
 		return cmdStore(args[1:])
 	case "journal":
 		return cmdJournal(args[1:])
+	case "activate":
+		return cmdActivate(args[1:])
+	case "rollback":
+		return cmdRollback(args[1:])
+	case "attach":
+		return cmdAttach(args[1:])
+	case "detach":
+		return cmdDetach(args[1:])
+	case "teardown":
+		return cmdTeardown(args[1:])
+	case "harvest":
+		return cmdHarvest(args[1:])
+	case "gc":
+		return cmdGC(args[1:])
+	case "status":
+		return cmdStatus(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
-	case "daemon", "stage", "harvest", "status", "activate", "rollback", "gc", "operation":
-		return fmt.Errorf("%q has no CLI verb yet: the store, the journal and offline doctor "+
-			"ship today. The whole v1 pipeline exists as libraries with no operator entry "+
-			"point — publication and hold units (internal/publish, internal/hold), the "+
-			"host-bind exposure driver (internal/expose) and harvest (internal/harvest). "+
-			"The verbs that drive them, the daemon, gc and boot restore arrive with P08",
-			args[0])
+	case "daemon", "stage", "operation":
+		return fmt.Errorf("%q has no CLI verb yet. The v1 pipeline is drivable — activate, "+
+			"rollback, attach, detach, teardown, harvest, gc and status all work, and each "+
+			"is a one-shot root process under an flock rather than a client of anything. "+
+			"%q belongs to the daemon and the boot path (P08b): %s", args[0], args[0],
+			pendingVerb(args[0]))
 	default:
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
 }
 
+// pendingVerb says what a not-yet-implemented verb is waiting for, by name.
+// A message that only said "not yet" would leave an operator guessing whether
+// they had the wrong command or the wrong version.
+func pendingVerb(name string) string {
+	switch name {
+	case "daemon":
+		return "there is no daemon in v1 — every verb is synchronous and serialized by " +
+			"a lock. The admin socket and a long-lived process arrive with the provider " +
+			"protocol, which is v2 (see decision D-025)"
+	case "stage":
+		return "use `srdm store promote --from <dir>`, which is the same operation under " +
+			"the name the store has always had it"
+	default:
+		return "the journal already records every operation; `srdm journal show --op <id>` " +
+			"is what this verb would print"
+	}
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `srdm — shared-ramdisk-depot-manager
+
+Operations — each takes --profile <file>, and each is one root process
+under a lock:
+  srdm activate --profile <file> --release <id> [--write-owner uid:gid]
+  srdm rollback --profile <file>
+  srdm attach   --profile <file> --server <uuid> [--access ro|rw] [--write-owner uid:gid]
+  srdm detach   --profile <file> --server <uuid>
+  srdm teardown --profile <file>
+  srdm harvest  --profile <file> --release <new-id>
+  srdm gc       --profile <file> [--dry-run] [--retention N]
+  srdm status   [--profile <file>] [--json]
 
   srdm doctor  [--offline] [--profile <file>] [--json]
   srdm store   promote  --profile <file> --release <id> --from <dir> [--channel <c>] [--op <id>]

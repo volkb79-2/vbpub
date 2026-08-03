@@ -14,21 +14,32 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
-## Status — P01–P07 landed
+## Status — P01–P08 landed
 
-The whole v1 pipeline exists as libraries, and it is now a loop: store →
-verified release → publication → hold units → exposure into a Wings server's
-volume → update in place → **harvest back into a release**. What is missing is
-the operator surface that drives it and the operational loop around it. See
+The v1 pipeline is a loop and it is drivable: store → verified release →
+publication → hold units → exposure into a Wings server's volume → update in
+place → **harvest back into a release** → activate. What is missing is the
+part that survives a reboot. See
 [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
 
 | | |
 |---|---|
-| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset plus the Wings preconditions; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw`, and `harvest` |
-| **Not yet** | retention/GC, the daemon, boot restore and the CLI verbs that drive any of this (P08), SteamCMD driver, everything `provider` (v2) |
+| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset plus the Wings preconditions; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw`, `harvest`, and the operator surface: assignments, `activate`/`rollback`, `attach`/`detach`, retention/`gc`, `status` |
+| **Not yet** | boot restore, reconciliation acting on what it finds, `doctor` online (P08b), SteamCMD driver, everything `provider` (v2) |
 
-Publication, hold, exposure and harvest are libraries with no operator entry
-point yet: the CLI verbs that drive them arrive with the daemon (P08).
+```
+srdm store promote --profile examples/soulmask.profile.json \
+                   --release rel-2026w31 --from /path/to/content
+srdm activate --profile examples/soulmask.profile.json --release rel-2026w31
+srdm attach   --profile examples/soulmask.profile.json --server <uuid> --access ro
+srdm status
+srdm rollback --profile examples/soulmask.profile.json
+srdm gc       --profile examples/soulmask.profile.json --dry-run
+```
+
+Every operation is one root process under an `flock` on `/run/srdm/srdm.lock`
+— there is no daemon in v1, and D-025 says why. Nothing srdm does survives a
+reboot on its own yet; that is P08b.
 
 `access: rw` needs `wings.write_owner` — the uid:gid Wings runs its server
 containers as (`system.user.uid` / `system.user.gid` in its config). srdm

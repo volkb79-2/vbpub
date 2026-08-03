@@ -27,15 +27,35 @@ the live host. Nothing in the store depends on the answer.
 
 ## D-002 — retention count
 
-**Status:** open, default 3. Filed by P01 on arrival, per the handoff.
+**Status:** **closed by P08** — 3, from configuration, and a floor rather
+than a cap.
 
 The master plan's default is "≥ 3 retained, immutable, hash-verified"
 (§Defaults), with the count itself `[open]` (§Open questions 3).
 
-**Worked around in P01:** retention is not implemented, so no number is
-baked in anywhere. `srdm store list` shows what exists; nothing is ever
-deleted. The garbage collector arrives later and will read the count from
-config rather than a constant.
+**Worked around in P01:** retention was not implemented, so no number was
+baked in anywhere.
+
+**Decided:** `config.Retention`, defaulting to `DefaultRetention = 3`, and
+`gc` keeps that many releases **beyond** the ones it may not remove at all.
+The distinction is the substance of the decision rather than a detail of it:
+the number never decides whether something live survives. Four pins come
+first — the assigned release, the rollback target, anything with a live
+generation, and any channel target — and retention only chooses among what
+is left over. So a profile can legitimately hold more than three and can
+never hold fewer.
+
+`Validate` refuses a retention below 1. Zero would mean "keep nothing beyond
+what is pinned", which is a coherent policy nobody wants by accident, and it
+is exactly what an unset field would produce.
+
+The master plan's rule is "removable when not assigned, no live lease, no
+labeled container in any state". Two thirds of that is v2: leases and
+Wings-constructed labels arrive with the provider protocol, and in the v1
+host-bind shape **a container never references a release at all** — it holds
+a bind of a generation's tmpfs, whose superblock is what teardown refuses
+over (D-018). So v1's rule is the same rule with the two absent terms
+dropped, and `published` is what replaces them.
 
 ---
 
@@ -821,3 +841,92 @@ Claiming F1 falsely corrupts nothing: it produces exactly the `EROFS` start
 failure this refusal exists to prevent, with srdm's warning removed from in
 front of it. That asymmetry is why the assertion is acceptable where a guess
 would not be.
+
+---
+
+## D-024 — an assignment is declared intent, and it is not the registry D-018 refused
+
+**Status:** accepted. Filed by P08, because it looks like a contradiction and
+is not.
+
+D-018 refused to keep a consumer **registry** — a table of who is holding
+what — and the reasoning was specific: in the v1 host-bind shape nothing
+tells srdm who mounted what, a consumer's bind is at a path srdm never chose,
+and a table srdm maintained itself could only be a second opinion about a
+fact the kernel owns. `internal/consumer` answers that question fresh at
+every ask, and the registry IS the resolution.
+
+P08 writes `internal/assign`, which is a durable per-profile document listing
+servers. It has to be said why that is a different thing, because the next
+person to read both will otherwise conclude one of them is wrong.
+
+**They answer different questions.** "Who is holding this generation" is a
+fact about the kernel — the pages are held by a mount, and only the mount
+table knows. "Which servers should be reading this profile's content" is a
+fact about **what an operator asked for**, and nothing else in the system
+knows it. A mount table can say a server HAS a generation; it can never say
+it SHOULD.
+
+Three things need the second question answered and cannot derive it:
+
+- `activate` re-points every assigned server. Without a record it would have
+  to guess the cohort from the mounts, which means an operation's effect
+  would depend on which servers happened to be running when it ran.
+- the boot path republishes "assigned generations" — the master plan's own
+  words — and after a reboot there are no mounts at all to infer from.
+- `gc` must not collect a release a profile is on, which is a statement
+  about intent even when nothing is published.
+
+**The pair is the design.** Intent is recorded, reality is measured,
+reconciliation is the comparison. The failure D-018 exists to prevent is
+recording reality; the failure this exists to prevent is having to measure
+intent. Neither implies the other, and a system that got them the wrong way
+round would be both unable to restore itself and confidently wrong about what
+it was holding.
+
+---
+
+## D-025 — v1 has no daemon; the CLI is one-shot under a lock
+
+**Status:** proposed. **Confirm before P08b**, which is where the admin
+socket would otherwise be built.
+
+The master plan lists `daemon` among the CLI subcommands, puts an admin
+socket at `/run/srdm/admin.sock` (0600, root), and says "the CLI refuses when
+the daemon is down except `doctor --offline`" (§Process and package layout).
+P08 implements every v1 operation as a one-shot root process instead, and the
+question is whether that is an omission or the right answer.
+
+**What a v1 daemon would actually be for**, taken one purpose at a time:
+
+- **The provider socket** — v2. Nothing in the host-bind shape speaks a
+  protocol to anybody.
+- **Per-start lease resolution** — v2, for the same reason.
+- **Boot restore** — a `oneshot` unit ordered `After=local-fs.target`, which
+  the master plan itself specifies as a *unit* rather than as daemon work.
+- **Serialization** — real, and the whole of it in v1. Two operations
+  interleaving would each succeed at steps that contradict the other's.
+- **Being the thing the CLI talks to** — which is a consequence of having a
+  daemon, not a reason to have one.
+
+Serialization is the only live purpose, and an `flock` on `/run/srdm.lock`
+provides it with no long-lived process, no socket, no protocol, and no
+"refuses when the daemon is down" failure mode — a mode which, on a node
+where the daemon has crashed, refuses exactly the operations an operator
+needs in order to fix it.
+
+**Proposed:** v1 ships no daemon. `internal/adminapi` stays a doc-only
+package, `daemon` stays a named verb that says what it is waiting for, and
+the socket arrives with the provider protocol that needs it.
+
+**Why this must be confirmed rather than assumed**, in the same sense D-003
+had to be: it decides whether srdm is a service an operator installs and
+supervises or a command they run. That is the difference between adopting it
+by running one command and adopting it by taking on a daemon — and it is
+much cheaper to add a daemon in front of these operations later than to
+discover the operations were shaped around a socket that bought nothing.
+
+**Cost, stated:** the lock is per-node rather than per-profile, so two
+profiles cannot be operated on concurrently. On a node with one game that is
+free; on a node with several it is a serialization nobody asked for, and the
+fix is a per-profile lock file rather than a daemon.

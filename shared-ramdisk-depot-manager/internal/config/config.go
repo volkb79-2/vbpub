@@ -50,6 +50,15 @@ type Config struct {
 	// Slice is the admin-owned parent slice whose MemoryMin backs the class
 	// floors. srdm verifies it rather than writing it (decision D-003).
 	Slice string
+	// Retention is how many releases per profile `gc` keeps beyond the ones
+	// it may not remove at all. The master plan's default is "≥ 3 retained,
+	// immutable, hash-verified" (D-002).
+	//
+	// It is a floor on what is KEPT rather than a cap on what exists: the
+	// assigned release, the rollback target and anything published are never
+	// collected, so a profile can legitimately hold more than this and never
+	// fewer.
+	Retention int
 	// Wings describes the deployment srdm exposes content into. Only the
 	// host-bind driver reads it; provider mode (v2) needs none of it.
 	Wings Wings
@@ -170,14 +179,18 @@ func withinPath(path, root string) bool {
 	return path == root || strings.HasPrefix(path, root+"/")
 }
 
+// DefaultRetention is the master plan's "≥ 3 retained" (D-002).
+const DefaultRetention = 3
+
 // Default returns the shipped defaults.
 func Default() Config {
 	return Config{
-		StateDir: DefaultStateDir,
-		RunDir:   DefaultRunDir,
-		Owner:    DefaultOwnership(),
-		Slice:    DefaultSlice,
-		Wings:    DefaultWings(),
+		StateDir:  DefaultStateDir,
+		RunDir:    DefaultRunDir,
+		Owner:     DefaultOwnership(),
+		Slice:     DefaultSlice,
+		Retention: DefaultRetention,
+		Wings:     DefaultWings(),
 	}
 }
 
@@ -212,6 +225,14 @@ func (c Config) Validate() error {
 	}
 	if c.Owner.DirMode&fs.ModeType != 0 || c.Owner.FileMode&fs.ModeType != 0 {
 		return fmt.Errorf("config: ownership modes must be permission bits only")
+	}
+	// Zero would mean "keep nothing beyond what is pinned", which is a
+	// coherent policy nobody wants by accident, and negative is meaningless.
+	// Refusing both keeps `gc` from ever being destructive because a field
+	// was left unset.
+	if c.Retention < 1 {
+		return fmt.Errorf("config: retention is %d; it must keep at least one release "+
+			"per profile, and the shipped default is %d", c.Retention, DefaultRetention)
 	}
 	// Empty Wings settings are valid: everything upstream of the exposure
 	// fork works without a Pterodactyl node at all, and provider mode (v2)
@@ -303,3 +324,18 @@ func (c Config) PublishedDir() string { return filepath.Join(c.StateDir, "publis
 func (c Config) PublishedRecord(profileID, generation string) string {
 	return filepath.Join(c.PublishedDir(), profileID, generation+".json")
 }
+
+// AssignmentsDir holds one declared-intent document per profile.
+//
+// Under StateDir beside PublishedDir, and the pair is the point: a published
+// record is what srdm DID, an assignment is what it was ASKED to do. Both
+// have to survive the reboot at which the difference between them becomes
+// the boot path's whole job.
+func (c Config) AssignmentsDir() string { return filepath.Join(c.StateDir, "assignments") }
+
+// LockPath is the mutual exclusion between operations that change state.
+//
+// Under RunDir, not StateDir: a lock that survived a reboot would be a lock
+// held by a process that no longer exists, and the first boot after a crash
+// is exactly when srdm most needs to be able to act.
+func (c Config) LockPath() string { return filepath.Join(c.RunDir, "srdm.lock") }

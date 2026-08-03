@@ -505,6 +505,76 @@ canary "P06-no-drift-check" "TestADriftedGenerationFailsAndSaysWhere" \
   's#^\t\t\tif err := rel.Manifest.VerifyClass(class.ExposePath, class.Name); err != nil {$#\t\t\tif err := error(nil); err != nil {#' \
   "a drifted generation is reported as clean"
 
+# --- P08: the operator surface --------------------------------------------
+
+# Swap what a running server is reading underneath it. This is oracle 24 for
+# activate and rollback: the content the process has open is replaced by
+# content it did not open, which is not a restart away from working.
+canary "P08-activate-ignores-holders" "TestActivateIsRefusedWhileAConsumerHolds" \
+  "internal/opctl/opctl.go" \
+  's#\t\treturn c.refuseIfHeld(ctx, kind, prof.ID, a.Release)#\t\treturn nil#' \
+  "activate never asks whether a consumer is reading the live generation"
+
+# Never write the assignment down. Every operation then appears to work and
+# the next boot restores whatever the last durable record happened to say —
+# which is the state before all of it.
+canary "P08-assignment-never-recorded" "TestActivatePublishesExposesRecordsThenTearsDown|TestAttachExposesBeforeItRecords|TestDetachUnexposesBeforeItRecords" \
+  "internal/opctl/opctl.go" \
+  's#^\t\treturn c.asg.Save(a)$#\t\treturn nil#' \
+  "declared intent is never made durable"
+
+# Let a re-activation of the live release shift the rollback target.
+# Re-activating is how a degraded generation is repaired, so this destroys
+# the way back at exactly the moment somebody is already dealing with
+# something being wrong.
+canary "P08-rollback-memory-lost" "TestReActivatingTheLiveReleaseDoesNotDestroy" \
+  "internal/assign/assign.go" \
+  's#^\tif a.Release == releaseID {$#\tif false {#' \
+  "repairing the present destroys the way back"
+
+# Bind the new generation over the old one instead of replacing it. The
+# mounts stack: the server reads the new content, and the old generation's
+# pages are held by a mount nothing will ever unmount.
+canary "P08-mounts-stack-on-swap" "TestActivatePublishesExposesRecordsThenTearsDown" \
+  "internal/opctl/opctl.go" \
+  's#\t\t\tif err := c.drv.Unexpose(ctx, oldRec, prof, req); err != nil {#\t\t\tif err := error(nil); err != nil {#' \
+  "the replaced generation is never unexposed, so mounts stack"
+
+# Take a shared lock instead of an exclusive one. Two operations then run at
+# once, each succeeding at steps that contradict the other's.
+canary "P08-lock-is-not-exclusive" "TestASecondOperationIsRefusedWhileOneHoldsTheLock" \
+  "internal/opctl/lock.go" \
+  's#syscall.LOCK_EX|syscall.LOCK_NB#syscall.LOCK_SH|syscall.LOCK_NB#' \
+  "two operations can run at once"
+
+# Collect a release a live generation was built from. The pages exist
+# whatever the assignment says, and the republish after the next reboot finds
+# nothing to republish from.
+canary "P08-gc-collects-the-published" "TestGCKeepsAPublishedReleaseNobodyAssigned" \
+  "internal/opctl/gc.go" \
+  's#\t\tkeepIfUnpinned(res.Kept, rec.ReleaseID, KeptPublished)#\t\t_ = rec#' \
+  "gc collects a release that has a live generation"
+
+# Collect a channel target, turning a working reference into a dangling one.
+canary "P08-gc-collects-channel-targets" "TestGCKeepsAChannelTarget" \
+  "internal/opctl/gc.go" \
+  's#\t\tkeepIfUnpinned(res.Kept, id, KeptChannel)#\t\t_ = id#' \
+  "gc collects what a channel points at"
+
+# Ignore retention entirely, so everything unpinned goes on the first run.
+canary "P08-gc-ignores-retention" "TestGCKeepsTheConfiguredNumberOfUnpinnedReleases" \
+  "internal/opctl/gc.go" \
+  's#^\t\tif i < c.cfg.Retention {$#\t\tif false {#' \
+  "gc keeps nothing beyond what is pinned"
+
+# Make --dry-run remove things. A collector whose decisions cannot be
+# inspected before it acts is one nobody will run on a node that matters —
+# and one that lies about it is worse than none.
+canary "P08-gc-dry-run-deletes" "TestGCDryRunReportsAndRemovesNothing" \
+  "internal/opctl/gc.go" \
+  's#^\tif dryRun || len(res.Removed) == 0 {$#\tif len(res.Removed) == 0 {#' \
+  "a dry run deletes releases"
+
 rm -rf "$WORK"
 
 printf '\n%d canary/canaries rejected, %d survived\n' "$pass" "$fail"
