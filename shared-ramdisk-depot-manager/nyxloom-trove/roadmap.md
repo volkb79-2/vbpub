@@ -76,19 +76,38 @@ Wave 1 — it decides whether srdm ever needs host root at install time.
 
 ### Wave 1 — publication
 
-| id | package | depends on |
+| id | package | state |
 |---|---|---|
-| **P03** | mount topology: op tmpfs per class, populate, verify, `chmod a-w`, RO bind, teardown, mountinfo recovery | P02 |
-| **P04** | relocate population into per-class transient hold units; class memory policy; charging | P02, P03 |
+| **P03** | mount topology: op tmpfs per class, populate, verify, seal, RO bind, teardown, mountinfo reconciliation | **done** |
+| **P04** | relocate population into per-class transient hold units; class memory policy; charging | next |
 
-**Why split.** P03 proves the *mount* half with population running inline in
+**What P03 settled.** The topology is built and gated at both levels: unit
+tests assert the exact mount sequence against an injected mounter, and six
+privileged oracles assert what the kernel actually does — a published
+exposure refuses writes with **EROFS** (not EACCES, which is what a
+chmod-only seal would give and which would not hold against root), the op
+tmpfs stays writable while only the bind is read-only, data classes carry
+`noexec`, teardown leaves nothing mounted, a class too small to hold its
+content is **refused** rather than half-published, and reconciliation
+classifies correctly against the live mount table.
+
+Two decisions came out of it. **D-014**: publication verifies content, not
+modes — sealing changes the modes by design, so comparing them would fail on
+the very hardening that makes publication safe. **D-013**, which refines
+D-011 and matters for P04: `Type=exec` is not enough, because it marks a
+unit active as soon as the process is *exec'd*, before it has populated
+anything. The hold unit is `Type=notify` with `NotifyAccess=main`, so
+"active" means "populated". That was found by an intermittently failing
+oracle, and the fix was the unit shape rather than a wider tolerance.
+
+**Why split.** P03 proved the *mount* half with population running inline in
 the daemon; P04 moves that population into `srdm-hold-<g8>-<class>.service`
 units so the charge and the policy can never separate. Charging to the
 daemon's cgroup is wrong for production and perfectly fine for proving
-topology and recovery, so P03 is a real, gateable intermediate rather than
-scaffolding. The cost is honest: **P04 rewrites P03's populate call path**,
-and if P02's probe forces the minimal-hold-process fallback, P04 changes
-shape. That is the rework the split buys de-risking with.
+topology and recovery, so P03 was a real, gateable intermediate rather than
+scaffolding. The cost was real too, and is now concrete: **P04 rewrites
+P03's `publishClass` populate step** into a `Type=notify` worker that
+populates, verifies, signals ready, and parks (D-011, D-013).
 
 P03 carries: class size = `ceil(manifest × 1.15)` rounded to 64 M as a hard
 cap, with ENOSPC quarantining the generation; the exact ordered sequence

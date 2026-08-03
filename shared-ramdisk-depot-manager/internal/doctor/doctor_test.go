@@ -190,22 +190,6 @@ func TestRecursiveProtMissingIsFatal(t *testing.T) {
 	}
 }
 
-func TestMountInfoParsingHandlesOptionalFieldsAndEscapes(t *testing.T) {
-	body := "" +
-		// No optional fields at all, and an escaped space in the mount point.
-		"31 24 0:27 / /sys/fs/cgroup\\040x rw,relatime - cgroup2 cgroup2 rw,memory_recursiveprot\n"
-	m, ok := findCgroup2Mount(body)
-	if !ok {
-		t.Fatal("a cgroup2 line with no optional fields was not found")
-	}
-	if m.mountPoint != "/sys/fs/cgroup x" {
-		t.Errorf("mount point is %q; the \\040 escape was not decoded", m.mountPoint)
-	}
-	if len(m.superOptions) != 2 || m.superOptions[1] != "memory_recursiveprot" {
-		t.Errorf("super options parsed as %v", m.superOptions)
-	}
-}
-
 // A slice name systemd does not know does not fail at container-create time
 // — it fails OPEN into an unlimited transient slice. So this check is the
 // only thing standing between a typo and an unbounded tier.

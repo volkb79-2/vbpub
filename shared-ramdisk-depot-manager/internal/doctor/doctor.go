@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"srdm/internal/config"
+	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
 	"srdm/internal/store"
 )
@@ -167,29 +168,34 @@ const RecursiveProtOption = "memory_recursiveprot"
 
 func checkRecursiveProt(opts Options) Check {
 	c := Check{ID: "cgroup-recursiveprot", Title: "cgroup2 is mounted with " + RecursiveProtOption}
-	body, err := os.ReadFile(opts.mountInfoPath())
+	entries, err := mountinfo.Read(opts.mountInfoPath())
 	if err != nil {
 		c.Status = StatusSkip
 		c.Detail = fmt.Sprintf("cannot read %s: %v", opts.mountInfoPath(), err)
 		return c
 	}
-	mnt, ok := findCgroup2Mount(string(body))
-	if !ok {
+	var mnt mountinfo.Entry
+	var found bool
+	for _, e := range entries {
+		if e.FSType == "cgroup2" {
+			mnt, found = e, true
+			break
+		}
+	}
+	if !found {
 		c.Status = StatusFail
 		c.Detail = "no cgroup2 mount found in " + opts.mountInfoPath()
 		c.Fix = "mount the unified hierarchy at " + opts.cgroupRoot()
 		return c
 	}
-	for _, o := range mnt.superOptions {
-		if o == RecursiveProtOption {
-			c.Status = StatusPass
-			c.Detail = mnt.mountPoint + " has " + RecursiveProtOption
-			return c
-		}
+	if mnt.HasSuperOption(RecursiveProtOption) {
+		c.Status = StatusPass
+		c.Detail = mnt.MountPoint + " has " + RecursiveProtOption
+		return c
 	}
 	c.Status = StatusFail
-	c.Detail = mnt.mountPoint + " super options are: " + strings.Join(mnt.superOptions, ",")
-	c.Fix = "remount with it (mount -o remount," + RecursiveProtOption + " " + mnt.mountPoint +
+	c.Detail = mnt.MountPoint + " super options are: " + strings.Join(mnt.SuperOptions, ",")
+	c.Fix = "remount with it (mount -o remount," + RecursiveProtOption + " " + mnt.MountPoint +
 		"). systemd sets it at boot, but a runtime remount from the init cgroup namespace " +
 		"can strip it — and without it every class floor beneath " +
 		"the parent slice is silently inert"

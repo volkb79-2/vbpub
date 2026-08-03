@@ -116,6 +116,41 @@ canary "O5-no-key-denylist" "TestCredentialShaped|TestDeniedKey" \
   's#^\tif deniedKeyExact\[lower\] {$#\tif false {#' \
   "credential-shaped field names are no longer dropped"
 
+# --- P03: publication topology --------------------------------------------
+# Stop sealing the populated tree, so the bind source stays writable.
+canary "P03-no-seal" "TestPublishSeals" \
+  "internal/publish/publish.go" \
+  's#info.Mode().Perm()&\^0o222#info.Mode().Perm()|0o222#' \
+  "the populated tree is never made read-only"
+
+# Drop the read-only half of the exposure remount. A bind inherits its
+# source's flags, so this leaves published content WRITABLE.
+canary "P03-exposure-writable" "TestExposureIsMadeReadOnly" \
+  "internal/publish/publish.go" \
+  's#syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY#syscall.MS_BIND|syscall.MS_REMOUNT#' \
+  "the published exposure is left writable"
+
+# Unmount the op tmpfs before the exposure. A bind that survives its tmpfs
+# frees nothing, so this is a silent memory leak dressed as a teardown.
+canary "P03-teardown-order" "TestTeardownDropsExposure|TestPublishTearsDown" \
+  "internal/publish/teardown.go" \
+  's#if err := p.unmountIfMounted(c.ExposePath); err != nil {#if err := p.unmountIfMounted(c.OpMount); err != nil {#' \
+  "teardown drops the op tmpfs before the exposure"
+
+# Publish every class, including the excluded one. WS/Saved is per-instance
+# state and the absolute state rule says it is never shared.
+canary "P03-publishes-excluded" "TestExcludedClasses" \
+  "internal/publish/publish.go" \
+  's#^\t\tif c.Kind == profile.KindManaged {$#\t\tif true {#' \
+  "per-instance state is published as shared content"
+
+# Claim every mount, so nothing is ever an orphan. An unrecorded mount then
+# holds memory forever with nothing to attribute it to.
+canary "P03-no-orphans" "TestReconcileFindsOrphan" \
+  "internal/publish/teardown.go" \
+  's#^\t\t\tif claimed\[e.MountPoint\] || e.MountPoint == p.cfg.RunDir {$#\t\t\tif true {#' \
+  "reconciliation never reports an orphan mount"
+
 rm -rf "$WORK"
 
 printf '\n%d canary/canaries rejected, %d survived\n' "$pass" "$fail"

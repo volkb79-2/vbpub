@@ -323,3 +323,28 @@ func TestStartTransientIssuesSystemdRun(t *testing.T) {
 		t.Fatalf("calls = %v", r.calls)
 	}
 }
+
+// The hold-unit shape is a measured design decision (D-011, D-013), not a
+// preference, so it is pinned here rather than only living in a comment.
+func TestHoldBasePropertiesAreProductionShaped(t *testing.T) {
+	got := map[string]string{}
+	for _, p := range HoldBaseProperties() {
+		got[p.Name] = p.Value
+	}
+
+	// NOT oneshot+RemainAfterExit: systemd reaps an active-but-empty unit's
+	// cgroup, and the class floor would be arithmetically dead (D-011).
+	if got["Type"] != "notify" {
+		t.Errorf("Type = %q, want notify", got["Type"])
+	}
+	if _, ok := got["RemainAfterExit"]; ok {
+		t.Error("RemainAfterExit is set; the worker parks instead, so the unit " +
+			"stays active because a process is alive in it")
+	}
+	// notify rather than exec: exec marks the unit active once the process
+	// is EXEC'D, which is before it has populated anything (D-013).
+	if got["NotifyAccess"] != "main" {
+		t.Errorf("NotifyAccess = %q, want main — a helper that exits must not be "+
+			"able to declare the class populated", got["NotifyAccess"])
+	}
+}

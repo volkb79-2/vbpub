@@ -67,14 +67,22 @@ func mountTmpfs(t *testing.T, size int64) string {
 	return dir
 }
 
-// populateArgv fills the tmpfs and then PARKS, keeping the unit's cgroup
-// alive. The parking is the whole point — see systemdx.HoldBaseProperties.
+// populateArgv fills the tmpfs, SIGNALS READY, and then parks.
+//
+// The order is the contract. Parking keeps the unit's cgroup alive (D-011);
+// signalling readiness only after the write completes is what makes
+// "active" mean "populated" rather than "started" (D-013). Without the
+// signal, a caller that waits for the unit and then unmounts races the
+// worker's still-open file descriptor and gets EBUSY — which is how this
+// was found.
+//
 // The shell string is fixed here and interpolates only a path this test
-// created, so there is no quoting hazard; srdm's real worker parks itself
-// and needs no shell at all.
+// created, so there is no quoting hazard; srdm's real worker populates,
+// notifies and parks by itself and needs no shell at all.
 func populateArgv(tmpfsDir string) []string {
 	return []string{"/bin/sh", "-c", fmt.Sprintf(
-		"dd if=/dev/zero of=%s/blob bs=1M count=%d status=none; exec sleep infinity",
+		"dd if=/dev/zero of=%s/blob bs=1M count=%d status=none && "+
+			"systemd-notify --ready && exec sleep infinity",
 		tmpfsDir, blobSize>>20)}
 }
 
@@ -84,10 +92,19 @@ func startHoldUnit(t *testing.T, c *systemdx.Client, name, tmpfsDir string, extr
 	t.Helper()
 	ctx := context.Background()
 
+	// Type=notify as production uses, but NotifyAccess=all rather than
+	// =main: this stand-in worker is a shell, so `systemd-notify` is a
+	// CHILD process and =main would reject its signal. srdm's real worker is
+	// itself the main process and keeps the stricter =main, which
+	// TestHoldBasePropertiesAreProductionShaped pins.
+	props := []systemdx.Property{
+		{Name: "Type", Value: "notify"},
+		{Name: "NotifyAccess", Value: "all"},
+	}
 	unit := systemdx.TransientUnit{
 		Name:        name,
 		Description: "srdm e2e hold probe",
-		Properties:  append(systemdx.HoldBaseProperties(), extra...),
+		Properties:  append(props, extra...),
 		ExecStart:   populateArgv(tmpfsDir),
 	}
 

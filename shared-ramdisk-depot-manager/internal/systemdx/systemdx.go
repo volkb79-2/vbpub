@@ -57,13 +57,30 @@ type TransientUnit struct {
 // arithmetically dead — the same failure the single-token slice name exists
 // to prevent, arriving by a different route.
 //
-// Type=exec with a worker that parks after populating keeps the cgroup, the
-// charge and the policy together, which is the property the whole design
-// rests on. The worker must therefore NOT exit after populating.
+// A worker that parks after populating keeps the cgroup, the charge and the
+// policy together, which is the property the whole design rests on. The
+// worker must therefore NOT exit after populating.
 //
-// See decision D-011 and the e2e oracles that pin both halves.
+// Type=notify, not Type=exec, and the difference is a race rather than a
+// preference. Type=exec marks a unit active as soon as the process has been
+// EXEC'D — which is before it has populated anything. Anything that waits
+// for "running" and then acts on the content is then racing the worker: the
+// e2e teardown oracle did exactly that and failed intermittently with EBUSY,
+// because the unmount landed while the worker still had the file open
+// (which is D-012's mechanism, arriving from the other direction).
+//
+// With Type=notify the worker signals READY=1 once population and
+// verification are complete, so "active" means "the content is there and I
+// am now only holding it". That is the state srdm actually needs to observe.
+//
+// See decisions D-011 and D-013, and the e2e oracles that pin both halves.
 func HoldBaseProperties() []Property {
-	return []Property{{Name: "Type", Value: "exec"}}
+	return []Property{
+		{Name: "Type", Value: "notify"},
+		// Only the main process may signal readiness; a helper that exits
+		// must not be able to declare the class populated.
+		{Name: "NotifyAccess", Value: "main"},
+	}
 }
 
 // CommandRunner runs a command and returns its combined stdout. It is

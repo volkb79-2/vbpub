@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -307,6 +308,125 @@ func (m *Manifest) Verify(root string) error {
 			len(missing), plural(len(missing), "y", "ies"), missing[0])
 	}
 	return nil
+}
+
+// ClassEntries returns the manifest entries belonging to one class, plus
+// the structural directories on the path to them.
+//
+// The ancestors matter: a class path of "WS/Content/Paks" cannot be
+// populated without "WS" and "WS/Content" existing first, and those are
+// classified as structure rather than as the class.
+func (m *Manifest) ClassEntries(class string) []Entry {
+	want := make(map[string]bool)
+	for _, e := range m.Entries {
+		if e.Class != class {
+			continue
+		}
+		want[e.Path] = true
+		for p := path.Dir(e.Path); p != "." && p != "/"; p = path.Dir(p) {
+			want[p] = true
+		}
+	}
+	out := make([]Entry, 0, len(want))
+	for _, e := range m.Entries {
+		if want[e.Path] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// ClassBytes is the total size of a class's regular files.
+func (m *Manifest) ClassBytes(class string) int64 {
+	var total int64
+	for _, e := range m.ClassEntries(class) {
+		if e.Type == EntryFile {
+			total += e.Size
+		}
+	}
+	return total
+}
+
+// VerifyClass checks a populated class tree against the manifest, comparing
+// CONTENT but not permission bits.
+//
+// Modes are deliberately excluded. Publication populates the tree and then
+// makes it read-only (`chmod -R a-w`), so the published copy's modes differ
+// from the release's by design — comparing them would fail on the very
+// hardening that makes publication safe. What must match is what the pages
+// actually are: type, size, digest, and a symlink's target.
+func (m *Manifest) VerifyClass(root, class string) error {
+	entries := m.ClassEntries(class)
+	if len(entries) == 0 {
+		return fmt.Errorf("store: manifest has no entries for class %q", class)
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		full := filepath.Join(root, filepath.FromSlash(e.Path))
+		info, err := os.Lstat(full)
+		if err != nil {
+			return fmt.Errorf("store: class %q: %q is missing from the populated tree: %w",
+				class, e.Path, err)
+		}
+		seen[e.Path] = true
+
+		switch e.Type {
+		case EntrySymlink:
+			if info.Mode()&fs.ModeSymlink == 0 {
+				return fmt.Errorf("store: class %q: %q is not a symlink", class, e.Path)
+			}
+			target, err := os.Readlink(full)
+			if err != nil {
+				return err
+			}
+			if target != e.Target {
+				return fmt.Errorf("store: class %q: symlink %q points at %q, manifest says %q",
+					class, e.Path, target, e.Target)
+			}
+		case EntryDir:
+			if !info.IsDir() {
+				return fmt.Errorf("store: class %q: %q is not a directory", class, e.Path)
+			}
+		case EntryFile:
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("store: class %q: %q is not a regular file", class, e.Path)
+			}
+			if info.Size() != e.Size {
+				return fmt.Errorf("store: class %q: %q is %d bytes, manifest says %d",
+					class, e.Path, info.Size(), e.Size)
+			}
+			sum, err := hashFile(full)
+			if err != nil {
+				return err
+			}
+			if sum != e.SHA256 {
+				return fmt.Errorf("store: class %q: %q hashes to %s, manifest says %s",
+					class, e.Path, sum, e.SHA256)
+			}
+		default:
+			return fmt.Errorf("store: class %q: entry %q has unknown type %q", class, e.Path, e.Type)
+		}
+	}
+
+	// Anything present that the manifest does not name is content nobody
+	// hashed — the same hole VerifyClass's caller would otherwise leave open.
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if !seen[filepath.ToSlash(rel)] {
+			return fmt.Errorf("store: class %q: %q is present in the populated tree "+
+				"but not in the manifest", class, filepath.ToSlash(rel))
+		}
+		return nil
+	})
 }
 
 func plural(n int, one, many string) string {

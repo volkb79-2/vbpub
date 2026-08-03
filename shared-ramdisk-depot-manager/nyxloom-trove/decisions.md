@@ -367,3 +367,61 @@ when the consumer's bind went away.
 plan already specifies mountinfo, and this is the measurement behind that
 choice. It also explains the production symptom of the 2026-07-31 outage: a
 **ghost mount**, not a failed `umount`.
+
+---
+
+## D-013 — the hold unit is `Type=notify`; "active" must mean "populated"
+
+**Status:** decided by a failing oracle, refining D-011.
+
+D-011 established that the hold worker must park rather than exit, and
+settled on `Type=exec`. That is not sufficient, and the difference is a race
+rather than a preference.
+
+**`Type=exec` marks a unit active as soon as the process has been EXEC'D**,
+which is before it has populated anything. Anything that waits for the unit
+to be `running` and then acts on the content is racing the worker.
+
+**Found by P03's teardown oracle**, intermittently: the test waited for the
+charge to reach the written size (within a tolerance), then unmounted — and
+the unmount landed while the worker still had the file open, failing with
+`EBUSY`. That is D-012's mechanism arriving from the other direction, and
+the tolerance is what turned a correct sequence into a race.
+
+**Decided:** `Type=notify` with `NotifyAccess=main`. The worker signals
+`READY=1` only after population and verification are complete, so `active`
+means "the content is there and I am now only holding it" — which is the
+state srdm actually needs to observe before binding, exposing or tearing
+down. `NotifyAccess=main` because a helper that exits must not be able to
+declare a class populated.
+
+**The wrong fix, explicitly rejected:** widening the charge tolerance, or
+sleeping before the unmount. Both would have made a real race pass on a fast
+machine, which is the anti-pattern the authoring guide names first. The
+oracle was correct; the unit shape was not.
+
+**For P04:** the worker populates, verifies, calls `sd_notify(READY=1)`,
+then parks. `HoldBaseProperties` returns this shape and
+`TestHoldBasePropertiesAreProductionShaped` pins it, so the decision cannot
+quietly regress into a comment.
+
+---
+
+## D-014 — publication verifies content, not modes
+
+**Status:** accepted; a direct consequence of sealing.
+
+`Manifest.Verify` compares permission bits, because for a release in the
+store the mode IS part of what was promoted. Publication cannot use it: it
+populates a class tree and then makes it read-only (`chmod -R a-w`), so the
+published copy's modes differ from the release's *by design*.
+
+**Decided:** `Manifest.VerifyClass` compares type, size, digest and symlink
+target — everything about what the pages *are* — and not the permission
+bits. Comparing them would fail on exactly the hardening that makes
+publication safe.
+
+It still refuses a tree containing anything the manifest does not name.
+Dropping that check alongside the mode check would have left content
+smugglable into a published class, which is a much bigger hole than the one
+being avoided.

@@ -124,3 +124,53 @@ func (c Config) ReleaseDir(releaseID string) string {
 func (c Config) ChannelLink(profileID, channel string) string {
 	return filepath.Join(c.ChannelsDir(), profileID, channel)
 }
+
+// --- publication layout ----------------------------------------------------
+//
+// Two roots under RunDir, and the split is deliberate. Operation-private
+// work happens under OpRoot, where a half-populated tree is nobody's
+// business; a generation becomes visible only as a read-only bind under
+// ExposeRoot, of a tree that has already been verified. Nothing is ever
+// renamed into visibility, and nothing visible was ever writable.
+
+// OpRootName is the dot-prefixed operation-private subtree of RunDir.
+const OpRootName = ".op"
+
+// OpRoot holds every in-flight publication's private mounts.
+func (c Config) OpRoot() string { return filepath.Join(c.RunDir, OpRootName) }
+
+// OpDir is one operation's private directory.
+func (c Config) OpDir(opID string) string { return filepath.Join(c.OpRoot(), opID) }
+
+// OpClassDir is where a class's op tmpfs is mounted.
+func (c Config) OpClassDir(opID, class string) string {
+	return filepath.Join(c.OpDir(opID), class)
+}
+
+// OpClassRoot is the content root inside a class's op tmpfs. Content lives
+// one level down so the tmpfs mount point itself is never the thing bound,
+// which keeps the bind source a plain directory.
+func (c Config) OpClassRoot(opID, class string) string {
+	return filepath.Join(c.OpClassDir(opID, class), "root")
+}
+
+// GenerationDir is a published generation's visible root.
+func (c Config) GenerationDir(profileID, generation string) string {
+	return filepath.Join(c.RunDir, profileID, generation)
+}
+
+// ExposeClassDir is the read-only bind a consumer eventually sees.
+func (c Config) ExposeClassDir(profileID, generation, class string) string {
+	return filepath.Join(c.GenerationDir(profileID, generation), class)
+}
+
+// PublishedDir holds the durable published-state records.
+//
+// Under StateDir, not RunDir: a record has to survive the reboot whose
+// republish it drives.
+func (c Config) PublishedDir() string { return filepath.Join(c.StateDir, "published") }
+
+// PublishedRecord is one generation's durable published-state record.
+func (c Config) PublishedRecord(profileID, generation string) string {
+	return filepath.Join(c.PublishedDir(), profileID, generation+".json")
+}
