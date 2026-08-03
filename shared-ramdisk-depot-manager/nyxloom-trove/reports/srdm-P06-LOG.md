@@ -100,6 +100,6 @@ remove something that was already there.
 tools/gate.sh . unit      → gofmt, build, vet, all oracles green
 tools/gate.sh . e2e       → 31 privileged oracles green, 3 consecutive clean runs
 tools/canary-run.sh       → 44 canaries rejected, 0 survived
-tools/gate.sh . coverage  → see the commit
+tools/gate.sh . coverage  → 568/686 changed lines (82.8% >= 75.0%)
 nyxloom lint              → clean
 ```
