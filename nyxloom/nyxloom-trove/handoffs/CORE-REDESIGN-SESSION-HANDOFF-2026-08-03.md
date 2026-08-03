@@ -12,13 +12,14 @@ This file is the operating manual that sits beside it.
 ## Where the program is
 
 Accepted and merged on `main`: CR-00, CR-15, CR-01, CR-02a, CR-02b, CR-03,
-CR-04a, CR-04b, CR-05a, CR-05b. Every one through the authoritative
+CR-04a, CR-04b, CR-05a, CR-05b, CR-05c. Every one through the authoritative
 `tester-unified` gate at 100% changed-line coverage; gate evidence and commit
 SHAs are in the ledger.
 
-Next by dependency order: **CR-05c** (the attempt lifecycle: dispatch,
-resume, self-review launch, and the receipt-exit consumer), then **CR-05d**
-(carve and the carver session). The boundary already exists and every action
+Next by dependency order: **CR-05d** (carve and the carver session -- the
+largest remaining family, ~713 executable lines plus ~1,500 lines of packet
+builders), then **CR-05e** (`EmitAttemptExit` alone, which routes by attempt
+ROLE and therefore depends on every other family having moved). The boundary already exists and every action
 type is already registered, so both are move-and-lower-the-budget packages,
 not design packages. What each move owes: an effector module, a lowered
 `LEGACY_HANDLER_BUDGET` in the same commit, a declared `emits`, a CONSUMED
