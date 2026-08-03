@@ -12,16 +12,26 @@ This file is the operating manual that sits beside it.
 ## Where the program is
 
 Accepted and merged on `main`: CR-00, CR-15, CR-01, CR-02a, CR-02b, CR-03,
-CR-04a, CR-04b, CR-05a. Every one through the authoritative `tester-unified`
-gate at 100% changed-line coverage; gate evidence and commit SHAs are in the
-ledger.
+CR-04a, CR-04b, CR-05a, CR-05b. Every one through the authoritative
+`tester-unified` gate at 100% changed-line coverage; gate evidence and commit
+SHAs are in the ledger.
 
-Next by dependency order: **CR-05b** (the remaining 12 effect families). The
-boundary already exists and every action type is already registered, so this
-is a move-and-lower-the-budget package, not a design package. See the CR-05a
-ledger row for what each move owes: an effector module, a lowered
-`LEGACY_HANDLER_BUDGET`, a declared `emits`, a CONSUMED idempotency key, and
-a differential scenario.
+Next by dependency order: **CR-05c** (the attempt lifecycle: dispatch,
+resume, self-review launch, and the receipt-exit consumer), then **CR-05d**
+(carve and the carver session). The boundary already exists and every action
+type is already registered, so both are move-and-lower-the-budget packages,
+not design packages. What each move owes: an effector module, a lowered
+`LEGACY_HANDLER_BUDGET` in the same commit, a declared `emits`, a CONSUMED
+idempotency key, and a differential scenario.
+
+**Sizing before splitting is worth the ten minutes.** CR-05 was scoped as one
+package and is landing as four. Measuring each family's executable line count
+first (`ast` for method spans, `coverage.parser` for statements) is what made
+the cut obvious: carve alone is ~713 executable lines, larger than any
+package this program has accepted, while review+merge came to ~250 and gated
+at 441 changed lines including scaffolding. Cut where families have no shared
+helpers -- the dependency map (`grep -o "self\._[a-z_]*"` over each branch)
+takes a minute and tells you which cut is clean.
 
 Remaining after that: CR-06, CR-07, CR-08, CR-13a, CR-16, CR-09, CR-10, CR-11,
 CR-12, CR-13b, CR-14. Section 7 of the plan is the authoritative order.
@@ -223,6 +233,22 @@ fails if that stops being true.
   and the pause registry is `Daemon._provider_backoff` (the method
   `_provider_pause` kept its name, so the attribute could not).
 
+**CR-05b — launching is gated at the effect boundary, not the planner.**
+`effects_dispatch.admissible(ctx, kind)` runs immediately before every
+wrapper launch. A test that patched `Daemon._dispatch_admissible` to simulate
+a refusal no longer intercepts anything the effectors call -- patch
+`effects_dispatch.admissible`. The daemon keeps a delegate for the carve
+families CR-05d still owns. Also:
+
+- the pass's snapshot verdict rides on `ctx.snapshot_audit`. `None` means no
+  fan-in ran in this call stack (an operator-initiated verb) and is
+  PERMITTED; it is not the same as clean.
+- reading a committed review report goes through
+  `effects_review.parse_reject_class(git, cfg, task_id)`. It is a routing
+  hint and carries no merge authority -- do not grow a second reader.
+- `effects_merge` refuses in five distinct ways and leaves the task at
+  MERGE_READY in every one. A new failure path must escalate, never advance.
+
 **CR-01 — document truth is a standing gate.** `product_truth.py` compares a
 marker in a canonical doc against a machine fact. If a package changes one of
 those facts, updating the doc (or the fact reader) is that package's
@@ -246,12 +272,11 @@ disagree.
 1. Read the ledger in the plan amendment.
 2. Read this file.
 3. `git log --oneline -15` on `main` to see the accepted packages.
-4. Create the CR-05b worktree and read, in this order: `effects.py` (the
-   boundary CR-05a built), `effects_gates.py` (the worked example of a family
-   that owns background work), and then `Daemon._execute_legacy` — which is
-   the whole remaining scope and nothing else. Do NOT read `daemon.py` end to
-   end; it is 8,500 lines and reading it will consume the session before any
-   code is written.
+4. Create the CR-05c worktree and read, in this order: `effects.py` (the
+   boundary), `effects_review.py` (the worked example of a dispatch family),
+   and then `Daemon._execute_legacy` — which is the whole remaining scope and
+   nothing else. Do NOT read `daemon.py` end to end; it is 7,600 lines and
+   reading it will consume the session before any code is written.
 
 CR-05 is flagged operator-carved and frontier-implemented, and the stop-loss
 watches it most closely: if the differential diff cannot be driven to
