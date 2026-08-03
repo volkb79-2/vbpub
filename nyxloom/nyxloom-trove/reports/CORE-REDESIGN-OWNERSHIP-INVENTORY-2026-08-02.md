@@ -57,7 +57,8 @@ why. The rules are deliberately structural, never line-exact:
 
 | Surface | Lines | Package ownership / constraint |
 | --- | ---: | --- |
-| `src/nyxloom/snapshot.py` | 584 | CR-02 (added 2026-08-03): the typed snapshot-input vocabulary and the authoritative/advisory fan-in. Pure -- it imports no other package module and reads nothing. Owned by CR-02 alone; the later handler-registry and planning-rule packages CONSUME its `SnapshotAudit` (carried on `ReconcileInput`) instead of re-deriving authority classification per call site, which is a dependency on this surface, not shared ownership of it |
+| `src/nyxloom/exception_census.py` | 256 | CR-02b (added 2026-08-03): the broad-exception classification vocabulary, the structural fan-in derivation, and the per-module legacy budget. Pure AST reads; imports nothing from the package. Every other CR package interacts with it in ONE direction only -- by lowering its own module's budget as it classifies or retires handlers. Raising a budget is a review-rejectable change, not a merge conflict resolution |
+| `src/nyxloom/snapshot.py` | 580 | CR-02 (added 2026-08-03): the typed snapshot-input vocabulary and the authoritative/advisory fan-in. Pure -- it imports no other package module and reads nothing. Owned by CR-02 alone; the later handler-registry and planning-rule packages CONSUME its `SnapshotAudit` (carried on `ReconcileInput`) instead of re-deriving authority classification per call site, which is a dependency on this surface, not shared ownership of it |
 | `src/nyxloom/config.py` | 693 | CR-01, CR-08, CR-13b: instance configuration remains a boundary; workflow documents do not become arbitrary code |
 | `src/nyxloom/lint.py` | 1,112 | CR-01: document-truth contradiction rule is a standing gate, not a cleanup script |
 | `src/nyxloom/doctor.py` | 609 | CR-02, CR-04, CR-16: authority/snapshot and liveness fault reporting |
@@ -109,6 +110,7 @@ so each needs a named owner before that plane is rewritten around it.
 | `tests/test_core_characterization.py` | new | Cross-package semantic corpus | Keep through the entire program. New implementations must preserve active cases or explicitly amend them with reviewed evidence. |
 | `tests/test_snapshot.py` | new | Snapshot-descriptor vocabulary, redaction, ordering, digest, payload replay | Behavior oracle owned by CR-02. Pure unit tests over `snapshot.py`; they do not mirror daemon structure and survive the control-plane rewrite unchanged. |
 | `tests/test_snapshot_faults.py` | new | Authoritative/advisory fault matrix driven through the real reconcile pass | Behavior oracle owned by CR-02. It asserts effects and events, never helper calls, so CR-05/CR-06 must keep it green as written; a case that has to be relaxed is a behavioural regression, not a shape change. |
+| `tests/test_exception_census.py` | new | Broad-exception classification: fan-in fully classified, legacy budget never exceeded and never stale | Behavior oracle owned by CR-02b, and a standing gate on every later package. CR-05/CR-06/CR-07 will move most of `daemon.py`; the budget is per module precisely so that move lowers a number rather than rewriting a registry. |
 
 ## Ownership rules for reviewers
 
