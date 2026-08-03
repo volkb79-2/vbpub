@@ -12,11 +12,16 @@ This file is the operating manual that sits beside it.
 ## Where the program is
 
 Accepted and merged on `main`: CR-00, CR-15, CR-01, CR-02a, CR-02b, CR-03,
-CR-04a, CR-04b. Every one through the authoritative `tester-unified` gate at
-100% changed-line coverage; gate evidence and commit SHAs are in the ledger.
+CR-04a, CR-04b, CR-05a. Every one through the authoritative `tester-unified`
+gate at 100% changed-line coverage; gate evidence and commit SHAs are in the
+ledger.
 
-Next by dependency order: **CR-05** (action/effect handler extraction). It
-depends on CR-03 and CR-04, both now accepted, so nothing blocks it.
+Next by dependency order: **CR-05b** (the remaining 12 effect families). The
+boundary already exists and every action type is already registered, so this
+is a move-and-lower-the-budget package, not a design package. See the CR-05a
+ledger row for what each move owes: an effector module, a lowered
+`LEGACY_HANDLER_BUDGET`, a declared `emits`, a CONSUMED idempotency key, and
+a differential scenario.
 
 Remaining after that: CR-06, CR-07, CR-08, CR-13a, CR-16, CR-09, CR-10, CR-11,
 CR-12, CR-13b, CR-14. Section 7 of the plan is the authoritative order.
@@ -74,11 +79,31 @@ Two cheap checks catch it, and both are now standing policy:
 
 - the denominator being byte-identical to the previously accepted package's is
   a red flag;
-- recount out of band and compare. A working recount script lives at
-  `/tmp/.../scratchpad/count_changed.py` in the old session; it is ~30 lines:
-  walk `git diff --unified=0 main...HEAD` hunks, intersect the new-side line
-  numbers with `coverage.parser.PythonParser(...).statements` per file, sum.
-  Rewrite it once and keep it.
+- recount out of band and compare. The script now lives in the repo at
+  `tools/count_changed_lines.py` (CR-05a); run it from the package root:
+  `python tools/count_changed_lines.py main src/nyxloom`.
+
+**The recount script has a false-green of its own.** Its pathspec is passed to
+`git diff` and is therefore interpreted RELATIVE TO CWD, and its output paths
+need `--relative` to be openable from there. Give it the repo-root-relative
+path (`nyxloom/src/nyxloom`) while standing in `nyxloom/` and it matches
+nothing and prints a confident `TOTAL ... 0` — which reads exactly like "this
+package changed no code", the same shape of wrong answer the gate-base trap
+produces. Sanity-check the per-file breakdown, not just the total: a real
+package prints one row per changed file.
+
+**Never run another pytest while the `--cov` run is in flight.** Coverage
+data from concurrent runs in the same directory merges into nonsense: a run
+whose daemon.py genuinely sat at 94.5% reported 54.2% with two thousand
+spurious "missing" lines. It looks like a catastrophic coverage regression and
+it is an artifact. Re-run alone before believing any coverage number.
+
+**The gate argv's inner `cd {worktree}/nyxloom` is easy to lose.** It sits
+inside a nested single-quoted `bash -c` string; dropping it silently runs the
+gate against the container's default cwd, which fails with an unrelated
+`sqlite3.OperationalError: unable to open database file` from coverage. Write
+the whole command to a shell script and grep the file for the `cd` before
+running it, rather than re-typing it into a shell.
 
 ## Hard-won specifics a new session will otherwise rediscover
 
@@ -171,6 +196,33 @@ census rule. `_build_input` has ONE `permits_effects` guard and everything
 below it is advisory by construction — `test_the_authoritative_input_set_is_closed`
 fails if that stops being true.
 
+**CR-05a — actions reach their effect through a registry, not a ladder.**
+`Daemon._execute` is now a lookup into `effects.EffectRegistry`. Therefore:
+
+- every `reconcile.Action` subclass MUST have a registered handler, and
+  `require_covers` runs when the `Daemon` is constructed — a new action class
+  with no handler fails at construction, including in every test that builds a
+  daemon, not on the first pass that plans it.
+- the effect families CR-05b still owns are registered as legacy specs whose
+  handler is `_execute_legacy`. There is no fallback path: an unregistered
+  action raises `effects.UnownedAction`.
+- `effects.LEGACY_HANDLER_BUDGET` is a two-directional ratchet like the
+  exception census. Moving a family LOWERS it in the same commit; nothing
+  raises it.
+- an effector reaches the outside world only through `ctx.ports` and records
+  only through `ctx.append` / `ctx.transition`. No `effects*.py` module may
+  import `daemon` or name `Daemon`; `tests/test_effects.py` reads the import
+  graph with `ast`.
+- `HandlerSpec.emits` is verified against the handler's own call graph, so
+  appending a new event type fails until the spec says so. Declaring an event
+  the code cannot emit fails too.
+- background work is keyed by `ctx.idempotency_key`, which the registry
+  computes from the spec. Do not key a new in-flight registry on a field you
+  picked yourself.
+- `PROVIDER_PAUSE_SECONDS` moved from `daemon.py` to `effects_lifecycle.py`,
+  and the pause registry is `Daemon._provider_backoff` (the method
+  `_provider_pause` kept its name, so the attribute could not).
+
 **CR-01 — document truth is a standing gate.** `product_truth.py` compares a
 marker in a canonical doc against a machine fact. If a package changes one of
 those facts, updating the doc (or the fact reader) is that package's
@@ -194,13 +246,20 @@ disagree.
 1. Read the ledger in the plan amendment.
 2. Read this file.
 3. `git log --oneline -15` on `main` to see the accepted packages.
-4. Create the CR-05 worktree and read `daemon.py`'s `_execute` plus the plan's
-   CR-05 section and amendment §3.3 (the state-ownership acceptance: each
-   effector owns its state through injected ports, no effector holds a
-   reference to `Daemon`, and background-work registries move to the effector
-   that owns the work).
+4. Create the CR-05b worktree and read, in this order: `effects.py` (the
+   boundary CR-05a built), `effects_gates.py` (the worked example of a family
+   that owns background work), and then `Daemon._execute_legacy` — which is
+   the whole remaining scope and nothing else. Do NOT read `daemon.py` end to
+   end; it is 8,500 lines and reading it will consume the session before any
+   code is written.
 
-CR-05 is flagged operator-carved and frontier-implemented. It is the largest
-remaining package and the one the stop-loss watches most closely: if its
-differential diff cannot be driven to explained-or-zero, stop and re-scope
-rather than proceeding to CR-07.
+CR-05 is flagged operator-carved and frontier-implemented, and the stop-loss
+watches it most closely: if the differential diff cannot be driven to
+explained-or-zero, stop and re-scope rather than proceeding to CR-07. CR-05a's
+was zero. CR-05b inherits the harness — add a scenario to
+`tests/effect_differential.py` per family moved, and re-record the fixture
+from the PRE-package tree (create a detached worktree at the branch point,
+copy the harness in, run with `NYXLOOM_RECORD_EFFECT_TRANSCRIPTS=1`, copy the
+fixture back) rather than from the tree you just changed. Recording from your
+own tree proves nothing, and it is the one way this mechanism can be turned
+into decoration.
