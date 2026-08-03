@@ -186,6 +186,54 @@ items:
   component: review
   context_estimate: medium
   folds_into: F005
+- id: B30
+  title: 'coverage_gate: make the changed-line floor language-agnostic (Go, Rust, JS).
+    The PURE CORE ALREADY IS -- parse_added_lines, evaluate, _resolve_base and
+    _check_measurable are plain-data functions with nothing Python-specific in them,
+    and none of them needs to change. Exactly two seams bind the module to
+    coverage.py: (1) _load_coverage reads its JSON report; (2) evaluate hard-filters
+    `if not npath.endswith(".py"): continue` (coverage_gate.py:222). SEAM 2 IS A
+    SILENT-PASS BUG for any non-Python consumer, not merely a limitation: it skips
+    every source file, evaluate returns 0 changed executable lines, the verdict
+    renders "0/0 changed executable lines covered (100.0%)" and the gate PASSES --
+    while _check_measurable stays quiet, because the tree is clean and the base is a
+    real ancestor. A declared changed-line-coverage assert would then launder every
+    merge. PROPOSED: a --source-ext flag (default .py, so Python behaviour is
+    bit-identical) plus a pluggable report loader; a Go cover profile and lcov between
+    them reach Go, Rust and JS, and lcov alone covers Rust (cargo llvm-cov --lcov) and
+    JS (nyc --reporter=lcovonly). THIRD REQUIREMENT, and it falls out of NEITHER seam
+    -- a per-language "could this file ever be measured" guard. Go instruments
+    function BODIES only, so a .go file that declares no functions produces no cover
+    blocks and is absent from the profile for exactly the reason a JSON schema is;
+    the existing cov-is-None branch then counts every one of its changed lines as
+    uncovered and appends it to files_missing_coverage. MEASURED, not hypothetical:
+    94 phantom uncovered lines across four comment-only doc.go package stubs on the
+    first run of the reference implementation -- a verdict no test could ever clear.
+    This is the B63 "unmeasurABLE is not unmeasurED" lesson one layer in, and it has
+    analogues elsewhere (Rust: a mod.rs of only pub use; TS: a .d.ts). The Go form of
+    the guard is a go/parser walk for a FuncDecl carrying a Body. WORTH PORTING BACK
+    from the reference implementation as its own small fix, independent of the rest:
+    a legitimate test-only or comment-only change renders "0/0 changed executable
+    lines covered (100.0%)", textually IDENTICAL to what a measurement that never
+    happened prints -- the precise ambiguity exit 3 and the NO MEASUREMENT docstring
+    section exist to eliminate, reintroduced at the point where the verdict is
+    formatted. Fix is to state why the denominator is empty (how many changed files
+    reached the intersection, under which prefix); the verdict itself is unchanged.
+    Note also that pragma-exclusion (GA5) has no Go analogue, so an adapter should
+    report an empty excluded set rather than the guard being made conditional.
+    REFERENCE IMPLEMENTATION, with unit tests over crafted inputs, a canary proving
+    the floor can fail (95% floor against a 78.0% delta exits 1), and a real
+    measurement of 1409/1807 changed executable lines:
+    shared-ramdisk-depot-manager/tools/covergate (vbpub commits 855ea4b8, 9d837c27),
+    written up in that project nyxloom-trove/decisions.md D-007. CONSUMER WAITING ON
+    THIS: srdm, a Go project under one daemon with the Python ones, currently running
+    its own reimplementation rather than declaring a floor nyxloom cannot enforce.
+    Landing this lets srdm delete tools/covergate and declare [gates.coverage]
+    against the shared evaluator, which is also the honest test of whether the
+    generalization is real.'
+  type: feature
+  component: gate
+  context_estimate: medium
 ---
 
 # nyxloom — backlog
