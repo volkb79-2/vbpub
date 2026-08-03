@@ -1,0 +1,44 @@
+# Escalation handler for a failed nyxloom-liveness run. Instantiated by
+# systemd as nyxloom-liveness-alarm@nyxloom-liveness.service.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO. It does not send over the daemon's ntfy.
+# CR-16's second acceptance criterion is that breaking the notification
+# transport is reported "through a different path"; routing this alarm back
+# through that transport would make the two paths one, and the failure mode
+# being guarded against -- the notification channel crash-looping unnoticed
+# for ten days -- is exactly the case where it is unavailable.
+#
+# THE DEFAULT IS LOCAL AND HONEST. Out of the box it writes to the journal
+# with emergency priority and to every logged-in terminal. That is genuinely
+# independent of nyxloom, of Docker, and of the network -- and it is NOT
+# sufficient on an unattended host. Wiring a real second channel is the
+# operator's decision because only they know what it should be; see
+# README.md, "Choosing the second channel". Shipping a placeholder that
+# looked like paging would be worse than shipping something plainly local.
+
+[Unit]
+Description=nyxloom liveness alarm for %i
+
+[Service]
+Type=oneshot
+
+# The journal, at a priority that survives default filtering, with the failing
+# unit's own last lines attached so the alarm carries its cause rather than
+# just its existence.
+ExecStart=/bin/sh -c '\
+  { echo "nyxloom liveness FAILED: %i on $(hostname) at $(date -Is)"; \
+    echo "--- last output from %i ---"; \
+    journalctl -u "%i" -n 20 --no-pager -o cat 2>/dev/null || true; \
+  } | systemd-cat -t nyxloom-liveness-alarm -p emerg'
+
+# Every logged-in terminal. Best-effort: a headless host may have none, and
+# that must not turn the alarm handler itself into a failed unit.
+ExecStart=-/bin/sh -c '\
+  echo "nyxloom liveness FAILED: %i on $(hostname) -- run: journalctl -u %i -n 50" \
+  | wall -n 2>/dev/null'
+
+# Operator hook. Drop an executable here to add a second channel (SMS gateway,
+# a DIFFERENT ntfy instance/topic than the daemon's, an on-call webhook, a
+# mail relay). Leading `-` so a missing or failing hook cannot suppress the
+# journal and wall alarms above.
+ExecStart=-/etc/nyxloom/liveness-alarm-hook %i
