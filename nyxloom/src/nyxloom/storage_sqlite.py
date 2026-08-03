@@ -96,21 +96,59 @@ def db_path(project: str) -> Path:
 
 
 def _connect(project: str) -> sqlite3.Connection:
-    """Open a connection with WAL pragmas set. Schema DDL runs only on the
-    very first connect ever made for this project (guarded by the db file
-    not yet existing) so later connects -- same or a different process --
-    never re-issue `CREATE TABLE IF NOT EXISTS`, keeping concurrent
-    reader/writer access free of incidental schema-lock contention."""
+    """Open a connection with WAL pragmas set, creating the schema if absent.
+
+    The guard is SCHEMA presence, not FILE presence, and the difference is a
+    real race rather than a nicety. `sqlite3.connect` creates the database
+    file BEFORE any DDL runs, so two processes first-opening the same project
+    concurrently interleave like this:
+
+        A: file absent          -> intends to create the schema
+        A: connect()            -> the file now EXISTS, still empty
+        B: file present         -> concludes someone else owns the schema
+        B: skips the DDL
+        B: SELECT ... FROM events -> OperationalError: no such table: events
+
+    B loses on a check that was true and useless: the file existing says
+    nothing about whether the tables inside it do. Asking `sqlite_master`
+    instead asks the question that was always meant -- and because every
+    statement in `_SCHEMA_SQL` is `IF NOT EXISTS`, both processes may run it
+    without conflict; SQLite serialises them and the second is a no-op.
+
+    The original intent survives: the DDL is still skipped on every ordinary
+    connect (one indexed catalogue lookup decides it), so steady-state
+    reader/writer access takes no incidental schema-lock contention.
+
+    Found by CR-16's review as the cause of a ~1-in-6 failure of
+    `test_properties.py::test_sequence_integrity_under_concurrency`, which
+    reproduces identically on a tree with no CR-16 changes. CR-16 makes the
+    window likelier in production, not less: `doctor --liveness` now opens
+    the same store from a second process.
+    """
     paths.ensure_layout(project)
     p = db_path(project)
-    is_new = not p.exists()
     conn = sqlite3.connect(str(p), timeout=5.0, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
-    if is_new:
+    if not _schema_present(conn):
         conn.executescript(_SCHEMA_SQL)
     return conn
+
+
+def _schema_present(conn: sqlite3.Connection) -> bool:
+    """Whether this database already carries the event log's own table.
+
+    `events` is the anchor rather than an arbitrary table: it is the first
+    statement in `_SCHEMA_SQL`, so a connection that can see it has seen a
+    completed `executescript` -- SQLite runs the script in one implicit
+    transaction, so there is no window in which `events` is visible and its
+    siblings are not.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'"
+    ).fetchone()
+    return row is not None
 
 
 # ---------------------------------------------------------------------------
