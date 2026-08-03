@@ -99,7 +99,12 @@ _FANIN_MARKERS = ("SnapshotBuilder", "snapshot.acquire", "SnapshotInput")
 LEGACY_BUDGET: dict[str, int] = {
     # Control plane -- the largest pool, retired as CR-05 moves effect code
     # out of the god object and CR-06 decomposes the planner.
-    "daemon.py": 35,
+    # CR-05a lowered this from 35: two handlers left with the code they
+    # guarded (the journal's notify containment and the gate-verify probe's
+    # degradation), and both are CLASSIFIED in their new module rather than
+    # inherited as debt. This is the per-module budget doing what it was
+    # designed for -- a move lowers a number instead of rewriting a registry.
+    "daemon.py": 33,
     # Diagnostics: doctor and render both read the world defensively so a
     # broken project still produces a readable report. CR-16 owns doctor's
     # (liveness reporting must not itself go dark); CR-11 owns render's.

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, notify, reconcile, snapshot, storage
+from nyxloom import daemon, effects_gates, lint, notify, reconcile, snapshot, storage
 from nyxloom.config import GateDef, MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import ReconcileInput, VerifyGate, plan_project
 from nyxloom.types import (
@@ -163,8 +163,8 @@ def test_feature_off_real_run_pass_starts_no_thread_and_appends_no_event_LOAD_BE
     d = daemon.Daemon({"demo": sample_project.root})
     d.run_pass("demo")
 
-    assert d._gate_verify_running == {}
-    assert d._gate_verify_results.empty()
+    assert d._gates.verify_running == {}
+    assert d._gates.verify_results.empty()
     events = list(storage.iter_events("demo"))
     assert not any(e.type is EventType.GATE_VERIFY_RECORDED for e in events)
     assert not any(
@@ -356,26 +356,26 @@ def test_execute_verify_gate_starts_no_second_thread_while_one_is_alive(
     started = threading.Event()
     release = threading.Event()
 
-    def fake_bg(self, project, cfg):
+    def fake_bg(self, project, cfg, key):
         started.set()
         release.wait(timeout=5)
 
-    monkeypatch.setattr(daemon.Daemon, "_run_gate_verify_bg", fake_bg)
+    monkeypatch.setattr(effects_gates.GateEffector, "_run_verify_probe", fake_bg)
     d = daemon.Daemon({"demo": sample_project.root})
     try:
-        events1 = d._execute_verify_gate("demo", sample_project)
+        events1 = d._execute("demo", sample_project, {}, VerifyGate(project="demo"))
         assert events1 == []
         assert started.wait(timeout=2), "background thread never started"
-        first = d._gate_verify_running["demo"]
+        first = d._gates.verify_running["verify-gate:demo"]
         assert first.is_alive()
 
-        events2 = d._execute_verify_gate("demo", sample_project)
+        events2 = d._execute("demo", sample_project, {}, VerifyGate(project="demo"))
         assert events2 == []
-        second = d._gate_verify_running["demo"]
+        second = d._gates.verify_running["verify-gate:demo"]
         assert second is first, "a second thread was started while the first was still alive"
     finally:
         release.set()
-        d._gate_verify_running["demo"].join(timeout=5)
+        d._gates.verify_running["verify-gate:demo"].join(timeout=5)
 
 
 def test_execute_verify_gate_starts_a_fresh_thread_once_the_prior_one_finished(
@@ -385,32 +385,36 @@ def test_execute_verify_gate_starts_a_fresh_thread_once_the_prior_one_finished(
     (idempotence guards a live run, not the feature)."""
     calls = []
 
-    def fake_bg(self, project, cfg):
-        calls.append(1)
+    def fake_bg(self, project, cfg, key):
+        calls.append(key)
 
-    monkeypatch.setattr(daemon.Daemon, "_run_gate_verify_bg", fake_bg)
+    monkeypatch.setattr(effects_gates.GateEffector, "_run_verify_probe", fake_bg)
     d = daemon.Daemon({"demo": sample_project.root})
-    d._execute_verify_gate("demo", sample_project)
-    d._gate_verify_running["demo"].join(timeout=5)
-    d._execute_verify_gate("demo", sample_project)
-    d._gate_verify_running["demo"].join(timeout=5)
-    assert len(calls) == 2
+    d._execute("demo", sample_project, {}, VerifyGate(project="demo"))
+    d._gates.verify_running["verify-gate:demo"].join(timeout=5)
+    d._execute("demo", sample_project, {}, VerifyGate(project="demo"))
+    d._gates.verify_running["verify-gate:demo"].join(timeout=5)
+    assert calls == ["verify-gate:demo", "verify-gate:demo"]
 
 
-def test_execute_dispatches_verify_gate_action_via_the_isinstance_chain(
+def test_execute_routes_a_verify_gate_action_to_the_gate_effector(
         tmp_state, sample_project, monkeypatch):
+    """CR-05a restatement. The PROPERTY -- a planned VerifyGate reaches the
+    verify handler and nothing else -- is unchanged; the MECHANISM it used to
+    name (an isinstance chain in `_execute`) is gone, replaced by a registry
+    lookup, so the test asserts the routing rather than the ladder."""
     calls = []
 
-    def fake_execute(self, project, cfg):
-        calls.append((project, cfg))
+    def fake_verify(self, ctx, action):
+        calls.append((ctx.project, ctx.cfg, action))
         return []
 
-    monkeypatch.setattr(daemon.Daemon, "_execute_verify_gate", fake_execute)
+    monkeypatch.setattr(effects_gates.GateEffector, "verify_gate", fake_verify)
     d = daemon.Daemon({"demo": sample_project.root})
     action = reconcile.VerifyGate(project="demo")
     result = d._execute("demo", sample_project, {}, action)
     assert result == []
-    assert calls == [("demo", sample_project)]
+    assert calls == [("demo", sample_project, action)]
 
 
 # ==========================================================================
@@ -421,9 +425,10 @@ def test_bg_probe_no_gate_declared(tmp_state, sample_project, monkeypatch):
     from nyxloom import gate_runner
     monkeypatch.setattr(gate_runner, "select_verification_gate", lambda cfg: None)
     d = daemon.Daemon({"demo": sample_project.root})
-    d._run_gate_verify_bg("demo", sample_project)
-    result = d._gate_verify_results.get_nowait()
-    assert result == {"project": "demo", "verdict": "NO_GATE", "gate_id": None}
+    d._gates._run_verify_probe("demo", sample_project, "verify-gate:demo")
+    result = d._gates.verify_results.get_nowait()
+    assert result == {"project": "demo", "verdict": "NO_GATE", "gate_id": None,
+                      "key": "verify-gate:demo"}
 
 
 def test_bg_probe_broken_when_good_head_fails(tmp_state, sample_project, monkeypatch):
@@ -443,8 +448,8 @@ def test_bg_probe_broken_when_good_head_fails(tmp_state, sample_project, monkeyp
     monkeypatch.setattr(gate_canary, "verify_gate_rejects_canary", must_not_verify)
 
     d = daemon.Daemon({"demo": sample_project.root})
-    d._run_gate_verify_bg("demo", sample_project)
-    result = d._gate_verify_results.get_nowait()
+    d._gates._run_verify_probe("demo", sample_project, "verify-gate:demo")
+    result = d._gates.verify_results.get_nowait()
     assert result["verdict"] == "BROKEN"
     assert result["gate_id"] == "pytest-q"
 
@@ -463,8 +468,8 @@ def _bg_result_for_canary(sample_project, monkeypatch, canary_result):
         gate_canary, "verify_gate_rejects_canary",
         lambda cfg, gate, commit: canary_result)
     d = daemon.Daemon({"demo": sample_project.root})
-    d._run_gate_verify_bg("demo", sample_project)
-    return d._gate_verify_results.get_nowait()
+    d._gates._run_verify_probe("demo", sample_project, "verify-gate:demo")
+    return d._gates.verify_results.get_nowait()
 
 
 def test_bg_probe_trustworthy_when_canary_killed(tmp_state, sample_project, monkeypatch):
@@ -502,8 +507,8 @@ def test_bg_probe_inconclusive_when_head_cannot_be_resolved(tmp_state, tmp_path)
         policy=Policy(),
     )
     d = daemon.Daemon({"demo": root})
-    d._run_gate_verify_bg("demo", cfg)
-    result = d._gate_verify_results.get_nowait()
+    d._gates._run_verify_probe("demo", cfg, "verify-gate:demo")
+    result = d._gates.verify_results.get_nowait()
     assert result["verdict"] == "INCONCLUSIVE"
     assert result["gate_id"] == "g1"
 
@@ -517,8 +522,8 @@ def test_bg_probe_exception_degrades_to_inconclusive_not_a_dead_thread(
 
     monkeypatch.setattr(gate_runner, "select_verification_gate", boom)
     d = daemon.Daemon({"demo": sample_project.root})
-    d._run_gate_verify_bg("demo", sample_project)
-    result = d._gate_verify_results.get_nowait()
+    d._gates._run_verify_probe("demo", sample_project, "verify-gate:demo")
+    result = d._gates.verify_results.get_nowait()
     assert result["verdict"] == "INCONCLUSIVE"
     assert result["gate_id"] is None
 
@@ -528,24 +533,27 @@ def test_bg_probe_exception_degrades_to_inconclusive_not_a_dead_thread(
 # ==========================================================================
 
 def _put(d: "daemon.Daemon", verdict: str, gate_id: str = "g1") -> None:
-    d._gate_verify_results.put({"project": "demo", "verdict": verdict, "gate_id": gate_id})
+    # `key` is what the dispatcher registered the work under, and what the
+    # drain clears -- carried on the result so the two cannot derive it apart.
+    d._gates.verify_results.put({"project": "demo", "verdict": verdict,
+                                 "gate_id": gate_id, "key": "verify-gate:demo"})
 
 
 def test_drain_launders_appends_record_and_escalates_once(
         tmp_state, sample_project, monkeypatch):
     monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
     d = daemon.Daemon({"demo": sample_project.root})
-    d._gate_verify_running["demo"] = object()  # sentinel: must be cleared
+    d._gates.verify_running["verify-gate:demo"] = object()  # sentinel: must be cleared
     _put(d, "LAUNDERS")
 
-    events = d._drain_gate_verify_results("demo", sample_project, {})
+    events = d._gates.drain_verify(d._effect_context("demo", sample_project, {}))
 
     types_ = {e.type for e in events}
     assert EventType.GATE_VERIFY_RECORDED in types_
     assert EventType.NEEDS_OPERATOR in types_
     needs = next(e for e in events if e.type is EventType.NEEDS_OPERATOR)
     assert needs.payload["reason"] == "gate-verify-launders"
-    assert "demo" not in d._gate_verify_running
+    assert "verify-gate:demo" not in d._gates.verify_running
 
 
 def test_drain_broken_appends_record_and_escalates(tmp_state, sample_project, monkeypatch):
@@ -553,7 +561,7 @@ def test_drain_broken_appends_record_and_escalates(tmp_state, sample_project, mo
     d = daemon.Daemon({"demo": sample_project.root})
     _put(d, "BROKEN")
 
-    events = d._drain_gate_verify_results("demo", sample_project, {})
+    events = d._gates.drain_verify(d._effect_context("demo", sample_project, {}))
 
     needs = next(e for e in events if e.type is EventType.NEEDS_OPERATOR)
     assert needs.payload["reason"] == "gate-verify-broken"
@@ -565,7 +573,7 @@ def test_drain_trustworthy_appends_record_but_no_escalation_THE_NEGATIVE(
     d = daemon.Daemon({"demo": sample_project.root})
     _put(d, "TRUSTWORTHY")
 
-    events = d._drain_gate_verify_results("demo", sample_project, {})
+    events = d._gates.drain_verify(d._effect_context("demo", sample_project, {}))
 
     types_ = {e.type for e in events}
     assert EventType.GATE_VERIFY_RECORDED in types_
@@ -580,11 +588,11 @@ def test_drain_debounces_a_repeated_launders_escalation(tmp_state, sample_projec
     d = daemon.Daemon({"demo": sample_project.root})
 
     _put(d, "LAUNDERS")
-    first = d._drain_gate_verify_results("demo", sample_project, {})
+    first = d._gates.drain_verify(d._effect_context("demo", sample_project, {}))
     assert any(e.type is EventType.NEEDS_OPERATOR for e in first)
 
     _put(d, "LAUNDERS")
-    second = d._drain_gate_verify_results("demo", sample_project, {})
+    second = d._gates.drain_verify(d._effect_context("demo", sample_project, {}))
     assert any(e.type is EventType.GATE_VERIFY_RECORDED for e in second)
     assert not any(e.type is EventType.NEEDS_OPERATOR for e in second)
 
@@ -596,14 +604,14 @@ def test_drain_requeues_results_belonging_to_other_projects(
     lose) a result stamped for a different project."""
     monkeypatch.setattr(notify, "notify_event", lambda cfg, states, ev: None)
     d = daemon.Daemon({"demo": sample_project.root})
-    d._gate_verify_results.put({"project": "other", "verdict": "TRUSTWORTHY", "gate_id": "g1"})
+    d._gates.verify_results.put({"project": "other", "verdict": "TRUSTWORTHY", "gate_id": "g1"})
 
-    events = d._drain_gate_verify_results("demo", sample_project, {})
+    events = d._gates.drain_verify(d._effect_context("demo", sample_project, {}))
 
     assert events == []
-    requeued = d._gate_verify_results.get_nowait()
+    requeued = d._gates.verify_results.get_nowait()
     assert requeued["project"] == "other"
-    assert d._gate_verify_results.empty()
+    assert d._gates.verify_results.empty()
 
 
 # ==========================================================================
@@ -650,7 +658,7 @@ def test_end_to_end_dispatch_thread_then_drain_closes_the_cadence(
     d = daemon.Daemon({"demo": sample_project.root})
     d.run_pass("demo")
 
-    t = d._gate_verify_running.get("demo")
+    t = d._gates.verify_running.get("verify-gate:demo")
     assert t is not None, "VerifyGate did not start a background thread"
     t.join(timeout=5)
     assert not t.is_alive()
@@ -668,4 +676,4 @@ def test_end_to_end_dispatch_thread_then_drain_closes_the_cadence(
 
     age = d._days_since_gate_verify("demo")
     assert age is not None and age < 1.0
-    assert "demo" not in d._gate_verify_running
+    assert "verify-gate:demo" not in d._gates.verify_running

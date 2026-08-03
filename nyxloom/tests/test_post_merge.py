@@ -81,7 +81,7 @@ def _join_and_drain(d: "daemon.Daemon", task_id: str) -> None:
     still-VALIDATING task (see
     test_merged_task_reaches_completed_via_real_passing_gate's docstring
     for that race and why it drains directly instead)."""
-    t = d._post_merge_gate_running.get(task_id)
+    t = d._gates.post_merge_running.get(f"post-merge-gate:{task_id}")
     assert t is not None, "RunPostMergeGate did not start a background thread"
     t.join(timeout=10)
     assert not t.is_alive()
@@ -127,16 +127,16 @@ def test_merged_task_reaches_completed_via_real_passing_gate(
     tsf_mid = storage.load_state("demo", task_id)
     assert tsf_mid.state is TaskState.VALIDATING
 
-    t = d._post_merge_gate_running.get(task_id)
+    t = d._gates.post_merge_running.get(f"post-merge-gate:{task_id}")
     assert t is not None, "RunPostMergeGate did not start a background thread"
     t.join(timeout=10)
     assert not t.is_alive()
 
-    d._drain_post_merge_gate_results("demo", cfg, storage.list_states("demo"))
+    d._gates.drain_post_merge(d._effect_context("demo", cfg, storage.list_states("demo")))
 
     tsf2 = storage.load_state("demo", task_id)
     assert tsf2.state is TaskState.COMPLETED
-    assert task_id not in d._post_merge_gate_running
+    assert f"post-merge-gate:{task_id}" not in d._gates.post_merge_running
 
     assert len(tsf2.gate_results) == 1
     gr = tsf2.gate_results[0]
