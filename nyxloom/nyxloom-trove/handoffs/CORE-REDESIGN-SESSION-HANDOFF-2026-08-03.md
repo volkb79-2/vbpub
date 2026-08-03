@@ -12,36 +12,26 @@ This file is the operating manual that sits beside it.
 ## Where the program is
 
 Accepted and merged on `main`: CR-00, CR-15, CR-01, CR-02a, CR-02b, CR-03,
-CR-04a, CR-04b, CR-05a, CR-05b, CR-05c. Every one through the authoritative
+CR-04a, CR-04b, CR-05a, CR-05b, CR-05c, CR-05d. Every one through the authoritative
 `tester-unified` gate at 100% changed-line coverage; gate evidence and commit
 SHAs are in the ledger.
 
-Next by dependency order: **CR-05d** (carve and the carver session), then
+Next by dependency order: **CR-05f** (the carve-dispatch families), then
 **CR-05e** (`EmitAttemptExit` alone, which routes by attempt ROLE and
 therefore depends on every other family having moved).
 
-**Read the CR-05d ledger row before scoping it.** That row records a sizing
-pass done at the end of the 2026-08-03 session: the family is ~899 executable
-lines, carve dispatch and the session verbs are genuinely inseparable (the
-dispatcher delegates into the session resume, and they share four helpers),
-and proposal admission is blocked on two INPUT-BUILDER readers that belong to
-CR-06's surface rather than an effector's. The session stopped there rather
-than starting a package it could not finish cleanly -- an unfinished package
-leaves a dirty worktree and a ledger that overstates what shipped, which is
-worse than one fewer merge. The boundary already exists and every action
-type is already registered, so both are move-and-lower-the-budget packages,
-not design packages. What each move owes: an effector module, a lowered
-`LEGACY_HANDLER_BUDGET` in the same commit, a declared `emits`, a CONSUMED
-idempotency key, and a differential scenario.
+**A reader is not a blocker.** The CR-05d row was once marked blocked because
+two of its functions are called by `_build_input` as well as by the effects.
+That reasoning was wrong and cost a package: a reader MOVES into the effector
+module as a function, and the shell calls it there. The boundary rule is
+one-directional -- the shell may call an effector; an effector may not call
+the shell -- so a shared reader is a delegate, never a blocker.
 
-**Sizing before splitting is worth the ten minutes.** CR-05 was scoped as one
-package and is landing as four. Measuring each family's executable line count
-first (`ast` for method spans, `coverage.parser` for statements) is what made
-the cut obvious: carve alone is ~713 executable lines, larger than any
-package this program has accepted, while review+merge came to ~250 and gated
-at 441 changed lines including scaffolding. Cut where families have no shared
-helpers -- the dependency map (`grep -o "self\._[a-z_]*"` over each branch)
-takes a minute and tells you which cut is clean.
+**Write the delegates the shell actually calls, and no others.** CR-05d's
+gate rejected at 413/415 on two forwarding methods with no caller. Grep for
+callers before writing a delegate; the cockpit's per-module coverage will not
+show you this, because the module reads 100% while the changed line sits
+unexercised.
 
 Remaining after that: CR-06, CR-07, CR-08, CR-13a, CR-16, CR-09, CR-10, CR-11,
 CR-12, CR-13b, CR-14. Section 7 of the plan is the authoritative order.
