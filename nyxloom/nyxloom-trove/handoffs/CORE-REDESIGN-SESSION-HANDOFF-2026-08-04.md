@@ -26,6 +26,7 @@ and the authoritative `tester-unified` gate, denominator recounted out of band:
 | CR-04c — sqlite first-open schema race | 4/4 | `6af5e3a1` |
 | CR-05g — the second copy of the warm-session tie | 1/1 | `c215cf0c` |
 | CR-07a — workflow compiler and IR | 823/823 | `6e50b666` |
+| CR-13a — execution containment, fail-closed launch gate | 248/248 | `9c46da96` |
 | CR-07 prerequisite — kernel/compiler transition inventory | docs | `088e1841` |
 
 Earlier sessions: CR-00, CR-15, CR-01, CR-02a/b, CR-03, CR-04a/b, CR-05a–f.
@@ -37,10 +38,35 @@ Earlier sessions: CR-00, CR-15, CR-01, CR-02a/b, CR-03, CR-04a/b, CR-05a–f.
 fire** — see the ledger row for why the reasoning is stronger than the
 implementer's.
 
-## In flight — read this before doing anything else
+## CR-13a — MERGED as `9c46da96` (this section is kept for its lessons)
 
-**CR-13a (execution containment) — DO NOT MERGE. Branch `cr/nyxloom-cr13a`,
-worktree `.worktrees/nyxloom-cr13a`, tip `96534250`.**
+**Superseding the "do not merge" below: the hang was root-caused and fixed,
+the nine uncovered refusal branches were covered, and the package gated at
+`248/248 (100.0%)` on the eighth attempt. Every one of the seven prior
+failures was a real defect.**
+
+The hang: `resume_attempt` did a filesystem scan (`next_resume_n`) and a
+`config.Routes.load()` BEFORE either of its refusal checks, so a resume that
+was going to be refused paid for a disk walk and a config parse first, every
+pass. `next_resume_n` walks resume ordinals until the filesystem port says
+stop — unbounded, gated on an external predicate — and the paused-ports test
+double answers `exists -> True` for every path, so it never terminated. Both
+refusals now come first; the hang went away as a CONSEQUENCE of refusing
+before doing work, not as the goal. Found with
+`in-gate.sh <wt> tests -n auto -q -o faulthandler_timeout=240`, which dumps
+the stuck thread's traceback — that is the tool for any future gate hang.
+
+**Three gaps remain open with owners** (see the ledger row "CR-13a open
+gaps"): the four interactive surfaces are the most privileged agent execution
+in the system and are a HOLE rather than an acceptable boundary; the routes
+sync the package REQUIRES breaks four features, so **the daemon must not be
+restarted until that is resolved**; and admission still sits after durable
+side effects on `effects_carve`'s legacy fresh-carve path.
+
+The verification history below is retained because it is the transferable
+part.
+
+**CR-13a as it stood mid-session — branch `cr/nyxloom-cr13a`.**
 
 The security design is strong and its escape proofs are real (capabilities
 dropped to zero, symlinks resolving in the container's own namespace, the
@@ -75,10 +101,9 @@ were found by something other than that verification.**
 `cr/nyxloom-cr07b`, tip `6b8f9e5f`, recount 71 changed executable production
 lines.** Complete and reported; needs an independent review before merge.
 
-## What CR-13a still needs before it can merge
+## CR-13a's open gaps, carried forward
 
-1. **The hang resolved** (above).
-2. **The sync hazard.** The deployed `$XDG_STATE_HOME/nyxloom/routes.toml`
+1. **The sync hazard.** The deployed `$XDG_STATE_HOME/nyxloom/routes.toml`
    carries no `trust` key, so with fail-closed containment **every route in it
    refuses to launch** until synced with the tracked `routes.host.toml`. The
    daemon must not be restarted before that sync. **And the sync itself breaks
@@ -213,7 +238,7 @@ Applied immediately: CR-07b was scoped to the `GuardFacts` derivation alone
 1. Read the plan's ledger.
 2. Read this file.
 3. `git log --oneline -20 main`.
-4. **Resolve CR-13a's hang first** — it is the only thing blocking a package
+4. **Review and merge CR-07b** (gate-green at 71/71, branch `cr/nyxloom-cr07b`) — it needs an independent review pass before merge.
    that is otherwise reviewed and fixed. The faulthandler diagnostic is the
    tool; `in-gate.sh` runs it safely.
 5. Then review and merge CR-07b, and carve **CR-07c** — the lifecycle/node
