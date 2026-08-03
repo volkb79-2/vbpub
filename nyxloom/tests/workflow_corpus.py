@@ -29,7 +29,7 @@ harmless, because the oracle runs over the corpus, not over the tests.
 from __future__ import annotations
 
 from nyxloom.stages import PRESETS
-from nyxloom.types import TASK_TRANSITIONS, TaskState
+from nyxloom.types import TaskState
 from nyxloom.workflow_ir import KERNEL_EDGES, KERNEL_OWNED_STATES
 from nyxloom.workflow_shadow import (
     LEGACY_PIPELINE,
@@ -202,7 +202,7 @@ def _set_node(src: dict, node_id: str, **fields) -> None:
     src["nodes"][node_id].update(fields)
 
 
-def negative_sources() -> dict:  # noqa: C901 - a flat catalogue, one entry per code
+def negative_sources() -> dict:
     """One manifest per compile refusal. Flat and repetitive on purpose: a
     reader checking "is condition N covered" reads one entry, not a builder."""
     out: dict = dict(kernel_edge_sources())
@@ -463,7 +463,3 @@ def all_sources() -> dict:
     merged = {f"valid:{k}": v for k, v in valid_sources().items()}
     merged.update({f"negative:{k}": v for k, v in negative_sources().items()})
     return merged
-
-
-def non_terminal_states() -> list:
-    return [s for s in TASK_TRANSITIONS if TASK_TRANSITIONS[s]]
