@@ -4,7 +4,91 @@ Date: 2026-08-02
 Parent: [`CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02.md`](CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02.md)
 Source assessment: [`DEEP-REVIEW-2026-08-02-AMENDMENT.md`](DEEP-REVIEW-2026-08-02-AMENDMENT.md)
 
-Status: proposed for operator approval
+Status: operator-approved; implementation in progress
+
+## Implementation progress
+
+This section is the live program ledger. Update it whenever program changes land
+on `main`; architecture text below remains the contract. A package is `done`
+only after implementation, an independent capable review-and-fix pass, and the
+authoritative `tester-unified` gate. Commit IDs and gate evidence are recorded
+here so external reviewers can distinguish planned work from shipped work.
+
+Last updated: 2026-08-03
+
+| Item | State | Evidence / notes |
+| --- | --- | --- |
+| Program preparation | in progress | `e9bf702f` adds a package-scoped exception to the obsolete frozen-file list; it does not generally unfreeze core files. |
+| CR-00 | done | Sonnet implementation `4c995686`; independent Opus review-and-fix `8bdf283f`; authoritative `tester-unified` parallel suite completed at 100% with exit 0 and the coverage gate accepted 0 changed executable production lines (the package changes tests/docs only); merged to `main` as `5a9d441d`. |
+| CR-15 | implementing | Opus implementation `b0bc7dfb`; focused control-auth/UI/invariant and daemon diagnostics are green. Awaiting rebase onto accepted CR-00, a fresh independent Opus security review-and-fix, and the authoritative gate. |
+| CR-01 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
+
+Program operating decisions:
+
+- Keep the nyxloom daemon stopped through the core migration unless a later
+  ledger entry records a deliberate compatibility decision.
+- Preserve all live and nonterminal project tasks through backups and versioned
+  upcasting. Greenfield architecture does not authorize a live-state reset.
+- Free or otherwise untrusted routes remain disabled until CR-13a is gated.
+- Implementation agents do not run the long gate. The controller runs it from
+  each committed package branch, and no package merges on cockpit-only evidence.
+- Reviewers may improve and commit the implementation as they see fit while
+  preserving the package contract; review is not limited to comments.
+
+### Implementation-readiness audit decisions
+
+An independent Opus/high read-only audit of the 2026-08-02 tree refined the
+execution shape below. These are package boundaries and verification rules,
+not changes to the product direction:
+
+- **CR-01:** implement the standing product-truth check as an ordinary pytest
+  test exercised by the existing `tester-unified` command; do not grow the
+  already constrained gate argv. It covers explicit `[refs]` plus the contract
+  files named by `AGENTS.md`, including interpreter and authoritative-gate
+  claims.
+- **CR-02a / CR-02b:** first introduce typed snapshot descriptors, the
+  authoritative fan-in and the fault matrix; then land a complete advisory
+  census and an AST allow-list oracle for broad exception handling. The audit
+  counted 144 broad exception handlers across 15 production modules. In
+  particular, `Daemon._build_input` currently converts a lint exception to an
+  empty finding set and therefore to `lint_clean=True`; CR-02 owns that
+  fail-open defect.
+- **CR-03:** use two reviewable commits in one gated package: first the
+  versioned envelope plus generated enum/schema consistency checks, then the
+  replacement of regex authority at the exact decision sites. Extend the
+  existing receipt/gate-result records where possible rather than creating a
+  parallel evidence model.
+- **CR-04:** perform the backend removal in two internally verified steps:
+  make SQLite unconditional while ignoring the selector, then delete the
+  selector, file backend and obsolete tests. The source census found 17
+  transactional append/project call sites and 13 direct append bypasses after
+  excluding definitions; the test migration spans 119 call sites in 19 files.
+  Persist storage/projection versions in a dedicated metadata table rather
+  than reusing the event-envelope `SCHEMA_VERSION`. Rollback means restoring a
+  verified pre-write backup and replaying with the old projector; it does not
+  promise that the old binary can read a newly projected database.
+- **CR-05a / CR-05b:** first add the handler registry, injected ports and the
+  smaller route families; then move attempt, review and carve execution. The
+  final structural oracle rejects effector imports or effector-owned mutable
+  state on `Daemon`, not merely a long `_execute` method.
+- **CR-06:** decompose against the numbered reconcile-contract rules already
+  documented in the source and reuse `PlanResult.trace`, `ReconcileTrace` and
+  `TraceNote` as the explanation model.
+- **CR-07a / CR-07b:** first land schema, parser, typed IR, validator, digest,
+  negative corpus and shadow compilation; then migrate lifecycle nodes. Keep
+  read compatibility for the removed `DRAFT` value through enum `_missing_`,
+  not as an executable workflow state.
+- **Differential verification:** there is no production old/new runtime flag.
+  Tests retain a frozen legacy reconcile implementation and compare observable
+  plans; CR-05 compares injected-port transcripts. Legacy test machinery is
+  retired when its replacement package has passed its retirement obligation.
+- **Migration safety:** preserve queued and other nonterminal tasks across the
+  redesign. "Drain" means no attempt may be mid-effect during a schema write;
+  it does not mean finishing or deleting the queue. Inventory the live state
+  root before CR-04, then create and verify the rollback backup immediately
+  before CR-07 first writes an upcast event shape.
+- **Merge order:** land CR-15 before CR-03, CR-05 and CR-07 because it already
+  threads actor identity through daemon handlers those packages will move.
 
 ## What this document is
 
