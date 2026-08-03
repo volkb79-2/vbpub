@@ -1,0 +1,48 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Host-managed BuildKit worker — shared build cache, reliable slice placement
+Before=slices.target
+
+[Slice]
+# NOTE: no explicit parent directive — systemd derives nesting from the
+# dash-separated name: "dev-buildkitd.slice" nests under "dev.slice"
+# automatically, exactly like dev-interactive.slice/dev-background.slice. A
+# SIBLING of those two tiers, not nested under either: buildkitd is one
+# shared, long-lived service serving every project's builds, not a
+# per-invocation background job — it doesn't fit dev-background.slice's
+# OOM-first/yield-instantly posture (killing the one shared builder mid-build
+# is worse than killing one test-runner container), and an active build IS
+# latency-sensitive to whoever is waiting on it, unlike idle background soak
+# work. See plan-buildkitd-service.md §1.
+#
+# Exactly one persistent container lives under this slice (mdt-buildkitd),
+# so these properties are set HERE ONLY — not duplicated as `docker run
+# --memory`/`--cpus` flags on the container itself (see
+# units/mdt-buildkitd.service.in). One number, one place to look.
+MemoryHigh=@DEV_BUILDKITD_MEMORY_HIGH@
+MemoryMax=@DEV_BUILDKITD_MEMORY_MAX@
+MemorySwapMax=@DEV_BUILDKITD_MEMORY_SWAP_MAX@
+
+CPUWeight=@DEV_BUILDKITD_CPU_WEIGHT@
+# Hard cap (not just proportional share): auto-detected as (nproc - 2) cores
+# at install time when left unset in host-setup.env (mirrors the existing
+# IO_DEV_PATH auto-discovery convention), floored at 1 core. An explicit
+# value in host-setup.env always overrides the auto-detected one.
+CPUQuota=@DEV_BUILDKITD_CPU_QUOTA@
+# See the IOWeight note in dev-interactive.slice/dev-background.slice:
+# KEEP <= 100 ON A BFQ HOST or the BFQ rescaling silently changes the ratio.
+IOWeight=@DEV_BUILDKITD_IO_WEIGHT@
+
+# NO absolute IO cap here — inherits dev.slice's DEV_IO_CAP_PCT-derived
+# ceiling, same "one estate ceiling, not one per child" reasoning as the
+# other two tiers. See units/dev.slice.in.
+
+# Every property above is OPTIONAL: leaving its host-setup.env variable
+# empty drops that directive from this rendered file entirely (install.sh's
+# render() strips any line that resolves to a bare `Key=`) — "not set" means
+# "not applied," not "apply some fallback number." CPUQuota is the one
+# exception with its own auto-detect fallback, described above.
+
+# Containers join via `docker run --cgroup-parent=dev-buildkitd.slice`
+# (mdt-buildkitd.service) — CREATE-time only, same rule as every other tier.

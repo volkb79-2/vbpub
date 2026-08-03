@@ -3,6 +3,17 @@
 # dev-background.slice combined), dev-interactive zswap policy, per-container
 # caps for bench/buildkit/devcontainer containers. Idempotent oneshot; run at
 # boot (enabled) and periodically via mdt-host-slices.timer.
+#
+# Second ExecStart: mdt-slice-audit.py — read-only; walks the SAME dev.slice
+# tree and logs a [WARN] for any memory.min/memory.low that is a silent
+# no-op because an ancestor cgroup lacks its own value (a container/config
+# can request mem_min while the dev tiers don't set it — this is exactly
+# that case, caught on the same cadence rather than only when someone
+# thinks to check). See scripts/mdt-slice-audit.py and
+# ciu/docs/DESIGN-NOTES.md D1/D3/D4/D6. Runs after the caps script (so a
+# finding reflects whatever this run just applied), but never blocks it —
+# each ExecStart= is independent; the audit exiting nonzero would not undo
+# the caps step (it never exits nonzero anyway — see the script).
 [Unit]
 Description=mdt host-setup — runtime dev-tier IO caps + per-container limits
 Documentation=file:/etc/mdt/host-setup.env
@@ -14,6 +25,7 @@ Wants=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/mdt-apply-dev-caps.sh
+ExecStart=/usr/local/sbin/mdt-slice-audit.py
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+#
+# Runs a rootless BuildKit worker AS A CONTAINER via a plain `docker run`
+# (never through `buildx create` / any Buildx driver) — Buildx's own
+# `cgroup-parent` driver-opt does not reliably place a `docker-container`
+# builder under a named slice with Docker's systemd cgroup driver
+# (source-verified, docs/BUILD-ARCHITECTURE.md); a plain `docker run
+# --cgroup-parent=...` places correctly (verified live, see
+# plan-buildkitd-service.md §0). Buildx then reaches this worker via its
+# `remote` driver over the Unix socket this unit exposes at
+# /run/mdt-buildkitd/buildkitd.sock (see templates/devcontainer.json for the
+# consumer-side bind-mount).
+#
+# `docker run` (foreground, no -d) AS ExecStart= is systemd's own
+# established pattern for supervising a container — Restart= gives crash
+# recovery for free, and a config change just needs `systemctl restart`
+# after re-running install.sh. No bespoke drift-detection script.
+#
+# Rootless image variant (not a hand-rolled privilege setup): a build daemon
+# executes arbitrary Dockerfile RUN content, so rootless is the meaningfully
+# safer default, not merely a tolerable one. Cgroup placement/accounting is
+# unaffected either way — enforced by the kernel on the outer cgroup
+# regardless of the UID of processes inside it. The --device /dev/fuse
+# --security-opt seccomp=unconfined --security-opt apparmor=unconfined trio
+# is the SAME relaxation the mdt devcontainer already grants itself, for the
+# identical FUSE (fuse-overlayfs) reason — not a new category of exposure.
+[Unit]
+Description=mdt host-setup — host-managed BuildKit worker (dev-buildkitd.slice)
+Documentation=file:/etc/mdt/host-setup.env
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# Creates /run/mdt-buildkitd (correct ownership) before ExecStart, removes
+# it after — /run is tmpfs, so this must happen every boot; RuntimeDirectory=
+# does it natively instead of a one-shot mkdir in install.sh that would only
+# apply to the run install.sh itself happened in.
+RuntimeDirectory=mdt-buildkitd
+# Clear any stale container from an unclean shutdown before starting fresh
+# (the "-" prefix makes a failure here non-fatal — nothing to clear is fine).
+ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
+ExecStartPre=-/usr/bin/docker pull @DEV_BUILDKITD_IMAGE@
+ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
+  --cgroup-parent=dev-buildkitd.slice \
+  --device /dev/fuse \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  -v /run/mdt-buildkitd:/run/buildkit \
+  -v mdt-buildkitd-cache:/home/user/.local/share/buildkit \
+  @DEV_BUILDKITD_IMAGE@ \
+  --addr unix:///run/buildkit/buildkitd.sock
+ExecStop=/usr/bin/docker stop -t 30 mdt-buildkitd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

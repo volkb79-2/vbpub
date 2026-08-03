@@ -54,6 +54,13 @@
   "mounts": [
     // ── Docker / host integration ──────────────────────────────────────────────
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    // Host-managed BuildKit worker (mdt-buildkitd.service, dev-buildkitd.slice
+    // — see host-setup/plan-buildkitd-service.md). OPTIONAL and commented out:
+    // an unconditional mount here would break container start on any host that
+    // hasn't also run the updated host-setup/install.sh yet. Uncomment (and the
+    // matching BUILDKIT_HOST below) once that's the assumed baseline, then:
+    //   docker buildx create --name host-buildkitd --driver remote "$BUILDKIT_HOST"
+    // "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind",
     // Host letsencrypt certs (readonly). Consider security implications.
     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
 
@@ -98,6 +105,9 @@
     // the running container).
     "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
     "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice"
+    // Host-managed BuildKit worker (see the matching OPTIONAL mount above).
+    // Uncomment both together (and add a trailing comma to the line above):
+    // "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"
   },
 
   // ─── 8. Docker runtime arguments ──────────────────────────────────────────────

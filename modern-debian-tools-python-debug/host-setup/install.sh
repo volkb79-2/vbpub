@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # mdt host-setup installer — prepares a host for tiered devcontainer/test work
 # (dev.slice root ceiling + dev-interactive.slice + dev-background.slice +
-# runtime IO governance + /etc/docker/daemon.json, which this owns fully).
+# dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
+# which this owns fully).
 #
-#   sudo ./install.sh [--with-baseline]
+#   sudo ./install.sh [--with-baseline] [--force]
 #
 # Idempotent. First run seeds /etc/mdt/host-setup.env from the example (review
 # it, then re-run to apply your edits). --with-baseline additionally runs the
-# fio benchmark (~4 min of saturated disk — quiet window!). See README.md.
+# fio benchmark (~4 min of saturated disk — quiet window!). --force backs up
+# an already-installed /etc/mdt/host-setup.env and re-seeds it from the
+# current example (needed to pick up newly-added variables — otherwise this
+# script never touches a config that's already there). See README.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 WITH_BASELINE=0
+FORCE=0
 for arg in "$@"; do
   case "$arg" in
     --with-baseline) WITH_BASELINE=1 ;;
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --force) FORCE=1 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -24,7 +30,12 @@ done
 
 echo "== config =="
 mkdir -p /etc/mdt /var/lib/mdt
-if [ ! -f /etc/mdt/host-setup.env ]; then
+if [ -f /etc/mdt/host-setup.env ] && [ "$FORCE" = 1 ]; then
+  backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
+  cp /etc/mdt/host-setup.env "$backup"
+  cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
+  echo "--force: backed up existing config to $backup, re-seeded from example — REVIEW IT and re-run to apply edits"
+elif [ ! -f /etc/mdt/host-setup.env ]; then
   cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
   echo "seeded /etc/mdt/host-setup.env from example — REVIEW IT and re-run to apply edits"
 fi
@@ -39,6 +50,16 @@ if [ -z "${IO_DEV_PATH:-}" ]; then
   done
 fi
 echo "io device for static caps: ${IO_DEV_PATH:-<none discovered — static IO caps omitted>}"
+
+# dev-buildkitd.slice CPUQuota: auto-detect (nproc - 2) cores, floored at 1,
+# when left unset in host-setup.env — same auto-discovery convention as
+# IO_DEV_PATH above. An explicit value in host-setup.env always wins.
+if [ -z "${DEV_BUILDKITD_CPU_QUOTA:-}" ]; then
+  _nproc=$(nproc 2>/dev/null || echo 2)
+  _buildkitd_cores=$(( _nproc > 2 ? _nproc - 2 : 1 ))
+  DEV_BUILDKITD_CPU_QUOTA="${_buildkitd_cores}00%"
+  echo "dev-buildkitd.slice CPUQuota: auto-detected $_buildkitd_cores cores (host has $_nproc) -> $DEV_BUILDKITD_CPU_QUOTA"
+fi
 
 echo "== packages =="
 # fio: the baseline benchmark. systemd-oomd: without it every ManagedOOM*
@@ -65,6 +86,8 @@ RENDER_VARS="DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_INTERACT
 DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
 DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_IO_WEIGHT DEV_BACKGROUND_OOM_PRESSURE_LIMIT \
+DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
+DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
 DOCKER_SCOPE_BACKSTOP_MEMORY_MAX DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX \
 IO_DEV_PATH SWEEP_INTERVAL"
@@ -72,11 +95,19 @@ render() { # render <template> <dest>
   local src="$1" dst="$2" v args=()
   for v in $RENDER_VARS; do args+=(-e "s|@$v@|${!v:-}|g"); done
   sed "${args[@]}" "$src" > "$dst"
+  # Optional settings: a directive whose value resolves to empty (the var
+  # was left unset in host-setup.env) is DROPPED from the rendered unit
+  # entirely, not left as an invalid `Key=` line — "not set" means "not
+  # applied," systemd's own default for that property then governs (see
+  # host-setup.env.example, dev-buildkitd.slice section).
+  sed -i '/^[A-Za-z][A-Za-z0-9]*=$/d' "$dst"
   echo "rendered $dst"
 }
 render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
 render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interactive.slice
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
+render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
+render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
 install -m 0644 "$HERE/units/mdt-host-slices.service" /etc/systemd/system/mdt-host-slices.service
 
@@ -130,6 +161,7 @@ PY
 echo "== scripts =="
 install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh" /usr/local/sbin/mdt-apply-dev-caps.sh
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"    /usr/local/sbin/mdt-io-baseline.py
+install -m 0755 "$HERE/scripts/mdt-slice-audit.py"    /usr/local/sbin/mdt-slice-audit.py
 install -m 0755 "$HERE/scripts/check.sh"              /usr/local/sbin/mdt-host-check.sh
 
 echo "== BFQ scheduler (io.weight needs it; io.max caps work on any scheduler) =="
@@ -145,11 +177,12 @@ systemctl daemon-reload
 # Slices activate on demand, but starting them now makes the cgroups exist so
 # the zswap policy applies immediately and check.sh has something to look at.
 # dev.slice first — its children nest under it by name, but starting it
-# explicitly means the root's IO ceiling is in force even before either
-# child has its own first member.
-systemctl start dev.slice dev-interactive.slice dev-background.slice 2>/dev/null || true
+# explicitly means the root's IO ceiling is in force even before any of the
+# three has its own first member.
+systemctl start dev.slice dev-interactive.slice dev-background.slice dev-buildkitd.slice 2>/dev/null || true
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
+systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker
 
 if [ "$WITH_BASELINE" = 1 ]; then
   echo "== io baseline (fio — disk will be saturated for ~4 min) =="

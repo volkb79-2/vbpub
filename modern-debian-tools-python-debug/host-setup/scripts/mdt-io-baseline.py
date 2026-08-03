@@ -4,7 +4,7 @@
 #
 # Part of mdt host-setup. Consumers:
 #   - mdt-apply-dev-caps.sh sources the cache (dev.slice whole-estate caps at
-#     DEV_IO_CAP_PCT%, per-container bench caps at BENCH_IO_CAP_PCT% — both in
+#     DEV_IO_CAP_PCT%, per-container caps at SWEEP_IO_CAP_PCT% — both in
 #     the 60-80% band, see host-setup.env.example)
 #   - ciu governance reads the same plain KEY=VALUE format, but from its own
 #     search path — point CIU_GOV_BASELINE_PATH here so one measurement serves
@@ -356,7 +356,7 @@ def main() -> int:
         clean_path(Path(str(OUT) + ".tmp"))
 
     # The two percentages mdt-apply-dev-caps.sh derives caps at by default:
-    # DEV_IO_CAP_PCT (whole dev.slice estate) and BENCH_IO_CAP_PCT (one container).
+    # DEV_IO_CAP_PCT (whole dev.slice estate) and SWEEP_IO_CAP_PCT (one container).
     print("measured ceiling            (tier 60%)   (per-container 80%)")
     for key in ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS"):
         v = int(values[key])

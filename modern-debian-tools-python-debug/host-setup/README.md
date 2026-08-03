@@ -25,28 +25,34 @@ weight in `host-setup.env`.
 
 ```
 dev.slice                    ONE absolute IOPS/bandwidth ceiling — covers
-                              both children combined, even interactive/IDE
-                              activity must not be able to starve production
+                              all three children combined, even interactive/
+                              IDE activity must not be able to starve production
 ├── dev-interactive.slice    devcontainers (IDE + AI agents) via
 │                             devcontainer.json runArg
-└── dev-background.slice     test/build/gate containers — explicit opt-in
-                             (compose cgroup_parent, docker run
-                             --cgroup-parent) OR caught by the Docker
-                             daemon-wide default (/etc/docker/daemon.json)
+├── dev-background.slice     test/build/gate containers — explicit opt-in
+│                            (compose cgroup_parent, docker run
+│                            --cgroup-parent) OR caught by the Docker
+│                            daemon-wide default (/etc/docker/daemon.json)
+└── dev-buildkitd.slice      host-managed BuildKit worker (mdt-buildkitd.
+                             service) — a shared, long-lived builder, not
+                             a per-invocation job; see
+                             plan-buildkitd-service.md
 ```
 
 | Tier | Who joins | Character |
 |---|---|---|
 | `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
 | `dev-background.slice` | test/build/gate containers, via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
+| `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` auto-detected as `nproc - 2` cores unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's |
 | (production tiers) | e.g. `wings.slice` for game servers | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
 `dev.slice` (the shared parent) carries the **one** absolute IOPS/bandwidth
-ceiling for both children combined — not one per tier. That is deliberate:
-even interactive/IDE work must not be able to starve production I/O, so a
-build storm AND a heavy IDE session together still can't exceed the estate's
-single cap. `CPUWeight`/memory/OOM policy stay per-child, since interactive
-and background work genuinely need different shapes there.
+ceiling for all three children combined — not one per tier. That is
+deliberate: even interactive/IDE work must not be able to starve production
+I/O, so a build storm AND a heavy IDE session together still can't exceed the
+estate's single cap. `CPUWeight`/memory/OOM policy stay per-child, since
+interactive, background, and the shared builder genuinely need different
+shapes there.
 
 Genuine **per-container** guarantees (so N concurrent gate containers can't
 each individually hog the tier) are a separate, complementary mechanism:
@@ -85,11 +91,13 @@ the test stacks.
 
 | Artifact | Target | Role |
 |---|---|---|
-| `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
+| `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
+| `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-host-slices.service` | systemd (enabled) | boot-time apply of the runtime half |
 | `units/mdt-host-slices.timer.in` | systemd (enabled) | periodic re-apply (default 5min) |
 | `scripts/mdt-apply-dev-caps.sh` | `/usr/local/sbin/` | runtime half (see below) |
+| `scripts/mdt-slice-audit.py` | `/usr/local/sbin/` | read-only audit — logs a `[WARN]` for any `memory.min`/`memory.low` under `dev.slice` that is a silent no-op because an ancestor lacks its own value (second `ExecStart=` on the same service/timer) |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | fio benchmark → `/var/lib/mdt/io-baseline.env` (30-day cache) |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
@@ -113,19 +121,34 @@ cannot express the next:
      `dev-background.slice` combined) — `systemctl set-property --runtime`,
      reapplied each boot;
    - **per-container** caps for `buildx_buildkit_*`, `*test-runner*` and
-     devcontainer scopes (`BENCH_IO_CAP_PCT`% io.max; bench and buildkit
+     devcontainer scopes (`SWEEP_IO_CAP_PCT`% io.max; bench and buildkit
      additionally get `IOWeight=1` — the devcontainer does **not**, it is the
      IDE): docker scopes are *transient*, they only exist while the container
      runs, so no unit file can pre-configure them, and buildkit workers are
-     created on demand by buildx (no compose file to put `cgroup_parent:`
-     into). The timer sweep catches them within `SWEEP_INTERVAL`. Anything
-     `cmru`/mdt itself spawns directly gets explicit per-container flags
+     created on demand by buildx AND — source-verified, see
+     [BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md) — Buildx's
+     `cgroup-parent` driver-opt is unreliable under the systemd cgroup driver,
+     so they can never be placed under `dev.slice` via compose either; this
+     sweep is their only governance, full stop, not a backstop for a
+     placement mechanism that also works. The timer sweep catches them within
+     `SWEEP_INTERVAL`. Anything `cmru`/mdt itself spawns directly gets
+     explicit per-container flags
      instead (see "Tiering model" above) — this sweep is only for containers
      nobody's own code controls the invocation of;
    - a **cgroup2 mount-flag check**: `memory_recursiveprot` (without which
      every slice-level `MemoryLow`/`MemoryMin` silently stops protecting the
      container pages below it) is a systemd boot default, but a runtime
-     remount can strip it — `CGROUP2_FLAGS=warn|fix` in the env file.
+     remount can strip it — `CGROUP2_FLAGS=warn|fix` in the env file;
+   - a **read-only ancestor-chain audit** (`mdt-slice-audit.py`, a second
+     `ExecStart=` on the same service): even with `memory_recursiveprot`
+     correctly mounted, `memory.min`/`memory.low` protection is bounded by
+     EVERY ancestor cgroup's own value, not just the one it's set on — a
+     value declared anywhere under `dev.slice` (a stack's governance config,
+     a hand-set property, a future per-container mechanism) is a complete
+     no-op if `dev.slice`/`dev-background.slice`/`dev-interactive.slice`
+     themselves don't ALSO carry one (which, as shipped, they mostly don't —
+     see `CGROUP-NOTES.md`). This never applies anything; it only logs to
+     the journal so the gap is discoverable instead of silent;
 3. **Create-time placement** — the one thing the host cannot do at all:
    containers join their tier only where they are *created*
    (devcontainer.json `runArgs`, compose `cgroup_parent:`, or the Docker
@@ -155,11 +178,16 @@ disk for ~4 minutes** — run it in a quiet window.
 
 The caps derived from it sit in a **60–80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds 10–15+
-containers across both tiers together), `BENCH_IO_CAP_PCT=80` per
-bench/buildkit/devcontainer container. Never 100% — a saturated device queues
-everything behind the burst, which is the stall the tiering exists to
-prevent; below ~60% you are just throttling ordinary work. Where both apply,
-cgroup limits nest and the stricter wins.
+containers across both tiers together — protects PRODUCTION from the tier,
+but not tier members from each other), `SWEEP_IO_CAP_PCT=80` per
+bench/buildkit/devcontainer container (protects tier members from each
+other — for buildkit specifically, its *only* governance, since Buildx
+placement under `dev.slice` doesn't work at all; see above). Never 100% — a
+saturated device queues everything behind the burst, which is the stall the
+tiering exists to prevent; below ~60% you are just throttling ordinary work.
+Where both apply, cgroup limits nest and the stricter wins — the two are
+complementary layers answering different questions, not a redundant pair to
+collapse into one number.
 
 **Bootstrapping from gstammtisch.** `install.sh` copies
 `/var/lib/gstammtisch/io-baseline.env` to `/var/lib/mdt/io-baseline.env` on
@@ -199,11 +227,13 @@ set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-un
 ## Uninstall
 
 ```bash
-sudo systemctl disable --now mdt-host-slices.timer mdt-host-slices.service
-sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background}.slice \
+sudo systemctl disable --now mdt-host-slices.timer mdt-host-slices.service mdt-buildkitd.service
+sudo docker volume rm mdt-buildkitd-cache 2>/dev/null || true
+sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background,dev-buildkitd}.slice \
+        /etc/systemd/system/mdt-buildkitd.service \
         /etc/systemd/system/docker-.scope.d/50-default-limits.conf \
         /etc/systemd/system/mdt-host-slices.{service,timer} \
-        /usr/local/sbin/{mdt-apply-dev-caps.sh,mdt-io-baseline.py,mdt-host-check.sh} \
+        /usr/local/sbin/{mdt-apply-dev-caps.sh,mdt-slice-audit.py,mdt-io-baseline.py,mdt-host-check.sh} \
         /etc/modules-load.d/mdt-bfq.conf /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
 sudo systemctl daemon-reload
 sudo rm -rf /etc/mdt /var/lib/mdt        # config + cached baseline

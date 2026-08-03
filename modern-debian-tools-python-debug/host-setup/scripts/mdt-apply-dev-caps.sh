@@ -10,10 +10,14 @@
 #     systemd < 256 where the MemoryZSwapWriteback= directive doesn't exist;
 #     harmless double-set on newer hosts)
 #   - per-container caps: test-runner/buildx_buildkit_*/devcontainer scopes get
-#     io.max at BENCH_IO_CAP_PCT% of the baseline (bench+buildkit additionally
-#     get IOWeight=1; the devcontainer does not — it is the IDE). Docker scopes
-#     are transient units: they exist only while the container runs, so this
-#     can only ever be done at runtime, never declaratively in a unit file.
+#     io.max at SWEEP_IO_CAP_PCT% of the baseline (bench+buildkit additionally
+#     get IOWeight=1; the devcontainer does not — it is the IDE). This is the
+#     ONLY governance buildx_buildkit_* workers get at all: Buildx's own
+#     cgroup-parent driver-opt is unreliable under the systemd cgroup driver
+#     (docs/BUILD-ARCHITECTURE.md), so they can't be PLACED under dev.slice —
+#     DEV_IO_CAP_PCT's aggregate never reaches them. Docker scopes are also
+#     transient units: they exist only while the container runs, so this can
+#     only ever be done at runtime, never declaratively in a unit file.
 #   - cgroup2 mount-flag check: without memory_recursiveprot every slice-level
 #     MemoryLow/MemoryMin silently stops protecting container pages
 # Idempotent; tolerant of missing docker/baseline/slices. Config:
@@ -28,9 +32,27 @@ log(){ echo "[mdt-dev-caps] $*"; }
 [ -f "$CONF" ] && . "$CONF" || log "WARN: $CONF not found — using built-in defaults"
 
 DEV_IO_CAP_PCT="${DEV_IO_CAP_PCT:-60}"
-BENCH_IO_CAP_PCT="${BENCH_IO_CAP_PCT:-80}"
-BENCH_IMAGE_PATTERNS="${BENCH_IMAGE_PATTERNS:-*test-runner*}"
-BENCH_NAME_PATTERNS="${BENCH_NAME_PATTERNS:-buildx_buildkit_*}"
+# SWEEP_IO_CAP_PCT / TESTRUNNER_IMAGE_PATTERNS / BUILDKIT_NAME_PATTERNS renamed
+# 2026-08-03 from BENCH_* for clarity (the old name implied "benchmark only";
+# the percentage applies to bench+buildkit+devcontainer alike, and the two
+# pattern vars each match a DIFFERENT one of those categories — see
+# host-setup.env.example). Back-compat: an old BENCH_* value in an already-
+# installed /etc/mdt/host-setup.env still works, loudly, for one release.
+if [ -z "${SWEEP_IO_CAP_PCT:-}" ] && [ -n "${BENCH_IO_CAP_PCT:-}" ]; then
+  log "WARN: BENCH_IO_CAP_PCT is renamed SWEEP_IO_CAP_PCT — using the old value ($BENCH_IO_CAP_PCT) for now; update /etc/mdt/host-setup.env"
+  SWEEP_IO_CAP_PCT="$BENCH_IO_CAP_PCT"
+fi
+if [ -z "${TESTRUNNER_IMAGE_PATTERNS:-}" ] && [ -n "${BENCH_IMAGE_PATTERNS:-}" ]; then
+  log "WARN: BENCH_IMAGE_PATTERNS is renamed TESTRUNNER_IMAGE_PATTERNS — using the old value for now; update /etc/mdt/host-setup.env"
+  TESTRUNNER_IMAGE_PATTERNS="$BENCH_IMAGE_PATTERNS"
+fi
+if [ -z "${BUILDKIT_NAME_PATTERNS:-}" ] && [ -n "${BENCH_NAME_PATTERNS:-}" ]; then
+  log "WARN: BENCH_NAME_PATTERNS is renamed BUILDKIT_NAME_PATTERNS — using the old value for now; update /etc/mdt/host-setup.env"
+  BUILDKIT_NAME_PATTERNS="$BENCH_NAME_PATTERNS"
+fi
+SWEEP_IO_CAP_PCT="${SWEEP_IO_CAP_PCT:-80}"
+TESTRUNNER_IMAGE_PATTERNS="${TESTRUNNER_IMAGE_PATTERNS:-*test-runner*}"
+BUILDKIT_NAME_PATTERNS="${BUILDKIT_NAME_PATTERNS:-buildx_buildkit_*}"
 DEVCONTAINER_NAME_PATTERNS="${DEVCONTAINER_NAME_PATTERNS:-*devcontainer*}"
 CGROUP2_FLAGS="${CGROUP2_FLAGS:-warn}"
 IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
@@ -150,12 +172,12 @@ _apply_container_caps() {
   [ -d "$scope" ] || return 0
   unit="${scope##*/}"
   [ "$deprio" = 1 ] && props+=(IOWeight=1)
-  props+=("IOReadBandwidthMax=$IO_DEV_PATH $BENCH_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $BENCH_WBPS"
-          "IOReadIOPSMax=$IO_DEV_PATH $BENCH_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $BENCH_WIOPS")
+  props+=("IOReadBandwidthMax=$IO_DEV_PATH $SWEEP_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $SWEEP_WBPS"
+          "IOReadIOPSMax=$IO_DEV_PATH $SWEEP_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $SWEEP_WIOPS")
   # set-property (not a raw io.max write): systemd re-applies its own recorded
   # properties to a scope on every daemon-reload, silently wiping raw writes.
   if systemctl set-property --runtime "$unit" "${props[@]}" 2>/dev/null; then
-    log "$label ($cid): io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS $((BENCH_RBPS/1048576))/$((BENCH_WBPS/1048576))MB/s r/w (${BENCH_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
+    log "$label ($cid): io.max=${SWEEP_RIOPS}r/${SWEEP_WIOPS}w IOPS $((SWEEP_RBPS/1048576))/$((SWEEP_WBPS/1048576))MB/s r/w (${SWEEP_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
   else
     log "WARN: $label ($cid): set-property failed — skipped"
     return 0
@@ -167,32 +189,34 @@ _apply_container_caps() {
 }
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  # Per-container ceilings: BENCH_IO_CAP_PCT% of baseline, static fallbacks
-  # when no baseline exists (tight on purpose — measure!).
-  BENCH_RBPS="${BENCH_RBPS:-31457280}"; BENCH_WBPS="${BENCH_WBPS:-31457280}"
-  BENCH_RIOPS="${BENCH_RIOPS:-200}";    BENCH_WIOPS="${BENCH_WIOPS:-400}"
-  BENCH_SRC="static fallback — no baseline, run mdt-io-baseline.py"
+  # Per-container ceilings: SWEEP_IO_CAP_PCT% of baseline, static fallbacks
+  # when no baseline exists (tight on purpose — measure!). Applies to every
+  # category this sweep matches below (test-runner/"bench", buildkit,
+  # devcontainer) — one percentage, three container categories.
+  SWEEP_RBPS="${SWEEP_RBPS:-31457280}"; SWEEP_WBPS="${SWEEP_WBPS:-31457280}"
+  SWEEP_RIOPS="${SWEEP_RIOPS:-200}";    SWEEP_WIOPS="${SWEEP_WIOPS:-400}"
+  SWEEP_SRC="static fallback — no baseline, run mdt-io-baseline.py"
   # All four or none: a partial baseline would derive a 0 cap, and 0 in io.max
   # is not "unlimited", it stops the container's IO dead.
   if [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] \
      && [ -n "${RBW_MAX_BPS:-}" ] && [ -n "${WBW_MAX_BPS:-}" ]; then
-    BENCH_RIOPS=$(( RIOPS_MAX   * BENCH_IO_CAP_PCT / 100 ))
-    BENCH_WIOPS=$(( WIOPS_MAX   * BENCH_IO_CAP_PCT / 100 ))
-    BENCH_RBPS=$((  RBW_MAX_BPS * BENCH_IO_CAP_PCT / 100 ))
-    BENCH_WBPS=$((  WBW_MAX_BPS * BENCH_IO_CAP_PCT / 100 ))
-    BENCH_SRC="${BENCH_IO_CAP_PCT}% of baseline"
+    SWEEP_RIOPS=$(( RIOPS_MAX   * SWEEP_IO_CAP_PCT / 100 ))
+    SWEEP_WIOPS=$(( WIOPS_MAX   * SWEEP_IO_CAP_PCT / 100 ))
+    SWEEP_RBPS=$((  RBW_MAX_BPS * SWEEP_IO_CAP_PCT / 100 ))
+    SWEEP_WBPS=$((  WBW_MAX_BPS * SWEEP_IO_CAP_PCT / 100 ))
+    SWEEP_SRC="${SWEEP_IO_CAP_PCT}% of baseline"
   fi
-  if [ "$BENCH_RIOPS" -lt 1 ] || [ "$BENCH_WIOPS" -lt 1 ] \
-     || [ "$BENCH_RBPS" -lt 1 ] || [ "$BENCH_WBPS" -lt 1 ]; then
+  if [ "$SWEEP_RIOPS" -lt 1 ] || [ "$SWEEP_WIOPS" -lt 1 ] \
+     || [ "$SWEEP_RBPS" -lt 1 ] || [ "$SWEEP_WBPS" -lt 1 ]; then
     log "WARN: derived per-container cap <= 0 (bad baseline?) — skipping the container sweep"
-    BENCH_SWEEP=0
+    SWEEP_SKIP=1
   fi
-  for c in $([ "${BENCH_SWEEP:-1}" = 1 ] && docker ps -q 2>/dev/null); do
+  for c in $([ "${SWEEP_SKIP:-0}" = 0 ] && docker ps -q 2>/dev/null); do
     img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
     name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | tr -d '/' || true)
-    if _match "$img" "$BENCH_IMAGE_PATTERNS"; then
+    if _match "$img" "$TESTRUNNER_IMAGE_PATTERNS"; then
       _apply_container_caps "$c" "bench:$name" 1
-    elif _match "$name" "$BENCH_NAME_PATTERNS"; then
+    elif _match "$name" "$BUILDKIT_NAME_PATTERNS"; then
       _apply_container_caps "$c" "buildkit:$name" 1
     elif _match "$name" "$DEVCONTAINER_NAME_PATTERNS"; then
       _apply_container_caps "$c" "devcontainer:$name" 0
