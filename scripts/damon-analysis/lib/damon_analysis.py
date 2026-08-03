@@ -782,41 +782,76 @@ def get_process_info(pid: int) -> Dict:
 
 
 def get_container_pids(container_name: str) -> List[int]:
-    """Get all PIDs in a Docker/Podman container."""
-    pids = []
-    try:
-        # Try Docker
-        result = subprocess.run(
-            ['docker', 'inspect', '--format', '{{.State.Pid}}',
-             container_name],
-            capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            container_pid = int(result.stdout.strip())
-            pids = _get_child_pids(container_pid)
-            if pids:
-                return pids
-    except Exception:
-        pass
+    """Get all PIDs in a Docker/Podman container.
 
-    try:
-        # Try Podman
-        result = subprocess.run(
-            ['podman', 'inspect', '--format', '{{.State.Pid}}',
-             container_name],
-            capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
+    Resolved via the container's cgroup (cgroup.procs), not a PPID walk from
+    .State.Pid: `docker exec`'d processes (a devcontainer's VS Code server,
+    attached shells, etc.) are cgroup members but are reparented to the
+    host's exec helper/reaper, not to the container's PID 1 — a PPID tree
+    walk from .State.Pid never finds them. cgroup.procs is the authoritative
+    membership list regardless of ancestry, and covers any nested
+    sub-cgroups (e.g. an "init" wrapper) too.
+    """
+    pids = []
+    for tool in ('docker', 'podman'):
+        try:
+            result = subprocess.run(
+                [tool, 'inspect', '--format', '{{.State.Pid}}',
+                 container_name],
+                capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                continue
             container_pid = int(result.stdout.strip())
-            pids = _get_child_pids(container_pid)
+            cgroup_path = _get_cgroup_path(container_pid)
+            if cgroup_path:
+                pids = _get_cgroup_pids(cgroup_path)
+            if not pids:
+                pids = _get_child_pids(container_pid)  # fallback: old PPID walk
             if pids:
                 return pids
-    except Exception:
-        pass
+        except Exception:
+            continue
 
     return pids
 
 
+def _get_cgroup_path(pid: int) -> Optional[str]:
+    """Resolve a PID's cgroup v2 path, relative to /sys/fs/cgroup."""
+    try:
+        with open(f'/proc/{pid}/cgroup', 'r') as f:
+            for line in f:
+                # unified (v2) hierarchy line is "0::/path/to/cgroup"
+                parts = line.strip().split(':', 2)
+                if len(parts) == 3 and parts[0] == '0' and parts[1] == '':
+                    return parts[2]
+    except (OSError, IOError, IndexError):
+        pass
+    return None
+
+
+def _get_cgroup_pids(cgroup_path: str, cgroup_root: str = '/sys/fs/cgroup') -> List[int]:
+    """Read cgroup.procs for a cgroup and every nested descendant cgroup —
+    the authoritative membership list (handles docker-exec'd processes,
+    which a PPID walk from the container's init process misses entirely)."""
+    pids: List[int] = []
+    base = os.path.join(cgroup_root, cgroup_path.lstrip('/'))
+    for dirpath, _dirnames, filenames in os.walk(base):
+        if 'cgroup.procs' not in filenames:
+            continue
+        try:
+            with open(os.path.join(dirpath, 'cgroup.procs'), 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.isdigit():
+                        pids.append(int(line))
+        except OSError:
+            continue
+    return pids
+
+
 def _get_child_pids(parent_pid: int) -> List[int]:
-    """Get all child PIDs recursively."""
+    """Get all child PIDs recursively (PPID-walk fallback; misses
+    docker-exec'd processes — see get_container_pids)."""
     pids = [parent_pid]
     try:
         for entry in os.listdir('/proc'):

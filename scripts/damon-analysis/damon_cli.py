@@ -749,6 +749,14 @@ def cmd_auto_lru_sort(args):
         hot_thres = args.hot_thres or 500  # permil (50%)
         cold_age_us = int((args.cold_age or 120) * 1_000_000)
 
+        # damon_stat runs by default (CONFIG_DAMON_STAT_ENABLED_DEFAULT=y) and
+        # occupies the kdamond slot damon_lru_sort needs — enabling otherwise
+        # fails with a bare EIO and no dmesg trace. Same fix cmd_monitor_pid
+        # already applies before starting a manual damo session.
+        if not disable_damon_stat():
+            die("Could not disable damon_stat (needed to free the kdamond "
+                "damon_lru_sort requires)")
+
         print(f"[*] Enabling DAMON_LRU_SORT...", file=sys.stderr)
         print(f"    hot_thres_access_freq: {hot_thres}‰", file=sys.stderr)
         print(f"    cold_min_age: {cold_age_us}µs ({args.cold_age or 120}s)", file=sys.stderr)
