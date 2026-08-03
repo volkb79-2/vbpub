@@ -446,6 +446,44 @@ class TestL7Paths:
         l7_errors = [f for f in findings if f.rule == "L7"]
         assert len(l7_errors) > 0
 
+    def test_source_ref_into_archive_is_blocking_l7(self, sample_project, tmp_path):
+        """CR-01 (DR-04): a source.ref pointing at an archived/superseded
+        doc fails L7, naming the reference and its lifecycle reason -- even
+        though the archived file genuinely exists (existence alone is not
+        enough; L7's existence check runs AFTER the archive check)."""
+        _write_archived_doc(sample_project.root, "docs/archive/product-docs/OLD.md")
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review, ref: "docs/archive/product-docs/OLD.md"}
+            scope: {touch: ["src/test.py"]}
+            oracles:
+              - id: O1
+                observable: "pass"
+                negative: "fail"
+                gate: pytest-q
+            gates: [pytest-q]
+            escalate_if: ["trigger"]
+            ---
+
+            Body with BLOCKED: marker.
+            worktree branch out of scope read first context to read
+            """)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+
+        findings = lint.lint_file(path, sample_project)
+        l7_errors = [f for f in findings if f.rule == "L7"]
+        assert l7_errors, findings
+        assert any("archived document" in f.message for f in l7_errors)
+        assert any("docs/archive/product-docs/OLD.md" in f.message for f in l7_errors)
+        assert any("superseded by nyxloom-trove/3-roadmap.md" in f.message for f in l7_errors)
+
     def test_relative_up_path_error(self, sample_project, tmp_path):
         """Test L7 error for relative-up path."""
         content = textwrap.dedent("""\
@@ -1027,8 +1065,6 @@ class TestConfigLintSchema:
             ref_stubs=(
                 "docs/SPEC.md",
                 "docs/ARCHITECTURE.md",
-                "docs/ROADMAP.md",
-                "docs/EVOLUTION.md",
             ),
         )
         cfg = config.ProjectConfig.load(root)
@@ -1182,6 +1218,105 @@ class TestConfigLintRefs:
         assert cfg3, findings
         assert "../outside.md" in cfg3[0].message
         assert lint.has_blocking(findings)
+
+
+_ARCHIVED_SUPERSEDED_DOC = """\
+---
+lifecycle: archived
+status: superseded
+archived_date: "2026-08-03"
+superseded_by: nyxloom-trove/3-roadmap.md
+reason: test fixture
+---
+
+# archived
+"""
+
+
+def _write_archived_doc(root: Path, rel: str = "docs/archive/product-docs/OLD.md") -> None:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_ARCHIVED_SUPERSEDED_DOC)
+
+
+class TestConfigLintArchiveRefs:
+    """CFG4 (CR-01, DR-04): a [refs] entry that resolves into docs/archive/
+    is rejected -- naming the ref, the resolved archive path, and (when the
+    archived doc's own lifecycle frontmatter is readable) its reason."""
+
+    def test_ref_into_archive_is_blocking_cfg4(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        _write_archived_doc(root)
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"', 'spec = "docs/archive/product-docs/OLD.md"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(config.ProjectConfig.load(root))
+        cfg4 = [f for f in findings if f.rule == "CFG4"]
+        assert cfg4, findings
+        assert all(f.severity == "error" for f in cfg4)
+        assert "spec" in cfg4[0].message
+        assert "docs/archive/product-docs/OLD.md" in cfg4[0].message
+        assert "superseded by nyxloom-trove/3-roadmap.md" in cfg4[0].message
+        assert lint.has_blocking(findings)
+
+    def test_ref_into_archive_via_dotdot_normalization_is_blocking_cfg4(self, tmp_path):
+        """A ref that stays nominally 'under docs/' but normalizes (via '..')
+        into the archive must be caught the same as a direct path -- proves
+        containment is checked post-resolve, not by string prefix."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        _write_archived_doc(root)
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"',
+            'spec = "docs/../docs/archive/product-docs/OLD.md"',
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(config.ProjectConfig.load(root))
+        cfg4 = [f for f in findings if f.rule == "CFG4"]
+        assert cfg4, findings
+
+    def test_ref_into_archive_via_symlink_is_blocking_cfg4(self, tmp_path):
+        """A ref path that is NOT lexically under docs/archive/ but resolves
+        there through a symlink must still be caught (containment is
+        checked after symlink resolution)."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        _write_archived_doc(root)
+        link = root / "docs" / "SNEAKY.md"
+        link.symlink_to(root / "docs" / "archive" / "product-docs" / "OLD.md")
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"', 'spec = "docs/SNEAKY.md"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(config.ProjectConfig.load(root))
+        cfg4 = [f for f in findings if f.rule == "CFG4"]
+        assert cfg4, findings
+        assert "docs/SNEAKY.md" in cfg4[0].message
+
+    def test_ref_into_archive_with_unreadable_metadata_still_blocks(self, tmp_path):
+        """Fail-closed (CR-01 contract item 6): an archived doc whose OWN
+        frontmatter is missing/unparsable is still excluded -- containment
+        alone decides, metadata only enriches the message."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        junk = root / "docs" / "archive" / "product-docs" / "JUNK.md"
+        junk.parent.mkdir(parents=True, exist_ok=True)
+        junk.write_text("not frontmatter at all\n")
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"', 'spec = "docs/archive/product-docs/JUNK.md"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(config.ProjectConfig.load(root))
+        cfg4 = [f for f in findings if f.rule == "CFG4"]
+        assert cfg4, findings
+        assert "lifecycle metadata unreadable" in cfg4[0].message
+
+    def test_ref_outside_archive_has_no_cfg4_finding(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        findings = lint.lint_config(config.ProjectConfig.load(root))
+        assert [f for f in findings if f.rule == "CFG4"] == []
 
 
 class TestConfigLintWorktreeRoot:

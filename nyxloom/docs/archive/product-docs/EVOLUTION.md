@@ -1,4 +1,22 @@
-# Evolution from the md-file workflow
+---
+lifecycle: archived
+status: historical
+archived_date: "2026-08-03"
+reason: >-
+  Describes the one-time M0-M4 migration from the pre-nyxloom md-file
+  workflow to "draft 2" (tick-based dispatch). That migration is complete and
+  was itself superseded by the "daemon from the start" amendment (README.md
+  deciding log, 2026-07-15) before most of its milestones were reached in the
+  form described here. No current document performs the same function
+  because there is no ongoing evolution to document; this is pure history.
+---
+
+# Evolution from the md-file workflow (archived — historical)
+
+> **Archived 2026-08-03 — historical.** This document describes a completed,
+> one-time migration. No current authority replaces it (there is nothing
+> ongoing left to document); do not treat any step below as a live rollback
+> plan.
 
 Status: **design / pilot**. Draft 1 needed a *migration* (importer → drift
 audit → shadow → cutover) because it introduced a second store. Draft 2 needs

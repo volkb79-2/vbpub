@@ -1,7 +1,12 @@
 # nyxloom — nyxloom trove
 
-This folder is **nyxloom's own** nyxloom content: its direction documents,
-handoffs, reports, decisions, and project-specific instructions.
+<!-- product-truth:trove_path=nyxloom-trove -->
+
+This folder, `nyxloom-trove/`, is **nyxloom's own** nyxloom content: its
+direction documents, handoffs, reports, decisions, and project-specific
+instructions — the folder `nyxloom-trove/nyxloom.toml`'s `[project]` section
+loads as its trove (`tests/test_product_truth.py` asserts this marker still
+names the folder that is actually loaded, CR-01/DR-04).
 
 ## Where the rules live (upstream, not here)
 

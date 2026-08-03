@@ -7,19 +7,31 @@ rather than from cron; §9's tick-vs-daemon graduation is decided in the
 daemon's favor. All invariants stand: disk authoritative, idempotent pass,
 detached wrappers, flock leases, zero AI in the control path.
 
+> **Storage correction (CR-01/DR-04, 2026-08-03):** §1's "files are the
+> database" model is the ORIGINAL design and is superseded for the runtime
+> state store specifically — SQLite is the live authoritative backend
+> (`NYXLOOM_STATE_BACKEND=sqlite`, cutover 2026-07-21; see README's "Current
+> state", machine-checked by `tests/test_product_truth.py`). The repo-side
+> contract below (handoff frontmatter as the single source, no JSON
+> sidecars) is unaffected — only the "host side — the runtime" subsection's
+> `events.jsonl`/statefile description is superseded. CR-04 removes the file
+> backend and its selector; this note stays until that lands, at which point
+> §1 itself should be rewritten rather than annotated.
+
 Inherits draft 1's planes (product / control / execution / evidence) and its
 security boundary; this document specifies the draft-2 realization. Deltas
 from draft 1 are justified in [../REVIEW-OF-DRAFT1.md](../REVIEW-OF-DRAFT1.md)
 (referenced as F1…F12).
 
-## 1. Files are the database (F1, F4)
+## 1. Files are the database (F1, F4) — original design; see storage correction above
 
 ### Repo side — the contract (committed, portable)
 
 ```text
 docs/.../handoff/<task>.md      # SINGLE SOURCE: YAML frontmatter (machine) + body (contract)
 docs/.../handoff/reports/       # P<NN>-LOG.md, -REPORT.md, -SELFREVIEW.md + receipt.json
-docs/ROADMAP.md                 # product-owned
+nyxloom-trove/roadmap.md        # product-owned (or the direction-spine
+                                 # 3-roadmap.md, when a project has adopted it)
 docs/DECISIONS-INBOX.md         # product-owned; entries carry D-IDs and resume prompts
 .nyxloom/project.toml        # project policy: gates, mutexes, globs, caps, redaction
 AGENTS.md                       # hard rules + canonical pointers (tool files are thin shims)

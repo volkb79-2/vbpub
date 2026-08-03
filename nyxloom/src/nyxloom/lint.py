@@ -5,8 +5,11 @@ INTERFACE CONTRACT (frozen):
 - lint_file(path, cfg) -> list[LintFinding]; lint_project(cfg) ->
   dict[str(relpath), list[LintFinding]]. lint_project folds in the project's
   own nyxloom.toml under its root-relative path (see lint_config, PACKAGE
-  P24, rule namespace CFG1-CFG3 — schema/semantic checks on the raw config,
-  independent of the handoff rules L1-L12 above).
+  P24, rule namespace CFG1-CFG4 — schema/semantic checks on the raw config,
+  independent of the handoff rules L1-L12 above), plus one entry per
+  lifecycle-tracked archived doc (see lint_archive, PACKAGE CR-01, rule
+  namespace ARC1; doc_lifecycle.py owns the archive-containment model CFG4,
+  L7's archive check, and ARC1 all share).
 - A parse/schema failure IS finding L1 (severity error) and short-circuits
   the other rules for that file.
 - severity: 'error' blocks the carve (exit 1 in CLI); 'warning' reports only.
@@ -51,7 +54,12 @@ L7  error   every repo-relative path referenced in frontmatter (scope.touch,
             starting with '../' or an absolute path outside cfg.root is
             flagged 'non-resolving reference (P69)'. For the body: markdown
             links/inline code containing '/'-paths starting with '../' or
-            '/workspaces/<other-repo>' are flagged as warning.
+            '/workspaces/<other-repo>' are flagged as warning. ADDITIONALLY
+            (CR-01, DR-04): a source.ref that resolves (doc_lifecycle.
+            is_archived -- symlinks + '..' normalization resolved first, so
+            an escape can't dodge this) inside docs/archive/ is flagged
+            'reference to archived document (CR-01)' with the archive's
+            lifecycle reason (doc_lifecycle.describe) appended when readable.
 L8  error   escalate_if entries containing introspective phrasing
             (r'(reflect|consider whether|feel|expertise|confident)') are
             flagged 'non-mechanical escalation trigger (P51)'.
@@ -137,7 +145,7 @@ from pathlib import Path
 
 import jsonschema
 
-from . import backlog_items, frontmatter, paths
+from . import backlog_items, doc_lifecycle, frontmatter, paths
 from .config import ProjectConfig
 from .log import get_logger
 from .types import LintFinding, utc_now
@@ -221,7 +229,9 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     configured direction-spine doc (see lint_spine, PACKAGE F1, rule
     namespace S1-S5) -- merged in (not overwritten) since a spine S3 finding
     for a missing/unset key is keyed to the SAME nyxloom.toml path lint_config
-    already populated."""
+    already populated -- plus one entry per lifecycle-tracked archived doc
+    under docs/archive/product-docs/ (see doc_lifecycle.lint_archive,
+    PACKAGE CR-01, rule namespace ARC1)."""
     results = {}
     for handoff_path in frontmatter.discover_handoffs(cfg):
         rel_path = str(handoff_path.relative_to(cfg.root))
@@ -234,6 +244,8 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
         results[str(backlog_path.relative_to(cfg.root))] = lint_backlog(cfg)
     for rel_path, spine_findings in lint_spine(cfg).items():
         results.setdefault(rel_path, []).extend(spine_findings)
+    for rel_path, archive_findings in doc_lifecycle.lint_archive(cfg).items():
+        results.setdefault(rel_path, []).extend(archive_findings)
     log.debug("lint project", project_id=cfg.project_id, file_count=len(results),
               finding_count=sum(len(f) for f in results.values()))
     return results
@@ -309,7 +321,7 @@ def _locate_config_path(cfg: ProjectConfig) -> Path | None:
 def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
     """Findings for the project's raw nyxloom.toml (schema + semantic checks).
 
-    Rule namespace CFG1-CFG3 (separate from the handoff rules L1-L12):
+    Rule namespace CFG1-CFG4 (separate from the handoff rules L1-L12):
     CFG1 schema violation against schemas/nyxloom-config.schema.json (covers
          missing/empty [gates.*].argv, [project] missing id/handoff_globs,
          wrong-typed [policy] values, etc).
@@ -317,6 +329,18 @@ def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
          (absence is fine — ProjectConfig.load defaults it).
     CFG3 every [refs] path must resolve under cfg.root ([refs] is dropped by
          ProjectConfig.load, so this reads the raw TOML directly).
+    CFG4 (CR-01, DR-04) every [refs] path that DOES resolve under cfg.root
+         (CFG3 clean) must not resolve inside docs/archive/ -- an archived/
+         superseded/historical document is never a valid current [refs]
+         target. Symlinks and '..' segments are resolved before the
+         containment test (doc_lifecycle.is_archived), so neither can be
+         used to dodge the check. The message names the ref key, the
+         resolved path, and -- when the archived doc's own lifecycle
+         frontmatter is readable -- its lifecycle.describe() reason
+         ('superseded by <path>' / 'historical (no current successor)').
+         Fails closed: an archived doc whose OWN frontmatter is unreadable
+         is still flagged (containment alone decides exclusion; content is
+         read only to enrich the message, never to decide it).
     """
     findings: list[LintFinding] = []
     config_path = _locate_config_path(cfg)
@@ -368,6 +392,35 @@ def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
             rule="CFG3",
             severity="error",
             message=f"refs.{ref_name} path '{ref_path}' {reason}; must resolve under project root",
+            path=str(config_path),
+        ))
+
+    # CFG4 (CR-01, DR-04): a [refs] path that IS under the project root must
+    # not resolve into docs/archive/ -- checked only for refs that passed
+    # CFG3 (an already-broken ref gets exactly one finding, not two).
+    cfg3_bad_names = {
+        ref_name for ref_name, ref_path in raw.get("refs", {}).items()
+        if isinstance(ref_path, str) and any(
+            f.rule == "CFG3" and f.message.startswith(f"refs.{ref_name} ")
+            for f in findings
+        )
+    }
+    for ref_name, ref_path in raw.get("refs", {}).items():
+        if not isinstance(ref_path, str) or ref_name in cfg3_bad_names:
+            continue
+        target = cfg.root / ref_path
+        if not doc_lifecycle.is_archived(cfg.root, target):
+            continue
+        resolved_rel = target.resolve().relative_to(root_resolved)
+        findings.append(LintFinding(
+            rule="CFG4",
+            severity="error",
+            message=(
+                f"refs.{ref_name} path '{ref_path}' resolves to archived "
+                f"document '{resolved_rel}' ({doc_lifecycle.describe(target.resolve())}); "
+                "an archived/superseded/historical document cannot be an "
+                "active [refs] target"
+            ),
             path=str(config_path),
         ))
 
@@ -945,6 +998,23 @@ def _check_path_resolution(findings: list[LintFinding], path: Path, check_path: 
         return
 
     full_path = cfg.root / check_path
+    # CR-01 (DR-04): a reference into docs/archive/ is never valid, whether
+    # or not it exists on disk under that name today -- checked before the
+    # existence test below so an archived doc (which DOES exist) is flagged
+    # for the right reason, not silently accepted.
+    if doc_lifecycle.is_archived(cfg.root, full_path):
+        resolved = full_path.resolve()
+        findings.append(LintFinding(
+            rule="L7",
+            severity="error",
+            message=(
+                f"reference to archived document '{check_path}' "
+                f"({doc_lifecycle.describe(resolved)}) (CR-01)"
+            ),
+            path=str(path)
+        ))
+        return
+
     # Files to be created (in scope.touch) are exempt
     if not is_touch and not full_path.exists():
         findings.append(LintFinding(

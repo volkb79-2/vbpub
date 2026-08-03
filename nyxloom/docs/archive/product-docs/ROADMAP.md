@@ -1,4 +1,25 @@
-# nyxloom roadmap
+---
+lifecycle: archived
+status: superseded
+archived_date: "2026-08-03"
+superseded_by: nyxloom-trove/3-roadmap.md
+reason: >-
+  This M0-M5 tick/wrapper/dispatch narrative predates the "daemon from the
+  start" amendment (README.md deciding log, 2026-07-15) and the adopted
+  direction-spine roadmap. nyxloom's actual self-dev milestones (schema-
+  validated, lint S1-S5-checked) live at nyxloom-trove/3-roadmap.md, which
+  nyxloom.toml's `roadmap` key points at. CR-01 (DR-04) archived this file
+  because two roadmap documents made "what milestone is active" ambiguous by
+  construction.
+---
+
+# nyxloom roadmap (archived — historical design doc, superseded)
+
+> **Archived 2026-08-03 — superseded by
+> [`nyxloom-trove/3-roadmap.md`](../../../nyxloom-trove/3-roadmap.md).** The
+> milestones below (M0-M5) describe the original tick/wrapper design and do
+> not reflect the shipped daemon architecture or nyxloom's current milestones.
+> Kept for historical reference only; do not treat any claim below as current.
 
 Status: **design / pilot**. No milestone is complete because it appears here;
 evidence links land when implementation begins. Ordering principle: every

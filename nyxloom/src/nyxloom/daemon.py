@@ -357,9 +357,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import (
-    adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat, decisions,
-    frontmatter, gate_canary, gate_runner, intake_chat, leases, lint, merge_digest, notify,
-    paths, reconcile, render, stages, storage, watchdog, wrapper,
+    adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat,
+    decisions, doc_lifecycle, frontmatter, gate_canary, gate_runner, intake_chat, leases,
+    lint, merge_digest, notify, paths, reconcile, render, stages, storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -3610,36 +3610,60 @@ class Daemon:
         backlog_items.is_briefed) instead of the generic file pointers below
         -- so a direct carve of a briefed item loses no interview context.
         An un-briefed/legacy item still gets only a plain reference (no
-        invented brief)."""
+        invented brief).
+
+        CR-01 (DR-04) 2026-08-03: resolution order is now the ADOPTED
+        direction-spine config key (`cfg.backlog`/`cfg.roadmap`, e.g.
+        nyxloom-trove/4-backlog.md / 3-roadmap.md) FIRST, then the plain
+        trove convention, then the legacy docs/ path -- a project that
+        adopted the spine (like nyxloom itself) must never fall through to
+        a stale legacy doc just because the plain `nyxloom-trove/roadmap.md`
+        filename doesn't exist. Every candidate is also checked against
+        doc_lifecycle.is_archived (containment-only, no content read) so an
+        archived/superseded document can never surface here even if a
+        caller later repoints a legacy path back onto one by hand -- this is
+        the daemon's "context collection" surface CR-01's contract names."""
         if item_id is not None:
             return self._targeted_item_note_lines(cfg, item_id)
 
         lines = []
-        # Backlog: trove-first, then legacy docs/BACKLOG.md.
-        backlog = cfg.root / "nyxloom-trove" / "backlog.md"
-        if not backlog.exists():
-            backlog = cfg.root / "docs" / "BACKLOG.md"
+        backlog = self._first_live_source(cfg, [cfg.backlog, "nyxloom-trove/backlog.md", "docs/BACKLOG.md"])
         lines.append(
             f"- backlog: {backlog.relative_to(cfg.root)}"
-            if backlog.exists()
+            if backlog is not None
             else "- backlog: none found (nyxloom-trove/backlog.md, docs/BACKLOG.md)"
         )
-        # Roadmap: trove-first, then legacy docs/ROADMAP.md.
-        roadmap = cfg.root / "nyxloom-trove" / "roadmap.md"
-        if not roadmap.exists():
-            roadmap = cfg.root / "docs" / "ROADMAP.md"
-        if roadmap.exists():
+        roadmap = self._first_live_source(cfg, [cfg.roadmap, "nyxloom-trove/roadmap.md", "docs/ROADMAP.md"])
+        if roadmap is not None:
             lines.append(f"- roadmap: {roadmap.relative_to(cfg.root)}")
-        gap_files = sorted((cfg.root / "docs").glob("gap-*.md")) if (cfg.root / "docs").exists() else []
+        gap_files = sorted(
+            p for p in ((cfg.root / "docs").glob("gap-*.md") if (cfg.root / "docs").exists() else [])
+            if not doc_lifecycle.is_archived(cfg.root, p)
+        )
         if gap_files:
             lines.append("- gap analysis: " + ", ".join(
                 str(p.relative_to(cfg.root)) for p in gap_files))
-        if not roadmap.exists() and not gap_files:
+        if roadmap is None and not gap_files:
             lines.append(
                 "- roadmap/gap analysis: none found "
                 "(nyxloom-trove/roadmap.md, docs/ROADMAP.md, docs/gap-*.md)"
             )
         return lines
+
+    @staticmethod
+    def _first_live_source(cfg: ProjectConfig, candidates: list[str | None]) -> Path | None:
+        """First candidate (repo-root-relative or None) that resolves to an
+        existing, non-archived file. None entries (an unset spine config
+        key) are skipped. CR-01 (DR-04): the archive check is containment-
+        only (doc_lifecycle.is_archived), so this never has to read a
+        candidate's content to reject it."""
+        for candidate in candidates:
+            if not candidate:
+                continue
+            resolved = cfg.root / candidate
+            if resolved.exists() and not doc_lifecycle.is_archived(cfg.root, resolved):
+                return resolved
+        return None
 
     def _targeted_item_note_lines(self, cfg: ProjectConfig, item_id: str) -> list[str]:
         """P41 2026-07-16: the ONE carve source for a targeted carve --

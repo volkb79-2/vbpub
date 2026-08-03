@@ -87,6 +87,7 @@ so each needs a named owner before that plane is rewritten around it.
 | `src/nyxloom/leases.py` (see above) | 114 | CR-05 |
 | `src/nyxloom/gate_runner.py` | 110 | CR-02, CR-12: shared gate execution primitive; its result is typed evidence bound to a commit |
 | `src/nyxloom/paths.py` | 95 | CR-04: state layout. Frozen through the store rewrite except by an explicit migration contract |
+| `src/nyxloom/doc_lifecycle.py` | 153 | CR-01 (new, 2026-08-03): archive-containment model (`is_archived`) shared by `lint.py` (CFG4/L7/ARC1) and `daemon.py`'s carve-context assembly; a path-only check, never reads archived content to decide exclusion |
 
 ## Existing test pressure and retirement policy
 
