@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from nyxloom import effects, effects_attempt, effects_dispatch, reconcile, storage
+from nyxloom import effects, effects_attempt, effects_dispatch, paths, reconcile, storage
 from nyxloom.types import (
     Attempt, AttemptState, EventType, Role, Route, TaskState, TaskStateFile,
     utc_now,
@@ -77,6 +77,25 @@ def _task(task_id: str, state: TaskState, attempts=()) -> TaskStateFile:
     return TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id,
                          project="demo", state=state, since=utc_now(),
                          attempts=list(attempts))
+
+
+# A route with NO `trust = "operator"` declaration -- containment.
+# requires_containment is True for it, and with NYXLOOM_CONTAINMENT_IMAGE
+# unset, containment.plan_for raises "no-image-configured" deterministically
+# without ever asking docker (see test_effects_dispatch.py's own
+# TestAdmissionRefusesAnUncontainableRoute, which established this).
+UNTRUSTED_SELF_REVIEW_ROUTES_TOML = """\
+revision = "test-rev"
+
+[tiers.flash-high]
+routes = ["untrusted-cli"]
+
+[routes.untrusted-cli]
+cli = "fake"
+model = "fake-model"
+probe = ["true"]
+usage_source = "none"
+"""
 
 
 class TestAdmissionRefusals:
@@ -210,6 +229,55 @@ class TestARouteThatVanishedBetweenPlanningAndExecution:
         assert effects_dispatch.admissible(ctx, "dispatch")[0] is False
         assert effects_dispatch.admissible(ctx, "resume")[0] is True
         assert effects_dispatch.admissible(ctx, "self-review")[0] is True
+
+    def test_a_self_review_whose_borrowed_route_vanished_refuses(
+            self, tmp_state, sample_project):
+        """launch_self_review's OWN route_by_id call -- distinct from the
+        dispatch/resume ones above. The borrowed route is the SOURCE
+        attempt's pinned route (possibly minted a prior pass), re-read from
+        `routes.toml` on disk exactly the same way, so the same divergence
+        applies: a route id that no longer resolves must refuse, not raise."""
+        effector = effects_attempt.AttemptEffector(effects.EffectPorts.system())
+        source = dataclasses.replace(
+            _attempt("a1", "route-that-was-renamed"), session_handle="sess-1")
+        states = {"t1": _task("t1", TaskState.SELF_REVIEWING, attempts=[source])}
+        ctx = _ctx(sample_project, states)
+
+        try:
+            events = effector.launch_self_review(
+                ctx, reconcile.LaunchSelfReview(task_id="t1",
+                                                source_attempt_id="a1"))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"a vanished borrowed route raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert states["t1"].state is TaskState.SELF_REVIEWING, (
+            "a refused self-review must leave the task retried next pass")
+
+    def test_a_self_review_refuses_when_its_resolved_route_cannot_be_contained(
+            self, tmp_state, sample_project, monkeypatch):
+        """The SECOND admission check in launch_self_review -- asked again
+        once the borrowed route is KNOWN, because containment is a property
+        of the route and cannot be answered before route_by_id resolves it.
+        Distinct from the first (pause/budget, no route) refusal covered
+        above: this one is only reachable once a REAL route has resolved."""
+        monkeypatch.delenv("NYXLOOM_CONTAINMENT_IMAGE", raising=False)
+        paths.routes_path().write_text(UNTRUSTED_SELF_REVIEW_ROUTES_TOML)
+        effector = effects_attempt.AttemptEffector(effects.EffectPorts.system())
+        source = dataclasses.replace(
+            _attempt("a1", "untrusted-cli"), session_handle="sess-1")
+        states = {"t1": _task("t1", TaskState.SELF_REVIEWING, attempts=[source])}
+        ctx = _ctx(sample_project, states)
+
+        try:
+            events = effector.launch_self_review(
+                ctx, reconcile.LaunchSelfReview(task_id="t1",
+                                                source_attempt_id="a1"))
+        except Exception as exc:                      # noqa: BLE001 -- the oracle
+            pytest.fail(f"an uncontainable route raised {exc!r} instead of refusing")
+
+        assert events == []
+        assert states["t1"].state is TaskState.SELF_REVIEWING
 
 
 class TestEnsureWorktree:
