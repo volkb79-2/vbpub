@@ -101,7 +101,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import adapters, leases, paths, storage
+from . import adapters, leases, paths, results, storage
 from .config import RouteDef
 from .log import get_logger
 from .types import (
@@ -159,6 +159,17 @@ class WrapperSpec:
     leases: list[dict[str, Any]] = field(default_factory=list)  # {name, capacity}
     env_overrides: dict[str, str] = field(default_factory=dict)
     term_grace_seconds: int = 30
+    # CR-03 (DR-13): which typed result this leg produces, if any. Empty means
+    # "this leg has no agent judgement to collect" (a carve or a diagnosis
+    # today), and the wrapper writes no result document -- rather than writing
+    # an empty one, which a reader could not tell from a leg that answered
+    # nothing.
+    result_kind: str = ""
+    # The tasks this leg judges. Empty means "just task_id". A wave review
+    # judges several tasks in ONE attempt, so the wrapper has to be told which
+    # -- it cannot derive the membership, and guessing from the worktree would
+    # be the same "find the files that look like reviews" scan CR-03 removes.
+    result_tasks: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -217,6 +228,80 @@ def launch_detached(spec: WrapperSpec) -> int:
         # Timeout
         os.waitpid(pid, 0)
         raise TimeoutError(f"wrapper.pid not created within 10s")
+
+
+def _head_commit(cwd: str) -> str:
+    """The worktree's current HEAD, or "" when it cannot be read.
+
+    Mechanically knowable, so the wrapper stamps it rather than asking the
+    agent -- an agent that reported the wrong commit would bind a judgement to
+    a tree it did not review. Empty on failure: an absent expectation is not
+    checked (results._require_identity), so a repository the wrapper cannot
+    read degrades to "no revision claim" rather than to a false one.
+    """
+    try:
+        res = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=15)
+    except Exception:  # census: process-boundary translation (CR-03)
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def _write_typed_results(spec: WrapperSpec, log_text: str) -> None:
+    """Assemble one typed result per judged task, atomically.
+
+    The wrapper is the only party that knows BOTH the agent's conclusion and
+    the facts it must be bound to, which is why the assembly lives here rather
+    than in the daemon (which would have to trust the agent's copy of the
+    facts) or in the agent (which cannot hash its own log).
+
+    A leg that produced no readable judgement still gets a result: a FAILED
+    one naming why. Recording the absence as a typed record rather than as a
+    missing file is what lets the daemon tell "the reviewer never answered"
+    from "the reviewer said no" -- those route differently, and an absence
+    cannot distinguish them.
+    """
+    if not spec.result_kind:
+        return
+    try:
+        kind = results.ResultKind(spec.result_kind)
+    except ValueError:
+        log.error("result-kind-unknown", attempt=spec.attempt_id, kind=spec.result_kind)
+        return
+
+    evidence_bytes = log_text.encode("utf-8", errors="replace")
+    evidence_name = Path(spec.log_path).name
+    head = _head_commit(spec.cwd)
+    attempt_dir = Path(spec.attempt_dir)
+
+    for task_id in (spec.result_tasks or [spec.task_id]):
+        judgement_path = Path(spec.cwd) / results.judgement_filename(task_id)
+        try:
+            raw = judgement_path.read_bytes()
+            judgement = results.load_judgement(
+                raw, task_id=task_id, attempt_id=spec.attempt_id, kind=kind)
+            record = results.bind_evidence(
+                judgement, evidence_path=evidence_name,
+                evidence_bytes=evidence_bytes, head_commit=head)
+        except OSError:
+            record = results.failed_result(
+                kind, task_id=task_id, attempt_id=spec.attempt_id,
+                evidence_path=evidence_name, evidence_bytes=evidence_bytes,
+                detail=f"no judgement at {results.judgement_filename(task_id)}",
+                head_commit=head)
+        except results.ResultRejected as exc:
+            record = results.failed_result(
+                kind, task_id=task_id, attempt_id=spec.attempt_id,
+                evidence_path=evidence_name, evidence_bytes=evidence_bytes,
+                detail=f"judgement refused: {exc.code.value}: {exc.detail}",
+                head_commit=head)
+            log.warning("judgement-refused", attempt=spec.attempt_id, task=task_id,
+                        code=exc.code.value, detail=exc.detail[:200])
+
+        out = attempt_dir / results.result_filename(task_id)
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(record.to_json(), encoding="utf-8")
+        os.replace(tmp, out)
 
 
 def wrapper_main(spec_path: str) -> int:
@@ -321,7 +406,17 @@ def wrapper_main(spec_path: str) -> int:
             # Step 4: Spawn CLI
             log_path = Path(spec.log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            env = child_env(spec.env_overrides)
+            # CR-03 (DR-13): the child is TOLD its identity rather than
+            # asked to transcribe it out of the prompt. An agent that
+            # mistypes an attempt id produces a judgement the reader must
+            # refuse, which reads to an operator as a broken reviewer rather
+            # than as a typo -- and a cheap model copying a hex string is
+            # exactly the kind of mechanical burden that produces those.
+            env = child_env({
+                **spec.env_overrides,
+                "NYXLOOM_TASK_ID": spec.task_id,
+                "NYXLOOM_ATTEMPT_ID": spec.attempt_id,
+            })
 
             with log_path.open("ab") as log_fd:
                 child = subprocess.Popen(
@@ -551,6 +646,13 @@ def wrapper_main(spec_path: str) -> int:
         tmp_path = receipt_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(receipt.to_dict()), encoding="utf-8")
         os.replace(tmp_path, receipt_path)
+
+        # CR-03 (DR-13): collect the agent's judgement and bind it to the
+        # facts. AFTER the receipt, because the receipt records that the
+        # PROCESS ended and this records what the AGENT concluded -- two
+        # different facts, and the process one must survive even if the agent
+        # wrote nothing readable.
+        _write_typed_results(spec, log_text)
 
         # Append event
         state = storage.load_state(spec.project, spec.task_id)

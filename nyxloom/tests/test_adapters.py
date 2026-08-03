@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import adapters, log
+from nyxloom import adapters, results, log
 from nyxloom.config import RouteDef
 from nyxloom.types import Basis, Role
 
@@ -1336,12 +1336,24 @@ def test_self_review_prompt_is_mechanical_oracle_anchored():
     contract so it cannot silently regress to a vague 'review critically'."""
     p = adapters.self_review_prompt(
         task_id="demo-P01", worktree="/w", branch="feat/demo-P01",
-        report_path="reports/demo-P01-SELFREVIEW.md")
+        report_path="reports/demo-P01-SELFREVIEW.md", attempt_id="att-abc123")
     low = p.lower()
     for token in ("oracle", "observable", "real data", "negative", "hollow"):
         assert token in low, f"self_review prompt missing mechanical token {token!r}"
-    assert "SELF_REVIEW: APPROVED" in p and "SELF_REVIEW: REJECTED" in p
     assert "reports/demo-P01-SELFREVIEW.md" in p
+
+    # CR-03 (DR-13): the verdict contract is a TYPED JUDGEMENT, not a prose
+    # line. The prompt must name the exact file the wrapper reads, both
+    # verdict words, and THIS attempt's id -- the agent echoing that id is
+    # what binds its verdict to this run, so a prompt that omitted it would
+    # produce judgements the reader must refuse.
+    assert results.judgement_filename("demo-P01") in p
+    assert '"kind": "self_review"' in p
+    assert '"approved"' in p and '"rejected"' in p
+    assert "att-abc123" in p
+    # ...and the prose line it replaced is gone, so a reviewer cannot satisfy
+    # the prompt by writing something nothing reads.
+    assert "SELF_REVIEW: APPROVED" not in p
 
 
 # ============================================================================

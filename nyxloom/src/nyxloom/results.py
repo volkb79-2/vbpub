@@ -83,6 +83,27 @@ import jsonschema
 SCHEMA_VERSION = 1
 
 _SCHEMA_FILE = "agent-result.schema.json"
+_JUDGEMENT_SCHEMA_FILE = "agent-judgement.schema.json"
+
+def judgement_filename(task_id: str) -> str:
+    """Where a leg's agent writes its judgement for one task, in its worktree.
+
+    ONE derived name, never a search. "Find the file that looks like a review"
+    is the defect this package removes: a misnamed file is now simply absent,
+    which routes to a relaunch, instead of being hunted for by a broadening
+    scan whose every widening was another way to read the wrong file.
+
+    Per TASK rather than per attempt because a wave review judges several
+    tasks in one run, and a single document holding a list would make one
+    malformed entry contaminate every verdict in the wave.
+    """
+    return f"nyxloom-judgement-{task_id}.json"
+
+
+def result_filename(task_id: str) -> str:
+    """Where the wrapper writes the assembled, evidence-bound result for one
+    task, relative to the attempt directory."""
+    return f"result-{task_id}.json"
 
 
 class ResultKind(enum.Enum):
@@ -542,6 +563,150 @@ def load_result(raw: str | bytes | dict, *, expect: ResultIdentity,
         decline_reason=decline_reason,
         schema_version=SCHEMA_VERSION,
         details=dict(doc.get("details") or {}),
+    )
+
+
+@dataclass(frozen=True)
+class Judgement:
+    """The half of a result an AGENT authors: what it concluded.
+
+    It deliberately cannot express evidence, commits or digests. Those are
+    mechanically knowable, so the wrapper stamps them -- which means an agent
+    cannot claim a fact about the repository that the repository disagrees
+    with, and does not have to be trusted to remember one either.
+    """
+
+    kind: ResultKind
+    verdict: Verdict
+    task_id: str
+    attempt_id: str
+    summary: str = ""
+    decline_reason: DeclineReason | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+def _judgement_schema() -> dict:
+    text = (importlib.resources.files("nyxloom.schemas")
+            .joinpath(_JUDGEMENT_SCHEMA_FILE).read_text(encoding="utf-8"))
+    return json.loads(text)
+
+
+def load_judgement(raw: str | bytes, *, task_id: str, attempt_id: str,
+                   kind: ResultKind) -> Judgement:
+    """Validate an agent-authored judgement, or raise :class:`ResultRejected`.
+
+    Same fail-closed contract as :func:`load_result`, over the smaller
+    document an agent is allowed to write. `attempt_id` is compared rather
+    than trusted: a judgement left on the branch by a previous attempt names
+    THAT attempt, so it is inert here -- which is the P59b staleness case
+    turned into a comparison instead of a rule about which file is newest.
+    """
+    try:
+        doc = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ResultRejected(RejectionCode.MALFORMED_DOCUMENT, str(exc)) from exc
+    if not isinstance(doc, dict):
+        raise ResultRejected(RejectionCode.MALFORMED_DOCUMENT,
+                             f"top level is {type(doc).__name__}, expected object")
+
+    version = doc.get("schema_version")
+    if version != SCHEMA_VERSION:
+        raise ResultRejected(
+            RejectionCode.UNSUPPORTED_VERSION,
+            f"judgement declares schema_version {version!r}, this reader "
+            f"implements {SCHEMA_VERSION}")
+
+    validator = jsonschema.Draft202012Validator(_judgement_schema())
+    errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    if errors:
+        first = errors[0]
+        where = ".".join(str(p) for p in first.absolute_path) or "$"
+        raise ResultRejected(_code_for(first), f"{where}: {first.message}")
+
+    record_kind = ResultKind(doc["kind"])
+    if record_kind is not kind:
+        raise ResultRejected(
+            RejectionCode.KIND_MISMATCH,
+            f"judgement is a {record_kind.value} judgement, expected {kind.value}")
+
+    verdict = Verdict(doc["verdict"])
+    if verdict not in ADMISSIBLE_VERDICTS[record_kind]:
+        raise ResultRejected(
+            RejectionCode.UNKNOWN_OUTCOME,
+            f"{verdict.value} is not admissible for a {record_kind.value} judgement")
+
+    if doc["task_id"] != task_id:
+        raise ResultRejected(
+            RejectionCode.STALE_TASK,
+            f"judgement is about {doc['task_id']!r}, expected {task_id!r}")
+    if doc["attempt_id"] != attempt_id:
+        raise ResultRejected(
+            RejectionCode.WRONG_ATTEMPT,
+            f"judgement is about attempt {doc['attempt_id']!r}, expected {attempt_id!r}")
+
+    decline_reason = (DeclineReason(doc["decline_reason"])
+                      if verdict is Verdict.DECLINED else None)
+    return Judgement(
+        kind=record_kind, verdict=verdict,
+        task_id=doc["task_id"], attempt_id=doc["attempt_id"],
+        summary=str(doc.get("summary", "")),
+        decline_reason=decline_reason,
+        details=dict(doc.get("details") or {}),
+    )
+
+
+def bind_evidence(judgement: Judgement, *, evidence_path: str, evidence_bytes: bytes,
+                  base_commit: str = "", head_commit: str = "",
+                  workflow_digest: str = "", prompt_digest: str = "") -> AgentResult:
+    """Assemble the authoritative record from a judgement plus the facts.
+
+    Called by the wrapper, which is the only party that knows both. The
+    digest is computed HERE from the bytes actually persisted, never taken
+    from anything the agent wrote -- a self-reported digest would make the
+    evidence binding a statement of intent rather than a check.
+    """
+    return AgentResult(
+        kind=judgement.kind,
+        verdict=judgement.verdict,
+        identity=ResultIdentity(
+            task_id=judgement.task_id,
+            attempt_id=judgement.attempt_id,
+            base_commit=base_commit,
+            head_commit=head_commit,
+            workflow_digest=workflow_digest,
+            prompt_digest=prompt_digest,
+        ),
+        evidence=Evidence(path=evidence_path, sha256=digest_bytes(evidence_bytes),
+                          bytes_len=len(evidence_bytes)),
+        summary=judgement.summary,
+        decline_reason=judgement.decline_reason,
+        details=judgement.details,
+    )
+
+
+def failed_result(kind: ResultKind, *, task_id: str, attempt_id: str,
+                  evidence_path: str, evidence_bytes: bytes, detail: str,
+                  base_commit: str = "", head_commit: str = "") -> AgentResult:
+    """The result for a leg that produced no usable judgement.
+
+    An agent that crashed, timed out, or wrote an unreadable judgement has
+    FAILED -- a fact about the run, not a judgement about the work. It is
+    recorded as a typed result rather than an absence so the reason survives
+    into the event log: "the reviewer never answered" and "the reviewer said
+    no" route differently, and an absence cannot tell them apart.
+
+    Deliberately never DECLINED: a decline is a claim about capability that
+    only the agent can make, and manufacturing one here would put a promotion
+    in the ladder that nobody asked for.
+    """
+    return AgentResult(
+        kind=kind,
+        verdict=Verdict.FAILED,
+        identity=ResultIdentity(task_id=task_id, attempt_id=attempt_id,
+                                base_commit=base_commit, head_commit=head_commit),
+        evidence=Evidence(path=evidence_path, sha256=digest_bytes(evidence_bytes),
+                          bytes_len=len(evidence_bytes)),
+        summary=detail,
     )
 
 

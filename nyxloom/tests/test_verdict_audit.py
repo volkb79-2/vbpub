@@ -38,6 +38,19 @@ from nyxloom.types import (
 # local helpers (never added to conftest.py -- STANDING.md)
 # --------------------------------------------------------------------------
 
+def _record_review(project, task_id, result):
+    """CR-03 (DR-13): the RECORDED verdict is now the daemon's own
+    REVIEW_RECORDED event, not a fresh markdown scan.
+
+    That is the same fact the merge decision was made on. Re-deriving it from
+    the branch could disagree with what the daemon actually did, and an audit
+    that compares against a re-derivation audits the derivation instead of
+    the decision -- which is the one thing this audit exists to catch."""
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+        type=EventType.REVIEW_RECORDED, payload={"result": result}, task_id=task_id)
+
+
 def _make_feature_branch(root: Path, task_id: str, filename: str, content: str) -> None:
     subprocess.run(["git", "-C", str(root), "branch", f"feat/{task_id}"],
                     check=True, capture_output=True)
@@ -527,11 +540,11 @@ def test_verdict_audit_is_gap_audit_only_negative(tmp_state, sample_project):
 def test_oracle_1_disagreement_yields_disputed_candidate(tmp_state, sample_project):
     cfg = sample_project
     _make_feature_branch(cfg.root, "demo-P80", "p80.py", "# p80\n")
-    _commit_review_report(cfg.root, "demo-P80", cfg.reports_dir, "VERDICT: APPROVED\n")
+    _record_review("demo", "demo-P80", "approved")
 
     d = daemon.Daemon({"demo": cfg.root})
     disputes = d._verdict_audit_disputes(
-        cfg, [{"task_id": "demo-P80", "judgment": "REJECTED", "rationale": "looks unsafe"}])
+        "demo", [{"task_id": "demo-P80", "judgment": "REJECTED", "rationale": "looks unsafe"}])
 
     assert len(disputes) == 1
     assert disputes[0]["task_id"] == "demo-P80"
@@ -542,11 +555,11 @@ def test_oracle_1_disagreement_yields_disputed_candidate(tmp_state, sample_proje
 def test_oracle_2_agreement_produces_nothing(tmp_state, sample_project):
     cfg = sample_project
     _make_feature_branch(cfg.root, "demo-P81", "p81.py", "# p81\n")
-    _commit_review_report(cfg.root, "demo-P81", cfg.reports_dir, "VERDICT: APPROVED\n")
+    _record_review("demo", "demo-P81", "approved")
 
     d = daemon.Daemon({"demo": cfg.root})
     disputes = d._verdict_audit_disputes(
-        cfg, [{"task_id": "demo-P81", "judgment": "APPROVED", "rationale": "looks fine"}])
+        "demo", [{"task_id": "demo-P81", "judgment": "APPROVED", "rationale": "looks fine"}])
 
     assert disputes == []
 
@@ -556,11 +569,11 @@ def test_oracle_2_agreement_on_rejected_also_produces_nothing(tmp_state, sample_
     REJECTED is also a non-event, not just the APPROVED case."""
     cfg = sample_project
     _make_feature_branch(cfg.root, "demo-P82", "p82.py", "# p82\n")
-    _commit_review_report(cfg.root, "demo-P82", cfg.reports_dir, "VERDICT: REJECTED\n")
+    _record_review("demo", "demo-P82", "rejected")
 
     d = daemon.Daemon({"demo": cfg.root})
     disputes = d._verdict_audit_disputes(
-        cfg, [{"task_id": "demo-P82", "judgment": "REJECTED", "rationale": "confirmed unsafe"}])
+        "demo", [{"task_id": "demo-P82", "judgment": "REJECTED", "rationale": "confirmed unsafe"}])
 
     assert disputes == []
 
@@ -568,9 +581,14 @@ def test_oracle_2_agreement_on_rejected_also_produces_nothing(tmp_state, sample_
 def test_verdict_audit_disputes_skips_malformed_entries(tmp_state, sample_project):
     cfg = sample_project
     d = daemon.Daemon({"demo": cfg.root})
-    disputes = d._verdict_audit_disputes(cfg, [
+    _record_review("demo", "demo-P83", "approved")
+    disputes = d._verdict_audit_disputes("demo", [
         {"task_id": "", "judgment": "REJECTED"},          # no task_id
         {"task_id": "demo-P83", "judgment": "MAYBE"},      # not a valid judgment
+        # CR-03: a task with NO recorded review is skipped too -- there is
+        # nothing to dispute, and inventing a verdict for it would
+        # manufacture a carve candidate out of an absence.
+        {"task_id": "demo-P84", "judgment": "REJECTED"},
     ])
     assert disputes == []
 
@@ -629,7 +647,7 @@ def test_end_to_end_dispute_reaches_carve_outcome_payload(tmp_state, sample_proj
     cfg = sample_project
 
     _make_feature_branch(cfg.root, "demo-P90", "p90.py", "# p90\n")
-    _commit_review_report(cfg.root, "demo-P90", cfg.reports_dir, "VERDICT: APPROVED\n")
+    _record_review("demo", "demo-P90", "approved")
 
     task_id, attempt_id = _seed_carve_task("demo", 1, cfg.root)
     _write_carve_report(cfg.root, cfg.reports_dir, 1, {

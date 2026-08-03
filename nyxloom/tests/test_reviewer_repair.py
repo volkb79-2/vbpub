@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import (adapters, daemon, lint, notify, paths, reconcile, render, snapshot,
+from nyxloom import (adapters, daemon, lint, notify, paths, reconcile, render, results,
+                     snapshot,
                      storage, wrapper)
 from nyxloom.config import Policy, ProjectConfig
 from nyxloom.types import (
@@ -97,6 +98,31 @@ def _commit_files_on_branch(root, task_id, files: dict, message: str):
     subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(root), "commit",
                     "-qm", message], check=True, capture_output=True)
     _git(root, "checkout", "main")
+
+
+def _write_typed_result(project, task_id, attempt_id, verdict, summary=""):
+    """CR-03 (DR-13): the record the daemon now reads for a verdict.
+
+    The DR8 repair path runs AFTER the verdict is read -- a `(repaired)`
+    marker is a permission checked against what the reviewer actually
+    committed, not a way of announcing a verdict -- so these tests supply an
+    approved typed result and keep asserting the repair enforcement on top of
+    it, which is exactly the layering the feature has in production.
+    """
+    evidence = b"reviewer stdout\n"
+    attempt_dir = paths.attempt_dir(project, attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / "attempt.log").write_bytes(evidence)
+    record = results.AgentResult(
+        kind=results.ResultKind.REVIEW_INDEPENDENT, verdict=verdict,
+        identity=results.ResultIdentity(task_id=task_id, attempt_id=attempt_id),
+        evidence=results.Evidence(path="attempt.log",
+                                   sha256=results.digest_bytes(evidence),
+                                   bytes_len=len(evidence)),
+        summary=summary,
+    )
+    (attempt_dir / results.result_filename(task_id)).write_text(
+        record.to_json(), encoding="utf-8")
 
 
 def _commit_review_report(root, task_id, reports_dir, content):
@@ -228,6 +254,7 @@ def test_in_bounds_repair_routes_as_approved_no_revert(
         "VERDICT: APPROVED (repaired)\nPatched: added tests/test_thing.py::test_x\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id, pre_review_sha=baseline)
+    _write_typed_result("demo", task_id, attempt_id, results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -278,6 +305,7 @@ def test_out_of_bounds_repair_is_reverted_and_forced_rejected_fixable(
         "and src/thing.py\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id, pre_review_sha=baseline)
+    _write_typed_result("demo", task_id, attempt_id, results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -323,6 +351,7 @@ def test_out_of_bounds_repair_revert_failure_still_forces_rejected(
         "# Review\n\nVERDICT: APPROVED (repaired)\nPatched: src/thing.py\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id, pre_review_sha=baseline)
+    _write_typed_result("demo", task_id, attempt_id, results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -354,6 +383,7 @@ def test_missing_baseline_invalidates_without_reverting(
         "# Review\n\nVERDICT: APPROVED (repaired)\nPatched: tests/test_thing.py\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id, pre_review_sha=_NO_BASELINE)
+    _write_typed_result("demo", task_id, attempt_id, results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -399,6 +429,7 @@ def test_repaired_marker_with_no_reviewer_commits_is_ordinary_approved(
         "# Review\n\nVERDICT: APPROVED (repaired)\nPatched: nothing, actually.\n",
     )
     _seed_review_attempt("demo", task_id, attempt_id, pre_review_sha=baseline)
+    _write_typed_result("demo", task_id, attempt_id, results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -442,6 +473,7 @@ def test_policy_off_repaired_verdict_handled_by_ordinary_logic_no_enforcement(
     # checkout after it, is what makes it actually reach `run_pass`.
     cfg_off = _reload_policy_off(cfg, "reviewer_repair", "false")
     _seed_review_attempt("demo", task_id, attempt_id, pre_review_sha=baseline)
+    _write_typed_result("demo", task_id, attempt_id, results.Verdict.APPROVED)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
 
@@ -504,6 +536,7 @@ def test_pre_review_sha_returns_none_when_no_matching_attempt_created(tmp_state,
     completion here, never raises)."""
     d = daemon.Daemon({"demo": sample_project.root})
     _seed_review_attempt("demo", "t-other", "att-other", pre_review_sha="deadbeef")
+    _write_typed_result("demo", "t-other", "att-other", results.Verdict.APPROVED)
     assert d._pre_review_sha("demo", "t-other", "att-DIFFERENT") is None
 
 

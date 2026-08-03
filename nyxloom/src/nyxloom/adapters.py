@@ -125,6 +125,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import results
 from .config import RouteDef
 from .log import get_logger
 from .types import Basis, Role, Usage
@@ -812,7 +813,7 @@ def build_resume(route: RouteDef, *, session: str | None, worktree: str,
 
 
 def self_review_prompt(*, task_id: str, worktree: str, branch: str,
-                       report_path: str) -> str:
+                       report_path: str, attempt_id: str) -> str:
     """B5 2026-07-20 (hardened per P40 + AUTHORING): the self_review leg's prompt.
     Fed to build_resume (a WARM resume of the implementer's OWN session, which
     already holds the diff's full context -- no cold-start tax, no packet). The
@@ -821,8 +822,12 @@ def self_review_prompt(*, task_id: str, worktree: str, branch: str,
     (models are poor judges of what they missed). It runs each oracle's
     observable on REAL data, checks the oracle's NEGATIVE (the edge case: a test
     that also passes on the negative is a HOLLOW test), confirms every Work step,
-    fixes in-session, and records a machine-readable verdict the daemon parses
-    from git (`_parse_self_review_verdict`), NEVER the receipt (P33)."""
+    fixes in-session, and records its verdict as a TYPED JUDGEMENT DOCUMENT
+    (CR-03/DR-13) the daemon reads through a schema, NEVER from the receipt
+    (P33) and no longer from prose (the `SELF_REVIEW:` line this prompt used
+    to ask for was scanned with a regex, which is the authority this package
+    removes)."""
+    judgement = results.judgement_filename(task_id)
     return (
         f"Self-review your OWN just-committed work on {branch} in {worktree}, "
         "before it goes to independent frontier review. Do NOT merely 're-read' "
@@ -832,13 +837,19 @@ def self_review_prompt(*, task_id: str, worktree: str, branch: str,
         "each oracle's NEGATIVE case -- the edge/failure path, not just the happy "
         "path -- a test that would ALSO pass on the negative is a HOLLOW test, a "
         "defect to fix; (3) confirm every numbered Work step was met. Fix any "
-        f"finding and `git add`/`git commit` it on {branch}. Then write your "
-        "verdict as a single line `SELF_REVIEW: APPROVED` (all oracles pass on "
-        "real data, no hollow tests, all Work steps met) or `SELF_REVIEW: "
-        "REJECTED` (a wall you cannot resolve in-session) into "
-        f"{report_path}, and `git add`/`git commit` ONLY that file on {branch} "
-        "(never main, never a code change in that commit). The daemon reads your "
-        "verdict from that committed file, NOT from the receipt."
+        f"finding and `git add`/`git commit` it on {branch}. Write your prose "
+        f"notes to {report_path} for humans. Then write your VERDICT as JSON to "
+        f"{judgement} in the worktree root -- this file, not the prose, is what "
+        "the daemon reads:\n"
+        f'{{"schema_version": {results.SCHEMA_VERSION}, "kind": "self_review", '
+        f'"task_id": "{task_id}", "attempt_id": "{attempt_id}", '
+        '"verdict": "approved"|"rejected", "summary": "<one line>"}\n'
+        "Use \"approved\" only when all oracles pass on real data with no hollow "
+        "tests and every Work step met; \"rejected\" for a wall you cannot resolve "
+        "in-session. The attempt_id above is yours -- copy it exactly, it is what "
+        "binds this verdict to THIS run. `git add`/`git commit` the prose report "
+        f"on {branch} (never main, never a code change in that commit); the JSON "
+        "does not need committing."
     )
 
 

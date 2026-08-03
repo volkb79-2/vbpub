@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/agent-judgement.schema.json",
+  "title": "nyxloom agent-authored judgement (CR-03, DR-13)",
+  "description": "The half of an agent result an AGENT may author: what it concluded, and which task/attempt it believes it was working on. It deliberately cannot express evidence, commits, or digests -- those are mechanically knowable and the wrapper stamps them, so an agent cannot claim a fact about the repository that the repository disagrees with. The wrapper reads this, binds it to the facts, and produces an agent-result document; the controller reads only that.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "verdict", "task_id", "attempt_id"],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "kind": {
+      "enum": [
+        "implement",
+        "self_review",
+        "review_independent",
+        "diagnosis",
+        "carve",
+        "gate",
+        "operator"
+      ]
+    },
+    "verdict": {
+      "enum": ["done", "blocked", "approved", "rejected", "declined", "failed"]
+    },
+    "decline_reason": {
+      "enum": [
+        "context-exceeded",
+        "tool-unavailable",
+        "contract-referent-missing",
+        "contract-self-contradictory",
+        "dependency-not-landed"
+      ]
+    },
+    "task_id": {"type": "string", "minLength": 1},
+    "attempt_id": {
+      "description": "The attempt id the agent was given in its packet. Echoing it is what binds the judgement to one run: a file left on the branch by a previous attempt names that attempt and is therefore inert, without any rule about which file is newest.",
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {"type": "string"},
+    "details": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["verdict"],
+        "properties": {"verdict": {"const": "declined"}}
+      },
+      "then": {"required": ["decline_reason"]},
+      "else": {"not": {"required": ["decline_reason"]}}
+    }
+  ]
+}

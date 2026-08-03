@@ -63,6 +63,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import results
+
 # ---------------------------------------------------------------------------
 # test-side scripting API (imported by tests; runs in the pytest process)
 
@@ -98,6 +100,16 @@ class FakeStep:
     review_reason: str = ""
     review_body: str | None = None         # override the generated body
 
+    # CR-03 (DR-13): the typed judgement the wrapper reads. Normally derived
+    # from review_verdict/review_reason above, so a test scripts ONE verdict
+    # and both artifacts agree. These two exist for the negative cases:
+    # `judgement_override` replaces the document wholesale (malformed JSON, a
+    # foreign attempt id, an unknown outcome), and `judgement_task_id` writes
+    # it under a DIFFERENT task's name so a wave member's judgement can be
+    # made to go missing without breaking its siblings.
+    judgement_override: str | None = None
+    judgement_task_id: str | None = None
+
     # If set, the fake prints `BLOCKED: <reason>` to stdout -- wrapper.py's
     # classify_log_tail then forces receipt.result BLOCKED regardless of
     # exit_code (blocked beats exit code beats limit).
@@ -123,6 +135,10 @@ class FakeStep:
                 d["review_reason"] = self.review_reason
             if self.review_body is not None:
                 d["review_body"] = self.review_body
+            if self.judgement_override is not None:
+                d["judgement_override"] = self.judgement_override
+            if self.judgement_task_id is not None:
+                d["judgement_task_id"] = self.judgement_task_id
         if self.blocked_reason:
             d["blocked_reason"] = self.blocked_reason
         if self.limit:
@@ -217,6 +233,37 @@ def _pop_step(script_path: Path, task_id: str, role: str) -> dict[str, Any] | No
     return _with_lock(script_path, _do)
 
 
+def _write_fake_judgement(task_id: str, verdict: str, reason: str,
+                          step: dict[str, Any]) -> None:
+    """Write the judgement document a real reviewer would write.
+
+    Deliberately NOT committed: the judgement is read from the worktree by
+    the wrapper, not from the branch, which is what makes a stale one from a
+    previous attempt impossible rather than merely unlikely.
+
+    `judgement_override` lets a test script a MALFORMED or MISBOUND judgement
+    (the negative cases the corpus needs) by replacing the document wholesale.
+    """
+    override = step.get("judgement_override")
+    task_for_file = step.get("judgement_task_id") or task_id
+    path = Path(os.getcwd()) / results.judgement_filename(task_for_file)
+    if override is not None:
+        path.write_text(override, encoding="utf-8")
+        return
+    attempt_id = os.environ.get("NYXLOOM_ATTEMPT_ID", "")
+    if not attempt_id:
+        return          # not launched by the wrapper; nothing to bind to
+    doc = {
+        "schema_version": results.SCHEMA_VERSION,
+        "kind": "review_independent",
+        "verdict": "approved" if verdict.upper() == "APPROVED" else "rejected",
+        "task_id": task_for_file,
+        "attempt_id": attempt_id,
+        "summary": reason or f"fake reviewer verdict for {task_for_file}",
+    }
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+
 def _run_step(task_id: str, step: dict[str, Any]) -> int:
     target_dir = step.get("target_dir") or os.getcwd()
     Path(target_dir).mkdir(parents=True, exist_ok=True)
@@ -231,6 +278,14 @@ def _run_step(task_id: str, step: dict[str, Any]) -> int:
         if body is None:
             body = f"# Review for {task_id}\n\n{line}\n"
         files[review_file] = body
+        # CR-03 (DR-13): a real reviewer writes a TYPED JUDGEMENT next to its
+        # prose, and the wrapper binds that to the facts. The fake writes the
+        # same document from the same script field, so the behavioral corpus
+        # exercises the real contract end to end rather than a test-only
+        # shortcut past it. Identity comes from the environment the wrapper
+        # exports -- the same source a real agent should use instead of
+        # transcribing a hex string out of its prompt.
+        _write_fake_judgement(task_id, verdict, reason, step)
 
     committed = False
     if files:
