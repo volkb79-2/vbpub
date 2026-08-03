@@ -74,7 +74,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import jsonschema
+# jsonschema is imported LAZILY, inside the two functions that validate. The
+# wrapper imports this module in every dispatched leg -- including the fake
+# CLI the behavioral corpus runs under a bare interpreter -- and only the
+# READER needs a schema validator. Paying for it at import time made the
+# module unimportable wherever jsonschema is absent, which turned a missing
+# test dependency into "every attempt fails to launch". Constructing and
+# serializing a result must work anywhere; validating one is what needs the
+# library.
 
 #: Bumped when a change to the envelope is not readable by the previous
 #: reader. A record declaring a version this reader does not implement is
@@ -84,6 +91,7 @@ SCHEMA_VERSION = 1
 
 _SCHEMA_FILE = "agent-result.schema.json"
 _JUDGEMENT_SCHEMA_FILE = "agent-judgement.schema.json"
+
 
 def judgement_filename(task_id: str) -> str:
     """Where a leg's agent writes its judgement for one task, in its worktree.
@@ -381,7 +389,7 @@ _FIELD_CODES: dict[str, RejectionCode] = {
 }
 
 
-def _code_for(error: jsonschema.ValidationError) -> RejectionCode:
+def _code_for(error: "jsonschema.ValidationError") -> RejectionCode:
     """The most specific rejection code for one schema error.
 
     A field-level error names its field in ``absolute_path``. The
@@ -409,6 +417,8 @@ def validate_document(doc: dict) -> None:
     otherwise the named codes below would be unreachable in practice and the
     vocabulary would document a distinction the reader never actually made.
     """
+    import jsonschema
+
     validator = jsonschema.Draft202012Validator(_schema())
     errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
     if errors:
@@ -615,6 +625,8 @@ def load_judgement(raw: str | bytes, *, task_id: str, attempt_id: str,
             RejectionCode.UNSUPPORTED_VERSION,
             f"judgement declares schema_version {version!r}, this reader "
             f"implements {SCHEMA_VERSION}")
+
+    import jsonschema
 
     validator = jsonschema.Draft202012Validator(_judgement_schema())
     errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
