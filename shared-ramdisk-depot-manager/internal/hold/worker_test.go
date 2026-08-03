@@ -260,7 +260,43 @@ func TestWorkerRefusesAReleaseItCannotLoad(t *testing.T) {
 	}
 }
 
+// A target the worker cannot write into is a FAULT, not a refusal. Only
+// running out of space quarantines a generation; everything else has to stay
+// distinguishable from it, or a broken host looks like content that does not
+// fit.
+//
+// The target is made a regular file rather than an unwritable directory:
+// permissions do not stop root, and this suite runs as root under the
+// privileged harness.
+func TestWorkerReportsAnUnusableTargetAsAFault(t *testing.T) {
+	cfg := testConfig(t)
+	rel := stagedRelease(t, cfg)
+
+	target := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(target, []byte("in the way"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, msg := runPrepare(t, WorkerArgs{
+		ReleaseDir: rel.Dir, ReleaseID: rel.ID, Class: "pak", Target: target})
+	if code != ExitFault {
+		t.Fatalf("worker exited %d for an unusable target, want %d: %s", code, ExitFault, msg)
+	}
+	if code == ExitNoSpace {
+		t.Error("a target that could not be written was reported as running out of space, " +
+			"which would quarantine the generation for a fault in the host")
+	}
+}
+
 // --- sealing ---------------------------------------------------------------
+
+// Sealing a tree that is not there has to fail. Returning nil would let
+// publication proceed to bind a class nothing ever wrote.
+func TestSealReportsAMissingTree(t *testing.T) {
+	if err := Seal(filepath.Join(t.TempDir(), "nonexistent")); err == nil {
+		t.Fatal("sealing a tree that does not exist reported success")
+	}
+}
 
 // chmod follows symlinks. Sealing a tree that contains one must not reach
 // through it and strip write access from whatever it points at — which could
@@ -322,6 +358,36 @@ func TestNotifyReadySendsTheReadyDatagram(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(buf[:n])); got != "READY=1" {
 		t.Fatalf("the worker sent %q, want READY=1", got)
+	}
+}
+
+// A worker that failed must never declare itself ready. "Active" means
+// "populated" only because the signal comes after the work (D-013); a signal
+// sent regardless would make it mean "started" again, and the daemon would
+// bind a class that does not exist.
+func TestAFailedWorkerNeverSignalsReady(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "notify")
+	conn, err := net.ListenPacket("unixgram", sock)
+	if err != nil {
+		t.Fatalf("listening on %s: %v", sock, err)
+	}
+	defer conn.Close()
+	t.Setenv("NOTIFY_SOCKET", sock)
+
+	var stderr bytes.Buffer
+	if code := RunWorker([]string{"--class", "pak"}, &stderr); code != ExitUsage {
+		t.Fatalf("RunWorker exited %d for a malformed invocation, want %d", code, ExitUsage)
+	}
+
+	// Checked with no waiting at all, which is the strict reading: the signal
+	// is written synchronously before RunWorker returns, so if one were
+	// coming it would already be here. Waiting could only help this pass.
+	if err := conn.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	if n, _, err := conn.ReadFrom(buf); err == nil {
+		t.Fatalf("a worker that never populated anything signalled %q", buf[:n])
 	}
 }
 
