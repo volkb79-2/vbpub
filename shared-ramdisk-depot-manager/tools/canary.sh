@@ -150,7 +150,7 @@ canary "P03-publishes-excluded" "TestExcludedClasses" \
 # holds memory forever with nothing to attribute it to.
 canary "P03-no-orphans" "TestReconcileFindsOrphan" \
   "internal/publish/teardown.go" \
-  's#^\t\t\tif claimed\[e.MountPoint\] || e.MountPoint == p.cfg.RunDir {$#\t\t\tif true {#' \
+  's#^\t\t\tif claimed\[e.MountPoint\] || infrastructure\[e.MountPoint\] {$#\t\t\tif true {#' \
   "reconciliation never reports an orphan mount"
 
 # --- P04: hold units, class policy and charging ---------------------------
@@ -241,6 +241,67 @@ canary "P04-stale-exit-status" "TestStartIgnoresTheStatusOfAUnitThatDidNotFail" 
   "internal/hold/hold.go" \
   's#props\["ActiveState"\] != "failed" || props\["Result"\] != "exit-code"#props\["ActiveState"\] == "never"#' \
   "a refused start is read as a worker exit status"
+
+# --- P05: consumer resolution and teardown safety -------------------------
+
+# Tear down without asking who is holding. Every step afterwards SUCCEEDS
+# with a consumer running and frees nothing, so there is no failure left to
+# notice — this is the leak with no symptom.
+canary "P05-teardown-skips-the-check" "TestTeardownIsRefusedWhileAConsumerHolds" \
+  "internal/publish/teardown.go" \
+  's#if err := p.refuseIfHeld(ctx, opID, KindTeardown, rec); err != nil {#if err := error(nil); err != nil {#' \
+  "teardown never asks whether a consumer is holding the generation"
+
+# Ask, and then ignore the answer.
+canary "P05-holds-are-never-held" "TestTeardownIsRefusedWhileAConsumerHolds" \
+  "internal/consumer/consumer.go" \
+  's#^func (r \*Report) Held() bool { return len(r.Holders) > 0 }$#func (r *Report) Held() bool { return false }#' \
+  "a report full of holders says nothing is holding"
+
+# Count srdm's own namespace as a consumer. This does not leak — it does the
+# opposite, and refuses every teardown forever, because srdm is always
+# holding its own content.
+canary "P05-own-namespace-counts" "TestOurOwnMountsAreNotHolders" \
+  "internal/consumer/consumer.go" \
+  's#^\t\tif ns == selfNS || seen\[ns\] {$#\t\tif seen[ns] {#' \
+  "srdm reports itself as a consumer of its own generation"
+
+# Stop matching the superblock, so no mount in any other namespace is ever a
+# hold. A consumer's bind is at a path srdm has never seen, so the device is
+# the only thing that connects the two.
+canary "P05-superblock-ignored" "TestAMountOfOurSuperblockInAnotherNamespaceIsAHolder" \
+  "internal/consumer/consumer.go" \
+  's#^\t\t\tif !devices\[d\] {$#\t\t\tif true {#' \
+  "no mount in another namespace is ever recognised"
+
+# And the other direction: match every device, so unrelated tmpfs mounts pin
+# generations that have nothing to do with them.
+canary "P05-every-device-matches" "TestAMountOfADifferentSuperblockIsNotAHolder" \
+  "internal/consumer/consumer.go" \
+  's#^\t\t\tif !devices\[d\] {$#\t\t\tif false {#' \
+  "an unrelated superblock pins the generation"
+
+# Swallow an unreachable Docker. "Nobody is holding this" and "I could not
+# ask" then read identically, and only one of them is safe to act on.
+canary "P05-docker-failure-silent" "TestAnUnreachableDockerIsReportedAsDegraded" \
+  "internal/consumer/consumer.go" \
+  's#\t\trep.Degraded = append(rep.Degraded, "docker: "+err.Error())#\t\t_ = err#' \
+  "an unreachable Docker is not reported as a degraded check"
+
+# Publish into the shared parent, so every mount is delivered to every
+# namespace that is a slave of the root. Those copies are holds, so teardown
+# would then be refused by services that want nothing from srdm.
+canary "P05-no-private-root" "TestPublishPerformsTheExactSequence" \
+  "internal/publish/publish.go" \
+  's#^\tif e, ok := mountinfo.At(entries, root); ok \&\& e.Propagation() == mountinfo.PropagationPrivate {$#\tif true {#' \
+  "publication no longer isolates its own mount root"
+
+# Treat srdm's operation root as an orphan and tear it down, removing the
+# isolation from under every live generation.
+canary "P05-op-root-is-an-orphan" "TestTheOperationRootIsNotAnOrphan" \
+  "internal/publish/teardown.go" \
+  's#infrastructure := map\[string\]bool{p.cfg.RunDir: true, p.cfg.OpRoot(): true}#infrastructure := map[string]bool{p.cfg.RunDir: true}#' \
+  "the operation root is torn down as an orphan mount"
 
 rm -rf "$WORK"
 

@@ -41,6 +41,7 @@ import (
 	"syscall"
 
 	"srdm/internal/config"
+	"srdm/internal/consumer"
 	"srdm/internal/fsx"
 	"srdm/internal/hold"
 	"srdm/internal/journal"
@@ -63,12 +64,14 @@ const RecordSchemaVersion = 2
 // daemon journals PhaseHold around them and systemd's journal carries the
 // worker's own account under the unit name.
 const (
-	PhaseSlice    = "slice"
-	PhaseMount    = "mount"
-	PhaseHold     = "hold"
-	PhaseExpose   = "expose"
-	PhaseRecord   = "record"
-	PhaseTeardown = "teardown"
+	PhaseIsolate   = "isolate"
+	PhaseSlice     = "slice"
+	PhaseMount     = "mount"
+	PhaseHold      = "hold"
+	PhaseExpose    = "expose"
+	PhaseRecord    = "record"
+	PhaseConsumers = "consumers"
+	PhaseTeardown  = "teardown"
 )
 
 // KindPublish and friends name operations in the journal.
@@ -133,6 +136,17 @@ func (SyscallMounter) Unmount(target string, flags int) error {
 	return syscall.Unmount(target, flags)
 }
 
+// Guard resolves who is still holding a generation.
+//
+// It is a field of the Publisher rather than a precondition the caller is
+// trusted to run, and that is the whole point: a teardown that skips it does
+// not fail, it silently leaks — the unmount succeeds, reports success, and
+// frees nothing, because the consumer's own namespace still holds the
+// superblock. A check that can be forgotten is one that will be. See D-018.
+type Guard interface {
+	Resolve(ctx context.Context, paths []string) (*consumer.Report, error)
+}
+
 // Holder is the hold-unit surface publication depends on, injected so the
 // mount topology stays exercisable with no systemd present. The real one is
 // *hold.Manager.
@@ -150,6 +164,7 @@ type Publisher struct {
 	jnl           *journal.Journal
 	mounter       Mounter
 	holder        Holder
+	guard         Guard
 	mountInfoPath string
 	sizer         func(class string, contentBytes int64) int64
 }
@@ -162,6 +177,9 @@ func WithMounter(m Mounter) Option { return func(p *Publisher) { p.mounter = m }
 
 // WithHolder injects the hold-unit surface.
 func WithHolder(h Holder) Option { return func(p *Publisher) { p.holder = h } }
+
+// WithGuard injects the consumer resolver.
+func WithGuard(g Guard) Option { return func(p *Publisher) { p.guard = g } }
 
 // WithMountInfoPath points reconciliation at a specific mount table.
 func WithMountInfoPath(path string) Option { return func(p *Publisher) { p.mountInfoPath = path } }
@@ -196,6 +214,9 @@ func New(cfg config.Config, jnl *journal.Journal, opts ...Option) (*Publisher, e
 			return nil, err
 		}
 		p.holder = h
+	}
+	if p.guard == nil {
+		p.guard = consumer.New()
 	}
 	for _, dir := range []string{cfg.OpRoot(), cfg.PublishedDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -261,10 +282,19 @@ func (e *ENOSPCError) Error() string {
 
 func (e *ENOSPCError) Unwrap() error { return e.Err }
 
-// IsRefusal reports whether err is publication declining by contract.
+// IsRefusal reports whether err is srdm declining by contract rather than
+// failing.
+//
+// Both members are refusals in the same sense — srdm looked, found the
+// operation unsafe, and did not attempt it — and both need an operator to do
+// something srdm cannot do for them: resize a class, or stop a consumer.
 func IsRefusal(err error) bool {
 	var enospc *ENOSPCError
-	return errors.As(err, &enospc)
+	if errors.As(err, &enospc) {
+		return true
+	}
+	var held *consumer.HeldError
+	return errors.As(err, &held)
 }
 
 // Publish makes a verified release visible as read-only per-class binds.
@@ -325,6 +355,12 @@ func (p *Publisher) Publish(ctx context.Context, opID, profileID string,
 		}
 	}()
 
+	// Nothing else may receive these mounts by propagation. See isolateOpRoot.
+	if err := p.phase(opID, KindPublish, PhaseIsolate,
+		map[string]string{"op_root": p.cfg.OpRoot()}, p.isolateOpRoot); err != nil {
+		return nil, err
+	}
+
 	// The aggregate's floor is set before anything runs inside it. A slice
 	// created implicitly by the first service that names it starts at
 	// memory.min=0, and a cgroup v2 floor is capped by every ancestor's, so
@@ -352,6 +388,47 @@ func (p *Publisher) Publish(ctx context.Context, opID, profileID string,
 		return nil, err
 	}
 	return built, nil
+}
+
+// isolateOpRoot makes the operation-private root a mount point of its own,
+// with private propagation, so nothing srdm mounts beneath it is ever
+// delivered to another mount namespace.
+//
+// Without this, publication sprays itself across the host. On a systemd host
+// `/run` is shared, so a mount created under it propagates into every mount
+// namespace that is a slave of the root — which is every service with
+// PrivateTmp, ProtectSystem or its own `unshare`. Measured 2026-08-03: a
+// pre-existing slave namespace received a new tmpfs immediately, and
+// marking the mount private AFTERWARDS was too late, because the copy had
+// already been delivered.
+//
+// Those copies are not harmless. They are holds: unmounting the host side
+// does NOT remove them, and the content stays readable through them (D-019).
+// So without isolation, every generation would acquire a holder per such
+// service, teardown would be refused, and the refusal would be correct —
+// the memory really would not come back.
+//
+// Idempotent, because it runs once per publication and there is no sensible
+// place to run it exactly once: if the root is already a private mount
+// point, there is nothing to do, and repeating the bind would stack mounts.
+func (p *Publisher) isolateOpRoot() error {
+	root := p.cfg.OpRoot()
+	entries, err := p.mountInfo()
+	if err != nil {
+		return fmt.Errorf("publish: reading the mount table to isolate %s: %w", root, err)
+	}
+	if e, ok := mountinfo.At(entries, root); ok && e.Propagation() == mountinfo.PropagationPrivate {
+		return nil
+	}
+	// A path can only carry propagation if it is a mount point, so it has to
+	// become one: a bind of the directory onto itself.
+	if err := p.mounter.Mount(root, root, "", syscall.MS_BIND, ""); err != nil {
+		return fmt.Errorf("publish: binding %s onto itself: %w", root, err)
+	}
+	if err := p.mounter.Mount("", root, "", syscall.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("publish: making %s private: %w", root, err)
+	}
+	return nil
 }
 
 func managedClasses(prof *profile.Profile) []profile.Class {

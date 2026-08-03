@@ -74,6 +74,16 @@ func (e Entry) Propagation() string {
 	return PropagationPrivate
 }
 
+// Peer-group accessors (shared:N, master:N) deliberately do NOT live here.
+//
+// P05 added them to tell a mount that receives srdm's unmount from one that
+// survives it, and the distinction turned out not to exist in this data:
+// measured, two mounts carrying the same master:N behave differently, and
+// only one of them keeps the superblock alive (D-019). Nothing reads the
+// numbers now, so nothing exports them. P06 needs the host peer-group state
+// for doctor's propagation table and can add them back with the oracle that
+// makes them mean something.
+
 // HasOption reports whether a per-mount option is set.
 func (e Entry) HasOption(opt string) bool { return hasString(e.Options, opt) }
 

@@ -158,24 +158,46 @@ is still P08's.
 
 ### Wave 2 — exposure
 
-| id | package | depends on |
+| id | package | state |
 |---|---|---|
-| **P05** | consumer registry + teardown safety | P02 (may start in parallel with Wave 1) |
-| **P06** | the `host-bind` exposure driver, `ro`/`rw`, and doctor's mount + Wings preconditions | P03, P04, P05 |
+| **P05** | consumer resolution + teardown safety | **done** |
+| **P06** | the `host-bind` exposure driver, `ro`/`rw`, and doctor's mount + Wings preconditions | next (needs P03, P04, P05) |
 
-**P05** resolves holders itself, because `host-bind` has no disposal
-callback: running containers by volume path via the Docker API, plus
-`/proc/*/mountinfo`. It refuses `activate`, `rollback` and teardown while any
-hold remains, **naming the holding container**. Its consumer-resolution half
-depends only on P02's helpers, so it can run in a parallel worktree with
-Wave 1 and merge before P06.
+**What P05 settled.** Teardown now refuses while anything holds the content,
+naming it. Resolution matches on the **superblock**, because a consumer's
+bind is at a path srdm has never seen and cannot predict while the
+major:minor is the same number on both sides of a bind; it reads every mount
+namespace but srdm's own through `/proc/*/mountinfo`, and names the container
+from the holding process's cgroup path plus the Docker socket.
 
-This is a correctness gate, not politeness: a game container that still has
-the bind in its own `rprivate` namespace keeps the superblock — and every
-page — alive across the host unmount, so the memory is never returned and
-the hold cgroup does not drain. *Gate*: oracles 15 and 24, in **both**
-directions — teardown after a clean stop drops `memory.current` to ~0;
-teardown with a consumer running is **refused**, not attempted.
+There is **no stored registry** — see D-018. Nothing tells srdm who mounted
+what in the host-bind shape, and a table srdm kept itself could only be a
+second opinion about the kernel's. The registry is the resolution.
+
+The check lives inside `Teardown` rather than in front of it, because every
+step of an unguarded teardown *succeeds* and frees nothing: there is no
+failure afterwards to notice, and the only instant the difference exists is
+before the first unmount.
+
+**D-019 came out of it, and changed publication.** Matching on the superblock
+means that on a systemd host — where `/run` is shared — every service with
+its own mount namespace receives srdm's mounts by propagation and reads as a
+holder. The obvious filter (excuse anything tagged `master:<our group>`, it
+is downstream) was written and then deleted: measured, such a copy sometimes
+survives the host unmount with its content intact, and nothing in
+`mountinfo` distinguishes the cases. Over-filtering is a silent leak;
+under-filtering is a visible refusal. So srdm does not filter, and instead
+publishes into a **private** operation root so the copies are never handed
+out. That root is infrastructure, not a generation's mount, and
+reconciliation must not tear it down as an orphan.
+
+*Gated*: oracle 24 in both directions against a real second mount namespace —
+refused while a consumer holds, naming it, with nothing attempted and the
+charge unchanged; then after a clean stop it proceeds, leaves nothing
+mounted, and `nr_dying_descendants` returns to baseline, which is oracle 15's
+"the memory came back" stated so that it survives the cgroup being removed.
+Plus the measurement behind the refusal: a consumer's bind survives srdm's
+unmount with the content still readable.
 
 **P06** adds the exposure interface and its first driver, plus the three
 hard preconditions that must **refuse, not warn**:

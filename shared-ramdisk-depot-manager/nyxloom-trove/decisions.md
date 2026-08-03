@@ -561,3 +561,94 @@ for that, it is a limit a legitimate population can reach. The value is a
 hang failsafe and never an oracle: expiry means a worker making no progress,
 which is a true failure however long you wait, and no plausible class on any
 plausible disk comes near it.
+
+---
+
+## D-018 — the consumer check is inside teardown, not a precondition on it
+
+**Status:** accepted.
+
+The P03 code said teardown "does NOT decide whether it is safe to run", and
+left resolving live consumers to whatever called it. That was the wrong
+layering, and the reason is specific rather than stylistic.
+
+Every step of a teardown performed while a consumer holds the content
+**succeeds**. The unmounts return 0. The hold units stop. The generation
+slice goes. The record is removed. And not one page comes back, because the
+consumer's own namespace still holds the superblock — measured, D-012 and
+again here. There is no error to detect afterwards, no state that looks
+wrong, and nothing in the journal that reads differently from a healthy
+teardown. The only instant at which the difference exists is before the first
+unmount.
+
+A check with that property cannot be a caller's responsibility. So
+`Publisher` takes a `Guard` the same way it takes a `Holder`, defaulting to
+the real resolver, and `Teardown` consults it first. `Holders` is exported
+for `activate` and `rollback`, which have the same problem and arrive with
+P08.
+
+**There is no stored consumer registry, deliberately.** In the v1 host-bind
+shape nothing tells srdm who mounted what: Wings creates the container,
+Docker resolves the bind source in the host namespace, srdm is not in the
+conversation. A table srdm maintained itself could only be a second opinion
+about the kernel's, and the kernel is what holds the pages. The registry is
+the resolution, done fresh at every ask — which is what the master plan means
+by oracle 24 being "oracle 15 without the protocol's help, the mode that has
+to get it right by inspection".
+
+**Degrading is reported, never assumed.** Docker names the holders and sees a
+container that is configured but not yet running; the mount table answers the
+question that costs memory. If Docker is unreachable the answer is still
+usable, but the check says so in the journal — "nobody is holding this" and
+"I could not ask" are different answers, and only one of them is safe to have
+acted on.
+
+---
+
+## D-019 — publication mounts into a private root, because propagation cannot be filtered
+
+**Status:** decided by measurement, after the obvious answer was implemented
+and deleted.
+
+Resolution matches on the **superblock**: a consumer's bind is at a path srdm
+has never seen and cannot predict, while the major:minor is the same number
+on both sides of a bind. That immediately raises a problem. On a systemd host
+`/run` is shared (verified on the case-study node, `shared:5`), so a mount
+created beneath it is **delivered** to every mount namespace that is a slave
+of the root — every service with `PrivateTmp`, `ProtectSystem`, or its own
+`unshare`. Each of those copies matches the superblock, so each reads as a
+consumer, and teardown would be refused forever by services that want nothing
+from srdm.
+
+**The filter that looked obvious, and was wrong.** Such a copy carries
+`master:<srdm's peer group>`, which says it is downstream: srdm's unmount
+ought to take it away again, so it could be excused. That filter was written.
+Then it was measured, on kernel 7.1 / systemd 257, 2026-08-03: a copy
+carrying exactly that tag **survived** the host unmount, with the content
+still readable through it, when the namespace also held its own bind of the
+same superblock. In other arrangements the same tag is removed as expected.
+**Nothing in `mountinfo` tells the two cases apart.**
+
+The asymmetry settles it. Over-filtering is a silent leak — the exact failure
+this check exists to prevent. Under-filtering is a refusal an operator can
+see, understand and act on. So srdm does not filter: every mount of the
+superblock in another mount namespace is a hold.
+
+**Which makes not handing the copies out the actual fix.** Publication binds
+its operation root onto itself and marks it `MS_PRIVATE` before mounting
+anything beneath it, so nothing it creates is delivered anywhere. Marking a
+mount private *after* creating it is too late — also measured; the copy has
+already gone out.
+
+Two consequences worth stating plainly:
+
+- The operation root is srdm's own infrastructure, not a generation's mount.
+  Reconciliation must not tear it down as an orphan, or the isolation
+  disappears from under every live generation and the next publication starts
+  handing out copies again.
+- Isolation does not help against a namespace created *after* publication:
+  `unshare` copies the whole mount table, whatever its propagation. A service
+  that restarts while a generation is published will hold it, srdm will
+  refuse the teardown, and srdm will be right — the memory really would not
+  come back. The operator is told which process. Whether that wants a
+  narrower answer is a question for P06, which owns propagation properly.

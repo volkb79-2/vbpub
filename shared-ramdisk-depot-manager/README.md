@@ -14,18 +14,18 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
-## Status — P01–P04 landed
+## Status — P01–P05 landed
 
 The store, the journal, offline `doctor`, the privileged systemd harness, the
-publication mount topology and the per-class hold units are implemented and
-gated. What is missing is everything a *consumer* needs: nothing is exposed
+publication mount topology, the per-class hold units and teardown safety are
+implemented and gated. What is missing is the last step: nothing is exposed
 into a container yet. See
 [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
 
 | | |
 |---|---|
-| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset, CLI; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, teardown, mountinfo + unit reconciliation |
-| **Not yet** | consumer registry and teardown safety (P05), the `host-bind` exposure driver and doctor's mount/Wings preconditions (P06), `harvest` (P07), retention/GC, the daemon and boot restore (P08), SteamCMD driver, everything `provider` (v2) |
+| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset, CLI; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, mountinfo + unit reconciliation |
+| **Not yet** | the `host-bind` exposure driver and doctor's mount/Wings preconditions (P06), `harvest` (P07), retention/GC, the daemon and boot restore (P08), SteamCMD driver, everything `provider` (v2) |
 
 Publication and hold are libraries with no operator entry point yet: the CLI
 verbs that drive them arrive with the daemon (P08).
@@ -99,6 +99,7 @@ shared-ramdisk-depot-manager/
 │   ├── mountinfo/            /proc/*/mountinfo, with propagation   ← P03
 │   ├── publish/              publication topology, reconciliation  ← P03
 │   ├── hold/                 hold units, class policy, the worker  ← P04
+│   ├── consumer/             who is still holding a generation     ← P05
 │   ├── expose/               exposure drivers                         P06
 │   ├── source/steam/         SteamCMD driver (off the MVP path)
 │   ├── providerapi/          v2 only

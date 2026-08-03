@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"srdm/internal/consumer"
 	"srdm/internal/journal"
 	"srdm/internal/mountinfo"
 )
@@ -17,6 +18,7 @@ import (
 // Teardown removes a published generation's mounts and holds, in the one
 // order that actually returns the memory.
 //
+//  0. refuse outright if any consumer still holds the content
 //  1. drop the read-only bind exposure
 //  2. unmount the op tmpfs — THIS is what frees and uncharges the pages
 //  3. stop the hold unit
@@ -32,15 +34,22 @@ import (
 // last service exits, so a teardown that stops only the services leaves the
 // generation's aggregate behind.
 //
-// Teardown does NOT decide whether it is safe to run. Resolving live
-// consumers and refusing while one holds a bind is P05's job, and it runs
-// before this.
+// Step 0 is a correctness gate and not politeness, which is why it lives
+// here rather than in whatever calls this. Every later step still SUCCEEDS
+// with a consumer running: the unmounts return 0, the units stop, the record
+// is removed, and not one page comes back — because the holder's namespace
+// keeps the superblock alive. There is no failure to notice afterwards. The
+// only place the difference is visible is before the first unmount.
 func (p *Publisher) Teardown(ctx context.Context, opID, profileID, generation string) error {
 	rec, err := p.LoadRecord(profileID, generation)
 	if err != nil {
 		return fmt.Errorf("publish: teardown %s/%s: %w", profileID, generation, err)
 	}
 	fields := recFields(rec)
+
+	if err := p.refuseIfHeld(ctx, opID, KindTeardown, rec); err != nil {
+		return err
+	}
 
 	if err := p.phase(opID, KindTeardown, PhaseTeardown, fields, func() error {
 		return p.releaseRecord(ctx, rec)
@@ -57,6 +66,62 @@ func (p *Publisher) Teardown(ctx context.Context, opID, profileID, generation st
 		}
 		return nil
 	})
+}
+
+// Holders reports what is still holding a published generation.
+//
+// Exported because teardown is not the only operation that has to refuse:
+// `activate` and `rollback` swap what a consumer is reading underneath it,
+// and they call this before doing anything (P08, where those verbs exist).
+func (p *Publisher) Holders(ctx context.Context, profileID, generation string) (*consumer.Report, error) {
+	rec, err := p.LoadRecord(profileID, generation)
+	if err != nil {
+		return nil, fmt.Errorf("publish: holders of %s/%s: %w", profileID, generation, err)
+	}
+	return p.guard.Resolve(ctx, recordPaths(rec))
+}
+
+// refuseIfHeld resolves live consumers and declines if there are any.
+//
+// The journal fields are filled in as the check learns them: the `started`
+// record carries what was known going in, and the outcome record carries the
+// answer — including a `degraded` note when a source could not be consulted,
+// because "nobody is holding this" and "I could not ask" are different
+// answers and only one of them is safe to have acted on.
+func (p *Publisher) refuseIfHeld(ctx context.Context, opID, kind string, rec *Record) error {
+	fields := recFields(rec)
+	return p.phase(opID, kind, PhaseConsumers, fields, func() error {
+		rep, err := p.guard.Resolve(ctx, recordPaths(rec))
+		if err != nil {
+			return fmt.Errorf("publish: resolving consumers of %s/%s: %w",
+				rec.Profile, rec.Generation, err)
+		}
+		fields["holders"] = itoa(int64(len(rep.Holders)))
+		if len(rep.Degraded) > 0 {
+			fields["degraded"] = strings.Join(rep.Degraded, "; ")
+		}
+		if rep.Held() {
+			return &consumer.HeldError{
+				Generation: rec.Profile + "/" + rec.Generation,
+				Holders:    rep.Holders,
+			}
+		}
+		return nil
+	})
+}
+
+// recordPaths is every mount point a record names.
+//
+// Both halves, because either can be the one a consumer bound: Docker
+// resolves a bind source in the host namespace at create time, and an
+// operator pointing a container at the op mount instead of the exposure gets
+// the same superblock and the same leak.
+func recordPaths(rec *Record) []string {
+	var paths []string
+	for _, c := range rec.Classes {
+		paths = append(paths, c.OpMount, c.ExposePath)
+	}
+	return paths
 }
 
 // releaseRecord drops every mount and every hold a record names, in the
@@ -239,9 +304,17 @@ func (p *Publisher) Reconcile(ctx context.Context, opID string) (*Reconciliation
 	}
 
 	// Anything mounted under an srdm root that no record claims.
+	//
+	// The roots themselves are srdm's own infrastructure and belong to no
+	// generation: RunDir may be a mount on some hosts, and OpRoot is
+	// deliberately one — publication binds it onto itself and makes it
+	// private so that nothing it mounts beneath is delivered to another
+	// namespace (D-019). Tearing either down as an orphan would remove the
+	// isolation from under every live generation.
+	infrastructure := map[string]bool{p.cfg.RunDir: true, p.cfg.OpRoot(): true}
 	for _, root := range []string{p.cfg.OpRoot(), p.cfg.RunDir} {
 		for _, e := range mountinfo.Under(entries, root) {
-			if claimed[e.MountPoint] || e.MountPoint == p.cfg.RunDir {
+			if claimed[e.MountPoint] || infrastructure[e.MountPoint] {
 				continue
 			}
 			if !containsString(res.Orphans, e.MountPoint) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"srdm/internal/config"
+	"srdm/internal/consumer"
 	"srdm/internal/hold"
 	"srdm/internal/journal"
 	"srdm/internal/profile"
@@ -154,6 +155,27 @@ func (h *fakeHolder) startedUnits() []string {
 	return out
 }
 
+// fakeGuard stands in for consumer resolution. It logs, so the order of the
+// check against the first unmount is assertable — and that order is the
+// whole contract: every unmount SUCCEEDS with a consumer running, so there
+// is no failure afterwards to notice.
+type fakeGuard struct {
+	log     *opLog
+	report  consumer.Report
+	err     error
+	queries [][]string
+}
+
+func (g *fakeGuard) Resolve(_ context.Context, paths []string) (*consumer.Report, error) {
+	g.log.add("consumers held=%d", len(g.report.Holders))
+	g.queries = append(g.queries, paths)
+	if g.err != nil {
+		return nil, g.err
+	}
+	rep := g.report
+	return &rep, nil
+}
+
 func describeMount(source, target, fstype string, flags uintptr, data string) string {
 	var f []string
 	for _, spec := range []struct {
@@ -166,6 +188,7 @@ func describeMount(source, target, fstype string, flags uintptr, data string) st
 		{syscall.MS_NOSUID, "nosuid"},
 		{syscall.MS_NODEV, "nodev"},
 		{syscall.MS_NOEXEC, "noexec"},
+		{syscall.MS_PRIVATE, "private"},
 	} {
 		if flags&spec.bit != 0 {
 			f = append(f, spec.name)
@@ -306,11 +329,12 @@ func stagedReleaseWith(t *testing.T, cfg config.Config, jnl *journal.Journal,
 	return release
 }
 
-// fakes bundles the two injected surfaces and the log they share.
+// fakes bundles the injected surfaces and the log they share.
 type fakes struct {
 	log     *opLog
 	mounter *fakeMounter
 	holder  *fakeHolder
+	guard   *fakeGuard
 }
 
 func newPublisher(t *testing.T, cfg config.Config, jnl *journal.Journal, opts ...Option) (*Publisher, *fakes) {
@@ -320,8 +344,10 @@ func newPublisher(t *testing.T, cfg config.Config, jnl *journal.Journal, opts ..
 		log:     log,
 		mounter: &fakeMounter{log: log, mountErr: map[string]error{}},
 		holder:  newFakeHolder(log),
+		guard:   &fakeGuard{log: log},
 	}
-	p, err := New(cfg, jnl, append([]Option{WithMounter(f.mounter), WithHolder(f.holder)}, opts...)...)
+	p, err := New(cfg, jnl, append([]Option{
+		WithMounter(f.mounter), WithHolder(f.holder), WithGuard(f.guard)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,6 +417,13 @@ func TestPublishPerformsTheExactSequence(t *testing.T) {
 	gen := rec.Generation
 
 	want := []string{
+		// First of all: the operation root becomes a private mount point, so
+		// nothing srdm mounts beneath it is delivered to another namespace.
+		// A copy delivered that way is a HOLD — the host unmount does not
+		// take it back (D-019) — so without this every generation would
+		// acquire a holder per service with a private mount namespace.
+		"mount -o bind " + cfg.OpRoot() + " -> " + cfg.OpRoot(),
+		"mount -o private -> " + cfg.OpRoot(),
 		// The aggregate's floor is in place before anything runs inside it:
 		// 150M + 200M of class floors. A slice created implicitly by its
 		// first service starts at memory.min=0, and a cgroup v2 floor is
@@ -460,6 +493,11 @@ func TestExposureIsMadeReadOnlyByASeparateRemount(t *testing.T) {
 	binds := 0
 	for i, c := range f.mounter.calls {
 		if !c.Bind() || c.Remount() {
+			continue
+		}
+		// The op root's bind onto itself is not an exposure — it exists only
+		// to give that directory a propagation setting of its own.
+		if c.Source == c.Target {
 			continue
 		}
 		binds++
@@ -858,6 +896,10 @@ func TestTeardownReleasesInTheOrderThatUnchages(t *testing.T) {
 
 	gen := rec.Generation
 	want := []string{
+		// Before anything is touched: every step below succeeds with a
+		// consumer running and frees nothing, so this is the only point at
+		// which the difference is visible.
+		"consumers held=0",
 		"umount " + cfg.ExposeClassDir("testgame", gen, "code"),
 		"umount " + cfg.ExposeClassDir("testgame", gen, "pak"),
 		"umount " + cfg.OpClassDir("op-1", "code"),
@@ -872,6 +914,154 @@ func TestTeardownReleasesInTheOrderThatUnchages(t *testing.T) {
 	}
 	if _, err := p.LoadRecord("testgame", rec.Generation); !os.IsNotExist(err) {
 		t.Errorf("the record survived teardown: %v", err)
+	}
+}
+
+// --- teardown safety -------------------------------------------------------
+
+// The refusal, and the reason it has to come first. With a consumer holding
+// the bind in its own namespace, every unmount below would return 0, every
+// unit would stop, the record would go — and not one page would come back,
+// because the holder still has the superblock. Nothing downstream can
+// detect that, so nothing downstream may run.
+func TestTeardownIsRefusedWhileAConsumerHolds(t *testing.T) {
+	cfg := testConfig(t)
+	jnl := testJournal(t, cfg)
+	prof := testProfile(t)
+	rel := stagedRelease(t, cfg, jnl, prof)
+	p, f := newPublisher(t, cfg, jnl)
+
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.log.ops = nil
+	f.guard.report = consumer.Report{Holders: []consumer.Holder{{
+		Kind: consumer.KindMount, MountPoint: "/home/container/paks",
+		Device: consumer.Device{Major: 0, Minor: 50}, PID: 4242,
+		ContainerName: "soulmask-01",
+	}}}
+
+	err = p.Teardown(ctx(), "op-2", "testgame", rec.Generation)
+	if err == nil {
+		t.Fatal("teardown proceeded with a consumer still holding the generation")
+	}
+	if !IsRefusal(err) {
+		t.Errorf("a live consumer was reported as a fault rather than a refusal: %v", err)
+	}
+	var held *consumer.HeldError
+	if !errors.As(err, &held) {
+		t.Fatalf("want a HeldError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "soulmask-01") {
+		t.Errorf("the refusal does not name what to stop: %v", err)
+	}
+
+	// Nothing was attempted. Not one unmount, not one unit stopped.
+	if !reflect.DeepEqual(f.log.ops, []string{"consumers held=1"}) {
+		t.Fatalf("a refused teardown still did work: %v", f.log.ops)
+	}
+	// And the record survives, or reconciliation would forget the mounts are
+	// meant to be there and tear them down as orphans instead.
+	if _, err := p.LoadRecord("testgame", rec.Generation); err != nil {
+		t.Errorf("a refused teardown removed the record anyway: %v", err)
+	}
+}
+
+// The check is asked about every path the record names — both the exposure a
+// consumer was meant to bind and the op tmpfs behind it, since either yields
+// the same superblock and the same leak.
+func TestTheConsumerCheckAsksAboutEveryPathTheRecordNames(t *testing.T) {
+	cfg := testConfig(t)
+	jnl := testJournal(t, cfg)
+	prof := testProfile(t)
+	rel := stagedRelease(t, cfg, jnl, prof)
+	p, f := newPublisher(t, cfg, jnl)
+
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Teardown(ctx(), "op-2", "testgame", rec.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.guard.queries) != 1 {
+		t.Fatalf("the consumer check ran %d times, want once", len(f.guard.queries))
+	}
+	asked := f.guard.queries[0]
+	for _, c := range rec.Classes {
+		if !containsString(asked, c.OpMount) {
+			t.Errorf("the check was not asked about the op tmpfs %s", c.OpMount)
+		}
+		if !containsString(asked, c.ExposePath) {
+			t.Errorf("the check was not asked about the exposure %s", c.ExposePath)
+		}
+	}
+}
+
+// A check that could not run is not a check that passed. Proceeding on an
+// error would be the leak with an excuse attached.
+func TestTeardownStopsWhenTheConsumerCheckCannotRun(t *testing.T) {
+	cfg := testConfig(t)
+	jnl := testJournal(t, cfg)
+	prof := testProfile(t)
+	rel := stagedRelease(t, cfg, jnl, prof)
+	p, f := newPublisher(t, cfg, jnl)
+
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.log.ops = nil
+	f.guard.err = errors.New("/proc is not readable")
+
+	if err := p.Teardown(ctx(), "op-2", "testgame", rec.Generation); err == nil {
+		t.Fatal("teardown proceeded without knowing whether anything was holding the generation")
+	}
+	if len(f.mounter.unmounted) != 0 {
+		t.Errorf("a teardown that could not check still unmounted %v", f.mounter.unmounted)
+	}
+}
+
+// Degrading loudly means the journal says so. A teardown that ran with the
+// Docker source unavailable is a different event from one that ran with
+// everything answering, and only the record can distinguish them afterwards.
+func TestADegradedConsumerCheckIsJournaled(t *testing.T) {
+	cfg := testConfig(t)
+	jnl := testJournal(t, cfg)
+	prof := testProfile(t)
+	rel := stagedRelease(t, cfg, jnl, prof)
+	p, f := newPublisher(t, cfg, jnl)
+
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.guard.report = consumer.Report{Degraded: []string{"docker: no such file"}}
+
+	if err := p.Teardown(ctx(), "op-2", "testgame", rec.Generation); err != nil {
+		t.Fatal(err)
+	}
+	op, err := journal.LoadOperation(cfg.JournalDir(), "op-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range op.Events {
+		if r.Phase != PhaseConsumers || r.Outcome != journal.OutcomeOK {
+			continue
+		}
+		found = true
+		if got := r.Fields["degraded"]; !strings.Contains(got, "docker") {
+			t.Errorf("the consumer check recorded degraded=%q; a check that could not "+
+				"fully run must not read afterwards like one that did", got)
+		}
+		if r.Fields["holders"] != "0" {
+			t.Errorf("holders = %q, want 0", r.Fields["holders"])
+		}
+	}
+	if !found {
+		t.Fatal("the consumer check left no record of having run")
 	}
 }
 

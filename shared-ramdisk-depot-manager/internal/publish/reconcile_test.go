@@ -260,6 +260,31 @@ func TestReconcileFindsOrphanMounts(t *testing.T) {
 	}
 }
 
+// srdm's own operation root is infrastructure, not a generation's mount.
+// Tearing it down as an orphan would remove the private-propagation
+// isolation from under every live generation, and every publication after
+// that would start leaking copies into other namespaces again (D-019).
+func TestTheOperationRootIsNotAnOrphan(t *testing.T) {
+	rec, withTable := publishedFixture(t)
+	// <RunDir>/.op/<op>/<class> -> <RunDir>/.op
+	opRoot := filepath.Dir(filepath.Dir(rec.Classes[0].OpMount))
+	p, _ := withTable(append(mountedLines(rec), mountLine(80, "/", opRoot, false))...)
+	if opRoot != p.cfg.OpRoot() {
+		t.Fatalf("this test is pointed at %s, not the operation root %s", opRoot, p.cfg.OpRoot())
+	}
+
+	res, err := p.Reconcile(ctx(), "op-r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range res.Orphans {
+		if o == p.cfg.OpRoot() {
+			t.Fatalf("the operation root was reported as an orphan; tearing it down "+
+				"removes the isolation from under every live generation: %v", res.Orphans)
+		}
+	}
+}
+
 func TestReconcileOnAnEmptyHost(t *testing.T) {
 	cfg := testConfig(t)
 	jnl := testJournal(t, cfg)

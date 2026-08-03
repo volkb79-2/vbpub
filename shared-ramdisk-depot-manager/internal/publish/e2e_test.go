@@ -11,6 +11,7 @@
 package publish
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,8 @@ import (
 	"time"
 
 	"srdm/internal/cgroupfs"
+	"srdm/internal/config"
+	"srdm/internal/consumer"
 	"srdm/internal/hold"
 	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
@@ -199,13 +202,26 @@ func cleanUpMounts(t *testing.T, runDir string) {
 	}
 }
 
+// liveMounts is every mount under root that belongs to a GENERATION.
+//
+// srdm's own operation root is excluded: publication binds it onto itself
+// and makes it private so nothing beneath it is delivered to another mount
+// namespace (D-019). It outlives every individual generation on purpose, so
+// counting it would make "teardown left nothing behind" impossible to state.
 func liveMounts(t *testing.T, root string) []mountinfo.Entry {
 	t.Helper()
 	entries, err := mountinfo.Read("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mountinfo.Under(entries, root)
+	var out []mountinfo.Entry
+	for _, e := range mountinfo.Under(entries, root) {
+		if e.MountPoint == filepath.Join(root, config.OpRootName) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // controlGroup is where systemd actually put the unit.
@@ -670,6 +686,192 @@ func TestClassTooSmallIsRefusedAndLeavesNothingMounted(t *testing.T) {
 	if state := unitProperty(t, unit, "LoadState"); state == "loaded" {
 		t.Errorf("%s is still loaded (ActiveState=%s) after a refusal; the next attempt "+
 			"at this generation would fail by name", unit, unitProperty(t, unit, "ActiveState"))
+	}
+}
+
+// --- teardown safety: master-plan oracle 24 --------------------------------
+
+// startConsumer runs a process in its own mount namespace holding a bind of
+// path — which is what a game container is, as far as the superblock is
+// concerned.
+//
+// `--propagation slave`, not `private`: a private namespace would hold an
+// independent copy of every mount it inherited and pin every superblock on
+// the host, which would make this pass for the wrong reason. A slave
+// namespace receives srdm's mounts and loses them again when srdm unmounts;
+// its own bind is the one thing that survives, which is exactly the hold
+// Docker gives a game container and exactly what teardown must refuse over.
+//
+// The returned stop waits for the process to be reaped, which is a real
+// synchronization point and not a delay: after it, the pid and its mount
+// namespace are gone from /proc.
+func startConsumer(t *testing.T, path string) (stop func()) {
+	t.Helper()
+	script := fmt.Sprintf(
+		"mkdir -p /tmp/held.$$ && mount --bind %q /tmp/held.$$ && echo ready && exec sleep 600", path)
+	cmd := exec.Command("unshare", "--mount", "--propagation", "slave", "/bin/sh", "-c", script)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the consumer: %v", err)
+	}
+	stopped := false
+	stop = func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	t.Cleanup(stop)
+
+	sc := bufio.NewScanner(out)
+	if !sc.Scan() || strings.TrimSpace(sc.Text()) != "ready" {
+		stop()
+		t.Fatalf("the consumer never reported ready (%v)", sc.Err())
+	}
+	return stop
+}
+
+// Oracle 24, both directions, with no protocol to help: with a consumer
+// still running teardown is refused and the holder named; after a clean stop
+// it proceeds and the memory actually comes back.
+//
+// The refusal direction is the one that cannot be checked any other way.
+// Every step of an unguarded teardown SUCCEEDS here — the unmounts return 0,
+// the units stop, the record is removed — and not one page is returned,
+// because the consumer's namespace still holds the superblock. There is no
+// error afterwards to detect. Refusing beforehand is the only place the
+// difference exists.
+func TestTeardownRefusesWhileAConsumerHoldsAndFreesAfterItStops(t *testing.T) {
+	p, rel, prof := realPublisherWith(t, bigContent())
+	r := cgroupfs.New()
+
+	dyingBefore, err := r.DyingDescendants("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pak := classByName(rec, "pak")
+	cg := controlGroup(t, pak.HoldUnit)
+	charged, err := r.Shmem(cg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if charged < pak.ContentBytes {
+		t.Fatalf("the class is not charged before the test begins: shmem=%d", charged)
+	}
+
+	stop := startConsumer(t, pak.ExposePath)
+
+	// --- with a consumer running: refused, and nothing attempted ---
+	err = p.Teardown(ctx(), "op-2", "testgame", rec.Generation)
+	if err == nil {
+		t.Fatal("teardown proceeded while a consumer still held the generation, which " +
+			"would have reported success and freed nothing")
+	}
+	if !IsRefusal(err) {
+		t.Errorf("a live consumer was reported as a fault rather than a refusal: %v", err)
+	}
+	var held *consumer.HeldError
+	if !errors.As(err, &held) {
+		t.Fatalf("want a HeldError, got %T: %v", err, err)
+	}
+	// The consumer's own bind has to be among them. The count is not pinned:
+	// `unshare` copies the whole mount table into the new namespace, so this
+	// stand-in holds more than a Docker container would — every one of those
+	// copies is a real hold (D-019), so reporting them is right, but only
+	// this one models what a game container does.
+	var named bool
+	for _, h := range held.Holders {
+		if strings.HasPrefix(h.MountPoint, "/tmp/held.") {
+			named = true
+			t.Logf("refused, naming: %s", h)
+		}
+	}
+	if !named {
+		t.Errorf("the refusal does not name the consumer's own bind: %v", held.Holders)
+	}
+
+	// The generation is untouched: still mounted, still charged, still
+	// recorded, still held by its unit.
+	if len(liveMounts(t, p.cfg.RunDir)) == 0 {
+		t.Fatal("a refused teardown unmounted the generation anyway")
+	}
+	if still, err := r.Shmem(cg); err != nil || still != charged {
+		t.Errorf("shmem is %d (was %d, err %v) after a refused teardown", still, charged, err)
+	}
+	if _, err := p.LoadRecord("testgame", rec.Generation); err != nil {
+		t.Errorf("a refused teardown removed the record: %v", err)
+	}
+	if state := unitProperty(t, pak.HoldUnit, "ActiveState"); state != "active" {
+		t.Errorf("%s is %s after a refused teardown", pak.HoldUnit, state)
+	}
+
+	// --- after a clean stop: it proceeds, and the memory comes back ---
+	stop()
+
+	if err := p.Teardown(ctx(), "op-3", "testgame", rec.Generation); err != nil {
+		t.Fatalf("teardown was refused after the consumer stopped: %v", err)
+	}
+	if left := liveMounts(t, p.cfg.RunDir); len(left) != 0 {
+		t.Errorf("teardown left %d mount(s) behind", len(left))
+	}
+	if _, err := p.LoadRecord("testgame", rec.Generation); !os.IsNotExist(err) {
+		t.Errorf("the record survived teardown: %v", err)
+	}
+
+	// "The memory came back" has to be stated in a way that survives the
+	// cgroup being removed, which teardown does last. A cgroup removed while
+	// pages are still charged below it becomes a DYING cgroup and the count
+	// stays up; one whose pages were freed by the unmount drains. That is
+	// the same number oracle 12 watches, and here it is the difference the
+	// consumer made.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		dyingAfter, err := r.DyingDescendants("/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dyingAfter <= dyingBefore {
+			t.Logf("nr_dying_descendants returned to %d; %d bytes of shmem were returned",
+				dyingAfter, charged)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nr_dying_descendants was %d before and %d after a teardown that "+
+				"should have freed %d bytes — the pages are still charged below a cgroup "+
+				"that no longer exists", dyingBefore, dyingAfter, charged)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// The check must not fire on srdm's own mounts, nor on any namespace that
+// merely receives them by propagation. This is the failure that would not
+// look like a bug: teardown simply refusing forever, on every generation,
+// with a plausible-looking holder named.
+func TestAFreshlyPublishedGenerationHasNoHolders(t *testing.T) {
+	p, rel, prof := realPublisher(t)
+
+	rec, err := p.Publish(ctx(), "op-1", "testgame", rel, prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := p.Holders(ctx(), "testgame", rec.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Held() {
+		t.Fatalf("srdm reported holders of a generation nothing has consumed: %+v", rep.Holders)
 	}
 }
 
