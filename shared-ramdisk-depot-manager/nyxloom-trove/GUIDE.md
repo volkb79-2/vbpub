@@ -84,6 +84,23 @@ what hollow tests evade. If you change an oracle, run `canary`, and if one
 reports "the mutation matched nothing", the code moved and that canary is
 silently testing an unmodified tree. That is a failure, not a skip.
 
+## Closing a package: where a gap goes
+
+Every package ends with a `nyxloom-trove/reports/srdm-P<NN>-LOG.md` whose
+last-but-one section is **Gaps**. That section is the narrative, not the
+tracking — a LOG is written once and re-read by nobody. Each gap it names
+must also land in exactly one of:
+
+- **`roadmap.md`**, when a named later package owns it. Write it into that
+  package's entry, so whoever carves it inherits the obligation rather than
+  discovering it.
+- **`backlog.md`**, when it is real work no package owns yet.
+- **`decisions.md`** as a `D-<NNN>`, when it is a product call, not work.
+
+Then retire the entry when it ships. A backlog still proposing something the
+tree already has is worse than an empty one — it was, until P05 noticed the
+coverage gate it asked for had shipped four packages earlier.
+
 ## Where handoffs live
 
 `nyxloom-trove/handoffs/srdm-P<NN>-<slug>.md`, stem equal to the frontmatter

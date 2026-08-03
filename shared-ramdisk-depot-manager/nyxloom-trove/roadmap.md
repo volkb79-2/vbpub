@@ -215,6 +215,17 @@ Plus the `ro|rw` axis: `rw` permitted only with **exactly one** consumer,
 refused for a second; a written-through generation marked dirty-capable and
 barred from promotion, sharing and use-as-source until re-verified.
 
+**Inherited from P05**, and not optional: srdm publishes into a **private**
+operation root so its mounts are not delivered to every namespace on the host
+(D-019). P06 mounts into `/var/lib/pterodactyl/volumes/**` instead, where the
+requirement is the opposite — those mounts MUST propagate, or Wings never
+sees them. Both facts have to hold at once, so P06 owns the propagation story
+end to end, including the residue D-019 could not fix: a namespace created
+*after* publication copies the whole mount table whatever its propagation, so
+a service that restarts mid-generation holds it and teardown is refused
+naming a process that has nothing to do with the game. Decide there whether
+that wants a narrower answer or is simply true.
+
 P06 is also where doctor gains the mount-propagation and Wings checks the
 P01 handoff deferred. *Gate*: oracles 19–22, and oracle 20's requirement
 that neither precondition failure is allowed to surface as a server start
@@ -242,6 +253,23 @@ kept); `internal/adminapi` on `/run/srdm/admin.sock` (0600, root) and the
 `daemon` subcommand; the worker-contract rules for adoption and quarantine
 of operations whose units outlived the daemon. *Gate*: reboot republish
 before consumer starts; orphan adoption and quarantine.
+
+**Inherited obligations**, each already built but unreachable until P08 gives
+it a verb or a loop:
+
+- `activate` and `rollback` must call `Publisher.Holders` and refuse exactly
+  as teardown does (P05). They swap what a consumer is reading underneath it,
+  which is the same hazard by a different route.
+- Reconciliation reports and does not repair. `NeedsRepublish`, `NotReadOnly`
+  and `Unheld` are surfaced by P03/P04 and acted on by nobody; the boot path
+  is where acting on them belongs.
+- Generation GC needs the stricter rule the master plan states — removable
+  when not assigned, no live lease, **no labeled container in any state**.
+  P05 deliberately implements only the narrower running-container question,
+  because that is what teardown safety is about; a stopped definition holds
+  no pages but still pins what it will need on its next start.
+- Publication and hold have no operator entry point at all. They are
+  libraries; `cmd/srdm` says so by name rather than pretending otherwise.
 
 ### Wave 4 — the real acceptance test
 

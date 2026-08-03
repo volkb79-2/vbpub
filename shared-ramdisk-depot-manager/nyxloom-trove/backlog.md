@@ -2,10 +2,34 @@
 
 Un-carved ideas. Nothing here is committed to.
 
-- **A Go changed-line coverage gate.** D-007 declines to claim a floor the
-  gate does not enforce. `go test -coverprofile` plus a changed-line
-  evaluator would let `[gates.unit]` honestly assert
-  `changed-line-coverage`.
+**Where a gap goes when a package ends.** Every package LOG closes with a
+"Gaps" section, and that section is the narrative — it is not the tracking.
+Each gap it names must also land in exactly one of three places, or it exists
+only in a file nobody re-reads:
+
+- the **roadmap**, when a named later package already owns it (say so in that
+  package's entry, so whoever carves it inherits the obligation);
+- **here**, when it is real work that no package owns yet;
+- a **`D-<NNN>`**, when it is a product call rather than work.
+
+Retire an entry when it ships; a backlog that still proposes something the
+tree already has is worse than an empty one.
+
+---
+
+- **Measure the parked hold worker's own footprint** (P04). The worker is
+  charged to the class cgroup alongside the content it holds, so its
+  resident size comes straight off the class floor.
+  `debug.FreeOSMemory()` returns the copy buffers before it parks, but a Go
+  runtime is not nothing. Worth a number before the floors are calibrated
+  against a real payload in P09 — and worth knowing whether a smaller
+  worker would be worth writing.
+- **Exercise the Docker resolver against a real daemon** (P05). The gate
+  container has no Docker socket, so `internal/consumer`'s Docker half is
+  tested against a stub over a unix socket and every e2e run reports the
+  check as degraded. Naming a real container end to end needs a harness with
+  the socket mounted — P06 builds the first harness that has containers in
+  it at all.
 - **A durability oracle.** D-008: process kill proves ordering, not
   durability. `dm-flakey` or a VM snapshot in the privileged harness would
   close it.
