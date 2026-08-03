@@ -37,8 +37,8 @@ import subprocess
 import pytest
 
 from nyxloom import (
-    adapters, config, daemon, decisions, frontmatter, leases, lint, notify,
-    paths, render, snapshot, storage, wrapper,
+    adapters, config, daemon, decision_chat, decisions, frontmatter, leases, lint,
+    notify, paths, render, snapshot, storage, wrapper,
 )
 from nyxloom.config import ProjectConfig
 from nyxloom.types import (
@@ -727,3 +727,248 @@ def test_bounded_diagnostics_never_carry_raw_output_or_secrets(
     assert "<redacted>" in detail
     assert len(detail) <= snapshot.DETAIL_MAX
     assert json.dumps(payload)  # the whole payload stays JSON-serialisable
+
+
+# --------------------------------------------------------------------------
+# the fan-in's own edges: paths reached only when a fault lands beside
+# another fault, beside an append, or beside a partially-usable source.
+# Each one is a place the fail-closed pass still has work to do correctly.
+
+
+_OPEN_INBOX = (
+    "# Decisions inbox\n\n"
+    "## D-001 · 2026-08-03 · carver · OPEN\n\n"
+    "Should the sample package ship?\n"
+)
+
+
+def _seed_open_decision(cfg: ProjectConfig) -> None:
+    """An inbox with one OPEN decision, so the pass's FIRST act is to append
+    a DECISION_OPENED before any later acquisition can fail."""
+    path = cfg.root / cfg.decisions_inbox
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_OPEN_INBOX, encoding="utf-8")
+
+
+def test_a_fail_closed_pass_still_renders_what_it_already_appended(
+        tmp_state, fault_project, launches, fault_mp, monkeypatch):
+    """A pass can append BEFORE it fails closed.
+
+    `_reconcile_decisions` runs on phase-A facts and records that a human
+    opened D-001; a later authoritative fault then stops the pass. The
+    decision is durable either way, but the dashboard is rendered from
+    events, so skipping the render on the fail-closed return would leave the
+    operator looking at a page that does not mention the decision they just
+    opened -- while the daemon has stopped making progress *because* of a
+    fault they also cannot see. Rendering is the only channel that shows
+    both."""
+    rendered: list = []
+    monkeypatch.setattr(render, "render_after_event", lambda *a, **k: rendered.append(a))
+    _seed_open_decision(fault_project)
+    _seed_queued("demo")
+    fault_mp.setattr(lint, "lint_project", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    assert d.run_pass("demo") == 0
+    fault_mp.undo()
+
+    assert_failed_closed("demo", launches, source="lint")
+    assert EventType.DECISION_OPENED in _types(), "the appended decision was lost"
+    assert rendered, "a fail-closed pass that appended events skipped the render"
+
+
+def test_a_feedback_push_failure_degrades_without_undoing_the_decision(
+        tmp_state, fault_project, launches, fault_mp):
+    """The DECISION_OPENED is already durable when the extra feedback-channel
+    push is attempted, so a push failure must not be able to unwind it -- and
+    must not fail the pass either, because the decision is recorded and the
+    operator can still see it in the dashboard.
+
+    It is still not silent: N failed pushes collapse into ONE advisory
+    descriptor (descriptor names are unique per audit, and N failures of one
+    channel are one degradation of that channel), and the dedup cursor is
+    still advanced so the next pass does not re-fire the same DECISION_OPENED
+    forever."""
+    _seed_open_decision(fault_project)
+    _seed_queued("demo")
+    fault_mp.setattr(decision_chat, "notify_decision_opened", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    d.run_pass("demo")
+    fault_mp.undo()
+
+    types = _types()
+    assert EventType.DECISION_OPENED in types
+    assert EventType.SNAPSHOT_UNAVAILABLE not in types, "an advisory push failed the pass"
+
+    degraded = [e for e in _events() if e.type is EventType.SNAPSHOT_DEGRADED]
+    assert len(degraded) == 1
+    row = next(r for r in degraded[0].payload["degraded"]
+               if r["name"] == "decision_feedback_push")
+    assert row["class"] == "advisory"
+    assert "D-001" in row["detail"] and "_Boom" in row["detail"]
+
+    # The dedup cursor advanced: a second pass does not re-open D-001.
+    before = len([e for e in _events() if e.type is EventType.DECISION_OPENED])
+    d.run_pass("demo")
+    after = len([e for e in _events() if e.type is EventType.DECISION_OPENED])
+    assert after == before, "the seen-status cursor was not advanced"
+
+
+def test_an_unreadable_store_cannot_stop_the_pass_from_failing_closed(
+        tmp_state, fault_project, launches, fault_mp):
+    """The last-resort path: the config is unavailable AND the event store
+    cannot record that fact.
+
+    There is no channel left but the log line, and nothing this method could
+    do would make the pass less closed -- it has already executed zero
+    effects. What must NOT happen is the append error escaping, because
+    run_pass's own `except` would then classify a fail-closed pass as a
+    TICK_ERROR and hide which authoritative source was actually missing."""
+    _seed_queued("demo")
+    fault_mp.setattr(config.ProjectConfig, "load", staticmethod(_raiser))
+    fault_mp.setattr(storage, "append_and_apply", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    assert d.run_pass("demo") == 0
+    fault_mp.undo()
+
+    assert launches == []
+    # Neither the fail-closed event nor a TICK_ERROR could be written -- the
+    # store was the thing that was broken. The contract that survives is
+    # "zero effects", and it held.
+    assert EventType.SNAPSHOT_UNAVAILABLE not in _types()
+    for banned in IRREVERSIBLE:
+        assert banned not in _types()
+
+
+def test_build_input_acquires_its_own_event_log_when_called_alone(
+        tmp_state, fault_project, fault_mp):
+    """`_build_input` is reachable without a pass around it (tests, and every
+    future caller CR-05's handler registry introduces). Called that way it
+    acquires the log itself and returns None on a fault -- never a
+    ReconcileInput built over a silently empty history, which is what an
+    `events or []` default would have produced."""
+    d = daemon.Daemon({"demo": fault_project.root})
+    states = storage.list_states("demo")
+    fault_mp.setattr(storage, "iter_events", _raiser)
+
+    assert d._build_input("demo", fault_project, states) is None
+
+    fault_mp.undo()
+    assert d._build_input("demo", fault_project, states) is not None
+
+
+#: Every AUTHORITATIVE input the fan-in may acquire, by descriptor name.
+#: Closed on purpose -- see the test below for what widening it obliges.
+DECLARED_AUTHORITATIVE = {
+    "config", "state", "event_log",
+    "decision_reconcile", "decisions_inbox", "decisions_open",
+    "routes", "handoffs", "lint", "leases",
+    "git_merged_branches", "git_head_revision", "receipts",
+}
+
+
+def test_the_authoritative_input_set_is_closed(
+        tmp_state, fault_project, launches, fault_mp):
+    """The structural invariant that replaced an unreachable runtime guard.
+
+    `_build_input` checks `permits_effects` once, immediately before the
+    `.require()` calls that consume the authoritative values. Everything
+    acquired below that point -- provider probes, handoff frontmatter,
+    carve-proposal artifacts -- is ADVISORY by construction, which is what
+    makes one guard sufficient. A trailing second guard used to sit at the
+    end of the method; it could never fire, so it was protection in
+    appearance only and a line no test could honestly cover.
+
+    This asserts the property that made it redundant. Classify any
+    acquisition below the guard as authoritative and this fails, which is
+    the signal to move the guard rather than to widen the list. It is
+    checked over a REAL clean pass so the set is the one the daemon actually
+    produces, not one re-derived here."""
+    _seed_queued("demo")
+    d = daemon.Daemon({"demo": fault_project.root})
+    d.run_pass("demo")
+
+    audit = d._build_input("demo", fault_project, storage.list_states("demo")).snapshot_audit
+    acquired_authoritative = {i.name for i in audit.inputs if i.authoritative}
+
+    assert acquired_authoritative <= DECLARED_AUTHORITATIVE, (
+        "a new AUTHORITATIVE snapshot input appeared: "
+        f"{sorted(acquired_authoritative - DECLARED_AUTHORITATIVE)}. If it is "
+        "acquired below _build_input's permits_effects guard, the guard no "
+        "longer covers every authoritative input -- move it, do not just add "
+        "the name here.")
+
+    # Non-vacuous: the acquisitions that DO happen below the guard are
+    # reachable and really are advisory. A probe fault is the one that fires
+    # furthest down, so it is the one that proves the single guard is
+    # sufficient rather than merely untriggered.
+    fault_mp.setattr(adapters, "probe", _raiser)
+    # The clean pass above already probed and memoized a healthy answer, and
+    # the memo answers for PROBE_TTL_SECONDS. Clearing it is what makes the
+    # fault reach the acquisition -- a TTL wait here would be a wall-clock
+    # budget deciding the verdict, which STANDING.md L20 forbids outright.
+    d._probe_memo.clear()
+    below_the_guard = d._build_input(
+        "demo", fault_project, storage.list_states("demo")).snapshot_audit
+    fault_mp.undo()
+
+    probe = below_the_guard.get("provider_probe")
+    assert probe is not None, "the below-the-guard acquisition never ran"
+    assert not probe.authoritative
+    assert below_the_guard.permits_effects, (
+        "an acquisition below the guard closed the pass -- the guard above it "
+        "cannot have covered it")
+
+
+def test_blank_lines_in_the_merged_branch_list_are_not_branch_names(
+        tmp_state, fault_project, launches, fault_mp):
+    """`git branch --merged` output is line-oriented and its last line is
+    empty. An empty string entering the merged-branch set would compare equal
+    to nothing real -- but a task whose branch field is empty (a
+    not-yet-branched task) would then read as MERGED, which authorizes the
+    single most irreversible transition the daemon has."""
+    real = subprocess.run
+
+    class _Padded:
+        returncode = 0
+        stdout = "  main\n\n* feat/demo-P01-sample\n   \n"
+        stderr = ""
+
+    def _run(cmd, *a, **k):
+        if isinstance(cmd, (list, tuple)) and "--merged" in list(cmd):
+            return _Padded()
+        return real(cmd, *a, **k)
+
+    fault_mp.setattr(daemon.subprocess, "run", _run)
+    d = daemon.Daemon({"demo": fault_project.root})
+    merged = d._merged_branches(fault_project, storage.list_states("demo"))
+    fault_mp.undo()
+
+    assert merged.ok
+    names = merged.require()
+    assert "" not in names, "an empty line became a branch name"
+    assert "main" in names and "feat/demo-P01-sample" in names
+
+
+def test_a_crashing_watchdog_removes_a_safety_net_without_closing_the_gate(
+        tmp_state, fault_project, launches, fault_mp):
+    """The one detector whose failure must NOT fail the pass closed.
+
+    `detect_runaways` only ever SUPPRESSES actions the planner already
+    decided are correct, so a detector crash removes a safety net rather than
+    opening a gate -- treating it as authoritative would let a buggy detector
+    halt the whole factory. It is still logged, because a permanently
+    crashing watchdog is a silently disabled watchdog, which is exactly
+    RISK-007's shape."""
+    _seed_queued("demo")
+    fault_mp.setattr(daemon.watchdog, "detect_runaways", _raiser)
+
+    d = daemon.Daemon({"demo": fault_project.root})
+    executed = d.run_pass("demo")
+    fault_mp.undo()
+
+    assert executed >= 1, "a detector crash suppressed the planned action"
+    assert launches, "the dispatch the positive control proves must still happen"
+    assert EventType.SNAPSHOT_UNAVAILABLE not in _types()

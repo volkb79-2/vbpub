@@ -513,10 +513,18 @@ class SnapshotBuilder:
         lint_findings = b.authoritative(
             "lint", lambda: lint.lint_project(cfg),
             provenance=Provenance("lint", str(cfg.root)))
-        ...
+        # ...the rest of the pass's acquisitions...
         audit = b.audit()
         if not audit.permits_effects:
-            ...   # one event, zero effects
+            return 0   # one event, zero effects
+
+    (The example deliberately writes "# ..." rather than a bare ``...``
+    line. coverage.py's exclusion pass is TEXTUAL, not AST-aware: a line
+    that is only an ellipsis matches its empty-body rule even inside a
+    docstring, and excluding any line of a docstring excludes the whole
+    docstring statement. On a changed file the diff-coverage gate then
+    reports it as a `pragma: no cover` escape -- which is exactly what it
+    is, just an accidental one. It cost this package one gate run.)
 
     ``authoritative``/``advisory`` return the descriptor, never the raw value,
     so a caller cannot accidentally use an unavailable reading. Reading the

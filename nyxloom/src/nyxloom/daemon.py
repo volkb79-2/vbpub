@@ -1411,9 +1411,17 @@ class Daemon:
         # composes with P3b's ceiling escalation (never double-fires).
         pending_carve_repairs = self._pending_carve_repairs(
             project, cfg, carver_session_snap, events=events)
-        if not b.audit().permits_effects:
-            return None
-
+        # NO second `permits_effects` guard here. A trailing re-check stood at
+        # this line and could never fire: every AUTHORITATIVE acquisition
+        # happens at or above the guard that protects the `.require()` calls,
+        # and everything between them (provider probes, handoff frontmatter,
+        # carve-proposal artifacts) is ADVISORY by construction. An unreachable
+        # guard is not free -- it reads as protection that is not there, and it
+        # is a line no test can honestly cover. The invariant it was reaching
+        # for is asserted instead by
+        # test_snapshot_faults.test_the_authoritative_input_set_is_closed,
+        # which fails the moment an acquisition below the guard is classified
+        # authoritative. Add one, and that test tells you to move the guard.
         return reconcile.ReconcileInput(
             now=utc_now(),
             cfg=cfg,
