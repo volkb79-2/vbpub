@@ -1,5 +1,109 @@
 {
   "scenarios": {
+    "auto-merge-clean": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "gate_result": {
+            "artifacts": [],
+            "commit": "<sha>",
+            "ended": "<ts>",
+            "environment": "local",
+            "exit_code": 0,
+            "gate_id": "pytest-q",
+            "output_tail": "",
+            "phase": "pre-merge",
+            "started": "<ts>"
+          }
+        },
+        "task_id": "demo-D23",
+        "type": "GATE_FINISHED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": null,
+        "payload": {
+          "from": "MERGE_READY",
+          "notes": null,
+          "to": "MERGED"
+        },
+        "task_id": "demo-D23",
+        "type": "TASK_TRANSITIONED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": null,
+        "payload": {
+          "carver_digest": {
+            "diffstat": {
+              "deletions": 0,
+              "files_changed": 1,
+              "insertions": 1
+            },
+            "digest_id": "merge:demo:<sha>",
+            "files": [
+              {
+                "change": "A",
+                "path": "d23.txt"
+              }
+            ],
+            "first_parent": "<sha>",
+            "handoff": {
+              "input_revision": null,
+              "path": "handoff/x.md",
+              "sha256": null,
+              "title": null
+            },
+            "merge_commit": "<sha>",
+            "review": {
+              "attempt_id": null,
+              "report_path": null,
+              "report_sha256": null,
+              "verdict": null
+            },
+            "schema_version": 1,
+            "spine_delta": {
+              "after_revisions": {},
+              "before_revisions": {},
+              "changed": false,
+              "changed_ids": {},
+              "paths": []
+            },
+            "task_id": "demo-D23"
+          },
+          "merge_commit": "<sha>",
+          "progress_units": [],
+          "source_kind": "review"
+        },
+        "task_id": "demo-D23",
+        "type": "MERGE_RECORDED",
+        "wave_id": null
+      }
+    ],
+    "auto-merge-conflict": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "detail": "auto-merge: real conflict merging demo-D24 -- operator must resolve by hand",
+          "reason": "auto-merge-conflict"
+        },
+        "task_id": "demo-D24",
+        "type": "NEEDS_OPERATOR",
+        "wave_id": null
+      }
+    ],
+    "auto-merge-no-recorded-branch": [
+      {
+        "attempt_id": null,
+        "payload": {
+          "detail": "auto-merge: no recorded implementer branch for demo-D22",
+          "reason": "auto-merge-error"
+        },
+        "task_id": "demo-D22",
+        "type": "NEEDS_OPERATOR",
+        "wave_id": null
+      }
+    ],
     "create-task": [
       {
         "attempt_id": null,
@@ -29,6 +133,144 @@
     ],
     "interrupt-attempt-no-pid-files": [],
     "interrupt-attempt-unparseable-pid": [],
+    "launch-gate-diagnosis": [
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": null,
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "review-independent",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-review-model",
+              "route_id": "fake-review",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "CREATED",
+            "usage": null,
+            "wave_id": null,
+            "worktree": null
+          }
+        },
+        "task_id": "demo-D21",
+        "type": "ATTEMPT_CREATED",
+        "wave_id": null
+      },
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": null,
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": 4242,
+            "receipt": null,
+            "role": "review-independent",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-review-model",
+              "route_id": "fake-review",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "PREFLIGHTING",
+            "usage": null,
+            "wave_id": null,
+            "worktree": null
+          }
+        },
+        "task_id": "demo-D21",
+        "type": "ATTEMPT_PREFLIGHTED",
+        "wave_id": null
+      }
+    ],
+    "launch-review-empty-wave": [],
+    "launch-review-wave": [
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": null,
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": null,
+            "receipt": null,
+            "role": "review-independent",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-review-model",
+              "route_id": "fake-review",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "CREATED",
+            "usage": null,
+            "wave_id": "wave-d20",
+            "worktree": null
+          },
+          "pre_review_sha": "<sha>"
+        },
+        "task_id": "demo-D20",
+        "type": "ATTEMPT_CREATED",
+        "wave_id": "wave-d20"
+      },
+      {
+        "attempt_id": "<att-id>",
+        "payload": {
+          "attempt": {
+            "attempt_id": "<att-id>",
+            "base_commit": null,
+            "branch": null,
+            "ended": null,
+            "log_path": null,
+            "pgid": null,
+            "pid": 4242,
+            "receipt": null,
+            "role": "review-independent",
+            "route": {
+              "cli": "fake",
+              "effort": null,
+              "model": "fake-review-model",
+              "route_id": "fake-review",
+              "routes_rev": "diff-rev",
+              "variant": null
+            },
+            "session_handle": null,
+            "started": "<ts>",
+            "state": "PREFLIGHTING",
+            "usage": null,
+            "wave_id": "wave-d20",
+            "worktree": null
+          }
+        },
+        "task_id": "demo-D20",
+        "type": "ATTEMPT_PREFLIGHTED",
+        "wave_id": "wave-d20"
+      }
+    ],
     "mark-interrupted": [
       {
         "attempt_id": "att-d05",

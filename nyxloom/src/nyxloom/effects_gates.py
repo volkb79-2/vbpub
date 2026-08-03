@@ -289,8 +289,8 @@ class GateEffector:
             scratch = Path(repo_root) / ".worktrees" / f"postmerge-{task_id}"
             if self._ports.files.exists(scratch):
                 self._ports.git.worktree_remove(repo_root, str(scratch))
-            if not self._ports.git.worktree_add_detached(
-                    repo_root, str(scratch), commit):
+            if self._ports.git.worktree_add_detached(
+                    repo_root, str(scratch), commit).returncode != 0:
                 scratch = None  # fall back to the live root below
         gate_cwd = str(scratch) if scratch is not None else str(cfg.root)
         worktree_value = (str(scratch) if scratch is not None

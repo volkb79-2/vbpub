@@ -33,13 +33,24 @@ BACKLOG_SRC = (REPO_ROOT / "nyxloom-trove" / "4-backlog.md").read_text()
 # A backlog item id `X` is present iff the frontmatter has a `- id: X` entry.
 _BACKLOG_ID_RE = r"^\s*-\s+id:\s*{}\b"
 
+# CR-05b: the control plane's DISPATCH SURFACE is no longer one file. Effect
+# execution now lives in `effects*.py` modules, and more move there with each
+# CR-05 sub-package -- so the scan globs them rather than listing them, and a
+# family that moves does not silently drop out of this census.
+CONTROL_PLANE_SRC = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in sorted((REPO_ROOT / "src" / "nyxloom").glob("effects*.py"))
+)
+
 _DISPATCH_RE = re.compile(r"role=Role\.(\w+)")
 _RESERVED_BLOCK_RE = re.compile(r"^RESERVED_ROLES.*?^\}\)", re.M | re.S)
 _RESERVED_REF_RE = re.compile(r"Role\.(\w+),\s*#\s*nyxloom-trove/backlog\.md:\s*(\S+)")
 
 
 def _dispatched_roles() -> set[Role]:
-    names = set(_DISPATCH_RE.findall(DAEMON_SRC)) | set(_DISPATCH_RE.findall(RECONCILE_SRC))
+    names = (set(_DISPATCH_RE.findall(DAEMON_SRC))
+             | set(_DISPATCH_RE.findall(RECONCILE_SRC))
+             | set(_DISPATCH_RE.findall(CONTROL_PLANE_SRC)))
     return {Role[name] for name in names}
 
 
@@ -57,7 +68,7 @@ def test_every_role_is_dispatched_or_reserved():
     for role in Role:
         assert role in dispatched or role in RESERVED_ROLES, (
             f"{role} is neither dispatched (role=Role.{role.name} in "
-            f"daemon.py/reconcile.py) nor in RESERVED_ROLES — silent stub"
+            f"daemon.py/reconcile.py/effects*.py) nor in RESERVED_ROLES — silent stub"
         )
 
 
