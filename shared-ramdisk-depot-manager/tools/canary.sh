@@ -384,8 +384,119 @@ canary "P06-exposure-writable" "TestExposeReadOnlyMakesEachBindReadOnly" \
 # measured, and the reason the two modes bind different mount points.
 canary "P06-rw-binds-the-ro-side" "TestExposeReadWriteLeavesTheBindsWritable|TestReadOnlyBindsThePublishedExposure" \
   "internal/expose/expose.go" \
-  's#\t\treturn path.Join(cr.OpMount, "root")#\t\treturn cr.ExposePath#' \
+  's#^\t\treturn cr.ContentRoot()$#\t\treturn cr.ExposePath#' \
   "an rw exposure binds the read-only side and is silently read-only"
+
+# --- P07: harvest, and the rw ownership model -----------------------------
+
+# Expose rw and stop at the MOUNT. Publication seals a class tree a-w, so the
+# result permits writes that the modes still refuse to every uid but root —
+# and the one writer rw exists for, the game's own updater, is not root. The
+# update reports success and changes nothing.
+canary "P07-rw-never-unsealed" "TestExposeRWUnsealsEachClassTree" \
+  "internal/expose/hostbind.go" \
+  's#\t\tif err := hold.Unseal(root, h.chown, owner.UID, owner.GID); err != nil {#\t\tif err := error(nil); err != nil {#' \
+  "an rw exposure leaves the content sealed against the only writer it has"
+
+# Hand the unsealed tree to nobody. srdm does not guess the uid: a tree
+# unsealed to root is one an unprivileged updater still cannot create a file
+# in, and that failure arrives as an update that did nothing.
+canary "P07-rw-owner-optional" "TestExposeRWIsRefusedWhenNoWriteOwnerIsDeclared" \
+  "internal/expose/hostbind.go" \
+  's#^\tif access == AccessRW \&\& h.cfg.WriteOwner == nil {$#\tif false {#' \
+  "rw is exposed with no owner to hand the tree to"
+
+# Unseal to the world. Exactly one consumer may write to a generation, so
+# group and other write hand it to processes the single-consumer rule just
+# refused.
+canary "P07-unseal-world-writable" "TestUnsealRestoresOwnerWrite|TestExposeRWUnsealsEachClassTree" \
+  "internal/hold/worker.go" \
+  's#info.Mode().Perm()|0o200|keep#info.Mode().Perm()|0o222|keep#' \
+  "unsealing gives group and other write"
+
+# Seal with Perm() alone. It strips setuid, setgid and sticky from every
+# entry — invisibly, because publication never compares modes again (D-014).
+# It surfaces one package later, as a harvest that cannot match the release
+# it came from.
+canary "P07-seal-drops-setuid" "TestSealRemovesWriteAndKeeps" \
+  "internal/hold/worker.go" \
+  's#^\t\thigh := info.Mode() \& (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)$#\t\thigh := fs.FileMode(0)#' \
+  "sealing strips setuid, setgid and sticky from published content"
+
+# The same blindness in the copy that builds a transaction.
+canary "P07-copy-drops-setuid" "TestCopyTreeCarriesSetuid" \
+  "internal/fsx/copy.go" \
+  's#^\treturn m.Perm() | (m \& (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))$#\treturn m.Perm()#' \
+  "a staged or harvested tree loses setuid, setgid and sticky"
+
+# Copy a directory with its sealed mode, so the next entry written into it
+# fails. Every generation harvest reads is sealed, and the gate — like any
+# operator who is not root — cannot write into 0555.
+canary "P07-copy-seals-the-destination" "TestCopyTreeCanCopyASealedTree|TestAHarvestedReleaseCarriesTheStoresModes" \
+  "internal/fsx/copy.go" \
+  's#^\t\treturn os.Chmod(dst, fullMode(info.Mode())|0o700)$#\t\treturn os.Chmod(dst, fullMode(info.Mode()))#' \
+  "a sealed tree cannot be copied into a transaction"
+
+# Harvest without asking whether anything can still write. The release that
+# comes back is then a state the tree may never have been in — and it hashes,
+# verifies and publishes perfectly, because a torn copy is self-consistent.
+canary "P07-harvest-skips-quiesce" "TestHarvestIsRefusedWhileAConsumerCanStillWrite" \
+  "internal/harvest/harvest.go" \
+  's#\t\treturn h.refuseIfHeld(ctx, rec, "before the copy", fields)#\t\treturn nil#' \
+  "harvest never asks whether a consumer can still write"
+
+# Ask once, before the copy, and never again. A container that starts while
+# harvest is reading is then invisible — which is the only case the second
+# ask exists for.
+canary "P07-harvest-no-settle" "TestHarvestIsRefusedWhenAConsumerAppearsDuringTheCopy" \
+  "internal/harvest/harvest.go" \
+  's#\t\treturn h.refuseIfHeld(ctx, rec, "during the copy", fields)#\t\treturn nil#' \
+  "a consumer that starts mid-harvest is never noticed"
+
+# Harvest a generation that is no longer mounted. A teardown leaves the mount
+# POINT behind as an ordinary empty directory, so this promotes an empty
+# release over a good one — and it verifies clean, because an empty tree
+# hashes consistently.
+canary "P07-harvest-unmounted" "TestHarvestIsRefusedWhenAClassIsNotMounted" \
+  "internal/harvest/harvest.go" \
+  's#^\t\t\treturn \&NotPublishedError{Generation: rec.Generation, Class: c.Name, Mount: c.OpMount}$#\t\t\treturn nil#' \
+  "a torn-down generation is harvested as an empty release"
+
+# And the same failure one step on: mounted, but with nothing in it.
+canary "P07-harvest-empty-tree" "TestHarvestRefusesAGenerationWhoseTreesAreEmpty" \
+  "internal/harvest/harvest.go" \
+  's#^\tif len(from) == 0 {$#\tif false {#' \
+  "an empty generation is promoted over a good release"
+
+# Accept a path whose class no longer names the tmpfs it came off. The
+# profile changed under a live generation, and republishing afterwards moves
+# the content to a different class, tmpfs and memory floor with no signal.
+canary "P07-harvest-class-moved" "TestHarvestRefusesWhenTheProfileMovedAPathToAnotherClass" \
+  "internal/harvest/harvest.go" \
+  's#^\t\t\tif class.Kind != profile.KindStructure \&\& class.Name != c.Name {$#\t\t\tif false {#' \
+  "content is silently reclassified into another memory class"
+
+# Let the second class tree win a path both claim, instead of refusing. The
+# release then depends on the order the classes happened to be walked in.
+canary "P07-harvest-collision-wins" "TestHarvestRefusesAPathTwoClassTreesBothClaim" \
+  "internal/harvest/harvest.go" \
+  's#^\t\t\t\treturn \&CollisionError{Path: rel, First: prev, Second: c.Name}$#\t\t\t\treturn nil#' \
+  "two class trees claiming one path picks a winner silently"
+
+# Record a harvest as a stage. Provenance is the only thing that says this
+# release came out of a running tmpfs rather than a verified acquisition.
+canary "P07-harvest-provenance" "TestHarvestPromotesTheLiveTreeWithHarvestedProvenance" \
+  "internal/harvest/harvest.go" \
+  's#^\t\t\tKind: store.ProvenanceHarvested,$#\t\t\tKind: store.ProvenanceStaged,#' \
+  "a harvested release claims it was staged"
+
+# Leave the partial copy behind when a harvest refuses. Unlike a failed
+# stage, it is not evidence — the tmpfs it came from is still mounted and
+# still readable — it is just gigabytes nobody will explain.
+canary "P07-harvest-tx-survives" "TestHarvestRefusesWhenTheProfileMovedAPathToAnotherClass|TestHarvestIsRefusedWhenAConsumerAppearsDuringTheCopy" \
+  "internal/harvest/harvest.go" \
+  's#^\t\t_ = h.st.Discard(tx)$#\t\t_ = tx#' \
+  "a refused harvest leaves its partial copy on disk"
 
 # Never re-hash a generation that has been exposed writable, so drift
 # through an rw exposure is invisible until somebody trips over it.

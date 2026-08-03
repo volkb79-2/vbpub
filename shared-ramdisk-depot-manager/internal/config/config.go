@@ -87,7 +87,26 @@ type Wings struct {
 	// produces the EROFS start failure this exists to prevent, with srdm's
 	// refusal removed from in front of it.
 	ChownSkipPatch bool
+	// WriteOwner is who a class tree is handed to when `access: rw` unseals
+	// it — the uid:gid Wings runs its server containers as.
+	//
+	// nil means undeclared, and `access: rw` is then REFUSED. srdm does not
+	// guess it: mode-only unsealing leaves the tree owned by root, an
+	// unprivileged updater still cannot create a file in it, and the failure
+	// would arrive as "the update silently did nothing" rather than as a
+	// refusal. The number lives in Wings' own config as system.user.uid /
+	// system.user.gid; srdm asks the operator for it rather than scanning a
+	// nested YAML key it could misread (D-021's reasoning, D-022's decision).
+	WriteOwner *WriteOwner
 }
+
+// WriteOwner is the identity that may write through an `access: rw` exposure.
+type WriteOwner struct {
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+}
+
+func (o WriteOwner) String() string { return fmt.Sprintf("%d:%d", o.UID, o.GID) }
 
 // Wings defaults, as a stock Pterodactyl node lays itself out.
 const (
@@ -131,6 +150,13 @@ func (w Wings) Validate() error {
 		return fmt.Errorf("config: wings.volume_root %q is not beneath wings.bind_root %q, "+
 			"so the propagation srdm checks is not the propagation its mounts travel over",
 			w.VolumeRoot, w.BindRoot)
+	}
+	// A negative id is how "unset" is spelled everywhere else in this config
+	// (config.Ownership), so accepting one here would mean two different
+	// meanings for the same value in the same document.
+	if w.WriteOwner != nil && (w.WriteOwner.UID < 0 || w.WriteOwner.GID < 0) {
+		return fmt.Errorf("config: wings.write_owner is %s; leave it unset rather than "+
+			"negative — unset refuses access: rw, which is the safe answer", w.WriteOwner)
 	}
 	return nil
 }

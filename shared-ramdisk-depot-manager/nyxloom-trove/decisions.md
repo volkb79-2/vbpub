@@ -690,6 +690,103 @@ write through in the first place — the master plan's oracle 23 is "update in
 place through `rw` → `harvest`". Deciding ownership without the consumer of
 that decision in front of us is how it gets decided wrongly.
 
+**Update (P07): the open half is closed by D-022.**
+
+---
+
+## D-022 — `access: rw` unseals the class tree and hands it to a declared owner
+
+**Status:** decided, and the measurement is an oracle. Closes the open half
+of D-020.
+
+Three questions were left open: which uid writes, whether unsealing is
+per-class or per-generation, and whether an unsealed tree may be re-sealed or
+only republished. `harvest` is now in front of us, so they can be answered
+against something rather than in the abstract.
+
+**Which uid: one the operator declares, and rw is refused without it.**
+
+The alternative was to leave the tree owned by root and let the modes stay as
+publication left them. That is what P06 shipped, and it does not work for the
+only writer `rw` exists for. Publication seals a class tree `chmod -R a-w`,
+so an `rw` exposure permits writes at the MOUNT level that the MODES refuse
+to every uid except root — and the game's own updater, running in the
+container as an unprivileged uid, is not root. `AUTO_UPDATE=1` would report
+success and change nothing, which is the 2026-07-21 incident in a new
+costume: "steamcmd reported Success" and "the content changed" are different
+claims.
+
+So exposure **unseals**: it restores the owner write bit and `lchown`s the
+tree to `wings.write_owner`. Not detected — declared, exactly as F1 is
+(D-021). The number is Wings' `system.user.uid` / `system.user.gid`, which
+lives one level deeper in the YAML than the single key `wings.ReadChownWalk`
+scans for, and srdm has no parser. Guessing it wrong hands the tree to a uid
+the container is not, which fails exactly as not unsealing at all does — so
+there is nothing to be gained by guessing, and the refusal names where to
+look. **Undeclared refuses**; a node that has not said who writes does not
+get a writable exposure.
+
+Owner write only, never group or other. Exactly one consumer may write to a
+generation, so a world-writable tree would hand it to precisely the processes
+the single-consumer rule just refused.
+
+**Per class, and the mechanism matters more than today's granularity.** The
+unit of unsealing is the class tree, because a class tree is what was
+populated, verified and sealed as one — and because the game rewrites paths
+inside it that no individual binding names. In v1 every managed class is
+unsealed, because the access axis is per exposure rather than per class; a
+per-class axis is additive and changes nothing here.
+
+**Never re-sealed. Republish, or harvest.** Re-sealing would restore the
+MODES of a tree whose CONTENT is no longer any release's — the appearance of
+a sealed generation without the property, which is worse than an obviously
+dirty one. A generation exposed writable stays `DirtyCapable`, is not shared
+and is not used as a source. There are exactly two ways out, and `harvest` is
+the new one: republish from the store and discard the writes (oracle 22), or
+harvest the writes into a release and republish from that.
+
+**Measured, because the whole point is an assertion about a uid srdm is
+not.** `TestAnUnprivilegedWriterCanWriteThroughAnRWExposureAndNotThroughRO`
+performs the write as uid 65534 through both modes: `EROFS` through `ro`
+(the mount refusing, which holds even for root) and success through `rw`. The
+two failures it tells apart are the whole decision — `EROFS` would mean rw
+bound the read-only side (D-020's measured half), `EACCES` would mean the
+tree was never unsealed (this one). Root writing through proves neither, and
+that is exactly what P06 was able to observe.
+
+**One consequence, stated because it looks like a bug from the outside.** The
+`ro`/`rw` seal is not what makes a read-only exposure safe — the MOUNT is,
+and that has been an oracle since P03. Unsealing therefore does not weaken
+`ro` in any way, and a read-only exposure never unseals: the seal is the
+second lock, and an exposure that quietly removed it would leave the next
+consumer writing into a tree nobody marked.
+
+---
+
+## D-023 — a harvested release is managed content only, and that is the state rule holding
+
+**Status:** accepted; it falls out of the design rather than being chosen.
+
+Oracle 23 says a harvested release's manifest matches "a from-scratch stage
+of the same build identity, byte for byte". A from-scratch stage of a real
+game install contains per-instance state — `WS/Saved`, `WS/Config` — because
+the game creates it. A harvest cannot contain any, because publication never
+carries any: only managed classes are published, so only managed classes
+exist to be read back.
+
+**Decided: the harvest is right and the comparison is what needs stating.**
+Carrying the source release's excluded entries into the harvested one was the
+alternative, and it is the absolute state rule inverted — `WS/Saved` is never
+shared, never used as content input, never modified by a transaction. A
+release whose excluded content came from one particular server's disk is a
+release that shares one server's saves with every other.
+
+So oracle 23 compares against a from-scratch stage of the **managed**
+content, which is what a clean acquisition of game content actually is, and a
+unit oracle asserts separately that nothing excluded can enter a harvest at
+all. Both are true statements; only their conjunction is the claim worth
+making.
+
 ---
 
 ## D-021 — srdm reads Wings' config with a scanner, and F1 is asserted rather than detected

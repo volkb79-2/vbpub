@@ -76,6 +76,83 @@ func TestSyncDirRejectsANonDirectory(t *testing.T) {
 	}
 }
 
+// setuid, setgid and sticky live outside Go's Perm(), so a copy written the
+// obvious way drops exactly the three bits that matter most — the same
+// blindness store.unixMode exists to avoid. A release staged through here
+// would then differ from the tree it was staged from, in a way no check of
+// the content could ever show.
+func TestCopyTreeCarriesSetuidSetgidAndSticky(t *testing.T) {
+	src, dst := t.TempDir(), filepath.Join(t.TempDir(), "out")
+
+	shared := filepath.Join(src, "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(src, "helper")
+	if err := os.WriteFile(helper, []byte("elf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(helper, 0o755|os.ModeSetuid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o775|os.ModeSetgid|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CopyTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	for rel, want := range map[string]os.FileMode{
+		"helper": 0o755 | os.ModeSetuid,
+		"shared": 0o775 | os.ModeSetgid | os.ModeSticky,
+	} {
+		info, err := os.Lstat(filepath.Join(dst, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+		if got != want {
+			t.Errorf("%s copied as %v, want %v", rel, got, want)
+		}
+	}
+}
+
+// A tree cannot be built inside its own read-only directories. Publication
+// leaves a class tree 0555, so a copy that carried that mode across would
+// fail on the very next entry it wrote into that directory — which is the
+// state harvest reads every generation in.
+func TestCopyTreeCanCopyASealedTree(t *testing.T) {
+	src, dst := t.TempDir(), filepath.Join(t.TempDir(), "out")
+
+	nested := filepath.Join(src, "WS", "Content")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "game.pak"), []byte("pak"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	// Deepest first, exactly as the seal does it.
+	for _, d := range []string{nested, filepath.Join(src, "WS"), src} {
+		if err := os.Chmod(d, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, d := range []string{src, filepath.Join(src, "WS"), nested} {
+			_ = os.Chmod(d, 0o755)
+		}
+	})
+
+	if err := CopyTree(src, dst); err != nil {
+		t.Fatalf("copying a sealed tree: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dst, "WS", "Content", "game.pak"))
+	if err != nil || string(body) != "pak" {
+		t.Fatalf("the sealed tree did not arrive: %q, %v", body, err)
+	}
+}
+
 func TestCopyTreePreservesStructureModesAndLinks(t *testing.T) {
 	src, dst := t.TempDir(), filepath.Join(t.TempDir(), "out")
 

@@ -109,6 +109,10 @@ const (
 	PreconditionConsumers   = "consumers-stopped"
 	PreconditionSingleWrite = "rw-single-consumer"
 	PreconditionDirty       = "generation-dirty"
+	// PreconditionWriteOwner is `access: rw` having somebody to hand the
+	// unsealed tree to. Without it the mount permits writes that the modes
+	// still refuse to everyone but root.
+	PreconditionWriteOwner = "rw-write-owner"
 	// PreconditionBoundedWaiver is the invariant-14 waiver staying inside
 	// its declared bounds: managed content at exactly the declared class
 	// paths, and per-instance state neither bound nor shadowed.
@@ -194,9 +198,32 @@ func plan(rec *publish.Record, prof *profile.Profile, req Request, volume string
 // unprivileged uid cannot until that is decided.
 func sourceBase(cr publish.ClassRecord, access Access) string {
 	if access == AccessRW {
-		return path.Join(cr.OpMount, "root")
+		return cr.ContentRoot()
 	}
 	return cr.ExposePath
+}
+
+// writableRoots is the set of class content roots an rw exposure has to
+// unseal: one per class the bindings touch, deduplicated and ordered.
+//
+// The whole class root, not the bound subpaths. A class tree is one unit —
+// it was populated, verified and sealed as one — and the game's updater
+// rewrites paths within it that no binding names individually. Nothing else
+// can reach the tree either way: it lives under the operation-private root,
+// which is 0700 and mounted MS_PRIVATE (D-019).
+func writableRoots(rec *publish.Record, bindings []Binding) []string {
+	touched := make(map[string]bool, len(bindings))
+	for _, b := range bindings {
+		touched[b.Class] = true
+	}
+	var out []string
+	for _, c := range rec.Classes {
+		if touched[c.Name] {
+			out = append(out, sourceBase(c, AccessRW))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // excludedPaths is every path the profile says is per-instance state.

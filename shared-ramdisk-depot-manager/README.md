@@ -14,20 +14,29 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
-## Status — P01–P06 landed
+## Status — P01–P07 landed
 
-The whole v1 pipeline exists as libraries: store → verified release →
-publication → hold units → exposure into a Wings server's volume. What is
-missing is the operator surface that drives it and the operational loop
-around it. See [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
+The whole v1 pipeline exists as libraries, and it is now a loop: store →
+verified release → publication → hold units → exposure into a Wings server's
+volume → update in place → **harvest back into a release**. What is missing is
+the operator surface that drives it and the operational loop around it. See
+[`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
 
 | | |
 |---|---|
-| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset plus the Wings preconditions; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw` |
-| **Not yet** | `harvest` (P07), retention/GC, the daemon, boot restore and the CLI verbs that drive any of this (P08), SteamCMD driver, everything `provider` (v2) |
+| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset plus the Wings preconditions; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw`, and `harvest` |
+| **Not yet** | retention/GC, the daemon, boot restore and the CLI verbs that drive any of this (P08), SteamCMD driver, everything `provider` (v2) |
 
-Publication and hold are libraries with no operator entry point yet: the CLI
-verbs that drive them arrive with the daemon (P08).
+Publication, hold, exposure and harvest are libraries with no operator entry
+point yet: the CLI verbs that drive them arrive with the daemon (P08).
+
+`access: rw` needs `wings.write_owner` — the uid:gid Wings runs its server
+containers as (`system.user.uid` / `system.user.gid` in its config). srdm
+unseals the class trees and hands them to that owner, because publication
+seals them read-only for everyone and an updater running as anything but root
+would otherwise report success and write nothing. Undeclared, `rw` is refused
+(D-022). A generation written through is repaired by republishing it, or kept
+by harvesting it.
 
 ```
 srdm store promote  --profile examples/soulmask.profile.json \

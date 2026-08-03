@@ -82,10 +82,17 @@ func newNode(t *testing.T) *node {
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(dir, "state")
 	cfg.RunDir = filepath.Join(dir, "run")
+	// An rw exposure unseals the class trees and hands them to a declared
+	// owner (D-022); without one it is refused. 65534 is an unprivileged
+	// stand-in for the uid Wings runs its servers as — root writes through it
+	// here regardless, which is all these oracles need. That an UNPRIVILEGED
+	// writer can too is harvest's measurement, in internal/harvest.
+	owner := config.WriteOwner{UID: 65534, GID: 65534}
 	cfg.Wings = config.Wings{
 		BindRoot:   filepath.Join(dir, "pterodactyl"),
 		VolumeRoot: filepath.Join(dir, "pterodactyl", "volumes"),
 		ConfigPath: filepath.Join(dir, "wings.yml"),
+		WriteOwner: &owner,
 	}
 
 	fixed := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)

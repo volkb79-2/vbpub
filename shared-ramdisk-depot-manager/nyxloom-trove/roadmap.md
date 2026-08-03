@@ -260,28 +260,57 @@ oracles across the project now, and 44 canaries, none surviving.
 
 ### Wave 3 — acquisition and operations
 
-| id | package | depends on |
+| id | package | state |
 |---|---|---|
-| **P07** | `harvest` — adopt an in-place-updated generation as a release | P06 |
-| **P08** | retention/GC, the daemon, the admin socket, boot restore, doctor online | P06 |
-
-**Inherited from P06**: `harvest` closes **D-020**. An `rw` exposure today
-permits writes at the mount level while the content's modes are still sealed
-`a-w`, so root can write through it and an unprivileged game container
-cannot. Which uid writes, whether unsealing is per-class or per-generation,
-and whether an unsealed tree may be re-sealed or only republished are all
-open — and they are open on purpose, because harvest is the only consumer of
-the answer and deciding without it in front of us is how it gets decided
-wrongly. P07 must also refuse to harvest a generation whose record is
-`DirtyCapable` without re-verifying it first.
+| **P07** | `harvest` — adopt an in-place-updated generation as a release | **done** |
+| **P08** | retention/GC, the daemon, the admin socket, boot restore, doctor online | next |
 
 **P07** is today's manual procedure automated: refuse if any consumer is
 running → re-walk and re-hash → classify (an unclassified new path blocks
 promotion, exactly as on the staged path) → probes → transaction into the
-store → journal with `harvested-from-<generation>` provenance. The store
-already accepts this shape; `ProvenanceHarvested` exists and is unused on
-purpose. *Gate*: oracle 23 — the harvested manifest matches a from-scratch
-stage of the same build identity, byte for byte.
+store → journal with harvested provenance. The store already accepted this
+shape; `ProvenanceHarvested` existed and was unused on purpose.
+
+**What P07 settled.** Everything from classification down is `store.Promote`,
+unchanged and shared with the staged path — which is the point, because a
+harvested release has to be indistinguishable from a staged one and the
+cheapest way to guarantee that is for it to be made by the same code. What
+`internal/harvest` adds is the two things staging never has to think about:
+establishing that nobody can still write, and ASSEMBLING one tree out of the
+N tmpfs mounts publication spread a generation across.
+
+Assembly is where the decisions are. Every path is re-classified before it is
+copied, and the check is not promotion's: promotion asks "does any rule match
+this path", assembly asks "does the rule that matches it still name the tmpfs
+it came off". The first catches new content, the second catches a **profile
+that moved under a live generation** — which is the only way, under
+host-bind, that a harvest can meet a path it should refuse. An exposure binds
+only the declared class paths, so every write that reaches a class tmpfs
+lands inside that class and classifies.
+
+**D-022 closes D-020's open half**, and it is a measurement rather than an
+argument: `rw` now unseals each bound class tree and hands it to a declared
+`wings.write_owner`, with `rw` refused when none is declared. The oracle
+performs the write as an unprivileged uid through both modes, because root
+writing through proves nothing — root could always write through, and that
+was exactly the problem. **D-023** records why a harvested release carries no
+per-instance state, and that this is the absolute state rule holding rather
+than a gap.
+
+Two mode bugs surfaced, both invisible until harvest made a published tree
+comparable with the release it came from: `hold.Seal` and `fsx.CopyTree` both
+chmod'd through `Perm()`, which is blind to setuid, setgid and sticky. Nothing
+in publication compares modes again (D-014), so a setgid directory lost its
+bit at publication and again at every stage, silently.
+
+*Gated*: oracle 23 end to end — update in place through `rw` as the game's
+uid → unexpose → harvest → the resulting manifest's content digest equals a
+from-scratch stage of the same content, and republishing from the harvest
+keeps the update where republishing from the source discards it (oracle 22
+with the remedy attached); harvest refused against a real second mount
+namespace and lifting when it stops; harvest refused once the generation is
+torn down, against the real mount table. Plus 15 unit oracles and 16 new
+canaries, none surviving.
 
 **P08** closes the operational loop: `srdm-restore.service`
 (`After=local-fs.target`, no Docker dependency) republishing assigned
@@ -290,6 +319,23 @@ kept); `internal/adminapi` on `/run/srdm/admin.sock` (0600, root) and the
 `daemon` subcommand; the worker-contract rules for adoption and quarantine
 of operations whose units outlived the daemon. *Gate*: reboot republish
 before consumer starts; orphan adoption and quarantine.
+
+**Inherited from P07.** Two things harvest needs from the operator surface,
+and one it deliberately did not build:
+
+- **`harvest` has no CLI verb**, like publication, hold and exposure before
+  it. It is a library; `cmd/srdm` says so by name.
+- **The procedure has an order, and nothing enforces it.** Harvest reads a
+  generation's own tmpfs and needs no exposure to do it — which is
+  fortunate, because a live exposure IS a hold: the volume binds propagate
+  into the Wings container's namespace, so the generation is held until they
+  are removed. The order is stop the server → unexpose → harvest → teardown
+  → publish the harvested release → expose. P08 owns whatever drives that,
+  and the refusal names the next step rather than assuming somebody knows it.
+- **Re-verifying a `DirtyCapable` generation is harvest's re-hash**, not a
+  separate step: harvest never trusts the record's manifest and always
+  rebuilds one from the tree. What is still open is `doctor`'s side — it
+  reports drift, and nothing acts on the report.
 
 **Inherited obligations**, each already built but unreachable until P08 gives
 it a verb or a loop:
@@ -305,8 +351,13 @@ it a verb or a loop:
   P05 deliberately implements only the narrower running-container question,
   because that is what teardown safety is about; a stopped definition holds
   no pages but still pins what it will need on its next start.
-- Publication and hold have no operator entry point at all. They are
-  libraries; `cmd/srdm` says so by name rather than pretending otherwise.
+- Publication, hold, exposure and harvest have no operator entry point at
+  all. They are libraries; `cmd/srdm` says so by name rather than pretending
+  otherwise. Every verb the master plan names —
+  `daemon, stage, harvest, status, activate, rollback, gc, operation` — is
+  P08's, and `harvest` needs one more input than the others: which release id
+  the harvest becomes, since a harvested release is first-class and its
+  identity is the operator's to choose.
 
 ### Wave 4 — the real acceptance test
 

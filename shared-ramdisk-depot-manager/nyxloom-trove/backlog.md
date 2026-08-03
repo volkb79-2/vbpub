@@ -44,9 +44,26 @@ tree already has is worse than an empty one.
   engine lands and a parser dependency is worth its weight.
 - **`srdm store gc`** — retention (D-002), once there is something that
   pins a release.
-- **Manifest streaming.** `BuildManifest` holds every entry in memory. Fine
-  for a ~2.4 GB game tree; worth revisiting if a profile ever covers a tree
-  with millions of entries.
+- **Manifest streaming.** `BuildManifest` holds every entry in memory, and
+  `harvest.assemble` holds two maps keyed on every path it copies. Fine for a
+  ~2.4 GB game tree; worth revisiting together if a profile ever covers a
+  tree with millions of entries.
 - **Parallel hashing.** The manifest walk is single-threaded. Measure before
   optimizing: on the case-study node the store lives on the same device the
   io.max caps govern, so more concurrency may buy nothing.
+- **Harvest reads the tree twice** (P07). It copies the class trees into a
+  transaction and then `store.Promote` hashes the copy — two full passes over
+  a multi-gigabyte tree. Hashing the copy rather than the source is the
+  correct half and must stay: a release's manifest has to describe what
+  actually landed on disk. Hashing WHILE copying would collapse the two and
+  keep that property, at the cost of a second manifest builder to keep in
+  step with the first. Measure the copy against the hash before deciding it
+  is worth two implementations.
+- **Build identity is not recorded** (P07). The master plan's harvest step 4
+  is "run the profile's probes; record build identity where discoverable" —
+  the probes run, and there is nowhere to record a build identity, because no
+  profile has a way to express one. It would want a probe kind that captures
+  a value (a version file, a manifest header) rather than asserting a
+  predicate, and a field in COMPLETE to hold it. Wanted by the same thing
+  that wants it for staged releases, so it is one piece of work for both
+  paths, not a harvest rider.

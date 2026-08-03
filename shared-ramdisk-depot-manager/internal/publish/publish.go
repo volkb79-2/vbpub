@@ -245,6 +245,22 @@ type ClassRecord struct {
 	NoExec    bool  `json:"noexec"`
 }
 
+// ContentRoot is the class's content inside its op tmpfs: the writable mount
+// of the same pages the read-only ExposePath shows.
+//
+// A method rather than a stored field, because it is derived and a record
+// that stored both could disagree with itself. Everything that has to reach
+// the writable side goes through here — an rw exposure binds it (D-020) and
+// harvest reads it — so there is one answer rather than a string literal in
+// each of them.
+func (c ClassRecord) ContentRoot() string {
+	return filepath.Join(c.OpMount, contentRootName)
+}
+
+// contentRootName matches config.OpClassRoot: content lives one level inside
+// the tmpfs so the mount point itself is never the thing bound.
+const contentRootName = "root"
+
 // Record is the durable published-state document.
 //
 // It records what SHOULD be mounted and held. It is never evidence that

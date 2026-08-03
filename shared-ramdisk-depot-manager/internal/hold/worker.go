@@ -255,7 +255,79 @@ func copyRegular(src, dst string) (err error) {
 // Deepest-first because removing write from a directory is harmless to chmod
 // but the ordering makes the walk independent of whether it is: no step
 // depends on a permission an earlier step removed.
+//
+// setuid, setgid and sticky are carried through. The seal is about the WRITE
+// bits; Perm() alone would silently drop the other three, and a generation
+// harvested back into the store would then differ from the release it was
+// published from by exactly the bits nothing else looks at.
 func Seal(root string) error {
+	paths, err := sealable(root)
+	if err != nil {
+		return err
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	for _, p := range paths {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		high := info.Mode() & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+		if err := os.Chmod(p, info.Mode().Perm()&^0o222|high); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Unseal is Seal's inverse, and it is what makes `access: rw` mean anything:
+// publication seals a class tree a-w before anything binds it, so an rw
+// exposure permits writes at the MOUNT level while the MODES still refuse
+// them. Root bypasses mode checks and a game container does not, so without
+// this the one writer rw exists for — the game's own updater — is the one
+// writer that cannot use it (D-022).
+//
+// It restores only the OWNER write bit, and hands the tree to owner uid:gid.
+// Group and other stay unwritable: exactly one consumer may write to a
+// generation, so a world-writable tree would grant it to processes the
+// single-consumer rule just refused.
+//
+// lchown runs BEFORE the chmod, per entry, and the order is load-bearing: a
+// root chown strips setuid and setgid from a non-directory, so chmod'ing
+// first would restore a mode the chown then quietly removed. This is the same
+// trap store.needsChown documents, arriving from the other side.
+//
+// Lchown, not Chown: a symlink's own ownership is set rather than its
+// target's, which would otherwise reach outside the tree.
+func Unseal(root string, chown func(name string, uid, gid int) error, uid, gid int) error {
+	if chown == nil {
+		chown = os.Lchown
+	}
+	if uid < 0 || gid < 0 {
+		return fmt.Errorf("hold: unsealing %s needs an owner, got uid %d gid %d", root, uid, gid)
+	}
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if err := chown(p, uid, gid); err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			// A symlink has no permission bits of its own, and chmod would
+			// follow it to the target.
+			return nil
+		}
+		keep := info.Mode() & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+		return os.Chmod(p, info.Mode().Perm()|0o200|keep)
+	})
+}
+
+// sealable lists every entry whose permission bits are the seal's business.
+func sealable(root string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -269,18 +341,5 @@ func Seal(root string) error {
 		paths = append(paths, p)
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
-	for _, p := range paths {
-		info, err := os.Lstat(p)
-		if err != nil {
-			return err
-		}
-		if err := os.Chmod(p, info.Mode().Perm()&^0o222); err != nil {
-			return err
-		}
-	}
-	return nil
+	return paths, err
 }

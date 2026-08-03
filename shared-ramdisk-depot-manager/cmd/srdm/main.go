@@ -66,10 +66,11 @@ func run(args []string) error {
 		return nil
 	case "daemon", "stage", "harvest", "status", "activate", "rollback", "gc", "operation":
 		return fmt.Errorf("%q has no CLI verb yet: the store, the journal and offline doctor "+
-			"ship today, and publication topology and hold services exist as libraries "+
-			"(internal/publish, internal/hold) with no operator entry point. The exposure "+
-			"driver arrives with P06, harvest with P07, and the daemon, gc and boot restore "+
-			"with P08", args[0])
+			"ship today. The whole v1 pipeline exists as libraries with no operator entry "+
+			"point — publication and hold units (internal/publish, internal/hold), the "+
+			"host-bind exposure driver (internal/expose) and harvest (internal/harvest). "+
+			"The verbs that drive them, the daemon, gc and boot restore arrive with P08",
+			args[0])
 	default:
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])

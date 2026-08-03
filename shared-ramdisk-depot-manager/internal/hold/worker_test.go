@@ -329,6 +329,117 @@ func TestSealDoesNotFollowSymlinks(t *testing.T) {
 	}
 }
 
+// The seal removes WRITE. setuid, setgid and sticky are not its business,
+// and Perm() alone is blind to exactly those three — so a seal written the
+// obvious way strips them from every entry it touches, invisibly, because
+// nothing in publication ever compares modes again (D-014). It surfaces one
+// package later: a generation harvested back into the store would differ from
+// the release it was published from by bits no test of the content can see.
+func TestSealRemovesWriteAndKeepsSetuidSetgidAndSticky(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(func() { restoreWritable(dir) })
+
+	root := filepath.Join(dir, "root")
+	shared := filepath.Join(root, "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "helper")
+	if err := os.WriteFile(binary, []byte("elf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(binary, 0o755|os.ModeSetuid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o775|os.ModeSetgid|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Seal(root); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]os.FileMode{
+		binary: 0o555 | os.ModeSetuid,
+		shared: 0o555 | os.ModeSetgid | os.ModeSticky,
+	} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+		if got != want {
+			t.Errorf("%s sealed to %v, want %v", filepath.Base(path), got, want)
+		}
+	}
+}
+
+// Unseal is the inverse, and it gives back OWNER write only: exactly one
+// consumer may write to a generation, so a world-writable tree would hand it
+// to processes the single-consumer rule just refused.
+func TestUnsealRestoresOwnerWriteAndHandsTheTreeOver(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	nested := filepath.Join(root, "WS", "Content")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(nested, "game.pak")
+	if err := os.WriteFile(file, []byte("pak"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("game.pak", filepath.Join(nested, "latest.pak")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Seal(root); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recorded rather than performed: the unit gate is unprivileged, and an
+	// ownership test that needed root would simply never run.
+	var handed []string
+	chown := func(path string, uid, gid int) error {
+		if uid != 988 || gid != 988 {
+			t.Errorf("%s was handed to %d:%d, want 988:988", path, uid, gid)
+		}
+		handed = append(handed, path)
+		return nil
+	}
+	if err := Unseal(root, chown, 988, 988); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{root, nested, file} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o200 == 0 {
+			t.Errorf("%s is %v after unsealing; the declared owner cannot write to it",
+				p, info.Mode().Perm())
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			t.Errorf("%s is %v after unsealing; unsealing gave group or other write",
+				p, info.Mode().Perm())
+		}
+	}
+	// The symlink is handed over too — lchown, not chown, so its own
+	// ownership is set rather than its target's.
+	if len(handed) != 5 {
+		t.Errorf("handed over %d entries (%v), want all five including the symlink",
+			len(handed), handed)
+	}
+}
+
+// An owner is not optional. Unsealing to "nobody in particular" would leave
+// the tree owned by whoever ran srdm, which for the daemon is root — and root
+// is the one uid that never needed unsealing in the first place.
+func TestUnsealRefusesWithoutAnOwner(t *testing.T) {
+	if err := Unseal(t.TempDir(), nil, -1, -1); err == nil {
+		t.Fatal("unsealing with no owner reported success")
+	}
+}
+
 // --- the readiness signal --------------------------------------------------
 
 // sd_notify with no library: one datagram to $NOTIFY_SOCKET. This is what

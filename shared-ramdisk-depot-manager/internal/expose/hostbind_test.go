@@ -116,11 +116,25 @@ type harness struct {
 	walk      wings.ChownWalk
 	walkErr   error
 	f1        bool
+	chowned   []chownCall
 }
+
+// chownCall is one entry the ownership walk would have handed over. Recorded
+// rather than performed, because the unit gate runs unprivileged and a test
+// that needed root to prove the ownership model would simply not run.
+type chownCall struct {
+	Path     string
+	UID, GID int
+}
+
+// gameOwner is the uid:gid a Wings node runs its server containers as — the
+// identity an rw exposure hands the unsealed tree to.
+var gameOwner = config.WriteOwner{UID: 988, GID: 988}
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	dir := t.TempDir()
+	owner := gameOwner
 	return &harness{
 		t:   t,
 		dir: dir,
@@ -128,6 +142,7 @@ func newHarness(t *testing.T) *harness {
 			BindRoot:   filepath.Join(dir, "pterodactyl"),
 			VolumeRoot: filepath.Join(dir, "pterodactyl", "volumes"),
 			ConfigPath: filepath.Join(dir, "wings.yml"),
+			WriteOwner: &owner,
 		},
 		mounter:   &fakeMounter{mountErr: map[string]error{}},
 		guard:     &fakeGuard{},
@@ -135,6 +150,33 @@ func newHarness(t *testing.T) *harness {
 		inspector: fakeInspector{propagation: "rslave", name: "wings"},
 		walk:      wings.ChownWalk{Enabled: false, Known: true, Source: "the harness"},
 	}
+}
+
+// liveRecord is testRecord with its class trees actually on disk, sealed as
+// publication leaves them. The rw path needs it: unsealing walks the trees,
+// and a record naming paths that do not exist would prove nothing about what
+// unsealing does to the ones that do.
+func (h *harness) liveRecord() *publish.Record {
+	h.t.Helper()
+	rec := testRecord()
+	contents := map[string][]string{
+		"code": {"Engine/libengine.so", "WS/Binaries/server"},
+		"pak":  {"WS/Content/Paks/game.pak"},
+	}
+	for i := range rec.Classes {
+		c := &rec.Classes[i]
+		c.OpMount = filepath.Join(h.dir, ".op", "op-1", c.Name)
+		for _, rel := range contents[c.Name] {
+			full := filepath.Join(c.ContentRoot(), filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				h.t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(rel), 0o444); err != nil {
+				h.t.Fatal(err)
+			}
+		}
+	}
+	return rec
 }
 
 // mountInfo writes a table in which the bind root is carried by a shared /.
@@ -155,7 +197,11 @@ func (h *harness) driver(rootPropagation string) *HostBind {
 	d, err := NewHostBind(cfg, h.journal(),
 		WithMounter(h.mounter), WithGuard(h.guard), WithMarker(h.marker),
 		WithInspector(h.inspector), WithMountInfoPath(h.mountInfo(rootPropagation)),
-		WithChownWalk(func() (wings.ChownWalk, error) { return h.walk, h.walkErr }))
+		WithChownWalk(func() (wings.ChownWalk, error) { return h.walk, h.walkErr }),
+		WithChown(func(path string, uid, gid int) error {
+			h.chowned = append(h.chowned, chownCall{Path: path, UID: uid, GID: gid})
+			return nil
+		}))
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -427,7 +473,7 @@ func TestTheChownWalkPreconditionOnlyAppliesToReadOnly(t *testing.T) {
 	h := newHarness(t)
 	h.walk = wings.ChownWalk{Enabled: true, Known: true}
 
-	if err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRW)); err != nil {
+	if err := h.healthy().Expose(ctx(), h.liveRecord(), testProfile(t), request(AccessRW)); err != nil {
 		t.Fatalf("an rw exposure was refused over the chown walk: %v", err)
 	}
 }
@@ -572,7 +618,7 @@ func TestExposeReadOnlyMakesEachBindReadOnlyBySeparateRemount(t *testing.T) {
 
 func TestExposeReadWriteLeavesTheBindsWritable(t *testing.T) {
 	h := newHarness(t)
-	if err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRW)); err != nil {
+	if err := h.healthy().Expose(ctx(), h.liveRecord(), testProfile(t), request(AccessRW)); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range h.mounter.calls {
@@ -628,12 +674,117 @@ func TestExposeRWMarksTheGenerationBeforeMountingIt(t *testing.T) {
 	h := newHarness(t)
 	h.mounter.mountErr[filepath.Join(h.cfg.ServerVolume(serverID), "Engine")] = syscall.EPERM
 
-	if err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRW)); err == nil {
+	if err := h.healthy().Expose(ctx(), h.liveRecord(), testProfile(t), request(AccessRW)); err == nil {
 		t.Fatal("Expose reported success despite a failed mount")
 	}
 	if !reflect.DeepEqual(h.marker.marked, []string{"testgame/a1b2c3d4"}) {
 		t.Fatalf("marked = %v; the generation must be marked before writing becomes "+
 			"possible, so a crash between the two cannot leave it unmarked", h.marker.marked)
+	}
+}
+
+// --- the rw ownership model (D-022) ---------------------------------------
+
+// Publication seals a class tree a-w, so an rw exposure that stopped at the
+// MOUNT would permit writes the MODES still refuse to everyone but root — and
+// the one writer rw exists for, the game's own updater, runs as something
+// else. It would report success and change nothing.
+func TestExposeRWUnsealsEachClassTreeAndHandsItToTheWriteOwner(t *testing.T) {
+	h := newHarness(t)
+	rec := h.liveRecord()
+
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every class tree the exposure binds was handed over, whole.
+	for _, c := range rec.Classes {
+		var sawRoot bool
+		for _, call := range h.chowned {
+			if call.Path == c.ContentRoot() {
+				sawRoot = true
+			}
+			if strings.HasPrefix(call.Path, c.ContentRoot()) &&
+				(call.UID != gameOwner.UID || call.GID != gameOwner.GID) {
+				t.Errorf("%s was handed to %d:%d, want %s",
+					call.Path, call.UID, call.GID, gameOwner)
+			}
+		}
+		if !sawRoot {
+			t.Errorf("the %q class tree (%s) was never handed to the write owner",
+				c.Name, c.ContentRoot())
+		}
+	}
+
+	// And the modes came back: owner write, and nothing wider. Exactly one
+	// consumer may write to a generation, so a world-writable tree would grant
+	// it to processes the single-consumer rule just refused.
+	pak := rec.Classes[1]
+	for _, rel := range []string{"WS/Content/Paks", "WS/Content/Paks/game.pak"} {
+		info, err := os.Lstat(filepath.Join(pak.ContentRoot(), filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o200 == 0 {
+			t.Errorf("%s is still %v after unsealing, so the declared owner cannot "+
+				"write to it", rel, info.Mode().Perm())
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			t.Errorf("%s came back %v — unsealing gave group or other write, and only "+
+				"one consumer may write to a generation", rel, info.Mode().Perm())
+		}
+	}
+}
+
+// A read-only exposure must not unseal anything. Its guarantee is the mount,
+// but the seal is the second lock, and an exposure that quietly removed it
+// would leave the next rw consumer writing into a tree nobody marked.
+func TestExposeRODoesNotUnsealAnything(t *testing.T) {
+	h := newHarness(t)
+	rec := h.liveRecord()
+	h.f1 = true
+
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRO)); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.chowned) != 0 {
+		t.Errorf("a read-only exposure handed %d path(s) to another owner", len(h.chowned))
+	}
+	info, err := os.Lstat(filepath.Join(rec.Classes[1].ContentRoot(), "WS/Content/Paks/game.pak"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o222 != 0 {
+		t.Errorf("a read-only exposure unsealed %v", info.Mode().Perm())
+	}
+}
+
+// With no owner declared, rw is refused rather than exposed. srdm does not
+// guess the number: mode-only unsealing leaves the tree owned by root, an
+// unprivileged updater still cannot create a file in it, and that failure
+// arrives as "the update reported success and did nothing" — which is the
+// 2026-07-21 incident in a new costume.
+func TestExposeRWIsRefusedWhenNoWriteOwnerIsDeclared(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.WriteOwner = nil
+	rec := h.liveRecord()
+
+	err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW))
+	if !IsRefusal(err) {
+		t.Fatalf("want a refusal when no write owner is declared, got %v", err)
+	}
+	var r *RefusalError
+	if errors.As(err, &r) && r.Precondition != PreconditionWriteOwner {
+		t.Errorf("the refusal is %q, want %q", r.Precondition, PreconditionWriteOwner)
+	}
+	if !strings.Contains(err.Error(), "system.user.uid") {
+		t.Errorf("the refusal does not say where the number comes from: %v", err)
+	}
+	// Refused before anything happened: nothing marked, nothing unsealed,
+	// nothing mounted.
+	if len(h.marker.marked) != 0 || len(h.chowned) != 0 || len(h.mounter.calls) != 0 {
+		t.Errorf("a refused rw exposure marked %v, chowned %d and mounted %d",
+			h.marker.marked, len(h.chowned), len(h.mounter.calls))
 	}
 }
 

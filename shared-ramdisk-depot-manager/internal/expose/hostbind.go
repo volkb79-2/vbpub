@@ -11,6 +11,7 @@ import (
 
 	"srdm/internal/config"
 	"srdm/internal/consumer"
+	"srdm/internal/hold"
 	"srdm/internal/journal"
 	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
@@ -21,6 +22,7 @@ import (
 // Phases, journaled before they execute and after they settle.
 const (
 	PhasePreflight = "preflight"
+	PhaseUnseal    = "unseal"
 	PhaseBind      = "bind"
 	PhaseUnbind    = "unbind"
 )
@@ -76,6 +78,9 @@ type HostBind struct {
 	inspector     wings.ContainerInspector
 	// chownWalk is injected in tests; nil means read the node config.
 	chownWalk func() (wings.ChownWalk, error)
+	// chown is the syscall unsealing uses, injected so the ownership model
+	// is exercisable in a gate that runs unprivileged.
+	chown func(name string, uid, gid int) error
 }
 
 // Option configures a HostBind.
@@ -103,6 +108,12 @@ func WithChownWalk(f func() (wings.ChownWalk, error)) Option {
 	return func(h *HostBind) { h.chownWalk = f }
 }
 
+// WithChown injects the chown syscall unsealing uses. Tests record what the
+// ownership walk would have done without needing to be root.
+func WithChown(f func(name string, uid, gid int) error) Option {
+	return func(h *HostBind) { h.chown = f }
+}
+
 // NewHostBind returns the host-bind driver.
 func NewHostBind(cfg config.Wings, jnl *journal.Journal, opts ...Option) (*HostBind, error) {
 	if err := cfg.Validate(); err != nil {
@@ -111,7 +122,7 @@ func NewHostBind(cfg config.Wings, jnl *journal.Journal, opts ...Option) (*HostB
 	if jnl == nil {
 		return nil, errors.New("expose: a journal is required")
 	}
-	h := &HostBind{cfg: cfg, jnl: jnl, mounter: syscallMounter{}}
+	h := &HostBind{cfg: cfg, jnl: jnl, mounter: syscallMounter{}, chown: os.Lchown}
 	for _, o := range opts {
 		o(h)
 	}
@@ -207,11 +218,50 @@ func (h *HostBind) Expose(ctx context.Context, rec *publish.Record, prof *profil
 		if err := h.marker.MarkDirtyCapable(req.OperationID, rec.Profile, rec.Generation); err != nil {
 			return err
 		}
+		// Unsealing comes after the mark and before the mounts, for the same
+		// reason the mark does: it is the step that makes writing possible,
+		// and everything that restricts a writable generation has to be
+		// durable before it is.
+		if h.cfg.WriteOwner != nil {
+			fields["write_owner"] = h.cfg.WriteOwner.String()
+		}
+		if err := h.phase(req.OperationID, KindExpose, PhaseUnseal, fields, func() error {
+			return h.unseal(rec, bindings, h.cfg.WriteOwner)
+		}); err != nil {
+			return err
+		}
 	}
 
 	return h.phase(req.OperationID, KindExpose, PhaseBind, fields, func() error {
 		return h.bind(bindings)
 	})
+}
+
+// unseal hands each bound class tree to the declared owner and gives it back
+// its owner write bit.
+//
+// This is the half of D-020 P06 left open, and it is not reversed on
+// unexpose. Re-sealing would restore the MODES of a tree whose CONTENT is no
+// longer the release's — the appearance of a sealed generation without the
+// property, which is worse than an obviously dirty one. A generation exposed
+// writable is repaired by republishing it, which is what makes generations
+// ephemeral rather than things to be mended (D-022).
+func (h *HostBind) unseal(rec *publish.Record, bindings []Binding, owner *config.WriteOwner) error {
+	if owner == nil {
+		// Unreachable: preflight refuses rw with no declared owner. Stated as
+		// an error rather than assumed, because the alternative is unsealing
+		// to nobody or skipping silently, and a silent skip would turn the
+		// removal of that refusal into an exposure that merely does not work.
+		return fmt.Errorf("expose: rw reached the unseal step for %s/%s with no write owner; "+
+			"the preflight refusal is the gate and it did not run",
+			rec.Profile, rec.Generation)
+	}
+	for _, root := range writableRoots(rec, bindings) {
+		if err := hold.Unseal(root, h.chown, owner.UID, owner.GID); err != nil {
+			return fmt.Errorf("expose: unsealing %s for %s: %w", root, owner, err)
+		}
+	}
+	return nil
 }
 
 // preflight is the three hard preconditions, plus the rw rule.
@@ -324,6 +374,26 @@ func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Reque
 				"exhausts mid-write, and the generation ends with a new .sig and no .pak",
 				rec.Profile, rec.Generation, len(rep.Holders), strings.Join(who, "; ")),
 			Fix: "stop the other consumers, or expose this generation ro",
+		}
+	}
+
+	// 4. Somebody to hand the unsealed tree to. Publication seals a class
+	//    tree a-w, so rw without an owner is a mount that permits writes
+	//    nobody but root can make — and the game's own updater, which is the
+	//    entire reason rw exists, runs as something else. Refused rather than
+	//    exposed, because that failure arrives as an update that reported
+	//    success and changed nothing.
+	if access == AccessRW && h.cfg.WriteOwner == nil {
+		return &RefusalError{
+			Precondition: PreconditionWriteOwner,
+			Detail: "access rw was requested but no write owner is declared. Publication " +
+				"seals a class tree read-only for everyone, so the exposure would permit " +
+				"writes at the mount level that the modes still refuse to every uid except " +
+				"root — an updater running in the game container would report success and " +
+				"write nothing",
+			Fix: "set wings.write_owner to the uid:gid Wings runs its server containers as " +
+				"(system.user.uid and system.user.gid in " + h.cfg.ConfigPath + "), or " +
+				"expose this generation ro",
 		}
 	}
 	return nil
