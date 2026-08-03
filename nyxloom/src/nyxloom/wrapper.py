@@ -219,12 +219,7 @@ def launch_detached(spec: WrapperSpec) -> int:
                 os.dup2(log_fd.fileno(), 2)
                 try:
                     rc = wrapper_main(str(spec_path))
-                except BaseException:  # census: cleanup/containment (CR-13a)
-                    # Post-fork, in a process that MUST NOT return into the
-                    # caller's stack. The launch has already failed by the
-                    # time this runs; all it does is put the traceback in
-                    # wrapper.log and pick an exit code. It cannot authorize
-                    # anything -- there is no permission left to grant.
+                except BaseException:
                     import traceback
                     traceback.print_exc()
                     rc = 70

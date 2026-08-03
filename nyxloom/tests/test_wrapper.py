@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nyxloom import log, storage
+from nyxloom import containment, log, storage, wrapper
 from nyxloom.config import RouteDef
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, EventType, Receipt,
@@ -1564,6 +1564,170 @@ class TestContainmentGateFailsClosed:
             argv=["true"])
 
         assert wrapper_main(str(spec_path)) == 76
+
+    def test_a_contained_leg_is_wrapped_in_docker_run_with_a_lifecycle_name(
+            self, tmp_path, monkeypatch):
+        """`contained_launch` with the runtime ANSWERING, driven without a
+        docker daemon so this holds in the gate container too (the real
+        container proofs live in tests/test_containment.py and skip there).
+
+        Both halves matter: the CLI argv must survive intact as the tail --
+        containment wraps a launch, it does not rewrite one -- and the
+        container must carry a name, which is what lets the wrapper reap it
+        after a SIGKILL it could not deliver politely."""
+        monkeypatch.setenv("NYXLOOM_CONTAINMENT_IMAGE", "agent:local")
+        monkeypatch.setenv("NYXLOOM_CONTAINMENT_HOST_MAP", f"{tmp_path}={tmp_path}")
+        monkeypatch.setattr(containment, "probe", lambda image, run=None: "")
+        spec, _path, _dir = self._spec(
+            tmp_path, route={"route_id": "free", "cli": "opencode", "model": "m",
+                             "status": "free", "secrets": ["OPENROUTER_API_KEY"]},
+            argv=["opencode", "run", "--auto"], repo_root=str(tmp_path))
+
+        argv, name = wrapper.contained_launch(spec, RouteDef(**spec.route_def), {})
+
+        assert argv[:2] == ["docker", "run"]
+        assert argv[-3:] == ["opencode", "run", "--auto"]
+        assert "agent:local" in argv
+        assert argv[argv.index("--env") + 1] == "OPENROUTER_API_KEY"
+        assert name == "nyxloom-att-1"
+        assert argv[argv.index("--name") + 1] == name
+
+    def test_a_runtime_that_cannot_start_the_image_refuses_at_launch_time(
+            self, tmp_path, monkeypatch):
+        """The TOCTOU the wrapper's own gate closes: admission passed a pass
+        ago, and the image was pruned in between."""
+        monkeypatch.setenv("NYXLOOM_CONTAINMENT_IMAGE", "agent:local")
+        monkeypatch.setenv("NYXLOOM_CONTAINMENT_HOST_MAP", f"{tmp_path}={tmp_path}")
+        monkeypatch.setattr(containment, "probe",
+                            lambda image, run=None: f"image-missing:{image}")
+        spec, _path, _dir = self._spec(
+            tmp_path, route={"route_id": "free", "cli": "opencode", "model": "m",
+                             "status": "free"},
+            argv=["opencode"], repo_root=str(tmp_path))
+
+        with pytest.raises(containment.ContainmentUnavailable) as exc:
+            wrapper.contained_launch(spec, RouteDef(**spec.route_def), {})
+        assert exc.value.reason == "image-missing:agent:local"
+
+    def test_an_uncontained_route_is_handed_its_argv_unchanged(self, tmp_path):
+        spec, _path, _dir = self._spec(
+            tmp_path, route=OPERATOR_ROUTE, argv=["claude", "-p", "go"])
+        argv, name = wrapper.contained_launch(spec, RouteDef(**spec.route_def), {})
+        assert argv == ["claude", "-p", "go"]
+        assert name == ""
+
+    def test_a_killed_docker_client_takes_its_container_with_it(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch, fake_cli):
+        """The one way a contained launch could be WORSE than the uncontained
+        one it replaced.
+
+        For a contained leg the wrapper's child is the docker CLIENT. SIGTERM
+        is proxied to the container, but the SIGKILL the grace period ends
+        with is not -- killing the client leaves the container running with
+        nothing supervising it. So the kill path must also remove it.
+
+        Driven in-process with a real SIGTERM and a zero grace period, and
+        with the containment wrap substituted, so the assertion holds in the
+        gate container where there is no docker daemon to kill anything in.
+        """
+        import threading
+
+        seed("demo", "demo-P01-sample", "att-1")
+        # A child that IGNORES SIGTERM, so the grace period actually expires
+        # and the SIGKILL branch runs. A plain shell script dies on the first
+        # signal and would never reach it -- which is why the branch was
+        # unexercised before this test existed.
+        script = tmp_path / "stubborn.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('starting', flush=True)\n"
+            "time.sleep(30)\n")
+        script.chmod(0o755)
+        removed: list[str] = []
+        monkeypatch.setattr(
+            wrapper, "contained_launch",
+            lambda spec, route, env: ([str(script)], "nyxloom-att-1"))
+        monkeypatch.setattr(containment, "force_remove",
+                            lambda name, run=None: removed.append(name))
+
+        _spec, spec_path, _dir = self._spec(
+            tmp_path, route=OPERATOR_ROUTE, argv=[str(script)])
+        spec_dict = json.loads(spec_path.read_text())
+        spec_dict["term_grace_seconds"] = 0
+        spec_path.write_text(json.dumps(spec_dict), encoding="utf-8")
+
+        old_sigterm = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        old_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+        def _signal_self():
+            time.sleep(0.3)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        try:
+            t = threading.Thread(target=_signal_self)
+            t.start()
+            wrapper_main(str(spec_path))
+            t.join(timeout=5)
+        finally:
+            signal.signal(signal.SIGTERM, old_sigterm)
+            signal.signal(signal.SIGINT, old_sigint)
+
+        assert removed == ["nyxloom-att-1"], (
+            "the SIGKILLed docker client's container was not removed")
+
+    def test_a_crash_after_the_leases_are_taken_still_releases_them(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch, fake_cli):
+        """The wrapper's outermost handler, classified `cleanup/containment`
+        by CR-13a's census work and exercised here for the first time.
+
+        It substitutes no value and decides nothing -- it releases the flocks
+        and RE-RAISES. Without it a wrapper crash would hold every mutex the
+        leg took until process death, which arrives after the next pass has
+        already seen them held. The oracle is that the SAME lease can be
+        acquired afterwards.
+        """
+        from nyxloom import leases
+
+        seed("demo", "demo-P01-sample", "att-1")
+        script = fake_cli(["ran"], exit_code=0)
+        boom = RuntimeError("usage extraction exploded")
+        mock_adapters.extract_usage.side_effect = boom
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        spec = WrapperSpec(
+            project="demo", task_id="demo-P01-sample", attempt_id="att-1",
+            argv=[str(script)], cwd=str(tmp_path),
+            log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir), route_def=OPERATOR_ROUTE,
+            leases=[{"name": "demo.crashy", "capacity": 1}])
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="usage extraction exploded"):
+            wrapper_main(str(spec_path))
+
+        after = leases.acquire("demo.crashy", owner="test", purpose="probe")
+        assert after is not None, "the crashed wrapper never released its lease"
+        after.release()
+
+    def test_a_session_capture_failure_only_ever_subtracts(
+            self, tmp_state, tmp_path, mock_adapters, fake_cli):
+        """The `advisory-degradation` handler classified by CR-13a's census
+        work: a resume handle that could not be captured must not stop the
+        leg. It can only cost the daemon a cold start."""
+        seed("demo", "demo-P01-sample", "att-1")
+        mock_adapters.capture_session.side_effect = RuntimeError("provider down")
+        script = fake_cli(["ran"], exit_code=0)
+        _spec, spec_path, attempt_dir = self._spec(
+            tmp_path, route=OPERATOR_ROUTE, argv=[str(script)])
+
+        assert wrapper_main(str(spec_path)) == 0
+        receipt = json.loads((attempt_dir / "receipt.json").read_text())
+        assert receipt["result"] == "done"
 
     def test_an_operator_trusted_route_is_unaffected(
             self, tmp_state, tmp_path, mock_adapters, monkeypatch, fake_cli):

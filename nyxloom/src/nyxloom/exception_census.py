@@ -119,14 +119,24 @@ LEGACY_BUDGET: dict[str, int] = {
     "cli.py": 6,
     "commands.py": 5,
     # Store and process boundaries. CR-04 owns the store's; CR-13a owned the
-    # wrapper's and retired them (3 -> 0): containment changed what a launch
-    # failure means, so each of the three was classified where it stands --
-    # the post-fork crash guard and the lease-releasing re-raise are
-    # cleanup/containment, the session-capture swallow is
-    # advisory-degradation. The entry stays at 0 rather than being deleted so
-    # a new unclassified handler in this module still fails the budget.
+    # wrapper's and retired two of three (3 -> 1): containment changed what a
+    # launch failure means, so each was classified where it stands -- the
+    # lease-releasing re-raise as cleanup/containment, the session-capture
+    # swallow as advisory-degradation.
+    #
+    # The ONE that remains is `launch_detached`'s post-fork guard, and it is
+    # left unclassified DELIBERATELY. It lives in the forked grandchild,
+    # which calls `os._exit` and so never writes coverage data: no test can
+    # measure that line, and adding the census comment to it would make it a
+    # CHANGED line the diff-coverage gate then reports as uncovered. Its
+    # class is not in doubt (cleanup/containment -- it prints a traceback and
+    # picks an exit code on a path where the launch has already failed); what
+    # is in doubt is whether the two ratchets can both be satisfied there at
+    # once. Retiring it means moving the handler out of the fork child, which
+    # is a change to the detachment primitive and belongs to whichever
+    # package next has a reason to touch it.
     "storage_sqlite.py": 3,
-    "wrapper.py": 0,
+    "wrapper.py": 1,
     "migrate_store.py": 1,
     # Route/provider surfaces, retired by the routing packages.
     "benchmark_sources.py": 3,
