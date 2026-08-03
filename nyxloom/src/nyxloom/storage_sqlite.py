@@ -292,29 +292,69 @@ def list_states(project: str) -> dict[str, TaskStateFile]:
     return out
 
 
+def _committed_states(conn: sqlite3.Connection) -> dict[str, TaskStateFile]:
+    """The projection as COMMITTED, read on an already-open transaction."""
+    out: dict[str, TaskStateFile] = {}
+    for (data,) in conn.execute("SELECT data FROM states ORDER BY task_id"):
+        tsf = TaskStateFile.from_dict(json.loads(data))
+        out[tsf.task_id] = tsf
+    return out
+
+
 def append_and_apply(
     project: str,
     states: dict[str, TaskStateFile],
     **kwargs: Any,
 ) -> Event:
-    """THE canonical mutation, atomically: validate -> BEGIN IMMEDIATE ->
-    INSERT the event -> UPSERT every affected task's projection row ->
-    COMMIT. Any exception in that block rolls back the whole transaction --
-    neither the event nor the projection change persists (A.2)."""
-    _validate_before_append(states, **kwargs)
+    """THE canonical mutation, atomically: BEGIN IMMEDIATE -> read committed
+    projection -> validate -> INSERT the event -> UPSERT every affected row ->
+    COMMIT. Any exception rolls the whole transaction back: neither the event
+    nor the projection change persists (A.2).
+
+    CR-04 (DR-09; amendment section 3.1). The event is now validated and
+    applied against the state COMMITTED INSIDE THIS TRANSACTION, never
+    against the caller's `states` argument.
+
+    Before this, the caller supplied the projection the store wrote back. The
+    reconcile loop and each HTTP handler thread hold their own snapshot, so a
+    UI write landing during a reconcile pass was overwritten by that pass's
+    stale copy -- and because the event and the projection were written in one
+    transaction, the result was atomic and wrong, which is worse than a
+    visible race. The plan's own atomicity promise is unreachable while the
+    projection comes from a caller.
+
+    `states` is now a caller CACHE rather than the source of truth: it is
+    refreshed from the committed result after COMMIT, so existing callers
+    keep working and observe the merged state instead of their own. That is
+    why the signature is unchanged -- 188 call sites do not have to be
+    rewritten to get the fix, and none of them can opt out of it.
+
+    The whole projection is read per write rather than just the affected
+    rows: `apply_event` decides which tasks an event touches by looking at
+    the map, so narrowing the read would mean predicting the answer before
+    asking the question. BEGIN IMMEDIATE already serializes writers, and a
+    project's task table is small.
+    """
     conn = _connect(project)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        committed = _committed_states(conn)
+        _validate_before_append(committed, **kwargs)
         ev = _insert_event(conn, project, **kwargs)
-        for tid in apply_event(states, ev):
-            _upsert_state_row(conn, states[tid])
+        affected = apply_event(committed, ev)
+        for tid in affected:
+            _upsert_state_row(conn, committed[tid])
         conn.commit()
-        return ev
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    # Refresh the caller's cache from committed truth. Done AFTER commit so a
+    # rolled-back mutation never leaves the caller believing it happened.
+    for tid in affected:
+        states[tid] = committed[tid]
+    return ev
 
 
 def replay(project: str) -> dict[str, TaskStateFile]:

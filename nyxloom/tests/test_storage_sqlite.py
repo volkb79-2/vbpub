@@ -360,3 +360,140 @@ def test_concurrent_reader_sees_consistent_prior_snapshot_under_wal(sqlite_backe
     after_events = list(storage.iter_events(project))
     assert after_state.state is TaskState.ACTIVE
     assert len(after_events) == 2
+
+
+# ==========================================================================
+# CR-04 (DR-09; amendment section 3.1): the projection is derived from
+# COMMITTED state, never from the caller's snapshot.
+# ==========================================================================
+
+
+def test_a_write_from_a_stale_snapshot_does_not_lose_the_committed_one(sqlite_backend):
+    """THE defect this change exists to remove.
+
+    The reconcile loop and each HTTP handler thread hold their OWN projection
+    map. Before this, `append_and_apply` wrote back the map the caller
+    supplied, so a write landing during a reconcile pass was overwritten by
+    that pass's stale copy -- and because the event and the projection were
+    written in one transaction, the loss was ATOMIC, which is worse than a
+    visible race because nothing downstream could detect it.
+
+    Two callers hold snapshots taken before either wrote. The first
+    transitions the task; the second, still holding QUEUED, appends an
+    unrelated event about the SAME task. Under the old contract that second
+    write reverted the transition."""
+    project, task_id = "sp01-lost-update", "t-race"
+    first = _seed(project, task_id, TaskState.QUEUED)
+    second = storage.list_states(project)               # snapshot: still QUEUED
+    assert second[task_id].state is TaskState.QUEUED
+
+    storage.append_and_apply(
+        project, first, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+
+    # The stale caller now writes an event of its own about the same task.
+    storage.append_and_apply(
+        project, second, actor=ACTOR, type=EventType.CONFIG_CHANGED,
+        payload={"key": "value"}, task_id=task_id)
+
+    committed = storage.load_state(project, task_id)
+    assert committed.state is TaskState.ACTIVE, (
+        "the stale snapshot's QUEUED overwrote a committed transition")
+    assert storage.replay(project)[task_id].state is TaskState.ACTIVE, (
+        "the projection and the event log disagree")
+
+
+def test_the_callers_snapshot_is_refreshed_from_committed_truth(sqlite_backend):
+    """`states` is a cache now, not the source. Refreshing it is what lets the
+    existing call sites keep working AND makes it impossible for one of them
+    to opt out of the fix by holding its own copy: after the call the caller
+    observes committed state rather than what it supplied."""
+    project, task_id = "sp01-refresh", "t-refresh"
+    first = _seed(project, task_id, TaskState.QUEUED)
+    stale = storage.list_states(project)
+
+    storage.append_and_apply(
+        project, first, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+    assert stale[task_id].state is TaskState.QUEUED, "precondition: stale"
+
+    # The stale caller submits the NEXT legal move from COMMITTED state. It
+    # is illegal from the caller's own view (QUEUED has no edge to
+    # AWAITING_REVIEW), so this only succeeds because validation reads
+    # committed state -- and afterwards the cache must show where the task
+    # really is, not where the caller thought it was.
+    storage.append_and_apply(
+        project, stale, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "ACTIVE", "to": "AWAITING_REVIEW"}, task_id=task_id)
+
+    assert stale[task_id].state is TaskState.AWAITING_REVIEW, (
+        "the caller's cache was not refreshed from committed truth")
+    assert storage.load_state(project, task_id).state is TaskState.AWAITING_REVIEW
+
+
+def test_a_caller_cannot_smuggle_a_hand_edited_field_through_the_store(sqlite_backend):
+    """A strengthening that falls out of deriving the projection from
+    committed state: the store now writes what the EVENT says, and nothing
+    else. Before, any field a caller mutated on its snapshot was persisted as
+    a side effect of the next unrelated append -- a projection change with no
+    event behind it, which replay could never reproduce."""
+    project, task_id = "sp01-smuggle", "t-smuggle"
+    states = _seed(project, task_id, TaskState.QUEUED)
+    states[task_id].notes = "invented out of band"
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.CONFIG_CHANGED,
+        payload={}, task_id=task_id)
+
+    assert storage.load_state(project, task_id).notes is None
+    assert storage.replay(project)[task_id].notes is None
+
+
+def test_a_transition_is_validated_against_committed_state_not_the_snapshot(sqlite_backend):
+    """Validation moved inside the transaction too. A caller holding a
+    snapshot from before a transition could otherwise submit an edge that is
+    legal from ITS view and illegal from the committed one -- writing an
+    event the log can never replay."""
+    _seed("demo", "t-validate", TaskState.QUEUED)
+    stale = storage_sqlite.list_states("demo")          # QUEUED
+
+    storage_sqlite.append_and_apply(
+        "demo", storage_sqlite.list_states("demo"),
+        actor=ACTOR,
+        type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id="t-validate")
+
+    before = len(list(storage_sqlite.iter_events("demo")))
+    with pytest.raises(Exception):
+        # QUEUED->NEEDS_DECISION reads legal from the stale snapshot; from
+        # committed ACTIVE it is not.
+        storage_sqlite.append_and_apply(
+            "demo", stale, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+            payload={"from": "QUEUED", "to": "NEEDS_DECISION"}, task_id="t-validate")
+
+    assert len(list(storage_sqlite.iter_events("demo"))) == before, (
+        "an illegal-from-committed transition still reached the log")
+
+
+def test_a_rolled_back_mutation_leaves_the_callers_cache_untouched(sqlite_backend):
+    """The refresh happens AFTER commit, so a failed write never leaves the
+    caller believing it happened -- which would be the same lie as the lost
+    update, in the other direction."""
+    _seed("demo", "t-rollback", TaskState.QUEUED)
+    snapshot = storage_sqlite.list_states("demo")
+    original_state = snapshot["t-rollback"].state
+
+    real_upsert = storage_sqlite._upsert_state_row
+    try:
+        storage_sqlite._upsert_state_row = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("projection write failed"))
+        with pytest.raises(RuntimeError):
+            storage_sqlite.append_and_apply(
+                "demo", snapshot, actor=ACTOR,
+                type=EventType.TASK_TRANSITIONED,
+                payload={"from": "QUEUED", "to": "ACTIVE"}, task_id="t-rollback")
+    finally:
+        storage_sqlite._upsert_state_row = real_upsert
+
+    assert snapshot["t-rollback"].state is original_state
+    assert storage_sqlite.list_states("demo")["t-rollback"].state is original_state
