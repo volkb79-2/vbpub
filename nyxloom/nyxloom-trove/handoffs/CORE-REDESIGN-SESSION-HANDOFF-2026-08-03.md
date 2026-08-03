@@ -12,32 +12,21 @@ This file is the operating manual that sits beside it.
 ## Where the program is
 
 Accepted and merged on `main`: CR-00, CR-15, CR-01, CR-02a, CR-02b, CR-03,
-CR-04a, CR-04b, CR-05a, CR-05b, CR-05c, CR-05d, CR-05f. Every one through the authoritative
+CR-04a, CR-04b, and all six CR-05 sub-packages (a/b/c/d/f/e). Every one through the authoritative
 `tester-unified` gate at 100% changed-line coverage; gate evidence and commit
 SHAs are in the ledger.
 
-Next by dependency order: **CR-05e** — `EmitAttemptExit` alone, the LAST
-effect family on the shell. It routes by attempt ROLE into the implementer
-outcome table, the review verdict consumer, the self-review consumer, and
-carve's two, so it needed every other family to move first. Budget 1 -> 0, at
-which point the readiness audit's final structural oracle applies: reject
-effector imports or effector-owned mutable state on `Daemon`, not merely a
-long `_execute`.
+Next by dependency order: **CR-06** (ordered pure planner rules). CR-05 is
+COMPLETE -- `daemon.py` went 9,077 -> 4,090 lines, the isinstance ladder is
+gone, and `effects.LEGACY_HANDLER_BUDGET` is 0.
 
-`daemon.py` is 5,275 lines, down from 9,077 when CR-05 started.
-
-**A reader is not a blocker.** The CR-05d row was once marked blocked because
-two of its functions are called by `_build_input` as well as by the effects.
-That reasoning was wrong and cost a package: a reader MOVES into the effector
-module as a function, and the shell calls it there. The boundary rule is
-one-directional -- the shell may call an effector; an effector may not call
-the shell -- so a shared reader is a delegate, never a blocker.
-
-**Write the delegates the shell actually calls, and no others.** CR-05d's
-gate rejected at 413/415 on two forwarding methods with no caller. Grep for
-callers before writing a delegate; the cockpit's per-module coverage will not
-show you this, because the module reads 100% while the changed line sits
-unexercised.
+**What CR-06 inherits.** `reconcile.plan_project` is now the only large thing
+left in the control plane, and it is already pure. The effect boundary gives
+it a clean contract to plan against: every action type has exactly one
+handler, each declares the events it may emit, and the §5.1 differential
+harness (`tests/effect_differential.py`, 34 scenarios) will catch any
+behavioural drift the planner's decomposition introduces at the effect layer.
+Add planner scenarios to the same harness rather than building a second one.
 
 Remaining after that: CR-06, CR-07, CR-08, CR-13a, CR-16, CR-09, CR-10, CR-11,
 CR-12, CR-13b, CR-14. Section 7 of the plan is the authoritative order.
