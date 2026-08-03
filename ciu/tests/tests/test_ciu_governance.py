@@ -121,13 +121,40 @@ class TestResolveConfig:
         with pytest.raises(ValueError, match=r"\[S15\.2\].*enabled"):
             gov.resolve_config({"enabled": "false"}, strict_unknown_keys=True)
 
+    # -- S15.14/S15.15/S15.16 — new keys default to inert/off ---------------
+
+    def test_new_keys_default_to_off(self) -> None:
+        cfg = gov.resolve_config(None)
+        assert cfg["io_weight"] == 0
+        assert cfg["read_bps"] == 0
+        assert cfg["write_bps"] == 0
+        assert cfg["mem_min"] == ""
+
+    # -- S15.14 — io_weight range validation ---------------------------------
+
+    def test_io_weight_zero_is_valid_unset(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "io_weight": 0})
+        assert cfg["io_weight"] == 0
+
+    def test_io_weight_in_range_is_valid(self) -> None:
+        assert gov.resolve_config({"enabled": True, "io_weight": 10})["io_weight"] == 10
+        assert gov.resolve_config({"enabled": True, "io_weight": 1000})["io_weight"] == 1000
+
+    def test_io_weight_below_range_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.14\].*io_weight"):
+            gov.resolve_config({"enabled": True, "io_weight": 9})
+
+    def test_io_weight_above_range_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.14\].*io_weight"):
+            gov.resolve_config({"enabled": True, "io_weight": 1001})
+
 
 # ---------------------------------------------------------------------------
-# S15.10 — resolve_stack_governance (global-default fallback)
+# S15.10 — resolve_stack_governance (global-default merge layer, CIU-13)
 # ---------------------------------------------------------------------------
 
 class TestResolveStackGovernance:
-    def test_stack_table_wins_over_global(self) -> None:
+    def test_stack_table_wins_over_global_for_shared_keys(self) -> None:
         stack = {"enabled": True, "mem_limit": "2g"}
         global_cfg = {"governance": {"enabled": True, "mem_limit": "1g"}}
         result = gov.resolve_stack_governance(stack, global_cfg)
@@ -139,13 +166,53 @@ class TestResolveStackGovernance:
         result = gov.resolve_stack_governance(None, global_cfg)
         assert result == global_cfg["governance"]
 
-    def test_empty_stack_table_still_wins_over_global(self) -> None:
-        # An explicit (even empty) table means "the stack declared one" —
-        # S15.10 says the stack layer wins whenever it is not None, so an
-        # empty dict does NOT fall through to the global default.
-        global_cfg = {"governance": {"enabled": True}}
+    def test_empty_stack_table_inherits_global_in_full(self) -> None:
+        # CIU-13 fix: an explicit-but-empty stack table has NOTHING to layer
+        # over the base, so the result is the global table, unchanged — this
+        # used to return {} (the stack "fully owning" its empty table), which
+        # was the bug: the stack's mere presence discarded the global default.
+        global_cfg = {"governance": {"enabled": True, "mem_limit": "4g"}}
         result = gov.resolve_stack_governance({}, global_cfg)
-        assert result == {}
+        assert result == {"enabled": True, "mem_limit": "4g"}
+
+    def test_ciu13_one_key_stack_override_inherits_rest_of_global(self) -> None:
+        """The exact CIU-13 regression: dstdns's global governance table set
+        enabled=true, cgroup_parent, ksm_optin, mem_limit, device; a stack
+        restated ONLY mem_limit to raise it. The old code discarded every
+        other global key (including enabled), silently resolving to
+        enabled=false — an unconfined container. The merged raw table must
+        now carry every global key the stack didn't restate."""
+        global_cfg = {
+            "governance": {
+                "enabled": True,
+                "cgroup_parent": "dev-background.slice",
+                "ksm_optin": "tools/ksm-optin/ksm-optin.so",
+                "mem_limit": "2g",
+                "device": "/dev/vda",
+            }
+        }
+        stack = {"mem_limit": "8g"}
+        result = gov.resolve_stack_governance(stack, global_cfg)
+        assert result == {
+            "enabled": True,
+            "cgroup_parent": "dev-background.slice",
+            "ksm_optin": "tools/ksm-optin/ksm-optin.so",
+            "mem_limit": "8g",  # the stack's override wins
+            "device": "/dev/vda",
+        }
+        # And critically: resolving this against GOVERNANCE_DEFAULTS keeps
+        # governance ENABLED, not silently False.
+        assert gov.resolve_config(result)["enabled"] is True
+
+    def test_stack_can_still_opt_out_by_restating_enabled_false(self) -> None:
+        """The merge layer must not make opting out impossible: a stack that
+        explicitly restates enabled=false still disables governance for
+        itself, same as before."""
+        global_cfg = {"governance": {"enabled": True, "mem_limit": "2g"}}
+        stack = {"enabled": False}
+        result = gov.resolve_stack_governance(stack, global_cfg)
+        assert result["enabled"] is False
+        assert gov.resolve_config(result)["enabled"] is False
 
     def test_no_stack_and_no_global_yields_none(self) -> None:
         assert gov.resolve_stack_governance(None, None) is None
@@ -160,6 +227,12 @@ class TestResolveStackGovernance:
         result = gov.resolve_stack_governance(stack, None)
         result["enabled"] = False
         assert stack["enabled"] is True
+
+    def test_mutating_result_does_not_affect_global_source_table(self) -> None:
+        global_cfg = {"governance": {"enabled": True, "mem_limit": "2g"}}
+        result = gov.resolve_stack_governance({"mem_limit": "8g"}, global_cfg)
+        result["mem_limit"] = "16g"
+        assert global_cfg["governance"]["mem_limit"] == "2g"
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +546,34 @@ class TestResolveCgroupParent:
 # ---------------------------------------------------------------------------
 
 
+class TestSystemdIsPid1:
+    """The real (unmocked) body of `_systemd_is_pid1` — every other test in
+    this file monkeypatches it entirely, so this is the only place its actual
+    implementation runs."""
+
+    def test_matches_run_systemd_system_directory(self) -> None:
+        assert gov._systemd_is_pid1() == Path("/run/systemd/system").is_dir()
+
+    def test_true_when_marker_directory_exists(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        marker = tmp_path / "run" / "systemd" / "system"
+        marker.mkdir(parents=True)
+        monkeypatch.setattr(gov, "Path", lambda p: marker if p == "/run/systemd/system" else Path(p))
+        assert gov._systemd_is_pid1() is True
+
+    def test_false_when_marker_directory_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        missing = tmp_path / "no-such-run-systemd-system"
+        monkeypatch.setattr(gov, "Path", lambda p: missing if p == "/run/systemd/system" else Path(p))
+        assert gov._systemd_is_pid1() is False
+
+
 class TestCheckSliceUnit:
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Simulate systemd genuinely being PID 1 by default (most tests here
+        exercise the systemctl-parsing logic, not the PID-1 detection itself).
+        The dedicated shim-detection test below overrides this back to False."""
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
     def test_no_systemctl_skips_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gov.shutil, "which", lambda name: None)
         exists, note = gov.check_slice_unit("nyxloom-daemon.slice")
@@ -488,6 +588,25 @@ class TestCheckSliceUnit:
 
         monkeypatch.setattr(gov.subprocess, "run", fail_run)
         gov.check_slice_unit("whatever.slice")  # must not raise
+
+    def test_systemd_not_pid1_skips_with_none_even_if_systemctl_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The devcontainer-shim case: `systemctl` binary IS present (so the
+        which() check alone would proceed), but systemd is not actually PID 1
+        (no /run/systemd/system) — must skip as inconclusive, never call
+        subprocess.run and parse the shim's non-KEY=VALUE notice as if it
+        were a real (and false) LoadState/MemoryMin answer."""
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/local/bin/systemctl")
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: False)
+
+        def fail_run(*a, **k):
+            raise AssertionError("subprocess.run must not be called when systemd is not PID 1")
+
+        monkeypatch.setattr(gov.subprocess, "run", fail_run)
+        exists, note = gov.check_slice_unit("nyxloom-daemon.slice")
+        assert exists is None
+        assert "not PID 1" in note
 
     def test_loaded_slice_reports_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
@@ -653,6 +772,213 @@ class TestBuildInjections:
         with pytest.raises(ValueError, match=r"\[S15\.2\].*no cgroup_parent is resolvable"):
             gov.build_injections({"redis": {"image": "redis"}}, cfg)
 
+    # -- S15.14 — io_weight injection (independent of device resolution) ----
+
+    def test_io_weight_injected_without_device(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "resolve_device", lambda configured: ("", "autodetect failed"))
+        cfg = self._cfg(io_weight=500)
+        injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert injections["redis"]["blkio_config"] == {"weight": 500}
+
+    def test_io_weight_zero_omits_weight_key(self) -> None:
+        cfg = self._cfg(device="/dev/vda", io_weight=0)
+        injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert "weight" not in injections["redis"]["blkio_config"]
+
+    def test_io_weight_and_device_iops_coexist_in_one_blkio_config(self) -> None:
+        cfg = self._cfg(device="/dev/vda", io_weight=800, read_iops=100, write_iops=400)
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        blk = injections["redis"]["blkio_config"]
+        assert blk["weight"] == 800
+        assert blk["device_read_iops"] == [{"path": "/dev/vda", "rate": 100}]
+        assert any("io_weight=800" in n for n in notes)
+
+    # -- S15.15 — read_bps/write_bps bandwidth caps --------------------------
+
+    def test_bandwidth_caps_injected_when_device_resolves(self) -> None:
+        cfg = self._cfg(device="/dev/vda", read_bps=1_000_000, write_bps=500_000)
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        blk = injections["redis"]["blkio_config"]
+        assert blk["device_read_bps"] == [{"path": "/dev/vda", "rate": 1_000_000}]
+        assert blk["device_write_bps"] == [{"path": "/dev/vda", "rate": 500_000}]
+        assert any("read_bps=1000000" in n for n in notes)
+        assert any("write_bps=500000" in n for n in notes)
+
+    def test_bandwidth_caps_default_to_uncapped(self) -> None:
+        cfg = self._cfg(device="/dev/vda")
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        blk = injections["redis"]["blkio_config"]
+        assert "device_read_bps" not in blk
+        assert "device_write_bps" not in blk
+        assert any("uncapped" in n for n in notes)
+
+    def test_bandwidth_caps_skipped_without_device_even_if_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bandwidth caps are per-device (S15.5); no resolved device means no
+        blkio_config device_* fields, same as the pre-existing iops keys."""
+        monkeypatch.setattr(gov, "resolve_device", lambda configured: ("", "autodetect failed"))
+        cfg = self._cfg(read_bps=1_000_000, write_bps=500_000)
+        injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert "blkio_config" not in injections["redis"]  # io_weight also 0 here
+
+    # -- S15.16 — mem_min is visible in notes but never injected -------------
+
+    def test_mem_min_never_injected_but_visible_in_notes(self) -> None:
+        cfg = self._cfg(device="/dev/vda", mem_min="2g")
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert "mem_min" not in injections["redis"]
+        assert any("mem_min=2g" in n for n in notes)
+
+    def test_mem_min_not_declared_notes_say_so(self) -> None:
+        cfg = self._cfg(device="/dev/vda")
+        _, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert any("not declared" in n for n in notes)
+
+
+# ---------------------------------------------------------------------------
+# S15.16 — parse_size_to_bytes / check_slice_memory_min
+# ---------------------------------------------------------------------------
+
+class TestParseSizeToBytes:
+    def test_bare_bytes(self) -> None:
+        assert gov.parse_size_to_bytes("1024") == 1024
+
+    def test_b_suffix(self) -> None:
+        assert gov.parse_size_to_bytes("512b") == 512
+
+    def test_k_suffix(self) -> None:
+        assert gov.parse_size_to_bytes("2k") == 2048
+
+    def test_m_suffix(self) -> None:
+        assert gov.parse_size_to_bytes("256m") == 256 * 1024 * 1024
+
+    def test_g_suffix(self) -> None:
+        assert gov.parse_size_to_bytes("2g") == 2 * 1024 ** 3
+
+    def test_t_suffix(self) -> None:
+        assert gov.parse_size_to_bytes("1t") == 1024 ** 4
+
+    def test_uppercase_suffix(self) -> None:
+        assert gov.parse_size_to_bytes("2G") == 2 * 1024 ** 3
+
+    def test_fractional_value(self) -> None:
+        assert gov.parse_size_to_bytes("1.5g") == int(1.5 * 1024 ** 3)
+
+    def test_unrecognised_suffix_raises(self) -> None:
+        with pytest.raises(ValueError, match="unrecognised size suffix"):
+            gov.parse_size_to_bytes("2x")
+
+    def test_garbage_raises(self) -> None:
+        with pytest.raises(ValueError, match="not a recognizable size"):
+            gov.parse_size_to_bytes("plenty")
+
+    def test_empty_string_raises(self) -> None:
+        with pytest.raises(ValueError):
+            gov.parse_size_to_bytes("")
+
+
+class TestCheckSliceMemoryMin:
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """See TestCheckSliceUnit._systemd_running — same default, same reason."""
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
+    def test_no_systemctl_skips_with_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: None)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is None
+        assert "no systemctl" in note
+
+    def test_systemd_not_pid1_skips_with_none_even_if_systemctl_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/local/bin/systemctl")
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: False)
+
+        def fail_run(*a, **k):
+            raise AssertionError("subprocess.run must not be called when systemd is not PID 1")
+
+        monkeypatch.setattr(gov.subprocess, "run", fail_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is None
+        assert "not PID 1" in note
+
+    def test_adequate_memory_min_reports_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=4294967296\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is True
+        assert "4294967296" in note
+
+    def test_insufficient_memory_min_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=1073741824\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+        assert "< required" in note
+
+    def test_infinity_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=infinity\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+        assert "no floor" in note
+
+    def test_zero_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=0\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+
+    def test_unparseable_value_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=garbage\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+        assert "unparseable" in note
+
+    def test_subprocess_error_is_inconclusive_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            raise OSError("boom")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is None
+        assert "boom" in note
+
+    def test_exactly_equal_is_adequate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=2147483648\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, _ = gov.check_slice_memory_min("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is True
+
 
 # ---------------------------------------------------------------------------
 # S15.9 — parse_fio_json (fio prepends note lines even into --output files)
@@ -678,6 +1004,109 @@ _FIO_JSON_BODY = """\
   ]
 }
 """
+
+
+class TestSliceAncestorChain:
+    def test_single_dash_derives_two_level_chain(self) -> None:
+        assert gov.slice_ancestor_chain("dev-background.slice") == [
+            "dev-background.slice",
+            "dev.slice",
+        ]
+
+    def test_no_dash_returns_only_itself(self) -> None:
+        assert gov.slice_ancestor_chain("wings.slice") == ["wings.slice"]
+
+    def test_multi_dash_derives_full_chain(self) -> None:
+        assert gov.slice_ancestor_chain("a-b-c.slice") == [
+            "a-b-c.slice",
+            "a-b.slice",
+            "a.slice",
+        ]
+
+    def test_non_slice_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="not a slice name"):
+            gov.slice_ancestor_chain("not-a-slice")
+
+
+class TestCheckMemoryMinAncestorChain:
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+        monkeypatch.setattr(gov.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+    def test_all_ancestors_adequate_reports_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=4294967296\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_memory_min_ancestor_chain("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is True
+        assert "dev-background.slice" in note
+        assert "dev.slice" in note
+
+    def test_immediate_slice_inadequate_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The exact live default-mdt-config scenario: dev-background.slice
+        itself has no MemoryMin at all."""
+
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=infinity\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_memory_min_ancestor_chain("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+        assert "dev-background.slice" in note
+
+    def test_only_parent_inadequate_still_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The immediate slice IS configured, but its parent (dev.slice) is
+        not — effective protection is still zero; the chain check must catch
+        what a single-slice check would miss entirely."""
+
+        def fake_run(cmd, **k):
+            if cmd[2] == "dev-background.slice":
+                return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=4294967296\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=infinity\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_memory_min_ancestor_chain("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+        assert "dev.slice" in note
+
+    def test_both_levels_inadequate_reports_both_in_one_note(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=0\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_memory_min_ancestor_chain("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is False
+        assert "dev-background.slice" in note
+        assert "dev.slice" in note
+
+    def test_single_segment_slice_checks_only_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = []
+
+        def fake_run(cmd, **k):
+            calls.append(cmd[2])
+            return subprocess.CompletedProcess(cmd, 0, stdout="MemoryMin=4294967296\n", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, _ = gov.check_memory_min_ancestor_chain("wings.slice", 2 * 1024 ** 3)
+        assert adequate is True
+        assert calls == ["wings.slice"]
+
+    def test_inconclusive_on_first_probe_short_circuits_rest_of_chain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = []
+
+        def fake_run(cmd, **k):
+            calls.append(cmd[2])
+            raise OSError("boom")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        adequate, note = gov.check_memory_min_ancestor_chain("dev-background.slice", 2 * 1024 ** 3)
+        assert adequate is None
+        assert "boom" in note
+        assert calls == ["dev-background.slice"]  # dev.slice never probed
 
 
 class TestParseFioJson:

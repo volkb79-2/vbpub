@@ -734,7 +734,11 @@ def generate_overlay(
             cgroup_parent: ...                             # governance (S15), when enabled
             mem_limit: ...
             mem_reservation: ...
-            blkio_config: {device_read_iops: [...], device_write_iops: [...]}
+            blkio_config: {                                # device_*/weight only when applicable
+              device_read_iops: [...], device_write_iops: [...],
+              device_read_bps: [...], device_write_bps: [...],  # S15.15, when nonzero
+              weight: ...,                                     # S15.14, when nonzero
+            }
 
     All bind sources are physical paths (S1.3/S1.4) via :func:`to_physical_path`.
     The overlay NEVER contains secret values — only paths.
@@ -747,8 +751,14 @@ def generate_overlay(
     (except ``exempt_services``) gets ``cgroup_parent``/``mem_limit``/
     ``mem_reservation``/``blkio_config`` injected — but only for keys the
     stack author did NOT already set on that service in the rendered base
-    compose (S15.3 precedence). One summary line is always logged when
-    *governance* is not ``None`` (S15.7).
+    compose (S15.3 precedence). ``blkio_config`` additionally carries
+    bandwidth caps (S15.15, ``read_bps``/``write_bps``) and a proportional
+    weight (S15.14, ``io_weight``) when those are configured non-zero.
+    ``mem_min`` (S15.16) is declared intent only — no compose field exists
+    for a per-container memory floor, so it is never injected here; it is
+    checked against the resolved slice's live properties at deploy time
+    (``deploy.governance_slice_preflight``). One summary line is always
+    logged when *governance* is not ``None`` (S15.7).
 
     Returns the overlay path, or ``None`` when there are no secrets, no
     configfiles, **and** no governance injections (S8.1/S15 — the overlay is

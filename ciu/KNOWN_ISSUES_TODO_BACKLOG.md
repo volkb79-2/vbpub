@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-03 (CIU-13 filed by dstdns).
+Last updated: 2026-08-03 (CIU-13 fixed).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -44,7 +44,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-9 | `reset_service` volume cleanup silently no-ops in DooD when the operator can write the logical path | High | FIXED |
 | CIU-10 | Pre-set `PHYSICAL_REPO_ROOT` contamination from a sibling repo's sourced `ciu.env` corrupts `ciu env generate` for a nested repo | High | FIXED |
 | CIU-11 | `standalone_root` (S1.2) guard did not fire on `ciu render`: `deploy.py` detected the standalone root from the already-resolved `repo_root` (the contaminated value) instead of the invocation dir, so `ciu render` from a sibling repo with a stale `$REPO_ROOT` rendered the *other* repo's stacks silently; `ciu up` (engine) checked `working_dir` and was correct. Fixed by a shared `enforce_standalone_root(invocation_dir)` helper both paths call. | High | FIXED |
-| CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | OPEN |
+| CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | FIXED |
 
 ## Resolved / not-a-gap
 
@@ -351,3 +351,91 @@ Remove it if this is fixed upstream.
 
 **SPEC IDs touched by a fix:** S15.1 (declaration/merge-base wording), S15.2
 (defaults and merge), S15.10 (global default resolution).
+
+**Resolution (option 1 chosen).** `governance.resolve_stack_governance` (`src/ciu/governance.py`)
+now merges rather than replaces: the global `[governance]` table (when present) is
+the base layer, and the stack's own `[<root>.governance]` table (when present) is
+shallow-merged over it, key by key, last-wins — mirroring `resolve_config`'s own
+S15.2 merge rule exactly. The dstdns repro (`tools/test-runner` restating only
+`mem_limit`) now keeps `enabled = true` and every other global key, since the stack
+only overrides the one key it actually names; opting out is still possible, but now
+requires restating `enabled = false` explicitly rather than happening as a side
+effect of any partial table. `resolve_stack_governance` returns `None` only when
+BOTH layers are absent; a `None` `stack_governance` still falls through to the global
+table unchanged, and a `None` `global_governance` still lets the stack table stand
+alone — only the "both present" case changed. SPEC updated: **S15.10** rewritten
+around the merge (with the CIU-13 mechanism and fix recorded inline), **S15.1**'s
+declaration block reordered narratively (base → stack), **S15.2** cross-referenced.
+`composefile.generate_overlay`'s docstring and this file's consumer-side workaround
+note may both be retired now that the upstream fix has landed.
+
+**Tests:** `tests/tests/test_ciu_governance.py::TestResolveStackGovernance` —
+`test_empty_stack_table_inherits_global_in_full` (replaces the old
+`test_empty_stack_table_still_wins_over_global`, which encoded the pre-fix
+behavior),
+`test_ciu13_one_key_stack_override_inherits_rest_of_global` (the exact dstdns
+repro shape, asserting the merged result AND that `resolve_config` on top of it
+keeps `enabled = True`), `test_stack_can_still_opt_out_by_restating_enabled_false`
+(the merge must not make opting out impossible), plus a defensive-copy regression
+test for the global source table. Full suite:
+`CGROUP_PARENT_DEV_BACKGROUND=<slice> python run-ciu-tests.py` — 1653 passed,
+100% coverage on every file this change touches (`governance.py`, `deploy.py`,
+`composefile.py`); the handful of pre-existing engine.py/vault failures in this
+sandbox are unrelated devcontainer-env contamination (missing
+`CGROUP_PARENT_DEV_BACKGROUND` / a leaked foreign `REPO_ROOT`), reproduced
+identically against the pre-fix code and tracked separately (see
+`vbpub-cgroup-parent-env-gap` in the operator's notes) — not a regression from
+this fix.
+
+---
+
+### Related enhancement (not a CIU-13 sub-item): expanded S15 resource coverage
+
+While fixing CIU-13, three governance gaps identified alongside it (memory floor,
+IO proportional share, bandwidth caps — the values `systemd-cgls`/plain Docker
+inspection can't show) were closed in the same pass, since they touch the same
+`governance.py` merge/injection code:
+
+- **S15.14 `io_weight`** — proportional IO share (`blkio_config.weight`,
+  Docker's `10..1000` scale), injected independent of `device` resolution.
+  Documents the same BFQ-vs-iocost `io.weight`/`io.bfq.weight` scheduler trap
+  the wings-cgroups sibling project measured — CIU cannot detect the active
+  scheduler from an overlay generator, so this is a documented caveat, not a
+  runtime check.
+- **S15.15 `read_bps` / `write_bps`** — per-device bandwidth caps
+  (`blkio_config.device_read_bps`/`device_write_bps`), symmetric with the
+  existing `read_iops`/`write_iops`. No baseline-derived default exists for
+  bandwidth (S15.4's `RIOPS_MAX` formula is IOPS-specific), so both default to
+  `0` (uncapped), explicit-opt-in-only.
+- **S15.16 `mem_min`** — a declared `memory.min`-equivalent floor. There is no
+  Docker/compose field for a per-container memory floor, so this is NEVER
+  injected into the overlay; it is checked, not enforced, by a new D-G9 check 3
+  in `governance_slice_preflight` (`deploy.py`) that probes the resolved
+  `cgroup_parent` slice's live `MemoryMin=` via `systemctl show` and fails
+  closed (`[S15.16]`, exit 2) when it doesn't meet the declared floor —
+  explicitly documenting that host-side slice provisioning (a static `.slice`
+  unit, optionally automated by a companion such as
+  `modern-debian-tools-python-debug`'s `host-setup`) is required for this key
+  to mean anything; CIU itself never depends on such a companion being present.
+
+**Self-review finding, same pass (fixed, not filed separately per the CIU-12
+precedent above):** testing S15.12/S15.16 against CIU's own devcontainer
+found both preflights false-aborting there — `systemctl` IS present (a
+devcontainer-feature shim at `/usr/local/bin/systemctl`), so the pre-existing
+`shutil.which("systemctl") is None` skip never engaged, but the shim (when
+systemd isn't actually running) prints a fixed human-readable notice and
+exits `0` instead of erroring, and that notice contains no `LoadState=`/
+`MemoryMin=` line at all — the existing parse read that absence as a
+definitive **false** (slice missing / no floor), silently turning every
+devcontainer run into a hard abort. Fixed with `governance._systemd_is_pid1()`
+(`sd_booted(3)`'s own `/run/systemd/system`-existence check, monkeypatchable
+for tests), consulted before either probe trusts `systemctl`'s output;
+verified against this repo's live devcontainer (previously `(False, ...)`,
+now correctly `(None, ...)` — inconclusive, not "missing"). Tests:
+`TestSystemdIsPid1` (the real, unmocked check) plus a dedicated
+shim-detection test in each of `TestCheckSliceUnit`/`TestCheckSliceMemoryMin`.
+
+Code + tests + SPEC (S15.14/S15.15/S15.16) landed together with the CIU-13 fix
+above; not filed as a separate numbered issue per this file's convention that
+proactively-implemented enhancements (cf. the `--host --thin` note in the
+2026-07-21 audit above) are tracked via git history rather than a bug entry here.

@@ -50,6 +50,7 @@ from . import config_model
 from . import engine
 from . import governance as governance_mod
 from . import procutil
+from . import warn_policy
 from .cli_utils import get_cli_version
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
@@ -548,7 +549,7 @@ def registry_preflight(config: dict) -> None:
 
 
 # ===========================================================================
-# Governance slice preflight (D-G9 check 1, S15.8) — fail CLOSED
+# Governance slice preflight (D-G9 checks 1 & 3, S15.8/S15.16) — fail CLOSED
 # ===========================================================================
 
 
@@ -560,7 +561,9 @@ def governance_slice_preflight(
     *,
     no_preflight: bool = False,
 ) -> None:
-    """D-G9 check 1 — verify every explicitly-configured governance slice exists.
+    """D-G9 checks 1 & 3 — verify every explicitly-configured governance slice
+    exists (S15.8) and, where a stack declares ``mem_min`` (S15.16), that the
+    slice's live ``MemoryMin=`` actually meets it.
 
     Background (S15.8): S15 governance can inject
     ``cgroup_parent = "<name>.slice"`` into every non-exempt service. With
@@ -593,7 +596,9 @@ def governance_slice_preflight(
     ValueError
         [S15.G9-1] a systemd host is missing a named, non-default governance
         slice (S10.3 → exit 2 — a configuration/setup failure, mirroring
-        :func:`registry_preflight`'s missing-`docker login` pattern).
+        :func:`registry_preflight`'s missing-`docker login` pattern), or
+        [S15.16] a stack declares ``mem_min`` and the resolved slice's live
+        ``MemoryMin=`` does not meet it.
     """
     if no_preflight:
         info("[INFO] --no-preflight: skipping governance slice preflight")
@@ -602,6 +607,9 @@ def governance_slice_preflight(
     config = profile.config
     # slice_name -> [stack rel paths that would place a container under it]
     checked: dict[str, list[str]] = {}
+    # slice_name -> max declared mem_min in bytes across stacks sharing it
+    mem_min_required: dict[str, int] = {}
+    mem_min_sources: dict[str, list[str]] = {}
 
     for entry in selection:
         rel = entry["path"]
@@ -632,10 +640,23 @@ def governance_slice_preflight(
             continue
         checked.setdefault(slice_name, []).append(rel)
 
+        mem_min_raw = str(gov_cfg.get("mem_min") or "")
+        if mem_min_raw:
+            try:
+                required = governance_mod.parse_size_to_bytes(mem_min_raw)
+            except ValueError as exc:
+                raise ValueError(
+                    f"[S15.16] {rel}: [<root>.governance].mem_min={mem_min_raw!r} "
+                    f"is not a valid size: {exc}"
+                ) from exc
+            mem_min_required[slice_name] = max(mem_min_required.get(slice_name, 0), required)
+            mem_min_sources.setdefault(slice_name, []).append(rel)
+
     if not checked:
         return
 
     missing: list[str] = []
+    missing_slice_names: set[str] = set()
     for slice_name, stacks in checked.items():
         exists, note = governance_mod.check_slice_unit(slice_name)
         if exists is None:
@@ -645,6 +666,22 @@ def governance_slice_preflight(
             info(f"[INFO] [S15.G9-1] governance slice OK — {note}")
         else:
             missing.append(f"  '{slice_name}' (used by: {', '.join(stacks)}) — {note}")
+            missing_slice_names.add(slice_name)
+
+    # S15.16 (D-G9 check 3) — only meaningful for slices that DO exist; a
+    # missing slice is already reported (and about to abort) above.
+    inadequate: list[str] = []
+    for slice_name, required in mem_min_required.items():
+        if slice_name in missing_slice_names:
+            continue
+        adequate, note = governance_mod.check_memory_min_ancestor_chain(slice_name, required)
+        if adequate is None:
+            info(f"[INFO] [S15.16] {note}")
+        elif adequate:
+            info(f"[INFO] [S15.16] mem_min OK — {note}")
+        else:
+            sources = ", ".join(mem_min_sources[slice_name])
+            inadequate.append(f"  '{slice_name}' (declared by: {sources}, requires >= {required} bytes) — {note}")
 
     if missing:
         raise ValueError(
@@ -656,6 +693,31 @@ def governance_slice_preflight(
             "file under /etc/systemd/system/, then `systemctl daemon-reload`), "
             "or point [<root>.governance].cgroup_parent at a slice that "
             "already exists:\n" + "\n".join(missing)
+        )
+
+    if inadequate:
+        # S10.6 — warn_or_raise, not a bare raise: a broken mem_min ancestor
+        # chain is a real, worth-surfacing-loudly gap, but SOME real
+        # protection may still be in effect one level down (mem_limit,
+        # blkio caps) even though this specific floor is a no-op — an
+        # operator who already knows about the host-side gap (S15.16) may
+        # legitimately want to proceed anyway. Fail first, fail early BY
+        # DEFAULT (CIU_WARNINGS_AS_ERRORS=1); CIU_WARNINGS_AS_ERRORS=0 opts
+        # into "log it, keep going" for a specific run.
+        warn_policy.warn_or_raise(
+            "[S15.16] governance declares mem_min (a memory floor) for a stack "
+            "whose resolved cgroup slice does not carry a matching MemoryMin= "
+            "(cgroup-v2 memory.min). cgroup_parent only PLACES a container "
+            "under the named slice (S15.8) — CIU never configures the slice's "
+            "own resource properties. Add a matching MemoryMin= to the slice's "
+            "systemd unit (e.g. a drop-in under /etc/systemd/system/<slice>.d/, "
+            "then `systemctl daemon-reload`) — a host-side companion such as "
+            "modern-debian-tools-python-debug's host-setup can provision this, "
+            "but CIU never depends on one being present — or lower/remove the "
+            "mem_min declaration if no floor is actually required. Set "
+            f"{warn_policy.WARNINGS_AS_ERRORS_ENV_VAR}=0 to proceed anyway (not "
+            "recommended unless you already know about this gap):\n"
+            + "\n".join(inadequate)
         )
 
 

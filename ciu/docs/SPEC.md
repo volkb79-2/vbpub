@@ -854,6 +854,28 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   values. Exit `0` means no error-severity findings, `1` means findings were
   reported, and `2` means Docker/argument/decoding failure. `--json` emits a
   stable list of `{severity,container,code,summary,remedy}` objects.
+- **S10.6** Global warnings-as-errors policy (`warn_policy.py`): some
+  conditions CIU detects are configuration SMELLS rather than unconditional
+  breakage (first case: S15.16's mem_min ancestor-chain gap) — real, worth
+  surfacing loudly, but an operator may already know about and accept the
+  risk for one run. `warn_policy.warn_or_raise(message)` always prints
+  `[WARN] {message}`, then, by default, raises `ValueError(message)`
+  immediately — **fail first, fail early: nothing gets hidden behind a
+  warning line nobody reads.** Set `CIU_WARNINGS_AS_ERRORS=0` to opt into
+  the softer behavior (log the `[WARN]`, keep going) for a specific run; any
+  other value (including unset) keeps the fail-fast default — only the
+  literal string `"0"` opts out, a fail-safe default requiring an explicit,
+  unambiguous opt-out rather than merely failing to opt in. Env-var-only, no
+  dedicated CLI flag: this mirrors every other ambient `CIU_*` toggle in
+  this codebase (`CIU_SKIP_DOOD_PREFLIGHT`, `CIU_ADOPT_LEGACY_PROJECT`,
+  `CIU_SSH_INSECURE_TOFU`), none of which have one either — CIU's per-verb
+  argparse surface (S10.4) is built as individual small parsers per verb,
+  not a shared parent parser, so one flag meant to apply everywhere is
+  cheaper and more consistent as an env var. **Not** universally applied to
+  every existing `[WARN]`/error site in CIU — see
+  `docs/DESIGN-NOTES.md` D6 for the surveyed candidates and why some
+  (S15.G9-1's missing-slice abort; S15.13's forward-compat unknown-key
+  warning) are deliberately left as-is.
 
 ## S11 — Validation catalog (static, pre-execution)
 
@@ -1156,12 +1178,17 @@ cgroup_parent = ""              # "" = resolve $CGROUP_PARENT_DEV_BACKGROUND (am
                                  # explicit value always wins. No hardcoded fallback:
                                  # enabled=true with neither set is a [S15.2] error.
 mem_limit = "1g"                # default per service
-mem_reservation = "256m"
+mem_reservation = "256m"        # memory.low — ancestor-chain caveat, see S15.16 WARNING
 read_iops = 0                   # 0 = derive (S15.4); explicit nonzero value wins
 write_iops = 400
+io_weight = 0                   # 0 = not set (S15.14); else 10..1000
+read_bps = 0                    # 0 = uncapped (S15.15)
+write_bps = 0                   # 0 = uncapped (S15.15)
 device = ""                     # "" = autodetect (S15.5); explicit value wins
 baseline_path = ""              # "" = S15.4 search order; explicit path wins
 exempt_services = []            # service names to skip entirely
+ksm_optin = ""                  # "" = off (S15.11); path to a universal LD_PRELOAD shim
+mem_min = ""                    # "" = not declared; checked not injected — READ THE S15.16 WARNING
 ```
 
 ### S15.2 — Defaults and merge
@@ -1171,12 +1198,15 @@ Unlike the rest of CIU's config (free-form TOML, no key-level schema), the
 because it drives generated compose keys, not pass-through template values.
 The stack's declared table is shallow-merged over the defaults above — a
 stack sets only the keys it wants to change from the defaults table; any key
-it omits falls through. There is no further nesting: all eight keys are
-scalars or a flat list. Two shape checks abort (exit 2) regardless of the
-no-schema rule, because they gate a boolean branch and an iteration
-respectively: `enabled` MUST be a boolean (a truthy/falsy string like
-`"false"` would silently misbehave) and `exempt_services` MUST be a list of
-strings.
+it omits falls through. There is no further nesting: every key is a scalar
+or a flat list. Two shape checks abort (exit 2) regardless of the no-schema
+rule, because they gate a boolean branch and an iteration respectively:
+`enabled` MUST be a boolean (a truthy/falsy string like `"false"` would
+silently misbehave) and `exempt_services` MUST be a list of strings. A third
+check is scoped to one key: `io_weight` (S15.14) MUST be `0` or in `10..1000`
+(Docker's own `blkio_config.weight` range) — a value outside that range
+would otherwise surface as a `docker compose up` failure far from the typo
+that caused it.
 
 ### S15.3 — Injection and author-key precedence
 
@@ -1191,7 +1221,7 @@ keys injected):
 | `cgroup_parent` | `governance.cgroup_parent` |
 | `mem_limit` | `governance.mem_limit` |
 | `mem_reservation` | `governance.mem_reservation` |
-| `blkio_config` | `{device_read_iops: [{path, rate: read_iops}], device_write_iops: [{path, rate: write_iops}]}` — omitted entirely when no device resolves (S15.5) |
+| `blkio_config` | `device_read_iops`/`device_write_iops` (device resolves, S15.5), plus `device_read_bps`/`device_write_bps` when `read_bps`/`write_bps` are nonzero (S15.15), plus `weight` when `io_weight` is nonzero (S15.14, independent of device resolution) — the whole key is omitted only when NONE of those apply |
 
 **Precedence: the stack author's rendered compose always wins.** For each
 service, the overlay generator parses that service's block in the
@@ -1294,8 +1324,11 @@ still logs one "disabled" line; a stack with no `governance` table logs
 nothing and pays no computation cost — S15 is fully zero-footprint for the
 overwhelming majority of stacks that never opt in). When enabled, the line
 names every resolved value (`cgroup_parent`, `mem_limit`, `mem_reservation`,
-resolved `read_iops` + its source, `write_iops`, resolved `device` + its
-source or failure reason, and the count of services injected vs. exempted).
+declared `mem_min` (S15.16, or "not declared"), resolved `read_iops` + its
+source, `write_iops`, `io_weight` (S15.14, or "not set"), `read_bps`/
+`write_bps` (S15.15, or "uncapped"), resolved `device` + its source or
+failure reason, `ksm_optin` (S15.11, or "off"), and the count of services
+injected vs. exempted).
 
 ### S15.8 — Rationale: `cgroup_parent` requires a pre-existing systemd slice
 
@@ -1371,34 +1404,51 @@ unwritable output) · `2` invalid arguments.
 
 Writing `[<root>.governance]` into every stack that wants the same policy is
 pure boilerplate once a host has more than a couple of stacks. CIU resolves
-governance for a stack in this order (first match wins):
+governance for a stack from two layers, shallow-merged, last-wins —
+`GOVERNANCE_DEFAULTS` (S15.2) -> global `[governance]` -> stack
+`[<root>.governance]` (`governance.resolve_stack_governance`):
 
-1. **Stack-scoped table**, from either the stack's own `ciu.toml` or
+1. **Global default**: a bare top-level `[governance]` table in
+   `ciu.global.toml` (reserved namespace, S3.7), when present, is the BASE
+   layer.
+2. **Stack-scoped table**, from either the stack's own `ciu.toml` or
    `ciu.global.toml`'s root-key-scoped section (`[<root>.governance]`) — both
    already folded into `merged[root_key]` by the existing S3.3 merge, so this
-   layer is unchanged from S15.1–S15.3.
-2. **Global default**: a bare top-level `[governance]` table in
-   `ciu.global.toml` (reserved namespace, S3.7) — used only when step 1
-   resolves to nothing at all for this stack.
-3. **Nothing declared anywhere**: governance stays disabled, exactly as
+   layer is unchanged from S15.1–S15.3 — is applied OVER the base layer, key
+   by key.
+3. **Neither present anywhere**: governance stays disabled, exactly as
    before this section existed (no behavior change for hosts that don't use
    it).
 
-The two layers do **not** deep-merge with each other: a stack that declares
-its own `[<root>.governance]` table (even a single key) fully owns its
-governance config for that stack, resolved against `GOVERNANCE_DEFAULTS`
-(S15.2) as normal — it does not inherit unset keys from the global table.
-This mirrors the S15.2 rule of "no further nesting" and keeps resolution a
-simple two-step lookup rather than a three-way merge to reason about. A
-stack that wants the global policy plus one tweak restates the whole table
-it cares about (in practice: just the one changed key, since
-`GOVERNANCE_DEFAULTS` already matches the common host policy — see S15.1).
+**CIU-13 (fixed 2026-08-03).** This used to be an all-or-nothing choice
+rather than a merge: a stack that declared its own `[<root>.governance]`
+table, however small, fully replaced the global default — resolved against
+`GOVERNANCE_DEFAULTS` alone, never inheriting anything from the global table.
+Reported live by dstdns: the global table set `enabled = true` plus
+`cgroup_parent`/`ksm_optin`/`mem_limit`/`device`; a stack restated only
+`mem_limit` to raise it for one test-runner container. Because the stack
+table "won" wholesale, every other global key — including `enabled` —
+vanished, and the merge against `GOVERNANCE_DEFAULTS` (`enabled = false`)
+resolved to **governance silently disabled**: the container came back with
+`CgroupParent=` and `Memory=0`, completely unconfined, on a host whose whole
+point is bounding dev-tier workloads. The log line
+(`[GOVERNANCE] disabled ([<root>.governance].enabled is false)`) is
+indistinguishable from a deliberate opt-out, so nothing about the run
+signaled that a one-key tuning edit had turned governance off entirely.
 
-Practical effect: a host with N stacks that all want the same governance
-policy writes it **once**, as `[governance]` in `ciu.global.toml`; only
-stacks that need to differ (a different `cgroup_parent`, an exemption, or
-opting out entirely with `enabled = false`) declare their own
-`[<root>.governance]` table.
+Making S15.10 itself a merge layer (mirroring S15.2's own merge rule exactly)
+fixes this: a stack now only needs to restate the keys it actually wants to
+change, and every other key still comes from the global policy. The one-key
+`mem_limit` override above now raises the limit while keeping `enabled`,
+`cgroup_parent`, `ksm_optin`, and `device` exactly as the global table set
+them. A stack can still opt out entirely by restating `enabled = false`
+itself — that key wins the merge like any other, it just no longer happens
+**by accident** as a side effect of setting an unrelated key.
+
+Practical effect (unchanged from before the fix): a host with N stacks that
+all want the same governance policy writes it **once**, as `[governance]` in
+`ciu.global.toml`; a stack that needs to differ restates only the keys that
+actually differ — including, now, just one key of a many-key policy.
 
 ### S15.11 — KSM opt-in injection (`ksm_optin`)
 
@@ -1448,9 +1498,21 @@ unchecked, case):
   transiently with no limits, and the deploy would proceed as if it were
   governed.
 - **no `systemctl` on the host at all** (`shutil.which("systemctl") is
-  None`) — skip with an `[INFO]` note, not a failure: a non-systemd host
-  (CI runner, macOS, a minimal container) cannot honor governance slices
-  either way, so there is nothing to enforce.
+  None`), **or `systemctl` is present but systemd is not actually PID 1 in
+  this mount namespace** (`governance._systemd_is_pid1()` is `False` —
+  `sd_booted(3)`'s own check, `/run/systemd/system` existence) — skip with
+  an `[INFO]` note, not a failure: a non-systemd host (CI runner, macOS, a
+  minimal container) cannot honor governance slices either way, so there is
+  nothing to enforce. The second case matters in practice: several
+  devcontainer base images ship a `systemctl` at that path which, when
+  systemd isn't running, prints a fixed human-readable notice and exits `0`
+  rather than erroring or being absent — checking `which()` alone would
+  read that notice as a definitive `LoadState=`/`MemoryMin=` **absence**
+  (i.e. "missing"/"no floor") instead of "cannot tell," turning an
+  inconclusive environment into a false `[S15.G9-1]`/`[S15.16]` abort. Found
+  and fixed 2026-08-03 while auditing whether these preflights work from
+  inside the project's own devcontainer (they didn't, until this check was
+  added).
 - Multiple stacks naming the **same** slice are checked once, not once per
   stack (`governance.check_slice_unit`).
 
@@ -1471,6 +1533,167 @@ while still returning normally — the DEFAULT behavior stays a warning, never
 a raise, so forward-compat is preserved. An opt-in `strict_unknown_keys=True`
 keyword turns the same condition into a `ValueError` instead, for callers
 that want to hard-fail on it; nothing in CIU sets this by default.
+
+### S15.14 — Proportional IO share (`io_weight`)
+
+`io_weight` (default `0` = not set) declares the container's share of the
+block device's IO bandwidth relative to its siblings, on Docker/compose's
+own `blkio_config.weight` scale (`10..1000`; validated at S15.2). When
+nonzero, the overlay injects `blkio_config.weight = io_weight` into every
+non-exempt service — independent of whether a `device` resolves at all
+(S15.5 is only relevant to the per-device `device_read_iops`/
+`device_write_iops`/`device_read_bps`/`device_write_bps` fields; `weight`
+applies to the whole container).
+
+**CAVEAT — this key can be silently inert.** cgroup-v2 has more than one IO
+controller, and only ONE is active per block device at a time. `io.weight`
+is the **iocost** controller's proportional-share file; if the device's
+active IO scheduler is instead **BFQ** (a common default), BFQ reads its
+OWN file, `io.bfq.weight` (a different scale, `1..1000` with its own
+default of `100`), and does not consult `io.weight` at all — a container
+can have `io_weight = 1000` and see **zero** effect on a BFQ-scheduled
+device. CIU cannot detect the active scheduler from inside a container-facing
+overlay generator (the same class of gap S15.8 documents for
+`cgroup_parent`); this is documentation, not a runtime check. Verify which
+controller is active with `cat /sys/block/<dev>/queue/scheduler` (bfq in
+brackets means BFQ is active) before relying on `io_weight` for anything
+that matters, and inspect the container's own `io.bfq.weight` cgroup file
+post-start if so.
+
+### S15.15 — Bandwidth caps (`read_bps` / `write_bps`)
+
+`read_bps` / `write_bps` (bytes/sec; default `0` = uncapped) declare
+per-device bandwidth ceilings, injected as `blkio_config.device_read_bps` /
+`device_write_bps` — the same `device` (S15.5) and per-device list shape as
+the pre-existing `read_iops`/`write_iops` keys, and gated the same way: no
+resolved device means no `device_read_bps`/`device_write_bps` fields (device
+resolution failure is reported once, in the S15.7 summary line, same as
+today for the iops caps).
+
+Unlike `read_iops`, there is no baseline-derived default for either key: the
+`ciu iops-baseline` measurement (S15.9) and its `RIOPS_MAX`-derived formula
+(S15.4) are IOPS-specific — a bandwidth ceiling pulled from that number
+would not be measuring the thing it caps. `0` (uncapped) is therefore the
+only honest default until a bandwidth-specific baseline exists; both keys
+are explicit-opt-in-only.
+
+### S15.16 — Declared memory floor (`mem_min`) and its preflight (D-G9 check 3)
+
+> **⚠ WARNING — read this before trusting a "MemoryMin= OK" verdict.**
+> cgroup v2's memory protection is NOT a single-level check: per the
+> kernel's own documentation, *"effective min/low boundary is limited by
+> memory.min/memory.low values of **all ancestor cgroups**"* — a floor set
+> on one slice provides ZERO real protection if **any** cgroup above it in
+> the chain, all the way to the cgroup root, has no floor of its own
+> (memory.min/low default to `0` = no protection, and `0` anywhere in the
+> chain caps everything below it to `0`, regardless of what a deeper level
+> declares). This preflight therefore walks the **entire** ancestor chain
+> (`governance.slice_ancestor_chain` — systemd's dash-derived naming makes
+> this a pure string operation, no D-Bus tree lookup needed —
+> `governance.check_memory_min_ancestor_chain`), not just the one slice
+> `cgroup_parent` resolves to; it still can't correct the kernel's own
+> full proportional-overcommit-under-contention math, so treat a pass as
+> "every ancestor budgets at least this much" (exact in the common
+> uncontended case, conservative otherwise), not as a bit-for-bit kernel
+> simulation.
+>
+> **This is not hypothetical — it is this project's OWN default state.**
+> `modern-debian-tools-python-debug/host-setup/units/dev.slice.in` (the
+> parent of both dev-tier slices) sets ONLY IO ceilings — no
+> `MemoryMin`/`MemoryLow` at all. `dev-background.slice.in` sets
+> `MemoryHigh`/`MemoryMax`/`MemorySwapMax` but **no `MemoryMin` and no
+> `MemoryLow`**. `dev-interactive.slice.in` sets `MemoryLow` but still no
+> `MemoryMin`. So on a host running the shipped mdt dev-tier config exactly
+> as-is, `memory.min` protection is a complete no-op **anywhere** under
+> `dev.slice`, and this preflight will correctly report it as such (`FAIL —
+> dev.slice: MemoryMin=infinity`), not silently pass because
+> `dev-background.slice` itself happens to be configured. The identical
+> caveat applies to the PRE-EXISTING `mem_reservation` key (`memory.low` —
+> a "best-effort" protection with the exact same ancestor-chain rule, but
+> which this preflight does NOT check — S15.16 covers `mem_min` only): it
+> has been injected into every governed container's compose config since
+> before `mem_min` existed, but under `dev-background.slice` as shipped
+> today, it has never had any real kernel effect either, for the same
+> reason.
+>
+> Closing this for real means EVERY ancestor from the cgroup root down to
+> the placed slice needs its own nonzero `MemoryMin=`/`MemoryLow=` — a
+> one-time, host-wide, shared-unit change (editing `dev.slice`/
+> `dev-background.slice`/`dev-interactive.slice` themselves), **not**
+> something any single stack's `[<root>.governance]` table, or a fix inside
+> CIU, can provide per-deploy. See `docs/DESIGN-NOTES.md` D1/D3/D4/D5 for the
+> fuller design discussion, including why this is specific to the two
+> protection knobs (`memory.min`/`memory.low`) and not e.g. `mem_limit`/
+> `cpu_weight`/`io_weight`.
+
+`mem_min` (a Docker-style size string — `"2g"`, `"512m"` — or `""` = not
+declared) states an INTENDED cgroup-v2 `memory.min` floor for the stack.
+Unlike every other governance key, it is **never injected into the
+overlay**: Docker/compose has no field for a per-container `memory.min` (the
+closest existing keys, `mem_limit`/`mem_reservation`, map to `memory.max`/
+`memory.low` — a ceiling and a soft floor, not the hard floor `memory.min`
+provides). A floor only has effect at the SLICE a container is placed
+under (S15.8), and CIU's `cgroup_parent` only PLACES a container there — it
+never configures that slice's own resource properties. `mem_min` is
+therefore stated intent, checked rather than enforced.
+
+`governance_slice_preflight` (`deploy.py`, the same function that runs
+S15.12's slice-existence check) additionally collects every enabled stack's
+declared `mem_min`, converts it to bytes (`governance.parse_size_to_bytes`
+— an invalid size string aborts immediately, `[S15.16]`, naming the stack
+and the unparseable value), and — for every resolved slice that DID pass the
+S15.12 existence check (a missing slice already aborts on its own; checking
+`mem_min` for a slice that doesn't exist would add nothing) — walks that
+slice's **full ancestor chain**, derived purely from its name
+(`governance.slice_ancestor_chain`; e.g. `dev-background.slice` →
+`["dev-background.slice", "dev.slice"]`), probing every level's live
+`MemoryMin=` via `systemctl show <unit> --property=MemoryMin`
+(`governance.check_memory_min_ancestor_chain`, built on the single-slice
+primitive `governance.check_slice_memory_min`). ANY inadequate link anywhere
+in the chain fails the whole check — the failure message lists every
+inadequate ancestor found, not just the first, so an operator sees the full
+picture in one preflight run. Two or more stacks sharing one slice with
+different declared `mem_min` values are checked ONCE, against the
+**maximum** of the declared floors (the slice must satisfy the stricter
+expectation to satisfy both).
+
+Outcomes mirror S15.12's shape exactly:
+
+- **No `systemctl` on the host, or `systemctl` present but systemd is not
+  PID 1 here** — skip with an `[INFO]` note (same rationale and same
+  `_systemd_is_pid1()` check as S15.12: a non-systemd host, or a
+  devcontainer's non-systemd `systemctl` shim, cannot honor a slice-level
+  floor either way).
+- **`MemoryMin=` meets or exceeds the required bytes** — pass, one `[INFO]`
+  line per slice.
+- **`MemoryMin=` is `infinity`, `0`, unparseable, or below the required
+  bytes anywhere in the ancestor chain** — `[S15.16]` naming every
+  under-provisioned slice, the stacks that declared a floor for it, and the
+  required byte count, via `warn_policy.warn_or_raise` (S10.6): always
+  logged as `[WARN]`, and by default also raised (`ValueError`, S10.3 exit
+  2) — `CIU_WARNINGS_AS_ERRORS=0` downgrades this specific finding to
+  log-only for an operator who already knows about the gap. `infinity` and
+  `0` are both treated as "no floor" — systemd reports `0` for both an
+  explicit "no protection" and a genuinely unset property, and there is no
+  way to tell those apart from outside the unit, so this fails toward the
+  safer reading. (An unparseable `mem_min` **size string** itself — not the
+  live property — is a separate, unconditional `ValueError`: a typo in the
+  stack's own config is a shape error, not a judgment call, so it is never
+  softened by S10.6.)
+
+The abort message is deliberately explicit about WHO can fix this and how:
+add a matching `MemoryMin=` to the slice's systemd unit (a drop-in under
+`/etc/systemd/system/<slice>.d/`, then `systemctl daemon-reload`), or lower/
+remove the `mem_min` declaration if no floor is actually required. A
+host-side companion — e.g. `modern-debian-tools-python-debug`'s
+`host-setup`, which already provisions parameterized dev-tier slice units —
+can automate this provisioning, but **CIU never depends on one being
+present**: `mem_min` is meaningless (and silently un-preflighted, same as
+the general S15.12 "no systemctl" skip) on any host without a systemd cgroup
+driver, and CIU functions with or without such a companion either way.
+
+Skipped entirely under `--no-preflight`, same as S15.12 (they share one
+function and one break-glass flag).
 
 ---
 

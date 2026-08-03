@@ -31,6 +31,7 @@
 | Document | Audience |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors: module map, invariants, data-flow sketch |
+| [DESIGN-NOTES.md](DESIGN-NOTES.md) | Contributors: considered-but-not-built options and open design questions (non-normative — SPEC.md wins on any conflict) |
 | [plans/V2-PACKETS.md](plans/V2-PACKETS.md) | Work-packet history and stage gates |
 
 ## Demo Repo

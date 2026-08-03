@@ -23,7 +23,7 @@ KNOWN_MEASURE_METHODS  : tuple[str, ...]  — markers whose semantics are known
 FALLBACK_READ_IOPS     : int              — used when no baseline is found
 BASELINE_MAX_AGE_DAYS  : int              — freshness window for re-measurement
 resolve_config(raw) -> dict
-resolve_stack_governance(stack_governance, global_config) -> dict | None   — S15.10
+resolve_stack_governance(stack_governance, global_config) -> dict | None   — S15.10 (shallow merge, CIU-13)
 baseline_search_candidates(configured="") -> list[Path]
 resolve_baseline_path(configured="") -> Path | None
 read_iops_baseline(path) -> int | None
@@ -32,6 +32,10 @@ derive_read_iops(configured, *, baseline_path=None, configured_path="") -> (int,
 detect_device() -> str
 resolve_device(configured) -> (str, str)
 check_slice_unit(slice_name) -> (bool | None, str)                         — D-G9 check 1
+parse_size_to_bytes(value) -> int                                          — S15.16
+check_slice_memory_min(slice_name, required_bytes) -> (bool | None, str)   — D-G9 check 3, S15.16
+slice_ancestor_chain(slice_name) -> list[str]                              — S15.16 (systemd dash-naming)
+check_memory_min_ancestor_chain(slice_name, required_bytes) -> (bool | None, str) — S15.16, walks the chain
 build_injections(compose_services, config) -> (dict[str, dict], list[str])
 parse_fio_json(text) -> int
 select_fio_engine(fio_bin="fio") -> (str, str | None)
@@ -62,9 +66,29 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # an unresolvable cgroup_parent is a configuration error, not a silent default.
     "cgroup_parent": "",
     "mem_limit": "1g",
+    # memory.low (best-effort protection). CAVEAT (S15.16 WARNING): cgroup v2
+    # bounds effective protection by ALL ancestor cgroups' own memory.low, not
+    # just this slice's — a value here is a no-op under any ancestor
+    # (including this project's own shipped dev-tier slices, as shipped
+    # today) that has no memory.low of its own.
     "mem_reservation": "256m",
     "read_iops": 0,          # 0 = derive from the host io-baseline (S15.4)
     "write_iops": 400,
+    # S15.14 — proportional IO share, Docker/compose `blkio_config.weight`
+    # scale (10..1000). 0 = not set (no `weight` key injected — the container
+    # gets whichever default the block device's IO controller applies).
+    # CAVEAT (see S15.14): on a host whose block device is scheduled by BFQ,
+    # this container's own `io.weight` cgroup file is inert — BFQ reads
+    # `io.bfq.weight` instead, a different controller's file. CIU cannot
+    # detect the active scheduler from here; this is documentation, not code.
+    "io_weight": 0,
+    # S15.15 — per-device bandwidth caps in bytes/sec, same `device` target as
+    # read_iops/write_iops. 0 = uncapped (no `device_read_bps`/
+    # `device_write_bps` key injected). Unlike read_iops there is no baseline-
+    # derived default: an arbitrary nonzero number here would not be measured
+    # from anything, so uncapped is the only honest default.
+    "read_bps": 0,
+    "write_bps": 0,
     "device": "",            # "" = autodetect the disk backing /var/lib/docker
     "baseline_path": "",     # "" = search order (S15.4); explicit path wins
     "exempt_services": [],
@@ -76,6 +100,22 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # injection is inert for them; a dependency-free .so loads under both
     # glibc and musl (a libc-linked one is FATAL under the other libc).
     "ksm_optin": "",
+    # S15.16 — declared memory FLOOR (cgroup-v2 `memory.min`-equivalent), a
+    # Docker size string ("2g", "512m") or "" (not declared). There is no
+    # Docker/compose field for a per-container memory.min, so this is never
+    # injected into the overlay: it is a stated INTENT, checked at deploy time
+    # (governance_slice_preflight, S15.16) against the resolved cgroup_parent
+    # slice's own live `MemoryMin=`. CIU only PLACES a container under a named
+    # slice (S15.8); it never configures that slice's own resource
+    # properties — a declared mem_min only means anything once the slice unit
+    # itself carries a matching MemoryMin=, provisioned host-side (a static
+    # .slice unit, or an optional companion such as
+    # modern-debian-tools-python-debug's host-setup — never a CIU dependency).
+    # WARNING (S15.16, read it): a "MemoryMin= OK" preflight verdict on that
+    # ONE slice does not mean the container is protected — cgroup v2 bounds
+    # effective protection by EVERY ancestor's own MemoryMin, and this
+    # project's own shipped dev-tier slices set none at any level today.
+    "mem_min": "",
 }
 
 # S15.11 — in-container path the shim is bound to / preloaded from.
@@ -221,6 +261,16 @@ def resolve_config(
             f"service-name strings, got {exempt!r}"
         )
     cfg["exempt_services"] = list(exempt)
+
+    # S15.14 — 0 means "not set, inject nothing"; any other value must be a
+    # valid Docker/compose blkio weight (10..1000) or `docker compose up`
+    # would itself reject it later, far from where the typo was made.
+    io_weight = cfg.get("io_weight") or 0
+    if io_weight and not (10 <= int(io_weight) <= 1000):
+        raise ValueError(
+            f"[S15.14] [<root>.governance].io_weight must be 0 (unset) or in "
+            f"10..1000 (Docker's blkio weight range), got {io_weight!r}"
+        )
     return cfg
 
 
@@ -228,33 +278,47 @@ def resolve_stack_governance(
     stack_governance: Mapping[str, Any] | None,
     global_config: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """S15.10: resolve which raw ``governance`` table (if any) applies to a stack.
+    """S15.10: merge the stack's ``governance`` table (if any) over the global
+    default ``[governance]`` table (if any) — CIU-13 fix.
 
-    Resolution order (first match wins), mirroring the S15.10 spec text:
+    Layers, shallow-merged, last-wins (mirrors S15.2's own merge rule exactly:
+    ``GOVERNANCE_DEFAULTS`` -> global -> stack):
 
-    1. *stack_governance* — the stack's own ``[<root>.governance]`` table,
+    1. *global_config* — a bare top-level ``[governance]`` table in
+       ``ciu.global.toml`` (reserved namespace, S3.7): the estate-wide
+       default, when present. This is the BASE layer.
+    2. *stack_governance* — the stack's own ``[<root>.governance]`` table,
        already extracted by the caller from ``merged[root_key]["governance"]``
        (which itself already folds in ``ciu.global.toml``'s root-key-scoped
-       section per the existing S3.3 merge — nothing new there).
-    2. *global_config* — a bare top-level ``[governance]`` table in
-       ``ciu.global.toml`` (reserved namespace, S3.7), used only when (1) is
-       entirely absent for this stack.
-    3. Neither present: return ``None`` (governance stays disabled — no
-       behavior change for hosts that declare it nowhere).
+       section per the existing S3.3 merge — nothing new there). Its keys are
+       applied OVER the base layer, one key at a time.
+    3. Neither present anywhere: return ``None`` (governance stays disabled —
+       no behavior change for hosts that declare it nowhere).
 
-    The two layers do **not** deep-merge (S15.10): a stack with its own table,
-    however small, fully owns its governance config and does not inherit
-    unset keys from the global default. Callers pass the raw table straight
-    into :func:`resolve_config` as before; this function only decides *which*
-    raw table (if any) that call sees.
+    **CIU-13** (reported by dstdns, 2026-08-03): the previous behavior treated
+    a present *stack_governance* as winning wholesale — any stack table,
+    however small, fully replaced the global default rather than layering
+    over it. A stack that restated only ``mem_limit = "8g"`` therefore lost
+    the global's ``enabled = true`` along with everything else, silently
+    resolving (via :func:`resolve_config`'s own merge over
+    ``GOVERNANCE_DEFAULTS``) to ``enabled = false`` — a one-key tuning edit
+    that produced a completely unconfined container, logged identically to a
+    deliberate opt-out. Making this a merge layer means a stack only needs to
+    restate the keys it actually wants to change; every other key still comes
+    from the global policy.
+
+    Returns a fresh dict whenever either layer is present (defensive copy —
+    mutating the result never affects either source table).
     """
-    if stack_governance is not None:
-        return dict(stack_governance)
+    global_governance: Mapping[str, Any] | None = None
     if global_config:
         global_governance = global_config.get("governance")
-        if global_governance is not None:
-            return dict(global_governance)
-    return None
+    if stack_governance is None and global_governance is None:
+        return None
+    merged: dict[str, Any] = dict(global_governance) if global_governance else {}
+    if stack_governance is not None:
+        merged.update(stack_governance)
+    return merged
 
 
 def baseline_search_candidates(configured: str = "") -> list[Path]:
@@ -461,15 +525,46 @@ def resolve_device(configured: str) -> tuple[str, str]:
 # have host access, so it can catch it before `up` ever starts a container.
 
 
+def _systemd_is_pid1() -> bool:
+    """``sd_booted(3)``'s own check: does THIS mount namespace actually run
+    systemd as PID 1?
+
+    Module-level function (not a constant) so tests can monkeypatch it
+    directly, mirroring how :func:`shutil.which` is monkeypatched elsewhere
+    in this file.
+
+    Checking `shutil.which("systemctl") is not None` alone is not enough: a
+    common devcontainer base image ships a `systemctl` SHIM at that path
+    which, when systemd is not actually running, prints a fixed
+    human-readable notice ("'systemd' is not running in this container...")
+    and exits **0** — no `KEY=VALUE` property line at all. A caller that
+    naively parses that output for e.g. `LoadState=` would read the absence
+    of a match as a definitive **False** (slice missing / no floor
+    configured) rather than "cannot tell," turning an inconclusive
+    environment into a false preflight ABORT — exactly the class of bug this
+    governance work exists to prevent, just aimed at itself. `sd_booted(3)`
+    documents `/run/systemd/system` existing as the canonical, namespace-
+    local signal that systemd is genuinely PID 1 here — which is also
+    exactly what that same devcontainer shim checks internally before
+    deciding whether to exec the real `systemctl` or print its notice, so
+    this check agrees with the shim's own logic rather than second-guessing
+    its output text.
+    """
+    return Path("/run/systemd/system").is_dir()
+
+
 def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
     """Probe whether a systemd slice UNIT is loaded on this host (D-G9 check 1).
 
     Returns ``(exists, note)``:
 
     - ``exists is None`` — this host has no ``systemctl`` at all (not a
-      systemd host — CI runner, macOS, a minimal container). Governed cgroup
-      slices cannot be honored here regardless of what's configured, so the
-      caller must SKIP the check, not fail it; *note* explains why.
+      systemd host — CI runner, macOS, a minimal container), OR
+      ``systemctl`` is present but systemd is not actually PID 1 here
+      (:func:`_systemd_is_pid1` is False — a devcontainer whose `systemctl`
+      is a non-systemd shim is the common case). Governed cgroup slices
+      cannot be honored here regardless of what's configured, so the caller
+      must SKIP the check, not fail it; *note* explains why.
     - ``exists is True`` — ``systemctl show <slice> --property=LoadState``
       reports ``LoadState=loaded``: the unit is installed and known to
       systemd.
@@ -495,6 +590,14 @@ def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
             "cgroup slices cannot be honored here regardless; skipping the "
             "slice-existence preflight"
         )
+    if not _systemd_is_pid1():
+        return None, (
+            "systemctl is present but systemd is not PID 1 in this mount "
+            "namespace (no /run/systemd/system — common in devcontainers, "
+            "whose `systemctl` is often a non-systemd shim) — governed "
+            "cgroup slices cannot be checked from inside this container; "
+            "skipping the slice-existence preflight"
+        )
     try:
         result = subprocess.run(
             ["systemctl", "show", slice_name, "--property=LoadState"],
@@ -513,6 +616,175 @@ def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
     return False, (
         f"{slice_name}: LoadState={load_state or '(unknown — systemctl returned no LoadState)'} "
         "— the unit is not installed on this host"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S15.16 — declared memory floor (`mem_min`) preflight (D-G9 check 3)
+# ---------------------------------------------------------------------------
+#
+# There is no Docker/compose field for a per-container cgroup-v2 memory.min:
+# a floor only has effect at the SLICE a container is placed under (S15.8),
+# and CIU never configures a slice's own resource properties — only its
+# existence is checked (D-G9 check 1, check_slice_unit above). `mem_min` is
+# therefore a stated intent, verified rather than enforced: this preflight
+# reads the resolved cgroup_parent slice's live `MemoryMin=` and reports
+# whether it actually meets the declared floor.
+
+_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]?)\s*$")
+_SIZE_MULTIPLIERS: dict[str, int] = {
+    "": 1, "b": 1,
+    "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4,
+}
+
+
+def parse_size_to_bytes(value: str) -> int:
+    """Parse a Docker-style size string to bytes (S15.16).
+
+    Accepts the same ``b``/``k``/``m``/``g``/``t`` (1024-based, case-
+    insensitive) suffix convention Docker itself uses for ``mem_limit``/
+    ``mem_reservation`` values, or a bare byte count with no suffix. Raises
+    ``ValueError`` on anything else — this feeds a preflight comparison, so a
+    silently-mis-parsed size would compare against the wrong number.
+    """
+    m = _SIZE_RE.match(value)
+    if not m:
+        raise ValueError(
+            f"not a recognizable size (want e.g. '2g', '512m', or a raw byte "
+            f"count): {value!r}"
+        )
+    unit = m.group(2).lower()
+    if unit not in _SIZE_MULTIPLIERS:
+        raise ValueError(f"unrecognised size suffix {m.group(2)!r} in {value!r}")
+    return int(float(m.group(1)) * _SIZE_MULTIPLIERS[unit])
+
+
+def check_slice_memory_min(slice_name: str, required_bytes: int) -> tuple[bool | None, str]:
+    """Probe whether a systemd slice's live ``MemoryMin=`` meets *required_bytes*.
+
+    Returns ``(adequate, note)``, mirroring :func:`check_slice_unit`'s shape:
+
+    - ``adequate is None`` — no ``systemctl`` on this host, OR ``systemctl``
+      is present but systemd is not actually PID 1 here
+      (:func:`_systemd_is_pid1` is False — same rationale as
+      :func:`check_slice_unit`): skip, don't fail.
+    - ``adequate is True`` — the slice's ``MemoryMin`` (bytes) is ``>=
+      required_bytes``.
+    - ``adequate is False`` — the slice reports no floor (``infinity`` — the
+      systemd default when unset — or ``0``, which is indistinguishable from
+      "genuinely unset" and is treated the same, failing closed) or a floor
+      below *required_bytes*, or the property could not be parsed.
+
+    Never raises: any subprocess error is reported as inconclusive
+    (``adequate is None``), matching :func:`check_slice_unit`.
+    """
+    if shutil.which("systemctl") is None:
+        return None, (
+            "no systemctl on this host — not a systemd host, so a slice "
+            "MemoryMin= cannot be honored here regardless; skipping the "
+            "mem_min preflight"
+        )
+    if not _systemd_is_pid1():
+        return None, (
+            "systemctl is present but systemd is not PID 1 in this mount "
+            "namespace (no /run/systemd/system — common in devcontainers, "
+            "whose `systemctl` is often a non-systemd shim) — a slice "
+            "MemoryMin= cannot be checked from inside this container; "
+            "skipping the mem_min preflight"
+        )
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", slice_name, "--property=MemoryMin"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"systemctl probe failed ({exc}) — skipping the mem_min preflight"
+
+    output = (result.stdout or "").strip()
+    raw = output.split("=", 1)[1] if "=" in output else ""
+    if raw in ("", "infinity", "0"):
+        return False, (
+            f"{slice_name}: MemoryMin={raw or '(unknown)'} — no floor is "
+            "configured on the slice unit"
+        )
+    try:
+        live_bytes = int(raw)
+    except ValueError:
+        return False, f"{slice_name}: MemoryMin={raw!r} (unparseable) — treating as no floor"
+    if live_bytes >= required_bytes:
+        return True, f"{slice_name}: MemoryMin={live_bytes} bytes (>= required {required_bytes})"
+    return False, f"{slice_name}: MemoryMin={live_bytes} bytes (< required {required_bytes})"
+
+
+def slice_ancestor_chain(slice_name: str) -> list[str]:
+    """Derive a systemd slice's full ancestor chain from its name alone.
+
+    Per ``systemd.slice(5)``, a slice's name IS its ancestor path,
+    dash-joined: ``dev-background.slice``'s parent is ``dev.slice``, whose
+    parent is the implicit (unnamed, un-probeable) root slice. No D-Bus or
+    filesystem lookup is needed — this is a pure string derivation, always
+    correct for any conforming slice name.
+
+    Returns the chain from *slice_name* itself up to (but not including) the
+    implicit root, nearest-first — e.g.
+    ``slice_ancestor_chain("dev-background.slice") == ["dev-background.slice", "dev.slice"]``.
+    A single-segment name (e.g. ``"wings.slice"``) has no named parent short
+    of root, so it returns just itself: ``["wings.slice"]``.
+    """
+    if not slice_name.endswith(".slice"):
+        raise ValueError(f"not a slice name: {slice_name!r}")
+    parts = slice_name[: -len(".slice")].split("-")
+    return ["-".join(parts[:i]) + ".slice" for i in range(len(parts), 0, -1)]
+
+
+def check_memory_min_ancestor_chain(slice_name: str, required_bytes: int) -> tuple[bool | None, str]:
+    """Walk *slice_name*'s FULL ancestor chain checking every level's
+    ``MemoryMin=``, not just *slice_name* itself (S15.16 D1/D3/D4/D5).
+
+    cgroup v2's memory protection is bounded by EVERY ancestor cgroup's own
+    ``memory.min`` (see ``docs/SPEC.md`` S15.16's WARNING): a floor on one
+    slice provides ZERO real protection if any ancestor above it — all the
+    way to the cgroup root — has none of its own.
+    :func:`check_slice_memory_min` alone only reports on ONE link; this
+    walks systemd's dash-derived ancestor chain (:func:`slice_ancestor_chain`)
+    and checks each level with that same probe.
+
+    This is a simplification of the kernel's full proportional-overcommit
+    algorithm (effective protection can be *split* across siblings under
+    contention) — it answers the practical question "does every ancestor
+    budget AT LEAST *required_bytes*", which is exact in the common
+    uncontended case and conservative (never falsely reports "protected")
+    otherwise.
+
+    Returns ``(adequate, note)``:
+
+    - ``adequate is None`` — the FIRST probe in the chain was inconclusive
+      (no ``systemctl`` / systemd not PID 1 here). This is an
+      environment-wide condition, not a per-unit one, so every other level
+      would be equally inconclusive — the rest of the chain is not probed.
+    - ``adequate is True`` — every ancestor in the chain has an adequate
+      ``MemoryMin=``.
+    - ``adequate is False`` — at least one ancestor does not; *note* lists
+      EVERY inadequate link found (not just the first), so an operator sees
+      the whole broken chain in one preflight run rather than fixing one
+      link at a time across repeated deploys.
+    """
+    chain = slice_ancestor_chain(slice_name)
+    inadequate: list[str] = []
+    for ancestor in chain:
+        adequate, note = check_slice_memory_min(ancestor, required_bytes)
+        if adequate is None:
+            return None, note
+        if not adequate:
+            inadequate.append(note)
+    if inadequate:
+        return False, "; ".join(inadequate)
+    return True, (
+        f"{slice_name}: full ancestor chain ({', '.join(chain)}) all meet "
+        f">= {required_bytes} bytes"
     )
 
 
@@ -538,10 +810,17 @@ def build_injections(
     (injections, notes)
         ``injections`` maps service name -> the subset of
         ``cgroup_parent``/``mem_limit``/``mem_reservation``/``blkio_config``
-        not already set by the author. Exempt services and services with
-        nothing left to inject (author set every key) are absent from the
-        dict entirely. ``notes`` is a list of human-readable strings for the
-        caller's one-line summary log (S15.7).
+        not already set by the author. ``blkio_config`` itself carries
+        whichever of ``device_read_iops``/``device_write_iops`` (device
+        resolved), ``device_read_bps``/``device_write_bps`` (device resolved
+        AND a nonzero cap configured, S15.15) and ``weight`` (nonzero
+        ``io_weight`` configured, S15.14 — independent of device resolution)
+        actually apply; it is omitted entirely when none of those do. Exempt
+        services and services with nothing left to inject (author set every
+        key) are absent from the dict entirely. ``notes`` is a list of
+        human-readable strings for the caller's one-line summary log (S15.7).
+        ``mem_min`` (S15.16) is never injected — see :func:`check_slice_memory_min`
+        — but its declared value is included in ``notes`` for visibility.
     """
     exempt = set(config.get("exempt_services") or [])
     cgroup_parent = resolve_cgroup_parent(str(config.get("cgroup_parent") or ""))
@@ -551,6 +830,10 @@ def build_injections(
         configured_path=str(config.get("baseline_path") or ""),
     )
     write_iops = int(config.get("write_iops", 0) or 0)
+    io_weight = int(config.get("io_weight", 0) or 0)
+    read_bps = int(config.get("read_bps", 0) or 0)
+    write_bps = int(config.get("write_bps", 0) or 0)
+    mem_min = str(config.get("mem_min") or "")
 
     injections: dict[str, dict[str, Any]] = {}
     skipped_exempt = 0
@@ -568,11 +851,18 @@ def build_injections(
             frag["mem_limit"] = config["mem_limit"]
         if "mem_reservation" not in author_keys:
             frag["mem_reservation"] = config["mem_reservation"]
-        if "blkio_config" not in author_keys and device:
-            frag["blkio_config"] = {
-                "device_read_iops": [{"path": device, "rate": read_iops}],
-                "device_write_iops": [{"path": device, "rate": write_iops}],
-            }
+        blk: dict[str, Any] = {}
+        if device:
+            blk["device_read_iops"] = [{"path": device, "rate": read_iops}]
+            blk["device_write_iops"] = [{"path": device, "rate": write_iops}]
+            if read_bps:
+                blk["device_read_bps"] = [{"path": device, "rate": read_bps}]
+            if write_bps:
+                blk["device_write_bps"] = [{"path": device, "rate": write_bps}]
+        if io_weight:
+            blk["weight"] = io_weight
+        if "blkio_config" not in author_keys and blk:
+            frag["blkio_config"] = blk
         # S15.11 — KSM opt-in: additive env + bind, injected unconditionally
         # for non-exempt services (environment/volumes are MERGE keys in the
         # overlay, so the S15.3 author-precedence rule for scalar keys does
@@ -596,8 +886,12 @@ def build_injections(
         f"cgroup_parent={cgroup_parent}",
         f"mem_limit={config['mem_limit']}",
         f"mem_reservation={config['mem_reservation']}",
+        f"mem_min={mem_min or '(not declared)'}",
         f"read_iops={read_iops} ({read_note})",
         f"write_iops={write_iops}",
+        f"io_weight={io_weight or '(not set)'}",
+        f"read_bps={read_bps or '(uncapped)'}",
+        f"write_bps={write_bps or '(uncapped)'}",
         f"device={device or '(none — blkio_config skipped)'} ({device_note})",
         f"ksm_optin={config.get('ksm_optin') or 'off'}",
         f"services_injected={services_touched} exempt={skipped_exempt}",

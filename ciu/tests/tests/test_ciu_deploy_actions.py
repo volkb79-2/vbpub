@@ -1077,6 +1077,214 @@ def test_governance_slice_preflight_skips_shipped_stacks(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Governance mem_min preflight (D-G9 check 3, S15.16) — fail CLOSED
+# ---------------------------------------------------------------------------
+
+
+def _governance_selection_rendered_mem_min(cgroup_parent: str, mem_min: str, *, enabled: bool = True):
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/app",
+            "name": "app",
+            "service": {"path": "applications/app", "name": "app", "enabled": True},
+        }
+    ]
+    rendered = {
+        "applications/app": {
+            "app": {
+                "governance": {
+                    "enabled": enabled,
+                    "cgroup_parent": cgroup_parent,
+                    "mem_min": mem_min,
+                }
+            }
+        }
+    }
+    return selection, rendered
+
+
+def test_governance_slice_preflight_raises_when_mem_min_inadequate(monkeypatch, tmp_path):
+    import pytest
+
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_memory_min",
+        lambda name, required: (False, f"{name}: MemoryMin=0 — no floor is configured on the slice unit"),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert "[S15.16]" in str(exc_info.value)
+    assert "nyxloom-daemon.slice" in str(exc_info.value)
+    assert "applications/app" in str(exc_info.value)
+
+
+def test_governance_slice_preflight_mem_min_inadequate_logs_only_when_warnings_opted_out(
+    monkeypatch, tmp_path, capsys,
+):
+    """S10.6: CIU_WARNINGS_AS_ERRORS=0 turns the same S15.16 finding into a
+    logged [WARN] that does not stop the deploy — the default (unset/"1")
+    stays fail-first per test_..._raises_when_mem_min_inadequate above."""
+    from ciu import warn_policy
+
+    monkeypatch.setenv(warn_policy.WARNINGS_AS_ERRORS_ENV_VAR, "0")
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_memory_min",
+        lambda name, required: (False, f"{name}: MemoryMin=0 — no floor is configured on the slice unit"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[S15.16]" in out
+    assert "nyxloom-daemon.slice" in out
+
+
+def test_governance_slice_preflight_passes_when_mem_min_adequate(monkeypatch, tmp_path):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_memory_min",
+        lambda name, required: (True, f"{name}: MemoryMin={required} bytes (>= required {required})"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_skips_mem_min_when_not_declared(monkeypatch, tmp_path):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice")  # no mem_min key at all
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+
+    def fail_mem_min(name, required):
+        raise AssertionError("check_slice_memory_min must not be called when mem_min is not declared")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_memory_min", fail_mem_min)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_mem_min_skipped_when_slice_missing(monkeypatch, tmp_path):
+    """A missing slice already aborts on [S15.G9-1]; mem_min inadequacy for
+    that same slice must not ALSO be probed (the existence failure already
+    explains everything a mem_min check would add)."""
+    import pytest
+
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (False, f"{name}: LoadState=not-found"),
+    )
+
+    def fail_mem_min(name, required):
+        raise AssertionError("check_slice_memory_min must not be called for a missing slice")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_memory_min", fail_mem_min)
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert "[S15.G9-1]" in str(exc_info.value)
+
+
+def test_governance_slice_preflight_invalid_mem_min_size_raises(monkeypatch, tmp_path):
+    import pytest
+
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "not-a-size")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    with pytest.raises(ValueError, match=r"\[S15\.16\].*not a valid size"):
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+
+
+def test_governance_slice_preflight_mem_min_dedupes_and_takes_max_across_stacks(monkeypatch, tmp_path):
+    """Two stacks sharing a slice with different mem_min: the check runs ONCE
+    per slice, against the MAX of the declared floors."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection = [
+        {
+            "phase_num": 1, "phase_key": "phase_1", "path": "applications/a", "name": "a",
+            "service": {"path": "applications/a", "name": "a", "enabled": True},
+        },
+        {
+            "phase_num": 2, "phase_key": "phase_2", "path": "applications/b", "name": "b",
+            "service": {"path": "applications/b", "name": "b", "enabled": True},
+        },
+    ]
+    rendered = {
+        "applications/a": {"a": {"governance": {"enabled": True, "cgroup_parent": "shared.slice", "mem_min": "1g"}}},
+        "applications/b": {"b": {"governance": {"enabled": True, "cgroup_parent": "shared.slice", "mem_min": "4g"}}},
+    }
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    calls = []
+
+    def fake_mem_min(name, required):
+        calls.append((name, required))
+        return True, f"{name}: MemoryMin={required} bytes"
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_memory_min", fake_mem_min)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+    assert calls == [("shared.slice", 4 * 1024 ** 3)]  # max(1g, 4g), checked once
+
+
+def test_governance_slice_preflight_mem_min_skips_on_non_systemd_host(monkeypatch, tmp_path, capsys):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_memory_min",
+        lambda name, required: (None, "no systemctl on this host — skipping the mem_min preflight"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+    assert "no systemctl" in capsys.readouterr().out
+
+
+def test_governance_slice_preflight_skips_non_slice_cgroup_parent(monkeypatch, tmp_path):
+    """A resolved cgroup_parent that doesn't end in `.slice` names no systemd
+    slice unit to check (e.g. a raw cgroupfs path under a non-systemd cgroup
+    driver) — skip the existence/mem_min preflight for it entirely."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("custom-cgroup-path")
+
+    def fail_check(name):
+        raise AssertionError("check_slice_unit must not be called for a non-.slice cgroup_parent")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # CLI helpers (S10.2 action surface; --groups removed)
 # ---------------------------------------------------------------------------
 
