@@ -142,9 +142,15 @@ an assertion rather than a comment.
 tools/gate.sh <worktree> unit      → gofmt, build, vet, all oracles green
 tools/gate.sh <worktree> e2e       → 39 privileged oracles green, 3 consecutive clean runs
 tools/canary-run.sh                → 67 canaries rejected, 0 survived
-tools/gate.sh <worktree> coverage  → see below
+tools/gate.sh <worktree> coverage  → 525/629 changed lines (83.5% >= 75.0%)
 nyxloom lint                       → clean
 ```
+
+The floor found 71.5% on the first measurement, and what was uncovered was
+not noise: it was every path a caller meets when a profile is not in a state
+where an operation means anything. Those are refusals that have to say what
+to do instead, which is exactly the kind of message that rots untested. They
+are now oracles.
 
 39 is every `func Test` in a `//go:build e2e` file, less the `TestMain`
 dispatchers:
