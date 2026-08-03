@@ -179,13 +179,31 @@ def warmest_review_session(states: dict[str, TaskStateFile]) -> str | None:
     It is a CACHE optimization and never a relaxation of verdict binding: the
     resumed leg still mints a fresh attempt id and the reader still compares
     identity, so a stale judgement from the prior wave cannot be consumed.
+
+    The tie is broken on `attempt_id`, not left to iteration order. `max`
+    returns the FIRST maximal element, so with two EXITED review attempts
+    sharing a `started` stamp the winner followed `states` iteration order --
+    and the daemon builds that mapping by scanning a directory, so the choice
+    genuinely varied run to run. CR-06b repaired the identical tie in the
+    planner's own copy of this selection (`rules_review`, reached via
+    `LaunchReview.resume_session`); this is the SECOND implementation, on the
+    gate-diagnosis launch path, and leaving it meant one tie resolving two
+    ways in one product.
+
+    The safety argument is the one already accepted for the planner copy, and
+    it is structural rather than empirical: comparing `(started, attempt_id)`
+    compares `started` first, so the winner is always drawn from the
+    `started`-maximal set. The tie-break can only choose among candidates this
+    function's own criterion already calls equal -- it can never reach past a
+    tie to a strictly older session -- and the worst case of choosing a
+    different tied handle is a prompt-cache miss, never a correctness change.
     """
     prior = [a for tsf in states.values() for a in tsf.attempts
              if a.role is Role.REVIEW_INDEPENDENT
              and a.state is AttemptState.EXITED and a.session_handle]
     if not prior:
         return None
-    return max(prior, key=lambda a: a.started).session_handle
+    return max(prior, key=lambda a: (a.started, a.attempt_id)).session_handle
 
 
 class ReviewEffector:

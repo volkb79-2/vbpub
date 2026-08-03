@@ -213,6 +213,43 @@ class TestWarmestReviewSession:
                                     role=Role.IMPLEMENTER)])
         assert effects_review.warmest_review_session({"t1": tsf}) is None
 
+    def _tie(self, handle, when):
+        return TaskStateFile(
+            schema_version=storage.SCHEMA_VERSION, task_id=f"t-{handle}",
+            project="demo", state=TaskState.AWAITING_REVIEW, since=when,
+            attempts=[self._attempt(handle, AttemptState.EXITED, when)])
+
+    def test_a_started_tie_resolves_the_same_way_whatever_the_map_order(self):
+        """CR-05g. `max` returns the FIRST maximal element, so before the
+        tie-break this followed `states` iteration order -- and the daemon
+        builds that mapping by scanning a directory, so the chosen warm
+        session genuinely varied between runs of identical state.
+
+        Both orders are asserted, not one: a single order would pass just as
+        happily against the old implementation, which is what let the same
+        defect survive in the planner's copy until CR-06b.
+        """
+        when = utc_now()
+        forward = {"t-h1": self._tie("h1", when), "t-h2": self._tie("h2", when)}
+        backward = {"t-h2": forward["t-h2"], "t-h1": forward["t-h1"]}
+
+        assert effects_review.warmest_review_session(forward) == "h2"
+        assert effects_review.warmest_review_session(backward) == "h2"
+
+    def test_the_tie_break_never_reaches_past_a_tie_to_an_older_session(self):
+        """The safety property the repair rests on, asserted rather than
+        argued: `(started, attempt_id)` compares `started` FIRST, so the
+        winner is always drawn from the `started`-maximal set. Here the older
+        session sorts LAST by attempt id, so a tie-break that ignored
+        `started` would pick it."""
+        late = utc_now()
+        early = late.replace(year=late.year - 1)
+        states = {
+            "t-zz": self._tie("zz", early),     # newest id, oldest session
+            "t-aa": self._tie("aa", late),      # oldest id, newest session
+        }
+        assert effects_review.warmest_review_session(states) == "aa"
+
 
 class TestWaveLeaseUnion:
 
