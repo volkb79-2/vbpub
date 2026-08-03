@@ -176,8 +176,13 @@ class AttemptEffector:
         task_id = action.task_id
         tsf = states[task_id]
         attempt = tsf.attempt_by_id(action.attempt_id)
-        attempt_dir = paths.attempt_dir(project, action.attempt_id)
-        resume_n = next_resume_n(self._ports.files, attempt_dir)
+        # BOTH refusals come before any filesystem or config work. A refused
+        # resume should cost nothing: it is re-evaluated every pass for as
+        # long as the pause or the missing route lasts, so work done ahead of
+        # the gate is work done repeatedly for a launch that never happens.
+        # It also removes an unbounded scan from the refusal path --
+        # `next_resume_n` walks resume ordinals until the filesystem says
+        # stop, so it must not run before the decision to launch.
         routes_obj = config.Routes.load()
         route_def = effects_dispatch.route_by_id(
             routes_obj, attempt.route.route_id, project=project, kind="resume")
@@ -186,6 +191,8 @@ class AttemptEffector:
         ok, _reason = effects_dispatch.admissible(ctx, "resume", route_def)
         if not ok:
             return []  # admission refused; attempt stays INTERRUPTED, re-evaluated next pass
+        attempt_dir = paths.attempt_dir(project, action.attempt_id)
+        resume_n = next_resume_n(self._ports.files, attempt_dir)
         # A retry is degraded-but-continuing: WARNING, not INFO.
         with bind(task=task_id, attempt=action.attempt_id):
             log.warning("attempt-retry", project=project,
