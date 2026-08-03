@@ -111,7 +111,7 @@ class TestThisRepo:
         """Not merely "some package": the row says WHICH, so the remaining
         work is a plan rather than a pile."""
         owners = {s.kind: s.legacy_owner for s in registry.legacy_specs()}
-        assert owners and all(o in ("CR-05c", "CR-05d") for o in owners.values()), owners
+        assert owners and all(o in ("CR-05d", "CR-05e") for o in owners.values()), owners
 
     def test_a_handler_that_starts_background_work_declares_an_idempotency_key(
             self, registry):
@@ -152,6 +152,12 @@ class TestThisRepo:
                                                     task_ids=["t1"]),
             "launch-gate-diagnosis": reconcile.LaunchGateDiagnosis(task_id="t1"),
             "auto-merge": reconcile.AutoMergeTask(task_id="t1"),
+            "dispatch-implementer": reconcile.DispatchImplementer(
+                task_id="t1", route_id="r1"),
+            "resume-attempt": reconcile.ResumeAttempt(task_id="t1",
+                                                      attempt_id="a1"),
+            "launch-self-review": reconcile.LaunchSelfReview(
+                task_id="t1", source_attempt_id="a1"),
         }
         keys = {}
         for spec in registry.specs:

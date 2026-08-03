@@ -373,7 +373,7 @@ from typing import Any, Sequence
 
 from . import (
     adapters, backlog_items, carver_session, commands, config, control_auth, decision_chat,
-    decisions, doc_lifecycle, effects, effects_dispatch, effects_gates,
+    decisions, doc_lifecycle, effects, effects_attempt, effects_dispatch, effects_gates,
     effects_lifecycle, effects_merge, effects_review, frontmatter,
     gate_canary, gate_runner, intake_chat, leases,
     lint, merge_digest, notify, paths, reconcile, render, results, snapshot, stages,
@@ -739,6 +739,7 @@ class Daemon:
         self._gates = effects_gates.GateEffector(self._ports)
         self._lifecycle = effects_lifecycle.LifecycleEffector(
             self._ports, self._provider_backoff)
+        self._attempt = effects_attempt.AttemptEffector(self._ports)
         self._review = effects_review.ReviewEffector(self._ports)
         self._merge = effects_merge.MergeEffector(self._ports)
         self._registry = self._build_registry()
@@ -764,10 +765,9 @@ class Daemon:
         # CR-05c: the attempt lifecycle. The receipt-exit consumer routes by
         # attempt ROLE, so it moves with the launch families rather than with
         # whichever effector dispatched the leg.
-        ("dispatch-implementer", "DispatchImplementer", "CR-05c"),
-        ("resume-attempt", "ResumeAttempt", "CR-05c"),
-        ("launch-self-review", "LaunchSelfReview", "CR-05c"),
-        ("emit-attempt-exit", "EmitAttemptExit", "CR-05c"),
+        # CR-05e: the receipt-exit consumer routes by attempt ROLE and its
+        # CARVER branch delegates into carve, so it lands after CR-05d.
+        ("emit-attempt-exit", "EmitAttemptExit", "CR-05e"),
         # CR-05d: carve and the persistent carver session, the largest
         # remaining family and the one the exit consumer's CARVER branch
         # delegates into.
@@ -791,6 +791,8 @@ class Daemon:
         for spec in effects_lifecycle.specs(self._lifecycle):
             registry.register(spec)
         for spec in effects_gates.specs(self._gates):
+            registry.register(spec)
+        for spec in effects_attempt.specs(self._attempt):
             registry.register(spec)
         for spec in effects_review.specs(self._review):
             registry.register(spec)
@@ -3292,24 +3294,12 @@ class Daemon:
     def _lease_specs(self, cfg: ProjectConfig, fm) -> list[dict[str, Any]]:
         return effects_dispatch.lease_specs(cfg, fm)
 
-    def _ensure_worktree(self, root: Path, branch: str, worktree_path: Path, default_branch: str) -> None:
-        if worktree_path.exists():
-            return
-        worktree_path.parent.mkdir(parents=True, exist_ok=True)
-        check = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--verify", branch],
-            capture_output=True, text=True,
-        )
-        if check.returncode == 0:
-            subprocess.run(
-                ["git", "-C", str(root), "worktree", "add", str(worktree_path), branch],
-                check=True, capture_output=True, text=True,
-            )
-        else:
-            subprocess.run(
-                ["git", "-C", str(root), "worktree", "add", "-b", branch, str(worktree_path), default_branch],
-                check=True, capture_output=True, text=True,
-            )
+    def _ensure_worktree(self, root: Path, branch: str, worktree_path: Path,
+                          default_branch: str) -> None:
+        # CR-05c: retained as the daemon-side call site for the carve families
+        # CR-05d still owns; the two branch shapes it distinguishes, and why a
+        # failure must raise rather than degrade, are documented on the effector.
+        self._attempt._ensure_worktree(root, branch, worktree_path, default_branch)
 
     # -- carve automation (P16 2026-07-15) --------------------------------
 
@@ -5552,13 +5542,8 @@ class Daemon:
         and its prompt is byte-identical to the pre-B4b text. Bounded so a
         pathologically long review cannot blow build_dispatch's prompt-length
         guard."""
-        text = self._review_report_text(cfg, task_id)
-        if not text or not text.strip():
-            return None
-        text = text.strip()
-        if len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "\n[... review report truncated ...]"
-        return text
+        return effects_attempt.review_rationale(self._ports.git, cfg, task_id,
+                                                max_chars)
 
     def _verdict_is_repaired(self, cfg: ProjectConfig, task_id: str) -> bool:
         """DR8: True when the committed <task>-REVIEW.md's VERDICT line carries
@@ -5912,10 +5897,7 @@ class Daemon:
         return "missing", f"review leg {record.verdict.value}"
 
     def _next_resume_n(self, attempt_dir: Path) -> int:
-        n = 1
-        while (attempt_dir / f"attempt.resume-{n}.log").exists() or (attempt_dir / f"spec.resume-{n}.json").exists():
-            n += 1
-        return n
+        return effects_attempt.next_resume_n(self._ports.files, attempt_dir)
 
     def _execute(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                  action: reconcile.Action) -> list[Event]:
@@ -5947,192 +5929,7 @@ class Daemon:
         project, cfg, states = ctx.project, ctx.cfg, ctx.states
         events: list[Event] = []
 
-        if isinstance(action, reconcile.DispatchImplementer):
-            ok, _reason = self._dispatch_admissible(project, cfg, states, "dispatch")
-            if not ok:
-                return events  # P55: execute-time admission refused; task stays QUEUED, re-evaluated next pass
-            task_id = action.task_id
-            tsf = states[task_id]
-            branch = f"feat/{task_id}"
-            worktree_path = cfg.root / cfg.worktree_root / branch
-            self._ensure_worktree(cfg.root, branch, worktree_path, cfg.default_branch)
-
-            routes_obj = config.Routes.load()
-            route_def = routes_obj.routes[action.route_id]
-            attempt_id = new_id("att")
-            # P05a (docs/plan-logging.md §5, §6 P05a oracle 1): a dispatch
-            # emits INFO carrying project+task+route -- `project` comes from
-            # this call's own arg (no pass-level bind exists yet, see
-            # run_pass), `task`/`attempt` bound for the duration of this one
-            # log call per the module contract's "bind task/attempt context
-            # around attempt execution."
-            with bind(task=task_id, attempt=attempt_id):
-                log.info("dispatch", project=project, route=route_def.route_id)
-            route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
-                                variant=route_def.variant, effort=route_def.effort,
-                                routes_rev=routes_obj.revision)
-            attempt = Attempt(attempt_id=attempt_id, role=Role.IMPLEMENTER, state=AttemptState.CREATED,
-                               route=route_snap, started=utc_now(), worktree=str(worktree_path),
-                               branch=branch)
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
-                                           {"attempt": attempt.to_dict()}, task_id=task_id,
-                                           attempt_id=attempt_id))
-
-            attempt_dir = paths.attempt_dir(project, attempt_id)
-            fm_obj = self._frontmatter_for(cfg, tsf)
-            gate_hint = self._gate_hint(cfg)
-            receipt_path = str(attempt_dir / "receipt.json")
-            # B4b (critique "re-dispatch packets embed the review verdict"): if this
-            # task was rejected by a prior review, embed that review's findings so
-            # the fix is targeted -- never a bare context-free same-model retry.
-            # None on a first dispatch (no committed review yet) -> unchanged prompt.
-            prior_verdict = self._review_rationale(cfg, task_id)
-            # B21 2026-07-23 (D-R16 §3, D-B21-1 overlay): any file(s) a PRIOR
-            # SCOPE_AMENDMENT_REQUEST for this task already had approved --
-            # [] on a task with no amendment history (every pre-B21 dispatch,
-            # unchanged). Injected into the prompt so the widened allowlist
-            # actually reaches this re-dispatched attempt.
-            approved_amendments = self._scope_amendment_files(project, task_id)
-            argv, _prompt = adapters.build_dispatch(
-                route_def, handoff_path=tsf.handoff_path or "", worktree=str(worktree_path),
-                branch=branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
-                role=Role.IMPLEMENTER, prior_verdict=prior_verdict,
-                approved_amendments=approved_amendments,
-            )
-            spec = wrapper.WrapperSpec(
-                project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
-                cwd=str(worktree_path), log_path=str(attempt_dir / "attempt.log"),
-                receipt_path=receipt_path, attempt_dir=str(attempt_dir),
-                route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_obj),
-            )
-            pid = wrapper.launch_detached(spec)
-            attempt.state = AttemptState.PREFLIGHTING
-            attempt.pid = pid
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
-                                           {"attempt": attempt.to_dict()}, task_id=task_id,
-                                           attempt_id=attempt_id))
-            events.append(self._transition(project, cfg, states, task_id, TaskState.ACTIVE, None))
-
-        elif isinstance(action, reconcile.ResumeAttempt):
-            ok, _reason = self._dispatch_admissible(project, cfg, states, "resume")
-            if not ok:
-                return events  # P55: execute-time admission refused; attempt stays INTERRUPTED, re-evaluated next pass
-            task_id = action.task_id
-            tsf = states[task_id]
-            attempt = tsf.attempt_by_id(action.attempt_id)
-            attempt_dir = paths.attempt_dir(project, action.attempt_id)
-            resume_n = self._next_resume_n(attempt_dir)
-            routes_obj = config.Routes.load()
-            route_def = routes_obj.routes[attempt.route.route_id]
-            # P05a (§5): an attempt retry (resuming an INTERRUPTED/STALLED
-            # attempt) is degraded-but-continuing -> WARNING, not INFO.
-            with bind(task=task_id, attempt=action.attempt_id):
-                log.warning("attempt-retry", project=project, route=route_def.route_id, resume_n=resume_n)
-            worktree = attempt.worktree or str(cfg.root)
-            prompt = f"Resume {task_id} attempt {action.attempt_id} in {worktree}"
-            argv = adapters.build_resume(route_def, session=attempt.session_handle,
-                                          worktree=worktree, prompt=prompt)
-            fm_obj = self._frontmatter_for(cfg, tsf)
-            spec = wrapper.WrapperSpec(
-                project=project, task_id=task_id, attempt_id=action.attempt_id, argv=argv,
-                cwd=worktree, log_path=str(attempt_dir / f"attempt.resume-{resume_n}.log"),
-                receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
-                route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_obj),
-            )
-            # P53 2026-07-19 (M1, CRITICAL -- receipt-run binding): a resumed
-            # attempt reuses this attempt_dir and the SAME receipt.json path,
-            # and (below) is set back to RUNNING. The leg we are resuming
-            # already wrote an interrupt/error receipt.json at its own exit
-            # (wrapper.py always writes a receipt before ATTEMPT_INTERRUPTED).
-            # If that stale receipt is left in place, the NEXT reconcile pass
-            # sees this attempt RUNNING (in _INTERRUPTIBLE_STATES) WITH a
-            # receipt and treats it as "wrapper died before its exit event"
-            # (reconcile.py's has_receipt branch) -> a premature EmitAttemptExit
-            # on the STALE receipt while the resumed session is still live,
-            # which transitions the task off ACTIVE and lets a SECOND
-            # implementer dispatch into the same feat/<task> worktree. Archive
-            # the stale receipt (audit trail, not deleted) BEFORE launch so
-            # receipt.json does not exist again until THIS resumed run
-            # genuinely exits and writes its own -- consumed exactly once.
-            stale_receipt = Path(spec.receipt_path)
-            if stale_receipt.exists():
-                stale_receipt.rename(attempt_dir / f"receipt.pre-resume-{resume_n}.json")
-            pid = wrapper.launch_detached(spec)
-            attempt.state = AttemptState.RUNNING
-            attempt.pid = pid
-            # P14 2026-07-15 item 5 (resume bookkeeping drift): refresh the
-            # log path to the NEW resume log right here, rather than leaving
-            # it stale until the wrapper's own later ATTEMPT_STARTED lands --
-            # a stale log_path made log_quiet_seconds watch a dead file
-            # while the live resumed process went unwatched.
-            attempt.log_path = spec.log_path
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_RESUMED,
-                                           {"attempt": attempt.to_dict()}, task_id=task_id,
-                                           attempt_id=action.attempt_id))
-
-        elif isinstance(action, reconcile.LaunchSelfReview):
-            # B5 2026-07-20: the self_review leg -- a WARM resume of the
-            # implementer's session under a NEW Attempt(role=Role.SELF_REVIEW).
-            # A new record (not a ResumeAttempt) because Attempt.role is
-            # immutable and EmitAttemptExit keys on it; warm (build_resume with
-            # the implementer's BORROWED session_handle) so the self-check pays
-            # no 35-40k cold-start tax. If the source implementer left no
-            # session_handle (early capture failed), degrade gracefully: skip
-            # the leg and proceed to the frontier reviewer (the real gate) rather
-            # than stranding the task in SELF_REVIEWING.
-            ok, _reason = self._dispatch_admissible(project, cfg, states, "self-review")
-            if not ok:
-                return events  # admission refused; task stays SELF_REVIEWING, retried next pass
-            task_id = action.task_id
-            tsf = states[task_id]
-            source = tsf.attempt_by_id(action.source_attempt_id)
-            if source is None or not source.session_handle:
-                events.append(self._transition(
-                    project, cfg, states, task_id, TaskState.AWAITING_REVIEW,
-                    "self-review skipped (no warm session to resume) -- proceeding to frontier review"))
-                return events
-            worktree = source.worktree or str(cfg.root)
-            branch = source.branch or f"feat/{task_id}"
-            routes_obj = config.Routes.load()
-            route_def = routes_obj.routes[source.route.route_id]
-            attempt_id = new_id("att")
-            route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
-                                variant=route_def.variant, effort=route_def.effort,
-                                routes_rev=routes_obj.revision)
-            attempt = Attempt(attempt_id=attempt_id, role=Role.SELF_REVIEW, state=AttemptState.CREATED,
-                               route=route_snap, started=utc_now(), worktree=worktree,
-                               branch=branch, session_handle=source.session_handle)
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
-                                           {"attempt": attempt.to_dict()}, task_id=task_id,
-                                           attempt_id=attempt_id))
-            attempt_dir = paths.attempt_dir(project, attempt_id)
-            report_rel = f"{cfg.reports_dir}/{task_id}-SELFREVIEW.md"
-            prompt = adapters.self_review_prompt(
-                task_id=task_id, worktree=worktree, branch=branch, report_path=report_rel,
-                attempt_id=attempt_id)
-            argv = adapters.build_resume(route_def, session=source.session_handle,
-                                          worktree=worktree, prompt=prompt)
-            fm_obj = self._frontmatter_for(cfg, tsf)
-            spec = wrapper.WrapperSpec(
-                project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
-                cwd=worktree, log_path=str(attempt_dir / "attempt.log"),
-                receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
-                route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_obj),
-                # CR-03: collect this leg's typed judgement.
-                result_kind=results.ResultKind.SELF_REVIEW.value,
-            )
-            pid = wrapper.launch_detached(spec)
-            attempt.state = AttemptState.PREFLIGHTING
-            attempt.pid = pid
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
-                                           {"attempt": attempt.to_dict()}, task_id=task_id,
-                                           attempt_id=attempt_id))
-            # NOTE: no transition here -- the task is already SELF_REVIEWING (the
-            # implement-done consumption put it there); the leg's own EXITED
-            # receipt is what moves it on (approved -> AWAITING_REVIEW, rejected
-            # -> QUEUED), via the SELF_REVIEW branch of EmitAttemptExit.
-
-        elif isinstance(action, reconcile.EmitAttemptExit):
+        if isinstance(action, reconcile.EmitAttemptExit):
             task_id = action.task_id
             tsf = states[task_id]
             attempt = tsf.attempt_by_id(action.attempt_id)
