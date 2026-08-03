@@ -191,8 +191,37 @@ def test_the_oracle_is_not_vacuous():
 # --- the anti-curation guard ----------------------------------------------
 
 
+#: Keys that make a dict a workflow DOCUMENT rather than any other mapping.
+#: Document-level on purpose: `test_workflow_ir.py` builds a `NodeIR` with
+#: `dict(entry_state=..., kind=..., owns=...)`, which is a node record and not
+#: a manifest, so keying on `entry_state` alone would refuse honest code and
+#: the guard would acquire an exemption.
+_DOCUMENT_MARKERS = {"schema", "nodes"}
+#: Keys that make a dict a workflow document OR a node body inside one.
+_MANIFEST_MARKERS = {"schema", "entry_state", "nodes", "kernel_outcomes"}
+
+
 def _workflow_test_modules() -> list:
-    return sorted(p for p in TEST_DIR.glob("test_workflow_*.py"))
+    """Every TEST module that touches the workflow surface.
+
+    DERIVED FROM THE IMPORTS, not from a filename glob (CR-07a review). The
+    glob was `test_workflow_*.py`, so a module named anything else -- the
+    natural name for a one-off, `test_wf_extra.py` -- compiled manifests the
+    vocabulary oracle never ran over, and no test said so. A population guard
+    whose own population is a naming convention is the shape this file exists
+    to refuse, one level up.
+    """
+    modules = []
+    for path in sorted(TEST_DIR.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        touches = any(
+            (isinstance(n, ast.ImportFrom) and (n.module or "").startswith("nyxloom.workflow"))
+            or (isinstance(n, ast.ImportFrom) and n.module == "nyxloom"
+                and any(a.name.startswith("workflow_") for a in n.names))
+            for n in ast.walk(tree))
+        if touches:
+            modules.append(path)
+    return modules
 
 
 def test_every_workflow_test_module_draws_from_the_shared_corpus():
@@ -208,42 +237,85 @@ def test_every_workflow_test_module_draws_from_the_shared_corpus():
         assert "workflow_corpus" in imports, path.name
 
 
+def _is_dict_call(node) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "dict")
+
+
 def test_no_workflow_test_module_invents_its_own_manifest():
     """A manifest written inside a test module would be a population the
     oracle above never runs over -- which is CR-06's defect with a new
     vocabulary. Manifests live in `workflow_corpus.py`; mutations of them do
     too.
+
+    THREE SHAPES, because CR-07a's review got two of them past the original
+    check by writing the manifest the way a developer naturally would:
+
+    * a dict DISPLAY whose keys name manifest sections (the original check);
+    * ``dict(schema=..., nodes=...)`` -- a `Call`, not a `Dict`, so the key
+      scan never saw it;
+    * ``{**corpus_source, "start": "nope"}`` -- a `Dict`, but its only literal
+      key is `start`, which is in no marker set. This is the sharper of the
+      two: it is a DERIVATION of a corpus source, so it looks like drawing
+      from the corpus while producing an input the corpus does not contain.
+      Derivations belong in `workflow_corpus.py` next to what they derive
+      from, which is the one place the oracle above reads.
+
+    Verified by planting a module containing both and watching this file stay
+    green.
     """
-    markers = {"schema", "entry_state", "nodes", "kernel_outcomes"}
     offenders: list = []
     for path in _workflow_test_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Dict):
-                continue
-            keys = {k.value for k in node.keys
-                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
-            if keys & markers:
-                offenders.append(f"{path.name}:{node.lineno}")
+            if isinstance(node, ast.Dict):
+                keys = {k.value for k in node.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if keys & _MANIFEST_MARKERS:
+                    offenders.append(f"{path.name}:{node.lineno} manifest literal")
+                elif any(k is None for k in node.keys):
+                    offenders.append(
+                        f"{path.name}:{node.lineno} dict-spread: a derived input "
+                        f"the vocabulary oracle never compiles")
+            elif _is_dict_call(node):
+                kwargs = {kw.arg for kw in node.keywords if kw.arg}
+                if kwargs & _DOCUMENT_MARKERS:
+                    offenders.append(f"{path.name}:{node.lineno} dict() manifest")
     assert not offenders, (
-        "manifest literals outside tests/workflow_corpus.py -- the vocabulary "
-        f"oracle cannot see them: {offenders}")
+        "manifest literals or derivations outside tests/workflow_corpus.py -- "
+        f"the vocabulary oracle cannot see them: {offenders}")
 
 
-def test_no_workflow_test_module_passes_a_literal_to_the_compiler():
+def test_no_workflow_test_module_passes_a_constructed_source_to_the_compiler():
+    """The same rule at the call site, where the consequence is immediate.
+
+    Widened from "not a dict literal" to "not constructed here at all": a
+    `dict(...)` call reaching `compile_workflow` is the same population escape
+    a literal is, and it was admitted.
+    """
     for path in _workflow_test_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id == "compile_workflow" and node.args):
-                assert not isinstance(node.args[0], ast.Dict), (
-                    f"{path.name}:{node.lineno}")
+                first = node.args[0]
+                assert not isinstance(first, ast.Dict) and not _is_dict_call(first), (
+                    f"{path.name}:{node.lineno}: compile_workflow is given a "
+                    f"source built at the call site")
 
 
 def test_the_guard_covers_the_modules_it_claims_to():
-    """Its own population check: a workflow test module that stopped matching
-    the glob would leave the guard passing over nothing."""
+    """Its own population check, in both directions.
+
+    The floor keeps the derivation from silently returning nothing; the
+    membership check keeps it honest about how the population is DERIVED -- a
+    module is in scope because it imports the workflow surface, not because
+    its filename starts with `test_workflow_`.
+    """
     names = {p.name for p in _workflow_test_modules()}
     assert names >= {"test_workflow_compile.py", "test_workflow_ir.py",
                      "test_workflow_kernel_edges.py", "test_workflow_shadow.py",
                      "test_workflow_guards.py", "test_workflow_vocabulary.py"}
+    assert all(
+        "nyxloom.workflow" in (TEST_DIR / name).read_text(encoding="utf-8")
+        for name in names)

@@ -115,6 +115,16 @@ def test_a_guard_body_can_reach_nothing_but_its_own_arguments(name):
         if isinstance(node, ast.Name):
             assert node.id in ("facts", "arg"), (
                 f"guard {name!r} reaches the module-level name {node.id!r}")
+        if isinstance(node, ast.Constant):
+            # The allow-list's own description says INTEGER constants, and
+            # `ast.Constant` alone admitted every literal type including `str`
+            # (CR-07a review). A string literal in a guard body cannot carry
+            # agent text -- it is reviewed source like any other line -- but a
+            # rule that says one thing and checks another is the defect class
+            # this file exists to refuse, one level up from the guards.
+            assert type(node.value) in (int, bool), (
+                f"guard {name!r} contains a {type(node.value).__name__} "
+                f"literal; the boundary admits integer constants only")
 
 
 @pytest.mark.parametrize("name", sorted(GUARD_REGISTRY))
