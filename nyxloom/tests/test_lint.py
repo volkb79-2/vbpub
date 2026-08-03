@@ -1360,6 +1360,63 @@ class TestConfigLintFoldedIntoProject:
         assert results[key] == []
 
 
+class TestArchiveLintFoldedIntoProject:
+    """ARC1 (CR-01, DR-04): `lint_project` folds one entry per archived
+    product doc, keyed by that DOC's root-relative path.
+
+    The rule only earns its keep if it reaches the surface an operator and
+    the daemon actually run -- `nyxloom lint` calls `lint_project`, not
+    `doc_lifecycle.lint_archive`. A rule that fires in its own unit test and
+    is never folded into the project result is a rule nothing enforces."""
+
+    def test_a_malformed_archived_doc_surfaces_under_its_own_path(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        junk = root / "docs" / "archive" / "product-docs" / "JUNK.md"
+        junk.parent.mkdir(parents=True, exist_ok=True)
+        junk.write_text("not frontmatter at all\n")
+
+        results = lint.lint_project(cfg)
+
+        key = "docs/archive/product-docs/JUNK.md"
+        assert key in results, sorted(results)
+        arc1 = [f for f in results[key] if f.rule == "ARC1"]
+        assert arc1, results[key]
+        assert all(f.severity == "error" for f in arc1)
+        # Blocking, like S4: a mis-tagged archive entry must not pass review
+        # by being invisible.
+        assert lint.has_blocking(results[key])
+
+    def test_a_schema_violating_archived_doc_surfaces_its_schema_error(self, tmp_path):
+        """status=historical forbids superseded_by -- a "historical" doc that
+        names a successor is claiming a replacement that does not exist as a
+        lifecycle relation, and the message must say which field is wrong."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        doc = root / "docs" / "archive" / "product-docs" / "BAD.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(
+            "---\nlifecycle: archived\nstatus: historical\n"
+            'archived_date: "2026-08-03"\nsuperseded_by: docs/SPEC.md\n'
+            "reason: test fixture\n---\n\n# archived\n")
+
+        results = lint.lint_project(cfg)
+
+        key = "docs/archive/product-docs/BAD.md"
+        assert [f.rule for f in results.get(key, [])] == ["ARC1"], results.get(key)
+
+    def test_a_well_formed_archived_doc_adds_no_findings(self, tmp_path):
+        """The negative half: containment is not itself a finding. Only a
+        BROKEN lifecycle record is."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        _write_archived_doc(root, "docs/archive/product-docs/OK.md")
+
+        results = lint.lint_project(cfg)
+
+        assert results.get("docs/archive/product-docs/OK.md", []) == []
+
+
 # ---------------------------------------------------------------------------
 # P35: lint path resolution -- owning project (O1-O3), project-driven L7
 # cross-repo check (O4), trove-location depends_on resolution (O5). Fixtures

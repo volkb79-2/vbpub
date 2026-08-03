@@ -139,6 +139,27 @@ class TestDescribe:
         p = root / "docs" / "archive" / "product-docs" / "GONE.md"
         assert doc_lifecycle.describe(p) == "archived document (lifecycle metadata unreadable)"
 
+    @pytest.mark.parametrize("status_line, why", [
+        ("", "no status key at all"),
+        ("status: retired\n", "a status outside the schema's two-value enum"),
+    ])
+    def test_parsable_frontmatter_with_an_unrecognized_status_is_still_described(
+            self, tmp_path, status_line, why):
+        """The third branch: frontmatter that PARSES but does not name a
+        status this function knows.
+
+        It is distinct from the unreadable case above -- there is metadata,
+        it is just not a lifecycle verdict -- and it must still return a
+        plain label rather than raising or inventing a successor. ARC1 is
+        what rejects such a document; `describe` only has to keep the lint
+        message it appears in printable, which is precisely why its failure
+        mode must be a string and never an exception."""
+        root = _project(tmp_path)
+        p = root / "docs" / "archive" / "product-docs" / "X.md"
+        p.parent.mkdir(parents=True)
+        p.write_text("---\nlifecycle: archived\n" + status_line + "---\n\n# archived\n")
+        assert doc_lifecycle.describe(p) == "archived document", why
+
 
 class TestValidateLifecycleFrontmatter:
     def test_valid_superseded_has_no_errors(self):

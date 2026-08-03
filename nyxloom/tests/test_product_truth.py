@@ -262,6 +262,139 @@ class TestDiscriminatesRealMismatch:
         assert {declared} != actual
 
 
+class TestUnavailableSourcesFailClosed:
+    """The other half of every reader: what it returns when the machine
+    source it needs is NOT THERE.
+
+    None of these paths is reachable from the real repo -- it has a compose
+    file, a trove config and a parsable roadmap -- so the RealRepo class
+    above can only ever exercise the happy branch of each reader. That is
+    why they went untested while the registry looked covered.
+
+    They matter because `None` is the value the real-repo assertions treat
+    as a hard failure (`assert actual is not None`). A reader that swallowed
+    a missing source into a plausible-looking string instead would turn the
+    whole standing check green on a tree where the fact cannot be
+    established at all -- the same unavailable-collapses-to-benign defect
+    the core-redesign plan is removing from the daemon's snapshot."""
+
+    def test_a_missing_doc_declares_nothing_rather_than_raising(self, tmp_path):
+        """`declared_value` on a path that does not exist. The registry names
+        a doc per fact; if that doc is deleted or renamed, the check must
+        report "not declared" (which fails) rather than raise, so ONE moved
+        file cannot take the whole gate down with an unrelated OSError."""
+        root = _minimal_project(tmp_path)
+        assert product_truth.declared_value(root, "README.md", "state_backend") is None
+
+    def test_no_compose_file_makes_the_deployment_facts_unavailable(self, tmp_path):
+        """Both compose-derived facts read through one loader, so a tree with
+        no nyxloomd/docker-compose.yml must report unavailable for both --
+        never "files" or "non-resident", which are real values an operator
+        would act on."""
+        bare = tmp_path / "bare"
+        (bare / "nyxloom-trove").mkdir(parents=True)
+        assert product_truth.actual_state_backend(bare) is None
+        assert product_truth.actual_daemon_mode(bare) is None
+
+    def test_a_compose_file_with_no_nyxloomd_service_is_also_unavailable(self, tmp_path):
+        """Present-but-irrelevant is not a reading either: a compose file
+        that defines only other services says nothing about the daemon."""
+        root = _minimal_project(tmp_path)
+        _write(root / "nyxloomd" / "docker-compose.yml", """\
+            services:
+              ntfy:
+                restart: always
+            """)
+        assert product_truth.actual_daemon_mode(root) is None
+        assert product_truth.actual_state_backend(root) is None
+
+    def test_no_config_file_at_all_makes_the_toml_facts_unavailable(self, tmp_path):
+        """`_load_toml` on a missing path. merge_mode has no default here on
+        purpose -- absent config must read as unavailable, not as whatever
+        ProjectConfig.load would have defaulted it to, or the check would
+        certify a default nobody wrote down."""
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        assert product_truth.actual_merge_mode(bare) is None
+        assert product_truth.actual_gate_ids(bare) == set()
+        assert product_truth.actual_trove_dirname(bare) is None
+
+    def test_a_legacy_layout_project_is_read_from_its_own_config(self, tmp_path):
+        """The `.nyxloom/project.toml` fallback in `_nyxloom_toml_path`.
+
+        A legacy-layout project has no nyxloom-trove/nyxloom.toml, and the
+        readers must follow it there rather than reporting every TOML-backed
+        fact unavailable -- otherwise the standing check is silently
+        inapplicable to exactly the projects most likely to have stale docs."""
+        legacy = tmp_path / "legacy"
+        _write(legacy / ".nyxloom" / "project.toml", """\
+            [project]
+            id = "demo"
+            default_branch = "main"
+            handoff_globs = ["handoff/*.md"]
+
+            [gates.tester-unified]
+            argv = ["true"]
+            phase = "implementation"
+            timeout_seconds = 60
+
+            [policy]
+            merge_mode = "manual"
+            """)
+        assert product_truth.actual_trove_dirname(legacy) == ".nyxloom"
+        assert product_truth.actual_merge_mode(legacy) == "manual"
+        assert product_truth.actual_gate_ids(legacy) == {"tester-unified"}
+
+    def test_an_absent_gate_marker_is_not_a_real_gate(self, tmp_path):
+        """`check_authoritative_gate` with no marker in STANDING.md. The
+        (None, False) pair is what makes the real-repo assertion fail: a
+        contract file that stopped declaring which gate is authoritative is
+        the STANDING.md defect this fact exists to catch, and deleting the
+        marker must not be a way to make the check pass."""
+        root = _minimal_project(tmp_path)
+        _write(root / "nyxloom-trove" / "STANDING.md", "no marker here\n")
+        assert product_truth.check_authoritative_gate(root) == (None, False)
+
+    def test_a_missing_roadmap_yields_no_milestone_set(self, tmp_path):
+        root = _minimal_project(tmp_path)
+        assert product_truth.actual_active_milestones(root, "nyxloom-trove/3-roadmap.md") is None
+
+    def test_an_unparsable_roadmap_yields_no_milestone_set_rather_than_an_empty_one(
+            self, tmp_path):
+        """The distinction that carries the safety: an EMPTY active set and
+        an UNREADABLE roadmap must not look alike.
+
+        `check_active_milestone`'s caller asserts `{declared} == actual`. If
+        a parse failure returned `set()`, a doc that declares M3 would just
+        mismatch -- fine. But `assert actual is not None` is what tells the
+        operator the roadmap is broken rather than the marker being stale,
+        and those are opposite repairs."""
+        root = _minimal_project(tmp_path)
+        _write(root / "nyxloom-trove" / "3-roadmap.md",
+               "---\nmilestones: [oh dear\n---\n\n<!-- product-truth:active_milestone=M3 -->\n")
+
+        declared, actual = product_truth.check_active_milestone(root)
+
+        assert declared == "M3"                  # the marker still reads
+        assert actual is None                    # ...but the truth does not
+        # And it is NOT the same as a roadmap that parses with nothing active.
+        _write(root / "nyxloom-trove" / "3-roadmap.md", """\
+            ---
+            kind: roadmap
+            schema_version: 1
+            milestones:
+            - id: M1
+              title: One
+              target_product_version: 1
+              features: []
+              status: done
+            ---
+
+            <!-- product-truth:active_milestone=M3 -->
+            """)
+        assert product_truth.check_active_milestone(root)[1] == set()
+
+
 class TestExtractMarker:
     """Pure regex extraction: absent marker -> None; present -> its value;
     a marker elsewhere in the text does not bleed into another key's value."""
