@@ -5453,15 +5453,6 @@ class Daemon:
         elif isinstance(action, reconcile.AdmitCarveProposal):
             events.extend(self._execute_admit_carve_proposal(project, cfg, states, action))
 
-        elif isinstance(action, reconcile.StartCarverSession):
-            events.extend(self._execute_start_carver_session(project, cfg, states, action))
-
-        elif isinstance(action, reconcile.ResumeCarverSession):
-            events.extend(self._execute_resume_carver_session(project, cfg, states, action))
-
-        elif isinstance(action, reconcile.CompactCarverSession):
-            events.extend(self._execute_compact_carver_session(project, cfg, states, action))
-
         # No `else` branch: an action with no owner never reaches here. The
         # registry refuses it at lookup (effects.UnownedAction), and only the
         # types registered as legacy are routed to this method at all.
