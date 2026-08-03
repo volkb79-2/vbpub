@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -379,6 +381,37 @@ class TestThePlan:
         with pytest.raises(containment.ContainmentUnavailable) as exc:
             self._plan(environ={})
         assert exc.value.reason == "no-image-configured"
+
+    def test_an_image_that_is_really_a_docker_flag_is_refused(self):
+        """CR-13a review. `containment_image` is the ONE route-declared value
+        that lands in `docker run`'s OPTION region instead of inside the
+        container -- `cli`, `dispatch_extra` and `resume` all become inner
+        argv and are contained by construction. Docker takes the LAST
+        occurrence of a repeated flag, so an image of `--user=0:0` reinstates
+        root in the mounted repository, defeating one of the five declared
+        properties. Verified against a real daemon before this guard existed.
+        """
+        for hostile in ("--user=0:0", "--privileged", "-v=/:/hostfs"):
+            with pytest.raises(containment.ContainmentUnavailable) as exc:
+                containment.plan_for(_route(containment_image=hostile),
+                                     worktree="/repo", repo_root="/repo",
+                                     environ={containment.IMAGE_ENV: "img:1"},
+                                     inside=False)
+            assert exc.value.reason == f"image-is-not-a-name:{hostile}"
+
+    def test_the_deployment_default_image_is_guarded_the_same_way(self):
+        with pytest.raises(containment.ContainmentUnavailable) as exc:
+            containment.plan_for(_route(), worktree="/repo", repo_root="/repo",
+                                 environ={containment.IMAGE_ENV: "--user=0:0"},
+                                 inside=False)
+        assert exc.value.reason == "image-is-not-a-name:--user=0:0"
+
+    def test_an_ordinary_image_name_is_untouched_by_the_guard(self):
+        plan = containment.plan_for(
+            _route(containment_image="ghcr.io/x/agent:1-rc.2"),
+            worktree="/repo", repo_root="/repo",
+            environ={containment.IMAGE_ENV: "img:1"}, inside=False)
+        assert plan.image == "ghcr.io/x/agent:1-rc.2"
 
     def test_a_launch_site_that_declares_no_repository_is_refused(self):
         """`repo_root=""` is "nobody said", not "nothing needed". Defaulting
@@ -756,3 +789,57 @@ class TestRealContainedLaunchThroughTheWrapper:
         assert receipt["blocked_reason"] == f"containment-unavailable:image-missing:{missing}"
         assert not (attempt_dir / "attempt.log").exists() or \
             "SHOULD-NOT-RUN" not in (attempt_dir / "attempt.log").read_text()
+
+
+@requires_docker
+class TestTheKillPathDoesNotLeakARunningAgent:
+    """CR-13a review. The kill path is the one place containment can be
+    STRICTLY WORSE than the uncontained launch it replaced, and both existing
+    tests for it substitute the runner -- they prove the wrapper CALLS
+    ``force_remove``, and that ``force_remove`` shells out, but neither
+    proves the premise (a SIGKILLed client really does leave the container
+    running) or the remedy (``docker rm -f`` really does reap it). Against a
+    real daemon, both.
+    """
+
+    def test_sigkilling_the_docker_client_really_does_orphan_the_container(self):
+        name = f"nyxloom-killpath-{uuid.uuid4().hex[:8]}"
+
+        def running() -> bool:
+            res = _run(["docker", "ps", "--filter", f"name={name}",
+                        "--format", "{{.Names}}"])
+            return name in res.stdout
+
+        client = subprocess.Popen(
+            ["docker", "run", "--rm", "--name", name, "--network", "bridge",
+             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+             "--user", f"{os.getuid()}:{os.getgid()}",
+             PROBE_IMAGE, "sleep", "120"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 60
+            while not running() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            assert running(), "the container never started; nothing below proves anything"
+
+            # Exactly what wrapper_main does when the grace period expires.
+            os.killpg(os.getpgid(client.pid), signal.SIGKILL)
+            client.wait(timeout=30)
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not running():
+                time.sleep(0.2)
+            assert running(), (
+                "PREMISE GONE: killing the docker client stopped the container "
+                "by itself, so the force_remove on the wrapper's kill path is "
+                "now dead code rather than the thing that prevents an orphan")
+
+            containment.force_remove(name)
+
+            deadline = time.monotonic() + 30
+            while running() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            assert not running(), "force_remove did not reap the orphaned container"
+        finally:
+            _run(["docker", "rm", "-f", name])

@@ -320,14 +320,45 @@ operator's home, and every registered repository. The shipped mechanism:
 
 **Scope, stated so it stays testable.** All of the above applies to every leg
 the daemon dispatches through the wrapper — implementer, resume, self-review,
-review, gate diagnosis, carve and carver. It does NOT apply to the four
-operator-initiated interactive surfaces that shell out directly
-(`intake_chat`, `decision_chat`, `onboarding_scan`,
-`onboarding_questionnaire`, each in their `_run_subprocess_turn`): those still
-inherit the full daemon environment and run uncontained. They are driven by a
-human command rather than by the autonomous loop and use the operator-trusted
-review route, which is why they are a gap rather than a hole — but they are a
-gap, and this paragraph exists so nobody reads the list above as covering them.
+review, gate diagnosis, carve and carver. Six other places execute a
+route-declared binary WITHOUT going through the wrapper, so no container is
+built for them. Enumerated, because a scope claim nobody can check is not a
+scope claim (CR-13a review — the original of this paragraph named four of the
+six):
+
+1–4. the operator-initiated interactive surfaces `intake_chat`,
+`decision_chat`, `onboarding_scan` and `onboarding_questionnaire`, each in
+their `_run_subprocess_turn`. **Uncontained and still inheriting the full
+daemon environment** — every route's keys, `AA_API_KEY`, both ntfy tokens, the
+docker socket, the operator's home and every registered repository. They are
+therefore now the MOST privileged agent execution in the system, which is a
+thing to say plainly rather than to leave as an inference from a scope note.
+
+Read "operator-initiated" precisely: it describes the REQUEST, not the
+process. 1 and 2 are reached from inside the daemon — `/api/intake/reply`,
+`/api/decision/reply`, and the ntfy command-listener thread — so the trigger
+is an authenticated message on a control ingress, not a human's shell. CR-15
+hardened that ingress; it did not change what the resulting process holds.
+The bound on this gap is therefore "you must already hold the control
+credential or the ntfy command token", which is a real bound and a much
+weaker one than containment. It is an open security gap with an owner
+(whichever package next touches these four call chains, which must give them
+a route and a repository root), not a closed scope decision.
+
+5. `adapters.probe` — the route's own `probe` argv, run **in the daemon
+process, on every reconcile pass, for every configured route**.
+
+6. `adapters.capture_session` for a route declaring `session_discover` — run
+on the HOST five seconds after launch, outside the container, *including for
+a contained leg*. Every route `free_models.py` generates declares one.
+
+5 and 6 remain uncontained, but as of the CR-13a review they no longer
+inherit: both build their environment with `containment.child_env(route)`, the
+same allowlist the dispatched leg gets. That closes the credential half — the
+part that made a free route's own binary a holder of the daemon's
+notification tokens — and leaves the namespace half open. Containerising them
+needs a repository root and a worktree at those call sites, which is CR-13b's
+work, not a line change here.
 
 Per-task resource and permission policy (CPU, memory, pids, wall-time, mounts
 and network as selector constraints) and a recorded containment identity are

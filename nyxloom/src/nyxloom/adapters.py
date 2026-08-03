@@ -125,7 +125,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import results
+from . import containment, results
 from .config import RouteDef
 from .log import get_logger
 from .types import Basis, Role, Usage
@@ -925,8 +925,15 @@ def probe(route: RouteDef) -> tuple[bool, str]:
     # P05a (§5): a provider call -> DEBUG.
     log.debug("probe", route=route.route_id, cli=route.cli)
     try:
+        # CR-13a review: the SAME allowlist the dispatched leg gets. This runs
+        # the route's own binary, in the DAEMON's process, on every pass -- and
+        # it is not reached through the wrapper, so containment.child_env is
+        # not applied to it by the launch path. Without this it was the one
+        # place a route-declared argv still saw the daemon's whole environment
+        # after CR-13a deleted the denylist. It cannot be more restrictive than
+        # the real dispatch, which already runs on exactly this environment.
         result = subprocess.run(probe_argv, capture_output=True, text=True,
-                              timeout=60)
+                              timeout=60, env=containment.child_env(route))
         if result.returncode == 0:
             return (True, "ok")
         else:
@@ -1007,8 +1014,16 @@ def capture_session(route: RouteDef, *, attempt_dir: Path, worktree: str,
         # Run session discovery command. P05a (§5): a provider call -> DEBUG.
         log.debug("session-discover", route=route.route_id, worktree=worktree)
         try:
+            # CR-13a review: the SAME allowlist the dispatched leg gets. The
+            # wrapper calls this five seconds after launching a CONTAINED leg,
+            # and it runs the route's own `session_discover` argv on the HOST,
+            # outside that container -- every generated free route declares one
+            # (free_models._render_route_block). Containment cannot reach this
+            # call, so the environment half is applied here directly rather
+            # than left inherited, which is what it was before this line.
             result = subprocess.run(route.session_discover, capture_output=True,
-                                  text=True, timeout=30)
+                                  text=True, timeout=30,
+                                  env=containment.child_env(route))
             if result.returncode != 0:
                 return None
 

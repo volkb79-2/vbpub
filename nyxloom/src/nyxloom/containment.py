@@ -40,12 +40,29 @@ A ``docker run`` of the route's image with:
   list is built from the declared repository and contains nothing else;
 * the declared repository bind-mounted at its OWN path (so a worktree path in
   a prompt, in ``spec.cwd``, and in the agent's git output all mean the same
-  thing on both sides of the boundary);
+  thing on both sides of the boundary). READ-WRITE, necessarily -- an agent
+  that cannot write its repository cannot work -- and that has one consequence
+  worth saying out loud for a SELF-HOSTING deployment: when the repository
+  being worked on is nyxloom's own, the mount contains the daemon's source and
+  ``nyxloomd/supervise.sh``, both of which the daemon later executes. The
+  network boundary below stops an agent reaching the control plane NOW; it does
+  not stop it writing code the control plane runs LATER. What stops that is
+  review and the merge gates, not this module, and no mount policy could
+  change it (symlinks out of the mount are NOT a way around this -- they
+  resolve in the container's own namespace, verified);
 * a network that is NOT the daemon's. Docker's inter-bridge isolation is what
   makes the control plane unreachable: the default bridge cannot route to a
   user-defined network, and ``nyxloomd``'s 8942 is published on no host port.
   ``--network none`` would be stronger still but would also cut the model
-  provider off, which is not a posture -- it is a non-functioning route;
+  provider off, which is not a posture -- it is a non-functioning route.
+  READ THAT CLAIM NARROWLY (CR-13a review, measured): it says the control
+  plane, not "isolated". A bridge network still routes to the host gateway,
+  so a contained leg reaches every port PUBLISHED on the host -- by any
+  container on the box, not only this product's -- and every other container
+  sharing the default bridge. What makes ``nyxloomd`` unreachable is that it
+  publishes nothing and sits on its own network; a deployment that publishes
+  the control plane on a host port loses this property and must set
+  :data:`NETWORK_ENV`. Egress policy as such is CR-13b, not here;
 * ``--cap-drop ALL``, ``--security-opt no-new-privileges``, and the daemon's
   own uid/gid (so work landing in the mounted repository is not root-owned);
 * environment by ALLOWLIST: the route's declared secret NAMES are forwarded
@@ -73,17 +90,27 @@ containment and the fail-closed launch gate over it, and nothing else.
 
 WHAT IS NOT COVERED
 -------------------
-The four operator-initiated interactive surfaces that shell out to a CLI
-directly rather than through the wrapper -- ``intake_chat``,
-``decision_chat``, ``onboarding_scan`` and ``onboarding_questionnaire``, each
-in their own ``_run_subprocess_turn``. They still inherit the daemon's whole
-environment and run uncontained. ``effects_dispatch.admissible`` already
-recorded that it does not reach them; this module does not either. They are
-driven by an explicit human command rather than by the autonomous loop, and
-they use the operator-trusted review route -- which is why this is a stated
-gap rather than a silent one. Closing it means giving those call sites a
-route and a repository root, which is a change to four call chains and
-belongs to whichever package next touches them.
+SIX call sites execute a route-declared binary without passing through the
+wrapper, so this module builds no container for any of them. ``docs/
+ARCHITECTURE.md`` §10 enumerates them; in short:
+
+* the four operator-initiated interactive surfaces (``intake_chat``,
+  ``decision_chat``, ``onboarding_scan``, ``onboarding_questionnaire``, each
+  in its own ``_run_subprocess_turn``) -- uncontained AND still inheriting the
+  daemon's whole environment. Driven by an explicit human command rather than
+  by the autonomous loop, on the operator-trusted review route, which is why
+  this is a stated gap rather than a silent one. Closing it means giving those
+  call sites a route and a repository root: four call chains, and it belongs
+  to whichever package next touches them;
+* ``adapters.probe`` (in the daemon, every pass, every route) and
+  ``adapters.capture_session``'s ``session_discover`` branch (on the host,
+  outside the container, even for a CONTAINED leg -- and every generated free
+  route declares one). Found by the CR-13a review, which could not containerize
+  them here for the same reason as above but DID apply :func:`child_env` to
+  both, so a route's own binary no longer holds credentials no route declared.
+
+The distinction that matters: "uncontained" and "inherits everything" are two
+different failures, and only the first is still true of these two.
 """
 
 from __future__ import annotations
@@ -348,6 +375,16 @@ def plan_for(route: Any, *, worktree: str, repo_root: str,
     image = image_for(route, src)
     if not image:
         raise ContainmentUnavailable("no-image-configured")
+    # CR-13a review: the image is the ONE route-declared value that lands in
+    # `docker run`'s OPTION region rather than inside the container. Everything
+    # else a route declares -- `cli`, `dispatch_extra`, `resume` -- becomes
+    # inner argv and is therefore contained by construction; an image beginning
+    # with `-` is parsed by docker as a FLAG, and a later flag overrides the
+    # earlier one, so `containment_image = "--user=0:0"` silently restores root
+    # in the mounted repository. Refused rather than escaped, because there is
+    # no legal image name of this shape and a caller that wants one is wrong.
+    if image.startswith("-"):
+        raise ContainmentUnavailable(f"image-is-not-a-name:{image}")
     if not repo_root:
         raise ContainmentUnavailable("no-repository-declared")
     root = os.path.normpath(repo_root)

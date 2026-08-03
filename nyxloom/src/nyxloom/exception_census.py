@@ -135,6 +135,18 @@ LEGACY_BUDGET: dict[str, int] = {
     # once. Retiring it means moving the handler out of the fork child, which
     # is a change to the detachment primitive and belongs to whichever
     # package next has a reason to touch it.
+    #
+    # CR-13a's REVIEW tried the obvious escape and MEASURED it failing, which
+    # is why this stays at 1 rather than being re-litigated a third time:
+    # extracting `run_reporting_crashes(spec_path) -> int` (handler inside,
+    # `os._exit` left at the call site) does make the handler an ordinary
+    # function body a test covers -- but it rewrites the grandchild's call
+    # site into ONE new line that is itself inside the fork and therefore
+    # still unmeasurable, and now CHANGED. Measured with docker hidden: that
+    # line, `os._exit(run_reporting_crashes(...))`, is reported uncovered by
+    # the diff-coverage gate. The extraction relocates the uncoverable line;
+    # it does not remove it. The only real exit is to stop forking here, and
+    # that is the detachment primitive's own redesign.
     "storage_sqlite.py": 3,
     "wrapper.py": 1,
     "migrate_store.py": 1,
