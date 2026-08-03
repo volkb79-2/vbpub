@@ -185,13 +185,43 @@ class TestDiscriminatesRealMismatch:
         assert declared2 != actual2
 
     def test_interpreter_mismatch_detected(self, tmp_path):
-        # Pure comparator check -- no file IO on the "actual" side by design
-        # (sys.version_info), so this proves the COMPARISON discriminates
-        # rather than a real doc read (which the real-repo test above covers).
-        actual = product_truth.actual_interpreter(tmp_path)
-        assert actual == product_truth.actual_interpreter(tmp_path)  # deterministic, no clock/env dependence
-        wrong_declared = "9.9"
-        assert wrong_declared != actual
+        """The interpreter's `actual` side reads sys.version_info, so the DOC
+        side is the one this drives -- through the same check_fact() the
+        real-repo test uses, not a bare literal comparison.
+
+        The original of this test asserted `"9.9" != actual_interpreter(...)`,
+        which is true for every interpreter that will ever run it: it could
+        not fail, so it certified nothing. Anti-pattern C in its own file
+        docstring -- a check nobody has seen fail is not known to check
+        anything -- and the one fact whose real-repo assertion is therefore
+        the only thing standing between a stale STANDING.md interpreter claim
+        and the factory. Drive both verdicts."""
+        root = _minimal_project(tmp_path)
+        fact = product_truth.ProductFact(
+            "interpreter", "nyxloom-trove/STANDING.md", "d", product_truth.actual_interpreter)
+        running = product_truth.actual_interpreter(root)
+
+        # Agreeing declaration -> the check passes...
+        _write(root / "nyxloom-trove" / "STANDING.md",
+               f"<!-- product-truth:interpreter={running} -->\n")
+        declared, actual = product_truth.check_fact(root, fact)
+        assert declared == actual == running
+
+        # ...and a stale one -- exactly STANDING.md's real 2026-08-02 defect,
+        # where it named an interpreter version that was not the one running
+        # -- must flip it to a mismatch.
+        stale = "3.13" if running != "3.13" else "3.12"
+        _write(root / "nyxloom-trove" / "STANDING.md",
+               f"<!-- product-truth:interpreter={stale} -->\n")
+        declared2, actual2 = product_truth.check_fact(root, fact)
+        assert declared2 == stale
+        assert actual2 == running
+        assert declared2 != actual2
+
+        # A doc with no marker at all is a mismatch too, not a silent pass:
+        # the real-repo assertion fails closed on `declared is None`.
+        _write(root / "nyxloom-trove" / "STANDING.md", "no marker here\n")
+        assert product_truth.check_fact(root, fact)[0] is None
 
     def test_authoritative_gate_rejects_unknown_gate_id(self, tmp_path):
         root = _minimal_project(tmp_path)

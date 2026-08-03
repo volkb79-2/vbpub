@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -152,7 +153,7 @@ class ProductFact:
     key: str
     doc_relpath: str
     description: str
-    actual: "callable"
+    actual: Callable[[Path], str | None]
 
 
 FACT_REGISTRY: tuple[ProductFact, ...] = (
