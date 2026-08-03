@@ -16,7 +16,9 @@ import urllib.request
 import pytest
 import structlog.contextvars
 
-from nyxloom import config, daemon, findings, intake_chat, lint, log, paths, reconcile, render
+from nyxloom import (
+    config, control_auth, daemon, findings, intake_chat, lint, log, paths, reconcile, render,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +33,19 @@ def _silence_nyxloom_logging():
     for handler in list(nyxloom_logger.handlers):
         nyxloom_logger.removeHandler(handler)
         handler.close()
+
+
+# --------------------------------------------------------------------------
+# local helpers (never added to conftest.py)
+
+def _control_headers() -> dict[str, str]:
+    """CR-15: every mutating POST on this surface needs the operator
+    credential. `ensure()` rather than `load()` so the helper works whether or
+    not a daemon fixture has already bootstrapped the store -- both resolve
+    the same file under the test's isolated NYXLOOM_STATE."""
+    store = control_auth.CredentialStore(paths.daemon_dir())
+    return {"Content-Type": "application/json",
+            **control_auth.authorization_header(store.ensure())}
 
 
 # --------------------------------------------------------------------------
@@ -128,7 +143,7 @@ def test_post_intake_advances_turn_and_echoes_reply(http_daemon, monkeypatch):
 
     body = json.dumps({"project": "demo", "text": "add a dark mode toggle"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/intake", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     resp = urllib.request.urlopen(req, timeout=5)
     assert resp.status == 200
     data = json.loads(resp.read())
@@ -146,7 +161,7 @@ def test_post_intake_advances_turn_and_echoes_reply(http_daemon, monkeypatch):
     body2 = json.dumps({"project": "demo", "intake_id": intake_id,
                          "text": "priority: high"}).encode("utf-8")
     req2 = urllib.request.Request(f"{base}/api/intake", data=body2,
-                                   headers={"Content-Type": "application/json"}, method="POST")
+                                   headers=_control_headers(), method="POST")
     resp2 = urllib.request.urlopen(req2, timeout=5)
     assert resp2.status == 200
     assert calls[1] == ("demo", intake_id, "priority: high")
@@ -158,7 +173,7 @@ def test_post_intake_unknown_project_404(http_daemon, monkeypatch):
     base = f"http://127.0.0.1:{http_daemon.http_port}"
     body = json.dumps({"project": "no-such-project", "text": "hi"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/intake", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 404
@@ -170,7 +185,7 @@ def test_post_intake_missing_text_400(http_daemon, monkeypatch):
     base = f"http://127.0.0.1:{http_daemon.http_port}"
     body = json.dumps({"project": "demo"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/intake", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 400
@@ -194,7 +209,7 @@ def test_post_intake_rejects_unminted_intake_id(http_daemon, monkeypatch, bad_id
     base = f"http://127.0.0.1:{http_daemon.http_port}"
     body = json.dumps({"project": "demo", "intake_id": bad_id, "text": "hi"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/intake", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 400
@@ -234,7 +249,7 @@ def test_promote_advances_intake_seeded_from_finding(http_daemon, monkeypatch):
     body = json.dumps({"project": "demo",
                        "finding_id": finding_id}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     resp = urllib.request.urlopen(req, timeout=5)
     assert resp.status == 200
     data = json.loads(resp.read())
@@ -257,7 +272,7 @@ def test_promote_unknown_project_404(http_daemon, monkeypatch):
     body = json.dumps({"project": "no-such-project",
                        "finding_id": "F-x-1"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 404
@@ -272,7 +287,7 @@ def test_promote_missing_finding_id_400(http_daemon, monkeypatch):
     base = f"http://127.0.0.1:{http_daemon.http_port}"
     body = json.dumps({"project": "demo"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 400
@@ -288,7 +303,7 @@ def test_promote_unknown_finding_id_404(http_daemon, monkeypatch):
     body = json.dumps({"project": "demo",
                        "finding_id": "F-demo-no-such"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 404
@@ -315,7 +330,7 @@ def test_promote_advance_intake_raises_500(http_daemon, monkeypatch):
     body = json.dumps({"project": "demo",
                        "finding_id": finding_id}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 500
@@ -334,7 +349,7 @@ def test_promote_config_load_raises_404(http_daemon, monkeypatch):
     body = json.dumps({"project": "demo",
                        "finding_id": finding_id}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/finding/promote", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 404

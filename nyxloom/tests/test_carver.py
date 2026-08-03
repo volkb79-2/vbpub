@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import daemon, lint, paths, reconcile, storage
+from nyxloom import control_auth, daemon, lint, paths, reconcile, storage
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, EventType, Receipt,
     ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
@@ -514,11 +514,17 @@ def cfg_daemon(tmp_state, sample_project, monkeypatch):
         assert not t.is_alive(), "cfg_daemon fixture's daemon thread outlived teardown and may pollute global logging"
 
 
+def _operator() -> control_auth.OperatorCredential:
+    """CR-15: the daemon's own credential store, bootstrapped by _start_http."""
+    return control_auth.CredentialStore(paths.daemon_dir()).ensure()
+
+
 def _post(base: str, path: str, body: dict) -> tuple[int, dict]:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{base}{path}", data=data, method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 **control_auth.authorization_header(_operator())},
     )
     try:
         resp = urllib.request.urlopen(req, timeout=5)
@@ -544,7 +550,8 @@ def test_post_carve_authority_updates_project_toml_and_emits_config_changed(
     assert changed[0].payload == {
         "scope": "policy", "key": "carve_authority", "old": "branch", "new": "main"}
     assert changed[0].actor.kind is ActorKind.OPERATOR
-    assert changed[0].actor.id == "ui"
+    # CR-15: a named operator, no longer the interface name "ui".
+    assert changed[0].actor.id == _operator().operator_id
 
 
 def test_post_carve_authority_rejects_unknown_value_no_write_no_event(

@@ -57,6 +57,26 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               project at the SP03 cutover (not here).
   daemon [--foreground]       Daemon(registry).run() (foreground only in
                               the pilot; systemd/tmux owns daemonization).
+  auth show                   Explicitly print the current HTTP operator
+                              identity and credential from daemon instance
+                              state (never from project config). Exit 1 with
+                              the reason if the store is not trustworthy.
+  auth bootstrap [--operator ID]
+                              Create the 0600 credential store if absent and
+                              print the credential for first dashboard use.
+  auth rotate [--operator ID] [--force]
+                              Atomically issue a new credential. The daemon
+                              reads the store per request, so the old value is
+                              invalid immediately without restart. --force
+                              recovers a store the loader refuses (mode,
+                              owner, corruption) and restarts generation at 1.
+                              Audit trail: nyxloom events _nyxloom-control
+                              NB: this credential governs the HTTP control
+                              plane only. The ntfy feedback topic is a
+                              separate ingress with no verifiable sender, so
+                              its mutating verbs are refused unless the
+                              deployment sets NYXLOOM_CHANNEL_OPERATOR_ID --
+                              see control_auth.channel_operator.
   tick [--project X]          daemon.run_once — one pass, prints action
                               count. THE debug/fallback mode.
   decide <project> <D-id> --choose TEXT [--note TEXT]
@@ -1781,6 +1801,70 @@ def cmd_version(args) -> int:
     return 0
 
 
+def _print_operator_credential(record) -> None:
+    """THE intentional secret-retrieval surface. Printed to stdout only -- the
+    value is never passed to log.*, never written to an event payload, and
+    never rendered into a dashboard page (render.py's dashboard prompts for it
+    at runtime instead). It does land in this terminal's scrollback, so prefer
+    piping it where it is needed over re-running this by hand."""
+    print(f"operator: {record.operator_id}")
+    print(f"generation: {record.generation}")
+    print(f"credential: {record.credential}")
+    print(f"header: Authorization: Bearer {record.credential}")
+
+
+def cmd_auth(args) -> int:
+    """Bootstrap, show, or atomically rotate the HTTP operator credential.
+
+    A store this loader refuses (wrong mode, foreign owner, truncated write)
+    makes the daemon refuse every mutation, so `show`/`rotate` report the
+    reason on stderr and exit 1 rather than raising -- and `rotate --force`
+    is the documented way back, since an unreadable store cannot carry its
+    identity or generation forward.
+
+    Refusals and rotations are auditable with
+    `nyxloom events _nyxloom-control`."""
+    from . import control_auth, paths, storage
+    from .types import EventType
+
+    store = control_auth.CredentialStore(paths.daemon_dir())
+    try:
+        if args.auth_cmd == "bootstrap":
+            _print_operator_credential(store.ensure(args.operator))
+            return 0
+        if args.auth_cmd == "show":
+            _print_operator_credential(store.load())
+            return 0
+        # `main` dispatches here ONLY for show/bootstrap/rotate (anything else
+        # prints usage and exits 2 there), so rotate is the remaining case. An
+        # `else: return 2` stood here and was deleted rather than tested: it was
+        # unreachable through every entry point, and an unreachable line is a
+        # line no test can honestly cover.
+        record = store.rotate(args.operator, force=args.force)
+    except control_auth.CredentialStoreError as exc:
+        print(f"error: {exc} ({store.path})", file=sys.stderr)
+        if args.auth_cmd == "rotate":
+            print("hint: `nyxloom auth rotate --force` replaces an unreadable "
+                  "store with a fresh credential", file=sys.stderr)
+        return 1
+
+    # Print BEFORE auditing: the credential has already been replaced on disk,
+    # so an unavailable event store must not cost the operator the only copy
+    # of the value that now works.
+    _print_operator_credential(record)
+    try:
+        storage.append_event(
+            control_auth.CONTROL_LEDGER_PROJECT, actor=record.actor,
+            type=EventType.CONTROL_CREDENTIAL_ROTATED,
+            payload={"generation": record.generation, "forced": bool(args.force)},
+        )
+    except Exception as exc:
+        print(f"warning: rotation succeeded but could not be audited: {exc!r}",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _bootstrap_logging()
     parser = argparse.ArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
@@ -1834,6 +1918,18 @@ def main(argv: list[str] | None = None) -> int:
     # daemon
     daemon_parser = subparsers.add_parser("daemon")
     daemon_parser.add_argument("--foreground", action="store_true", help="Foreground mode")
+
+    # control-plane operator credential
+    auth_parser = subparsers.add_parser("auth")
+    auth_subs = auth_parser.add_subparsers(dest="auth_cmd")
+    auth_subs.add_parser("show")
+    auth_bootstrap = auth_subs.add_parser("bootstrap")
+    auth_bootstrap.add_argument("--operator", help="Named operator identity")
+    auth_rotate = auth_subs.add_parser("rotate")
+    auth_rotate.add_argument("--operator", help="New named operator identity")
+    auth_rotate.add_argument(
+        "--force", action="store_true",
+        help="Replace a store this loader refuses (resets generation to 1)")
 
     # tick
     tick_parser = subparsers.add_parser("tick")
@@ -2038,6 +2134,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_migrate_store(args)
         elif args.cmd == "daemon":
             return cmd_daemon(args)
+        elif args.cmd == "auth":
+            if args.auth_cmd in {"show", "bootstrap", "rotate"}:
+                return cmd_auth(args)
+            parser.print_help(sys.stderr)
+            return 2
         elif args.cmd == "tick":
             return cmd_tick(args)
         elif args.cmd == "decide":

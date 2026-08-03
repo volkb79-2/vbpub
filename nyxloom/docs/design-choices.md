@@ -74,7 +74,37 @@ like a nicely readable table-formatted log with filter/highlight/context." Insta
 
 ---
 
-## Control-plane authentication: keep the private-bridge trust model (2026-07-21)
+## Control-plane authentication: keep the private-bridge trust model (2026-07-21) — SUPERSEDED 2026-08-03
+
+> **Superseded by CR-15 (2026-08-03).** The revisit trigger below fired and was then missed
+> for eleven days: P38 (2026-07-22) set `NYXLOOM_HTTP_BIND: "0.0.0.0"` in
+> `nyxloomd/docker-compose.yml`, so the control plane WAS bound to a network-reachable
+> interface — every container on `nyxloomd-net`, the devcontainer included by design, held
+> full control authority, and `POST /api/decision/reply` is the mechanism the product's
+> central promise ("the human owns direction") runs on. The 2026-08-02 deep-review
+> amendment filed that as RISK-005 [P0]; CR-15 implements it: every mutating POST requires
+> an operator credential (`src/nyxloom/control_auth.py`, `Authorization: Bearer <secret>`)
+> whose named identity becomes the `Actor` of the resulting events, refusals are audited,
+> and GETs stay open so the dashboard remains readable on a trusted network.
+>
+> **The HTTP surface was not the only ingress.** The ntfy feedback topic mutates the same
+> invariants — `pause`/`resume` chat-ops, `decide D-NNN <choice>`, and every decision-chat
+> turn — and it authenticates nothing: `NTFY_CMD_TOKEN` is the daemon's own *read*
+> credential for subscribing, ntfy exposes no sender identity at all, and the actors it
+> recorded (`ntfy-cmd`, `feedback-chat`) were transport names, the same non-identity as
+> `ui`. Authenticating one door and leaving the other open would have been theatre, so
+> CR-15 closes that ingress by default: its mutating routes refuse with a fixed reply, write
+> nothing, and audit one refusal, unless the deployment sets
+> `NYXLOOM_CHANNEL_OPERATOR_ID` to name the operator its topic's write ACL belongs to.
+> That variable is an *assertion by the deployment*, not authentication, and it is
+> documented as such — nyxloom cannot verify a topic ACL, it can only record whether the
+> claim was made and attribute the resulting events to the named human. Read verbs
+> (`help`/`status`/`digest`) stay open, mirroring the HTTP read/write split.
+>
+> **The standing lesson is about the mechanism, not the verdict:** a "revisit trigger"
+> phrased as a condition a human is supposed to notice ("the startup warning fires") is not
+> a trigger. It fired into a log nobody read. The record below is kept verbatim as the
+> reasoning that was correct for its deployment and wrong for the next one.
 
 nyxloom's HTTP control plane (`POST /api/config/*` — pause/resume, edit policy, answer
 decisions) is **unauthenticated**. **Decision (operator, 2026-07-21): keep it as-is, documented.**

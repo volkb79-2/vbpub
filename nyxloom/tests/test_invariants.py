@@ -624,6 +624,13 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.DAEMON_STOPPED,
     EventType.TICK_ERROR,
     EventType.CONFIG_CHANGED,
+    # CR-15: security/control-plane audit markers are deliberately outside
+    # the task projection.  Consumers query them from the event ledger.
+    EventType.CONTROL_MUTATION_REFUSED,
+    EventType.CONTROL_CREDENTIAL_ROTATED,
+    EventType.DECISION_REPLY_RECORDED,
+    EventType.INTAKE_REPLY_RECORDED,
+    EventType.FINDING_PROMOTED,
     # F018 P1 2026-07-24 (plan-long-running-carver.md §2.2): audit-only carver
     # session events — no TaskStateFile projection. Consumed by the pure
     # carver_session.project_session projector, never by storage.apply_event.

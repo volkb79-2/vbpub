@@ -9,6 +9,14 @@ must be explicit while the control plane is decomposed.
 Snapshot: `8578cbfa`, measured with `wc -l` in this checkout. Sizes are signals
 for review allocation, not estimates of difficulty and not proof of coupling.
 
+Re-measured 2026-08-03 (CR-15 review) for the three rows CR-15 moved past the
+size tolerance, plus the one module it ADDED to the control-plane import
+closure. `control_auth.py` was missing entirely: CR-15 imported a new module
+into `daemon.py` without declaring an owner, which is exactly the omission rule
+2 exists to catch, and the closure test had been failing on that branch since
+the module landed. The rest of the table is unchanged and unre-measured, which
+is the point of a tolerance.
+
 ## Mechanical contract (enforced by `tests/test_core_characterization.py`)
 
 This document is checked by tests, so a reader editing it knows what fails and
@@ -68,7 +76,8 @@ so each needs a named owner before that plane is rewritten around it.
 | `src/nyxloom/decisions.py` | 415 | CR-09, CR-11: `decisions_open` is a planner input; the open/resolved projection must survive the store rewrite unchanged |
 | `src/nyxloom/intake_chat.py` | 423 | CR-01: intake writes handoff documents; document authority rules apply to what it produces |
 | `src/nyxloom/gate_canary.py` | 402 | CR-02, CR-12: a gate that cannot be proven to reject is an advisory input, never authoritative evidence |
-| `src/nyxloom/commands.py` | 387 | CR-05, CR-16: operator chat-ops are effects; they must route through the same effect boundary and health alarm |
+| `src/nyxloom/control_auth.py` | 469 | CR-15: the control plane's trust root. Owns the credential store, the operator identity that becomes an event `Actor`, the shared audited-refusal helper, and the notification channel's closed-by-default posture. CR-05 may move the handlers that call it; the auth-before-body/target boundary and the single refusal shape move with them, never around them |
+| `src/nyxloom/commands.py` | 451 | CR-05, CR-16: operator chat-ops are effects; they must route through the same effect boundary and health alarm. CR-15 (2026-08-03) made its mutating verbs an authenticated ingress: they resolve a named channel operator before any project lookup and refuse otherwise |
 | `src/nyxloom/log.py` | 372 | CR-14: structured logging is the trace substrate. Reserved-key traps (`event=`, `level=`) are documented in `nyxloom-trove/DOCTRINE.md`; renaming a field is a behavioural change |
 | `src/nyxloom/backlog_items.py` | 324 | CR-12: auto-tick on merge is product evidence; it must read the typed merge record, not re-parse markdown |
 | `src/nyxloom/carver_session.py` | 291 | CR-06, CR-07: the carver session projector is planner input; keep it pure when the planner is rewritten |
@@ -91,7 +100,8 @@ so each needs a named owner before that plane is rewritten around it.
 | `tests/test_stages.py` | 313 | Registry/closure invariants for the stage menu CR-07 replaces | Structure mirror of a mechanism being replaced. Its closure invariants (no dead-end, single ownership, terminal reachable) must be re-expressed against the compiled workflow IR before the menu is deleted; the file itself retires with the menu, named in the CR-07 report. |
 | `tests/test_types.py` | 187 | Transition-graph and serde invariants | Behavior oracle. The lifecycle/node split (CR-07) may move members, never delete a proven invariant: every transition legality and serde round-trip assertion migrates with the type it covers. |
 | `tests/test_carver_session.py` | 464 | Session projector behaviour | Behavior oracle. The projector must stay pure through CR-06; these tests move with it and are not rewritten to match a new planner shape. |
-| `tests/test_commands.py` | 693 | Operator chat-ops surface | Behavior oracle for the operator contract. CR-05 may re-route the effects underneath; the observable command-to-effect mapping asserted here must survive unchanged. |
+| `tests/test_control_auth.py` | 1,722 | Control-plane trust boundary: credential store, auth-before-body/target ordering, refusal indistinguishability, request framing, and the structural route census | Behavior oracle, kept whole. CR-05 moves the handlers, not the boundary: its route census and auth-ordering tests read `daemon.py` with `ast`, so they must be re-pointed at the new registry and keep their verdicts. No assertion here retires because a handler moved; one may only be amended with the reviewed evidence that the property it names still holds somewhere. |
+| `tests/test_commands.py` | 843 | Operator chat-ops surface | Behavior oracle for the operator contract. CR-05 may re-route the effects underneath; the observable command-to-effect mapping asserted here must survive unchanged — including CR-15's closed-by-default mutating verbs and their audited refusals. |
 | `tests/test_frontmatter.py` | 453 | Handoff parse/serde boundary | Behavior oracle. CR-07 extends the schema; every existing parse/reject assertion keeps its verdict, and new workflow fields are additive. |
 | `tests/test_leases.py` | 179 | Lease acquire/release semantics | Behavior oracle. CR-05 injects leases as a port; capacity and race semantics asserted here are the port's contract. |
 | `tests/test_core_characterization.py` | new | Cross-package semantic corpus | Keep through the entire program. New implementations must preserve active cases or explicitly amend them with reviewed evidence. |

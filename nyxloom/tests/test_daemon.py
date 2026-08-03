@@ -28,8 +28,8 @@ import pytest
 from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
-    adapters, carver_session, cli, daemon, decision_chat, decisions, doctor, lint, log,
-    notify, paths, reconcile, render, storage, wrapper,
+    adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
+    lint, log, notify, paths, reconcile, render, storage, wrapper,
 )
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
@@ -39,6 +39,16 @@ from nyxloom.types import (
 
 # --------------------------------------------------------------------------
 # local helpers / fixtures (never added to conftest.py)
+
+def _control_headers() -> dict[str, str]:
+    """CR-15: every mutating POST on this surface needs the operator
+    credential. `ensure()` rather than `load()` so the helper works whether or
+    not a daemon fixture has already bootstrapped the store -- both resolve
+    the same file under the test's isolated NYXLOOM_STATE."""
+    store = control_auth.CredentialStore(paths.daemon_dir())
+    return {"Content-Type": "application/json",
+            **control_auth.authorization_header(store.ensure())}
+
 
 MUTEX_HANDOFF = """\
 ---
@@ -3239,13 +3249,19 @@ def _write_raw_log_lines(records: list[dict]) -> None:
             fh.write(json.dumps(r) + "\n")
 
 
-def test_nonloopback_bind_prints_unauthenticated_notice(
+def test_nonloopback_bind_warns_about_the_open_read_surface(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """2026-07-20: a non-loopback bind states the security assumption out loud
-    at startup -- the control plane is unauthenticated, only safe on a private
-    unpublished network. 2026-07-21 (P01): the notice is now a structured
-    `log.warning` record (read back from the JSONL file) rather than a raw
-    stderr print."""
+    at startup. 2026-07-21 (P01): as a structured `log.warning` record rather
+    than a raw stderr print.
+
+    CR-15 2026-08-02 changes WHAT is true, so it changes what this asserts.
+    The warning used to say the control plane was UNAUTHENTICATED; mutations
+    now require an operator credential, so that word would be a false claim --
+    and the review amendment's rule is that a statement about the trust
+    boundary is testable or absent. The remaining, true exposure is the READ
+    surface (every GET is open by design), so the warning must name that and
+    must not resurrect the stale claim."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
@@ -3256,22 +3272,35 @@ def test_nonloopback_bind_prints_unauthenticated_notice(
     # from inside its own thread (daemon.py: log_module.configure(paths.logs_dir()),
     # which removes+closes ALL handlers). Under -n4 full-suite load a
     # concurrent/leaked daemon thread's configure() closes the file handler
-    # BETWEEN this daemon's "daemon started" info write and its UNAUTHENTICATED
+    # BETWEEN this daemon's "daemon started" info write and its non-loopback
     # warning write, so the warning record is emitted but silently dropped to a
     # closed handler. Instrumentation confirmed it precisely: the daemon CALLED
     # log.warning(..., http_bind="0.0.0.0") once, yet that record reached NO file
     # anywhere on disk (green in isolation, red under load). Proving the log
     # module persists a record to file end-to-end is test_log.py's job; THIS
-    # daemon test's contract is only "a non-loopback bind EMITS the
-    # UNAUTHENTICATED warning", so capture the emission at daemon.log.warning --
+    # daemon test's contract is only "a non-loopback bind EMITS the exposure
+    # warning", so capture the emission at daemon.log.warning --
     # immune to the global-logger/file race (same de-flake shape as B25: assert
     # through a deterministic in-process seam, not a race-prone shared resource).
     emitted: list[tuple[str, dict]] = []
     _real_log = daemon.log
+    # CR-15 review: the capture SETS this the instant the notice is emitted, so
+    # the test blocks on a real synchronization point instead of polling a
+    # wall-clock deadline. The previous `deadline = monotonic() + 5` loop made
+    # a slow or loaded host decide the verdict -- exactly the L20 anti-pattern
+    # STANDING.md forbids. The wait's timeout is a generous hang failsafe: the
+    # assertion below is on the captured record, not on how long it took.
+    notice_seen = threading.Event()
+
+    def _bind_notices() -> list[tuple[str, dict]]:
+        return [(m, kw) for m, kw in emitted
+                if kw.get("http_bind") == "0.0.0.0" and "non-loopback" in m]
 
     class _CapturingLog:
         def warning(self, msg, **kw):
             emitted.append((msg, dict(kw)))
+            if _bind_notices():
+                notice_seen.set()
             return _real_log.warning(msg, **kw)
 
         def __getattr__(self, name):
@@ -3284,20 +3313,25 @@ def test_nonloopback_bind_prints_unauthenticated_notice(
     t.start()
 
     def _notice_emitted() -> bool:
-        return any("UNAUTHENTICATED" in m and kw.get("http_bind") == "0.0.0.0"
-                   for m, kw in emitted)
+        return bool(_bind_notices())
 
-    deadline = time.monotonic() + 5
-    while not _notice_emitted() and time.monotonic() < deadline:
-        time.sleep(0.02)
+    notice_seen.wait(timeout=60)
     d.stop()
-    t.join(timeout=5)
+    t.join(timeout=60)
     assert not t.is_alive(), "daemon thread outlived the test and may pollute global logging"
 
     assert _notice_emitted(), (
-        "expected the daemon to emit an UNAUTHENTICATED http_bind=0.0.0.0 warning "
+        "expected the daemon to emit a non-loopback http_bind=0.0.0.0 warning "
         f"on a non-loopback bind; captured warnings: {emitted}"
     )
+    message, fields = _bind_notices()[0]
+    assert fields["http_port"] == d.http_port
+    # It names the exposure that is REAL after CR-15: the read surface.
+    assert "read" in message.lower()
+    # And it does not re-assert the posture CR-15 removed. A future edit that
+    # reintroduces "unauthenticated" here would be describing a system that no
+    # longer exists -- exactly the contradiction the amendment called out.
+    assert "unauthenticated" not in message.lower()
 
 
 def test_loopback_bind_prints_no_notice_THE_NEGATIVE(
@@ -3544,8 +3578,11 @@ def test_decision_reply_endpoint(http_daemon, sample_project, monkeypatch):
 
     calls = []
 
-    def fake_advance_chat(cfg, project, decision_id, text):
-        calls.append((project, decision_id, text))
+    def fake_advance_chat(cfg, project, decision_id, text, actor=None):
+        # CR-15: the endpoint threads the AUTHENTICATED operator through to
+        # the chat bridge, so the stub must accept it -- and record it, since
+        # "who answered this decision" is the invariant the package exists for.
+        calls.append((project, decision_id, text, actor))
         return "ok"
 
     monkeypatch.setattr(decision_chat, "advance_chat", fake_advance_chat)
@@ -3554,20 +3591,22 @@ def test_decision_reply_endpoint(http_daemon, sample_project, monkeypatch):
 
     body = json.dumps({"decision_id": "D-050", "text": "go ahead"}).encode("utf-8")
     req = urllib.request.Request(f"{base}/api/decision/reply", data=body,
-                                  headers={"Content-Type": "application/json"}, method="POST")
+                                  headers=_control_headers(), method="POST")
     resp = urllib.request.urlopen(req, timeout=5)
     assert resp.status == 200
-    assert calls == [("demo", "D-050", "go ahead")]
+    operator = control_auth.CredentialStore(paths.daemon_dir()).load()
+    assert calls == [("demo", "D-050", "go ahead",
+                      Actor(ActorKind.OPERATOR, operator.operator_id))]
 
     unknown_body = json.dumps({"decision_id": "D-999", "text": "hi"}).encode("utf-8")
     req2 = urllib.request.Request(f"{base}/api/decision/reply", data=unknown_body,
-                                   headers={"Content-Type": "application/json"}, method="POST")
+                                   headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req2, timeout=5)
     assert exc.value.code == 404
 
     req3 = urllib.request.Request(f"{base}/api/decision/reply", data=b"{}",
-                                   headers={"Content-Type": "application/json"}, method="POST")
+                                   headers=_control_headers(), method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc3:
         urllib.request.urlopen(req3, timeout=5)
     assert exc3.value.code == 400
@@ -4552,7 +4591,7 @@ def test_log_level_post_flips_live_no_restart_and_persists(http_daemon, tmp_stat
     req = urllib.request.Request(
         f"{base}/api/config/log-level",
         data=json.dumps({"level": "DEBUG"}).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json"},
+        method="POST", headers=_control_headers(),
     )
     resp = urllib.request.urlopen(req, timeout=5)
     assert resp.status == 200
@@ -4583,7 +4622,7 @@ def test_log_level_post_invalid_level_400_unchanged(http_daemon, tmp_state, monk
     req = urllib.request.Request(
         f"{base}/api/config/log-level",
         data=json.dumps({"level": "not-a-real-level"}).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json"},
+        method="POST", headers=_control_headers(),
     )
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req, timeout=5)
@@ -4602,7 +4641,7 @@ def test_log_level_post_missing_level_400(http_daemon):
     req = urllib.request.Request(
         f"{base}/api/config/log-level",
         data=json.dumps({}).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json"},
+        method="POST", headers=_control_headers(),
     )
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req, timeout=5)
@@ -4622,7 +4661,7 @@ def test_log_level_get_reports_effective_level_and_source(http_daemon, monkeypat
     req = urllib.request.Request(
         f"{base}/api/config/log-level",
         data=json.dumps({"level": "warning"}).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json"},
+        method="POST", headers=_control_headers(),
     )
     urllib.request.urlopen(req, timeout=5)
 
@@ -4655,7 +4694,7 @@ def test_log_level_post_emits_log_not_domain_event(http_daemon, tmp_state):
     req = urllib.request.Request(
         f"{base}/api/config/log-level",
         data=json.dumps({"level": "warning"}).encode("utf-8"),
-        method="POST", headers={"Content-Type": "application/json"},
+        method="POST", headers=_control_headers(),
     )
     resp = urllib.request.urlopen(req, timeout=5)
     assert resp.status == 200

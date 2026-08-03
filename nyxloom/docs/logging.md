@@ -164,11 +164,19 @@ channel only (never mutates the stdlib root — test-isolation safe).
 Flip live with no restart:
 
 ```bash
-curl -X POST http://<daemon>/api/config/log-level -d '{"level":"debug"}'
+# CR-15 (2026-08-03): mutating POSTs need the operator credential AND an
+# explicit JSON content type (curl -d would otherwise send urlencoded, which
+# the CSRF guard refuses). Reads need neither.
+CRED=$(nyxloom auth show | sed -n 's/^credential: //p')
+curl -X POST http://<daemon>/api/config/log-level \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $CRED" \
+  -d '{"level":"debug"}'
 curl http://<daemon>/api/logs/level        # -> {"level":"debug","source":"runtime"}
 ```
 
-A level change emits an INFO **log** and **no domain event** (D-L4).
+A level change emits an INFO **log** and no **project** domain event (D-L4). CR-15 adds one
+`CONFIG_CHANGED` record naming the operator to the instance control ledger
+(`nyxloom events _nyxloom-control`); no project's replayable history is touched.
 
 ---
 
@@ -237,10 +245,14 @@ Features:
 | `GET /api/logs/export?…` | JSONL download of the filtered set. |
 | `GET /api/logs/level` · `POST /api/config/log-level` | read / set the effective level (§5). |
 
-**Trust model:** the whole HTTP surface is unauthenticated and loopback-by-
-default (the http_bind decision). The log endpoints are read-only and inherit
-that model; secrets are kept out of records at write-time (a P05b oracle), so
-there is no read-time redaction.
+**Trust model (revised by CR-15, 2026-08-03):** the READ half of the HTTP
+surface — including every log endpoint here — is unauthenticated and
+loopback-by-default (the http_bind decision), so a trusted network can serve
+the dashboard. `POST /api/config/log-level`, like every other mutating POST,
+requires the operator credential (`nyxloom auth show`) and records who made
+the change. Secrets are kept out of records at write-time (a P05b oracle), so
+there is no read-time redaction — and the operator credential itself is never
+written to a log record or an event payload.
 
 ---
 
