@@ -215,7 +215,7 @@ def path_classes(path: str) -> frozenset:
 class Reducer(Enum):
     """The closed vocabulary of admissible reductions.
 
-    There is no fourth member, and that is the claim this module makes. Adding
+    There is no fifth member, and that is the claim this module makes. Adding
     one is a review-visible edit here AND in the oracle that checks each
     reducer against the runtime type of the source it is applied to.
     """
