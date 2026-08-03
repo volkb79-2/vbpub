@@ -29,10 +29,15 @@ run_as_gid = 1003
 docker_gid = 994
 
 [nyxloomd.health]
-interval = "15s"
-timeout = "5s"
+# CR-16 2026-08-03 (RISK-007): the check now chains a `nyxloom doctor
+# --liveness` python invocation (event-log reads across every registered
+# project, plus a bounded ntfy/webhook reachability probe) after the
+# original TCP probe -- widened from the TCP-only 15s/5s/40s to give that
+# second stage real headroom instead of racing it.
+interval = "20s"
+timeout = "12s"
 retries = 5
-start_period = "40s"
+start_period = "60s"
 
 [nyxloomd.logging]
 max_size = "10m"

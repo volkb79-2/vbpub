@@ -4674,12 +4674,24 @@ def test_log_level_post_emits_log_not_domain_event(http_daemon, tmp_state):
     """Oracle 4 (D-L4): the level change emits an INFO log record and
     appends NO domain event -- the event log is byte-for-byte unchanged
     across the POST, unlike every other POST /api/config/* endpoint on
-    this surface (which all append a CONFIG_CHANGED/PAUSE_* event)."""
+    this surface (which all append a CONFIG_CHANGED/PAUSE_* event).
+
+    CR-16 (RISK-007): `http_daemon` runs the REAL background reconcile
+    loop, which now writes a RECONCILE_HEARTBEAT at the end of every pass
+    -- including an idle one, unconditionally, unrelated to this POST at
+    all. That is a genuine, deliberate behaviour change (the whole point
+    of the deadman is a durable heartbeat even when nothing else happens),
+    so RECONCILE_HEARTBEAT rows are excluded from the equality check below
+    rather than the check being weakened to "no NEW domain event type" --
+    every OTHER event type still fails this test if the POST appends one."""
     d = http_daemon
     base = f"http://127.0.0.1:{d.http_port}"
     log_dir = tmp_state / "logs"
 
-    before_events = [e.to_dict() for e in storage.iter_events("demo", since=0)]
+    def _non_heartbeat(events):
+        return [e.to_dict() for e in events if e.type is not EventType.RECONCILE_HEARTBEAT]
+
+    before_events = _non_heartbeat(storage.iter_events("demo", since=0))
 
     req = urllib.request.Request(
         f"{base}/api/config/log-level",
@@ -4689,7 +4701,7 @@ def test_log_level_post_emits_log_not_domain_event(http_daemon, tmp_state):
     resp = urllib.request.urlopen(req, timeout=5)
     assert resp.status == 200
 
-    after_events = [e.to_dict() for e in storage.iter_events("demo", since=0)]
+    after_events = _non_heartbeat(storage.iter_events("demo", since=0))
     assert after_events == before_events   # NOT ONE new domain event
 
     records = _read_log_records(log_dir)

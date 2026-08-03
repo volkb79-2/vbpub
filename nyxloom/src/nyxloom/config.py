@@ -250,6 +250,15 @@ class Policy:
     # perturb existing behaviour" convention gap_audit_after_changed_lines
     # itself follows.
     verdict_audit_sample_size: int = 0
+    # CR-16 2026-08-03 (RISK-007 deadman): the durable heartbeat
+    # (RECONCILE_HEARTBEAT, written once per completed run_pass) is stale --
+    # and doctor.liveness_findings' 'reconcile-deadman' check fires -- once
+    # no evidence of a completed pass has landed within
+    # reconcile_interval_seconds * deadman_multiple. A multiple, not a flat
+    # second count, so the threshold scales automatically with a project's
+    # own configured cadence instead of a second knob that can drift out of
+    # sync with it.
+    deadman_multiple: int = 5
 
 
 @dataclass

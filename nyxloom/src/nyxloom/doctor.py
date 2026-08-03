@@ -33,6 +33,29 @@ INTERFACE CONTRACT (frozen):
                                 exists (unless task terminal).
     decision-hold      info     QUEUED/NEEDS_DECISION task whose D-dep is
                                 OPEN (refs the D-id) — visibility, not error.
+
+CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
+RISK-007) adds three checks, folded into doctor_project's sweep AND
+available standalone via `liveness_findings(cfg)` (the fast path
+`nyxloom doctor --liveness` and the container healthcheck use — see
+cli.cmd_doctor and nyxloomd/docker-compose.yml):
+    reconcile-deadman   critical no evidence of a completed reconcile pass
+                                (RECONCILE_HEARTBEAT, or any event, absent a
+                                heartbeat) within reconcile_interval_seconds
+                                * cfg.policy.deadman_multiple.
+    tick-error-streak   critical watchdog.detect_runaways' 'tick-error-streak'
+                                pattern fired over the recent event window:
+                                the daemon is looping (so the deadman above
+                                is silent) but raising every pass.
+    notify-transport-unreachable
+                        critical notify.probe_transport(cfg.notify) reports
+                                'unreachable'. 'unconfigured'/'healthy' ->
+                                no finding, same convention as
+                                docker-transport-lying below.
+These three are the reason `nyxloom doctor` — a plain CLI invocation that
+constructs no Daemon and starts no HTTP server — is RISK-007's escape
+path: every one of them is readable, and reportable via this process's own
+exit code, with the daemon dead, wedged, or its own push channel down.
 - rebuild(project, write=False) -> tuple[dict replayed, list[str] diffs]:
   replay events; diff against on-disk statefiles (json-dict equality; diffs
   are 'task_id: <field-path>' strings, cap 50); write=True saves replayed
@@ -64,9 +87,12 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import paths, storage, frontmatter, lint, decisions, transport_check
+from . import paths, storage, frontmatter, lint, decisions, notify, transport_check, watchdog
 from .config import ProjectConfig, load_registry
-from .types import DoctorFinding, TaskStateFile, TaskState, AttemptState, TERMINAL_TASK_STATES, TERMINAL_ATTEMPT_STATES
+from .types import (
+    DoctorFinding, EventType, TaskStateFile, TaskState, AttemptState,
+    TERMINAL_TASK_STATES, TERMINAL_ATTEMPT_STATES, utc_now,
+)
 
 
 _LOSSY_ATTEMPT_FIELDS = ("usage", "receipt", "session_handle")
@@ -98,12 +124,135 @@ def _replayable_projection(tsf: TaskStateFile) -> dict:
     return d
 
 
+#: liveness_findings reads a bounded tail of the event log -- the same
+#: window convention daemon.py's watchdog callers use (`[-500:]`) -- so a
+#: project with years of history costs this check nothing extra.
+_LIVENESS_EVENT_WINDOW = 500
+
+
+def _deadman_finding(cfg: ProjectConfig, events: list) -> DoctorFinding | None:
+    """CR-16 (RISK-007): a project this daemon has stopped reconciling is
+    invisible to a TCP healthcheck and to every push-based alarm, because
+    both require the daemon to be the one raising them. Read the last
+    evidence of a completed pass straight from the store -- the SAME
+    RECONCILE_HEARTBEAT `daemon.Daemon._record_heartbeat` writes at the end
+    of every run_pass, win, lose, or draw -- so this answers correctly even
+    when the daemon process that used to write it is gone. No RECONCILE_
+    HEARTBEAT at all falls back to the most recent event of any type (a
+    just-started project has a DAEMON_STARTED to anchor on); no events at
+    all means the project has never ticked, which is not yet a fault."""
+    heartbeats = [ev.timestamp for ev in events if ev.type is EventType.RECONCILE_HEARTBEAT]
+    if heartbeats:
+        reference = max(heartbeats)
+    elif events:
+        reference = max(ev.timestamp for ev in events)
+    else:
+        return None
+    threshold = cfg.policy.reconcile_interval_seconds * cfg.policy.deadman_multiple
+    age = (utc_now() - reference).total_seconds()
+    if age <= threshold:
+        return None
+    return DoctorFinding(
+        kind='reconcile-deadman',
+        severity='critical',
+        message=(f'no evidence of a completed reconcile pass in {int(age)}s '
+                  f'(threshold {threshold}s = reconcile_interval_seconds * deadman_multiple)'),
+        project=cfg.project_id,
+        refs=[],
+    )
+
+
+def _tick_error_streak_finding(cfg: ProjectConfig, events: list) -> DoctorFinding | None:
+    """CR-16 (RISK-007): a daemon that is up, looping (so `_deadman_finding`
+    above stays silent), healthy by its TCP check, and raising every single
+    pass -- reusing watchdog.detect_runaways' pattern (d) rather than a
+    second, divergent scan of the same event shape."""
+    signals = watchdog.detect_runaways(events, watchdog.WatchdogConfig())
+    streak = next((s for s in signals if s.pattern == "tick-error-streak"), None)
+    if streak is None:
+        return None
+    return DoctorFinding(
+        kind='tick-error-streak',
+        severity='critical',
+        message=f'daemon failing every pass: {streak.detail}',
+        project=cfg.project_id,
+        refs=[],
+    )
+
+
+def _transport_finding(cfg: ProjectConfig) -> DoctorFinding | None:
+    """CR-16 (RISK-007): the second, independent alarm path. An active probe
+    of the SAME channel notify.notify_event would use -- but this call, and
+    the finding it produces, never travels over that channel: it is reported
+    through doctor's findings table and this process's own exit code, which
+    is exactly what makes it independent of the transport it is checking."""
+    probe = notify.probe_transport(cfg.notify)
+    if probe.status != "unreachable":
+        return None
+    return DoctorFinding(
+        kind='notify-transport-unreachable',
+        severity='critical',
+        message=f'{probe.channel} transport unreachable: {probe.detail}',
+        project=cfg.project_id,
+        refs=[probe.channel] if probe.channel else [],
+    )
+
+
+def liveness_findings(cfg: ProjectConfig) -> list[DoctorFinding]:
+    """CR-16 (RISK-007): the three checks that answer "is this project's
+    reconciliation actually alive", not just "is a socket listening" --
+    deadman, TICK_ERROR streak, and notification-transport reachability.
+    Deliberately separable from doctor_project's other 11 checks (rather
+    than only reachable by running the whole sweep) so a fast, narrowly-
+    scoped caller -- the container healthcheck via `nyxloom doctor
+    --liveness` -- pays for exactly these three, not a full replay-
+    divergence pass and a git subprocess call, on a tight polling interval.
+    """
+    try:
+        events = list(storage.iter_events(cfg.project_id))[-_LIVENESS_EVENT_WINDOW:]
+    except Exception as exc:  # census: cleanup/containment (CR-16)
+        # The event log is the thing every one of these three checks reads.
+        # Unreadable is not "nothing to report" -- it is the loudest possible
+        # liveness fault, so it becomes one itself rather than three silent
+        # skips.
+        return [DoctorFinding(
+            kind='liveness-check-failed',
+            severity='critical',
+            message=f'liveness check could not read the event log: {type(exc).__name__}: {exc}',
+            project=cfg.project_id,
+            refs=['storage'],
+        )]
+    findings: list[DoctorFinding | None] = []
+    for kind, check in (
+        ("reconcile-deadman", lambda: _deadman_finding(cfg, events)),
+        ("tick-error-streak", lambda: _tick_error_streak_finding(cfg, events)),
+        ("notify-transport-unreachable", lambda: _transport_finding(cfg)),
+    ):
+        try:
+            findings.append(check())
+        except Exception as exc:  # census: cleanup/containment (CR-16)
+            # Isolation between the three checks (same idea as doctor_
+            # project's per-check try/except below): one check's own bug
+            # must not silence the other two on a surface whose entire job
+            # is reporting, not staying quiet.
+            findings.append(DoctorFinding(
+                kind='liveness-check-failed',
+                severity='critical',
+                message=f'{kind} check failed: {type(exc).__name__}: {exc}',
+                project=cfg.project_id,
+                refs=[kind],
+            ))
+    return [f for f in findings if f is not None]
+
+
 def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
     """Run all 11 checks on a project config, degrading on NotImplementedError
     (check-unavailable); check 1 (replay-divergence) additionally degrades any
     other exception to a replay-check-failed finding so a broken event log
-    cannot take out the other ten checks."""
-    findings: list[DoctorFinding] = []
+    cannot take out the other ten checks. CR-16 folds in three more --
+    reconcile-deadman, tick-error-streak, notify-transport-unreachable --
+    via `liveness_findings` (see its docstring for why it also stands alone)."""
+    findings: list[DoctorFinding] = list(liveness_findings(cfg))
 
     # 1. replay-divergence
     try:

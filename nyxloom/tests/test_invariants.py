@@ -694,6 +694,12 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     # and replayable while the pass performs zero effects. See snapshot.py.
     EventType.SNAPSHOT_UNAVAILABLE,
     EventType.SNAPSHOT_DEGRADED,
+    # CR-16 2026-08-03 (RISK-007 deadman): the durable heartbeat run_pass
+    # writes at the end of EVERY pass. Audit-only by construction -- a
+    # heartbeat records that the daemon looped, never a domain fact about any
+    # task, so it must never move a projection. See types.py and
+    # doctor.liveness_findings.
+    EventType.RECONCILE_HEARTBEAT,
 })
 
 

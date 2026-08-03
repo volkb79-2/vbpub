@@ -1098,6 +1098,39 @@ class Daemon:
             # The audit describes THIS pass only. Leaving it behind would let
             # a later operator-initiated effect consult a stale verdict.
             self._snapshot_audit.pop(project, None)
+            # CR-16 (RISK-007 deadman): unconditional, on EVERY path through
+            # this method -- the success return, both fail-closed returns,
+            # and the pass-level exception net above. What the deadman must
+            # answer is "did the daemon loop over this project at all", not
+            # "did it loop successfully"; a fail-closed or erroring pass is
+            # already its own actionable event (SNAPSHOT_UNAVAILABLE /
+            # TICK_ERROR). See _record_heartbeat and doctor.liveness_findings.
+            self._record_heartbeat(project)
+
+    def _record_heartbeat(self, project: str) -> None:
+        """CR-16 (RISK-007): durable, restart-safe evidence that a reconcile
+        pass reached completion for this project. Read back by
+        doctor.liveness_findings from a SEPARATE process -- never by
+        Daemon itself -- which is what makes it a deadman rather than
+        in-memory bookkeeping a restart erases.
+
+        Deliberately NOT `_append_ev` (no `cfg`/`states` dependency, so it
+        still runs when config failed to load) and deliberately NOT pushed:
+        RECONCILE_HEARTBEAT is absent from NotifyConfig.push_classes by
+        default, and a channel firing once a pass would BE the notification
+        storm watchdog.py exists to catch. Contained: the store being the
+        thing that is broken is already reported elsewhere in this same
+        pass (SNAPSHOT_UNAVAILABLE or the pass-level TICK_ERROR above), and
+        a heartbeat write failing on TOP of that must not raise out of a
+        `finally` and mask whichever of those two already ran.
+        """
+        try:
+            storage.append_and_apply(
+                project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+                type=EventType.RECONCILE_HEARTBEAT, payload={},
+            )
+        except Exception:  # census: cleanup/containment (CR-16)
+            pass
 
     # -- snapshot fan-in reporting (CR-02a) --------------------------------
 
@@ -2823,6 +2856,11 @@ class Daemon:
                     if not (isinstance(a, (reconcile.DispatchImplementer, reconcile.ResumeAttempt))
                             and a.task_id == task_id)]
 
+        # CR-16's 'tick-error-streak' (and any future pattern this method
+        # does not yet know) falls through here: it names a symptom of the
+        # PASS itself, not a specific reconcile.Action the planner emitted,
+        # so there is nothing to filter -- the NEEDS_OPERATOR escalation and
+        # the streak-graded auto-pause above are the whole remedy.
         return actions
 
     def _auto_pause_for_runaway(self, project: str, cfg: ProjectConfig,
