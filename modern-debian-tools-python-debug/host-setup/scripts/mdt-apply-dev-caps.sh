@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # mdt host-setup — runtime half of the dev-tier governance. Everything the
 # static slice units can't express:
-#   - besteffort.slice IO*Max at BE_IO_CAP_PCT% of the MEASURED device
-#     ceilings (io-baseline.env) — replaces the deliberately tight unit-file
-#     statics for the whole tier
-#   - interactive.slice memory.zswap.writeback (raw-write fallback for
+#   - dev.slice (the shared root) IO*Max at DEV_IO_CAP_PCT% of the MEASURED
+#     device ceilings (io-baseline.env) — replaces the deliberately tight
+#     unit-file statics for BOTH dev-interactive.slice and
+#     dev-background.slice combined (host dev-tier cgroup governance
+#     rollout: one absolute ceiling on the shared parent, not one per child)
+#   - dev-interactive.slice memory.zswap.writeback (raw-write fallback for
 #     systemd < 256 where the MemoryZSwapWriteback= directive doesn't exist;
 #     harmless double-set on newer hosts)
 #   - per-container caps: test-runner/buildx_buildkit_*/devcontainer scopes get
@@ -25,14 +27,14 @@ log(){ echo "[mdt-dev-caps] $*"; }
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF" || log "WARN: $CONF not found — using built-in defaults"
 
-BE_IO_CAP_PCT="${BE_IO_CAP_PCT:-40}"
+DEV_IO_CAP_PCT="${DEV_IO_CAP_PCT:-60}"
 BENCH_IO_CAP_PCT="${BENCH_IO_CAP_PCT:-80}"
 BENCH_IMAGE_PATTERNS="${BENCH_IMAGE_PATTERNS:-*test-runner*}"
 BENCH_NAME_PATTERNS="${BENCH_NAME_PATTERNS:-buildx_buildkit_*}"
 DEVCONTAINER_NAME_PATTERNS="${DEVCONTAINER_NAME_PATTERNS:-*devcontainer*}"
 CGROUP2_FLAGS="${CGROUP2_FLAGS:-warn}"
 IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
-INTERACTIVE_ZSWAP_WRITEBACK="${INTERACTIVE_ZSWAP_WRITEBACK:-no}"
+DEV_INTERACTIVE_ZSWAP_WRITEBACK="${DEV_INTERACTIVE_ZSWAP_WRITEBACK:-no}"
 
 # --- cgroup2 mount flags -----------------------------------------------------
 # systemd mounts cgroup2 with nsdelegate,memory_recursiveprot at boot; a later
@@ -64,7 +66,7 @@ fi
 [ -n "${IO_DEV_PATH:-}" ] && log "io device: $IO_DEV_PATH" \
   || log "WARN: no block device discovered — all IO cap steps will be skipped"
 
-# --- besteffort.slice: tier-wide measured IO caps -----------------------------
+# --- dev.slice: whole-estate measured IO caps (dev-interactive + dev-background) --
 if [ -f "$IO_BASELINE_ENV" ]; then
   RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
   # shellcheck disable=SC1090
@@ -81,43 +83,43 @@ if [ -f "$IO_BASELINE_ENV" ]; then
   esac
   if [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] && [ -n "${RBW_MAX_BPS:-}" ] \
      && [ -n "${WBW_MAX_BPS:-}" ] && [ -n "${IO_DEV_PATH:-}" ]; then
-    BE_RIOPS=$(( RIOPS_MAX * BE_IO_CAP_PCT / 100 ))
-    BE_WIOPS=$(( WIOPS_MAX * BE_IO_CAP_PCT / 100 ))
-    BE_RBPS=$(( RBW_MAX_BPS * BE_IO_CAP_PCT / 100 ))
-    BE_WBPS=$(( WBW_MAX_BPS * BE_IO_CAP_PCT / 100 ))
+    DEV_RIOPS=$(( RIOPS_MAX * DEV_IO_CAP_PCT / 100 ))
+    DEV_WIOPS=$(( WIOPS_MAX * DEV_IO_CAP_PCT / 100 ))
+    DEV_RBPS=$(( RBW_MAX_BPS * DEV_IO_CAP_PCT / 100 ))
+    DEV_WBPS=$(( WBW_MAX_BPS * DEV_IO_CAP_PCT / 100 ))
     # 0 in io.max is not "unlimited" — it halts IO. Refuse a bad baseline and
     # leave the unit-file statics (tight, but a working host) in force.
-    if [ "$BE_RIOPS" -lt 1 ] || [ "$BE_WIOPS" -lt 1 ] || [ "$BE_RBPS" -lt 1 ] || [ "$BE_WBPS" -lt 1 ]; then
-      log "WARN: baseline yields a <= 0 tier cap — besteffort.slice keeps unit-file statics"
+    if [ "$DEV_RIOPS" -lt 1 ] || [ "$DEV_WIOPS" -lt 1 ] || [ "$DEV_RBPS" -lt 1 ] || [ "$DEV_WBPS" -lt 1 ]; then
+      log "WARN: baseline yields a <= 0 estate cap — dev.slice keeps unit-file statics"
     # --runtime: survives daemon-reload (runtime drop-in), gone at reboot —
     # which is exactly right, this service re-runs at every boot.
-    elif systemctl set-property --runtime besteffort.slice \
-         "IOReadBandwidthMax=$IO_DEV_PATH $BE_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $BE_WBPS" \
-         "IOReadIOPSMax=$IO_DEV_PATH $BE_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $BE_WIOPS" 2>/tmp/mdt-cg-err; then
-      log "besteffort.slice: io.max=${BE_RIOPS}r/${BE_WIOPS}w IOPS $((BE_RBPS/1048576))/$((BE_WBPS/1048576))MB/s r/w (${BE_IO_CAP_PCT}% of baseline)"
+    elif systemctl set-property --runtime dev.slice \
+         "IOReadBandwidthMax=$IO_DEV_PATH $DEV_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $DEV_WBPS" \
+         "IOReadIOPSMax=$IO_DEV_PATH $DEV_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $DEV_WIOPS" 2>/tmp/mdt-cg-err; then
+      log "dev.slice: io.max=${DEV_RIOPS}r/${DEV_WIOPS}w IOPS $((DEV_RBPS/1048576))/$((DEV_WBPS/1048576))MB/s r/w (${DEV_IO_CAP_PCT}% of baseline — covers dev-interactive.slice + dev-background.slice combined)"
     else
-      log "WARN: besteffort.slice set-property failed ($(cat /tmp/mdt-cg-err 2>/dev/null)) — unit-file statics remain in force"
+      log "WARN: dev.slice set-property failed ($(cat /tmp/mdt-cg-err 2>/dev/null)) — unit-file statics remain in force"
     fi
   else
-    log "baseline file incomplete or no device — besteffort.slice keeps unit-file statics"
+    log "baseline file incomplete or no device — dev.slice keeps unit-file statics"
   fi
 else
-  log "no $IO_BASELINE_ENV — besteffort.slice keeps unit-file statics (run mdt-io-baseline.py)"
+  log "no $IO_BASELINE_ENV — dev.slice keeps unit-file statics (run mdt-io-baseline.py)"
 fi
 
-# --- interactive.slice: zswap writeback policy --------------------------------
+# --- dev-interactive.slice: zswap writeback policy -----------------------------
 # Raw cgroupfs write: fallback for systemd < 256 (no MemoryZSwapWriteback=
 # directive) and for a slice activated before the unit carried the directive.
-case "$INTERACTIVE_ZSWAP_WRITEBACK" in
+case "$DEV_INTERACTIVE_ZSWAP_WRITEBACK" in
   no|0|false) ZSWAP_WB=0 ;;
   *)          ZSWAP_WB=1 ;;
 esac
-IA="$CG/interactive.slice"
+IA="$CG/dev-interactive.slice"
 if [ -d "$IA" ] && [ -w "$IA/memory.zswap.writeback" ]; then
   echo "$ZSWAP_WB" > "$IA/memory.zswap.writeback" \
-    && log "interactive.slice memory.zswap.writeback=$ZSWAP_WB"
+    && log "dev-interactive.slice memory.zswap.writeback=$ZSWAP_WB"
 else
-  log "interactive.slice not active yet (starts with the first devcontainer) — skipped zswap policy"
+  log "dev-interactive.slice not active yet (starts with the first devcontainer) — skipped zswap policy"
 fi
 
 # --- per-container caps: bench / buildkit / devcontainer ----------------------
@@ -134,7 +136,7 @@ _match() { # _match "value" "pattern1 pattern2 ..."
 # _apply_container_caps <container-id> <label> [deprioritize]
 # deprioritize=1 (bench/buildkit): also drop the scope to the lowest IO weight,
 # so it yields the device to everything else. NOT used for the devcontainer —
-# that scope lives in interactive.slice and IS the IDE; capping its peak rate is
+# that scope lives in dev-interactive.slice and IS the IDE; capping its peak rate is
 # the goal, making it lose every IO race to a sibling is not.
 _apply_container_caps() {
   local cid="$1" label="$2" deprio="${3:-0}" pid scope unit props=()

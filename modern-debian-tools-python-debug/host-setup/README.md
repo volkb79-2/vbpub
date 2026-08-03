@@ -1,13 +1,16 @@
 # mdt host-setup — dev-tier resource governance (cgroup v2 slices)
 
-Prepares a Docker host so devcontainers and the test/build containers they
-spawn run in **bounded systemd slices** instead of the host's default
+Prepares a Docker host so devcontainers and the test/build/gate containers
+they spawn run in **bounded systemd slices** instead of the host's default
 (unlimited) cgroup — the host-side counterpart of the
-`"--cgroup-parent=interactive.slice"` runArg shipped in
-[`../templates/devcontainer.json`](../templates/devcontainer.json) and the
-`cgroup_parent: besteffort.slice` that ciu governance injects into compose
-stacks. Placement is CREATE-time only and can never be expressed from inside a
-container or image — see
+`"--cgroup-parent=dev-interactive.slice"` runArg shipped in
+[`../templates/devcontainer.json`](../templates/devcontainer.json), the
+`cgroup_parent: dev-background.slice` that ciu governance injects into compose
+stacks, and `/etc/docker/daemon.json`'s `cgroup-parent` (the daemon-wide
+fallback for anything that names no parent at all — this companion is the
+**sole owner** of that file now, merging its managed keys into whatever else
+is already there rather than overwriting it). Placement is CREATE-time only
+and can never be expressed from inside a container or image — see
 [`../docs/CONTAINER-DOCTRINE.md`](../docs/CONTAINER-DOCTRINE.md) and the
 "Host resource governance" section of
 [`../DEVCONTAINER-LIFECYCLE.md`](../DEVCONTAINER-LIFECYCLE.md).
@@ -20,22 +23,49 @@ weight in `host-setup.env`.
 
 ## Tiering model
 
+```
+dev.slice                    ONE absolute IOPS/bandwidth ceiling — covers
+                              both children combined, even interactive/IDE
+                              activity must not be able to starve production
+├── dev-interactive.slice    devcontainers (IDE + AI agents) via
+│                             devcontainer.json runArg
+└── dev-background.slice     test/build/gate containers — explicit opt-in
+                             (compose cgroup_parent, docker run
+                             --cgroup-parent) OR caught by the Docker
+                             daemon-wide default (/etc/docker/daemon.json)
+```
+
 | Tier | Who joins | Character |
 |---|---|---|
-| `interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
-| `besteffort.slice` | test/build/CI stacks via compose `cgroup_parent` | bounded: hard memory+swap caps, `systemd-oomd` kills inside the tier first, whole-tier **IO caps** at a percent of the *measured* device ceiling |
+| `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
+| `dev-background.slice` | test/build/gate containers, via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
 | (production tiers) | e.g. `wings.slice` for game servers | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
-Weights (`CPUWeight`/`IOWeight`) settle contention *between* tiers; the io.max
-caps bound besteffort **absolutely** so a build storm can't saturate the disk
-even when production is momentarily idle (its next burst must not queue behind
-a build). IO weights need the BFQ scheduler (installed/selected by this setup);
-the io.max caps work on any scheduler.
+`dev.slice` (the shared parent) carries the **one** absolute IOPS/bandwidth
+ceiling for both children combined — not one per tier. That is deliberate:
+even interactive/IDE work must not be able to starve production I/O, so a
+build storm AND a heavy IDE session together still can't exceed the estate's
+single cap. `CPUWeight`/memory/OOM policy stay per-child, since interactive
+and background work genuinely need different shapes there.
 
-⚠️ The shipped IO weights (interactive 100, besteffort 10) are a true 10:1
-*because both stay ≤ 100*. systemd rescales `IOWeight` above 100 into BFQ's
-1..1000 range, so "1000 vs 100" would be 1.81:1, not 10:1 — express IO ratios
-by lowering the loser, never raising the winner.
+Genuine **per-container** guarantees (so N concurrent gate containers can't
+each individually hog the tier) are a separate, complementary mechanism:
+explicit `docker run --memory`/`--cpus`/`--device-*-iops` flags in whatever
+spawns the container (e.g. `cmru`'s tester-gate) — a slice's own limits only
+bound the *whole tier combined*, never one container in it. See
+`AGENTS.md` in the repo root ("Host cgroup placement for spawned containers").
+
+Weights (`CPUWeight`/`IOWeight`) settle contention *between* the two child
+tiers; `dev.slice`'s `io.max` bounds the **whole estate** absolutely so a
+build storm (or a heavy interactive session) can't saturate the disk even when
+production is momentarily idle (its next burst must not queue behind it). IO
+weights need the BFQ scheduler (installed/selected by this setup); the io.max
+caps work on any scheduler.
+
+⚠️ The shipped IO weights (dev-interactive 100, dev-background 10) are a true
+10:1 *because both stay ≤ 100*. systemd rescales `IOWeight` above 100 into
+BFQ's 1..1000 range, so "1000 vs 100" would be 1.81:1, not 10:1 — express IO
+ratios by lowering the loser, never raising the winner.
 [CGROUP-NOTES.md §BFQ](CGROUP-NOTES.md#bfq-caveats) has the mapping table.
 
 ## Quick start
@@ -55,13 +85,15 @@ the test stacks.
 
 | Artifact | Target | Role |
 |---|---|---|
-| `units/interactive.slice.in`, `units/besteffort.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
+| `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
+| `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-host-slices.service` | systemd (enabled) | boot-time apply of the runtime half |
 | `units/mdt-host-slices.timer.in` | systemd (enabled) | periodic re-apply (default 5min) |
 | `scripts/mdt-apply-dev-caps.sh` | `/usr/local/sbin/` | runtime half (see below) |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | fio benchmark → `/var/lib/mdt/io-baseline.env` (30-day cache) |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
+| (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
 
 ## Persistence model — why units AND a service/timer
 
@@ -76,24 +108,32 @@ cannot express the next:
    reviewable file.
 2. **Boot service + periodic timer** (`mdt-host-slices.service/.timer` →
    `mdt-apply-dev-caps.sh`) — everything units *can't* declare:
-   - the **measured** besteffort IO caps (`BE_IO_CAP_PCT`% of the fio
-     baseline) — `systemctl set-property --runtime`, reapplied each boot;
+   - the **measured** whole-estate IO caps on `dev.slice` (`DEV_IO_CAP_PCT`%
+     of the fio baseline — covers `dev-interactive.slice` +
+     `dev-background.slice` combined) — `systemctl set-property --runtime`,
+     reapplied each boot;
    - **per-container** caps for `buildx_buildkit_*`, `*test-runner*` and
      devcontainer scopes (`BENCH_IO_CAP_PCT`% io.max; bench and buildkit
      additionally get `IOWeight=1` — the devcontainer does **not**, it is the
      IDE): docker scopes are *transient*, they only exist while the container
      runs, so no unit file can pre-configure them, and buildkit workers are
      created on demand by buildx (no compose file to put `cgroup_parent:`
-     into). The timer sweep catches them within `SWEEP_INTERVAL`;
+     into). The timer sweep catches them within `SWEEP_INTERVAL`. Anything
+     `cmru`/mdt itself spawns directly gets explicit per-container flags
+     instead (see "Tiering model" above) — this sweep is only for containers
+     nobody's own code controls the invocation of;
    - a **cgroup2 mount-flag check**: `memory_recursiveprot` (without which
      every slice-level `MemoryLow`/`MemoryMin` silently stops protecting the
      container pages below it) is a systemd boot default, but a runtime
      remount can strip it — `CGROUP2_FLAGS=warn|fix` in the env file.
 3. **Create-time placement** — the one thing the host cannot do at all:
    containers join their tier only where they are *created*
-   (devcontainer.json `runArgs`, compose `cgroup_parent:`). Graceful
-   degradation: if the unit file is missing, systemd invents a transient
-   *unlimited* slice of the same name and the container starts normally.
+   (devcontainer.json `runArgs`, compose `cgroup_parent:`, or the Docker
+   daemon-wide default in `daemon.json`). Graceful degradation: if the unit
+   file is missing, systemd invents a transient *unlimited* slice of the same
+   name and the container starts normally — the `docker-.scope.d` backstop
+   (D-G8, see "What gets installed") exists specifically to put a floor under
+   that failure mode.
 
 Alternatives considered for layer 2: a boot-only oneshot misses buildkit
 workers created mid-session; a docker-events watcher daemon reacts instantly
@@ -114,11 +154,18 @@ bandwidth at 128k QD8, libaio, incompressible buffers, ramp+runtime defaults
 disk for ~4 minutes** — run it in a quiet window.
 
 The caps derived from it sit in a **60–80% band** of the measured ceiling:
-`BE_IO_CAP_PCT=60` for the whole besteffort tier (it bounds 10–15 containers
-together), `BENCH_IO_CAP_PCT=80` per bench/buildkit/devcontainer container.
-Never 100% — a saturated device queues everything behind the burst, which is
-the stall the tiering exists to prevent; below ~60% you are just throttling
-ordinary work. Where both apply, cgroup limits nest and the stricter wins.
+`DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds 10–15+
+containers across both tiers together), `BENCH_IO_CAP_PCT=80` per
+bench/buildkit/devcontainer container. Never 100% — a saturated device queues
+everything behind the burst, which is the stall the tiering exists to
+prevent; below ~60% you are just throttling ordinary work. Where both apply,
+cgroup limits nest and the stricter wins.
+
+**Bootstrapping from gstammtisch.** `install.sh` copies
+`/var/lib/gstammtisch/io-baseline.env` to `/var/lib/mdt/io-baseline.env` on
+first run if the latter doesn't exist yet and the former does, rather than
+re-running the ~4min benchmark — mdt owns its own copy at its own canonical
+path from then on (no runtime cross-reference between the two companions).
 
 **Sharing the measurement with ciu.** ciu governance caps individual compose
 services from the same file format (deriving `read_iops` as 2/3 of
@@ -137,11 +184,12 @@ hardware: point `IO_BASELINE_ENV` at it or copy the file.
 ## Verification
 
 `mdt-host-check.sh` checks: `memory_recursiveprot` mount flag, unit presence +
-activity, effective cgroupfs values (including `io.bfq.weight` next to
-`io.weight` — under BFQ only the former is what schedules), zswap-writeback
-policy, besteffort `io.max` + baseline freshness, BFQ scheduler, timer
-enablement, and lists every running container's cgroup parent. Exit 0 = no
-failures (warnings possible).
+activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`),
+effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
+under BFQ only the former is what schedules), zswap-writeback policy,
+`dev.slice`'s `io.max` + baseline freshness, the `docker-.scope.d` backstop's
+presence, BFQ scheduler, timer enablement, and lists every running
+container's cgroup parent. Exit 0 = no failures (warnings possible).
 
 The one failure it reports as FAIL rather than WARN is a missing
 `memory_recursiveprot`: with that flag absent every `MemoryLow`/`MemoryMin` in
@@ -152,11 +200,15 @@ set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-un
 
 ```bash
 sudo systemctl disable --now mdt-host-slices.timer mdt-host-slices.service
-sudo rm /etc/systemd/system/{interactive,besteffort}.slice \
+sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background}.slice \
+        /etc/systemd/system/docker-.scope.d/50-default-limits.conf \
         /etc/systemd/system/mdt-host-slices.{service,timer} \
         /usr/local/sbin/{mdt-apply-dev-caps.sh,mdt-io-baseline.py,mdt-host-check.sh} \
         /etc/modules-load.d/mdt-bfq.conf /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
 sudo systemctl daemon-reload
 sudo rm -rf /etc/mdt /var/lib/mdt        # config + cached baseline
-# containers keep their (now transient, unlimited) slices until recreated
+# containers keep their (now transient, unlimited) slices until recreated.
+# /etc/docker/daemon.json is NOT removed here — it's a merge, not a wholesale
+# install; manually drop the cgroup-parent/live-restore/log-opts keys you no
+# longer want and `systemctl restart docker` if you do.
 ```

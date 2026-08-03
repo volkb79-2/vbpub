@@ -247,7 +247,10 @@ strategy = "scm"
 bump     = "conventional"
 [project.topos.env]
 CMRU_RELEASE_NOTES = "## topos wheel\nHost pressure inspector and cgroup forensics console. This is a pre-1.0 operator release: see `topos/docs/RELEASE-READINESS.md` for explicit live-host certification gaps and non-claims. The optional root daemon is deployed with the packaged systemd service/tmpfiles/slice templates; no privileged container image is published.\n\n**Install**\n```bash\npipx install topos-*.whl\n```"
-CMRU_TESTER_CGROUP_PARENT = "nyxloom-gates.slice"
+# No CMRU_TESTER_CGROUP_PARENT here (was nyxloom-gates.slice): this is a
+# repo/developer test run, not nyxloom-the-product dispatching a gate on
+# topos's behalf, so it falls through to the ambient CGROUP_PARENT_DEV_BACKGROUND
+# like every other project — see AGENTS.md and cmru/src/cmru/tester_gate.py.
 [project.topos.steps.run-tests]
 commands = [
   { label = "topos: tester-unified parallel suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=topos/src:topos; /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto"], cwd = "." },

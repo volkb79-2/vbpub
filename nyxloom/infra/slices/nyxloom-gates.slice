@@ -21,12 +21,20 @@ Before=slices.target
 CPUWeight=25
 IOWeight=30
 
-# OPERATOR MUST SET: cap RAM, allow GENEROUS swap (a gate that swaps finishes
-# slowly; a gate that OOMs fails a merge), and cap IOPS at 60-80% of measured
-# device ceilings -- reuse /var/lib/gstammtisch/io-baseline.env rather than
-# re-measuring.
-# MemoryHigh=
-# MemoryMax=
-# MemorySwapMax=
-# IOReadIOPSMax=/dev/vda
-# IOWriteIOPSMax=/dev/vda
+# Filled in (host dev-tier cgroup governance rollout) from the existing
+# sustained-v3 baseline measured 2026-07-08 (RIOPS_MAX=90173, WIOPS_MAX=58695,
+# RBW_MAX_BPS=2149035554, WBW_MAX_BPS=516276624 -- see
+# modern-debian-tools-python-debug/host-setup/README.md "The IO baseline").
+# Low end of the 60-80% band (whole-tier ceiling: several gate runs can be
+# concurrent, same reasoning as dev.slice's own DEV_IO_CAP_PCT default).
+# RAM: generous swap on purpose -- a gate that swaps finishes slowly; a gate
+# that OOMs fails a merge. Independent of nyxloom.slice's own still-unset
+# whole-factory MemoryMax (D-G1/G4, out of scope here) -- revisit once that
+# lands, since these child values only matter up to whatever the parent caps.
+MemoryHigh=12G
+MemoryMax=16G
+MemorySwapMax=40G
+IOReadIOPSMax=/dev/vda 54103
+IOWriteIOPSMax=/dev/vda 35217
+IOReadBandwidthMax=/dev/vda 1229M
+IOWriteBandwidthMax=/dev/vda 295M

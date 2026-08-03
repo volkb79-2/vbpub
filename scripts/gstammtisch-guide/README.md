@@ -14,10 +14,15 @@ the same host are owned elsewhere, and nothing here should duplicate them:
 | Concern | Owner |
 |---|---|
 | Per-server game slices (`wings-<uuid>.slice`, memory floors, CPU/IO weight) | Wings itself — patch stack in [`../../wings-cgroups/`](../../wings-cgroups/). Rollout on this node: [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) |
-| Dev tiers: `interactive.slice` (devcontainers) + `besteffort.slice` (test/build stacks), their measured IO caps, the fio baseline, BFQ setup | [`../../modern-debian-tools-python-debug/host-setup/`](../../modern-debian-tools-python-debug/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
+| Dev tiers: `dev-interactive.slice` (devcontainers) + `dev-background.slice` (test/build/gate stacks), their measured IO caps, the fio baseline, BFQ setup, **and `/etc/docker/daemon.json`** | [`../../modern-debian-tools-python-debug/host-setup/`](../../modern-debian-tools-python-debug/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
 
-`setup-cgroups.sh` here is therefore **game-side only**. Adding dev-tier logic
-back to it would give two scripts the same cgroup attributes to write.
+`setup-cgroups.sh` here is therefore **game-side only** — and RETIRED as of
+the host dev-tier cgroup governance rollout: patched Wings now places and
+configures each Soulmask container's cgroup natively (per-server
+`wings-<uuid>.slice`), so the userspace retrofit this script + its watcher
+service provided is superseded. Kept under `files/legacy/` for reference.
+Adding dev-tier logic back to any surviving game-side script would give two
+scripts the same cgroup attributes to write.
 
 ## Read these
 | Doc | What |
@@ -43,16 +48,22 @@ gstammtisch-guide/
 │   ├── etc/gstammtisch/instance-defaults.env      # per-instance defaults (N-instance, see SOULMASK.md §9b)
 │   ├── etc/gstammtisch/instances.d/*.env(.example) # per-instance overrides (one file per server UUID)
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
-│   ├── etc/systemd/system/gstammtisch-cgroups.service # extra cgroup knobs (game side)
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
-│   ├── etc/systemd/system/soulmask-pak-ramdisk.service  # shared pak tmpfs (opt-in per instance, §2c/§9b)
-│   ├── etc/systemd/system/soulmask-paks.slice           # pak cgroup: writeback=yes, memory.min=150M
+│   ├── etc/systemd/system/soulmask_tmpfs.service  soulmask_tmpfs.slice
+│   │                        soulmask_tmpfs-ZSwapMax{0,1}.slice   # SOULMASK-TMPFS.md
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
-│   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh  soulmask-instance-lib.sh
-│                         soulmask-pak-ramdisk-setup.sh  soulmask-pak-ramdisk-toggle.sh
-│                         soulmask-pak-ramdisk-teardown.sh
-│                         soulmask-zswap-monitor.sh  soulmask-mempress.sh
-│                         soulmask-pak-mempress.sh  soulmask-startup-cgroup.sh
+│   ├── legacy/                              # retired — kept for reference, not installed
+│   │   ├── etc/systemd/system/gstammtisch-cgroups.service  soulmask-cgroup-watcher.service
+│   │   │                        soulmask-paks.slice  soulmask-static.slice
+│   │   │                        soulmask-pak-ramdisk.service  soulmask-static-ramdisk.service
+│   │   └── usr/local/sbin/setup-cgroups.sh  soulmask-cgroup-watcher.sh
+│   │                             soulmask-startup-cgroup.sh
+│   │                             soulmask-pak-ramdisk-{setup,toggle,teardown}.sh
+│   │                             soulmask-static-ramdisk-{setup,teardown}.sh
+│   └── usr/local/sbin/soulmask-shutdown.sh  soulmask-instance-lib.sh  wings-ps.sh
+│                         soulmask_tmpfs-{setup,teardown,toggle,restart-wings}.sh
+│                         soulmask-zswap-monitor.{sh,py}  soulmask-mempress.sh
+│                         soulmask-pak-mempress.sh  container-mempress.sh
 └── scripts/
     ├── install.sh                # orchestrator (copy files, enable units, sysctl, BFQ)
     ├── partition-editor.py        # universal MBR partition editor
@@ -69,7 +80,7 @@ across several running Soulmask servers, how to add instance #2): see
 ```bash
 # 0) copy this folder to the host, then from inside it:
 sudo scripts/install.sh
-#    -> copies configs, enables zswap-config/cgroups/graceful-stop/oomd,
+#    -> copies configs, enables zswap-config/graceful-stop/oomd,
 #       applies sysctl, brings up zswap+zstd live. Prints the next steps.
 
 # 1) swap partitions — DRY-RUN first, then commit
@@ -79,9 +90,10 @@ sudo scripts/partition-editor.py --disk /dev/vda add-swap --count 2 --size fill 
 # 2) GRUB: make sure GRUB_CMDLINE_LINUX has NO zswap.* tokens (now post-boot).
 #    Optional latency: add `preempt=full`.  Then: sudo update-grub   (only if changed)
 
-# 3) measure Soulmask hot set (DAMON, kernel 7.0 auto-tunes intervals), then:
-sudo sed -i 's/^SOULMASK_MIN=.*/SOULMASK_MIN="${SOULMASK_MIN:-<measured>G}"/' /usr/local/sbin/setup-cgroups.sh
-sudo systemctl restart gstammtisch-cgroups
+# 3) per-server memory floor/weight: set via patched Wings itself now
+#    (docker.per_server_slices config + admin-only WINGS_CG_* egg overrides —
+#    see ../../wings-cgroups/SETUP.md), not gstammtisch. setup-cgroups.sh /
+#    SOULMASK_MIN / `systemctl restart gstammtisch-cgroups` are retired.
 
 # 4) priorities
 #    - Pterodactyl panel: set Soulmask memory/CPU/IO limits.

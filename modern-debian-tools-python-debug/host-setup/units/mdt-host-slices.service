@@ -1,5 +1,6 @@
 # mdt host-setup — applies the runtime half of the dev-tier governance:
-# besteffort.slice measured IO caps, interactive zswap policy, per-container
+# dev.slice measured IO caps (covers dev-interactive.slice +
+# dev-background.slice combined), dev-interactive zswap policy, per-container
 # caps for bench/buildkit/devcontainer containers. Idempotent oneshot; run at
 # boot (enabled) and periodically via mdt-host-slices.timer.
 [Unit]

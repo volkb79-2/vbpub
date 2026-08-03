@@ -1,0 +1,25 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+#
+# Installed at /etc/systemd/system/docker-.scope.d/50-default-limits.conf —
+# the truncated-name prefix means systemd applies this drop-in to EVERY
+# transient docker-<id>.scope unit, regardless of which --cgroup-parent (if
+# any) it was placed under (D-G8, host dev-tier cgroup governance rollout).
+#
+# WHY THIS EXISTS: a container placed under a typo'd or nonexistent slice
+# name fails OPEN — systemd silently auto-creates an unlimited transient
+# slice and the container starts normally (verified — see
+# nyxloom/docs/plan-resource-governance.md). This is the backstop for that
+# case: "never truly unbounded," for anything on this host, no exceptions.
+#
+# THIS IS NOT A TIER CEILING. It reaches every container regardless of slice
+# — including production's (Soulmask/Jitsi containers get the same generic
+# docker-<id>.scope naming as anything else) — so it MUST be sized generously
+# above any legitimate single container's real ceiling on this host, never
+# tight. The tight per-container defaults dev/test/build containers get
+# (--memory/--cpus/--device-*-iops) belong in whatever spawns them instead
+# (e.g. cmru's tester-gate) — those only ever touch containers that code
+# itself starts, never anyone else's.
+[Scope]
+MemoryMax=@DOCKER_SCOPE_BACKSTOP_MEMORY_MAX@
+MemorySwapMax=@DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX@

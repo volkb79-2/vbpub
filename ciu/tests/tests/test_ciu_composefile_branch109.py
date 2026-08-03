@@ -69,7 +69,7 @@ class TestComposefileBranchCoverage109:
             {},
             [],
             compose_yaml_text="services:\n  api: {image: example}\n",
-            governance={"enabled": True, "ksm_optin": absolute_shim},
+            governance={"enabled": True, "ksm_optin": absolute_shim, "cgroup_parent": "dev-background.slice"},
             repo_root=tmp_path / "logical",
             physical_root=tmp_path / "physical",
         )

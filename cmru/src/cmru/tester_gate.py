@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -49,6 +51,79 @@ def _physical_path(path: Path, mountinfo: str | None = None) -> Path:
 
 _DIND_IMAGE = "docker:dind"
 _DIND_READY_TIMEOUT = 30.0
+
+# Flat, per-container safe bounds (host dev-tier cgroup governance rollout —
+# nyxloom/docs/plan-resource-governance.md + the mdt host-setup companion).
+# Deliberately NOT a fraction of dev.slice's own aggregate budget: every gate
+# container gets its own independent ceiling regardless of how many run
+# concurrently, on top of (not instead of) the tier's own aggregate cap.
+_DEFAULT_MEMORY = "8g"
+_DEFAULT_MEMORY_SWAP = "20g"
+_DEFAULT_CPUS = "1.5"
+
+
+def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
+    """Probe whether a systemd slice UNIT is loaded on this host.
+
+    Mirrors ``ciu/src/ciu/governance.py:check_slice_unit`` — duplicated, not
+    imported: ``cmru`` is deliberately dependency-free (``cmru/pyproject.toml``
+    declares zero deps), so it cannot import ``ciu`` for one small helper.
+
+    Returns ``(exists, note)``:
+
+    - ``exists is None`` — no ``systemctl`` on this host (not systemd); the
+      caller must SKIP the check, not fail it.
+    - ``exists is True`` — the unit is installed and known to systemd.
+    - ``exists is False`` — systemd is present but the slice is NOT loaded.
+      Docker would silently auto-create it transiently with NO limits — this
+      is the fail-closed case a typo'd cgroup-parent must not sail through.
+    """
+    if shutil.which("systemctl") is None:
+        return None, (
+            "no systemctl on this host — not a systemd host, so governed cgroup "
+            "slices cannot be honored here regardless; skipping the slice-existence preflight"
+        )
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", slice_name, "--property=LoadState"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"systemctl probe failed ({exc}) — skipping the slice-existence preflight"
+
+    output = (result.stdout or "").strip()
+    load_state = output.split("=", 1)[1] if "=" in output else ""
+    if load_state == "loaded":
+        return True, f"{slice_name}: LoadState=loaded"
+    return False, (
+        f"{slice_name}: LoadState={load_state or '(unknown — systemctl returned no LoadState)'} "
+        "— the unit is not installed on this host"
+    )
+
+
+def resolve_cgroup_parent(explicit: str | None) -> str:
+    """Resolve the gate container's cgroup-parent, per the estate's
+    no-hardcoded-fallbacks rule: an unresolvable value is an error, never a
+    silent "launch with no --cgroup-parent" degrade.
+
+    Order: ``--cgroup-parent`` (explicit) > ``CMRU_TESTER_CGROUP_PARENT``
+    (per-project override, e.g. cmru.toml env) > ``CGROUP_PARENT_DEV_BACKGROUND``
+    (ambient, injected by devcontainer.json's ``containerEnv`` — see AGENTS.md).
+    """
+    if explicit:
+        return explicit
+    resolved = os.environ.get("CMRU_TESTER_CGROUP_PARENT") or os.environ.get("CGROUP_PARENT_DEV_BACKGROUND")
+    if not resolved:
+        raise SystemExit(
+            "tester-gate: no cgroup_parent resolvable — pass --cgroup-parent explicitly, "
+            "or set CMRU_TESTER_CGROUP_PARENT (per-project override) or "
+            "CGROUP_PARENT_DEV_BACKGROUND (ambient, from devcontainer.json) in the environment. "
+            "Refusing to launch an ungoverned container next to production."
+        )
+    return resolved
 
 
 def _dind_ready(name: str) -> bool:
@@ -99,6 +174,13 @@ def build_docker_command(
     image: str = "tester-unified:local",
     cgroup_parent: str = "",
     sidecar_name: str | None = None,
+    memory: str = _DEFAULT_MEMORY,
+    memory_swap: str = _DEFAULT_MEMORY_SWAP,
+    cpus: str = _DEFAULT_CPUS,
+    device_read_iops: str = "",
+    device_write_iops: str = "",
+    device_read_bps: str = "",
+    device_write_bps: str = "",
 ) -> list[str]:
     """Build the Docker argv without a shell or an ambient working-tree path.
 
@@ -109,6 +191,16 @@ def build_docker_command(
     (currently: MDT's OCI-layout push tests,
     modern-debian-tools-python-debug/scripts/test_oci_layout_push.py) should
     request it. Every other project's gate is unaffected.
+
+    ``memory``/``memory_swap``/``cpus`` are flat per-container safe bounds,
+    always applied (host dev-tier cgroup governance) — genuine per-container
+    guarantees, distinct from and complementary to whatever aggregate tier
+    ``cgroup_parent`` places this container under (a slice's own limits bound
+    the WHOLE tier combined, not any one container in it). The four
+    ``device_*`` values are optional per-container blkio caps in Docker's own
+    ``path:rate`` syntax (e.g. ``"/dev/vda:1000"``) — empty (the default)
+    means "rely on the ``dev.slice`` tier's own aggregate IOPS/bandwidth
+    ceiling instead of a per-container one."
     """
     relative = Path(relative_cwd)
     if relative.is_absolute() or ".." in relative.parts:
@@ -120,9 +212,20 @@ def build_docker_command(
         "docker", "run", "--rm",
         "--mount", f"type=bind,src={host_root},dst=/worktree",
         "--workdir", str(Path("/worktree") / relative),
+        "--memory", memory,
+        "--memory-swap", memory_swap,
+        "--cpus", cpus,
     ]
     if cgroup_parent:
         argv.append(f"--cgroup-parent={cgroup_parent}")
+    if device_read_iops:
+        argv += ["--device-read-iops", device_read_iops]
+    if device_write_iops:
+        argv += ["--device-write-iops", device_write_iops]
+    if device_read_bps:
+        argv += ["--device-read-bps", device_read_bps]
+    if device_write_bps:
+        argv += ["--device-write-bps", device_write_bps]
     if sidecar_name:
         argv += ["--network", f"container:{sidecar_name}", "-e", "DOCKER_HOST=tcp://localhost:2375"]
     return [*argv, image, *command]
@@ -132,7 +235,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run a command in tester-unified for this worktree")
     parser.add_argument("--cwd", required=True, help="relative directory in the current worktree")
     parser.add_argument("--image", default=os.environ.get("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:local"))
-    parser.add_argument("--cgroup-parent", default=os.environ.get("CMRU_TESTER_CGROUP_PARENT", ""))
+    parser.add_argument(
+        "--cgroup-parent", default=None,
+        help="Defaults to $CMRU_TESTER_CGROUP_PARENT, then $CGROUP_PARENT_DEV_BACKGROUND "
+             "(ambient, from devcontainer.json) — see AGENTS.md. No implicit fallback: "
+             "unresolvable is a hard error, never an ungoverned launch.",
+    )
+    parser.add_argument("--memory", default=os.environ.get("CMRU_TESTER_MEMORY", _DEFAULT_MEMORY))
+    parser.add_argument("--memory-swap", default=os.environ.get("CMRU_TESTER_MEMORY_SWAP", _DEFAULT_MEMORY_SWAP))
+    parser.add_argument("--cpus", default=os.environ.get("CMRU_TESTER_CPUS", _DEFAULT_CPUS))
+    parser.add_argument("--device-read-iops", default=os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", ""))
+    parser.add_argument("--device-write-iops", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", ""))
+    parser.add_argument("--device-read-bps", default=os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", ""))
+    parser.add_argument("--device-write-bps", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", ""))
     parser.add_argument(
         "--enable-docker", action="store_true",
         default=os.environ.get("CMRU_TESTER_ENABLE_DOCKER", "").strip().lower() in {"1", "true", "yes"},
@@ -145,15 +260,31 @@ def main(argv: Sequence[str] | None = None) -> None:
     if command[:1] == ["--"]:
         command = command[1:]
 
+    cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
+    exists, note = check_slice_unit(cgroup_parent)
+    if exists is False:
+        raise SystemExit(f"tester-gate: refusing to launch — {note}")
+    if exists is None:
+        print(f"[WARN] tester-gate: {note}", file=sys.stderr)
+
+    build_kwargs = dict(
+        image=args.image,
+        cgroup_parent=cgroup_parent,
+        memory=args.memory,
+        memory_swap=args.memory_swap,
+        cpus=args.cpus,
+        device_read_iops=args.device_read_iops,
+        device_write_iops=args.device_write_iops,
+        device_read_bps=args.device_read_bps,
+        device_write_bps=args.device_write_bps,
+    )
+
     if args.enable_docker:
         with dind_sidecar() as sidecar:
             docker_argv = build_docker_command(
-                Path.cwd(), args.cwd, command,
-                image=args.image, cgroup_parent=args.cgroup_parent, sidecar_name=sidecar,
+                Path.cwd(), args.cwd, command, sidecar_name=sidecar, **build_kwargs,
             )
             raise SystemExit(subprocess.run(docker_argv, check=False).returncode)
 
-    docker_argv = build_docker_command(
-        Path.cwd(), args.cwd, command, image=args.image, cgroup_parent=args.cgroup_parent,
-    )
+    docker_argv = build_docker_command(Path.cwd(), args.cwd, command, **build_kwargs)
     raise SystemExit(subprocess.run(docker_argv, check=False).returncode)

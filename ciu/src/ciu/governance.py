@@ -13,6 +13,8 @@ Public API
 ----------
 GOVERNANCE_DEFAULTS    : dict[str, Any]   — code-level defaults (S15.2)
 INJECTED_KEYS          : tuple[str, ...]  — compose keys governance may inject
+CGROUP_PARENT_ENV_VAR  : str              — ambient env override for cgroup_parent
+resolve_cgroup_parent(configured) -> str  — errors if unresolved (no hardcoded fallback)
 BASELINE_PATH_ENV_VAR  : str              — env override for the baseline file
 DEFAULT_BASELINE_PATH  : Path             — neutral default baseline location
 HOST_TOOLING_BASELINE_PATH : Path         — mdt host-setup's baseline, last candidate
@@ -54,7 +56,11 @@ from typing import Any, Mapping
 
 GOVERNANCE_DEFAULTS: dict[str, Any] = {
     "enabled": False,
-    "cgroup_parent": "besteffort.slice",
+    # "" = not explicitly configured by this stack; resolved at build_injections()
+    # time via resolve_cgroup_parent() — no hardcoded slice-name fallback (host
+    # dev-tier cgroup governance rollout, nyxloom/docs/plan-resource-governance.md):
+    # an unresolvable cgroup_parent is a configuration error, not a silent default.
+    "cgroup_parent": "",
     "mem_limit": "1g",
     "mem_reservation": "256m",
     "read_iops": 0,          # 0 = derive from the host io-baseline (S15.4)
@@ -84,6 +90,39 @@ INJECTED_KEYS: tuple[str, ...] = (
     "mem_reservation",
     "blkio_config",
 )
+
+# Ambient override for cgroup_parent, mirroring BASELINE_PATH_ENV_VAR below.
+# Injected by devcontainer.json's containerEnv for the shared dev/test/build
+# tier (see AGENTS.md) — a stack's own explicit governance.cgroup_parent
+# still always wins.
+CGROUP_PARENT_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
+
+
+def resolve_cgroup_parent(configured: str) -> str:
+    """Resolve governance's cgroup_parent: explicit stack config, else the
+    ambient :data:`CGROUP_PARENT_ENV_VAR`, else a hard error.
+
+    Only called once a caller has already confirmed governance is enabled
+    (composefile.generate_overlay gates on ``gov_cfg["enabled"]`` before ever
+    reaching :func:`build_injections`) — so "unresolvable" here always means
+    "governance is on and nothing named a slice," never "governance is off."
+    No hardcoded slice-name fallback: a stack that enables governance without
+    naming a slice, and without the ambient env var present, must fail loudly
+    rather than launch into whichever default happened to be baked in (see
+    nyxloom/docs/plan-resource-governance.md D-G0a — this is exactly the class
+    of implicit-default bug that section documents).
+    """
+    if configured:
+        return configured
+    env_value = os.environ.get(CGROUP_PARENT_ENV_VAR)
+    if env_value:
+        return env_value
+    raise ValueError(
+        "[S15.2] governance is enabled but no cgroup_parent is resolvable — "
+        "set [<root>.governance].cgroup_parent explicitly, or ensure "
+        f"${CGROUP_PARENT_ENV_VAR} is present in the environment (normally "
+        "injected by devcontainer.json's containerEnv; see AGENTS.md)."
+    )
 
 # ---------------------------------------------------------------------------
 # S15.4 — read_iops derivation from the host's measured I/O baseline
@@ -505,6 +544,7 @@ def build_injections(
         caller's one-line summary log (S15.7).
     """
     exempt = set(config.get("exempt_services") or [])
+    cgroup_parent = resolve_cgroup_parent(str(config.get("cgroup_parent") or ""))
     device, device_note = resolve_device(config.get("device", ""))
     read_iops, read_note = derive_read_iops(
         int(config.get("read_iops", 0) or 0),
@@ -523,7 +563,7 @@ def build_injections(
         author_keys = set(block.keys()) if isinstance(block, Mapping) else set()
         frag: dict[str, Any] = {}
         if "cgroup_parent" not in author_keys:
-            frag["cgroup_parent"] = config["cgroup_parent"]
+            frag["cgroup_parent"] = cgroup_parent
         if "mem_limit" not in author_keys:
             frag["mem_limit"] = config["mem_limit"]
         if "mem_reservation" not in author_keys:
@@ -553,7 +593,7 @@ def build_injections(
             services_touched += 1
 
     notes = [
-        f"cgroup_parent={config['cgroup_parent']}",
+        f"cgroup_parent={cgroup_parent}",
         f"mem_limit={config['mem_limit']}",
         f"mem_reservation={config['mem_reservation']}",
         f"read_iops={read_iops} ({read_note})",

@@ -163,7 +163,7 @@ class TestOverlayAndEnvironmentBoundaries:
         overlay = generate_overlay(
             stack, {}, [],
             compose_yaml_text="services:\n  api: {image: example}\n",
-            governance={"enabled": True, "ksm_optin": "hooks/ksm-optin.so"},
+            governance={"enabled": True, "ksm_optin": "hooks/ksm-optin.so", "cgroup_parent": "dev-background.slice"},
             repo_root=repo, physical_root=physical,
         )
         assert overlay is not None

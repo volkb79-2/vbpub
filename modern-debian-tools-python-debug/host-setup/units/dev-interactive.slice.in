@@ -5,34 +5,45 @@ Description=Interactive devcontainers + IDE — responsive, bounded, below any p
 Before=slices.target
 
 [Slice]
+# NOTE: no explicit parent directive — systemd derives nesting from the
+# dash-separated name (same mechanism nyxloom-gates.slice uses under
+# nyxloom.slice): "dev-interactive.slice" nests under "dev.slice"
+# automatically once dev.slice.in is also installed. See units/dev.slice.in
+# for the shared IOPS/bandwidth ceiling this tier inherits from there.
+
 # Generous ceilings: this tier is also the VS Code / IDE server — a too-low
 # MemoryMax OOM-kills the IDE. memory.high throttling into zswap is the
 # intended pressure valve; the hard cap is only the leak backstop.
-MemoryHigh=@INTERACTIVE_MEMORY_HIGH@
-MemoryMax=@INTERACTIVE_MEMORY_MAX@
+MemoryHigh=@DEV_INTERACTIVE_MEMORY_HIGH@
+MemoryMax=@DEV_INTERACTIVE_MEMORY_MAX@
 # Soft protection of the IDE working set against OTHER tiers' pressure.
 # NOTE: this only reaches the container's pages if cgroup2 is mounted with
 # memory_recursiveprot (the systemd >= 248 boot default — but runtime remounts
 # can strip it; check.sh verifies, mdt-apply-dev-caps.sh warns/fixes).
-MemoryLow=@INTERACTIVE_MEMORY_LOW@
+MemoryLow=@DEV_INTERACTIVE_MEMORY_LOW@
 
-CPUWeight=@INTERACTIVE_CPU_WEIGHT@
+CPUWeight=@DEV_INTERACTIVE_CPU_WEIGHT@
 # CPU ratios are exact; IO ratios are NOT on a BFQ host unless the weights stay
 # <= 100 (systemd rescales IOWeight 1..10000 into BFQ's 1..1000, compressing
 # everything above 100 by ~11x). See CGROUP-NOTES.md §BFQ.
-IOWeight=@INTERACTIVE_IO_WEIGHT@
+IOWeight=@DEV_INTERACTIVE_IO_WEIGHT@
+
+# NO absolute IO cap here — the shared parent dev.slice carries the one
+# IOPS/bandwidth ceiling for this tier AND dev-background.slice combined (host
+# dev-tier cgroup governance rollout: even interactive/IDE activity must not
+# be able to starve production I/O). See units/dev.slice.in.
 
 # Whether this tier's coldest pages may drain from zswap out to disk swap.
 # Shipped default is "yes": zswap is a cache, and letting its LRU evict the
 # coldest-of-cold keeps pool RAM available for pages that are actually warm.
-# Set INTERACTIVE_ZSWAP_WRITEBACK=no to pin the cold tail in compressed RAM
+# Set DEV_INTERACTIVE_ZSWAP_WRITEBACK=no to pin the cold tail in compressed RAM
 # instead — that avoids disk swap-in stalls in the IDE, but permanently spends
 # pool RAM on pages nobody is touching. See host-setup.env.example.
 # (Directive needs systemd >= 256; install.sh drops this line on older hosts
 # and mdt-apply-dev-caps.sh raw-writes memory.zswap.writeback as the fallback.)
-MemoryZSwapWriteback=@INTERACTIVE_ZSWAP_WRITEBACK@
+MemoryZSwapWriteback=@DEV_INTERACTIVE_ZSWAP_WRITEBACK@
 
 # Deliberately NO ManagedOOM* here: never OOM-kill the IDE tier.
 # Devcontainers join via devcontainer.json runArgs:
-#   "--cgroup-parent=interactive.slice"
+#   "--cgroup-parent=dev-interactive.slice"
 # (see ../templates/devcontainer.json — placement is CREATE-time only).

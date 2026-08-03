@@ -18,31 +18,30 @@ echo "== copying config files from $HERE/files into / =="
 # Remove the minimal sysctl stub deployed by the initial commit; the full
 # documented version (99-gstammtisch-memory.conf) supersedes it.
 rm -f /etc/sysctl.d/99-memory.conf
-# NOTE: this copies etc/docker/daemon.json too (live-restore + log rotation) —
-# host-specific installer, overwrites any existing daemon.json.
+# /etc/docker/daemon.json is NOT copied from here (host dev-tier cgroup
+# governance rollout): it now has one owner, mdt's host-setup/ companion
+# (modern-debian-tools-python-debug/host-setup/install.sh) — see that
+# script's "docker daemon.json" step. Two installers each doing a wholesale
+# copy of this file would silently fight over it, last-writer-wins.
 # cp -r WITHOUT -a/--preserve: -a copies the repo checkout's user ownership and
 # group-writable modes onto the TARGET DIRECTORIES themselves (observed
 # 2026-07-07: /etc became vb:vb 775). Plain -r as root creates root-owned
 # files with umask modes, which is what system config must be.
 cp -rv "$HERE/files/etc/."            /etc/
 cp -rv "$HERE/files/usr/local/sbin/." /usr/local/sbin/
-chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh \
+chmod +x /usr/local/sbin/soulmask-shutdown.sh \
          /usr/local/sbin/soulmask-pak-ramdisk-setup.sh /usr/local/sbin/soulmask-pak-ramdisk-toggle.sh \
          /usr/local/sbin/soulmask-pak-ramdisk-teardown.sh \
          /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-zswap-monitor.py \
-         /usr/local/sbin/soulmask-mempress.sh \
-         /usr/local/sbin/soulmask-startup-cgroup.sh /usr/local/sbin/soulmask-pak-mempress.sh \
-         /usr/local/sbin/soulmask-cgroup-watcher.sh \
+         /usr/local/sbin/soulmask-mempress.sh /usr/local/sbin/soulmask-pak-mempress.sh \
          /usr/local/sbin/container-mempress.sh
 # soulmask-instance-lib.sh is sourced only (not directly executed) — no +x needed.
+# setup-cgroups.sh / soulmask-cgroup-watcher.sh / soulmask-startup-cgroup.sh are
+# RETIRED (see files/legacy/) — superseded by patched Wings' own native
+# per-server slice placement + staged startup/steady bands; no longer copied
+# here, so no longer chmod'd or enabled below.
 # /etc/gstammtisch/instance-defaults.env + instances.d/*.env came in via the
 # etc/ copy above — see SOULMASK.md "Multi-instance operations".
-
-echo "== docker daemon config =="
-# SIGHUP reload applies live-restore without restarting containers; log-opts
-# only affect containers created afterwards.
-systemctl reload docker 2>/dev/null && echo "docker reloaded (live-restore active)" \
-  || echo "WARN: docker reload failed — run 'systemctl reload docker' manually"
 
 echo "== BFQ I/O scheduler =="
 # BFQ is required for cgroup io.weight / io.bfq.weight to have any effect.
@@ -72,10 +71,11 @@ echo "== systemd: reload + enable units =="
 systemctl daemon-reload
 systemctl enable --now zswap-config.service
 systemctl enable soulmask-paks.slice 2>/dev/null || true   # pak ramdisk cgroup slice
-# The dev tiers (interactive.slice / besteffort.slice) are NOT installed here —
-# they belong to mdt host-setup, see the note at the end of this script.
-systemctl enable --now gstammtisch-cgroups.service
-systemctl enable --now soulmask-cgroup-watcher.service
+# The dev tiers (dev-interactive.slice / dev-background.slice) are NOT
+# installed here — they belong to mdt host-setup, see the note at the end of
+# this script. gstammtisch-cgroups.service / soulmask-cgroup-watcher.service
+# are RETIRED (files/legacy/) — patched Wings now places+configures each
+# Soulmask container's cgroup natively; nothing here enables them anymore.
 systemctl enable --now soulmask-graceful-stop.service
 systemctl enable --now systemd-oomd.service 2>/dev/null || true
 
@@ -98,16 +98,19 @@ cat <<'NEXT'
        partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2 --commit
   2) GRUB: ensure GRUB_CMDLINE_LINUX has NO zswap.* tokens (handled post-boot now);
      optionally add `preempt=full` for lower game-tick latency. update-grub if changed.
-  3) Measure Soulmask hot set with DAMON, set SOULMASK_MIN in
-     /etc/gstammtisch/instances.d/<server-uuid>.env (or instance-defaults.env
-     for every instance), then: systemctl restart gstammtisch-cgroups
+  3) Per-server memory floors/weights are set via patched Wings itself now
+     (docker.per_server_slices config + admin-only WINGS_CG_* egg overrides —
+     see the wings-cgroups project's SETUP.md), not gstammtisch — that
+     retrofit path (setup-cgroups.sh, SOULMASK_MIN in
+     /etc/gstammtisch/instances.d/<server-uuid>.env) is retired.
   4) Pterodactyl panel: set Soulmask memory/CPU/IO limits.
   5) Pre-pull the RCON image:  docker pull itzg/rcon-cli
      Verify RCON:               exec-soulmask-rcon.sh -d List_OnlinePlayers
   6) Watch health:              swap-health watch
   7) Dev/test/build containers on this host are governed SEPARATELY, by the mdt
-     host-setup companion (interactive.slice + besteffort.slice, measured IO
-     caps, the fio baseline, BFQ setup):
+     host-setup companion (dev-interactive.slice + dev-background.slice,
+     measured IO caps, the fio baseline, BFQ setup, AND /etc/docker/daemon.json —
+     the sole owner of that file now, see the note above):
        sudo <vbpub>/modern-debian-tools-python-debug/host-setup/install.sh --with-baseline
        sudo mdt-host-check.sh
      Run the baseline while the game is STOPPED — it saturates the disk ~4 min.

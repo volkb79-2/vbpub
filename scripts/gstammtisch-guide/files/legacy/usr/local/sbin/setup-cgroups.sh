@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# RETIRED (host dev-tier cgroup governance rollout): superseded by patched
+# Wings' native per-server slice placement + properties, applied at
+# container-create time via D-Bus (see [[wings-cgroups-project]] memory —
+# PROD ROLLOUT COMPLETE 2026-07-17). Verified live: Soulmask's container
+# HostConfig.CgroupParent is already wings-<uuid>.slice, all 6 properties
+# (memory.min/low/high, io.weight, cpu.weight, zswap.writeback) applied by
+# Wings itself. gstammtisch-cgroups.service and soulmask-cgroup-watcher.service
+# (the systemd units that used to drive this script) were already
+# disabled+inactive on the host with no runtime state, confirming this had
+# already gone unused. Kept here for reference only — do not re-enable.
+#
 # Apply cgroup-v2 knobs that systemd slice units can't express directly:
 #   - ancestor floors      : system.slice + soulmask.slice MemoryMin. cgroup-v2 protection
 #                            is HIERARCHICAL — a child's memory.min is capped by every

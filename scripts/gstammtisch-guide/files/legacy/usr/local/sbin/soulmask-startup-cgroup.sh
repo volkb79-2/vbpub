@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# RETIRED (host dev-tier cgroup governance rollout): superseded by patched
+# Wings' native per-server slice placement + staged startup/steady bands
+# (patches 0007 "staged startup/steady bands + ramp" and 0010 "child-start on
+# steady trigger" — see [[wings-cgroups-project]] memory), which reimplement
+# this same 3-phase lifecycle natively at container-create time. Nothing on
+# the host invoked this script automatically (no systemd unit, no cron, no
+# Pterodactyl egg hook referenced it) and it left no run-state evidence.
+# Kept here for reference only — do not re-enable.
+#
 # Soulmask 3-phase startup cgroup lifecycle.
 #
 # Phase 1 — Startup (memory.min=9G, memory.high=max):

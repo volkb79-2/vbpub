@@ -22,7 +22,7 @@ case "$OPTS" in
 esac
 
 echo "== slice units =="
-for s in interactive besteffort; do
+for s in dev dev-interactive dev-background; do
   st=$(systemctl show "$s.slice" -p ActiveState --value 2>/dev/null)
   fp=$(systemctl show "$s.slice" -p FragmentPath --value 2>/dev/null)
   if [ -z "$fp" ]; then
@@ -34,30 +34,37 @@ for s in interactive besteffort; do
   fi
 done
 
-echo "== interactive.slice effective values =="
-if [ -d "$CG/interactive.slice" ]; then
+echo "== dev-interactive.slice effective values =="
+if [ -d "$CG/dev-interactive.slice" ]; then
   # io.bfq.weight is listed deliberately: on a BFQ host it is what actually
   # schedules, and it is NOT io.weight — systemd rescales IOWeight 1..10000
   # into BFQ's 1..1000 (identity at <= 100, ~11x compression above).
   for f in memory.high memory.max memory.low cpu.weight io.weight io.bfq.weight; do
-    printf '  %-14s %s\n' "$f" "$(cat "$CG/interactive.slice/$f" 2>/dev/null)"
+    printf '  %-14s %s\n' "$f" "$(cat "$CG/dev-interactive.slice/$f" 2>/dev/null)"
   done
-  wb=$(cat "$CG/interactive.slice/memory.zswap.writeback" 2>/dev/null)
-  case "${INTERACTIVE_ZSWAP_WRITEBACK:-no}" in no|0|false) want=0 ;; *) want=1 ;; esac
+  wb=$(cat "$CG/dev-interactive.slice/memory.zswap.writeback" 2>/dev/null)
+  case "${DEV_INTERACTIVE_ZSWAP_WRITEBACK:-no}" in no|0|false) want=0 ;; *) want=1 ;; esac
   [ "$wb" = "$want" ] && ok "memory.zswap.writeback=$wb" \
     || warn "memory.zswap.writeback=$wb (expected $want — run mdt-apply-dev-caps.sh)"
 else
-  warn "interactive.slice cgroup absent (no member started yet)"
+  warn "dev-interactive.slice cgroup absent (no member started yet)"
 fi
 
-echo "== besteffort.slice IO caps =="
-if [ -d "$CG/besteffort.slice" ]; then
-  iom=$(cat "$CG/besteffort.slice/io.max" 2>/dev/null)
+echo "== dev.slice IO caps (shared by dev-interactive + dev-background) =="
+if [ -d "$CG/dev.slice" ]; then
+  iom=$(cat "$CG/dev.slice/io.max" 2>/dev/null)
   [ -n "$iom" ] && echo "  io.max: $iom" \
-    || warn "no io.max on besteffort.slice — neither statics nor runtime caps applied"
-  printf '  %-14s %s\n' io.bfq.weight "$(cat "$CG/besteffort.slice/io.bfq.weight" 2>/dev/null)"
+    || warn "no io.max on dev.slice — neither statics nor runtime caps applied"
+  printf '  %-14s %s\n' io.bfq.weight "$(cat "$CG/dev.slice/io.bfq.weight" 2>/dev/null)"
 else
-  warn "besteffort.slice cgroup absent (no member started yet)"
+  warn "dev.slice cgroup absent (no member started yet)"
+fi
+
+echo "== docker-.scope.d default-limits backstop (D-G8) =="
+if [ -f /etc/systemd/system/docker-.scope.d/50-default-limits.conf ]; then
+  ok "backstop drop-in installed"
+else
+  warn "no docker-.scope.d/50-default-limits.conf — a typo'd/missing --cgroup-parent fails OPEN (unbounded), unmitigated"
 fi
 # Independent of the slice: a missing/stale baseline means the caps in force are
 # the tight unit statics, whether or not any member has started.
@@ -92,8 +99,10 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     p=$(docker inspect -f '{{.HostConfig.CgroupParent}}' "$n" 2>/dev/null)
     printf '  %-45s %s\n' "$n" "${p:-<daemon default>}"
   done
-  echo "  (devcontainers should show interactive.slice; test/build stacks besteffort.slice;"
-  echo "   placement is CREATE-time only — recreate a container to move it)"
+  echo "  (devcontainers should show dev-interactive.slice; test/build/gate stacks"
+  echo "   dev-background.slice (explicitly, or <daemon default> if the daemon.json"
+  echo "   cgroup-parent applies); placement is CREATE-time only — recreate a"
+  echo "   container to move it)"
 else
   warn "docker unavailable — skipped placement listing"
 fi

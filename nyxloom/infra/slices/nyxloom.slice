@@ -8,9 +8,11 @@ Before=slices.target
 # gates run concurrently -- the single number that makes "N runaway agents"
 # survivable.
 #
-# CPUWeight is RELATIVE TO SIBLINGS of this slice (interactive.slice=200,
-# dev-workloads.slice=50, besteffort.slice=20 on this host). Weights bind ONLY
-# under contention: on an idle host this slice still reaches 100% of all cores.
+# CPUWeight is RELATIVE TO SIBLINGS of this slice (dev-interactive.slice=200,
+# dev-background.slice=20 on this host — host dev-tier cgroup governance
+# rollout merged the old dev-workloads.slice into dev-background.slice).
+# Weights bind ONLY under contention: on an idle host this slice still
+# reaches 100% of all cores.
 CPUWeight=50
 IOWeight=50
 

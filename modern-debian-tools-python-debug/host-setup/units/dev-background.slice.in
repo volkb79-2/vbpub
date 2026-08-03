@@ -1,0 +1,46 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Dev/test/build/gate containers — bounded, OOM-first, yields to every other tier
+Before=slices.target
+
+[Slice]
+# NOTE: no explicit parent directive — systemd derives nesting from the
+# dash-separated name: "dev-background.slice" nests under "dev.slice"
+# automatically once dev.slice.in is also installed. See units/dev.slice.in
+# for the shared IOPS/bandwidth ceiling this tier inherits from there — this
+# is the merged besteffort.slice + dev-workloads.slice tier (host dev-tier
+# cgroup governance rollout): both the Docker daemon-wide fallback for
+# anything unconfigured AND the explicit convention every project's
+# test/gate/build container opts into ($CGROUP_PARENT_DEV_BACKGROUND).
+
+# Soft ceiling first (throttle into zswap), hard cap so a leak can never
+# poison the host, swap cap so it can't poison swap/zswap either.
+MemoryHigh=@DEV_BACKGROUND_MEMORY_HIGH@
+MemoryMax=@DEV_BACKGROUND_MEMORY_MAX@
+MemorySwapMax=@DEV_BACKGROUND_MEMORY_SWAP_MAX@
+
+CPUWeight=@DEV_BACKGROUND_CPU_WEIGHT@
+# On a BFQ host this is only a true ratio against dev-interactive.slice
+# because both weights are <= 100 (systemd compresses IOWeight > 100 into
+# BFQ's 1..1000 range). See CGROUP-NOTES.md §BFQ before raising it.
+IOWeight=@DEV_BACKGROUND_IO_WEIGHT@
+
+# NO absolute IO cap here — the shared parent dev.slice carries the one
+# IOPS/bandwidth ceiling for this tier AND dev-interactive.slice combined. See
+# units/dev.slice.in for the static boot-window fallback + the runtime
+# measured-baseline override this used to carry per-tier.
+
+# systemd-oomd: under sustained pressure, kill inside this tier first.
+# Silent no-op unless systemd-oomd is installed and running (install.sh
+# installs it; ManagedOOM* settings do nothing without the daemon).
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=@DEV_BACKGROUND_OOM_PRESSURE_LIMIT@
+ManagedOOMSwap=kill
+
+# NOTE: memory.zswap.writeback stays at the kernel default (1) here — cold
+# background pages MAY be written back to disk; that is the point of the tier.
+# Containers join via the Docker daemon-wide default (cgroup-parent in
+# /etc/docker/daemon.json — see host-setup.env.example), an explicit
+# `docker run --cgroup-parent=dev-background.slice`, or compose
+# `cgroup_parent: dev-background.slice` (ciu governance injects it).

@@ -1,0 +1,27 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Dev/build/interactive estate — one absolute IOPS/bandwidth ceiling for everything below it
+Before=slices.target
+
+[Slice]
+# Root parent for dev-interactive.slice + dev-background.slice (systemd
+# derives the nesting from the dash-separated names — no parent directive
+# needed on either child). ONLY an IO ceiling lives here (host dev-tier
+# cgroup governance rollout): CPUWeight/memory/OOM policy stay per-child,
+# since interactive and background work genuinely need different shapes
+# there. IO is different — even interactive/IDE activity must not be able to
+# starve production I/O, so ONE absolute cap bounds both tiers combined
+# rather than being duplicated (and potentially summed past a safe total) on
+# each child separately.
+#
+# Static boot-window fallbacks (deliberately tight — mdt-host-slices.service
+# overrides them at runtime with DEV_IO_CAP_PCT% (60% by default) of the
+# measured ceilings from io-baseline.env; a static unit file cannot express
+# "a percentage of what this disk actually does"). If no baseline has been
+# measured yet, these statics stay in force indefinitely — see
+# CGROUP-NOTES.md §3.
+IOReadBandwidthMax=@IO_DEV_PATH@ @DEV_STATIC_RBW@
+IOWriteBandwidthMax=@IO_DEV_PATH@ @DEV_STATIC_WBW@
+IOReadIOPSMax=@IO_DEV_PATH@ @DEV_STATIC_RIOPS@
+IOWriteIOPSMax=@IO_DEV_PATH@ @DEV_STATIC_WIOPS@

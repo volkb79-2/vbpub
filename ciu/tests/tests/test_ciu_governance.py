@@ -38,14 +38,16 @@ class TestResolveConfig:
     def test_empty_dict_yields_defaults(self) -> None:
         cfg = gov.resolve_config({})
         assert cfg["enabled"] is False
-        assert cfg["cgroup_parent"] == "besteffort.slice"
+        # No hardcoded slice-name default — resolve_cgroup_parent() resolves
+        # this later, at build_injections() time, erroring if unresolvable.
+        assert cfg["cgroup_parent"] == ""
 
     def test_partial_override_keeps_other_defaults(self) -> None:
         cfg = gov.resolve_config({"enabled": True, "write_iops": 999})
         assert cfg["enabled"] is True
         assert cfg["write_iops"] == 999
         assert cfg["mem_limit"] == "1g"  # untouched default
-        assert cfg["cgroup_parent"] == "besteffort.slice"
+        assert cfg["cgroup_parent"] == ""
 
     def test_exempt_services_defaults_to_empty_list(self) -> None:
         cfg = gov.resolve_config({"enabled": True})
@@ -307,7 +309,9 @@ class TestBaselineSearchOrder:
         self._pin(monkeypatch, tmp_path)
         monkeypatch.setattr(gov, "resolve_device", lambda configured: ("/dev/vda", "explicit"))
         configured = self._touch(tmp_path / "stack-baseline.env", 900)
-        cfg = gov.resolve_config({"enabled": True, "baseline_path": str(configured)})
+        cfg = gov.resolve_config({
+            "enabled": True, "baseline_path": str(configured), "cgroup_parent": "dev-background.slice",
+        })
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         rate = injections["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
         assert rate == 600
@@ -444,6 +448,27 @@ class TestResolveDevice:
 
 
 # ---------------------------------------------------------------------------
+# Host dev-tier cgroup governance rollout — resolve_cgroup_parent (no
+# hardcoded slice-name fallback: unresolvable is an error, never a default).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCgroupParent:
+    def test_explicit_config_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(gov.CGROUP_PARENT_ENV_VAR, "should-not-be-used.slice")
+        assert gov.resolve_cgroup_parent("explicit.slice") == "explicit.slice"
+
+    def test_falls_back_to_ambient_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(gov.CGROUP_PARENT_ENV_VAR, "dev-background.slice")
+        assert gov.resolve_cgroup_parent("") == "dev-background.slice"
+
+    def test_neither_configured_nor_env_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(gov.CGROUP_PARENT_ENV_VAR, raising=False)
+        with pytest.raises(ValueError, match=r"\[S15\.2\].*no cgroup_parent is resolvable"):
+            gov.resolve_cgroup_parent("")
+
+
+# ---------------------------------------------------------------------------
 # D-G9 check 1 — check_slice_unit (systemd slice-existence probe)
 # ---------------------------------------------------------------------------
 
@@ -552,7 +577,9 @@ class TestCheckSliceUnit:
 
 class TestBuildInjections:
     def _cfg(self, **overrides) -> dict:
-        cfg = gov.resolve_config({"enabled": True, **overrides})
+        raw = {"enabled": True, "cgroup_parent": "dev-background.slice"}
+        raw.update(overrides)
+        cfg = gov.resolve_config(raw)
         return cfg
 
     def test_injects_all_four_keys_when_author_sets_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -561,7 +588,7 @@ class TestBuildInjections:
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         assert set(injections) == {"redis"}
         frag = injections["redis"]
-        assert frag["cgroup_parent"] == "besteffort.slice"
+        assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["mem_limit"] == "1g"
         assert frag["mem_reservation"] == "256m"
         assert frag["blkio_config"] == {
@@ -577,7 +604,7 @@ class TestBuildInjections:
         injections, _ = gov.build_injections({"redis": block}, cfg)
         frag = injections["redis"]
         assert "mem_limit" not in frag
-        assert frag["cgroup_parent"] == "besteffort.slice"
+        assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["mem_reservation"] == "256m"
         assert "blkio_config" in frag
 
@@ -607,7 +634,7 @@ class TestBuildInjections:
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         frag = injections["redis"]
         assert "blkio_config" not in frag
-        assert frag["cgroup_parent"] == "besteffort.slice"
+        assert frag["cgroup_parent"] == "dev-background.slice"
         assert any("none" in n for n in notes)
 
     def test_empty_compose_services_yields_no_injections(self) -> None:
@@ -615,6 +642,16 @@ class TestBuildInjections:
         injections, notes = gov.build_injections({}, cfg)
         assert injections == {}
         assert any("services_injected=0" in n for n in notes)
+
+    def test_unresolvable_cgroup_parent_raises_even_with_no_services(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Governance enabled, nothing named a slice, no ambient env var: fail
+        loud — never silently omit cgroup_parent from the injected fragment."""
+        monkeypatch.delenv(gov.CGROUP_PARENT_ENV_VAR, raising=False)
+        cfg = gov.resolve_config({"enabled": True, "device": "/dev/vda"})
+        with pytest.raises(ValueError, match=r"\[S15\.2\].*no cgroup_parent is resolvable"):
+            gov.build_injections({"redis": {"image": "redis"}}, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +881,9 @@ class TestKsmOptinInjection:
     """S15.11 — KSM opt-in env + bind injection."""
 
     def _cfg(self, **overrides) -> dict:
-        return gov.resolve_config({"enabled": True, **overrides})
+        raw = {"enabled": True, "cgroup_parent": "dev-background.slice"}
+        raw.update(overrides)
+        return gov.resolve_config(raw)
 
     def test_default_is_off(self) -> None:
         cfg = gov.resolve_config({"enabled": True})

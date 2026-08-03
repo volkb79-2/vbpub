@@ -38,6 +38,32 @@ dedicated container, never here. For the vbpub family that is
 identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
 
+## Host cgroup placement for spawned containers
+This host runs real production workloads (game servers, edge/site infra)
+alongside dev/test/build work, so any container you or a tool starts must be
+placed on the host, never left at Docker's unconfined default. The
+devcontainer names both tiers as environment variables (injected by
+`devcontainer.json`'s `containerEnv`) — read one of these, never hardcode a
+slice name:
+
+- `$CGROUP_PARENT_DEV_INTERACTIVE` — this devcontainer's own tier (already
+  applied via `runArgs`; you don't need to pass this yourself).
+- `$CGROUP_PARENT_DEV_BACKGROUND` — the shared tier for a test/gate/build
+  container you spawn (`docker run --cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND
+  ...`). `cmru`'s `tester-gate` (`cmru/src/cmru/tester_gate.py`) and `ciu`'s
+  governance mechanism (`ciu/src/ciu/governance.py`) both already resolve this
+  automatically — an explicit `CMRU_TESTER_CGROUP_PARENT` (cmru) or
+  `[<root>.governance].cgroup_parent` (ciu) still overrides it when a project
+  genuinely needs something else.
+
+**No hardcoded fallbacks.** If neither variable nor an explicit override is
+set, that is a configuration error — refuse to launch (or let the tool's own
+preflight refuse), never fall through to Docker's unconfined default next to
+production. A typo'd or nonexistent slice name fails **open** (systemd
+silently auto-creates an unlimited transient slice), so any code that accepts
+a slice name should verify it's actually a loaded unit first
+(`systemctl show <slice> --property=LoadState`) rather than trust it blindly.
+
 ## Worktree protocol
 Parallel implementation runs in `.worktrees/<branch>` (branch from `main`).
 Merge serially onto `main` with `--no-ff`; expect minor overlap reconciliation.

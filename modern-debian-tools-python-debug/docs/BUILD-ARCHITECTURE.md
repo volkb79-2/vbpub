@@ -126,8 +126,8 @@ On the intended systemd/cgroup-v2 host, the relationship is typically:
 ```mermaid
 flowchart TD
     R[cgroup root] --> S[system.slice]
-    R --> I[interactive.slice]
-    R --> B[besteffort.slice]
+    R --> I[dev-interactive.slice]
+    R --> B[dev-background.slice]
     S --> D[docker.service / dockerd]
     S --> K[BuildKit docker scope<br/>4 GiB RAM, 12 GiB RAM+swap, 4 CPU quota]
     I --> V[MDT devcontainer]
@@ -139,14 +139,14 @@ flowchart TD
 The exact Docker scope name is runtime-generated. With systemd's cgroup driver,
 the builder is normally a separate `docker-<id>.scope` under `system.slice`, a
 sibling of `docker.service`, even though `dockerd` is its process-level parent.
-Its hard leaf limits still apply. `besteffort.slice` is shown for context: the
+Its hard leaf limits still apply. `dev-background.slice` is shown for context: the
 dstdns stack uses it, while local release processes inherit the invoking
-devcontainer's `interactive.slice`.
+devcontainer's `dev-interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
 | --- | --- | --- |
 | Dockerfile steps, cache, layer compression, registry export, optional OCI export/import | The container backing the configured `BUILDX_BUILDER` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
-| Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `interactive.slice` |
+| Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `dev-interactive.slice` |
 | Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count and compression concurrency; an optional diagnostic virtual-memory ceiling is disabled by default |
 | Docker API, container lifecycle, layer/accounting and registry coordination | `dockerd` in `system.slice/docker.service` | Host Docker service policy; CPU here is daemon work and is not evidence that Dockerfile commands escaped the governed builder |
 | Registry upload | BuildKit worker, `dockerd`, network stack | Builder limits still apply; host networking and Docker service work remain outside the builder leaf |
@@ -158,15 +158,15 @@ mismatched instance is automatically recreated before work starts. The
 important distinction is:
 
 - A systemd **slice** controls an aggregate workload tier. The shipped
-  devcontainer template requests `interactive.slice`; dstdns stack containers
-  normally request `besteffort.slice`. Slice policy is installed and owned by
+  devcontainer template requests `dev-interactive.slice`; dstdns stack containers
+  normally request `dev-background.slice`. Slice policy is installed and owned by
   the host.
 - A Docker **container cgroup leaf** can enforce hard memory and CPU limits even
   though its scope is in `system.slice`. That is how the governed BuildKit
   worker is bounded; `dockerd` itself is not given the builder's 4 GiB cap.
 - `cgroup-parent` is not used for the Buildx container. With Docker's systemd
   cgroup driver, Buildx's `cgroup-parent` driver option is not reliable. True
-  placement of buildkitd in `besteffort.slice` would require a host-managed
+  placement of buildkitd in `dev-background.slice` would require a host-managed
   buildkitd service in that slice and a Buildx `remote` driver.
 - Docker has no Buildx driver option for the host's dynamic per-device I/O
   ceilings. A host setup service may additionally find
@@ -208,7 +208,7 @@ cores when the host is otherwise idle.
 on swap. Paired with `memory=4g`, it permits up to 8 GiB of swap for the builder.
 Whether those pages use zswap before disk swap is a host kernel policy.
 
-For the devcontainer's `interactive.slice` placement and host prerequisites,
+For the devcontainer's `dev-interactive.slice` placement and host prerequisites,
 see [`DEVCONTAINER-LIFECYCLE.md`](../DEVCONTAINER-LIFECYCLE.md#host-resource-governance-cgroupsslices).
 
 ### How the cgroup controls compose
@@ -283,8 +283,8 @@ Use this phase map before changing a limit:
 | Visible load | Likely phase | First check | Usually bounded by |
 | --- | --- | --- | --- |
 | `buildkitd`, `runc`, compiler, package manager, or compression child beneath the builder | Dockerfile execution or layer export | Builder `docker stats`, `cpu.stat`, `memory.events`, and BuildKit progress | Builder leaf plus its ancestors |
-| `docker-buildx`, `tar`, or `build-push.py` in the MDT devcontainer | Resolve/stage/orchestrate or OCI stream handling | Caller cgroup and `interactive.slice` | Devcontainer leaf and `interactive.slice` |
-| `docker-repack` in the MDT devcontainer | Optional repack | Repack progress, caller PSI and I/O counters | Caller cgroup, job/concurrency settings, priority, and `interactive.slice` |
+| `docker-buildx`, `tar`, or `build-push.py` in the MDT devcontainer | Resolve/stage/orchestrate or OCI stream handling | Caller cgroup and `dev-interactive.slice` | Devcontainer leaf and `dev-interactive.slice` |
+| `docker-repack` in the MDT devcontainer | Optional repack | Repack progress, caller PSI and I/O counters | Caller cgroup, job/concurrency settings, priority, and `dev-interactive.slice` |
 | `dockerd` in `docker.service` | Snapshot, content-store, API, container, or registry coordination | Docker events/logs and host disk/network activity | Host policy for `docker.service`; not the builder's leaf |
 | `containerd`, `containerd-shim`, or kernel I/O workers | Runtime/snapshotter plumbing | Correlate timestamps and cumulative I/O deltas with the active phase | Their host service/cgroup and host I/O policy |
 | No hot process but high load average | Tasks blocked on disk or memory reclaim | `/proc/pressure/{io,memory}`, `vmstat`, and cgroup pressure | Host capacity and the tightest ancestor/leaf controls |
@@ -318,7 +318,7 @@ docker stats --no-stream "$builder_container"
 ps -eo pid,ppid,pcpu,pmem,cgroup,comm,args --sort=-pcpu | head -40
 
 # Host-owned aggregate slice policy and current accounting
-systemctl show interactive.slice besteffort.slice \
+systemctl show dev-interactive.slice dev-background.slice \
   -p ControlGroup -p MemoryCurrent -p MemoryHigh -p MemoryMax \
   -p MemorySwapCurrent -p MemorySwapMax -p CPUWeight -p IOWeight
 ```

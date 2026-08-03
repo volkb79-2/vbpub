@@ -96,8 +96,10 @@ containers read it from there. No hardcoded host path, no raw `containerEnv` var
 On hosts that tier resources via systemd slices (cgroup v2) — for example a shared host that also
 runs a production workload alongside devcontainers and best-effort test/build containers — this
 devcontainer should land in its own tier instead of the host's default (usually unlimited) cgroup.
-`templates/devcontainer.json` ships a `--cgroup-parent=interactive.slice` runArg for this; this
-section explains the mechanism so you can reason about safety on hosts that do **not** opt in.
+`templates/devcontainer.json` ships a `--cgroup-parent=dev-interactive.slice` runArg for this
+(plus `containerEnv` vars naming both tiers — see below — for any in-container tool that spawns
+its own containers); this section explains the mechanism so you can reason about safety on hosts
+that do **not** opt in.
 See also [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) for how this fits the doctrine's
 layering (host/orchestration concern, not image content).
 
@@ -113,15 +115,17 @@ list, and the BFQ caveats that come with IO weights, are in
 
 ### Host prerequisite: the slice unit must actually exist
 
-`--cgroup-parent=interactive.slice` only produces a governed container if the host has installed a
-systemd slice unit at `/etc/systemd/system/interactive.slice` with real limits. **The
-[`host-setup/`](host-setup/README.md) companion installs and maintains exactly this** — both dev
-tiers (`interactive.slice` for devcontainers, `besteffort.slice` for test/build stacks), rendered
-from a per-host env file, plus a measured-baseline IO-cap service and a health check
-(`mdt-host-check.sh`). Hand-rolled minimal equivalent:
+`--cgroup-parent=dev-interactive.slice` only produces a governed container if the host has
+installed a systemd slice unit at `/etc/systemd/system/dev-interactive.slice` with real limits.
+**The [`host-setup/`](host-setup/README.md) companion installs and maintains exactly this** — both
+dev tiers (`dev-interactive.slice` for devcontainers, `dev-background.slice` for test/build/gate
+stacks — also the Docker daemon-wide fallback via `/etc/docker/daemon.json`, which host-setup owns
+fully), nested under one shared `dev.slice` IOPS/bandwidth ceiling, rendered from a per-host env
+file, plus a measured-baseline IO-cap service and a health check (`mdt-host-check.sh`). Hand-rolled
+minimal equivalent:
 
 ```ini
-# /etc/systemd/system/interactive.slice — illustrative values, tune to your host
+# /etc/systemd/system/dev-interactive.slice — illustrative values, tune to your host
 [Unit]
 Description=Interactive devcontainers — responsive, bounded, below any production tier
 Before=slices.target
@@ -138,8 +142,8 @@ activates the slice on demand the first time something references it).
 **Graceful degradation if the unit is missing:** systemd does not fail the container start when the
 named slice has no unit file — it transparently creates a **transient, unlimited** slice with the
 same name on the fly. The container starts exactly as it would with no `--cgroup-parent` at all.
-This is why shipping `--cgroup-parent=interactive.slice` in the shared template is safe for every
-consumer, including those on hosts that never define the slice: at worst it is a no-op.
+This is why shipping `--cgroup-parent=dev-interactive.slice` in the shared template is safe for
+every consumer, including those on hosts that never define the slice: at worst it is a no-op.
 
 ### What the container can (and can't) see about its own placement
 

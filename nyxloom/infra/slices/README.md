@@ -64,14 +64,15 @@ infrastructure.
 Absolute numbers are **host-owned and live here**, never in project config
 (D-G4). A project moving hosts then needs no change — which is already how the
 estate works: dstdns's ciu governance sets a per-container `mem_limit` as a
-first-pass ceiling, and its own comment records that `besteffort.slice`'s
+first-pass ceiling, and its own comment records that `dev-background.slice`'s
 `MemoryMax` is "the real host-safety backstop regardless of any per-container
 value".
 
 ## Weight reference on this host
 
-`interactive.slice` **200** · `dev-workloads.slice` **50** ·
-`besteffort.slice` **20**. Weights bind **only under contention** — on an idle
+`dev-interactive.slice` **200** · `dev-background.slice` **20** (host dev-tier
+cgroup governance rollout merged the old `dev-workloads.slice` into
+`dev-background.slice`). Weights bind **only under contention** — on an idle
 host a weight-1 cgroup still reaches 100% of every core. Setting agent and gate
 weights low therefore costs nothing in idle throughput; it only decides who
 yields when things collide.

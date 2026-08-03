@@ -1151,7 +1151,10 @@ universal default across every stack that declares none of its own (S15.10).
 ```toml
 [<root>.governance]
 enabled = false                 # opt-in; default false
-cgroup_parent = "besteffort.slice"
+cgroup_parent = ""              # "" = resolve $CGROUP_PARENT_DEV_BACKGROUND (ambient,
+                                 # devcontainer.json's containerEnv — see AGENTS.md);
+                                 # explicit value always wins. No hardcoded fallback:
+                                 # enabled=true with neither set is a [S15.2] error.
 mem_limit = "1g"                # default per service
 mem_reservation = "256m"
 read_iops = 0                   # 0 = derive (S15.4); explicit nonzero value wins
@@ -1300,15 +1303,16 @@ source or failure reason, and the count of services injected vs. exempted).
 slice; it does not itself create or configure that slice. With the systemd
 cgroup driver (this host: Debian 13, docker 29, cgroup v2), a named slice
 that has **no** corresponding static unit file (e.g.
-`/etc/systemd/system/besteffort.slice`) is **implicitly, transiently
+`/etc/systemd/system/dev-background.slice`) is **implicitly, transiently
 created by systemd on first reference** — with no resource limits of its
 own (no `MemoryMax`, `IOWeight`, `CPUWeight`, etc.). In that case
-`cgroup_parent = "besteffort.slice"` still groups the stack's containers
+`cgroup_parent = "dev-background.slice"` still groups the stack's containers
 together under that name, but the host-level ceiling the operator intended
-(defined in a real slice unit, provisioned out-of-band — see the sibling
-`gstammtisch-guide` cgroup tooling for a worked example of authoring such
-units) silently does not apply: the containers run **unconfined** at the
-slice level even though the compose file "looks" governed. This is a
+(defined in a real slice unit, provisioned out-of-band — see
+`modern-debian-tools-python-debug/host-setup/` for a worked example of
+authoring such units) silently does not apply: the containers run
+**unconfined** at the slice level even though the compose file "looks"
+governed. This is a
 degradation, not a failure — `composefile.generate_overlay` still has no way
 to detect a missing systemd unit from inside a container-facing overlay
 generator (no host access there); **S15.12 closes this gap at deploy time
@@ -1421,13 +1425,18 @@ summary includes `ksm_optin=<path|off>`.
 ### S15.12 — Named-slice existence preflight (D-G9 check 1)
 
 Closes the S15.8 gap: for every selected stack whose resolved governance
-table is `enabled = true` **and** whose effective `cgroup_parent` is a
-`*.slice` name **other than** the CIU-shipped default
-(`GOVERNANCE_DEFAULTS["cgroup_parent"]`, normally `besteffort.slice` — CIU's
-own setup tooling's responsibility, not re-verified here), `ciu up`
-probes the target host's systemd for that unit **before any deploy phase
-starts** (`deploy.governance_slice_preflight`, alongside `vault_preflight` /
-`provisioning_preflight` / `registry_preflight`):
+table is `enabled = true`, `ciu up` first resolves the effective
+`cgroup_parent` (`governance.resolve_cgroup_parent` — explicit stack config,
+else the ambient `$CGROUP_PARENT_DEV_BACKGROUND`, else `ValueError`: S15.2's
+no-hardcoded-fallback rule applies here too) and, when that resolves to a
+`*.slice` name, probes the target host's systemd for that unit **before any
+deploy phase starts** (`deploy.governance_slice_preflight`, alongside
+`vault_preflight` / `provisioning_preflight` / `registry_preflight`).
+**There is no more "CIU-shipped default, skip it" exemption** —
+`GOVERNANCE_DEFAULTS["cgroup_parent"]` no longer hardcodes a slice name, so
+every resolved slice gets the same check, including whatever the ambient
+default resolves to (previously the single most common, and single
+unchecked, case):
 
 - **systemd present, slice loaded** (`systemctl show <slice>
   --property=LoadState` reports `LoadState=loaded`) — pass, one `[INFO]`

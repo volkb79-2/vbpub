@@ -898,16 +898,37 @@ def test_governance_slice_preflight_skips_on_non_systemd_host(monkeypatch, tmp_p
     assert "no systemctl" in out
 
 
-def test_governance_slice_preflight_skips_default_slice(monkeypatch, tmp_path):
-    """besteffort.slice (the ciu-shipped default) is never probed at all."""
+def test_governance_slice_preflight_checks_every_resolved_slice_no_default_exemption(monkeypatch, tmp_path):
+    """No more "CIU's shipped default is exempt" special case (host dev-tier
+    cgroup governance rollout — GOVERNANCE_DEFAULTS no longer hardcodes a
+    slice name, so there is nothing left to exempt): even a slice name that
+    used to be the shipped default gets probed like any other."""
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered("besteffort.slice")
 
-    def fail_check(name):
-        raise AssertionError("check_slice_unit must not be called for the default slice")
-
-    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    checked = []
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: checked.append(name) or (True, f"{name}: LoadState=loaded"),
+    )
     deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+    assert checked == ["besteffort.slice"]
+
+
+def test_governance_slice_preflight_raises_when_stack_relies_on_ambient_default_but_none_set(
+    monkeypatch, tmp_path,
+):
+    """A stack that names no cgroup_parent at all (relying on the ambient
+    CGROUP_PARENT_DEV_BACKGROUND) must fail the preflight loudly when that
+    env var isn't present either — not silently skip the check."""
+    import pytest
+
+    monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("")
+
+    with pytest.raises(ValueError, match=r"\[S15\.2\].*no cgroup_parent is resolvable"):
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
 
 
 def test_governance_slice_preflight_noop_when_governance_disabled(monkeypatch, tmp_path):

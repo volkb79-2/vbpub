@@ -307,11 +307,15 @@ Placement into a cgroup tier is **create-time only** and cannot be expressed fro
 image, so it lives in two places that must agree:
 
 - **Container side** — `templates/devcontainer.json` ships
-  `"--cgroup-parent=interactive.slice"` in `runArgs`. Safe everywhere: if the host has no
-  such unit, systemd creates a transient unlimited slice and the container starts normally.
+  `"--cgroup-parent=dev-interactive.slice"` in `runArgs`, plus `containerEnv` vars
+  (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`) any in-container tool
+  reads instead of hardcoding a slice name. Safe everywhere: if the host has no such unit,
+  systemd creates a transient unlimited slice and the container starts normally.
 - **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
-  themselves: `interactive.slice` for devcontainers, `besteffort.slice` for the test/build
-  stacks they spawn, IO caps derived from a measured device baseline, and a health check.
+  themselves: `dev-interactive.slice` for devcontainers, `dev-background.slice` for the
+  test/build/gate stacks they spawn (also the Docker daemon-wide fallback via
+  `/etc/docker/daemon.json`, which this owns), one shared `dev.slice` IOPS/bandwidth
+  ceiling for both, and a health check.
 
 ```bash
 sudo host-setup/install.sh --with-baseline    # ~4 min of saturated disk — quiet window

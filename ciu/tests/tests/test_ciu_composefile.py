@@ -729,6 +729,11 @@ class TestGenerateOverlayGovernance:
         repo.mkdir()
         monkeypatch.setenv("REPO_ROOT", str(repo))
         monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))  # native identity
+        # cgroup_parent has no hardcoded default (resolve_cgroup_parent errors
+        # if unresolvable) — the ambient env var stands in for what
+        # devcontainer.json's containerEnv provides on a real host, so every
+        # enabled-governance test below still resolves to a real slice name.
+        monkeypatch.setenv(governance_mod.CGROUP_PARENT_ENV_VAR, "besteffort.slice")
         stack = repo / "infra" / "redis-core"
         stack.mkdir(parents=True)
         return stack
@@ -995,6 +1000,22 @@ class TestGenerateOverlayGovernance:
             generate_overlay(
                 stack, {}, [], compose_yaml_text=compose_yaml,
                 governance={"enabled": "yes"},
+            )
+
+    def test_no_resolvable_cgroup_parent_raises_s15_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enabled, no explicit cgroup_parent, and (unlike every other test in
+        this class) no ambient env var either: must fail loud, not launch an
+        ungoverned container next to production."""
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.delenv(governance_mod.CGROUP_PARENT_ENV_VAR, raising=False)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        with pytest.raises(ValueError, match=r"\[S15\.2\].*no cgroup_parent is resolvable"):
+            generate_overlay(
+                stack, {}, [], compose_yaml_text=compose_yaml,
+                governance={"enabled": True},
             )
 
 

@@ -525,7 +525,9 @@ The **shape between 3G and 6G is unknown**. It could be a gradual ramp, a cliff 
 **Planned test conditions** (removes save-induced interference):
 - Ramdisk active (pak fast: warm pak = zswap decompress at 3µs, not disk)
 - `SAVE_TIME=0` (disable `-saving` periodic saves) and `BACKUP_TIME=0` (disable `-backup`) — eliminates the 10-min actor-graph warming cycle that refaults pages
-- Run `soulmask-startup-cgroup.sh` to prime zswap cleanly
+- Prime zswap cleanly — **not yet updated for the retired `soulmask-startup-cgroup.sh`** (see
+  "Startup cgroup lifecycle" below): patched Wings now primes this natively at container start, so
+  this step's premise needs re-checking against that before running the test as originally planned.
 - Then `soulmask-mempress.sh floor 1G` and step down from 6G to 3G in 256M steps, pausing 15 min at each level for steady-state measurement
 
 **Hypothesis**: with pak on ramdisk (warm access ≤ 3µs), the game core may sustain 0–30 refault/s at much less than 6G, because pak pages no longer contribute to game cgroup pressure and warm pak access is near-zero-cost. The functional floor is probably the actor-graph minimum, not the pak-inclusive total.
@@ -538,7 +540,18 @@ soulmask-zswap-monitor.sh 10   # 10s samples; record refault/s baseline, spikes
 
 **Expected findings**: a curve where 0–30/s is achievable at 4–4.5G (the actor graph core), with rapid degradation below ~4G. If confirmed, `memory.min=4G` with ramdisk gives near-ideal experience with 2G less guaranteed RAM than the current 6G (freeing zswap capacity for Docker builds).
 
-### Startup cgroup lifecycle (`soulmask-startup-cgroup.sh`)
+### Startup cgroup lifecycle (`soulmask-startup-cgroup.sh`) — RETIRED
+
+**RETIRED (host dev-tier cgroup governance rollout):** `soulmask-startup-cgroup.sh`
+moved to `files/legacy/` — superseded by patched Wings' native per-server
+slice placement + staged startup/steady bands (patches 0007/0010, see
+[[wings-cgroups-project]] memory), which reimplement this same 3-phase
+lifecycle at container-create time. Nothing on the host invoked this script
+automatically, and it left no run-state evidence — it had already gone
+unused before this rollout confirmed why. The engineering reasoning below
+(why 9G→6G, why 100M/0.5s steps) is kept as a historical record of the
+zswap-priming behavior it targets; the operational "Run it" instructions are
+no longer current — do not follow them.
 
 The game's memory needs change dramatically between startup and steady state. A single static `memory.min` is a compromise. The 3-phase lifecycle handles this properly:
 

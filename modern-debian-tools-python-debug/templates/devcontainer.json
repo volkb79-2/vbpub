@@ -86,7 +86,18 @@
 
   // ─── 7. Container environment ──────────────────────────────────────────────────
   "containerEnv": {
-    "DOCKER_HOST": "unix:///var/run/docker.sock"
+    "DOCKER_HOST": "unix:///var/run/docker.sock",
+    // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
+    // for spawned containers" and mdt's host-setup/README.md "Tiering model").
+    // This is the ONE place both tier names are declared — every tool that
+    // spawns a container (cmru's tester-gate, ciu's governance mechanism, ...)
+    // reads these instead of hardcoding a slice name. MUST stay in sync with
+    // the --cgroup-parent value in runArgs below (two keys, one file — there
+    // is no cross-reference between containerEnv and runArgs substitution
+    // contexts: runArgs is evaluated host-side, containerEnv applies inside
+    // the running container).
+    "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+    "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice"
   },
 
   // ─── 8. Docker runtime arguments ──────────────────────────────────────────────
@@ -103,13 +114,15 @@
 
     // Host resource governance (cgroup v2) — OPTIONAL, safe everywhere.
     // Cgroup placement is CREATE-TIME ONLY, so it must be set here.
-    // HOST PREREQUISITE: /etc/systemd/system/interactive.slice unit with desired
-    // limits (MemoryHigh/MemoryMax/CPUWeight/...) — install it (plus the
-    // besteffort tier for test/build stacks) with mdt's host-setup/ companion:
+    // HOST PREREQUISITE: /etc/systemd/system/dev-interactive.slice unit with
+    // desired limits (MemoryHigh/MemoryMax/CPUWeight/...), plus the
+    // dev-background tier for test/build/gate containers — both installed by
+    // mdt's host-setup/ companion:
     //   sudo <mdt>/host-setup/install.sh   (see host-setup/README.md)
     // GRACEFUL DEGRADATION: if that unit is missing, systemd creates a transient
-    // UNLIMITED slice — the container still starts normally.
-    "--cgroup-parent=interactive.slice"
+    // UNLIMITED slice — the container still starts normally. Must match
+    // CGROUP_PARENT_DEV_INTERACTIVE above.
+    "--cgroup-parent=dev-interactive.slice"
   ],
 
   // ─── 9. In-container initialization (POST-create) ─────────────────────────────

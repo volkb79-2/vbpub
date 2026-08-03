@@ -572,10 +572,16 @@ def governance_slice_preflight(
     phase starts, by asking the host's systemd whether the named slice is
     actually loaded (:func:`governance.check_slice_unit`).
 
-    Only checks slices *other than* CIU's own shipped default
-    (``governance.GOVERNANCE_DEFAULTS["cgroup_parent"]``, normally
-    ``besteffort.slice``) — provisioning that one is CIU's own setup
-    tooling's responsibility, not this preflight's (S15.1).
+    Checks every enabled stack's RESOLVED slice (:func:`governance.resolve_cgroup_parent`
+    — explicit config, else the ambient ``CGROUP_PARENT_DEV_BACKGROUND``, else
+    that call itself raises) — there is no more "CIU's own shipped default"
+    to skip (host dev-tier cgroup governance rollout,
+    nyxloom/docs/plan-resource-governance.md): governance.GOVERNANCE_DEFAULTS
+    no longer hardcodes a slice name, so every resolved slice gets the same
+    existence check, including whatever the ambient default resolves to —
+    that used to be silently exempted here, which meant the MOST common case
+    (a stack relying on the shipped default rather than naming its own slice)
+    was also the one case this preflight never actually checked.
 
     Skipped entirely when *no_preflight* is set (the same break-glass flag
     :func:`provisioning_preflight` honors), or when the host has no
@@ -594,7 +600,6 @@ def governance_slice_preflight(
         return
 
     config = profile.config
-    default_slice = governance_mod.GOVERNANCE_DEFAULTS["cgroup_parent"]
     # slice_name -> [stack rel paths that would place a container under it]
     checked: dict[str, list[str]] = {}
 
@@ -618,8 +623,12 @@ def governance_slice_preflight(
         gov_cfg = governance_mod.resolve_config(raw_governance)
         if not gov_cfg.get("enabled"):
             continue
-        slice_name = str(gov_cfg.get("cgroup_parent") or "")
-        if not slice_name.endswith(".slice") or slice_name == default_slice:
+        # May raise ValueError (no hardcoded fallback) if this stack neither
+        # names a slice explicitly nor picks up the ambient env var — that is
+        # exactly the "misconfigured, must not deploy" case this preflight
+        # exists to catch, so let it propagate.
+        slice_name = governance_mod.resolve_cgroup_parent(str(gov_cfg.get("cgroup_parent") or ""))
+        if not slice_name.endswith(".slice"):
             continue
         checked.setdefault(slice_name, []).append(rel)
 

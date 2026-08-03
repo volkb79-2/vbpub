@@ -23,7 +23,7 @@ time. `MemoryHigh/Max/Low/Min/SwapMax`, `CPUWeight`/`CPUQuota`, `IOWeight`,
 `IOReadBandwidthMax` and friends, `ManagedOOM*`, `TasksMax`,
 `MemoryZSwapMax`/`MemoryZSwapWriteback` (systemd ≥ 256). These survive reboot
 and `daemon-reload` by themselves and need zero runtime machinery — which is
-why `interactive.slice`/`besteffort.slice` carry as much as they possibly can.
+why `dev-interactive.slice`/`dev-background.slice` carry as much as they possibly can.
 
 The five things below are the entire reason `mdt-apply-dev-caps.sh` exists.
 
@@ -83,19 +83,26 @@ only form of the rule that ports between hosts. Only a benchmark knows the
 number.
 
 *Owned by:* `mdt-io-baseline.py` (measures, caches) + `mdt-apply-dev-caps.sh`
-(derives `BE_IO_CAP_PCT`% / `BENCH_IO_CAP_PCT`% and applies via
-`systemctl set-property --runtime`). The unit files keep deliberately **tight**
-static caps as the boot-window fallback: between boot and the first sweep, and
-forever on a host where nobody ran the benchmark, those statics are the
-operative values.
+(derives `DEV_IO_CAP_PCT`% and applies via `systemctl set-property --runtime`
+to the **root `dev.slice`**, not per-child — host dev-tier cgroup governance
+rollout: one absolute IOPS/bandwidth ceiling covers `dev-interactive.slice`
+and `dev-background.slice` combined, cgroup v2's hierarchical accounting does
+the rest, and neither child needs its own IO cap). The unit files keep
+deliberately **tight** static caps on `dev.slice` as the boot-window fallback:
+between boot and the first sweep, and forever on a host where nobody ran the
+benchmark, those statics are the operative values.
 
-**Why the caps sit at 60–80% and never 100%:** a device driven to saturation
+**Why the cap sits at 60–80% and never 100%:** a device driven to saturation
 queues everything behind the burst, which is precisely the stall the tiering
 exists to prevent — the IDE (or a production tier on a shared host) must never
 wait behind a build storm. Below ~60% you have stopped bounding a burst and
-started throttling ordinary work. The tier cap takes the low end (it bounds
-10–15 containers together), the per-container cap the high end (it bounds one).
-Where both apply, cgroup limits nest and the effective cap is the stricter.
+started throttling ordinary work. This is a **whole-estate** ceiling (it
+bounds every dev/test/build/interactive container together, easily 10-15+ at
+once) — genuine per-container guarantees are a separate mechanism (explicit
+`docker run --memory`/`--cpus`/`--device-*-iops` flags in whatever spawns the
+container, e.g. `cmru`'s tester-gate) that composes with this one: cgroup
+limits nest, and the effective cap on any single container is the stricter of
+its own flags and `dev.slice`'s aggregate ceiling.
 
 ### 4. Attributes systemd has no directive for
 
@@ -183,8 +190,8 @@ io_weight >  100 :  bfq =  100 + (io_weight - 100) * 900 / 9900   # ~11x compres
 > *lowering the loser*, never raising the winner.** Below 100 the mapping is
 > the identity, so the ratio you write is the ratio you get.
 
-This is exactly why the shipped tiers are `interactive.slice IOWeight=100` vs
-`besteffort.slice IOWeight=10` — a true 10:1 — rather than the 1000-vs-100 that
+This is exactly why the shipped tiers are `dev-interactive.slice IOWeight=100` vs
+`dev-background.slice IOWeight=10` — a true 10:1 — rather than the 1000-vs-100 that
 reads more emphatically and would actually deliver 1.81:1. Raising the
 interactive weight to "make it stronger" makes it *weaker* relative to intent.
 
@@ -196,8 +203,8 @@ Under BFQ the `io.weight` file is the *input* systemd wrote, not the value in
 force. Reading it back tells you nothing about scheduling:
 
 ```bash
-cat /sys/fs/cgroup/interactive.slice/io.bfq.weight   # what BFQ actually uses
-cat /sys/fs/cgroup/besteffort.slice/io.bfq.weight
+cat /sys/fs/cgroup/dev-interactive.slice/io.bfq.weight   # what BFQ actually uses
+cat /sys/fs/cgroup/dev-background.slice/io.bfq.weight
 ```
 
 `mdt-host-check.sh` prints both side by side for this reason.
@@ -222,11 +229,14 @@ a defect.
 ### 5. Weights only decide contention; caps bound absolutely
 
 A weight does nothing on an idle device — it only settles who yields when two
-cgroups queue against the same device at once. That is why the tiers carry
-both: the weights sort out interactive-vs-besteffort under contention, while
-`besteffort.slice`'s `io.max` bounds the tier **absolutely**, so a build storm
-cannot saturate the disk even when nothing else is currently asking for it (the
-next latency-sensitive burst must not have to queue behind it).
+cgroups queue against the same device at once. That is why both mechanisms
+exist: the per-child `IOWeight`s sort out interactive-vs-background under
+contention, while the root `dev.slice`'s `io.max` bounds the whole estate
+**absolutely**, so a build storm cannot saturate the disk even when nothing
+else is currently asking for it (the next latency-sensitive burst must not
+have to queue behind it) — and even sustained interactive activity can't
+either, which is the point of putting the cap on the shared parent instead of
+duplicating it per child.
 
 ---
 
@@ -236,9 +246,9 @@ next latency-sensitive burst must not have to queue behind it).
 mdt-host-check.sh                                    # everything below, with verdicts
 
 grep cgroup2 /proc/mounts                            # memory_recursiveprot present?
-systemctl show interactive.slice -p FragmentPath     # unit file exists (not transient)?
-cat /sys/fs/cgroup/besteffort.slice/io.max           # caps in force (statics or measured?)
-cat /sys/fs/cgroup/interactive.slice/io.bfq.weight   # NOT io.weight
+systemctl show dev-interactive.slice -p FragmentPath     # unit file exists (not transient)?
+cat /sys/fs/cgroup/dev.slice/io.max                      # aggregate cap in force (statics or measured?)
+cat /sys/fs/cgroup/dev-interactive.slice/io.bfq.weight   # NOT io.weight
 docker inspect -f '{{.HostConfig.CgroupParent}}' <c> # placement — create-time, recreate to change
 journalctl -u mdt-host-slices.service -n 40          # what the last sweep did
 ```
@@ -276,7 +286,7 @@ find /sys/fs/cgroup -name memory.zswap.max -exec sh -c \
   '[ "$(cat "$1")" = 0 ] && echo "BYPASS: ${1%/memory.zswap.max}"' _ {} \;
 
 # Walk one cgroup's ancestors — the hierarchical rule above.
-p=/sys/fs/cgroup/interactive.slice
+p=/sys/fs/cgroup/dev-interactive.slice
 while [ "$p" != /sys/fs/cgroup ]; do
     printf '%-52s %s\n' "$p" "$(cat "$p/memory.zswap.writeback" 2>/dev/null)"
     p=$(dirname "$p")
@@ -284,7 +294,7 @@ done
 printf '%-52s %s\n' /sys/fs/cgroup "$(cat /sys/fs/cgroup/memory.zswap.writeback)"
 
 # systemd's own view for a unit (needs systemd >= 256).
-systemctl show interactive.slice -p MemoryZSwapWriteback
+systemctl show dev-interactive.slice -p MemoryZSwapWriteback
 
 # Global pool state — writeback itself has no global switch in cgroup v2,
 # it is per-cgroup only.
@@ -295,7 +305,7 @@ grep . /sys/module/zswap/parameters/* 2>/dev/null
 
 ```bash
 # Dev tiers — use the supported knob, not a raw write:
-#   /etc/mdt/host-setup.env :  INTERACTIVE_ZSWAP_WRITEBACK=yes|no
+#   /etc/mdt/host-setup.env :  DEV_INTERACTIVE_ZSWAP_WRITEBACK=yes|no
 sudo "$PWD/install.sh"          # re-renders + reinstalls the slice units
 
 # Any other unit, runtime only (gone at reboot, survives daemon-reload):

@@ -4,7 +4,7 @@
 # pressure. Generic sibling of soulmask-mempress.sh: that one knows Soulmask
 # instances and game/pak slices; this one targets any container by name and
 # adds per-step monitoring, stop thresholds, and a JSONL log for later
-# analysis (e.g. sizing interactive.slice from a devcontainer squeeze).
+# analysis (e.g. sizing dev-interactive.slice from a devcontainer squeeze).
 #
 # Protocol: start memory.high just above current usage, lower it by --step
 # every --delay seconds. Each step samples memory.current/anon/file/zswap,
