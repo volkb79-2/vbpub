@@ -14,13 +14,13 @@ only after implementation, an independent capable review-and-fix pass, and the
 authoritative `tester-unified` gate. Commit IDs and gate evidence are recorded
 here so external reviewers can distinguish planned work from shipped work.
 
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 
 | Item | State | Evidence / notes |
 | --- | --- | --- |
 | Program preparation | in progress | `e9bf702f` adds a package-scoped exception to the obsolete frozen-file list; it does not generally unfreeze core files. |
-| CR-00 | implementing | Isolated branch `cr/nyxloom-cr00`; Sonnet implementation followed by independent Opus review-and-fix. |
-| CR-15 | implementing | Isolated branch `cr/nyxloom-cr15`; Opus security implementation followed by a fresh independent Opus review-and-fix. |
+| CR-00 | done | Sonnet implementation `4c995686`; independent Opus review-and-fix `8bdf283f`; authoritative `tester-unified` parallel suite completed at 100% with exit 0 and the coverage gate accepted 0 changed executable production lines (the package changes tests/docs only); merged to `main` as `5a9d441d`. |
+| CR-15 | implementing | Opus implementation `b0bc7dfb`; focused control-auth/UI/invariant and daemon diagnostics are green. Awaiting rebase onto accepted CR-00, a fresh independent Opus security review-and-fix, and the authoritative gate. |
 | CR-01 through CR-14, CR-16 | pending | Dependency order in section 7 remains authoritative. |
 
 Program operating decisions:
