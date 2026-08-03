@@ -61,14 +61,27 @@ so a failing gate reads as passing — the same aliasing that makes a trailing
 
 | id | what it asserts | when |
 |---|---|---|
-| `unit` | build, vet, and the O1–O5 oracles | implementation |
+| `unit` | gofmt, build, vet, and the O1–O5 oracles | implementation |
+| `coverage` | changed-line floor, 80% over `internal/` | review |
 | `canary` | that each oracle **rejects** a break of the contract it names | review |
 | `privileged-e2e` | publication topology, hold services, charging | **empty until P02** (D-004) |
 
-`canary` exists because a coverage floor is not wired up (D-007): coverage
-proves a changed line ran, the canaries prove the oracle goes red when the
-contract breaks. If you change an oracle, run `canary` — and if a canary
-reports "the mutation matched nothing", the code moved and the canary is
+```bash
+tools/gate.sh . coverage                      # against main
+SRDM_COVERAGE_BASE=HEAD~1 tools/gate.sh . coverage
+SRDM_COVERAGE_FLOOR=90 tools/gate.sh . coverage
+```
+
+`coverage` has **three** outcomes, not two. Exit 3 is NO MEASUREMENT — a
+dirty tree (the `base..HEAD` diff cannot see uncommitted work) or a base that
+resolves to HEAD. Both otherwise render as `0/0 changed lines covered
+(100.0%)`, which is indistinguishable from a real clean pass. If you see
+exit 3, commit first; do not read it as green.
+
+`canary` is the stronger of the two. Coverage proves a changed line *ran*;
+the canaries prove the oracle goes red when the contract breaks — which is
+what hollow tests evade. If you change an oracle, run `canary`, and if one
+reports "the mutation matched nothing", the code moved and that canary is
 silently testing an unmodified tree. That is a failure, not a skip.
 
 ## Where handoffs live

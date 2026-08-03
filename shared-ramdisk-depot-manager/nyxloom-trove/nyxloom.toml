@@ -68,12 +68,28 @@ example_profile = "examples/soulmask.profile.json"
 [gates.unit]
 argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} unit"]
 phase = "implementation"
-# Deliberately NOT claiming changed-line-coverage: nyxloom's coverage_gate.py
-# is Python-specific and no Go equivalent is wired up yet. Declaring an
-# assertion this gate does not make would be a declaration mismatch, which is
-# worse than a narrower honest claim. See D-007.
+# gofmt, build, vet and the O1-O5 oracles. The changed-line floor is its own
+# gate below, because it needs a committed tree and a base ref while this one
+# is meaningful on a dirty one.
 asserts = ["tests-pass"]
 timeout_seconds = 1200
+environment = "srdm-gate"
+
+# Changed-line coverage floor (D-007, closed by tools/covergate).
+#
+# nyxloom's coverage_gate.py is coverage.py-shaped at exactly two seams — the
+# report loader and an `endswith(".py")` measurability filter — so srdm ships
+# a Go implementation of the same semantics rather than a floor it cannot
+# enforce. It keeps the parts that were learned the hard way there: three-way
+# line classification (executed / missing / neither, so a comment edit is not
+# an uncovered-code event) and, above all, THREE outcomes — pass, fail, and
+# NO MEASUREMENT (exit 3) for a dirty tree or a base that resolves to HEAD,
+# both of which otherwise render as an indistinguishable "0/0 (100.0%)".
+[gates.coverage]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} coverage"]
+phase = "review"
+asserts = ["tests-pass", "changed-line-coverage"]
+timeout_seconds = 1800
 environment = "srdm-gate"
 
 # The privileged systemd-in-Docker harness for publication topology, hold

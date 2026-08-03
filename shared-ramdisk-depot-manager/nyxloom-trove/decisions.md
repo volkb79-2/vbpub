@@ -131,25 +131,72 @@ gate is `srdm-gate`, never the devcontainer.
 
 ---
 
-## D-007 — no changed-line coverage floor in P01's gate
+## D-007 — changed-line coverage floor: built for Go, not skipped
 
-**Status:** accepted, revisit when a Go evaluator exists.
+**Status:** **closed** by `tools/covergate` and `[gates.coverage]`
+(superseding the original "accepted, no floor" position).
 
-nyxloom offers `coverage_gate.py`, a changed-line coverage floor. It is
-Python-specific. Go has `go test -cover` and the tooling to build an
-equivalent, but writing one is not P01's package.
+nyxloom offers `coverage_gate.py`, a changed-line coverage floor, and it is
+Python-specific. P01 originally declared `asserts = ["tests-pass"]` only,
+on the grounds that claiming `changed-line-coverage` without enforcing it is
+a declaration mismatch — which nyxloom's own `gate verify` would catch with
+an uncovered-line canary, after laundering every merge until it did.
 
-**Decided:** `[gates.unit]` declares `asserts = ["tests-pass"]` only.
-Declaring `changed-line-coverage` without enforcing it is a declaration
-mismatch, and nyxloom's `gate verify` proves that claim with an
-uncovered-line canary — a false claim would be caught and would have
-laundered every merge until then.
+**Reopened and closed** on the observation that nyxloom's gate is *already*
+language-agnostic in its design; only two seams are Python-bound:
 
-**Compensating control:** `[gates.canary]` and `tools/canary.sh`. Coverage
-proves a changed line *ran*; the canaries prove each oracle actually *fails*
-when the contract it names is broken, which is the stronger property and the
-one hollow tests evade. Eight canaries, one per contract, all currently
-rejected.
+1. `_load_coverage` reads coverage.py JSON;
+2. `evaluate` hard-filters `if not npath.endswith(".py"): continue`.
+
+The second is the dangerous one for any non-Python consumer: it would skip
+every `.go` file, report `0/0 → 100%`, and **pass vacuously**, because
+`_check_measurable` does not fire on a clean tree.
+
+**Decided:** srdm ships `tools/covergate`, a Go implementation of the same
+semantics, and `[gates.coverage]` enforces it. Deliberately carried over
+from the Python original, because each is a lesson rather than a detail:
+
+- **Three-way line classification** (executed / missing / neither). A
+  changed line in neither set is a comment or a brace; editing it is not an
+  uncovered-code event.
+- **Three outcomes, not two.** Pass, fail, tool error — and NO MEASUREMENT
+  (exit 3). "0/0 changed lines covered (100.0%)" reads identically whether
+  the gate measured everything and found nothing or measured nothing at all.
+  A dirty tree (the `base..HEAD` diff cannot see uncommitted work) and a
+  base resolving to HEAD both produce that exact string. Both are ruled out
+  before a percentage is computed.
+- **Base resolution serves both phases**: a merge commit diffs against its
+  first parent, anything else against `merge-base(base, HEAD)`.
+
+**Found while building it** — a false-positive class the Python original
+documents in a different form (its B63 note, "unmeasur*able* is not
+unmeasur*ed*"). `go test -cover` instruments function *bodies* only, so a
+`.go` file declaring no functions produces no blocks and is absent from the
+profile for exactly the reason a JSON schema is. The first run flagged **94
+lines across four comment-only `doc.go` files** as uncovered — a verdict no
+test could ever clear. `HasExecutableCode` settles it by parsing for a
+function declaration with a body. Any port of this to nyxloom needs the
+same guard, and it does not fall out of the extension filter.
+
+**Floor: 80%**, set from measurement rather than aspiration. srdm's own
+P01 delta measures in the mid-70s before the extra edge-case tests and
+higher after; the residue is `if err != nil { return err }` passthroughs
+and one genuine exec boundary (`doctor.systemctlShow`). 100 would buy
+fault-injection scaffolding for error returns that a reviewer reads
+faster than a test asserts.
+
+**Suggested nyxloom generalization** (not done here — nyxloom has its own
+trove and package loop; this is the reference implementation to copy):
+a `--source-ext` flag replacing the hardcoded `.py`, a pluggable report
+loader (Go cover profiles and lcov cover Go, Rust and JS between them), and
+the code-free-file guard above. The pure core — `parse_added_lines`,
+`evaluate` — needs no change at all, which is the point: it was already
+written against plain data.
+
+**Still the stronger control:** `[gates.canary]`. Coverage proves a changed
+line *ran*; the canaries prove each oracle actually *fails* when the
+contract it names is broken. That is the property hollow tests evade, and
+no percentage can express it.
 
 ---
 

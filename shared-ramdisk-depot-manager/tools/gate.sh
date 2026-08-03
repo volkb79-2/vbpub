@@ -5,7 +5,13 @@
 #
 # <worktree>  path to the checkout to test, as the COCKPIT sees it
 #             (nyxloom substitutes {worktree}); defaults to this checkout.
-# [target]    "unit" (default) or "e2e".
+# [target]    "unit" (default), "coverage" or "e2e".
+#
+# The `coverage` target measures CHANGED-line coverage against a base ref
+# ($SRDM_COVERAGE_BASE, default main) and so needs a committed tree — it
+# exits 3 (NO MEASUREMENT) rather than reporting a vacuous percentage when
+# the diff cannot see the work. That is why it is a separate target from
+# `unit`, which is meaningful on a dirty tree.
 #
 # Three doctrines are load-bearing here, each the residue of a real failure:
 #
@@ -34,8 +40,8 @@ target="${2:-unit}"
 die() { printf 'gate: %s\n' "$*" >&2; exit 1; }
 
 case "$target" in
-  unit|e2e) ;;
-  *) die "unknown target \"$target\" (expected unit or e2e)" ;;
+  unit|coverage|e2e) ;;
+  *) die "unknown target \"$target\" (expected unit, coverage or e2e)" ;;
 esac
 
 # --- the host path of the repo -----------------------------------------
@@ -79,6 +85,20 @@ fi
 go build ./...
 go vet ./...
 go test ./... -count=1'
+  run_args=()
+elif [ "$target" = "coverage" ]; then
+  # -coverpkg=./... so packages with no test files of their own still appear
+  # in the profile. Without it they are simply absent, and "absent" is
+  # indistinguishable from "excluded by a build tag" — the gate would have to
+  # guess, and guessing in the lenient direction is how a floor stops binding.
+  cmd='set -euo pipefail
+cd "$0"
+go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=/tmp/srdm-cover.out >/dev/null
+exec go run ./tools/covergate \
+  -profile /tmp/srdm-cover.out \
+  -base "'"${SRDM_COVERAGE_BASE:-main}"'" \
+  -source internal \
+  -fail-under "'"${SRDM_COVERAGE_FLOOR:-80}"'"'
   run_args=()
 else
   # P02 fills this in. Declared and buildable now so the gate declaration is
