@@ -735,6 +735,60 @@ def test_task_rules_share_one_pass_over_the_handoffs():
     assert seen == [f"{rule}:{tid}" for tid in ids for rule in ("first", "second")]
 
 
+def test_a_lifecycle_action_that_names_no_task_is_refused_by_name():
+    """CR-06b, from CR-06a's review. The LIFECYCLE channel is grouped and
+    sorted BY TASK ID, so a lifecycle action carrying `task_id=None` has no
+    position in the plan -- and before this it did not fail at `add`, it
+    failed much later inside `sorted(self.lifecycle)` with a `TypeError` about
+    NoneType and str, in a function the author never wrote.
+
+    No rule can reach this today (`implementer-dispatch` is the only rule on
+    the channel that CR-06b owns, and it always names its task), which is
+    exactly why it is worth closing now: the trap is for the rule that does
+    not exist yet, and `RuleMatch`'s own `getattr(action, "task_id", None)`
+    was already the tell that the two disagreed about whether the field is
+    optional. Refused rather than defaulted, because WHERE a task-less
+    lifecycle action sorts is a design decision and not this method's to
+    invent.
+    """
+    channels = planning.PlanChannels()
+    with pytest.raises(planning.TaskLessLifecycleAction) as exc:
+        channels.add(Channel.LIFECYCLE, reconcile.SpecAttention(reason="ratchet"))
+    assert "SpecAttention" in str(exc.value)
+    # and the same action on any OTHER channel is ordinary
+    channels.add(Channel.SPEC, reconcile.SpecAttention(reason="ratchet"))
+    assert len(channels.assemble()) == 1
+
+
+def test_no_rule_module_shadows_one_of_its_own_function_names():
+    """The call-graph walker both oracles use keys functions by
+    `(module, name)` and resolves collisions with `setdefault` -- so two
+    same-named functions in one module become ONE node, and whichever `ast`
+    reached first wins. For a rule module that means a rule's derived `emits`
+    and its purity verdict could be computed from the wrong body.
+
+    Scoped to the modules that HOST rules, which is the population where the
+    consequence is a wrong oracle verdict rather than a wrong debug tool. The
+    package at large is full of legitimate collisions (`__init__`, `to_dict`,
+    `visit_Compare`, and `planning`'s own `PlanArbiter.available` /
+    `RuleEmitter.available`), so a package-wide ban would be false; making the
+    walker qualify names properly is a change to shared test infrastructure
+    that `tests/test_effects.py` also depends on, and it is not CR-06b's.
+    """
+    collisions = []
+    for module in sorted({_root_of(spec)[0] for spec in planning.rule_table()}):
+        tree = ast.parse((SRC / f"{module}.py").read_text(encoding="utf-8"))
+        seen: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in seen:
+                    collisions.append(f"{module}.{node.name}")
+                seen.add(node.name)
+    assert not collisions, (
+        f"a rule module defines one name twice: {collisions} -- the oracles' "
+        "call graph would silently walk only one of them")
+
+
 def test_the_lifecycle_channel_is_grouped_by_task_and_sorted():
     channels = planning.PlanChannels()
     channels.add(Channel.LIFECYCLE, reconcile.Transition(task_id="b", to=TaskState.QUEUED))
@@ -837,19 +891,19 @@ def test_every_breadcrumb_names_the_rule_that_recorded_it():
 
 
 def _normalise(action) -> tuple:
-    """(class, fields) with the KNOWN-nondeterministic field removed.
+    """(class, fields) -- EVERY field, with nothing excused.
 
-    `LaunchReview.resume_session` is chosen by `max(..., key=started)` over an
-    unordered scan, so ties are broken by snapshot iteration order -- a real
-    pre-existing gap, pinned by its own test below rather than hidden here.
+    Until CR-06b this dropped `LaunchReview.resume_session`, because it was
+    chosen by `max(..., key=started)` over an unordered scan and ties therefore
+    followed snapshot iteration order. That was the last field the permutation
+    acceptance could not cover; the tie-break in `rules_review.py` closed it,
+    so the exclusion is gone rather than left standing as a permanent excuse.
     """
     return (
         type(action).__name__,
         tuple(sorted(
             (f.name, repr(getattr(action, f.name)))
             for f in dataclasses.fields(action)
-            if not (type(action).__name__ == "LaunchReview"
-                    and f.name == "resume_session")
         )),
     )
 
@@ -877,7 +931,7 @@ def _permuted(inp):
 
 @pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
 def test_permuting_the_snapshot_key_order_cannot_change_the_plan(profile):
-    """The parent's permutation acceptance, over the real corpus.
+    """The parent's permutation acceptance, over the real corpus -- MET.
 
     A `ReconcileInput`'s maps are unordered by intent -- the daemon builds
     them by scanning a directory -- so a plan that depends on their iteration
@@ -885,50 +939,94 @@ def test_permuting_the_snapshot_key_order_cannot_change_the_plan(profile):
     than asserting over the flat plan: it says WHICH decisions are
     order-independent rather than only that the total is.
 
-    The attempt channel is compared as a multiset, not in order, and that is
-    a REAL pre-existing gap rather than a concession: the attempt ladder walks
-    `inp.states.items()` raw where every other rule sorts. Contract item 3
-    promises "sorted task-id order (determinism)" for dispatch and the module
-    docstring claims determinism generally; the ladder never did. It is
-    CR-06b's, and `test_the_attempt_channels_order_follows_the_snapshot`
-    below pins it so it cannot be repaired silently or lost.
+    EVERY channel is now compared in ORDER. CR-06a had to compare the ATTEMPT
+    channel as a multiset, because the attempt ladder walked
+    `inp.states.items()` raw where every other rule sorts, and it recorded the
+    acceptance as only PARTIALLY met for exactly that reason. CR-06b moved the
+    ladder and made it walk `PlanContext.sorted_task_ids`, so the concession is
+    gone. Restoring a multiset comparison here would silently un-meet the
+    acceptance, which is why the strictness lives in this test rather than in a
+    note about it.
     """
     differences = []
     for case_id, states in planner_corpus.projections():
         first = _channels(corpus_profiles.build(states, profile))
         second = _channels(_permuted(corpus_profiles.build(states, profile)))
         for channel in first:
-            if channel is Channel.ATTEMPT:
-                if sorted(first[channel]) != sorted(second[channel]):
-                    differences.append(f"{case_id}/{channel}: contents differ")
-            elif first[channel] != second[channel]:
+            if first[channel] != second[channel]:
                 differences.append(f"{case_id}/{channel}: order or contents differ")
         if len(differences) >= 5:
             break
     assert not differences, "\n".join(differences)
 
 
-def test_the_attempt_channels_order_follows_the_snapshot():
-    """Pins the gap the permutation test names, so it is visible and owned.
+def test_the_attempt_channels_order_is_sorted_task_id_order():
+    """RESTATED from CR-06a's `test_the_attempt_channels_order_follows_the_snapshot`.
 
-    Not a wish: this asserts the CURRENT behaviour, so CR-06b fixing it fails
-    this test and has to say so in its report. Left unfixed here because
-    sorting the channel would change the planned action ORDER, which the
-    differential would correctly report as a delta -- CR-06a changes no
-    planning policy.
+    That test pinned the CURRENT behaviour -- the attempt channel's order
+    followed the snapshot map -- precisely so that repairing it would be a
+    visible, reported change rather than a silent one. CR-06b repaired it, so
+    the OBSERVABLE moved and the test is restated rather than deleted
+    (amendment §5.2): the same projections, the same channel, the opposite
+    claim.
+
+    Two halves, because "permutation-stable" alone would pass for a rule that
+    emitted nothing: the channel must be in sorted task-id order, and there
+    must still be a projection that plans several attempt actions across
+    several tasks -- otherwise this asserts sortedness of a list with one
+    element in it.
     """
-    found = False
-    for _case_id, states in planner_corpus.projections():
+    exercised = 0
+    for case_id, states in planner_corpus.projections():
         inp = corpus_profiles.build(states, "neutral")
         first = _channels(inp)[Channel.ATTEMPT]
         second = _channels(_permuted(inp))[Channel.ATTEMPT]
-        if len(first) > 1 and first != second:
-            assert sorted(first) == sorted(second)
-            found = True
-            break
-    assert found, (
-        "no corpus projection plans two attempt actions -- the gap this test "
-        "pins can no longer be demonstrated, so re-read it before deleting")
+        assert first == second, f"{case_id}: the attempt channel still follows the map"
+        task_ids = [
+            dict(fields)["task_id"] for _kind, fields in first
+        ]
+        assert task_ids == sorted(task_ids), f"{case_id}: {task_ids}"
+        if len(set(task_ids)) > 1:
+            exercised += 1
+    assert exercised, (
+        "no corpus projection plans attempt actions for two DIFFERENT tasks "
+        "-- sortedness is vacuous here, so re-read this before trusting it")
+
+
+def test_a_poisoned_attempt_with_no_frontmatter_parks_and_retries_next_pass():
+    """The one row of P34's resume-safety decision table nothing exercised.
+
+    A resume-poisoned INTERRUPTED attempt on an ACTIVE task, with budget left
+    and every transient guard clear, is re-cut as a FRESH dispatch -- but only
+    if there is a frontmatter to dispatch FROM. Without one the ladder parks
+    and retries next pass, rather than dead-ending a task whose handoff file
+    the snapshot simply had not read yet.
+
+    Asserted against its own contrast, because "no action" is what a broken
+    rule also produces: the SAME projection WITH a frontmatter must plan the
+    fresh dispatch. Found by CR-06b's coverage of the moved ladder -- the
+    branch was reachable and unexercised in `reconcile.py` too, so this is a
+    gap the move surfaced rather than one it created.
+    """
+    attempt = Attempt(
+        attempt_id="a-poisoned", role=Role.IMPLEMENTER,
+        state=AttemptState.INTERRUPTED,
+        route=Route(route_id=corpus_profiles.ROUTE_A, cli="fake", model="fake-a"),
+        started=corpus_profiles.NOW, session_handle="warm")
+    states = {"t-a": TaskStateFile(
+        schema_version=1, task_id="t-a", project="corpus",
+        state=TaskState.ACTIVE, since=corpus_profiles.NOW, attempts=[attempt])}
+    inp = dataclasses.replace(
+        corpus_profiles.build(states, "neutral"),
+        resume_failures={"a-poisoned": 99})
+
+    def re_cuts(plan):
+        return [a.task_id for a in plan
+                if isinstance(a, reconcile.DispatchImplementer)]
+
+    assert re_cuts(reconcile.plan_project(inp)) == ["t-a"]
+    assert re_cuts(reconcile.plan_project(
+        dataclasses.replace(inp, frontmatters={}))) == []
 
 
 def _self_reviewing(task_id: str) -> TaskStateFile:
@@ -959,10 +1057,11 @@ def test_two_self_reviewing_tasks_launch_in_sorted_order():
     nothing about a branch the corpus never enters, which is why this input is
     built rather than found.
 
-    Fixed rather than pinned (unlike the attempt ladder, deferred to CR-06b):
-    sorting here moves 0 of 877 corpus projections, where sorting the ladder
-    moves 543 -- so the differential's zero-delta is untouched, and the parent
-    acceptance holds for this channel for a reason instead of by luck.
+    Fixed by CR-06a rather than pinned, because sorting here moved 0 of 877
+    corpus projections. The attempt ladder's identical gap was deferred on the
+    opposite ground -- sorting it moves real plans -- and CR-06b closed it,
+    declaring the divergence in `tests/test_planner_differential.py` rather
+    than relying on a zero-delta it does not have.
     """
     states = {"t-b": _self_reviewing("t-b"), "t-a": _self_reviewing("t-a")}
     inp = corpus_profiles.build(states, "neutral")
@@ -974,33 +1073,46 @@ def test_two_self_reviewing_tasks_launch_in_sorted_order():
     assert forward == reverse
 
 
-def test_the_warm_review_session_choice_is_ambiguous_under_a_tie():
-    """The second pre-existing gap, pinned the same way.
+def test_the_warm_review_session_choice_is_deterministic_under_a_tie():
+    """RESTATED from CR-06a's `..._is_ambiguous_under_a_tie`.
 
-    `resume_session` is `max(prior_sessions, key=lambda a: a.started)`, and
-    `max` returns the FIRST maximal element -- so when two EXITED review
-    attempts share a `started` timestamp, which warm session a wave resumes
-    depends on `inp.states` iteration order. Harmless in effect (the wrong
-    guess is a prompt-cache MISS, which is exactly the pre-B6 cost, and the
-    executor stamps a fresh attempt id either way, so the A7 verdict-attempt
-    binding is untouched) but it is still a plan that depends on map order.
-    Owner: whichever package next touches B6/D-R10 session reuse. NOT fixed
-    here: a deterministic tie-break would pick a different handle than the
-    frozen baseline does, which the differential would report as a delta.
+    Same observable, opposite claim, for the same reason as the attempt
+    channel above: CR-06a pinned the ambiguity so that repairing it could not
+    be silent, and CR-06b repaired it. `resume_session` was
+    `max(prior_sessions, key=lambda a: a.started)`, and `max` returns the
+    FIRST maximal element -- so when two EXITED review attempts shared a
+    `started` timestamp, which warm session a wave resumed depended on
+    `inp.states` iteration order, i.e. on the daemon's directory scan. The
+    tie-break is now `(started, attempt_id)`.
+
+    Non-vacuity is the load-bearing half here. A corpus with no tie would pass
+    this trivially, so the tie is COUNTED: at least one projection must have
+    two `started`-maximal prior review sessions AND plan a review that resumes
+    one of them, or the determinism asserted below is about nothing.
     """
-    ambiguous = []
+    tied_and_launched = 0
     for case_id, states in planner_corpus.projections():
         inp = corpus_profiles.build(states, "neutral")
         first = [a for a in reconcile.plan_project(inp)
                  if isinstance(a, reconcile.LaunchReview)]
         second = [a for a in reconcile.plan_project(_permuted(inp))
                   if isinstance(a, reconcile.LaunchReview)]
-        if [a.resume_session for a in first] != [a.resume_session for a in second]:
-            ambiguous.append(case_id)
-            break
-    assert ambiguous, (
-        "no corpus projection has two review sessions tied on `started` -- "
-        "the gap this test pins can no longer be demonstrated")
+        assert ([a.resume_session for a in first]
+                == [a.resume_session for a in second]), (
+            f"{case_id}: the warm-session choice still follows the map order")
+        priors = [
+            a for tsf in inp.states.values() for a in tsf.attempts
+            if a.role == Role.REVIEW_INDEPENDENT
+            and a.state == AttemptState.EXITED and a.session_handle
+        ]
+        if priors and any(a.resume_session for a in first):
+            newest = max(a.started for a in priors)
+            if sum(1 for a in priors if a.started == newest) > 1:
+                tied_and_launched += 1
+    assert tied_and_launched, (
+        "no corpus projection both ties two review sessions on `started` and "
+        "plans a review that resumes one -- the determinism asserted above is "
+        "vacuous, so re-derive the corpus before trusting it")
 
 
 @pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)

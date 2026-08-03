@@ -198,6 +198,27 @@ SCENARIOS: tuple[tuple[str, dict[str, TaskStateFile], str], ...] = (
         "therefore follows map order. Present so the defect stays visible "
         "to whichever package repairs it.",
     ),
+    (
+        "review-resume-tie-reaches-a-launch",
+        _states(
+            _task("t-a", TaskState.AWAITING_REVIEW, minutes=10, wave_id="wave-1",
+                  attempts=[_attempt("att-r1", Role.REVIEW_INDEPENDENT,
+                                     AttemptState.EXITED, minutes=5, handle="h1")]),
+            _task("t-b", TaskState.AWAITING_REVIEW, minutes=10, wave_id="wave-1",
+                  attempts=[_attempt("att-r2", Role.REVIEW_INDEPENDENT,
+                                     AttemptState.EXITED, minutes=5, handle="h2")]),
+            _task("t-c", TaskState.AWAITING_REVIEW, minutes=10, wave_id="wave-1",
+                  attempts=[_impl_done("c", 6)]),
+        ),
+        "CR-06b: the scenario above RECORDS the tie but cannot exercise it -- "
+        "both its tasks have a REVIEW_INDEPENDENT attempt as their LATEST, so "
+        "the in-flight recency guard suppresses every launch and no "
+        "LaunchReview is planned at all. A tie nothing reads is not a "
+        "divergence. This adds a third member whose latest attempt is the "
+        "IMPLEMENTER leg, so the wave DOES launch and the tied warm handle is "
+        "actually chosen -- which is what makes the (started, attempt_id) "
+        "tie-break observable outside the historical corpus.",
+    ),
 )
 
 SCENARIO_NAMES: tuple[str, ...] = tuple(name for name, _, _ in SCENARIOS)

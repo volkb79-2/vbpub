@@ -33,15 +33,28 @@ WHAT "IDENTICAL" MEANS, precisely, and why the two halves differ:
   (the CR-00 corpus classifies waits from these strings verbatim) while
   letting the explanation model deepen.
 
+WHAT CHANGED IN CR-06b. The package closed the two permutation exemptions
+CR-06a had recorded (the attempt ladder's raw map walk, and the warm-review
+tie-break), and both move real corpus plans -- so "identical" now means
+"identical to the frozen baseline WITH the declared repairs applied to it".
+That is still exact equality, not a tolerance: each repair is a MODEL that
+reconstructs the new plan from the old one, so a behavioural change the model
+does not produce still fails. See `KNOWN_DIVERGENCES` below, and
+`test_the_declared_repairs_cannot_absorb_a_foreign_delta`, which is the
+control that keeps the models from becoming an exemption.
+
 Under the program's stop-loss (§5.4) an unexplained difference stops the
 package. It is not written down as expected.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from dataclasses import fields, is_dataclass
+from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -49,7 +62,8 @@ import corpus_profiles
 import legacy_planner
 import planner_corpus
 import planner_synthetic
-from nyxloom import reconcile
+from nyxloom import planning, reconcile
+from nyxloom.types import AttemptState, Role
 
 
 def _real_states() -> set:
@@ -110,11 +124,21 @@ def compare(inp) -> list[str]:
     Empty list means zero delta. Returning the deltas rather than asserting
     lets the mutation test below prove this function can actually SEE a
     difference -- a comparator nobody has watched fail is not a comparator.
+
+    CR-06b: the legacy plan is first put through the DECLARED repairs (see
+    `KNOWN_DIVERGENCES`) and the comparison against the result is still exact
+    equality. That is deliberately not a tolerance: each repair is a MODEL of
+    the change, applied to the baseline, so a behavioural difference the model
+    does not produce still fails. A comparator that merely ignored the
+    differing region would be the blanket exemption this mechanism exists to
+    avoid.
     """
     old = legacy_planner.plan_project(inp)
     new = reconcile.plan_project(inp)
     deltas: list[str] = []
-    old_actions, new_actions = _normalize_plan(old), _normalize_plan(new)
+    repaired, problems = apply_declared_repairs(list(old), list(new), inp)
+    deltas.extend(problems)
+    old_actions, new_actions = _normalize_plan(repaired), _normalize_plan(new)
     if old_actions != new_actions:
         only_old = [a for a in old_actions if a not in new_actions]
         only_new = [a for a in new_actions if a not in old_actions]
@@ -219,7 +243,13 @@ def test_corpus_states_are_attributed_to_their_source():
 
 @pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
 def test_historical_corpus_plans_are_identical(profile: str):
-    """Every real projection, planned under one declared environment."""
+    """Every real projection, planned under one declared environment.
+
+    "Identical" means identical to the frozen baseline with the DECLARED
+    repairs applied to it -- see `compare` and `KNOWN_DIVERGENCES`. Still
+    exact equality: the repairs are models that reconstruct the new plan, not
+    regions the comparison agrees to skip.
+    """
     deltas: list[str] = []
     for case_id, states in planner_corpus.projections():
         found = compare(corpus_profiles.build(states, profile))
@@ -230,27 +260,239 @@ def test_historical_corpus_plans_are_identical(profile: str):
     assert not deltas, "planner differential delta:\n" + "\n".join(deltas)
 
 
-#: Scenarios where the new planner DELIBERATELY diverges from the frozen
-#: baseline, each with the package that introduced it and why. The amendment
-#: permits a difference "explained in the package report"; an entry here is
-#: that explanation, kept next to the check rather than in prose nobody runs.
-#:
-#: An entry buys NOTHING on its own -- the scenario is excluded from the
-#: general comparison below and then pinned EXACTLY by its own test, which
-#: asserts the divergence is the specific repair claimed and nothing else. A
-#: blanket "known difference" exemption is how a differential rots into
-#: decoration; this one fails if the divergence changes shape, and fails if it
-#: disappears (which would mean the repair was reverted).
-KNOWN_DIVERGENCES: dict[str, str] = {
-    "self-reviewing-pair":
-        "CR-06a review (8a6073a8): `self_review_dispatch` iterated the "
-        "snapshot map raw, so two SELF_REVIEWING tasks launched in insertion "
-        "order. Repaired to sort by task id, matching contract item 3's "
-        "determinism promise and every other rule. The repair was accepted on "
-        "the argument that it moved zero projections -- true only because the "
-        "HISTORICAL corpus contains no SELF_REVIEWING task at all, which is "
-        "the blind spot this synthetic set exists to close.",
+# ---------------------------------------------------------------------------
+# the declared divergences
+#
+# The amendment permits a difference "explained in the package report". An
+# entry below is that explanation, kept next to the check rather than in prose
+# nobody runs -- and it buys NOTHING on its own. A divergence comes in one of
+# two shapes and each is closed differently:
+#
+#   SCENARIO-SCOPED -- the difference exists in exactly one hand-built
+#     projection. That scenario is excluded from the general comparison and
+#     pinned EXACTLY by its own test.
+#
+#   REPAIR-SCOPED -- the difference is spread across the historical corpus, so
+#     there is no scenario to exclude. Excluding a case per occurrence would
+#     be a blanket exemption by instalments, so instead the repair is MODELLED:
+#     a function applies it to the legacy plan, and the comparison stays exact
+#     equality against the result. The model is what makes this safe -- a
+#     behavioural change the model does not produce still fails, because the
+#     model reconstructs the new plan rather than agreeing to overlook part of
+#     it.
+#
+# Either way an entry fails if the divergence changes shape, and fails if it
+# DISAPPEARS -- which would mean the repair was reverted and the entry is now
+# a permanent excuse for nothing.
+
+
+@dataclasses.dataclass(frozen=True)
+class Divergence:
+    """One deliberate difference between the new planner and the baseline."""
+
+    #: The package that introduced it, and why it is not a defect.
+    why: str
+    #: The test that pins it exactly. Named here so an entry cannot be added
+    #: without one -- `test_every_declared_divergence_has_a_pin_and_a_shape`
+    #: fails if this names a test that does not exist.
+    pin: str
+    #: For a scenario-scoped divergence: the `planner_synthetic` scenario.
+    scenario: str | None = None
+    #: For a repair-scoped divergence: `(legacy_actions, new_actions, inp) ->
+    #: (repaired_legacy_actions, problems)`. A non-empty `problems` list is a
+    #: delta in its own right: it means the observed difference is NOT the one
+    #: this entry claims.
+    repair: Callable[[list, list, object], tuple[list, list[str]]] | None = None
+
+
+#: Actions the attempt ladder can plan, taken from the rule's own declaration
+#: (which `tests/test_planning.py` derives from its call graph), so the
+#: divergence model below cannot quietly widen to cover another channel.
+_ATTEMPT_LADDER_EMITS = frozenset(
+    next(s for s in planning.rule_table() if s.name == "attempt-ladder").emits)
+
+
+def _task_id_of(normalized: tuple) -> str:
+    return dict(normalized[1])["task_id"]
+
+
+def _retie_the_warm_review_session(old: list, new: list, inp) -> tuple[list, list[str]]:
+    """Model CR-06b divergence (b): the `resume_session` tie-break.
+
+    The legacy rule takes `max(priors, key=lambda a: a.started)`, and `max`
+    returns the FIRST maximal element, so a tie is resolved by whatever order
+    the snapshot map happened to have. The repair breaks the tie on
+    `attempt_id`.
+
+    The model RECOMPUTES the expected handle from the snapshot and, crucially,
+    asserts that the handle the baseline chose was itself `started`-maximal.
+    That is the whole safety claim: the tie-break only ever discriminates
+    among candidates the policy already calls equally warm. A repair that
+    reached PAST a tie to a genuinely older session would be a behavioural
+    change, and it would be reported here rather than absorbed.
+    """
+    priors = [
+        a for tsf in inp.states.values() for a in tsf.attempts
+        if a.role == Role.REVIEW_INDEPENDENT
+        and a.state == AttemptState.EXITED
+        and a.session_handle
+    ]
+    if not priors:
+        return old, []
+    best = max(priors, key=lambda a: (a.started, a.attempt_id))
+    newest = max(a.started for a in priors)
+    problems: list[str] = []
+    repaired: list = []
+    for action in old:
+        if type(action).__name__ != "LaunchReview" or action.resume_session is None:
+            repaired.append(action)
+            continue
+        chosen = [p for p in priors if p.session_handle == action.resume_session]
+        if not chosen or all(p.started != newest for p in chosen):
+            problems.append(
+                f"resume_session {action.resume_session!r} is not a "
+                f"`started`-maximal prior review session -- the declared "
+                f"tie-break does not explain this difference")
+            repaired.append(action)
+            continue
+        repaired.append(dataclasses.replace(action, resume_session=best.session_handle))
+    return repaired, problems
+
+
+def _sort_the_attempt_run(old: list, new: list, inp) -> tuple[list, list[str]]:
+    """Model CR-06b divergence (a): the attempt ladder walks tasks sorted.
+
+    The ladder emits a contiguous BLOCK of actions per task, in one contiguous
+    run of the plan (its own channel). Sorting the outer loop therefore
+    permutes whole blocks and never touches what is inside one -- so the model
+    is a STABLE SORT BY TASK ID of the run, which reproduces the new plan
+    exactly or not at all.
+
+    The run is located as the minimal window where the two plans differ (the
+    maximal common prefix and suffix are peeled off). That cannot be laxity:
+    the assertion the caller then makes is full equality against the
+    reconstruction, so the window only decides WHERE the sort is applied, not
+    what counts as agreement. Three claims are checked here rather than left
+    implicit, because they are what makes this a reordering and not a change:
+
+    * every action in the window is one the attempt ladder can emit -- so a
+      delta in some other channel is reported, never sorted away;
+    * each task's actions are CONTIGUOUS in the window -- the block structure
+      the sort relies on;
+    * the window's multiset is unchanged -- nothing gained, nothing lost.
+    """
+    old_norm, new_norm = _normalize_plan(old), _normalize_plan(new)
+    if old_norm == new_norm:
+        return old, []
+    prefix = 0
+    while (prefix < len(old_norm) and prefix < len(new_norm)
+           and old_norm[prefix] == new_norm[prefix]):
+        prefix += 1
+    suffix = 0
+    while (suffix < len(old_norm) - prefix and suffix < len(new_norm) - prefix
+           and old_norm[len(old_norm) - 1 - suffix] == new_norm[len(new_norm) - 1 - suffix]):
+        suffix += 1
+    window = old[prefix:len(old) - suffix]
+    window_norm = old_norm[prefix:len(old_norm) - suffix]
+    target_norm = new_norm[prefix:len(new_norm) - suffix]
+
+    foreign = sorted({k for k, _ in window_norm} - _ATTEMPT_LADDER_EMITS)
+    if foreign:
+        return old, [
+            f"the differing window contains {foreign}, which the attempt "
+            f"ladder cannot emit -- this is not the declared reordering"]
+    task_ids = [_task_id_of(a) for a in window_norm]
+    if not _blocks_are_contiguous(task_ids):
+        return old, [
+            f"the differing window interleaves tasks {task_ids} -- the ladder "
+            f"emits one contiguous block per task, so this is not a block "
+            f"reordering"]
+    if sorted(window_norm) != sorted(target_norm):
+        return old, [
+            "the differing window gained or lost an action -- it is a "
+            "behavioural change, not a reordering"]
+    ordered = sorted(window, key=lambda a: a.task_id)
+    return old[:prefix] + ordered + old[len(old) - suffix:], []
+
+
+def _runs(values: list[str]):
+    """The consecutive runs of equal values, as a list of values."""
+    seen: list[str] = []
+    for value in values:
+        if not seen or seen[-1] != value:
+            seen.append(value)
+    return seen
+
+
+def _blocks_are_contiguous(task_ids: list[str]) -> bool:
+    runs = _runs(task_ids)
+    return len(runs) == len(set(runs))
+
+
+KNOWN_DIVERGENCES: dict[str, Divergence] = {
+    "self-reviewing-pair": Divergence(
+        scenario="self-reviewing-pair",
+        pin="test_the_self_review_divergence_is_exactly_the_repair_it_claims_to_be",
+        why=(
+            "CR-06a review (8a6073a8): `self_review_dispatch` iterated the "
+            "snapshot map raw, so two SELF_REVIEWING tasks launched in "
+            "insertion order. Repaired to sort by task id, matching contract "
+            "item 3's determinism promise and every other rule. The repair was "
+            "accepted on the argument that it moved zero projections -- true "
+            "only because the HISTORICAL corpus contains no SELF_REVIEWING "
+            "task at all, which is the blind spot this synthetic set exists "
+            "to close."),
+    ),
+    # ORDER MATTERS, and only here. The resume-session repair must run FIRST:
+    # `LaunchReview` sits in the WAVE channel, AFTER the attempt run, so an
+    # unrepaired `resume_session` would truncate the common suffix and drag
+    # wave actions into the attempt window -- where the "foreign action" check
+    # would correctly refuse to sort them.
+    "review-resume-tie-break": Divergence(
+        repair=_retie_the_warm_review_session,
+        pin="test_the_review_resume_divergence_only_ever_breaks_a_tie",
+        why=(
+            "CR-06b closes the second permutation exemption CR-06a recorded. "
+            "`LaunchReview.resume_session` was `max(priors, key=started)`, and "
+            "`max` returns the FIRST maximal element, so two EXITED review "
+            "attempts sharing a `started` timestamp made the resumed warm "
+            "session a function of `inp.states` iteration order -- which the "
+            "daemon builds by scanning a directory. Unlike the ladder's "
+            "reordering this changes a FIELD VALUE, so it is argued rather "
+            "than waved through: the tie-break discriminates ONLY among "
+            "candidates the rule itself calls equally warm, the wrong guess "
+            "was never worse than a prompt-cache miss (the pre-B6 cost), and "
+            "the A7 verdict-attempt binding is stamped downstream either way. "
+            "Its pin checks the 'only among ties' claim directly."),
+    ),
+    "attempt-ladder-sorted-task-order": Divergence(
+        repair=_sort_the_attempt_run,
+        pin="test_the_attempt_ladder_divergence_is_exactly_a_block_reordering",
+        why=(
+            "CR-06b closes the first permutation exemption CR-06a recorded. "
+            "The attempt ladder walked `inp.states.items()` RAW where every "
+            "other rule sorts, against contract item 3's own 'sorted task-id "
+            "order (determinism)' promise, so the ATTEMPT channel's action "
+            "order followed the daemon's directory scan. CR-06a deferred the "
+            "repair because it moves real corpus plans and 'that is not a "
+            "delta to explain in a report, it is a different planner'. That "
+            "argument was about VOLUME. The delta is a permutation of whole "
+            "per-task blocks within ONE channel: the same actions, the same "
+            "fields, the same decisions -- which is what the model here "
+            "reconstructs and what its pin asserts."),
+    ),
 }
+
+
+def apply_declared_repairs(old: list, new: list, inp) -> tuple[list, list[str]]:
+    """Put the legacy plan through every declared repair, in declared order."""
+    problems: list[str] = []
+    for name, divergence in KNOWN_DIVERGENCES.items():
+        if divergence.repair is None:
+            continue
+        old, found = divergence.repair(old, new, inp)
+        problems.extend(f"{name}: {p}" for p in found)
+    return old, problems
 
 
 @pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
@@ -258,7 +500,7 @@ def test_synthetic_corpus_plans_are_identical(profile: str):
     """The states real history never reached, under every profile."""
     deltas: list[str] = []
     for case_id, states in planner_synthetic.projections():
-        if case_id in KNOWN_DIVERGENCES:
+        if case_id in {d.scenario for d in KNOWN_DIVERGENCES.values()}:
             continue
         found = compare(corpus_profiles.build(states, profile))
         if found:
@@ -266,8 +508,25 @@ def test_synthetic_corpus_plans_are_identical(profile: str):
     assert not deltas, "planner differential delta:\n" + "\n".join(deltas)
 
 
-def test_the_known_divergence_is_exactly_the_repair_it_claims_to_be():
-    """Pin the one deliberate difference, in both directions.
+def test_every_declared_divergence_has_a_pin_and_a_shape():
+    """An entry with no pinning test is exactly the blanket exemption this
+    mechanism exists to refuse, and it would be invisible: the general
+    comparison would go green and nothing would say why."""
+    for name, divergence in KNOWN_DIVERGENCES.items():
+        assert divergence.why, name
+        assert (divergence.scenario is None) != (divergence.repair is None), (
+            f"{name}: a divergence is scenario-scoped OR repair-scoped, never "
+            f"both and never neither")
+        if divergence.scenario is not None:
+            assert divergence.scenario in planner_synthetic.SCENARIO_NAMES, (
+                f"{name}: declared for a scenario that no longer exists")
+        assert divergence.pin in globals(), (
+            f"{name}: names a pinning test {divergence.pin!r} that does not "
+            f"exist -- an unpinned divergence is a blanket exemption")
+
+
+def test_the_self_review_divergence_is_exactly_the_repair_it_claims_to_be():
+    """Pin the scenario-scoped difference, in both directions.
 
     Asserting three things, so the exemption cannot widen into cover:
     nothing was gained or lost (multiset equality); the NEW plan is sorted;
@@ -275,8 +534,6 @@ def test_the_known_divergence_is_exactly_the_repair_it_claims_to_be():
     divergence would not exist and the entry should be retired rather than
     left standing as a permanent excuse.
     """
-    assert set(KNOWN_DIVERGENCES) <= set(planner_synthetic.SCENARIO_NAMES), (
-        "a divergence is declared for a scenario that no longer exists")
     states = dict(next(s for n, s in planner_synthetic.projections()
                        if n == "self-reviewing-pair"))
     inp = corpus_profiles.build(states, "neutral")
@@ -295,22 +552,241 @@ def test_the_known_divergence_is_exactly_the_repair_it_claims_to_be():
         "the frozen baseline now agrees -- retire this divergence entry")
 
 
+def test_the_attempt_ladder_divergence_is_exactly_a_block_reordering():
+    """Pin the repair-scoped divergence (a) across the HISTORICAL corpus.
+
+    Four claims, per differing projection, in the order that matters:
+
+    1. the whole plan's multiset is unchanged -- nothing gained, nothing lost,
+       so it is not a decision that changed;
+    2. the difference is confined to actions the attempt LADDER can emit, so a
+       delta somewhere else could never be absorbed by this entry;
+    3. each task's actions stay contiguous, and the new plan is EXACTLY the
+       stable sort of the legacy run by task id -- reconstructed, not merely
+       tolerated;
+    4. it still happens. A count, because a repair that was reverted would
+       make every claim above vacuously true and this test green.
+
+    The companion repair (the `resume_session` tie-break) is applied first,
+    for the same reason `compare` applies it first: an unrepaired warm-session
+    handle sits AFTER the attempt run and would drag wave actions into the
+    window, where claim 2 would correctly refuse them.
+    """
+    moved = 0
+    for case_id, states in planner_corpus.projections():
+        inp = corpus_profiles.build(states, "neutral")
+        old = list(legacy_planner.plan_project(inp))
+        new = list(reconcile.plan_project(inp))
+        old, problems = _retie_the_warm_review_session(old, new, inp)
+        assert not problems, f"{case_id}: {problems}"
+        if _normalize_plan(old) == _normalize_plan(new):
+            continue
+        moved += 1
+        assert sorted(_normalize_plan(old)) == sorted(_normalize_plan(new)), (
+            f"{case_id}: the delta gained or lost an action -- it is a "
+            f"behavioural change, not a reordering")
+        repaired, problems = _sort_the_attempt_run(old, new, inp)
+        assert not problems, f"{case_id}: {problems}"
+        assert _normalize_plan(repaired) == _normalize_plan(new), (
+            f"{case_id}: sorting the legacy attempt run by task id does not "
+            f"reproduce the new plan -- the ladder changed more than its "
+            f"iteration order")
+    assert moved >= 150, (
+        f"only {moved} of {len(planner_corpus.projections())} projections "
+        f"reorder -- CR-06b measured 199 under this profile, so either the "
+        f"repair was reverted or the corpus no longer exercises it")
+
+
+def test_the_review_resume_divergence_only_ever_breaks_a_tie():
+    """Pin the repair-scoped divergence (b) across the HISTORICAL corpus.
+
+    This one changes a FIELD VALUE rather than an order, so the pin has to say
+    more than "a multiset is preserved". What makes it safe is that the
+    tie-break never REACHES past a tie: both the handle the baseline chose and
+    the handle the repair chooses must be `started`-maximal -- the rule's own
+    definition of "the warmest prior session" -- and the new one must be the
+    deterministic maximum. Everything else about the action, and every other
+    action in the plan, must be identical.
+
+    If a future change ever made the new planner prefer a strictly OLDER
+    session, that is a behavioural change and it fails here rather than being
+    read as "the known tie-break".
+    """
+    observed = 0
+    for case_id, states in planner_corpus.projections():
+        inp = corpus_profiles.build(states, "neutral")
+        old = list(legacy_planner.plan_project(inp))
+        new = list(reconcile.plan_project(inp))
+        priors = [
+            a for tsf in inp.states.values() for a in tsf.attempts
+            if a.role == Role.REVIEW_INDEPENDENT
+            and a.state == AttemptState.EXITED and a.session_handle
+        ]
+        old_waves = [a for a in old if type(a).__name__ == "LaunchReview"]
+        new_waves = [a for a in new if type(a).__name__ == "LaunchReview"]
+        assert len(old_waves) == len(new_waves), case_id
+        for before, after in zip(old_waves, new_waves):
+            assert before.wave_id == after.wave_id, case_id
+            assert before.task_ids == after.task_ids, case_id
+            if before.resume_session == after.resume_session:
+                continue
+            observed += 1
+            newest = max(a.started for a in priors)
+            chosen_before = [p for p in priors
+                             if p.session_handle == before.resume_session]
+            chosen_after = [p for p in priors
+                            if p.session_handle == after.resume_session]
+            assert any(p.started == newest for p in chosen_before), (
+                f"{case_id}: the BASELINE resumed a session that was not "
+                f"`started`-maximal -- this is not a tie")
+            assert any(p.started == newest for p in chosen_after), (
+                f"{case_id}: the repair reached PAST a tie to an older "
+                f"session -- that is a behavioural change, not a tie-break")
+            assert after.resume_session == max(
+                priors, key=lambda a: (a.started, a.attempt_id)).session_handle, (
+                f"{case_id}: the repair is not the declared "
+                f"(started, attempt_id) maximum")
+    assert observed >= 20, (
+        f"only {observed} corpus projections resolve a warm-session tie -- "
+        f"CR-06b measured 26 under this profile, so either the repair was "
+        f"reverted or the corpus no longer ties two review sessions")
+
+    # And the hand-built case, where the tie is exactly two candidates so the
+    # choice is readable rather than inferred. `planner_synthetic`'s original
+    # tie scenario RECORDED the ambiguity without exercising it -- both its
+    # tasks had a review attempt as their LATEST, so the recency guard
+    # suppressed every launch and no `resume_session` was ever read.
+    states = dict(next(s for n, s in planner_synthetic.projections()
+                       if n == "review-resume-tie-reaches-a-launch"))
+    inp = corpus_profiles.build(states, "neutral")
+
+    def handles(plan):
+        return [a.resume_session for a in plan
+                if type(a).__name__ == "LaunchReview"]
+
+    assert handles(legacy_planner.plan_project(inp)) == ["h1"], (
+        "the frozen baseline no longer resumes the map-order handle -- "
+        "retire this divergence entry")
+    assert handles(reconcile.plan_project(inp)) == ["h2"], (
+        "the tie-break is not choosing the (started, attempt_id) maximum")
+
+
+def _corpus_plans():
+    for case_id, states in planner_corpus.projections():
+        inp = corpus_profiles.build(states, "neutral")
+        yield (case_id, inp,
+               list(legacy_planner.plan_project(inp)),
+               list(reconcile.plan_project(inp)))
+
+
+@lru_cache(maxsize=1)
+def _corpus_case_that_diverges():
+    """A real projection the two planners genuinely disagree about.
+
+    `next` with no default on purpose: if the corpus stops producing one, the
+    controls below are testing nothing and should blow up rather than skip.
+    """
+    return next(case for case in _corpus_plans()
+                if _normalize_plan(case[2]) != _normalize_plan(case[3]))
+
+
+@pytest.mark.parametrize("mutate, why", [
+    (lambda plan: plan[:-1], "an action was dropped"),
+    (lambda plan: plan + [reconcile.StallCheck(task_id="zzz", attempt_id="a")],
+     "an action was invented"),
+    (lambda plan: [dataclasses.replace(a, task_id="zzz") if i == 0 else a
+                   for i, a in enumerate(plan)], "a field changed"),
+    (lambda plan: [reconcile.OpenWave(task_ids=["zzz"])] + plan[1:],
+     "an action from another channel replaced one"),
+])
+def test_the_declared_repairs_cannot_absorb_a_foreign_delta(mutate, why):
+    """The anti-decoration control for the repair mechanism itself.
+
+    A model of a repair is only safe if it REFUSES everything that is not that
+    repair. Each mutation here is a genuine behavioural difference dressed in
+    the same clothes -- same channel, same action classes -- and each must
+    still be reported, or `KNOWN_DIVERGENCES` has become the blanket exemption
+    it is written to avoid.
+    """
+    case_id, inp, old, new = _corpus_case_that_diverges()
+    mutated = mutate(list(new))
+    repaired, problems = apply_declared_repairs(list(old), mutated, inp)
+    assert problems or _normalize_plan(repaired) != _normalize_plan(mutated), (
+        f"{case_id}: the declared repairs absorbed a foreign delta ({why})")
+
+
+def test_the_repair_model_refuses_a_run_it_cannot_explain():
+    """The two structural claims inside the sort model, seen to FAIL.
+
+    Built rather than found: production cannot produce any of these shapes
+    today, which is exactly why a control is needed -- an unexercised guard is
+    a comment. The first plants an action from ANOTHER channel in the
+    differing window. The second INTERLEAVES two tasks *and* reorders within
+    one of them: no per-task loop can produce that, and a "stable sort by
+    task" that reconstructed it would be reconstructing a coincidence. The
+    third loses an action, which is a decision that changed and not an order.
+    """
+    inp = corpus_profiles.build(
+        next(states for _, states in planner_corpus.projections()), "neutral")
+
+    foreign_old = [reconcile.OpenWave(task_ids=["t2"]), reconcile.OpenWave(task_ids=["t1"])]
+    foreign_new = list(reversed(foreign_old))
+    _, problems = _sort_the_attempt_run(foreign_old, foreign_new, inp)
+    assert problems and "cannot emit" in problems[0], problems
+
+    interleaved_old = [
+        reconcile.StallCheck(task_id="t2", attempt_id="a1"),
+        reconcile.StallCheck(task_id="t1", attempt_id="b1"),
+        reconcile.StallCheck(task_id="t2", attempt_id="a2"),
+    ]
+    interleaved_new = [interleaved_old[2], interleaved_old[1], interleaved_old[0]]
+    _, problems = _sort_the_attempt_run(interleaved_old, interleaved_new, inp)
+    assert problems and "interleaves" in problems[0], problems
+
+    lost_old = [reconcile.StallCheck(task_id="t2", attempt_id="a1"),
+                reconcile.StallCheck(task_id="t1", attempt_id="b1")]
+    lost_new = [reconcile.StallCheck(task_id="t1", attempt_id="b1"),
+                reconcile.StallCheck(task_id="t1", attempt_id="b2")]
+    _, problems = _sort_the_attempt_run(lost_old, lost_new, inp)
+    assert problems and "gained or lost" in problems[0], problems
+
+
+def test_the_tie_break_model_refuses_a_handle_that_was_never_maximal():
+    """The safety claim inside the resume model, seen to FAIL.
+
+    A legacy plan that resumed a session which is NOT `started`-maximal cannot
+    be explained by a tie-break, and must be reported instead of rewritten.
+    """
+    tied = next(
+        (corpus_profiles.build(states, "neutral")
+         for _, states in planner_corpus.projections()
+         if any(a.role == Role.REVIEW_INDEPENDENT
+                and a.state == AttemptState.EXITED and a.session_handle
+                for tsf in states.values() for a in tsf.attempts)),
+        None)
+    assert tied is not None, "no corpus projection has a resumable review session"
+    forged = [reconcile.LaunchReview(wave_id="w1", task_ids=["t1"],
+                                     resume_session="no-such-handle")]
+    _, problems = _retie_the_warm_review_session(forged, forged, tied)
+    assert problems and "not a `started`-maximal" in problems[0], problems
+
+
 @pytest.mark.parametrize("case_id", planner_synthetic.SCENARIO_NAMES)
 def test_synthetic_scenarios_are_permutation_stable(case_id: str):
     """Each synthetic scenario carries several tasks in its target state, so
     map order is OBSERVABLE -- which is what the historical corpus could not
     do for these states, and why a defect hid behind a green.
 
-    Asserted as a MULTISET, matching the acceptance the ledger records as
-    actually met: the ATTEMPT channel's ordering is a known deferred defect
-    (CR-06b), so requiring strict sequence equality here would fail for a
-    reason this test is not about.
+    Asserted as a SEQUENCE. CR-06a had to weaken this to a multiset because
+    the attempt channel's order followed the snapshot; CR-06b repaired that,
+    so the acceptance the parent actually asked for -- "permuting input-map
+    order cannot change planned actions" -- is what is checked.
     """
     states = dict(next(s for n, s in planner_synthetic.projections() if n == case_id))
     forward = reconcile.plan_project(corpus_profiles.build(states, "neutral"))
     reversed_states = {k: states[k] for k in reversed(list(states))}
     backward = reconcile.plan_project(corpus_profiles.build(reversed_states, "neutral"))
-    assert sorted(_normalize_plan(forward)) == sorted(_normalize_plan(backward)), (
+    assert _normalize_plan(forward) == _normalize_plan(backward), (
         f"{case_id}: permuting the snapshot changed the planned actions")
 
 
