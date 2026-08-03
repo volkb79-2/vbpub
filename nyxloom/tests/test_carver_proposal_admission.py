@@ -115,6 +115,25 @@ def carver_project(tmp_state, tmp_path) -> ProjectConfig:
     return ProjectConfig.load(root)
 
 
+
+def _persist(project: str, states: dict) -> dict:
+    """Persist hand-made states through the canonical mutation.
+
+    CR-04b: `append_and_apply` derives the projection from COMMITTED state, so
+    a task that exists only in a caller's dict is now correctly invisible to
+    it -- a phantom task can no longer receive a transition. These fixtures
+    used to rely on that, which meant they were exercising a projection the
+    store had never heard of.
+    """
+    for task_id, tsf in list(states.items()):
+        storage.append_and_apply(
+            project, states, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()},
+            task_id=task_id)
+    return states
+
+
+
 def _bootstrap_warm(project: str = "demo", generation: int = 1, session_id: str = "S1") -> None:
     """Synthesize a WARM session snapshot at `generation` directly (no real
     launch needed for these tests -- proposal validation/admission reads
@@ -566,10 +585,10 @@ def test_rescope_supersedes_origin_only_on_successful_admission(tmp_state, carve
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    states = {
+    states = _persist("demo", {
         "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
                                       state=TaskState.READY_TO_CARVE, since=utc_now()),
-    }
+    })
     snap = d._carver_session("demo", cfg)
     # Merely being validated does NOT touch the origin.
     assert len(d._validated_carve_proposals("demo", cfg, snap)) == 1
@@ -602,10 +621,10 @@ def test_non_handoff_disposition_leaves_origin_untouched(tmp_state, carver_proje
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    states = {
+    states = _persist("demo", {
         "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
                                       state=TaskState.READY_TO_CARVE, since=utc_now()),
-    }
+    })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
     events = d._execute_admit_carve_proposal("demo", cfg, states, action)
@@ -1279,10 +1298,10 @@ def test_disposition_artifact_ref_mismatch_skipped(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    states = {
+    states = _persist("demo", {
         "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
                                       state=TaskState.READY_TO_CARVE, since=utc_now()),
-    }
+    })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
     events = d._execute_admit_carve_proposal("demo", cfg, states, action)
@@ -1308,10 +1327,10 @@ def test_disposition_artifact_ref_normalized_match_supersedes(tmp_state, carver_
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    states = {
+    states = _persist("demo", {
         "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
                                       state=TaskState.READY_TO_CARVE, since=utc_now()),
-    }
+    })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
     events = d._execute_admit_carve_proposal("demo", cfg, states, action)
@@ -1336,10 +1355,10 @@ def test_disposition_missing_artifact_ref_skipped(tmp_state, carver_project):
     _record("demo", payload)
 
     d = daemon.Daemon({"demo": cfg.root})
-    states = {
+    states = _persist("demo", {
         "demo-origin": TaskStateFile(schema_version=1, task_id="demo-origin", project="demo",
                                       state=TaskState.READY_TO_CARVE, since=utc_now()),
-    }
+    })
     action = reconcile.AdmitCarveProposal(
         project="demo", proposal_id=payload["proposal_id"], artifact_ids=("demo-P901",))
     events = d._execute_admit_carve_proposal("demo", cfg, states, action)

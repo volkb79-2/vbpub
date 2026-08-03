@@ -94,7 +94,12 @@ from nyxloom.types import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RECONCILE_SRC = (REPO_ROOT / "src" / "nyxloom" / "reconcile.py").read_text()
-STORAGE_SRC = (REPO_ROOT / "src" / "nyxloom" / "storage.py").read_text()
+# CR-04b: `apply_event` and the transition tuple moved to projection.py when
+# the pure functions were extracted to break the store's import cycle. This
+# scanner reads the module that DEFINES them; reading storage.py would now
+# find nothing and the invariant would pass vacuously -- which is exactly
+# how an "every EventType is handled" check stops checking.
+STORAGE_SRC = (REPO_ROOT / "src" / "nyxloom" / "projection.py").read_text()
 RENDER_SRC = (REPO_ROOT / "src" / "nyxloom" / "render.py").read_text()
 DAEMON_SRC = (REPO_ROOT / "src" / "nyxloom" / "daemon.py").read_text()
 

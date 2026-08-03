@@ -399,9 +399,16 @@ def test_replay_is_silent_but_live_append_logs(tmp_state, tmp_path):
 
     # Build a real history WITHOUT logging configured yet (simulates the
     # pre-restart history already sitting on disk from a prior daemon run).
-    _seed(project, task_id, TaskState.QUEUED)
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    states = _seed(project, task_id, TaskState.QUEUED)
+    # CR-04b: built through the CANONICAL mutation, not a bare `append_event`.
+    # A raw append writes an event without moving the projection, so the two
+    # diverge -- and since CR-04a validates against COMMITTED state, the next
+    # transition is then judged from a projection the log has already left
+    # behind. That divergence is a real defect (the audit counted 13 such
+    # bypasses); this oracle is about replay SILENCE and must not depend on
+    # one to set itself up.
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
         payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id=task_id,
     )
 

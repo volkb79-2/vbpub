@@ -2412,9 +2412,19 @@ def test_transient_escalate_at_cap_pauses_and_requeues(tmp_state, sample_project
         (attempt_dir / f"attempt.resume-{n}.log").write_text("x", encoding="utf-8")
 
     d = daemon.Daemon({"demo": sample_project.root})
-    events = d._transient_escalate(project, sample_project, {task_id: tsf})
+    # CR-04b: the store derives the projection from COMMITTED state, so a task
+    # that exists only in a caller's dict can no longer receive a transition.
+    # Persist it first, and read the verdict off the map the store refreshed
+    # rather than off the object handed in -- that object is the caller's
+    # stale copy by construction now.
+    states = {}
+    storage.append_and_apply(
+        project, states, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()},
+        task_id=task_id)
+    events = d._transient_escalate(project, sample_project, states)
 
-    assert tsf.state is TaskState.QUEUED
+    assert states[task_id].state is TaskState.QUEUED
     ev_types = [e.type for e in events]
     assert EventType.TASK_TRANSITIONED in ev_types
     assert EventType.PROVIDER_STATE_CHANGED in ev_types

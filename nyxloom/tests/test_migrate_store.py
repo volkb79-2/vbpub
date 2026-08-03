@@ -15,12 +15,83 @@ import pytest
 from nyxloom import cli, paths, storage, storage_sqlite
 from nyxloom.migrate_store import MigrationError, migrate
 from nyxloom.types import (
-    Actor, ActorKind, Attempt, AttemptState, Basis, BlockerType, EventType,
+    Actor, ActorKind, Attempt, AttemptState, Basis, BlockerType, Event, EventType,
     OracleResult, Receipt, ReceiptResult, Role, Route, TaskState,
-    TaskStateFile, Usage, utc_now,
+    TaskStateFile, Usage, iso, utc_now,
 )
 
 ACTOR = Actor(kind=ActorKind.TICK, id="test")
+
+
+def _legacy_list_states(project: str) -> dict:
+    """Read the LEGACY statefiles, not the store.
+
+    `storage.list_states` reads SQLite now, which is the migration TARGET --
+    using it to compute the expected value would compare the target against
+    itself and pass no matter what the import did.
+    """
+    out = {}
+    d = paths.state_dir(project)
+    if not d.exists():
+        return out
+    for f in sorted(d.glob("*.json")):
+        tsf = TaskStateFile.from_dict(json.loads(f.read_text(encoding="utf-8")))
+        out[tsf.task_id] = tsf
+    return out
+
+
+def _legacy_load_state(project: str, task_id: str):
+    return _legacy_list_states(project).get(task_id)
+
+
+def _legacy_events(project: str) -> list:
+    """Parse the legacy events.jsonl, same reasoning as above."""
+    path = paths.events_path(project)
+    if not path.exists():
+        return []
+    return [Event.from_dict(json.loads(ln))
+            for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def _legacy_append(project: str, *, type: EventType, payload: dict,
+                    task_id: str | None = None) -> None:
+    """Append one event to a LEGACY `events.jsonl`, in that file's format.
+
+    CR-04b deleted the file backend, so `storage.append_event` writes SQLite
+    and can no longer produce the artifact this tool exists to import. The
+    fixture therefore authors the legacy format itself -- which is the honest
+    shape for a migration test: the tool reads a format the code no longer
+    writes, and pretending otherwise would have quietly turned every case here
+    into "nothing to migrate".
+    """
+    paths.ensure_layout(project)
+    path = paths.events_path(project)
+    seq = len([l for l in path.read_text(encoding="utf-8").splitlines()
+               if l.strip()]) + 1 if path.exists() else 1
+    ev = {
+        "schema_version": storage.SCHEMA_VERSION,
+        "sequence": seq,
+        "timestamp": iso(utc_now()),
+        "project": project,
+        "actor": {"kind": ACTOR.kind.value, "id": ACTOR.id},
+        "type": type.value,
+        "payload": payload,
+        "task_id": task_id,
+        "attempt_id": None,
+        "wave_id": None,
+        "decision_id": None,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(ev, separators=(",", ":"), sort_keys=True) + "\n")
+
+
+def _legacy_save_state(state: TaskStateFile) -> None:
+    """Write one legacy statefile, same reasoning as `_legacy_append`."""
+    paths.ensure_layout(state.project)
+    p = paths.statefile_path(state.project, state.task_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state.to_dict(), indent=1, sort_keys=True) + "\n",
+                 encoding="utf-8")
 
 
 def _seed_project(project: str) -> None:
@@ -29,20 +100,20 @@ def _seed_project(project: str) -> None:
         schema_version=storage.SCHEMA_VERSION, task_id="demo-P01",
         project=project, state=TaskState.CARVED, since=utc_now(),
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_CREATED,
+    _legacy_append(
+        project, type=EventType.TASK_CREATED,
         payload={"statefile": created.to_dict()}, task_id="demo-P01",
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    _legacy_append(
+        project, type=EventType.TASK_TRANSITIONED,
         payload={"from": "CARVED", "to": "QUEUED", "notes": None}, task_id="demo-P01",
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    _legacy_append(
+        project, type=EventType.TASK_TRANSITIONED,
         payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id="demo-P01",
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
+    _legacy_append(
+        project, type=EventType.PROGRESS_RECORDED,
         payload={"units": ["step-1"]}, task_id="demo-P01",
     )
 
@@ -50,22 +121,22 @@ def _seed_project(project: str) -> None:
         schema_version=storage.SCHEMA_VERSION, task_id="demo-P02",
         project=project, state=TaskState.QUEUED, since=utc_now(),
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_CREATED,
+    _legacy_append(
+        project, type=EventType.TASK_CREATED,
         payload={"statefile": t2.to_dict()}, task_id="demo-P02",
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
+    _legacy_append(
+        project, type=EventType.PROGRESS_RECORDED,
         payload={"units": ["p2-step"]}, task_id="demo-P02",
     )
 
-    storage.save_state(TaskStateFile(
+    _legacy_save_state(TaskStateFile(
         schema_version=storage.SCHEMA_VERSION, task_id="demo-P01",
         project=project, state=TaskState.ACTIVE, since=utc_now(),
         progress_units=["step-1"],
     ))
     t2.progress_units = ["p2-step"]
-    storage.save_state(t2)
+    _legacy_save_state(t2)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +146,7 @@ def test_statefile_authoritative_import(tmp_state):
     project = "sp02-zero-div"
     _seed_project(project)
 
-    file_states = storage.list_states(project)  # file backend (default)
+    file_states = _legacy_list_states(project)   # the legacy source, not the target
 
     result = migrate(project)
 
@@ -93,7 +164,7 @@ def test_verbatim_fidelity_preserves_rich_attempt_fields(tmp_state):
     project = "sp02-verbatim-fidelity"
     _seed_project(project)
 
-    rich = storage.load_state(project, "demo-P01")
+    rich = _legacy_load_state(project, "demo-P01")
     assert rich is not None
     rich.attempts = [Attempt(
         attempt_id="att-rich", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
@@ -115,8 +186,8 @@ def test_verbatim_fidelity_preserves_rich_attempt_fields(tmp_state):
         ),
         wave_id="wave-rich",
     )]
-    storage.save_state(rich)
-    file_states = storage.list_states(project)
+    _legacy_save_state(rich)
+    file_states = _legacy_list_states(project)
 
     migrate(project)
 
@@ -214,7 +285,7 @@ def test_event_order_preserved(tmp_state):
     project = "sp02-order"
     _seed_project(project)
 
-    source_order = [(e.type, e.task_id) for e in storage.iter_events(project)]
+    source_order = [(e.type, e.task_id) for e in _legacy_events(project)]
     assert source_order == [
         (EventType.TASK_CREATED, "demo-P01"),
         (EventType.TASK_TRANSITIONED, "demo-P01"),
@@ -241,7 +312,7 @@ def test_already_imported_exact_match_skips_reinsert_and_still_completes(tmp_sta
 
     # Simulate a prior run that inserted every event into SQLite but
     # crashed before the rename (events.jsonl is still on disk).
-    file_events = list(storage.iter_events(project))
+    file_events = _legacy_events(project)
     for ev in file_events:
         storage_sqlite.append_event(
             project, actor=ev.actor, type=ev.type, payload=ev.payload,
@@ -269,7 +340,7 @@ def test_already_imported_mismatched_partial_state_raises(tmp_state):
     # full source still there) -- an inconsistent state migrate() must
     # refuse to guess about, rather than silently double-inserting or
     # silently accepting a partial import as "done".
-    file_events = list(storage.iter_events(project))
+    file_events = _legacy_events(project)
     for ev in file_events[:2]:
         storage_sqlite.append_event(
             project, actor=ev.actor, type=ev.type, payload=ev.payload,
@@ -298,17 +369,17 @@ def test_orphan_rejected_blocked_event_is_preserved_as_audit(tmp_state):
         schema_version=storage.SCHEMA_VERSION, task_id="topos-P64",
         project=project, state=TaskState.COMPLETED, since=utc_now(),
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_CREATED,
+    _legacy_append(
+        project, type=EventType.TASK_CREATED,
         payload={"statefile": created.to_dict()}, task_id="topos-P64",
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    _legacy_append(
+        project, type=EventType.TASK_TRANSITIONED,
         payload={"from": "VALIDATING", "to": "COMPLETED", "notes": None},
         task_id="topos-P64",
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_BLOCKED,
+    _legacy_append(
+        project, type=EventType.TASK_BLOCKED,
         payload={
             "from": "COMPLETED",
             "blocker": {
@@ -318,7 +389,7 @@ def test_orphan_rejected_blocked_event_is_preserved_as_audit(tmp_state):
         },
         task_id="topos-P64",
     )
-    storage.save_state(completed)
+    _legacy_save_state(completed)
 
     result = migrate(project)
 
@@ -335,8 +406,8 @@ def test_event_projection_without_statefile_is_tolerated(tmp_state):
         schema_version=storage.SCHEMA_VERSION, task_id="dstdns-P10",
         project=project, state=TaskState.QUEUED, since=utc_now(),
     )
-    storage.append_event(
-        project, actor=ACTOR, type=EventType.TASK_CREATED,
+    _legacy_append(
+        project, type=EventType.TASK_CREATED,
         payload={"statefile": absent.to_dict()}, task_id="dstdns-P10",
     )
 

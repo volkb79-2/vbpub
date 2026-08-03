@@ -419,12 +419,14 @@ def rebuild(project: str, write: bool = False) -> tuple[dict[str, TaskStateFile]
     diffs = diffs[:50]
 
     if write:
-        state_dir = paths.state_dir(project)
-        for task_id, replayed_state in replayed.items():
-            statefile_path = paths.statefile_path(project, task_id)
-            if statefile_path.exists():
-                bak_path = statefile_path.with_suffix('.bak')
-                bak_path.write_text(statefile_path.read_text(encoding='utf-8'), encoding='utf-8')
+        # CR-04b: ONE consistent backup of the whole store before repairing it,
+        # replacing the per-statefile `.bak` copies the file backend needed.
+        # A repair that rewrites every projection row is exactly when a
+        # backup has to exist, and it has to be a point in time -- per-row
+        # copies could not be, since a crash between two of them left a
+        # backup that was half old and half new.
+        storage.backup(project)
+        for replayed_state in replayed.values():
             storage.save_state(replayed_state)
 
     return replayed, diffs

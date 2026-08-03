@@ -708,8 +708,19 @@ def test_stale_page_removal(seed_data, sample_project):
     render.render_all(registry)
     assert (paths.www_dir() / "task" / "demo" / "demo-P02-done.html").exists()
 
-    # Delete P02's statefile
-    (tmp_state / "projects" / project_id / "state" / "demo-P02-done.json").unlink()
+    # Remove P02 from the projection. CR-04b: the statefile JSON this used to
+    # unlink is gone with the file backend, so the equivalent is deleting the
+    # row -- done directly because the store deliberately has no public
+    # "forget a task" verb (every real disappearance is a project being
+    # deregistered, not a task being erased).
+    import sqlite3
+    from nyxloom import storage_sqlite
+    conn = sqlite3.connect(str(storage_sqlite.db_path(project_id)))
+    try:
+        conn.execute("DELETE FROM states WHERE task_id = ?", ("demo-P02-done",))
+        conn.commit()
+    finally:
+        conn.close()
 
     # Re-render
     render.render_all(registry)

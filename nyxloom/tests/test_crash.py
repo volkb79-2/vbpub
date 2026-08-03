@@ -108,9 +108,14 @@ def test_statefile_atomicity_under_concurrent_saves(tmp_state):
         t.join(timeout=5)
 
     assert errors == []
-    p = paths.statefile_path(project, task_id)
-    assert p.exists()
-    assert not p.with_suffix(".tmp").exists()
+    # CR-04b: this is now the WAL concurrent-reader acceptance ("a concurrent
+    # reader sees only prior or committed complete state"). The old tail
+    # asserted a tmp+rename artifact of the deleted file backend; the property
+    # it protected -- a reader never observes a partial write -- is what the
+    # loop above actually measures, and it holds under a different mechanism.
+    final = storage.load_state(project, task_id)
+    assert final is not None
+    assert final.notes == "iteration-199", "the last committed write is the one visible"
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +270,12 @@ def test_wrapper_sigkill_drill(tmp_state, tmp_path):
 
 
 def _read_events_text(project: str, q) -> None:
-    q.put(paths.events_path(project).read_text(encoding="utf-8"))
+    """Read the log from a SEPARATE process, through the public API.
+
+    CR-04b: the observable moved from events.jsonl to the store; the property
+    -- an appended event is visible to another process immediately, with no
+    flush the writer forgot -- did not."""
+    q.put([ev.sequence for ev in storage.iter_events(project)])
 
 
 def test_event_log_fsync_visibility(tmp_state):
@@ -280,10 +290,8 @@ def test_event_log_fsync_visibility(tmp_state):
     q: multiprocessing.Queue = ctx.Queue()
     p = ctx.Process(target=_read_events_text, args=(project, q))
     p.start()
-    text = q.get(timeout=5)
+    seqs = q.get(timeout=5)
     p.join(timeout=5)
 
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    assert lines, "a separate process must see the appended line immediately"
-    last = json.loads(lines[-1])
-    assert last["sequence"] == ev.sequence
+    assert seqs, "a separate process must see the appended event immediately"
+    assert seqs[-1] == ev.sequence
