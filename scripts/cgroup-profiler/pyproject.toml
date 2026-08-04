@@ -1,0 +1,74 @@
+# SINGLE SOURCE OF TRUTH for this project's dependency closure.
+#
+# `tester-unified` derives the gate image's closure from this file (see that
+# Dockerfile's header), and `setup.sh` builds the local venv from it. Add a
+# dependency here and nowhere else — `requirements.txt` beside this file is a
+# generated lock, not a second list to maintain.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cgroup-profiler"
+version = "0.1.0"
+description = "Profile a container/cgroup's resource use over time, with effective limits, phase marks, and an interactive report"
+requires-python = ">=3.11"
+
+# Deliberately EMPTY. The collector half of this tool — everything that runs
+# inside the privileged helper container next to production — is standard
+# library only, by contract (DESIGN.md §1). Nothing this project needs at
+# collection time may appear in this list; if something does, the tier split
+# has been broken.
+dependencies = []
+
+[project.optional-dependencies]
+# The analysis and reporting half, which runs afterwards and outside. These
+# are what `setup.sh` installs into venv/ and what the gate image needs.
+report = [
+    "pandas>=2.2",
+    "plotly>=6.0",
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "ruptures>=1.1.9",
+]
+test = [
+    "cgroup-profiler[report]",
+    "pytest>=8",
+    "coverage[toml]>=7.6",
+]
+
+[tool.setuptools]
+# A dependency-only project: the code under test is bound from the worktree
+# via PYTHONPATH (the estate's gate convention), never installed. Declaring no
+# modules keeps `pip install .[test]` a pure closure install.
+py-modules = []
+
+[tool.coverage.run]
+branch = true
+# NOTE the missing ".py" on cgprofile — that is not a typo, it is the fix for
+# one. coverage.py resolves `source` entries as directories or importable
+# dotted module names; an entry with a file extension resolves to neither and
+# is silently DROPPED from tracing. Written as "cgprofile.py" this file — the
+# largest and most integration-critical in the package — was never measured at
+# all, and the gate would have reported a green 100% over zero traced lines.
+# Verify with: coverage report | grep cgprofile
+source = ["lib", "cgprofile"]
+omit = ["venv/*", "tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+# nyxloom quality standard for this package: every line and every branch.
+fail_under = 100
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+tmp_path_retention_count = 1
+tmp_path_retention_policy = "failed"

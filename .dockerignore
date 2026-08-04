@@ -10,6 +10,12 @@
 !topos
 !nyxloom
 !wheel-builder
+# scripts/ is otherwise excluded wholesale; whitelist just the one project
+# tester-unified installs from (its pyproject is the closure's source of truth).
+# The parent directory must be re-included first or the child is never reached.
+!scripts
+scripts/*
+!scripts/cgroup-profiler
 
 # Drop heavy/generated content within the whitelisted projects.
 **/.git
@@ -21,3 +27,8 @@
 **/.mypy_cache
 **/node_modules
 **/.worktrees
+# cgroup-profiler ships a built venv and captured runs; neither belongs in a
+# build context (the venv alone is 500 MB).
+scripts/cgroup-profiler/venv
+scripts/cgroup-profiler/runs
+scripts/cgroup-profiler/output

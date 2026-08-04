@@ -28,6 +28,12 @@ COPY ciu/         /src/ciu/
 COPY cmru/        /src/cmru/
 COPY topos/       /src/topos/
 COPY nyxloom/ /src/nyxloom/
+# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
+# scipy/ruptures) that no other project here pulls in. It is NOT a fork
+# candidate the way srdm was: its suite uses fake cgroup trees, injected
+# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
+# privilege, no systemd and no Docker socket — only this closure.
+COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
 # runtime home bind at /home/vscode cannot shadow it). Each install pulls that
@@ -40,8 +46,10 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
       "/src/cmru[test]" \
       "/src/topos[dev]" \
       "/src/nyxloom[test]" \
+      "/src/cgroup-profiler[test]" \
       "build" \
- && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')"
+ && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
+ && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 
 # The container runs as uid 1003 (to match the host-owned bind mounts), which
 # the base image has no /etc/passwd entry for and no writable HOME. Provide
