@@ -738,6 +738,67 @@ def test_a_legacy_state_row_is_upcast_on_read(sqlite_backend, monkeypatch):
     assert storage.list_states(project)[task_id].notes == "upcasted-from-v0"
 
 
+def test_a_legacy_state_row_is_not_re_upcast_after_a_write(sqlite_backend, monkeypatch):
+    """Independent review caught this empirically: `apply_event` mutates a
+    `TaskStateFile` object in place without touching `.schema_version`, and
+    `_upsert_state_row` used to persist whatever `.schema_version` was
+    already on the object -- so a legacy row upcast on read, then written
+    back through a normal `append_and_apply` mutation (which reads via
+    `_committed_states` INSIDE the transaction, the one call site the first
+    pass of this package left uncovered), would silently persist an
+    already-current shape under its OLD version number, and the upcaster
+    would fire AGAIN on the next read. A non-idempotent upcaster (appends a
+    marker rather than setting one) makes a second application visible.
+    """
+    project, task_id = "sp07e-state-no-reupcast", "t-state-no-reupcast"
+    _seed(project, task_id, TaskState.QUEUED)
+
+    conn = storage_sqlite._connect(project)
+    try:
+        row = conn.execute(
+            "SELECT data FROM states WHERE task_id = ?", (task_id,)).fetchone()
+        data = json.loads(row[0])
+        data["schema_version"] = 0
+        conn.execute(
+            "UPDATE states SET schema_version = 0, data = ? WHERE task_id = ?",
+            (json.dumps(data), task_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setitem(
+        projection.STATE_UPCASTERS, 0,
+        lambda d: {**d, "notes": (d.get("notes") or "") + "|hop0to1"})
+
+    # First read: exactly one hop applied.
+    first = storage.load_state(project, task_id)
+    assert first.notes == "|hop0to1"
+
+    # A normal mutation: reads via _committed_states INSIDE the transaction,
+    # then writes the (already-upcast-shaped) object back.
+    states = {task_id: first}
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE"}, task_id=task_id)
+
+    # The write-back must have stamped SCHEMA_VERSION, not the stale 0 --
+    # otherwise this second read re-applies the (non-idempotent) upcaster.
+    second = storage.load_state(project, task_id)
+    assert second.notes == "|hop0to1", (
+        f"upcaster re-applied on read after a write: notes={second.notes!r}")
+    assert second.schema_version == storage.SCHEMA_VERSION
+
+    conn = storage_sqlite._connect(project)
+    try:
+        row = conn.execute(
+            "SELECT schema_version, data FROM states WHERE task_id = ?",
+            (task_id,)).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == storage.SCHEMA_VERSION
+    assert json.loads(row[1])["schema_version"] == storage.SCHEMA_VERSION
+
+
 def test_a_state_row_with_no_registered_upcaster_refuses_rather_than_reading_wrong(
         sqlite_backend):
     """The fault-matrix contract this file's header names: "failed upcast

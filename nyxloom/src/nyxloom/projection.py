@@ -68,6 +68,18 @@ SCHEMA_VERSION = 1
 # GATE_RESULT payload are unrelated shapes sharing one schema_version), so
 # EVENT_UPCASTERS is keyed on (from_version, EventType). A TaskStateFile has
 # exactly one shape, so STATE_UPCASTERS is keyed on from_version alone.
+#
+# Residual, reported rather than solved: TASK_CREATED's payload carries a
+# NESTED TaskStateFile dict (apply_event's `TaskStateFile.from_dict(
+# ev.payload["statefile"])`) that does NOT separately route through
+# STATE_UPCASTERS -- upcast_event_payload hands a registered upcaster the
+# WHOLE payload dict, nested "statefile" key included, so a future
+# EVENT_UPCASTERS[(v, EventType.TASK_CREATED)] upcaster is responsible for
+# transforming that nested shape itself if it changed. Not a bug (no real
+# upcaster exists to get this wrong yet) and not solved here: building
+# generic recursive-upcast dispatch now, before any real schema change
+# names what "nested" even means for it, would be exactly the kind of
+# speculative machinery this package's zero-real-upcasters scope avoids.
 
 class UpcastError(Exception):
     """A persisted row's schema_version has no registered path forward to
