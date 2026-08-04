@@ -646,6 +646,96 @@ def test_task_page_trace_escapes_hostile_summary_text(seed_data, sample_project)
     assert "&lt;script&gt;alert" in content
 
 
+def test_task_page_trace_redacts_hostile_summary_text(seed_data, sample_project):
+    """CR-14a: an ATTEMPT_EXITED receipt's blocked_reason (untrusted,
+    potentially agent-authored free text -- same class of field the log
+    excerpt already redacts, per test_task_page_redaction above) must be
+    redacted in the trace table too, not merely HTML-escaped."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model")
+    started = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
+    blocked = Attempt(
+        attempt_id="att-block", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+        route=route, started=started, ended=started,
+        receipt=Receipt(result=ReceiptResult.BLOCKED, exit_code=1,
+                        blocked_reason="cannot proceed: password=hunter2"),
+    )
+    storage.append_event(
+        "demo", actor=Actor(ActorKind.TICK, "nyxloomd"), type=EventType.ATTEMPT_CREATED,
+        payload={"attempt": Attempt(attempt_id="att-block", role=Role.IMPLEMENTER,
+                                    state=AttemptState.CREATED, route=route,
+                                    started=started).to_dict()},
+        task_id="demo-P01-sample", attempt_id="att-block",
+    )
+    storage.append_event(
+        "demo", actor=Actor(ActorKind.TICK, "nyxloomd"), type=EventType.ATTEMPT_EXITED,
+        payload={"attempt": blocked.to_dict()},
+        task_id="demo-P01-sample", attempt_id="att-block",
+    )
+
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "task" / "demo" / "demo-P01-sample.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'data-kind="attempt"' in content
+    assert "[REDACTED]" in content
+    assert "hunter2" not in content
+
+
+def test_task_page_survives_a_config_load_failure_degrading_gracefully(
+        seed_data, sample_project, monkeypatch):
+    """CR-14a review fix: _render_task_page's own ProjectConfig.load(root)
+    (needed for the trace table's redaction, hoisted out of the
+    log-excerpt section's try/except) must degrade this ONE task's
+    redaction/log-excerpt rather than aborting render_all's entire
+    per-task loop -- every OTHER ProjectConfig.load(root) call site in
+    this module is guarded the same way (_render_config/_render_decisions/
+    etc.); an unguarded one here would take down every remaining
+    project's task pages, live.html, and logs.html on one config fault."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+
+    real_load = ProjectConfig.load
+
+    def _boom(root):
+        if str(root) == str(sample_project.root):
+            raise ValueError("simulated config corruption")
+        return real_load(root)
+
+    monkeypatch.setattr(ProjectConfig, "load", staticmethod(_boom))
+
+    render.render_all(registry)  # must not raise
+
+    content = (paths.www_dir() / "task" / "demo" / "demo-P01-sample.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Processing Trace" in content
+    assert "No log" in content
+
+
+def test_task_page_trace_does_not_redact_identity_fields_in_detail(seed_data, sample_project):
+    """NEGATIVE control for the same fix: a merge leg's detail identity
+    field (merge_commit) must survive verbatim -- redaction is scoped to
+    `summary` only, so structural evidence identity is never accidentally
+    stripped."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+    storage.append_event(
+        "demo", actor=Actor(ActorKind.TICK, "nyxloomd"), type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "f" * 40, "source_kind": "review"},
+        task_id="demo-P01-sample",
+    )
+
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "task" / "demo" / "demo-P01-sample.html").read_text(
+        encoding="utf-8"
+    )
+    assert "f" * 40 in content
+
+
 def test_dag_html_state_class(seed_data, sample_project):
     """Oracle 6: dag.html has state-ACTIVE class on P01."""
     tmp_state, project_id = seed_data
