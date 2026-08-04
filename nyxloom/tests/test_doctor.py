@@ -554,6 +554,109 @@ def test_doctor_decision_hold(sample_project):
         assert 'D-002' in decision_hold[0].refs
 
 
+# Oracle 12: decision-hold-unresolved
+def test_doctor_decision_hold_unresolved_reason_less_park(sample_project):
+    """Oracle 12: a NEEDS_DECISION task with NO declared D-dep at all (the
+    reject_triage human-judgment escalation shape the decision_hold fix
+    leaves parked) is flagged, distinct from check 11's open-D-dep case."""
+    parked_state = TaskStateFile(
+        schema_version=1,
+        task_id='demo-P07-test',
+        project=sample_project.project_id,
+        state=TaskState.NEEDS_DECISION,
+        since=utc_now(),
+        handoff_path='handoff/demo-P07-test.md',
+    )
+    save_demo_state(sample_project, parked_state)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.frontmatter.parse_handoff') as mock_parse, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = [sample_project.root / 'handoff' / 'demo-P07-test.md']
+        fm = MagicMock()
+        fm.id = 'demo-P07-test'
+        fm.task_deps.return_value = []
+        fm.decision_deps.return_value = []
+        mock_parse.return_value = (fm, 'body')
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert len(unresolved) == 1
+        assert unresolved[0].severity == 'warning'
+        assert unresolved[0].refs == ['demo-P07-test']
+
+        decision_hold = [f for f in findings if f.kind == 'decision-hold']
+        assert decision_hold == []
+
+
+def test_doctor_decision_hold_unresolved_silent_when_d_dep_declared(sample_project):
+    """A NEEDS_DECISION task WITH a declared D-dep (open or not) is check
+    11's territory, not check 12's -- check 12 must stay silent for it."""
+    parked_state = TaskStateFile(
+        schema_version=1,
+        task_id='demo-P08-test',
+        project=sample_project.project_id,
+        state=TaskState.NEEDS_DECISION,
+        since=utc_now(),
+        handoff_path='handoff/demo-P08-test.md',
+    )
+    save_demo_state(sample_project, parked_state)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.frontmatter.parse_handoff') as mock_parse, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = [sample_project.root / 'handoff' / 'demo-P08-test.md']
+        fm = MagicMock()
+        fm.id = 'demo-P08-test'
+        fm.task_deps.return_value = []
+        fm.decision_deps.return_value = ['D-009']
+        mock_parse.return_value = (fm, 'body')
+        mock_lint.return_value = {}
+        mock_decisions.return_value = {'D-009'}
+
+        findings = doctor_project(sample_project)
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert unresolved == []
+
+
+def test_doctor_decision_hold_unresolved_silent_for_queued(sample_project):
+    """A QUEUED task (not parked at all) never trips check 12, even with no
+    declared D-dep -- the check only looks at NEEDS_DECISION statefiles."""
+    queued_state = TaskStateFile(
+        schema_version=1,
+        task_id='demo-P09-test',
+        project=sample_project.project_id,
+        state=TaskState.QUEUED,
+        since=utc_now(),
+        handoff_path='handoff/demo-P09-test.md',
+    )
+    save_demo_state(sample_project, queued_state)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.frontmatter.parse_handoff') as mock_parse, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = [sample_project.root / 'handoff' / 'demo-P09-test.md']
+        fm = MagicMock()
+        fm.id = 'demo-P09-test'
+        fm.task_deps.return_value = []
+        fm.decision_deps.return_value = []
+        mock_parse.return_value = (fm, 'body')
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert unresolved == []
+
+
 # ============================================================================
 # CR-16 (RISK-007): liveness_findings -- reconcile-deadman, tick-error-streak,
 # notify-transport-unreachable. Folded into doctor_project's sweep AND

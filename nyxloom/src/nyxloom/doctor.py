@@ -580,6 +580,62 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
     except Exception:
         pass
 
+    # 12. decision-hold-unresolved
+    #
+    # Named follow-up to the decision_hold release-blindness fix (2026-08-04,
+    # nyxloom-trove/reports/CORE-REDESIGN-IMPLEMENTATION-PLAN-2026-08-02-
+    # AMENDMENT.md): rules_lifecycle.reject_triage escalates a task to
+    # NEEDS_DECISION for a human-judgment reason (a "product" rejection, an
+    # architectural/incapable/drift rejection with no carve stage, attempts
+    # exhausted with no carve stage) WITHOUT ever declaring a D-dep --
+    # decision_hold's fixed release condition correctly leaves such a task
+    # parked indefinitely, rather than silently mis-releasing it as before.
+    # But that means a reason-less park now has ONLY pull-based visibility
+    # (the dashboard, `nyxloom status`, a generic daily-digest count) --
+    # check 11 above only ever flags the OPEN-D-dep case, so this is the one
+    # doctor check aimed specifically at the shape the fix leaves standing.
+    # Independent of check 11 (that one reads `fm.decision_deps()` to find
+    # an open dependency to report; this one reports the ABSENCE of any
+    # dependency at all), so both can fire for different tasks in the same
+    # run without either shadowing the other.
+    try:
+        on_disk = storage.list_states(cfg.project_id)
+        for tsf in on_disk.values():
+            if tsf.state is not TaskState.NEEDS_DECISION:
+                continue
+            try:
+                discovered = frontmatter.discover_handoffs(cfg)
+            except NotImplementedError:
+                continue
+            for path in discovered:
+                try:
+                    fm, _ = frontmatter.parse_handoff(path)
+                except Exception:  # census: advisory-degradation (2026-08-04, decision-hold-unresolved)
+                    # An unparseable candidate can only cost this check a
+                    # finding it would otherwise have reported, never
+                    # manufacture one -- same shape as check 11's skip.
+                    continue
+                if fm.id != tsf.task_id:
+                    continue
+                if not fm.decision_deps():
+                    findings.append(DoctorFinding(
+                        kind='decision-hold-unresolved',
+                        severity='warning',
+                        message=(
+                            'task parked in NEEDS_DECISION with no declared '
+                            'decision dependency -- likely a review-triage '
+                            'escalation (product/architectural/attempts-'
+                            'exhausted) awaiting an explicit operator action, '
+                            'not a D-NNN decision'),
+                        project=cfg.project_id,
+                        refs=[tsf.task_id],
+                    ))
+                break
+    except Exception:  # census: advisory-degradation (2026-08-04, decision-hold-unresolved)
+        # A store/frontmatter read failure here costs only this check's
+        # findings, never a wrong one -- mirrors check 11's own swallow.
+        pass
+
     return findings
 
 
