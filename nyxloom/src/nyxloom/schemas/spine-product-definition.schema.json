@@ -49,6 +49,12 @@
                       "items": {"type": "string", "minLength": 1},
                       "description": "Pytest node ids (e.g. 'tests/test_x.py::TestFoo::test_bar'), resolved by nyxloom.product_evidence.evidence_resolves"
                     }
+                  },
+                  "if": {"properties": {"status": {"const": "proven"}}},
+                  "then": {
+                    "required": ["evidence"],
+                    "properties": {"evidence": {"minItems": 1}},
+                    "description": "A hollow 'proven, no evidence' claim is exactly the silent-skip S1 exists to close -- schema-enforced, not left to a project's own tests to catch."
                   }
                 }
               ]
