@@ -1157,7 +1157,7 @@ A stack MAY declare `[<root>.governance]` (stack-scoped per S3.6, like
 the stack's own `ciu.toml`, which S3.5 would reject as a second non-reserved
 top-level key there) to opt every service of the stack into host-level
 cgroup placement and resource ceilings, without the stack author
-hand-writing `cgroup_parent`/`mem_limit`/`mem_swap_limit`/`blkio_config` on
+hand-writing `cgroup_parent`/`mem_limit`/`memswap_limit`/`blkio_config` on
 each service.
 This is **opt-in and purely additive**: a stack that declares no
 `governance` table of its own, and for which no global default resolves
@@ -1223,7 +1223,7 @@ keys injected):
 |---|---|
 | `cgroup_parent` | `governance.cgroup_parent` |
 | `mem_limit` | `governance.mem_limit` |
-| `mem_swap_limit` | `governance.mem_swap_limit` — Docker's own combined mem+swap total, not swap alone (so "1g RAM + 16g swap" is `mem_swap_limit = "17g"`); without this key Docker's stock default applies instead (2x `mem_limit`) |
+| `memswap_limit` | `governance.mem_swap_limit` — the Compose Specification's actual key has no underscore between "mem" and "swap" (Docker's own combined mem+swap total, not swap alone, so "1g RAM + 16g swap" is `mem_swap_limit = "17g"` in the config table); without this key Docker's stock default applies instead (2x `mem_limit`) |
 | `mem_reservation` | `governance.mem_reservation` |
 | `blkio_config` | `device_read_iops`/`device_write_iops` (device resolves, S15.5), plus `device_read_bps`/`device_write_bps` when `read_bps`/`write_bps` are nonzero (S15.15), plus `weight` when `io_weight` is nonzero (S15.14, independent of device resolution) — the whole key is omitted only when NONE of those apply |
 
@@ -1305,7 +1305,7 @@ this host applies at the whole-disk level, not per-partition. An explicit
 `device` value in the stack config always wins over autodetection. If
 autodetection fails for any reason (`findmnt` missing, non-Linux, non-zero
 exit, unparseable/non-`/dev` output), `blkio_config` is skipped entirely for
-every service **this run** (cgroup_parent/mem_limit/mem_swap_limit/
+every service **this run** (cgroup_parent/mem_limit/memswap_limit/
 mem_reservation are still injected) and the S15.7 summary line names the
 failure.
 
@@ -1355,7 +1355,7 @@ degradation, not a failure — `composefile.generate_overlay` still has no way
 to detect a missing systemd unit from inside a container-facing overlay
 generator (no host access there); **S15.12 closes this gap at deploy time
 instead**, where profile-based `ciu up` *does* have host access, before any container
-starts. `mem_limit`/`mem_swap_limit`/`mem_reservation`/`blkio_config` are
+starts. `mem_limit`/`memswap_limit`/`mem_reservation`/`blkio_config` are
 per-container (not slice-dependent) and always apply regardless.
 
 ### S15.9 — `ciu iops-baseline` (self-contained measurement)

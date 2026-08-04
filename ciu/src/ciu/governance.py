@@ -129,10 +129,14 @@ KSM_PRELOAD_TARGET = "/opt/ksm/ksm-optin.so"
 # The compose service-level keys governance may inject. Precedence (S15.3):
 # any of these keys already present in the AUTHOR's rendered service block
 # is left untouched — governance only fills in what the author didn't set.
+# NOTE: the Compose Specification's actual key is `memswap_limit` (no
+# underscore between "mem" and "swap") — this tuple lists real compose keys,
+# NOT the `governance.mem_swap_limit` config-table key name (see
+# build_injections() below, which translates between the two).
 INJECTED_KEYS: tuple[str, ...] = (
     "cgroup_parent",
     "mem_limit",
-    "mem_swap_limit",
+    "memswap_limit",
     "mem_reservation",
     "blkio_config",
 )
@@ -815,7 +819,7 @@ def build_injections(
     -------
     (injections, notes)
         ``injections`` maps service name -> the subset of
-        ``cgroup_parent``/``mem_limit``/``mem_swap_limit``/``mem_reservation``/
+        ``cgroup_parent``/``mem_limit``/``memswap_limit``/``mem_reservation``/
         ``blkio_config`` not already set by the author. ``blkio_config`` itself carries
         whichever of ``device_read_iops``/``device_write_iops`` (device
         resolved), ``device_read_bps``/``device_write_bps`` (device resolved
@@ -855,8 +859,15 @@ def build_injections(
             frag["cgroup_parent"] = cgroup_parent
         if "mem_limit" not in author_keys:
             frag["mem_limit"] = config["mem_limit"]
-        if "mem_swap_limit" not in author_keys:
-            frag["mem_swap_limit"] = config["mem_swap_limit"]
+        # Compose's real key is `memswap_limit` (no underscore) — `docker
+        # compose` schema-validates service keys and rejects `mem_swap_limit`
+        # outright ("additional properties ... not allowed"), verified live
+        # 2026-08-04 against docker 29.7.1. `config["mem_swap_limit"]` on the
+        # right-hand side is still the GOVERNANCE_DEFAULTS/config-table key
+        # (S15.1's documented TOML name) — only the emitted compose key
+        # changes.
+        if "memswap_limit" not in author_keys:
+            frag["memswap_limit"] = config["mem_swap_limit"]
         if "mem_reservation" not in author_keys:
             frag["mem_reservation"] = config["mem_reservation"]
         blk: dict[str, Any] = {}

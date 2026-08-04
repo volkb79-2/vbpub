@@ -801,7 +801,7 @@ class TestGenerateOverlayGovernance:
         redis = doc["services"]["redis"]
         assert redis["cgroup_parent"] == "besteffort.slice"
         assert redis["mem_limit"] == "1g"
-        assert redis["mem_swap_limit"] == "17g"
+        assert redis["memswap_limit"] == "17g"
         assert redis["mem_reservation"] == "256m"
         assert redis["blkio_config"] == {
             "device_read_iops": [{"path": "/dev/vda", "rate": 100}],
@@ -832,7 +832,7 @@ class TestGenerateOverlayGovernance:
         # mem_limit is the author's to keep — the overlay does not carry it at all.
         assert "mem_limit" not in redis
         assert redis["cgroup_parent"] == "besteffort.slice"
-        assert redis["mem_swap_limit"] == "17g"
+        assert redis["memswap_limit"] == "17g"
         assert redis["mem_reservation"] == "256m"
         assert "blkio_config" in redis
 
@@ -847,7 +847,7 @@ class TestGenerateOverlayGovernance:
             "    image: redis\n"
             "    cgroup_parent: custom.slice\n"
             "    mem_limit: 4g\n"
-            "    mem_swap_limit: 8g\n"
+            "    memswap_limit: 8g\n"
             "    mem_reservation: 1g\n"
             "    blkio_config:\n"
             "      weight: 500\n"

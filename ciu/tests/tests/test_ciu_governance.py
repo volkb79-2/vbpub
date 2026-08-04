@@ -709,7 +709,7 @@ class TestBuildInjections:
         frag = injections["redis"]
         assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["mem_limit"] == "1g"
-        assert frag["mem_swap_limit"] == "17g"
+        assert frag["memswap_limit"] == "17g"
         assert frag["mem_reservation"] == "256m"
         assert frag["blkio_config"] == {
             "device_read_iops": [{"path": "/dev/vda", "rate": 100}],
@@ -725,17 +725,17 @@ class TestBuildInjections:
         frag = injections["redis"]
         assert "mem_limit" not in frag
         assert frag["cgroup_parent"] == "dev-background.slice"
-        assert frag["mem_swap_limit"] == "17g"
+        assert frag["memswap_limit"] == "17g"
         assert frag["mem_reservation"] == "256m"
         assert "blkio_config" in frag
 
     def test_author_set_swap_key_is_skipped_others_still_injected(self) -> None:
-        """S15.3 — per-key precedence: author's mem_swap_limit wins; others still injected."""
+        """S15.3 — per-key precedence: author's memswap_limit wins; others still injected."""
         cfg = self._cfg(device="/dev/vda")
-        block = {"image": "redis", "mem_swap_limit": "unlimited"}
+        block = {"image": "redis", "memswap_limit": "unlimited"}
         injections, _ = gov.build_injections({"redis": block}, cfg)
         frag = injections["redis"]
-        assert "mem_swap_limit" not in frag
+        assert "memswap_limit" not in frag
         assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["mem_limit"] == "1g"
         assert frag["mem_reservation"] == "256m"
@@ -746,7 +746,7 @@ class TestBuildInjections:
         block = {
             "cgroup_parent": "custom.slice",
             "mem_limit": "2g",
-            "mem_swap_limit": "18g",
+            "memswap_limit": "18g",
             "mem_reservation": "512m",
             "blkio_config": {"weight": 500},
         }
