@@ -9,7 +9,7 @@ open one.
 
 Why it moved here, stated once so nobody re-litigates it: the old plan was a
 *program* document spanning Wings and the manager, written before either
-existed. Wings' share has since collapsed to two small patches (§Direction),
+existed. Wings' share has since collapsed to one small patch (§Direction),
 v1 of the manager is built and its behaviour is measured rather than
 predicted, and **the old plan is now wrong in twenty-odd specific places**
 where the kernel disagreed with it (§The measured ground). A plan you have to
@@ -230,9 +230,12 @@ Three things follow, and each is a change to something that already exists:
 - **srdm gains a power surface.** It cannot stop or start a server, and must
   **not** do it through Docker despite holding that socket: Wings owns the
   container lifecycle, and a container dying underneath it is a crash it
-  will act on, racing the very swap in progress. `internal/power` is an
-  interface with a Panel-API implementation, the shape `expose.Driver`
-  already uses.
+  will act on, racing the very swap in progress. `internal/power` talks to
+  **Wings' own node API** — `POST /api/servers/<uuid>/power`, authorized by
+  the `token` in Wings' `config.yml` — rather than to the Panel, so an
+  update still works when the Panel is unreachable.
+  `wings-cgroups/wingsctl/wingsctl.py` is the working reference. The token
+  is a **secret** and goes through the journal's scrubber.
 - **srdm gains a readiness gate**, below, which turns out to matter well
   beyond this.
 
@@ -242,35 +245,51 @@ softer than a rolling design would need, because the servers' own memory is
 freed while they are stopped. It is refused up front rather than discovered
 with a cohort half down.
 
-### 2. Readiness comes from the container log — and that shrinks the Wings contract
+### 2. Readiness is a log match — the same mechanism Wings already uses
 
-A server is ready when a configured pattern appears in its **container log**.
-srdm already holds the Docker socket, so it can stream and match with no
-third-party dependency and no Wings involvement.
+A server is ready when a configured pattern appears in its **console log**.
 
-Three properties are load-bearing, and the first is the one every naive
-implementation gets wrong: **only lines from the current start may count**
-(stream with a `since` taken when the start was issued, or a line from a
-previous run reports ready instantly and forever); a **timeout fails the
-operation** rather than falling through to assume-ready; and `kind` is a
-closed vocabulary with one member so a structured signal is additive later.
+**This is not a workaround, and an earlier draft of this document was wrong
+to call it a weaker interface than a structured event.** Wings itself gates
+"the server has started" on a log match: the egg's `config.startup.done` —
+`"Create Dungeon Successed"` for Soulmask. A structured readiness signal
+emitted by Wings would therefore be *derived from a log match*, and srdm
+matching the same class of line loses nothing relative to the status quo. The
+pattern also lives somewhere versioned and operator-owned — the egg — rather
+than being an unversioned accident of a log format.
+
+**Two distinct lines, and they are not interchangeable.** The v1 cgroup patch
+stack already needed this distinction and encodes it:
+
+| what | where | Soulmask value |
+|---|---|---|
+| Wings thinks it started | egg `config.startup.done` | `Create Dungeon Successed` |
+| the game is actually serving | egg var `WINGS_CG_STEADY_MATCH` | `registe server soulmask session succeed` |
+
+A cohort update must gate the slaves on the **second**. Starting them when
+Wings merely thinks main is up risks them connecting to a server not yet
+accepting sessions.
+
+The egg's `WINGS_CG_PHASE_EVENTS` also establishes the format to adopt rather
+than invent — `name=pattern`, with a `regex:` prefix to escape from substring
+to regular expression. srdm's profile carries the same shape, because the
+ready-line is a property of the **game build**, which is what a profile
+describes, and it should travel with the content.
+
+Two properties stay load-bearing. **Only lines from the current start may
+count** — Wings recreates the container on start, so the log should be fresh,
+but that must not be the only defence: anchor on a marker taken when the
+start is issued. And a **timeout fails the operation** rather than falling
+through to assume-ready.
 
 **Why this reaches past M2.** §Direction 3 states the Wings contract as *two*
 patches — placement, and a readiness signal for staged startup→steady bands —
 on the reasoning that "the server finished starting" is a Wings-side fact
-that srdm could only infer, and inference is what this project distrusts.
-Log-matching is **not inference**: it is the server explicitly announcing
-itself, on a line the operator already watches by eye. So the readiness half
-of that contract may not need a Wings patch at all, and **M4's Wings contract
-may reduce to one patch: placement.**
-
-Stated as *may* rather than *does*, deliberately. Log formats are a weaker
-interface than a structured event — they change without notice and carry no
-version. The honest position is that log-match removes the *dependency* on an
-upstream patch, which is worth a great deal on its own, and a structured
-signal stays preferable if Wings ever offers one. P14 builds the matcher; M4
-decides whether it is enough, with a working implementation to judge rather
-than a prediction.
+srdm could only infer. That reasoning does not survive the observation above:
+the fact is already published as a log line, by an egg the operator already
+maintains, and reading it is not inference. **M4's Wings contract therefore
+reduces to one patch: placement.** P14 builds the matcher, so M4 will decide
+with a working implementation rather than a prediction.
 
 ### 3. srdm owns node resources; Wings becomes a runner
 
@@ -311,12 +330,13 @@ Why, strongest argument first:
    policy engine with profiles, bands, budgets and field overlays" is not.
    The less Wings code, the less the design is hostage to review.
 
-**The honest catch, stated rather than discovered:** staged startup→steady
-bands need a *readiness* signal, because "the server finished starting" is a
-Wings-side fact. Either srdm infers it from the container's own behaviour —
-which this project's habit is to distrust — or Wings emits it. So the Wings
-contract is **two** small patches (placement, readiness), not eight large
-ones. srdm already knows the server UUIDs from `internal/assign`, so it can
+**What looked like a catch, and is not.** Staged startup→steady bands need a
+*readiness* signal, and "the server finished starting" is a Wings-side fact.
+This was written as needing a second Wings patch, on the reasoning that srdm
+could otherwise only infer it. §Direction 2 retires that: the fact is already
+published as a **log line named by the egg**, Wings gates on exactly such a
+line itself, and reading it is not inference. So the Wings contract is
+**one** small patch — placement — not two, and not eight. srdm already knows the server UUIDs from `internal/assign`, so it can
 pre-create and pre-configure each slice at boot or at `attach`, closing the
 "container starts before its limits exist" window exactly as D-016 closes it
 for generations.

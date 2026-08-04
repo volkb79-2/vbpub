@@ -28,7 +28,7 @@ that is either true or not. Each one below names its exit condition, because
 | **M1** | **v1 MVP** — ✅ **reached 2026-08-04** | the loop is drivable and survives a reboot, gated end to end. *Proven by oracles, not in production* | P01–P08b |
 | **M2** | **production adoption** | the Soulmask cluster actually runs on srdm on the case-study node, `soulmask_tmpfs` is retired, and a content update is performed through srdm rather than around it | P10, **P09b**, P09 |
 | **M3** | **unattended acquisition** | an operator supplies an appid and nothing else; srdm acquires, verifies, records build identity and promotes a release with no hand-staging | P11 |
-| **M4** | **srdm owns the node** | content and servers are one budget under one policy file with one reconciler; Wings carries two small patches and no resource logic | P12, P13 |
+| **M4** | **srdm owns the node** | content and servers are one budget under one policy file with one reconciler; Wings carries **one** small patch (placement) and no resource logic | P12, P13 |
 
 M5 — `provider` exposure, holding invariant 7 in full — is deliberately
 beyond the horizon and conditional (PLAN.md §Direction 6). It becomes worth
@@ -599,16 +599,18 @@ retired. The migration runbook is the gate; nothing about it is a unit test.
 | id | package | depends on |
 |---|---|---|
 | **P12** | server slice governance host-side: pre-create and configure per-server slices from the assignment, apply policy, reconcile drift, `doctor` the node budget | P09 |
-| **P13** | the Wings contract: placement patch, and the readiness signal for staged bands | P12 |
+| **P13** | the Wings contract, now a single patch: `HostConfig.CgroupParent` placement | P12 |
 
 PLAN.md §Direction 3 is the argument. The order matters: **P12 before P13**,
 because properties are host-side and need no Wings change, so the whole
 resource engine can be built and gated against slices srdm creates itself
 before a single line of Wings is touched. P13 then adds only what srdm
-provably cannot do — `HostConfig.CgroupParent` placement, and a readiness
-event for startup→steady band transitions. That also replaces the `resources`
-R1–R8 series in `../wings-patchstack/` with two small patches, which is a
-much easier upstream ask.
+provably cannot do — `HostConfig.CgroupParent` placement. **Readiness is no
+longer part of that contract**: PLAN.md §Direction 2 retires it, because the
+signal is already a log line the egg names and Wings itself gates on such a
+line, so reading it is not inference. That replaces the `resources` R1–R8
+series in `../wings-patchstack/` with **one** small patch — about as easy an
+upstream ask as exists.
 
 The first thing P12 should produce is the check nothing performs today: the
 host's actual RAM against the **sum** of `srdm.slice`'s floors and the

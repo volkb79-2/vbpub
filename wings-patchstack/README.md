@@ -16,8 +16,8 @@ is moving off it.
 | Series | Patches | Status |
 |---|---|---|
 | `filesystem` | F1 | **exported for pterodactyl-v1.13.1**; pelican export pending; `gofmt`/`build`/`test` green — see below; oracles 16–18 and pelican still open |
-| `lifecycle` | L1, L1b, L2, L3 | not started (Phase 5–6) |
-| `resources` | R1–R8 | not started (Phase 6) |
+| `lifecycle` | L1, L1b, L2, L3 | not started; **L2 (readiness) retired** — see below |
+| `resources` | R1–R8 | **superseded** — replaced by a single placement patch, see below |
 | `integration` | I1 | not started (combined branch only) |
 
 ## Why `lifecycle`, `resources` and `integration` are still "not started"
@@ -41,8 +41,30 @@ interim, no 0011 bridge" decision the wings-cgroups project memory records.
 **v2 (master-plan Phases 4–7) starts after v1 proves itself in production**
 (`srdm`'s P09: Soulmask profile, managed egg, migration rehearsal) — "the
 cutover is a config flip, not a migration," per the roadmap, precisely
-because nothing built for v1 gets thrown away. P09 is the next package on
-the critical path, not `lifecycle`.
+because nothing built for v1 gets thrown away.
+
+## Two of these series shrank or died — 2026-08-04
+
+The authoritative plan is now `shared-ramdisk-depot-manager/nyxloom-trove/PLAN.md`
+(the `wings-cgroups/` documents linked above are superseded history). Two of
+its decisions land directly on this stack:
+
+- **`resources` R1–R8 is superseded.** Placement and properties are
+  independent axes and **only placement needs Wings code**: setting
+  `memory.min`/`cpu.weight`/`io.weight` on a slice is host-side, and srdm
+  already does it for generation slices. So the eight-patch in-Wings resource
+  engine is replaced by **one** patch exposing `HostConfig.CgroupParent`.
+  PLAN.md §Direction 3; carved as srdm's P13.
+- **`lifecycle` L2 (readiness events) is retired.** srdm reads readiness from
+  the console log — the same mechanism Wings itself uses, since the egg's
+  `config.startup.done` is exactly such a match. A structured signal from
+  Wings would be *derived from* a log match, so emitting one buys nothing.
+  PLAN.md §Direction 2.
+
+Net: the v2 Wings contract is **one small patch**, not nine. That is a much
+easier upstream ask, and it means the design is far less hostage to review
+than when this stack was drawn. L1/L1b and `integration` I1 remain as
+written, still gated behind the provider socket, still unscheduled.
 
 ## F1 — the only patch on the MVP path
 
