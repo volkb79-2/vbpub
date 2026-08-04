@@ -1155,10 +1155,11 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
     # stale-premise guard -- reject_triage already re-checks this at
     # REVIEW_REJECTED; this closes the gap for a QUEUED task that never even
     # reaches review with a stale `input_revision`, mirroring decision-hold's
-    # own belt-and-braces shape immediately above: `rules_lifecycle`'s
-    # `premise_hold` rule is what actually PARKS the task in
-    # NEEDS_DECISION this pass, and this check is what stops
-    # `implementer_dispatch` from ALSO dispatching the identical task in the
+    # own belt-and-braces shape immediately above: `rules_dispatch.
+    # implementer_dispatch` (item 3) is what actually PARKS the task in
+    # NEEDS_DECISION this pass -- there is no separate lifecycle rule for
+    # this one, unlike decision-hold's item-2 rule -- and this check is what
+    # stops that SAME call from ALSO dispatching the identical task in the
     # SAME pass -- both read the exact same pure predicate off the exact
     # same immutable snapshot, so they can never disagree.
     if _premise_drifted(fm.input_revision, inp.head_revision):
