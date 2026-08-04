@@ -425,20 +425,94 @@ class TestBuildHelperSpec:
             ]),
         )
         monkeypatch.setattr(access, "resolve_helper_image", lambda image: "resolved:local")
+        monkeypatch.setattr(access, "resolve_helper_cgroup_parent", lambda explicit: "dev-interactive.slice")
         spec = access.build_helper_spec(str(repo), str(out), image="whatever")
         assert spec.image == "resolved:local"
         assert spec.repo_host_path == "/host/repo"
         assert spec.repo_mount_path == str(repo)
         assert spec.out_host_path == "/host/out"
         assert spec.out_mount_path == str(out)
+        assert spec.cgroup_parent == "dev-interactive.slice"
+
+    def test_cgroup_parent_argument_is_threaded_through(self, monkeypatch, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.setattr(
+            access, "host_path_map",
+            lambda: access.HostPathMap(entries=[
+                (str(repo), "/host/repo"), (str(out), "/host/out"),
+            ]),
+        )
+        monkeypatch.setattr(access, "resolve_helper_image", lambda image: "img:local")
+        captured = {}
+
+        def fake_resolve_cgroup_parent(explicit):
+            captured["explicit"] = explicit
+            return "resolved.slice"
+
+        monkeypatch.setattr(access, "resolve_helper_cgroup_parent", fake_resolve_cgroup_parent)
+        spec = access.build_helper_spec(str(repo), str(out), cgroup_parent="my.slice")
+        assert captured["explicit"] == "my.slice"
+        assert spec.cgroup_parent == "resolved.slice"
+
+
+class TestResolveHelperCgroupParent:
+    def test_explicit_wins_over_everything(self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_HELPER_CGROUP_PARENT", "env-value.slice")
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "devcontainer-value.slice")
+        assert access.resolve_helper_cgroup_parent("explicit.slice") == "explicit.slice"
+
+    def test_cgprofile_env_var_wins_over_devcontainer_one(self, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_HELPER_CGROUP_PARENT", raising=False)
+        monkeypatch.setenv("CGPROFILE_HELPER_CGROUP_PARENT", "env-value.slice")
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "devcontainer-value.slice")
+        assert access.resolve_helper_cgroup_parent() == "env-value.slice"
+
+    def test_falls_back_to_the_devcontainer_env_var(self, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_HELPER_CGROUP_PARENT", raising=False)
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "devcontainer-value.slice")
+        assert access.resolve_helper_cgroup_parent() == "devcontainer-value.slice"
+
+    def test_empty_string_env_values_are_treated_as_unset(self, monkeypatch):
+        # os.environ.get returns "" for a var explicitly set to empty, not
+        # None — the precedence chain must not accept "" as a real placement.
+        monkeypatch.setenv("CGPROFILE_HELPER_CGROUP_PARENT", "")
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "")
+        with pytest.raises(access.AccessError):
+            access.resolve_helper_cgroup_parent()
+
+    def test_raises_rather_than_falling_back_to_the_daemon_default(self, monkeypatch, capsys):
+        # This is the whole point of the function: no environment variable at
+        # all must refuse, not silently let Docker place the helper in its
+        # `cgroup-parent` daemon default (dev-background.slice on this
+        # estate) — exactly the tier a gate run profiles.
+        monkeypatch.delenv("CGPROFILE_HELPER_CGROUP_PARENT", raising=False)
+        monkeypatch.delenv("CGROUP_PARENT_DEV_INTERACTIVE", raising=False)
+        with pytest.raises(access.AccessError) as exc_info:
+            access.resolve_helper_cgroup_parent()
+        message = str(exc_info.value)
+        assert "CGPROFILE_HELPER_CGROUP_PARENT" in message
+        assert "daemon" in message  # explains *why* there is no fallback
+
+    def test_explicit_empty_string_is_not_treated_as_given(self, monkeypatch):
+        # An explicit empty string ("--helper-cgroup-parent ''") is not a
+        # real placement either; the env chain still applies.
+        monkeypatch.delenv("CGPROFILE_HELPER_CGROUP_PARENT", raising=False)
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "devcontainer-value.slice")
+        assert access.resolve_helper_cgroup_parent("") == "devcontainer-value.slice"
 
 
 class TestHelperSpecDockerArgs:
-    def test_args_without_a_name(self):
-        spec = access.HelperSpec(
+    def _spec(self, cgroup_parent="dev-interactive.slice"):
+        return access.HelperSpec(
             image="img:local", repo_host_path="/h/repo", repo_mount_path="/repo",
-            out_host_path="/h/out", out_mount_path="/out",
+            out_host_path="/h/out", out_mount_path="/out", cgroup_parent=cgroup_parent,
         )
+
+    def test_args_without_a_name(self):
+        spec = self._spec()
         args = spec.docker_args()
         assert "--name" not in args
         assert args[-1] == "img:local"
@@ -448,13 +522,23 @@ class TestHelperSpecDockerArgs:
         assert f"/h/out:/out:rw" in args
 
     def test_args_with_a_name(self):
-        spec = access.HelperSpec(
-            image="img:local", repo_host_path="/h/repo", repo_mount_path="/repo",
-            out_host_path="/h/out", out_mount_path="/out",
-        )
+        spec = self._spec()
         args = spec.docker_args(name="cgprofile-helper-1")
         assert "--name" in args
         assert args[args.index("--name") + 1] == "cgprofile-helper-1"
+
+    def test_cgroup_parent_is_always_passed_explicitly(self):
+        # The bug this exists to prevent: no --cgroup-parent means Docker's
+        # daemon default wins, and on this estate that default is the exact
+        # tier a gate run is profiled in.
+        spec = self._spec(cgroup_parent="dev-interactive.slice")
+        assert "--cgroup-parent=dev-interactive.slice" in spec.docker_args()
+
+    def test_cgroup_parent_reflects_whatever_was_resolved(self):
+        spec = self._spec(cgroup_parent="some-other.slice")
+        assert "--cgroup-parent=some-other.slice" in spec.docker_args()
+        args_named = spec.docker_args(name="x")
+        assert "--cgroup-parent=some-other.slice" in args_named
 
 
 # ── choose_mode ───────────────────────────────────────────────────────────────

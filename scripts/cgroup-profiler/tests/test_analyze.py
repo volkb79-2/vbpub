@@ -750,40 +750,6 @@ class TestDedupeSimultaneousPhaseMarks:
         assert [m.name for m in out] == ["first", "second"]
 
 
-class TestPhasesFromMarksDispatch:
-    """`_run_phases_from_marks` prefers the real `phases.phases_from_marks`
-    (always present in this checkout) and falls back to a local
-    reimplementation only if that import ever fails. The fallback itself is
-    exercised directly; the *dispatch* is exercised by forcing the flag the
-    import sets, since actually removing lib/phases.py from the checkout is
-    not something a test should do."""
-
-    def test_uses_the_real_phases_module_by_default(self):
-        marks = [Mark(t=0.0, mono=10.0, name="a", kind="phase")]
-        out = analyze._run_phases_from_marks(marks, 0.0, 20.0)
-        assert [p.name for p in out] == ["a"]
-
-    def test_falls_back_to_the_local_implementation_when_flag_is_none(self, monkeypatch):
-        monkeypatch.setattr(analyze, "_phases_from_marks", None)
-        marks = [Mark(t=0.0, mono=10.0, name="a", kind="phase")]
-        out = analyze._run_phases_from_marks(marks, 0.0, 20.0)
-        assert [p.name for p in out] == ["a"]
-
-    def test_local_fallback_with_no_phase_marks_is_one_run_phase(self):
-        out = analyze._phases_from_marks_local([], 0.0, 20.0)
-        assert [p.name for p in out] == ["run"]
-        assert (out[0].t0, out[0].t1) == (0.0, 20.0)
-
-    def test_local_fallback_uses_wall_clock_t_when_mono_is_none(self):
-        marks = [
-            Mark(t=0.0, mono=0.0, name="first", kind="phase"),
-            Mark(t=12.0, name="second", kind="phase", mono=None),
-        ]
-        out = analyze._phases_from_marks_local(marks, 0.0, 20.0)
-        assert [p.t0 for p in out] == [0.0, 12.0]
-        assert [p.t1 for p in out] == [12.0, 20.0]
-
-
 # ── summarise_descendants (DESIGN.md §4.9a) ──────────────────────────────
 
 def _descendant_series(target: str, group: str, key: str, values, unit: str = "bytes", t=None) -> Series:
