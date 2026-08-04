@@ -616,6 +616,118 @@ class TestHealthyRoutes:
         assert healthy_routes([], {"anything": True}) == []
 
 
+class TestSelectRoute:
+    """CR-08 Slice 3a: the explanation-object wrapper around
+    `healthy_routes(...)[0]` -- winner, runners-up, filtered reasons,
+    cost/confidence (typed but inert), snapshot version."""
+
+    def _routes(self):
+        from nyxloom.config import RouteDef
+        return (
+            RouteDef(route_id="a", cli="claude", model="haiku"),
+            RouteDef(route_id="b", cli="claude", model="sonnet"),
+            RouteDef(route_id="c", cli="claude", model="opus"),
+        )
+
+    def test_winner_is_the_first_healthy_candidate_in_declared_order(self):
+        from nyxloom.config import select_route
+
+        a, b, c = self._routes()
+        result = select_route([a, b, c], {"a": False, "b": True, "c": True},
+                              snapshot_version="rev-1")
+        assert result.winner is b
+        assert result.runners_up == (c,)
+
+    def test_filtered_names_every_excluded_candidate_and_why(self):
+        from nyxloom.config import (
+            RouteExclusion, RouteExclusionReason, select_route,
+        )
+
+        a, b, c = self._routes()
+        result = select_route([a, b, c], {"a": False, "b": True, "c": False},
+                              snapshot_version="rev-1")
+        assert result.filtered == (
+            RouteExclusion("a", RouteExclusionReason.PROVIDER_UNHEALTHY),
+            RouteExclusion("c", RouteExclusionReason.PROVIDER_UNHEALTHY),
+        )
+
+    def test_no_healthy_candidate_yields_no_winner_not_an_exception(self):
+        from nyxloom.config import select_route
+
+        a, b, c = self._routes()
+        result = select_route([a, b, c], {}, snapshot_version="rev-1")
+        assert result.winner is None
+        assert result.runners_up == ()
+        assert {exc.route_id for exc in result.filtered} == {"a", "b", "c"}
+
+    def test_cost_and_confidence_are_always_none_today(self):
+        """No real capability_map/Prices data exists in production to
+        compute these from -- typed placeholders, not a real ranking, per
+        the field's own docstring."""
+        from nyxloom.config import select_route
+
+        a, b, c = self._routes()
+        result = select_route([a, b, c], {"a": True}, snapshot_version="rev-1")
+        assert result.expected_cost is None
+        assert result.confidence is None
+
+    def test_snapshot_version_passes_through_unchanged(self):
+        from nyxloom.config import select_route
+
+        a, b, c = self._routes()
+        result = select_route([a], {"a": True}, snapshot_version="routes-rev-42")
+        assert result.snapshot_version == "routes-rev-42"
+
+    def test_empty_candidates_yields_no_winner(self):
+        from nyxloom.config import select_route
+
+        result = select_route([], {}, snapshot_version="rev-1")
+        assert result.winner is None
+        assert result.runners_up == ()
+        assert result.filtered == ()
+
+
+class TestSelectRouteDifferentialAgainstRealDispatchSites:
+    """`select_route(...).winner` must be byte-identical to what
+    `rules_dispatch.py`'s and `rules_attempts.py`'s own
+    `healthy_routes(...)[0]` logic actually picks, for every candidate/
+    health combination those two real call sites can encounter -- proven,
+    not assumed, the same rigor CR-08 Slice 2a applied ("proven byte-
+    identical to current behavior... by differential test"). `select_route`
+    is not yet wired into either call site, so this is the only thing
+    standing between the two implementations silently diverging."""
+
+    @pytest.mark.parametrize("provider_ok", [
+        {},                                            # nothing healthy
+        {"a": True},                                    # only the first
+        {"c": True},                                    # only the last
+        {"a": True, "b": True, "c": True},               # all healthy
+        {"a": False, "b": True, "c": True},              # first excluded
+        {"a": True, "b": False, "c": False},             # only first healthy
+        {"a": False, "b": False, "c": True},             # only last healthy
+    ], ids=["none", "first-only", "last-only", "all", "first-excluded",
+            "only-first", "only-last"])
+    def test_winner_matches_the_real_dispatch_sites_first_healthy_pick(
+            self, provider_ok):
+        from nyxloom.config import RouteDef, healthy_routes, select_route
+
+        candidates = [
+            RouteDef(route_id="a", cli="claude", model="haiku"),
+            RouteDef(route_id="b", cli="claude", model="sonnet"),
+            RouteDef(route_id="c", cli="claude", model="opus"),
+        ]
+
+        # The REAL logic, character-for-character what rules_dispatch.py and
+        # rules_attempts.py both execute today.
+        healthy = healthy_routes(candidates, provider_ok)
+        real_winner_id = healthy[0].route_id if healthy else None
+
+        result = select_route(candidates, provider_ok, snapshot_version="rev-1")
+        selected_winner_id = result.winner.route_id if result.winner else None
+
+        assert selected_winner_id == real_winner_id
+
+
 class TestPricesLoad:
     """Prices.load: absent-file vs. present-file resolution (§5 config
     rubric: "a config load/resolve -> DEBUG")."""
