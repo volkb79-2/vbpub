@@ -282,11 +282,73 @@ def abandon_previous(repo_root: Path, current_projects: Sequence[str]) -> list[s
     return abandoned
 
 
+_PROMOTE_MAX_RETRIES = 5
+
+
 def promote_workspace(workspace: ReleaseWorkspace) -> None:
-    """Fast-forward remote main from the prepared branch, or fail before publication."""
-    subprocess.run(
-        ["git", "push", "origin", "HEAD:refs/heads/main"], cwd=workspace.path, check=True,
+    """Fast-forward remote main from the prepared branch, or fail before publication.
+
+    This repo has other concurrent committers (see AGENTS.md) — a project's own
+    prepare/gate cycle can run long enough (an OCI image build especially) that
+    ``origin/main`` moves before this push lands. A plain, unretried push would
+    fail the WHOLE release over a race that a bare ``git pull --rebase && push``
+    would have resolved by hand. So: on a non-fast-forward rejection, fetch and
+    rebase this branch's own commits onto the new ``origin/main`` tip and retry,
+    bounded to :data:`_PROMOTE_MAX_RETRIES` attempts (a busy-fought repo should
+    fail loud, not spin forever). A rebase that hits a REAL conflict is never
+    auto-resolved — abort back to a clean state and raise immediately, exactly
+    as an unretriable failure would, so the retained worktree stays inspectable.
+
+    Rebasing rewrites every commit SHA in the branch, including any earlier
+    project's already-recorded :func:`write_release_progress` checkpoint from
+    EARLIER in this same multi-project run — left stale, a later revert would
+    compute its undo range against commits that no longer exist on this branch.
+    Each successful rebase re-anchors that checkpoint to its rebased equivalent
+    by commit COUNT (a plain, non-interactive rebase preserves commit order and
+    count 1:1), not by content-matching, which would be fragile.
+    """
+    checkpoint = read_release_progress(workspace.repo_root, workspace)
+    checkpoint_depth = (
+        int(_git(workspace.path, "rev-list", "--count", f"{checkpoint}..HEAD"))
+        if checkpoint else None
     )
+    for attempt in range(_PROMOTE_MAX_RETRIES + 1):
+        result = subprocess.run(
+            ["git", "push", "origin", "HEAD:refs/heads/main"],
+            cwd=workspace.path, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return
+        stderr = result.stderr or ""
+        # Git uses "(non-fast-forward)" when it can tell locally that the
+        # remote is ahead, and the more generic "(fetch first)" when it can't
+        # (e.g. no recent fetch) — both mean the same thing: the remote moved,
+        # rebase and retry. Anything else "[rejected]" (a protected-branch
+        # hook, say) would just keep failing every retry too, surfacing as
+        # the same "lost the race" error once attempts are exhausted below.
+        if "[rejected]" not in stderr:
+            raise RuntimeError(f"git push origin HEAD:refs/heads/main failed:\n{stderr}")
+        if attempt == _PROMOTE_MAX_RETRIES:
+            raise RuntimeError(
+                f"git push origin HEAD:refs/heads/main lost the race to a concurrent "
+                f"push {_PROMOTE_MAX_RETRIES} time(s) in a row — resolve manually "
+                "(this repo has other concurrent committers; see AGENTS.md)."
+            )
+        subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=workspace.path, check=True)
+        rebase = subprocess.run(
+            ["git", "rebase", "origin/main"], cwd=workspace.path, capture_output=True, text=True,
+        )
+        if rebase.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], cwd=workspace.path, check=False)
+            raise RuntimeError(
+                "A concurrent push landed on origin/main while this release was "
+                "running, and rebasing this release's own commits onto it hit a "
+                "real conflict — not auto-resolvable. Resolve manually in the "
+                f"retained worktree:\n{rebase.stdout}\n{rebase.stderr}"
+            )
+        if checkpoint_depth is not None:
+            checkpoint = _git(workspace.path, "rev-parse", f"HEAD~{checkpoint_depth}")
+            write_release_progress(workspace.repo_root, workspace, checkpoint)
 
 
 def push_backup_branch(workspace: ReleaseWorkspace) -> None:
@@ -295,9 +357,17 @@ def push_backup_branch(workspace: ReleaseWorkspace) -> None:
     Purely additive durability: a crashed machine or lost worktree after this point
     still leaves an inspectable, resumable copy of the prepared release on origin —
     ``main`` itself is untouched by this push.
+
+    ``--force`` is safe here specifically because ``workspace.branch`` is a
+    uuid-scoped name this ONE transaction created and exclusively owns (never a
+    shared or human-authored branch) — required, not just permissive, once
+    :func:`promote_workspace` has rebased: origin's own copy of this same branch
+    name (pushed by an EARLIER call in this same run, before the rebase) then
+    diverges from the local rewritten history, and a plain push would itself
+    hit the identical non-fast-forward rejection this function exists to avoid.
     """
     subprocess.run(
-        ["git", "push", "origin", f"HEAD:refs/heads/{workspace.branch}"],
+        ["git", "push", "--force", "origin", f"HEAD:refs/heads/{workspace.branch}"],
         cwd=workspace.path, check=True,
     )
 

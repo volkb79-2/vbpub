@@ -962,15 +962,144 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
 
 
-def test_promote_workspace_fast_forwards_remote_main(tmp_path, monkeypatch):
+def test_promote_workspace_fast_forwards_remote_main():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/abc123")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        (workspace_path / "generated.txt").write_text("prepared\n")
+        _git("add", "generated.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: prepare release inputs", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/abc123", base)
+
+        transaction.promote_workspace(workspace)  # no concurrent push — succeeds on the first try
+
+        _git("fetch", "-q", "origin", "main", cwd=h.repo_root)
+        assert _git("rev-parse", "origin/main", cwd=h.repo_root) == _git("rev-parse", "HEAD", cwd=workspace_path)
+
+
+def test_promote_workspace_rebases_and_retries_past_a_concurrent_unrelated_push():
+    """This repo has other concurrent committers — a non-fast-forward rejection
+    from a race, not a real conflict, must not fail the whole release."""
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/race")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        (workspace_path / "generated.txt").write_text("prepared\n")
+        _git("add", "generated.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: prepare release inputs", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/race", base)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "concurrent.txt").write_text("someone else\n")
+        _git("add", "concurrent.txt", cwd=other)
+        _git("commit", "-q", "-m", "concurrent change", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        transaction.promote_workspace(workspace)  # must rebase onto it and retry, not raise
+
+        _git("fetch", "-q", "origin", "main", cwd=h.repo_root)
+        assert _git("rev-parse", "origin/main", cwd=h.repo_root) == _git("rev-parse", "HEAD", cwd=workspace_path)
+        remote_files = _git("ls-tree", "-r", "--name-only", "origin/main", cwd=h.repo_root)
+        assert "generated.txt" in remote_files  # this release's own change
+        assert "concurrent.txt" in remote_files  # the concurrent change, not clobbered
+
+
+def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/conflict")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        (workspace_path / "README.md").write_text("workspace change\n")
+        _git("add", "README.md", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: workspace edits README", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/conflict", base)
+
+        other = h.clone_workspace("scratch2", path_name="other2")
+        (other / "README.md").write_text("concurrent conflicting change\n")
+        _git("add", "README.md", cwd=other)
+        _git("commit", "-q", "-m", "concurrent conflicting edit", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        with pytest.raises(RuntimeError, match="real conflict"):
+            transaction.promote_workspace(workspace)
+
+        # Never left mid-rebase — a retained worktree must be immediately usable.
+        assert not (workspace_path / ".git" / "rebase-merge").exists()
+        assert not (workspace_path / ".git" / "rebase-apply").exists()
+        assert _git("status", "--porcelain=v1", cwd=workspace_path) == ""
+
+
+def test_promote_workspace_remaps_an_earlier_projects_checkpoint_after_rebase():
+    """A multi-project run records write_release_progress() after each project's
+    own promote. A LATER project's rebase must not strand an earlier project's
+    already-recorded checkpoint on a commit its rewritten branch no longer has."""
+    with _OriginAndClone() as h:
+        workspace_path = h.clone_workspace("cmru/release/multi")
+        base = _git("rev-parse", "HEAD", cwd=workspace_path)
+        workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/multi", base)
+
+        (workspace_path / "a.txt").write_text("project a\n")
+        _git("add", "a.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: project a", cwd=workspace_path)
+        after_a = _git("rev-parse", "HEAD", cwd=workspace_path)
+        transaction.write_release_progress(h.repo_root, workspace, after_a)
+
+        (workspace_path / "b.txt").write_text("project b\n")
+        _git("add", "b.txt", cwd=workspace_path)
+        _git("commit", "-q", "-m", "chore: project b", cwd=workspace_path)
+
+        other = h.clone_workspace("scratch3", path_name="other3")
+        (other / "concurrent.txt").write_text("someone else\n")
+        _git("add", "concurrent.txt", cwd=other)
+        _git("commit", "-q", "-m", "concurrent change", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        transaction.promote_workspace(workspace)
+
+        new_checkpoint = transaction.read_release_progress(h.repo_root, workspace)
+        assert new_checkpoint is not None
+        assert new_checkpoint != after_a  # the rebase gave it a brand new SHA
+        # Still sits exactly one commit before HEAD (project a done, b pending) —
+        # remapped by position, not left pointing at some other commit.
+        assert _git("rev-list", "--count", f"{new_checkpoint}..HEAD", cwd=workspace_path) == "1"
+        # And it is genuinely reachable from the rebased tip.
+        assert _git("merge-base", new_checkpoint, "HEAD", cwd=workspace_path) == new_checkpoint
+
+
+def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(monkeypatch, tmp_path):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_a, **_k: None)
     calls = []
-    monkeypatch.setattr(transaction.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
 
-    transaction.promote_workspace(workspace)
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=1, stdout="", stderr="fatal: could not read Password\n")
 
-    assert calls[0][0] == ["git", "push", "origin", "HEAD:refs/heads/main"]
-    assert calls[0][1]["cwd"] == workspace.path
+    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="could not read Password"):
+        transaction.promote_workspace(workspace)
+
+    assert len(calls) == 1  # not a race signature — no retry attempted
+
+
+def test_promote_workspace_gives_up_after_exhausting_retries(monkeypatch, tmp_path):
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_a, **_k: None)
+    rejected = SimpleNamespace(returncode=1, stdout="", stderr="! [rejected]  HEAD -> main (non-fast-forward)\n")
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:2] == ["git", "push"]:
+            return rejected
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="lost the race"):
+        transaction.promote_workspace(workspace)
+
+    push_attempts = [c for c in calls if c[:2] == ["git", "push"]]
+    assert len(push_attempts) == transaction._PROMOTE_MAX_RETRIES + 1
 
 
 def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
@@ -982,14 +1111,14 @@ def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
         transaction.resume_workspace(tmp_path, retained)
 
 
-def test_push_backup_branch_pushes_under_its_own_name(tmp_path, monkeypatch):
+def test_push_backup_branch_force_pushes_under_its_own_name(tmp_path, monkeypatch):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
     calls = []
     monkeypatch.setattr(transaction.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
 
     transaction.push_backup_branch(workspace)
 
-    assert calls[0][0] == ["git", "push", "origin", "HEAD:refs/heads/cmru/release/x"]
+    assert calls[0][0] == ["git", "push", "--force", "origin", "HEAD:refs/heads/cmru/release/x"]
     assert calls[0][1]["cwd"] == workspace.path
     assert calls[0][1]["check"] is True
 
