@@ -1330,3 +1330,39 @@ Both failure directions the design could take are safe ones: a stale match
 that does not count, or a fresh match that is missed, both end in a timeout
 and a rollback — never a false "ready" that starts slaves against a main
 that has not actually finished loading.
+
+---
+
+## D-034 — the headroom arithmetic has exactly one implementation, in `internal/publish`, not one each in `opctl` and `doctor`
+
+**Status:** accepted, operator-directed correction after both call sites
+already existed.
+
+`opctl.checkHeadroom` (the preflight refusal) and `doctor`'s
+`update-headroom` check both need the same two numbers: what a release
+would occupy resident (the same per-class rounding `publish.ClassSize`
+already applies) and what the host has available (`/proc/meminfo`'s
+`MemAvailable`). The first pass wrote each independently —
+`opctl.generationBytes`/`opctl.availableHostBytes` and
+`doctor.headroomGenerationBytes`/`doctor.availableMemInfoBytes` — reasoning
+that `doctor` and `opctl` should not depend on each other (true, and still
+the reason neither imports the other directly). That reasoning does not
+extend to the arithmetic ITSELF: two copies of "would this fit" is not two
+independent facts, it is one fact answered twice, and the two answers can
+silently disagree the day `SizeHeadroomPercent` or `SizeGranularity`
+changes in only one copy — doctor reporting a node has room while `update`
+refuses the identical release, or the reverse.
+
+**Decided:** `publish.GenerationBytes` and `publish.AvailableHostBytes`
+(`internal/publish/sizing.go`, new file) are the one implementation of
+each. `internal/publish` is elsewhere forbidden to this package — this is a
+narrow, explicit exception for exactly this pair of pure functions, made
+because the alternative (the duplication itself) was judged worse than the
+exception; `publish.go`'s own publication sequence, teardown and
+reconciliation are untouched. `GenerationBytes` sits beside `ClassSize`,
+which already owns the rounding rule the whole reason this needed
+consolidating in the first place; `AvailableHostBytes` has no more natural
+owner than "the other half of the same question", so it sits next to it
+rather than in a third file. Both `opctl.checkHeadroom` and
+`doctor.checkUpdateHeadroom` now call these and carry no sizing arithmetic
+of their own.
