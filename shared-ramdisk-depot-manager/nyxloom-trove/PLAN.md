@@ -207,7 +207,72 @@ not reaped. Prefix with `t.Name()`.
 
 ## Direction
 
-### 1. srdm owns node resources; Wings becomes a runner
+### 1. The cluster is an ordered cohort, and updating it is one command
+
+**M2's exit condition.** A cluster has a **main** server and **slaves** that
+connect to it. That makes a content update an *ordered cohort cycle*, and
+specifically **not** a rolling one — a slave running against a main on a
+different content version is a broken cluster, so "one at a time, at most one
+down" is the wrong shape however attractive the downtime figure looks.
+
+```
+stop every SLAVE  →  stop MAIN  →  switch the release  →
+start MAIN  →  wait for MAIN readiness  →  start every SLAVE
+```
+
+Three things follow, and each is a change to something that already exists:
+
+- **The assignment gains roles.** `assign.Server` is `{ID, Access}` today;
+  it needs `Role` (`main`|`slave`), exactly one main per profile. A v1
+  assignment document has no roles and must be **refused with a fix** rather
+  than migrated — guessing which server is main is guessing which one takes
+  the cluster down.
+- **srdm gains a power surface.** It cannot stop or start a server, and must
+  **not** do it through Docker despite holding that socket: Wings owns the
+  container lifecycle, and a container dying underneath it is a crash it
+  will act on, racing the very swap in progress. `internal/power` is an
+  interface with a Panel-API implementation, the shape `expose.Driver`
+  already uses.
+- **srdm gains a readiness gate**, below, which turns out to matter well
+  beyond this.
+
+Two generations still coexist briefly — publish happens before teardown so
+that a failed publish leaves something to restart on — but the constraint is
+softer than a rolling design would need, because the servers' own memory is
+freed while they are stopped. It is refused up front rather than discovered
+with a cohort half down.
+
+### 2. Readiness comes from the container log — and that shrinks the Wings contract
+
+A server is ready when a configured pattern appears in its **container log**.
+srdm already holds the Docker socket, so it can stream and match with no
+third-party dependency and no Wings involvement.
+
+Three properties are load-bearing, and the first is the one every naive
+implementation gets wrong: **only lines from the current start may count**
+(stream with a `since` taken when the start was issued, or a line from a
+previous run reports ready instantly and forever); a **timeout fails the
+operation** rather than falling through to assume-ready; and `kind` is a
+closed vocabulary with one member so a structured signal is additive later.
+
+**Why this reaches past M2.** §Direction 3 states the Wings contract as *two*
+patches — placement, and a readiness signal for staged startup→steady bands —
+on the reasoning that "the server finished starting" is a Wings-side fact
+that srdm could only infer, and inference is what this project distrusts.
+Log-matching is **not inference**: it is the server explicitly announcing
+itself, on a line the operator already watches by eye. So the readiness half
+of that contract may not need a Wings patch at all, and **M4's Wings contract
+may reduce to one patch: placement.**
+
+Stated as *may* rather than *does*, deliberately. Log formats are a weaker
+interface than a structured event — they change without notice and carry no
+version. The honest position is that log-match removes the *dependency* on an
+upstream patch, which is worth a great deal on its own, and a structured
+signal stays preferable if Wings ever offers one. P14 builds the matcher; M4
+decides whether it is enough, with a working implementation to judge rather
+than a prediction.
+
+### 3. srdm owns node resources; Wings becomes a runner
 
 **The decision this plan exists to record.** The old resources series (R1–R8)
 put a resource-policy engine *inside* Wings, configured through `WINGS_CG_*`
@@ -256,7 +321,7 @@ pre-create and pre-configure each slice at boot or at `attach`, closing the
 "container starts before its limits exist" window exactly as D-016 closes it
 for generations.
 
-### 2. `access: rw` moves to an overlay upper layer
+### 4. `access: rw` moves to an overlay upper layer
 
 D-027, from measurement. Today `rw` unseals and chowns the shared generation
 in place, which marks it `dirty_capable`, bars it from being shared or used as
@@ -272,7 +337,7 @@ The earlier review that rejected overlayfs rejected the **commit** half
 apply: srdm's commit path is `harvest`, which re-walks, re-hashes and promotes
 through the same `store.Promote` a staged release uses.
 
-### 3. Acquisition: SteamCMD becomes first-class
+### 5. Acquisition: SteamCMD becomes first-class
 
 `harvest` covers acquisition today — the game's own updater is a legitimate
 source, and harvest is what makes its output trustworthy. The containerized
@@ -286,7 +351,7 @@ It needs **build-identity recording**, which does not exist — no profile can
 express "capture this version string". That is one piece of work serving both
 the staged and the Steam path, and it comes first.
 
-### 4. `provider` exposure — still optional, still justified
+### 6. `provider` exposure — still optional, still justified
 
 Invariant 7 is the reason: under `provider`, release roots reach a server only
 as Docker mounts in the game container's namespace, so Wings' filesystem
@@ -352,7 +417,7 @@ reflect a change made here.
 | document | still worth opening for |
 |---|---|
 | `shared-ramdisk-update-lifecycle-5-fable.md` | the **provider protocol v1** specification (complete and normative), and the L1/L1b start-attempt transaction — only if `provider` exposure is actually being built |
-| `...-cgroups-2-fable.md` | the R1–R8 resource-engine design, **superseded** by §Direction 1; open it for the cgroup semantics discussion, not for the architecture |
+| `...-cgroups-2-fable.md` | the R1–R8 resource-engine design, **superseded** by §Direction 3; open it for the cgroup semantics discussion, not for the architecture |
 | `...-4-codex-combined-final-remarks.md` | the review that produced rev 5; historical rationale only |
 | `...-1-codex.md` | the storage-alternatives comparison, including the original overlayfs rejection that D-027 partially overturns |
 | `v1-legacy/` | the frozen v1 `cgroup` patch series and the production deployment it belongs to |

@@ -2,7 +2,7 @@
 schema_version: 1
 id: srdm-P14-rolling-update
 project: srdm
-title: "srdm update — the orchestrated rolling cluster update"
+title: "srdm update — the ordered cluster update, with a readiness gate"
 tier: sonnet5-high
 input_revision: "0903f307"
 depends_on: [D-025]
@@ -12,6 +12,8 @@ scope:
   touch:
     - "internal/power/**"
     - "internal/opctl/**"
+    - "internal/assign/**"
+    - "internal/profile/**"
     - "internal/config/**"
     - "internal/doctor/**"
     - "cmd/srdm/**"
@@ -26,8 +28,12 @@ scope:
     - "internal/consumer"
 oracles:
   - id: O29
-    observable: "A rolling update over a two-server cohort stops, swaps and starts each server ONE AT A TIME: at no point are both servers simultaneously offline, and the order is recorded in the journal."
-    negative: "The whole cohort goes down at once, which is the outage a rolling update exists to avoid."
+    observable: "The stop order is every slave before main, and the start order is main before every slave, with no slave started before main has signalled ready — asserted from the recorded operation order."
+    negative: "A slave runs against a main on a different generation, which is a version-mismatched cluster rather than an updated one."
+    gate: unit
+  - id: O33
+    observable: "Readiness matches only on a log line produced AFTER the start it belongs to; a timeout fails the update and triggers the ordered rollback rather than falling through to assume-ready."
+    negative: "A line from a previous run reports ready instantly and forever, which is the failure mode of every naive log matcher — the slaves then start against a main that is not up."
     gate: unit
   - id: O30
     observable: "The assignment is recorded AFTER every server has moved and BEFORE the old generation is torn down — the same crash window activate uses."
@@ -48,7 +54,11 @@ escalate_if:
   - "the Panel API shape cannot be confirmed from documentation"
 ---
 
-# P14 — `srdm update`, the orchestrated rolling cluster update
+# P14 — `srdm update`, the ordered cluster update
+
+> The id, filename and branch still say "rolling". They are stable
+> identifiers and are deliberately **not** being renamed mid-flight; the
+> design they name is the ordered cohort cycle in §2, not a rolling update.
 
 ## Working setup
 
@@ -80,8 +90,9 @@ Panel, run srdm, start every server by hand*, and a cohort is fully offline
 for the whole window.
 
 srdm already publishes the new generation **before** touching the old one —
-two generations coexist for the duration of an `activate`. That is exactly
-what a rolling update needs, and nothing uses it yet.
+two generations coexist for the duration of an `activate`. That is what lets
+the switch happen with the cohort down and still have something to restart
+on if the publish fails, and nothing uses it yet.
 
 ## What to build
 
@@ -115,45 +126,85 @@ as `expose`: a refusal always carries its fix.
 
 ### 2. `opctl.Update` — the sequence
 
+**This is a dependency-ordered cohort cycle, not a rolling update.** A
+cluster has a **main** server and **slaves** that connect to it; a slave
+running against a main on a different content version is a broken cluster,
+so "one at a time, at most one down" is exactly the wrong shape. The whole
+cohort goes down, in order, and comes back in the reverse order behind a
+readiness gate.
+
 ```
-preflight   the release exists and verifies; the assignment has servers;
+preflight   the release exists and verifies; exactly one main in the cohort;
             the power driver is configured and every server answers Status;
             the node can hold TWO generations at once
-publish     the new generation — old still live, every server still running
-per server, ONE AT A TIME:
-              stop → wait settled offline
-              unexpose from old → expose to new
-              start → wait running
+stop        every SLAVE                       ← main still up
+stop        MAIN                              ← cohort now fully down
+publish     the new generation                ← nothing is holding
+move        unexpose every server from old, expose to new
 assign      record the new release            ← after all moves, before teardown
 teardown    the old generation
+start       MAIN
+wait        MAIN readiness (§3)               ← the gate
+start       every SLAVE
 ```
-
-`--strategy rolling|all-at-once`, default `rolling`. `all-at-once` stops the
-whole cohort first and is for nodes that cannot hold two generations; it
-trades downtime for headroom and must say so when chosen.
 
 `--from <dir>` as sugar: promote a staged directory into a release and then
 update to it, so the practical case is genuinely one command.
 
-**Rollback (O31).** If server K fails to come up on the new generation:
-re-expose K to the old and restart it, then walk back every server already
-moved, the same way, one at a time. Leave the assignment naming the **old**
-release and the old generation standing. A partially-updated cohort is a
-version-mismatched cluster, which is worse than a failed update.
+**Why the headroom check survives even though the cohort is down.** Publish
+happens before teardown deliberately — a publish that fails must leave the
+old generation to restart on. So two generations still coexist briefly. The
+constraint is *softer* than a rolling design would need, because the
+servers' own memory is freed while they are stopped, but it is not gone.
 
-### 3. The headroom check (O32)
+**Server roles.** `assign.Server` gains `Role` (`main` | `slave`), exactly
+one main per profile, validated. `attach` gains `--role`, defaulting to
+`slave`. `assign.SchemaVersion` goes to 2; a v1 document has no roles, and
+reading one should **refuse with a fix** rather than migrate — guessing
+which server is main is guessing which one takes the cluster down.
 
-A rolling update holds two generations resident at once. Refuse **before
-anything is stopped** when the node cannot: sum the target generation's
+**Rollback (O31).** Any failure after the first stop walks the same order in
+reverse against the **old** generation: re-expose everything to old, start
+main, wait ready, start slaves. Leave the assignment naming the old release.
+A partially-updated cohort is a version-mismatched cluster, which is worse
+than a failed update.
+
+### 3. The readiness gate (O33)
+
+Main is ready when a configured pattern appears in its **container log**.
+srdm already holds the Docker socket — `internal/consumer/docker.go` is the
+model for talking to Docker with no third-party dependency.
+
+```json
+"readiness": { "kind": "log-match", "pattern": "<regexp>", "timeout": "300s" }
+```
+
+Three properties, each needing a test:
+
+1. **Only lines from the current start count.** Stream with a `since`
+   timestamp taken when the start was issued. Matching a line from a
+   previous run reports ready instantly and forever — the failure mode of
+   every naive log matcher, and here it starts the slaves against a main
+   that is not up.
+2. **A timeout FAILS the update** and triggers the ordered rollback. Never
+   fall through to assume-ready.
+3. **`kind` is a closed vocabulary** with one member today, so a future
+   structured signal is additive rather than breaking.
+
+### 4. The headroom check (O32)
+
+The update holds two generations resident at once, because publish precedes
+teardown. Refuse **before anything is stopped** when the node cannot: sum
+the target generation's
 class sizes, add the live one's, compare against what the host actually has.
 Add it to `doctor` too — an operator should learn this on a quiet afternoon,
 not with a cohort half down. `internal/cgroupfs` and the existing
 `checkParentSlice` are the shape to follow.
 
-### 4. `cmd/srdm` — the verb
+### 5. `cmd/srdm` — the verb
 
 ```
-srdm update --profile <file> --release <id> [--strategy rolling|all-at-once]
+srdm update --profile <file> --release <id>
 srdm update --profile <file> --from <dir> --release <id>
 ```
 
@@ -181,9 +232,9 @@ Report per server as it goes; the operator is watching a cluster move.
 `tools/gate.sh <worktree> unit`, then `coverage` against `main` on a
 committed tree (exit 3 is NO MEASUREMENT, not a pass), then
 `tools/canary-run.sh` reporting 0 survived. `privileged-e2e` must stay green
-but this package adds no case to it — a real rolling update needs a real
-Panel, which the gate container does not have. Say so in the LOG rather than
-implying coverage this does not have.
+but this package adds no case to it — a real cohort update needs a real
+Panel and real containers, neither of which the gate container has. Say so
+in the LOG rather than implying coverage this does not have.
 
 ## BLOCKED rule
 

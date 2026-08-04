@@ -31,7 +31,7 @@ that is either true or not. Each one below names its exit condition, because
 | **M4** | **srdm owns the node** | content and servers are one budget under one policy file with one reconciler; Wings carries two small patches and no resource logic | P12, P13 |
 
 M5 — `provider` exposure, holding invariant 7 in full — is deliberately
-beyond the horizon and conditional (PLAN.md §Direction 4). It becomes worth
+beyond the horizon and conditional (PLAN.md §Direction 6). It becomes worth
 scheduling only if M2 shows the waiver's operational bill actually hurting.
 
 **M2 is the milestone that matters.** Everything in M1 is proven by oracles
@@ -524,7 +524,7 @@ gave it a loop:
 
 | id | package | state | milestone | depends on |
 |---|---|---|---|---|
-| **P14** | `srdm update` — the orchestrated rolling cluster update | **next** | M2 | P08b |
+| **P14** | `srdm update` — the ordered cluster update, with a readiness gate | **next** | M2 | P08b |
 | **P10** | `access: rw` via an overlay upper layer (D-027), and the overlay holder recognizer (D-028) | **next** | M2 | P08b |
 | **P09b** | the waiver's operational bill: backup ignore rules, disk accounting, SFTP | queued | M2 | P06 |
 | **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | queued | M2 | P10, P09b, and F1 or `check_permissions_on_boot: false` |
@@ -534,20 +534,35 @@ gave it a loop:
 update is performed through srdm rather than around it", and today it cannot
 be: `activate` refuses while a consumer holds the generation (oracle 24, and
 rightly), so the real procedure is *stop every server by hand in the Panel,
-run srdm, start every server by hand* — with the whole cohort offline for
-the entire window. srdm already publishes the new generation **before**
-touching the old, so two coexist for the duration of an `activate`; that is
-exactly what a rolling update needs and nothing uses it yet. `srdm update`
-takes the lock once, then per server stops → swaps → starts, one at a time,
-so at most one server is ever down. The cost is holding two generations
-resident, which is refused up front rather than discovered mid-cohort.
+run srdm, start every server by hand*.
 
-The piece srdm does not have is **power**: it cannot stop and start a
-server, and must not do it through Docker even though it holds that socket
-— Wings owns the container lifecycle, and a container dying underneath it is
-a crash it will act on, racing the swap. So P14 adds `internal/power` as an
-interface with a Panel-API implementation, the same shape `expose.Driver`
-already uses.
+**It is an ordered cohort cycle, not a rolling update**, and that correction
+came from the operator rather than from the design. A cluster has a **main**
+and **slaves that connect to it**, so a slave running against a main on a
+different content version is a broken cluster — "one at a time, at most one
+down" is the wrong shape however attractive its downtime figure looks:
+
+```
+stop every SLAVE → stop MAIN → switch the release →
+start MAIN → wait for MAIN readiness → start every SLAVE
+```
+
+Three existing things change. The **assignment gains roles** (`main`/`slave`,
+exactly one main, schema v2; a v1 document is refused with a fix rather than
+migrated, because guessing which server is main is guessing which one takes
+the cluster down). srdm **gains a power surface** — it cannot stop or start a
+server, and must not do it through Docker despite holding that socket, since
+Wings owns the container lifecycle and a container dying underneath it is a
+crash it will act on, racing the swap; so `internal/power` is an interface
+with a Panel-API implementation, the shape `expose.Driver` already uses. And
+srdm **gains a readiness gate**, which matters well beyond this package —
+PLAN.md §Direction 2.
+
+Two generations still coexist briefly, because publish precedes teardown so
+a failed publish leaves something to restart on. The headroom constraint is
+softer than a rolling design would need (the servers' own memory is freed
+while they are stopped) but it is not gone, and it is refused up front rather
+than discovered with a cohort half down.
 
 **P10 goes before P09**, which reorders the old plan. P09 is the migration of
 two live servers onto one generation, and `rw` as it stands is
@@ -573,7 +588,7 @@ today — no profile can express "capture this version string" — and both the
 staged path and Steam need it, so it is one piece of work rather than a
 Steam rider. Then the driver itself: appid in, prepared tree out, as an
 unprivileged uid inside the egg's own runner image handing back one fsync'd
-typed result record (PLAN.md §Direction 3).
+typed result record (PLAN.md §Direction 5).
 
 **P09** is where **D-001** (`WS/Config` shared or per-instance) is answered
 by a runtime write audit rather than assumed, and where `soulmask_tmpfs` is
@@ -586,7 +601,7 @@ retired. The migration runbook is the gate; nothing about it is a unit test.
 | **P12** | server slice governance host-side: pre-create and configure per-server slices from the assignment, apply policy, reconcile drift, `doctor` the node budget | P09 |
 | **P13** | the Wings contract: placement patch, and the readiness signal for staged bands | P12 |
 
-PLAN.md §Direction 1 is the argument. The order matters: **P12 before P13**,
+PLAN.md §Direction 3 is the argument. The order matters: **P12 before P13**,
 because properties are host-side and need no Wings change, so the whole
 resource engine can be built and gated against slices srdm creates itself
 before a single line of Wings is touched. P13 then adds only what srdm
@@ -612,13 +627,13 @@ the config workaround, so F1 never blocked srdm — it only decides how much a
 node has to concede to adopt it. `gofmt`/`build`/`test` green 2026-08-04;
 oracles 17–18 and the pelican export are still open.
 
-**The Wings v2 contract** — reduced by PLAN.md §Direction 1 from the eight
+**The Wings v2 contract** — reduced by PLAN.md §Direction 3 from the eight
 `resources` patches to two: placement (`HostConfig.CgroupParent`) and a
 readiness signal. Carved as **P13** above rather than left to the patch
 stack, because P12 has to exist first for either to be worth anything.
 
 **`provider` exposure** — still optional, still justified by invariant 7
-(PLAN.md §Direction 4): it is what makes Wings' disk accounting, backups,
+(PLAN.md §Direction 6): it is what makes Wings' disk accounting, backups,
 SFTP and archive extraction structurally unable to see managed content.
 Not blocking, and not scheduled. Its protocol is specified in full in the
 historical plan; open that document only if this is actually being built.
