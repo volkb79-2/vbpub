@@ -331,6 +331,110 @@ def test_decision_hold_never_dispatched():
 
 
 # ============================================================================
+# ORACLE 2b: premise-drift dispatch hold (CR-11b)
+# ============================================================================
+
+def _drift_inp(*, fm, tsf, decisions_open=None):
+    return ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=make_config(),
+        routes=make_routes(),
+        states={tsf.task_id: tsf},
+        frontmatters={fm.id: (fm, "handoff/P01.md")},
+        lint_clean={"P01": True},
+        project_paused=False,
+        decisions_open=decisions_open or set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        head_revision="9999999deadbeef",
+    )
+
+
+def test_premise_drift_queued_parks_in_needs_decision():
+    """Oracle 2b: a QUEUED task whose input_revision has drifted from the
+    current main HEAD parks in NEEDS_DECISION instead of being dispatched."""
+    fm = make_frontmatter(id="P01")  # input_revision="abc123", drifts vs 9999999deadbeef
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+    inp = _drift_inp(fm=fm, tsf=tsf)
+
+    actions = plan_project(inp)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.NEEDS_DECISION
+    assert "abc123" in (transitions[0].notes or "")
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert dispatches == []
+
+
+def test_premise_drift_never_dispatched():
+    """Oracle 2b (negative): dispatch_eligible itself refuses a drifted task,
+    independent of whether the transitioning rule also fired -- the belt-
+    and-braces pairing decision-hold already established."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+    inp = _drift_inp(fm=fm, tsf=tsf)
+
+    eligible, reason = dispatch_eligible(fm, tsf, inp)
+    assert not eligible
+    assert reason == "premise-drifted"
+
+
+def test_premise_not_drifted_dispatches_normally():
+    """Oracle 2b (negative control): matching input_revision/head_revision
+    (no drift) dispatches exactly as before -- this package changes nothing
+    for the ordinary case."""
+    fm = make_frontmatter(id="P01")  # input_revision="abc123"
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=make_config(),
+        routes=make_routes(),
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "handoff/P01.md")},
+        lint_clean={"P01": True},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        head_revision="abc123def456789",  # abc123 is a prefix -> not drifted
+    )
+
+    actions = plan_project(inp)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert transitions == []
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert len(dispatches) == 1
+
+
+def test_premise_drift_defers_to_an_open_decision_dep():
+    """Oracle 2b (precedence): a task with BOTH an open D-dep AND a drifted
+    premise gets decision_hold's transition, not this rule's -- dispatch_
+    eligible's decision-hold check (3) runs before its premise-drift check
+    (4), so only ONE Transition is ever planned for the task in this pass."""
+    fm = make_frontmatter(id="P01", depends_on=["D-007"])
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+    inp = _drift_inp(fm=fm, tsf=tsf, decisions_open={"D-007"})
+
+    actions = plan_project(inp)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.NEEDS_DECISION
+    assert "D-007" in (transitions[0].notes or "")
+
+    eligible, reason = dispatch_eligible(fm, tsf, inp)
+    assert not eligible
+    assert reason == "decision-hold:D-007"
+
+
+# ============================================================================
 # ORACLE 3: dispatch-order
 # ============================================================================
 
@@ -467,7 +571,7 @@ def test_dispatch_skips_a_declined_route_even_if_healthy():
 
 
 def test_dispatch_eligible_no_healthy_route_when_the_only_healthy_route_is_declined():
-    """CR-09a: dispatch_eligible's check 8 and the selection loop must stay
+    """CR-09a: dispatch_eligible's check 9 and the selection loop must stay
     in sync -- when the ONLY healthy route for this tier is already
     declined, the task is INELIGIBLE (not eligible-then-strands-empty)."""
     cfg = make_config()
@@ -3586,7 +3690,7 @@ def test_ready_to_carve_no_dispatch_when_budget_exhausted():
     """Reviewer addendum (2026-07-19, post-P45 merge review): a READY_TO_CARVE
     task must NOT get a CarveDispatch when the project's session budget is
     already exhausted -- every other dispatch path in this module (item 9's
-    own untargeted trigger, dispatch_eligible's check 5) already stops all
+    own untargeted trigger, dispatch_eligible's check 7) already stops all
     new agent processes on budget_remaining <= 0; a rejected task's re-carve
     is not exempt. Mirrors test_ready_to_carve_no_dispatch_without_frontier_
     route's shape with budget_remaining=0.0 instead of an unhealthy route."""

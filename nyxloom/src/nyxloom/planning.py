@@ -1106,12 +1106,16 @@ def rule_table() -> tuple[RuleSpec, ...]:
             name="implementer-dispatch", contract_items=(3,), concern="dispatch",
             scope=RuleScope.PLAN, channel=Channel.LIFECYCLE,
             rule=rules_dispatch.implementer_dispatch,
-            emits=frozenset({"DispatchImplementer"}),
+            emits=frozenset({"DispatchImplementer", "Transition"}),
             rationale=(
                 "After the lifecycle rules, so a task transitioned this pass "
                 "is planned from the state the transition leaves it in. PLAN "
                 "scope rather than TASK: the capacity budget is shared across "
-                "tasks and spent in sorted task-id order."),
+                "tasks and spent in sorted task-id order. CR-11b (2026-08-04): "
+                "also parks a premise-drifted QUEUED task in NEEDS_DECISION -- "
+                "the one ineligibility reason that never self-clears, so this "
+                "rule owns its own park rather than leaving it to item 2's "
+                "D-dep-specific decision-hold rule."),
         ),
         RuleSpec(
             name="attempt-ladder", contract_items=(4,), concern="attempts",
