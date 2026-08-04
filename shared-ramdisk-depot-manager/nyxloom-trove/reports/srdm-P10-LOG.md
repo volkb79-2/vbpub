@@ -159,6 +159,38 @@ read-only at the same absolute path alongside it. Not a defect in
 worktree normally is — recorded here because the next agent in a linked
 worktree will hit the exact same wall.
 
+**The last 4 of 258 changed lines, named rather than chased.** Running
+`covergate` at `-fail-under 100` (the gate itself checks 75) isolates every
+uncovered changed line rather than stopping at the first failure, which is
+how the two rounds above found their targets. What is left after both
+rounds is `internal/expose/hostbind.go:410-411` and `:592-593`, and neither
+yields to a test because neither is reachable through the caller that
+exists:
+
+- **410-411** (`mirrorDirTree`, the `filepath.Rel(lower, p)` error branch).
+  `p` is never anything but a path `filepath.WalkDir(lower, …)` produced by
+  walking FROM `lower`, so `p` is always `lower` joined with some suffix —
+  `filepath.Rel` between a path and one of its own descendants cannot fail.
+  The check exists because `filepath.Rel` returns an error and Go rewards
+  checking it, not because this call site can hit one.
+- **592-593** (`firstPathComponent`, `if seg == "" { return "", false }`).
+  `seg` comes from `strings.Cut(filepath.ToSlash(rel), "/")` where `rel` is
+  `filepath.Rel`'s own successful, non-`"."` result — which, on every input
+  this function is ever called with (both here and directly, in
+  `TestFirstPathComponentRejectsATargetOutsideRoot` and its neighbours),
+  never begins with `/` and is never empty. No input constructed for the
+  direct unit tests reproduced it either, which is itself the evidence: if
+  a real `filepath.Rel` output could take this branch, one of those
+  adversarial cases would have found it.
+
+Both are the same shape: a defensive check against an error a standard
+library function's SIGNATURE allows but its CONTRACT — given how this code
+calls it — cannot actually produce. Deleting the checks would trade a
+harmless four covered-by-inspection lines for a function that panics or
+misbehaves the day that contract turns out to have an exception nobody
+found yet; better a coverage report that says so by name than either
+outcome.
+
 ## Gaps
 
 - **`publish.MarkDirtyCapable` is now unreachable code.** D-029 retires the
@@ -207,16 +239,30 @@ worktree will hit the exact same wall.
 ```
 tools/gate.sh <worktree> unit       → gofmt, build, vet, all packages green
 tools/gate.sh <worktree> e2e        → 468 passed, 0 failed
-tools/canary-run.sh                 → PENDING FINAL CONFIRMATION
-tools/gate.sh <worktree> coverage   → 247/258 changed executable lines (95.7% >= 75.0% floor)
+tools/canary-run.sh                 → 72 canaries rejected, 0 survived
+tools/gate.sh <worktree> coverage   → 254/258 changed executable lines (98.4% >= 75.0% floor;
+                                       the remaining 4 are named, not chased — see below)
 nyxloom lint nyxloom-trove/handoffs/*.md → clean
 ```
 
-4 new canaries (`P10-O25-lowerdir-swapped`, `P10-O26-shared-upper`,
-`P10-O27-overlay-recognizer-disabled`, `P10-O28-from-server-ignored`), one
-existing canary removed with the code it targeted no longer existing
+4 new canaries, one per new oracle (`P10-O25-lowerdir-swapped`,
+`P10-O26-shared-upper`, `P10-O27-overlay-recognizer-disabled`,
+`P10-O28-from-server-ignored`).
+
+4 existing canaries removed with the code they targeted no longer existing
 (`P06-rw-multi-consumer`, `P06-never-marks-dirty`, `P07-rw-never-unsealed`,
 `P07-rw-owner-optional` — the single-consumer refusal, the dirty mark and
-the write-owner precondition all retired by D-029) and one repointed
-(`P06-rw-binds-the-ro-side` → `P10-rw-skips-overlay`, at the branch that now
-selects overlay vs. plain bind rather than at the deleted `sourceBase`).
+the write-owner precondition all retired by D-029).
+
+6 existing canaries repointed. One behaviourally, at the branch that now
+selects overlay vs. plain bind rather than at the deleted `sourceBase`
+(`P06-rw-binds-the-ro-side` → `P10-rw-skips-overlay`). Five because their
+target lines *moved* under this package's refactor without the behaviour
+they test changing at all — caught by the canary run itself reporting "the
+mutation matched nothing", which is exactly the failure mode this
+mechanism exists to catch: `P05-superblock-ignored` and
+`P05-every-device-matches` (consumer.go's device-vs-overlay branch split),
+`P07-harvest-skips-quiesce`, `P07-harvest-class-moved` and
+`P07-harvest-collision-wins` (harvest.go's `assemble`/`walkJobs`
+restructuring, and `class.Name != c.Name` becoming `class.Name != c` once
+`walkJob.class` is already a plain string).
