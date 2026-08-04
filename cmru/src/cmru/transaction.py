@@ -234,7 +234,20 @@ def _forget_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> No
 
 def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     """Every ``cmru/release/*`` worktree still on disk — i.e. retained after a
-    failed (never-resumed) release attempt."""
+    failed (never-resumed) release attempt.
+
+    ``git worktree add`` records the absolute path it was given at creation
+    time, and ``git worktree list`` always reports that same literal path
+    back — it never re-resolves it from the *current* process's vantage
+    point. This repo is bind-mounted at two different absolute paths (the
+    devcontainer's ``/workspaces/vbpub`` and the host's own checkout path),
+    so a worktree created from one side is invisible — its recorded path
+    genuinely does not exist — when this runs from the other side. Skip
+    those instead of letting the ``git rev-parse`` below raise an uncaught
+    ``FileNotFoundError`` (a bad ``cwd``) and take down the whole release
+    invocation over a worktree this process simply cannot see right now;
+    it is still reachable, and cleanable, from whichever side created it.
+    """
     raw = _git(repo_root, "worktree", "list", "--porcelain")
     workspaces: list[ReleaseWorkspace] = []
     for block in raw.split("\n\n"):
@@ -250,6 +263,14 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
         if not branch.startswith("cmru/release/"):
             continue
         path = Path(wt_path)
+        if not path.is_dir():
+            print(
+                f"[WARN] cmru: retained release worktree {path} (branch {branch}) is not "
+                "visible from here (different bind-mount vantage point?) — skipping; "
+                "clean it up from wherever it IS visible.",
+                file=sys.stderr,
+            )
+            continue
         base = _git(path, "rev-parse", "HEAD", check=False) or ""
         workspaces.append(ReleaseWorkspace(repo_root, path, branch, base))
     return workspaces

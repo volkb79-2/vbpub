@@ -96,45 +96,103 @@ _DIND_READY_TIMEOUT = 30.0
 _DEFAULT_CPUS = "1.5"
 
 
+_SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
+_DEFAULT_SLICE_PROBE_IMAGE = "debian:trixie-slim"
+
+
 def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
-    """Probe whether a systemd slice UNIT is loaded on this host.
+    """Probe whether a systemd slice UNIT is genuinely installed on the DOCKER
+    HOST (not this process's own host/mount namespace).
 
     Mirrors ``ciu/src/ciu/governance.py:check_slice_unit`` — duplicated, not
     imported: ``cmru`` is deliberately dependency-free (``cmru/pyproject.toml``
     declares zero deps), so it cannot import ``ciu`` for one small helper.
 
+    This runs from a cockpit (devcontainer) that has no systemd of its own and
+    no view of the host's — private cgroup/mount namespaces, no host cgroupfs
+    bind (see vbpub's devcontainer notes). An earlier version of this check
+    shelled out to a *local* ``systemctl``, which on any host running the
+    standard container ``systemctl`` shim (checks for ``/run/systemd/system``,
+    prints a banner, exits 0 either way) silently misreports "not installed"
+    for every slice, always — it never actually reached the host. Running
+    from inside the eventual dedicated devcontainer doesn't fix this either:
+    that container has no host systemd visibility by design either.
+
+    So instead this reaches the real host systemd through a throwaway
+    ``--privileged --pid=host`` probe container and ``nsenter -t 1`` into
+    PID 1's namespaces (proven live against this host's dbus/systemd) —
+    mirroring how ``shared-ramdisk-depot-manager/tools/cgroup-parent.sh``
+    solves the same reachability problem via a ``--cgroupns=host`` cgroupfs
+    read instead. A pure cgroupfs read was tried first here and rejected: a
+    slice that is real but simply hasn't been instantiated yet this boot
+    (no scope ever placed under it) has NO cgroup directory at all, which is
+    indistinguishable from "never installed" by directory presence alone —
+    ``dev-interactive.slice`` on this host is exactly this case (loaded,
+    correctly configured, ``Active: inactive`` because nothing has used it
+    yet). ``LoadState`` alone is not enough either: systemd auto-vivifies
+    ``.slice`` units for ANY name, so ``systemctl show totally-typo.slice``
+    also reports ``LoadState=loaded`` — verified live. ``FragmentPath`` is the
+    one property that distinguishes a real, configured unit (backed by an
+    on-disk unit file) from a name Docker fail-opened into an unlimited
+    transient slice (no on-disk file, so ``FragmentPath`` is empty) — this is
+    also what host-setup/CGROUP-NOTES.md's own verification cheat sheet uses.
+
     Returns ``(exists, note)``:
 
-    - ``exists is None`` — no ``systemctl`` on this host (not systemd); the
-      caller must SKIP the check, not fail it.
-    - ``exists is True`` — the unit is installed and known to systemd.
-    - ``exists is False`` — systemd is present but the slice is NOT loaded.
-      Docker would silently auto-create it transiently with NO limits — this
-      is the fail-closed case a typo'd cgroup-parent must not sail through.
+    - ``exists is None`` — no ``docker`` on this host at all; nothing here
+      can launch a gate container regardless of slice governance, so the
+      caller should warn and let the launch attempt fail on its own terms.
+    - ``exists is True`` — the slice is a real, configured unit
+      (``LoadState=loaded`` and a non-empty ``FragmentPath``).
+    - ``exists is False`` — the slice is missing, unknown, or transient
+      (fail-open) — or the host could not be probed at all. Any uncertainty
+      here fails closed; a typo'd cgroup-parent must never sail through.
     """
-    if shutil.which("systemctl") is None:
+    if shutil.which("docker") is None:
         return None, (
-            "no systemctl on this host — not a systemd host, so governed cgroup "
-            "slices cannot be honored here regardless; skipping the slice-existence preflight"
+            "no docker on this host — a gate container cannot be launched here "
+            "regardless of slice governance; skipping the slice-existence preflight"
         )
+
+    probe_image = os.environ.get(_SLICE_PROBE_IMAGE_ENV, _DEFAULT_SLICE_PROBE_IMAGE)
     try:
         result = subprocess.run(
-            ["systemctl", "show", slice_name, "--property=LoadState"],
+            [
+                "docker", "run", "--rm", "--privileged", "--pid=host", probe_image,
+                "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "-p",
+                "systemctl", "show", slice_name,
+                "--property=LoadState,FragmentPath", "--no-pager",
+            ],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=30,
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"systemctl probe failed ({exc}) — skipping the slice-existence preflight"
+        return False, f"could not probe the Docker host for {slice_name!r} ({exc})"
 
-    output = (result.stdout or "").strip()
-    load_state = output.split("=", 1)[1] if "=" in output else ""
+    properties = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    load_state = properties.get("LoadState", "")
+    fragment_path = properties.get("FragmentPath", "")
+
+    if load_state == "loaded" and fragment_path:
+        return True, f"{slice_name}: LoadState=loaded, FragmentPath={fragment_path}"
     if load_state == "loaded":
-        return True, f"{slice_name}: LoadState=loaded"
+        return False, (
+            f"{slice_name}: LoadState=loaded but FragmentPath is empty — this is a "
+            "TRANSIENT slice, the fail-open signature Docker leaves behind for a typo'd "
+            "or never-installed name (systemd auto-vivifies .slice units for any name, "
+            "hands this one an unlimited cgroup, and the container starts normally). "
+            "Install the tier (modern-debian-tools-python-debug/host-setup/install.sh) "
+            "or pass a slice that exists."
+        )
+    if load_state:
+        return False, f"{slice_name}: LoadState={load_state} — the unit is not installed on this host"
     return False, (
-        f"{slice_name}: LoadState={load_state or '(unknown — systemctl returned no LoadState)'} "
-        "— the unit is not installed on this host"
+        f"could not determine {slice_name}'s LoadState on the Docker host "
+        f"(probe stderr: {result.stderr.strip()[:300] or 'empty'})"
     )
 
 
