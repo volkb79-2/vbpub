@@ -830,15 +830,18 @@ def next_implement_tier(routes: Routes, origin_tier: str) -> str | None:
 class RouteExclusionReason(enum.Enum):
     """Why a candidate route was excluded from a `select_route` result.
 
-    Closed vocabulary, not free text -- `select_route` applies exactly one
-    filter (`healthy_routes`) today, so there is exactly one member. A future
-    filter pulled into the pure core (e.g. part of `admissible()`'s
-    containment/pause/budget checks, currently effect-boundary-only -- see
-    the CR-08 Slice 2 split row) would add a member here rather than
-    smuggling a second free-text reason string past this type.
+    Closed vocabulary, not free text. CR-09a pulled a second real filter
+    into the pure core (`undeclined_routes`, excluding a route already
+    declared "incapable" of a task's origin) -- exactly the kind of future
+    filter this type's original docstring anticipated ("would add a member
+    here rather than smuggling a second free-text reason string past this
+    type"), so there are now two members, not one. `admissible()`'s
+    containment/pause/budget checks remain effect-boundary-only (see the
+    CR-08 Slice 2 split row) and still have no pure analogue to add here.
     """
 
     PROVIDER_UNHEALTHY = "provider-unhealthy"
+    DECLINED_INCAPABLE = "declined-incapable"
 
 
 @dataclass(frozen=True)
@@ -881,18 +884,36 @@ class SelectionResult:
 
 
 def select_route(candidates: list[RouteDef], provider_ok: dict[str, bool],
-                 *, snapshot_version: str) -> SelectionResult:
-    """The declared-order, health-filtered selection `rules_dispatch.py`'s
-    and `rules_attempts.py`'s implement-dispatch sites already make, wrapped
-    in a typed explanation object -- CR-08 Slice 3a.
+                 declined: frozenset[str], *, snapshot_version: str) -> SelectionResult:
+    """The declared-order, health-filtered, declined-route-excluding
+    selection `rules_dispatch.py`'s and `rules_attempts.py`'s implement-
+    dispatch sites already make, wrapped in a typed explanation object --
+    CR-08 Slice 3a, corrected by CR-08 Slice 5.
 
-    Reuses `healthy_routes` rather than re-filtering by hand, so there is
-    still exactly ONE place "is a route healthy" is decided. `winner` is the
-    first healthy candidate in `candidates`' own order (byte-identical to
-    today's `healthy_routes(candidates, provider_ok)[0]`); `runners_up` is
-    the rest of the healthy list in the same order; `filtered` names every
-    OTHER candidate and the one reason this function currently discriminates
-    on.
+    CR-08 Slice 5: this function was stale from the moment CR-09a shipped
+    until now -- CR-09a added `undeclined_routes` and rewired BOTH real
+    dispatch sites to exclude a route already declared "incapable" of a
+    task's origin, but `select_route` (merged before CR-09a) was never
+    updated, so it silently reintroduced the exact bug CR-09a fixed: a
+    route that is the first HEALTHY candidate but was already DECLINED
+    would still win here even though the real dispatch sites correctly
+    skip it. Dormant only because this function still has zero real
+    callers -- fixed now regardless, since a stale-but-unused function is
+    still a latent bug the moment something DOES call it.
+
+    Reuses `healthy_routes` then `undeclined_routes` in the SAME order the
+    real dispatch sites apply them, rather than re-deriving either filter
+    by hand, so there is still exactly ONE place each question is decided.
+    `winner` is the first healthy, undeclined candidate in `candidates`'
+    own order (byte-identical to today's
+    `undeclined_routes(healthy_routes(candidates, provider_ok), declined)[0]`);
+    `runners_up` is the rest of that list in the same order; `filtered`
+    names every OTHER candidate and why it was excluded -- classified by
+    which filter actually removed it (a candidate never healthy at all is
+    `PROVIDER_UNHEALTHY`, even if it also happens to be declined; only a
+    candidate that WAS healthy but excluded by the declined-route filter is
+    `DECLINED_INCAPABLE` -- mirroring the real filters' own layered order,
+    healthy-then-declined, never the reverse).
 
     Scoped DELIBERATELY to the implement-dispatch shape: review/carve/
     diagnosis dispatch (`effects_dispatch.route_for_role`, `effects_carve.py`,
@@ -901,17 +922,24 @@ def select_route(candidates: list[RouteDef], provider_ok: dict[str, bool],
     they never had -- a real behavior change needing its own acceptance
     criteria, not a side effect of an explanation wrapper. Not yet called
     from any real dispatch site; `rules_dispatch.py`/`rules_attempts.py`
-    still call `healthy_routes(...)[0]` directly, proven identical to this
-    function's `winner` by differential test rather than assumed.
+    still call `undeclined_routes(healthy_routes(...), declined)[0]`
+    directly, proven identical to this function's `winner` by differential
+    test rather than assumed.
     """
     healthy = healthy_routes(candidates, provider_ok)
     healthy_ids = {r.route_id for r in healthy}
+    available = undeclined_routes(healthy, declined)
+    available_ids = {r.route_id for r in available}
     filtered = tuple(
-        RouteExclusion(r.route_id, RouteExclusionReason.PROVIDER_UNHEALTHY)
-        for r in candidates if r.route_id not in healthy_ids)
+        RouteExclusion(
+            r.route_id,
+            RouteExclusionReason.PROVIDER_UNHEALTHY if r.route_id not in healthy_ids
+            else RouteExclusionReason.DECLINED_INCAPABLE,
+        )
+        for r in candidates if r.route_id not in available_ids)
     return SelectionResult(
-        winner=healthy[0] if healthy else None,
-        runners_up=tuple(healthy[1:]),
+        winner=available[0] if available else None,
+        runners_up=tuple(available[1:]),
         filtered=filtered,
         expected_cost=None,
         confidence=None,
