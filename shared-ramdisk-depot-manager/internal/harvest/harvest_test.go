@@ -898,6 +898,31 @@ func TestFromServerWithNoExposerConfiguredIsRefused(t *testing.T) {
 	}
 }
 
+// A harvester cannot discover rw holders when the exposer itself fails —
+// this is the exposer's own mount table read failing, not an ambiguous or
+// unknown answer, and it has to stop the harvest rather than guess.
+func TestHarvestFailsWhenRWServersCannotBeAsked(t *testing.T) {
+	f := newFixture(t)
+	e := &fakeExposer{rwErr: errors.New("mount table unreadable")}
+	if _, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof,
+		Opts{ReleaseID: "rel-h"}); err == nil {
+		t.Fatal("harvest succeeded although RWServers could not be asked")
+	}
+}
+
+// Once a server is chosen (explicitly or by default), assemble still has to
+// plan that server's bindings to know where to read from — and a failure
+// there has to stop the harvest rather than fall back to the generation's
+// own tmpfs silently.
+func TestHarvestFailsWhenPlanningTheChosenServersBindingsFails(t *testing.T) {
+	f := newFixture(t)
+	e := &fakeExposer{servers: []string{"srv-a"}, planErr: errors.New("plan failed")}
+	if _, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof,
+		Opts{ReleaseID: "rel-h"}); err == nil {
+		t.Fatal("harvest succeeded although planning the chosen server's bindings failed")
+	}
+}
+
 // harvestOpts is f.harvest with caller-supplied Opts, for the --from-server
 // tests that need to set fields f.harvest's own fixed Opts does not.
 func (f *fixture) harvestOpts(t *testing.T, o Opts) (*store.Release, error) {

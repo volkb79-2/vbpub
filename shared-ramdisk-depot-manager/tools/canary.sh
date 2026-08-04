@@ -271,14 +271,14 @@ canary "P05-own-namespace-counts" "TestOurOwnMountsAreNotHolders" \
 # the only thing that connects the two.
 canary "P05-superblock-ignored" "TestAMountOfOurSuperblockInAnotherNamespaceIsAHolder" \
   "internal/consumer/consumer.go" \
-  's#^\t\t\tif !devices\[d\] {$#\t\t\tif true {#' \
+  's#^\t\t\tif devices\[d\] {$#\t\t\tif false {#' \
   "no mount in another namespace is ever recognised"
 
 # And the other direction: match every device, so unrelated tmpfs mounts pin
 # generations that have nothing to do with them.
 canary "P05-every-device-matches" "TestAMountOfADifferentSuperblockIsNotAHolder" \
   "internal/consumer/consumer.go" \
-  's#^\t\t\tif !devices\[d\] {$#\t\t\tif false {#' \
+  's#^\t\t\tif devices\[d\] {$#\t\t\tif true {#' \
   "an unrelated superblock pins the generation"
 
 # Swallow an unreachable Docker. "Nobody is holding this" and "I could not
@@ -413,7 +413,7 @@ canary "P07-copy-seals-the-destination" "TestCopyTreeCanCopyASealedTree|TestAHar
 # verifies and publishes perfectly, because a torn copy is self-consistent.
 canary "P07-harvest-skips-quiesce" "TestHarvestIsRefusedWhileAConsumerCanStillWrite" \
   "internal/harvest/harvest.go" \
-  's#\t\treturn h.refuseIfHeld(ctx, rec, "before the copy", fields)#\t\treturn nil#' \
+  's#^\t\tif err := h.refuseIfHeld(ctx, rec, "before the copy", fields); err != nil {$#\t\tif false {#' \
   "harvest never asks whether a consumer can still write"
 
 # Ask once, before the copy, and never again. A container that starts while
@@ -444,14 +444,14 @@ canary "P07-harvest-empty-tree" "TestHarvestRefusesAGenerationWhoseTreesAreEmpty
 # the content to a different class, tmpfs and memory floor with no signal.
 canary "P07-harvest-class-moved" "TestHarvestRefusesWhenTheProfileMovedAPathToAnotherClass" \
   "internal/harvest/harvest.go" \
-  's#^\t\t\tif class.Kind != profile.KindStructure \&\& class.Name != c.Name {$#\t\t\tif false {#' \
+  's#^\t\t\tif class.Kind != profile.KindStructure \&\& class.Name != c {$#\t\t\tif false {#' \
   "content is silently reclassified into another memory class"
 
 # Let the second class tree win a path both claim, instead of refusing. The
 # release then depends on the order the classes happened to be walked in.
 canary "P07-harvest-collision-wins" "TestHarvestRefusesAPathTwoClassTreesBothClaim" \
   "internal/harvest/harvest.go" \
-  's#^\t\t\t\treturn \&CollisionError{Path: rel, First: prev, Second: c.Name}$#\t\t\t\treturn nil#' \
+  's#^\t\t\t\treturn \&CollisionError{Path: rel, First: prev, Second: c}$#\t\t\t\treturn nil#' \
   "two class trees claiming one path picks a winner silently"
 
 # Record a harvest as a stage. Provenance is the only thing that says this

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"srdm/internal/mountinfo"
 )
 
 // --- harness ---------------------------------------------------------------
@@ -424,6 +426,20 @@ func TestATmpfsMountIsNeverMisreadAsAnOverlay(t *testing.T) {
 	}
 }
 
+// An overlay mount with no lowerdir= option at all should not happen in
+// practice — the kernel refuses to mount one without it — but the parser
+// must not panic or misread the absence as an empty match.
+func TestOverlayLowerDirsReturnsNilWithNoLowerdirOption(t *testing.T) {
+	e, err := mountinfo.ParseLine(
+		"90 30 0:99 / /t/merged rw,relatime - overlay overlay rw,index=off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := overlayLowerDirs(e); got != nil {
+		t.Errorf("overlayLowerDirs = %v, want nil", got)
+	}
+}
+
 // srdm's own overlay mount (the one it just made for an rw exposure) must
 // not count — exactly as srdm's own bind never does.
 func TestOurOwnOverlayMountIsNotAHolder(t *testing.T) {
@@ -545,6 +561,9 @@ func TestAContainerBoundToThePathWithNoMountIsAHolder(t *testing.T) {
 	}
 	if rep.Holders[0].ContainerName != "soulmask-02" {
 		t.Errorf("ContainerName = %q", rep.Holders[0].ContainerName)
+	}
+	if !strings.Contains(rep.Holders[0].String(), "soulmask-02") {
+		t.Errorf("a KindContainer holder's String() does not name it: %s", rep.Holders[0])
 	}
 }
 

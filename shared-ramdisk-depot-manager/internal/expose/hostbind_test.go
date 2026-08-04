@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -934,6 +935,151 @@ func TestRefusalsAlwaysCarryAFix(t *testing.T) {
 			t.Errorf("%s: the refusal carries no remedy, which is an outage with extra "+
 				"steps: %s", name, r.Detail)
 		}
+	}
+}
+
+// --- mountOverlay / mirrorDirTree failure paths -----------------------------
+
+// mirrorDirTree fails when the lowerdir it is asked to mirror does not
+// exist, and Expose surfaces that rather than mounting a half-built overlay.
+func TestExposeRWFailsWhenTheSealedExposureDoesNotExist(t *testing.T) {
+	h := newHarness(t)
+	// testRecord's ExposePath names are fake — nothing is on disk there,
+	// unlike liveRecord — so mirrorDirTree's initial WalkDir fails.
+	if err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRW)); err == nil {
+		t.Fatal("Expose rw succeeded although the sealed exposure it mirrors does not exist")
+	}
+}
+
+// A failed overlay mount call is surfaced too, and unwinds anything already
+// mounted — the same contract a failed plain bind has.
+func TestExposeRWFailsWhenTheOverlayMountItselfFails(t *testing.T) {
+	h := newHarness(t)
+	rec := h.liveRecord()
+	volume := h.cfg.ServerVolume(serverID)
+	h.mounter.mountErr[filepath.Join(volume, "Engine")] = syscall.EPERM
+
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err == nil {
+		t.Fatal("Expose rw succeeded despite a failed overlay mount")
+	}
+}
+
+func TestMirrorDirTreeFailsWhenTheLowerDoesNotExist(t *testing.T) {
+	if err := mirrorDirTree(filepath.Join(t.TempDir(), "nonexistent"), t.TempDir()); err == nil {
+		t.Fatal("mirroring a nonexistent lower tree succeeded")
+	}
+}
+
+func TestMirrorDirTreeFailsWhenTheUpperCannotBeCreated(t *testing.T) {
+	dir := t.TempDir()
+	lower := filepath.Join(dir, "lower")
+	if err := os.MkdirAll(lower, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A FILE where mirrorDirTree needs a directory component: MkdirAll fails
+	// ENOTDIR trying to create anything beneath it.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirrorDirTree(lower, filepath.Join(blocker, "upper")); err == nil {
+		t.Fatal("mirroring into an upper whose parent is a plain file succeeded")
+	}
+}
+
+// --- RWServers (D-029): what harvest asks to find who holds rw ------------
+
+// overlayEntry renders one overlay mountinfo line, the shape an rw exposure
+// produces: srdm's own device (uninformative, D-028), a lowerdir option
+// naming the generation, and a target under the volume root.
+func overlayEntry(id int, point, lowerdirs string) string {
+	return fmt.Sprintf(
+		"%d 30 0:99 / %s rw,relatime - overlay overlay "+
+			"rw,lowerdir=%s,upperdir=/state/x/upper,workdir=/state/x/work",
+		id, point, lowerdirs)
+}
+
+// otherDevice is a superblock unrelated to anything srdm published, used to
+// prove a plain tmpfs mount is never mistaken for an overlay.
+const otherDevice = "0:77"
+
+// mountLine renders a plain tmpfs mountinfo line — the shape RWServers must
+// NOT mistake for an overlay, however its target path looks.
+func mountLine(id int, device, point string) string {
+	return fmt.Sprintf("%d 30 %s / %s rw,nosuid,nodev - tmpfs tmpfs rw,size=67108864,mode=755",
+		id, device, point)
+}
+
+func (h *harness) rwServersTable(entries ...string) string {
+	h.t.Helper()
+	path := filepath.Join(h.dir, "mountinfo-rwservers")
+	if err := os.WriteFile(path, []byte(strings.Join(entries, "\n")+"\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	return path
+}
+
+func TestRWServersFindsEveryServerHoldingAnOverlayOfTheGeneration(t *testing.T) {
+	h := newHarness(t)
+	rec := testRecord()
+	volume := h.cfg.VolumeRoot
+	serverB := "8f1c2e3d-0000-4000-8000-abcdefabcd02"
+
+	table := h.rwServersTable(
+		overlayEntry(90, filepath.Join(volume, serverID, "Engine"),
+			rec.Classes[0].ExposePath+"/Engine"),
+		// A second declared path of the SAME class, same server: must not
+		// be double-counted.
+		overlayEntry(91, filepath.Join(volume, serverID, "WS/Binaries"),
+			rec.Classes[0].ExposePath+"/WS/Binaries"),
+		overlayEntry(92, filepath.Join(volume, serverB, "WS/Content/Paks"),
+			rec.Classes[1].ExposePath+"/WS/Content/Paks"),
+		// Noise: an overlay of something else entirely, and a plain tmpfs.
+		overlayEntry(93, "/var/lib/docker/overlay2/abc/merged", "/var/lib/docker/overlay2/abc/lower"),
+		mountLine(94, otherDevice, filepath.Join(volume, serverB, "Engine")),
+	)
+	d, err := NewHostBind(h.cfg, h.journal(), WithMountInfoPath(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	servers, err := d.RWServers(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{serverB, serverID}
+	sort.Strings(want)
+	if !reflect.DeepEqual(servers, want) {
+		t.Fatalf("RWServers = %v, want %v", servers, want)
+	}
+}
+
+func TestRWServersFindsNobodyWhenNothingHoldsRW(t *testing.T) {
+	h := newHarness(t)
+	rec := testRecord()
+	table := h.rwServersTable(mountLine(90, otherDevice, "/somewhere/else"))
+	d, err := NewHostBind(h.cfg, h.journal(), WithMountInfoPath(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers, err := d.RWServers(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 0 {
+		t.Errorf("RWServers = %v, want none", servers)
+	}
+}
+
+func TestRWServersFailsWhenTheMountTableCannotBeRead(t *testing.T) {
+	h := newHarness(t)
+	d, err := NewHostBind(h.cfg, h.journal(),
+		WithMountInfoPath(filepath.Join(h.dir, "nonexistent")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RWServers(testRecord()); err == nil {
+		t.Fatal("RWServers succeeded reading an unreadable mount table")
 	}
 }
 
