@@ -14,18 +14,20 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
-## Status — P01–P08 landed
+## Status — P01–P08b landed, v1 MVP complete
 
-The v1 pipeline is a loop and it is drivable: store → verified release →
-publication → hold units → exposure into a Wings server's volume → update in
-place → **harvest back into a release** → activate. What is missing is the
-part that survives a reboot. See
-[`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
+The v1 pipeline is a loop and it survives everything short of losing the
+disk: store → verified release → publication → hold units → exposure into a
+Wings server's volume → update in place → **harvest back into a release** →
+activate, and now boot restore and reconciliation-repair as well. See
+[`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md); next on the critical
+path is P09 (Soulmask profile, migration rehearsal), not v2.
 
 | | |
 |---|---|
-| **Works now** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor` offline subset plus the Wings preconditions; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw`, `harvest`, and the operator surface: assignments, `activate`/`rollback`, `attach`/`detach`, retention/`gc`, `status` |
-| **Not yet** | boot restore, reconciliation acting on what it finds, `doctor` online (P08b), SteamCMD driver, everything `provider` (v2) |
+| **Works now** | everything below, plus: `srdm-restore.service` republishes and re-exposes every assignment at boot with no operator present; `srdm reconcile` / `doctor --repair` resolve crashed operations, remount drifted binds read-only, and clear broken generations nothing is assigned to |
+| **Also works** | transactional release store, per-file SHA-256 manifests, profile classification and probes, crash recovery, journal (durable records + JSONL + journald), `doctor`; publication topology (op tmpfs → hold unit → read-only bind), per-class hold units carrying the class memory policy, consumer resolution and teardown that refuses while anything holds, the `host-bind` exposure driver with `ro`/`rw`, `harvest`, and the operator surface: assignments, `activate`/`rollback`, `attach`/`detach`, retention/`gc`, `status` |
+| **Not yet (v2, deliberately after v1 proves itself)** | SteamCMD driver, everything `provider`-exposure (needs the socket D-025 confirmed v1 does not have) |
 
 ```
 srdm store promote --profile examples/soulmask.profile.json \
@@ -33,13 +35,16 @@ srdm store promote --profile examples/soulmask.profile.json \
 srdm activate --profile examples/soulmask.profile.json --release rel-2026w31
 srdm attach   --profile examples/soulmask.profile.json --server <uuid> --access ro
 srdm status
+srdm reconcile
 srdm rollback --profile examples/soulmask.profile.json
 srdm gc       --profile examples/soulmask.profile.json --dry-run
 ```
 
 Every operation is one root process under an `flock` on `/run/srdm/srdm.lock`
-— there is no daemon in v1, and D-025 says why. Nothing srdm does survives a
-reboot on its own yet; that is P08b.
+— there is no daemon in v1, and D-025 says why. `srdm-restore.service`
+(`systemd/srdm-restore.service`, a reference unit like `srdm.slice` — see
+D-003) is what makes state survive a reboot; it is the one thing srdm runs
+on itself with no operator watching.
 
 `access: rw` needs `wings.write_owner` — the uid:gid Wings runs its server
 containers as (`system.user.uid` / `system.user.gid` in its config). srdm
