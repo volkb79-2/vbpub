@@ -3842,6 +3842,22 @@ def test_review_rejected_fixable_class_requeues():
     assert t.to == TaskState.QUEUED
 
 
+def test_review_rejected_transient_class_requeues():
+    """'transient' carries no dedicated route -- it falls through to the same
+    mechanical budget path 'fixable' and unclassified already take (per
+    daemon.py's own comment on how it classifies a retryable infra hiccup).
+    Same input/shape as the 'fixable' control above but class='transient',
+    proving that claim rather than assuming it: nothing in reject_triage
+    special-cases 'transient' by name, and this test is what would catch it
+    if something ever did."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="abc123def",
+                      triage_class={"P01": "transient"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.QUEUED
+
+
 def test_review_rejected_precedence_product_beats_drift():
     """Precedence: product > stale-premise. When BOTH a product class and drift
     fire, the human decision wins (a re-carve cannot resolve a product question)
