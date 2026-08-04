@@ -639,11 +639,12 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"],
+        memory="3g", memory_swap="16g",
     )
 
     assert argv == [
         "docker", "run", "--rm", "--mount", "type=bind,src=/host/repo,dst=/worktree",
-        "--workdir", "/worktree/cmru", "--memory", "8g", "--memory-swap", "20g", "--cpus", "1.5",
+        "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g", "--cpus", "1.5",
         "tester-unified:local",
         "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
     ]
@@ -651,13 +652,13 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
 
 def test_tester_gate_rejects_paths_outside_the_worktree(tmp_path):
     with pytest.raises(ValueError, match="relative path"):
-        tester_gate.build_docker_command(tmp_path, "../ciu", ["true"])
+        tester_gate.build_docker_command(tmp_path, "../ciu", ["true"], memory="3g", memory_swap="16g")
 
 
 def test_tester_gate_no_sidecar_by_default_adds_no_docker_wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
 
-    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"])
+    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g")
 
     assert "--network" not in argv
     assert not any("DOCKER_HOST" in part for part in argv)
@@ -668,6 +669,7 @@ def test_tester_gate_sidecar_name_attaches_network_and_docker_host(monkeypatch, 
 
     argv = tester_gate.build_docker_command(
         tmp_path, "modern-debian-tools-python-debug", ["true"], sidecar_name="cmru-tester-dind-abc123",
+        memory="3g", memory_swap="16g",
     )
 
     assert "--network" in argv
@@ -763,6 +765,8 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
     )
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
@@ -777,6 +781,9 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
 
     assert captured["sidecar_name"] == "cmru-tester-dind-fixedname"
     assert captured["cgroup_parent"] == "dev-background.slice"
+    assert captured["cgroup_parent_dev_background"] == "dev-background.slice"
+    assert captured["memory"] == "3g"
+    assert captured["memory_swap"] == "16g"
 
 
 def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp_path):
@@ -787,6 +794,8 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
     )
     monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
@@ -813,6 +822,58 @@ def test_tester_gate_main_errors_when_no_cgroup_parent_resolvable(monkeypatch, t
 
     with pytest.raises(SystemExit, match="no cgroup_parent resolvable"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+
+def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.delenv("CMRU_TESTER_MEMORY", raising=False)
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+
+    def fail_if_called(*_a, **_k):
+        raise AssertionError("must not launch docker when the memory limit is unresolvable")
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
+
+    with pytest.raises(SystemExit, match="no memory limit resolvable"):
+        tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+
+def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    monkeypatch.delenv("CMRU_TESTER_MEMORY_SWAP", raising=False)
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+
+    def fail_if_called(*_a, **_k):
+        raise AssertionError("must not launch docker when the memory-swap limit is unresolvable")
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
+
+    with pytest.raises(SystemExit, match="no memory-swap limit resolvable"):
+        tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+
+def test_tester_gate_forwards_cgroup_parent_dev_background_into_the_container(monkeypatch, tmp_path):
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
+
+    argv = tester_gate.build_docker_command(
+        tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g",
+        cgroup_parent_dev_background="dev-background.slice",
+    )
+
+    assert "-e" in argv
+    assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in argv
+
+
+def test_tester_gate_omits_cgroup_parent_dev_background_when_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
+
+    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g")
+
+    assert not any("CGROUP_PARENT_DEV_BACKGROUND" in part for part in argv)
 
 
 def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tmp_path):

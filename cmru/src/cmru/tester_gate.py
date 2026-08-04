@@ -57,8 +57,11 @@ _DIND_READY_TIMEOUT = 30.0
 # Deliberately NOT a fraction of dev.slice's own aggregate budget: every gate
 # container gets its own independent ceiling regardless of how many run
 # concurrently, on top of (not instead of) the tier's own aggregate cap.
-_DEFAULT_MEMORY = "8g"
-_DEFAULT_MEMORY_SWAP = "20g"
+#
+# No hardcoded memory/memory-swap default here, deliberately (mirrors
+# resolve_cgroup_parent's no-hardcoded-fallbacks rule): the operative default
+# lives in cmru.toml's [env] (CMRU_TESTER_MEMORY / CMRU_TESTER_MEMORY_SWAP),
+# not in this module — see resolve_memory()/resolve_memory_swap().
 _DEFAULT_CPUS = "1.5"
 
 
@@ -126,6 +129,45 @@ def resolve_cgroup_parent(explicit: str | None) -> str:
     return resolved
 
 
+def resolve_memory(explicit: str | None) -> str:
+    """Resolve the gate container's ``--memory`` limit — no hardcoded fallback.
+
+    Order: ``--memory`` (explicit) > ``CMRU_TESTER_MEMORY`` (normally set in
+    cmru.toml's ``[env]``, the one place the estate's actual default lives).
+    Unresolvable is a hard error, never a silent unbounded launch.
+    """
+    if explicit:
+        return explicit
+    resolved = os.environ.get("CMRU_TESTER_MEMORY")
+    if not resolved:
+        raise SystemExit(
+            "tester-gate: no memory limit resolvable — pass --memory explicitly, "
+            "or set CMRU_TESTER_MEMORY (e.g. in cmru.toml's [env]) in the environment. "
+            "Refusing to launch an unbounded container next to production."
+        )
+    return resolved
+
+
+def resolve_memory_swap(explicit: str | None) -> str:
+    """Resolve the gate container's ``--memory-swap`` limit — no hardcoded fallback.
+
+    Order: ``--memory-swap`` (explicit) > ``CMRU_TESTER_MEMORY_SWAP`` (normally
+    set in cmru.toml's ``[env]``). Unresolvable is a hard error, never a silent
+    unbounded launch. Docker's own flag semantics: this is the COMBINED
+    mem+swap total, not swap alone.
+    """
+    if explicit:
+        return explicit
+    resolved = os.environ.get("CMRU_TESTER_MEMORY_SWAP")
+    if not resolved:
+        raise SystemExit(
+            "tester-gate: no memory-swap limit resolvable — pass --memory-swap explicitly, "
+            "or set CMRU_TESTER_MEMORY_SWAP (e.g. in cmru.toml's [env]) in the environment. "
+            "Refusing to launch an unbounded container next to production."
+        )
+    return resolved
+
+
 def _dind_ready(name: str) -> bool:
     probe = subprocess.run(
         ["docker", "exec", name, "docker", "version", "--format", "{{.Server.Version}}"],
@@ -173,9 +215,10 @@ def build_docker_command(
     *,
     image: str = "tester-unified:local",
     cgroup_parent: str = "",
+    cgroup_parent_dev_background: str = "",
     sidecar_name: str | None = None,
-    memory: str = _DEFAULT_MEMORY,
-    memory_swap: str = _DEFAULT_MEMORY_SWAP,
+    memory: str,
+    memory_swap: str,
     cpus: str = _DEFAULT_CPUS,
     device_read_iops: str = "",
     device_write_iops: str = "",
@@ -192,15 +235,26 @@ def build_docker_command(
     modern-debian-tools-python-debug/scripts/test_oci_layout_push.py) should
     request it. Every other project's gate is unaffected.
 
-    ``memory``/``memory_swap``/``cpus`` are flat per-container safe bounds,
-    always applied (host dev-tier cgroup governance) — genuine per-container
-    guarantees, distinct from and complementary to whatever aggregate tier
-    ``cgroup_parent`` places this container under (a slice's own limits bound
-    the WHOLE tier combined, not any one container in it). The four
-    ``device_*`` values are optional per-container blkio caps in Docker's own
-    ``path:rate`` syntax (e.g. ``"/dev/vda:1000"``) — empty (the default)
-    means "rely on the ``dev.slice`` tier's own aggregate IOPS/bandwidth
-    ceiling instead of a per-container one."
+    ``memory``/``memory_swap`` are required (see :func:`resolve_memory` /
+    :func:`resolve_memory_swap` — no hardcoded fallback here, matching
+    ``cgroup_parent``'s own no-implicit-default rule). ``cpus`` is a flat
+    per-container safe bound, always applied (host dev-tier cgroup
+    governance) — genuine per-container guarantees, distinct from and
+    complementary to whatever aggregate tier ``cgroup_parent`` places this
+    container under (a slice's own limits bound the WHOLE tier combined, not
+    any one container in it). The four ``device_*`` values are optional
+    per-container blkio caps in Docker's own ``path:rate`` syntax (e.g.
+    ``"/dev/vda:1000"``) — empty (the default) means "rely on the
+    ``dev.slice`` tier's own aggregate IOPS/bandwidth ceiling instead of a
+    per-container one."
+
+    ``cgroup_parent_dev_background``, when given, is forwarded into the
+    spawned container as ``$CGROUP_PARENT_DEV_BACKGROUND`` — Docker never
+    passes host/caller env into a container on its own, and a project's own
+    in-process governance code (e.g. ciu's own S15.2 resolver, exercised by
+    its own test suite) needs this ambient var visible *inside* the
+    container, independent of the ``--cgroup-parent`` placement of the
+    container itself.
     """
     relative = Path(relative_cwd)
     if relative.is_absolute() or ".." in relative.parts:
@@ -226,6 +280,8 @@ def build_docker_command(
         argv += ["--device-read-bps", device_read_bps]
     if device_write_bps:
         argv += ["--device-write-bps", device_write_bps]
+    if cgroup_parent_dev_background:
+        argv += ["-e", f"CGROUP_PARENT_DEV_BACKGROUND={cgroup_parent_dev_background}"]
     if sidecar_name:
         argv += ["--network", f"container:{sidecar_name}", "-e", "DOCKER_HOST=tcp://localhost:2375"]
     return [*argv, image, *command]
@@ -241,8 +297,16 @@ def main(argv: Sequence[str] | None = None) -> None:
              "(ambient, from devcontainer.json) — see AGENTS.md. No implicit fallback: "
              "unresolvable is a hard error, never an ungoverned launch.",
     )
-    parser.add_argument("--memory", default=os.environ.get("CMRU_TESTER_MEMORY", _DEFAULT_MEMORY))
-    parser.add_argument("--memory-swap", default=os.environ.get("CMRU_TESTER_MEMORY_SWAP", _DEFAULT_MEMORY_SWAP))
+    parser.add_argument(
+        "--memory", default=os.environ.get("CMRU_TESTER_MEMORY"),
+        help="Defaults to $CMRU_TESTER_MEMORY (normally set in cmru.toml's [env]). "
+             "No implicit fallback: unresolvable is a hard error, never an unbounded launch.",
+    )
+    parser.add_argument(
+        "--memory-swap", default=os.environ.get("CMRU_TESTER_MEMORY_SWAP"),
+        help="Defaults to $CMRU_TESTER_MEMORY_SWAP (normally set in cmru.toml's [env]); "
+             "Docker's combined mem+swap total, not swap alone. No implicit fallback.",
+    )
     parser.add_argument("--cpus", default=os.environ.get("CMRU_TESTER_CPUS", _DEFAULT_CPUS))
     parser.add_argument("--device-read-iops", default=os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", ""))
     parser.add_argument("--device-write-iops", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", ""))
@@ -267,11 +331,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     if exists is None:
         print(f"[WARN] tester-gate: {note}", file=sys.stderr)
 
+    memory = resolve_memory(args.memory)
+    memory_swap = resolve_memory_swap(args.memory_swap)
+
     build_kwargs = dict(
         image=args.image,
         cgroup_parent=cgroup_parent,
-        memory=args.memory,
-        memory_swap=args.memory_swap,
+        cgroup_parent_dev_background=os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", ""),
+        memory=memory,
+        memory_swap=memory_swap,
         cpus=args.cpus,
         device_read_iops=args.device_read_iops,
         device_write_iops=args.device_write_iops,

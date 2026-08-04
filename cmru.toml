@@ -42,6 +42,13 @@ ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 # Build once: docker build -f wheel-builder/Dockerfile -t wheel-builder:local /workspaces/vbpub
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
 
+# tester-gate per-container safe bounds (cmru/src/cmru/tester_gate.py has no
+# hardcoded fallback for these — an unresolvable value is a hard error, so
+# this IS the estate's actual default, not just documentation of one).
+# Docker's --memory-swap is the COMBINED mem+swap total, not swap alone.
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+
 # ─── ciu — Python wheel (built-in handlers; only run-tests is ciu-specific) ────
 # build/push/validate come from cmru's built-in wheel handlers (cmru/handlers.py).
 # The only project-specific inputs are the test command and the release-notes text.

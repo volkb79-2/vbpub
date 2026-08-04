@@ -701,7 +701,7 @@ class TestBuildInjections:
         cfg = gov.resolve_config(raw)
         return cfg
 
-    def test_injects_all_four_keys_when_author_sets_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_injects_all_five_keys_when_author_sets_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gov, "resolve_device", lambda configured: ("/dev/vda", "explicit"))
         cfg = self._cfg(device="/dev/vda", read_iops=100, write_iops=400)
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
@@ -709,6 +709,7 @@ class TestBuildInjections:
         frag = injections["redis"]
         assert frag["cgroup_parent"] == "dev-background.slice"
         assert frag["mem_limit"] == "1g"
+        assert frag["mem_swap_limit"] == "17g"
         assert frag["mem_reservation"] == "256m"
         assert frag["blkio_config"] == {
             "device_read_iops": [{"path": "/dev/vda", "rate": 100}],
@@ -724,14 +725,28 @@ class TestBuildInjections:
         frag = injections["redis"]
         assert "mem_limit" not in frag
         assert frag["cgroup_parent"] == "dev-background.slice"
+        assert frag["mem_swap_limit"] == "17g"
         assert frag["mem_reservation"] == "256m"
         assert "blkio_config" in frag
 
-    def test_author_sets_all_four_keys_service_absent_from_injections(self) -> None:
+    def test_author_set_swap_key_is_skipped_others_still_injected(self) -> None:
+        """S15.3 — per-key precedence: author's mem_swap_limit wins; others still injected."""
+        cfg = self._cfg(device="/dev/vda")
+        block = {"image": "redis", "mem_swap_limit": "unlimited"}
+        injections, _ = gov.build_injections({"redis": block}, cfg)
+        frag = injections["redis"]
+        assert "mem_swap_limit" not in frag
+        assert frag["cgroup_parent"] == "dev-background.slice"
+        assert frag["mem_limit"] == "1g"
+        assert frag["mem_reservation"] == "256m"
+        assert "blkio_config" in frag
+
+    def test_author_sets_all_five_keys_service_absent_from_injections(self) -> None:
         cfg = self._cfg(device="/dev/vda")
         block = {
             "cgroup_parent": "custom.slice",
             "mem_limit": "2g",
+            "mem_swap_limit": "18g",
             "mem_reservation": "512m",
             "blkio_config": {"weight": 500},
         }

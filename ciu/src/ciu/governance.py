@@ -66,6 +66,11 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # an unresolvable cgroup_parent is a configuration error, not a silent default.
     "cgroup_parent": "",
     "mem_limit": "1g",
+    # Docker's own `mem_swap_limit`/`--memory-swap` semantics: the COMBINED
+    # mem+swap total, not swap alone (17g here = 1g RAM + 16g swap). Without
+    # this key, Docker's stock default applies instead — 2x mem_limit, i.e.
+    # ~2g combined, not the host dev-tier's much larger swap allowance.
+    "mem_swap_limit": "17g",
     # memory.low (best-effort protection). CAVEAT (S15.16 WARNING): cgroup v2
     # bounds effective protection by ALL ancestor cgroups' own memory.low, not
     # just this slice's — a value here is a no-op under any ancestor
@@ -127,6 +132,7 @@ KSM_PRELOAD_TARGET = "/opt/ksm/ksm-optin.so"
 INJECTED_KEYS: tuple[str, ...] = (
     "cgroup_parent",
     "mem_limit",
+    "mem_swap_limit",
     "mem_reservation",
     "blkio_config",
 )
@@ -809,8 +815,8 @@ def build_injections(
     -------
     (injections, notes)
         ``injections`` maps service name -> the subset of
-        ``cgroup_parent``/``mem_limit``/``mem_reservation``/``blkio_config``
-        not already set by the author. ``blkio_config`` itself carries
+        ``cgroup_parent``/``mem_limit``/``mem_swap_limit``/``mem_reservation``/
+        ``blkio_config`` not already set by the author. ``blkio_config`` itself carries
         whichever of ``device_read_iops``/``device_write_iops`` (device
         resolved), ``device_read_bps``/``device_write_bps`` (device resolved
         AND a nonzero cap configured, S15.15) and ``weight`` (nonzero
@@ -849,6 +855,8 @@ def build_injections(
             frag["cgroup_parent"] = cgroup_parent
         if "mem_limit" not in author_keys:
             frag["mem_limit"] = config["mem_limit"]
+        if "mem_swap_limit" not in author_keys:
+            frag["mem_swap_limit"] = config["mem_swap_limit"]
         if "mem_reservation" not in author_keys:
             frag["mem_reservation"] = config["mem_reservation"]
         blk: dict[str, Any] = {}
@@ -885,6 +893,7 @@ def build_injections(
     notes = [
         f"cgroup_parent={cgroup_parent}",
         f"mem_limit={config['mem_limit']}",
+        f"mem_swap_limit={config['mem_swap_limit']}",
         f"mem_reservation={config['mem_reservation']}",
         f"mem_min={mem_min or '(not declared)'}",
         f"read_iops={read_iops} ({read_note})",
