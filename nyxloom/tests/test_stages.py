@@ -14,7 +14,8 @@ import pytest
 from nyxloom import stages
 from nyxloom.stages import (
     DEFAULT_PIPELINE, KNOWN_CONTEXT_FLAGS, PRESETS, STAGE_REGISTRY, Stage, compose,
-    effective_concurrency, stage_context, validate_pipeline, validate_stage_overrides,
+    effective_concurrency, effective_exit_map, stage_context, validate_pipeline,
+    validate_stage_overrides,
 )
 from nyxloom.types import TaskState, TASK_TRANSITIONS, TERMINAL_TASK_STATES
 
@@ -54,6 +55,54 @@ def test_carve_stage_declares_rescope_superseded_edge():
     assert labels["rescope_superseded"] is TaskState.SUPERSEDED
     assert carve.exit_from is TaskState.READY_TO_CARVE
     assert TaskState.SUPERSEDED in TASK_TRANSITIONS[TaskState.READY_TO_CARVE]
+
+
+# --- effective_exit_map: the composition-aware exit map (CR-07c) -----------
+#
+# CR-07a found that `implement`'s declared `done -> AWAITING_REVIEW` disagreed
+# with the engine, which routes `done -> SELF_REVIEWING` whenever `self_review`
+# is composed. `effective_exit_map` is the repair: the single function
+# `validate_pipeline`, `effects_exit.py` and the shadow-compile projection all
+# read, so the declared and the actual form of `implement.done` cannot diverge
+# again the way they did before.
+
+def test_effective_exit_map_routes_implement_done_to_self_review_when_composed():
+    implement = STAGE_REGISTRY["implement"]
+    effective = dict(effective_exit_map(implement, DEFAULT_PIPELINE))
+    assert "self_review" in DEFAULT_PIPELINE
+    assert effective["done"] is TaskState.SELF_REVIEWING
+    # untouched outcomes carry over unchanged
+    assert effective["incomplete"] is TaskState.QUEUED
+    assert effective["dead_end"] is TaskState.BLOCKED
+
+
+def test_effective_exit_map_is_the_raw_declaration_without_self_review():
+    implement = STAGE_REGISTRY["implement"]
+    legacy = ("carve", "implement", "review_independent", "triage",
+              "auto_merge", "post_merge_gate")
+    assert "self_review" not in legacy
+    assert effective_exit_map(implement, legacy) == implement.exit_map
+
+
+def test_effective_exit_map_is_a_no_op_for_every_other_stage():
+    """The composition-conditional rule names exactly one stage and one
+    label; every other stage's effective map is byte-identical to its raw
+    declaration regardless of what else the pipeline composes."""
+    for name, stage in STAGE_REGISTRY.items():
+        if name == "implement":
+            continue
+        assert effective_exit_map(stage, DEFAULT_PIPELINE) == stage.exit_map
+
+
+def test_effective_exit_map_leaves_implement_alone_without_the_label():
+    """Guards the label check: a stage NAMED implement with no `done` outcome
+    (hypothetical, but the function is a total mapping over labels) would
+    have nothing to redirect."""
+    bare = Stage(name="implement", role=None, entry_state=TaskState.QUEUED,
+                 exit_from=TaskState.ACTIVE,
+                 exit_map=(("incomplete", TaskState.QUEUED),),
+                 owns=frozenset({TaskState.QUEUED, TaskState.ACTIVE}))
+    assert effective_exit_map(bare, ("implement", "self_review")) == bare.exit_map
 
 
 # --- B6/P74 packet-assembly context policy --------------------------------

@@ -9,7 +9,9 @@ past, which is how a task ends up in a state nobody planned.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
+import inspect
 import subprocess
 
 import pytest
@@ -137,3 +139,18 @@ class TestSelfReviewStaleExit:
                                            attempt_id=attempt_id))
         assert not [e for e in events if e.type is EventType.TASK_TRANSITIONED]
         assert storage.load_state("demo", task_id).state is TaskState.CARVED
+
+
+# --- implement.done's target comes from stages.py, not a private copy ------
+#
+# CR-07c's repair: effects_exit.py must resolve implement.done's target via
+# stages.effective_exit_map rather than re-implementing the
+# "self_review" in cfg.pipeline check inline (the shape that let stages.py's
+# declaration and this module's engine drift apart under CR-07a). Structural,
+# not behavioural, so a future edit that reintroduces a private duplicate is
+# caught even if it happens to compute the same answer today.
+def test_implement_done_routing_calls_stages_effective_exit_map():
+    tree = ast.parse(inspect.getsource(effects_exit))
+    calls = {node.func.attr for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+    assert "effective_exit_map" in calls

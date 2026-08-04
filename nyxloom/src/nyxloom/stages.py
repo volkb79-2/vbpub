@@ -187,6 +187,32 @@ PRESETS: dict[str, tuple] = {
 }
 
 
+def effective_exit_map(stage: Stage, pipeline) -> tuple:
+    """The exit_map ``stage`` actually produces once composed into ``pipeline``.
+
+    Identical to ``stage.exit_map`` except for one edge: ``implement``'s
+    ``done`` outcome routes to ``SELF_REVIEWING`` instead of the declared
+    ``AWAITING_REVIEW`` when ``self_review`` is composed into the same
+    pipeline -- the one exit whose target is pipeline-composition-dependent
+    rather than a fixed property of the stage kind (``effects_exit.py`` is the
+    engine that does this; unlike ``triage``'s exhausted-case upgrade, which
+    a project without a carve stage may legally never reach, the declared
+    ``AWAITING_REVIEW`` floor for ``done`` is never actually produced once
+    ``self_review`` is present -- so leaving it as a permanent floor would be
+    wrong, not merely conservative).
+
+    This is the SINGLE function ``validate_pipeline``, ``effects_exit.py``'s
+    dispatch and the shadow-compile projection all read, so the declared and
+    the actual form of ``implement.done`` cannot diverge again the way CR-07a
+    found them diverged (``stages.py`` declaring ``-> AWAITING_REVIEW``
+    unconditionally against the engine's own composition-conditional route).
+    """
+    if stage.name != "implement" or "self_review" not in pipeline:
+        return stage.exit_map
+    return tuple((label, TaskState.SELF_REVIEWING) if label == "done" else (label, to)
+                 for label, to in stage.exit_map)
+
+
 def compose(spec: object) -> list[str]:
     """Resolve a `pipeline` config value to an ordered list of stage names.
 
@@ -268,10 +294,12 @@ def validate_pipeline(names: list[str]) -> None:
 
     # 2: edge legality against the frozen graph. TASK_TRANSITIONS already lists
     # every legal target from a state, terminal targets included, so membership
-    # is the whole check.
+    # is the whole check. Reads the EFFECTIVE exit map (composition-adjusted),
+    # not the raw declaration, so a composition-conditional edge is checked
+    # against the target it actually produces in THIS pipeline.
     for st in stages:
         legal = TASK_TRANSITIONS[st.exit_from]
-        for label, to in st.exit_map:
+        for label, to in effective_exit_map(st, names):
             if to not in legal:
                 log.warning("pipeline validation failed", reason="illegal-exit-edge",
                             stage=st.name, label=label, target=to.value)
@@ -279,12 +307,15 @@ def validate_pipeline(names: list[str]) -> None:
                     f"stage {st.name}: exit {label!r} -> {to.value} is not a legal "
                     f"transition from {st.exit_from.value} (TASK_TRANSITIONS)")
 
-    # 3: no dead-end routing
+    # 3: no dead-end routing. Also reads the effective exit map -- a target
+    # that only exists because of a composition-conditional edge (SELF_REVIEWING,
+    # reached solely via implement.done when self_review is composed) must be
+    # owned by a stage actually present, exactly like any other target.
     owned = set(owner)
     entries = {st.entry_state for st in stages}
     handled = owned | entries | set(LIFECYCLE_STATES) | set(_POST_MERGE_STATES)
     for st in stages:
-        for label, to in st.exit_map:
+        for label, to in effective_exit_map(st, names):
             if to in TERMINAL_TASK_STATES:
                 continue
             if to not in handled:
@@ -298,7 +329,8 @@ def validate_pipeline(names: list[str]) -> None:
     # 4: terminal reachable (a terminal exit, or auto_merge -> MERGED -> COMPLETED
     # via the gate/auto-advance mechanism)
     reaches_terminal = any(
-        to in TERMINAL_TASK_STATES for st in stages for _label, to in st.exit_map
+        to in TERMINAL_TASK_STATES
+        for st in stages for _label, to in effective_exit_map(st, names)
     ) or any(st.name == "auto_merge" for st in stages)
     if not reaches_terminal:
         log.warning("pipeline validation failed", reason="no-terminal-path")
