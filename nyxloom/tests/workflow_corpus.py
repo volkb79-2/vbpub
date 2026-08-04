@@ -121,7 +121,7 @@ def valid_sources() -> dict:
     return sources
 
 
-# --- kernel-edge negatives: the 38 x 3 refusal corpus ----------------------
+# --- kernel-edge negatives: the 35 x 3 refusal corpus ----------------------
 
 
 def _probe_node(state: TaskState) -> tuple:
@@ -144,7 +144,7 @@ def _probe_document(state: TaskState) -> tuple:
 
 
 def kernel_edges() -> list:
-    """The 38 kernel edges, sorted for a stable parameter id."""
+    """The 35 kernel edges, sorted for a stable parameter id."""
     return sorted(KERNEL_EDGES, key=lambda e: (e[0].value, e[1].value))
 
 

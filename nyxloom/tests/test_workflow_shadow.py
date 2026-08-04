@@ -206,10 +206,11 @@ def test_the_kernel_entry_edge_is_carried_not_dropped():
 # --- the stop-loss measurement ---------------------------------------------
 
 
-def test_the_language_expresses_all_seventeen_compiler_edges():
-    """The §5.4 trigger, made countable by the inventory: "the 17 compiler
-    edges are the entire set the language must express... if any one of them
-    needs an escape hatch, the trigger has fired".
+def test_the_language_expresses_all_sixteen_compiler_edges():
+    """The §5.4 trigger, made countable by the inventory: "the 16 compiler
+    edges (17 before CR-07d removed DRAFT) are the entire set the language
+    must express... if any one of them needs an escape hatch, the trigger has
+    fired".
 
     Two documents, because ``ACTIVE -> AWAITING_REVIEW`` and
     ``ACTIVE -> SELF_REVIEWING`` are the same outcome with different

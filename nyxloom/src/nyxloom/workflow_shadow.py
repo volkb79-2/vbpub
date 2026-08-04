@@ -10,16 +10,17 @@ stage registry edge by edge -- the §5.4 differential for a package that adds no
 behaviour, applied to the only population that matters: what is running.
 
 It is also the stop-loss instrument. The inventory makes the trigger countable:
-the 17 compiler edges are the entire set the language must express, and if any
-one of them needs a per-node escape hatch into imperative code, CR-07 stops.
-:func:`full_vocabulary_sources` declares all 17 as data, so the trigger is
-answered by a compile rather than by an opinion.
+the 16 compiler edges (17 before CR-07d removed ``DRAFT -> READY_TO_CARVE``
+along with the state itself) are the entire set the language must express, and
+if any one of them needs a per-node escape hatch into imperative code, CR-07
+stops. :func:`full_vocabulary_sources` declares all 16 as data, so the trigger
+is answered by a compile rather than by an opinion.
 
-Two of the 17 -- ``ACTIVE -> AWAITING_REVIEW`` and ``ACTIVE -> SELF_REVIEWING``
+Two of the 16 -- ``ACTIVE -> AWAITING_REVIEW`` and ``ACTIVE -> SELF_REVIEWING``
 -- are the SAME outcome (``implement.done``) with different destinations, so no
 single document can carry both; they are alternatives in the product too. The
 stop-loss asks whether the LANGUAGE can express each edge, so the instrument is
-two documents whose compiler-edge sets UNION to all 17. Claiming one document
+two documents whose compiler-edge sets UNION to all 16. Claiming one document
 would have meant either inventing a second implementer node (two nodes owning
 ``ACTIVE``) or an ``if``, and the second is the trigger itself.
 
@@ -29,7 +30,7 @@ One addition, DATA, forced by the IR being stricter than ``validate_pipeline``
 -- which is the point of the exercise rather than a concession:
 
 **Wait nodes for the lifecycle hand-off.** ``stages.LIFECYCLE_STATES`` exempts
-``CARVED``/``NEEDS_DECISION``/``BLOCKED``/``DRAFT`` from the dead-end rule on
+``CARVED``/``NEEDS_DECISION``/``BLOCKED`` from the dead-end rule on
 the grounds that "a stage may route a task INTO one of these; the mechanism
 (or a human) carries it onward". It never says WHERE onward is. A compiler
 outcome into a kernel-owned state must name a wait node here, so ``carve``'s
@@ -100,7 +101,6 @@ SHADOW_PROMPTS: dict = {
 
 #: The wait node id for each kernel-owned state a projection may need.
 WAIT_NODE_IDS: dict = {
-    TaskState.DRAFT: "intake",
     TaskState.CARVED: "queue_admission",
     TaskState.NEEDS_DECISION: "decision_hold",
     TaskState.BLOCKED: "escalation_hold",
@@ -213,12 +213,11 @@ def _full_vocabulary_base() -> dict:
         "schema": SCHEMA_ID,
         "id": "full-vocabulary",
         "version": 1,
-        "start": "intake",
+        # CR-07d: DRAFT (the "intake" wait node) is gone -- daemon.py's
+        # CreateTask hardcodes CARVED, so queue_admission is the document's
+        # real entry point, not a projection convenience.
+        "start": "queue_admission",
         "nodes": {
-            "intake": {
-                "entry_state": "DRAFT",
-                "outcomes": {"resume_carve": "carve"},
-            },
             "carve": {
                 "handler": "dispatch_agent", "role": "carver",
                 "prompt": "carve/v1",
@@ -289,7 +288,7 @@ def _full_vocabulary_base() -> dict:
 
 
 def full_vocabulary_sources() -> tuple:
-    """Two workflows whose compiler edges UNION to all 17 of the inventory's.
+    """Two workflows whose compiler edges UNION to all 16 of the inventory's.
 
     The second is the first without ``self_review``, which is the only way to
     express ``ACTIVE -> AWAITING_REVIEW`` -- see the module docstring.

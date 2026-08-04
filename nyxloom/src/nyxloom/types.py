@@ -43,7 +43,6 @@ def new_id(prefix: str) -> str:
 # enums
 
 class TaskState(enum.Enum):
-    DRAFT = "DRAFT"
     NEEDS_DECISION = "NEEDS_DECISION"
     READY_TO_CARVE = "READY_TO_CARVE"
     CARVED = "CARVED"
@@ -60,15 +59,30 @@ class TaskState(enum.Enum):
     SUPERSEDED = "SUPERSEDED"
     CANCELLED = "CANCELLED"
 
+    @classmethod
+    def _missing_(cls, value):
+        # CR-07d read-compat: DRAFT was removed as a constructible, executable
+        # state -- pinned inert since 2026-07-17 (no code ever assigned a task
+        # to it; daemon.py's CreateTask hardcodes CARVED). Map the legacy value
+        # so TaskStateFile.from_dict (_FIELD_TYPES {"state": TaskState} ->
+        # TaskState(value)) keeps loading statefiles/events written before the
+        # removal, rather than raising ValueError on a pre-CR-07d row. Routed
+        # to NEEDS_DECISION -- the human-triage state, and one of DRAFT's own
+        # former edges -- rather than silently reviving a removed state or a
+        # default that would decide a transition nobody vouched for.
+        if value == "DRAFT":
+            return cls.NEEDS_DECISION
+        return None
+
 
 TERMINAL_TASK_STATES = frozenset(
     {TaskState.COMPLETED, TaskState.SUPERSEDED, TaskState.CANCELLED}
 )
 
 # Normative transition graph (draft 1 SPEC §4 + draft 2 SPEC §4).
+# CR-07d: DRAFT removed as a constructible state (see TaskState._missing_) --
+# it is no longer a key here, and it never appears as anyone else's target.
 TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
-    TaskState.DRAFT: frozenset({TaskState.NEEDS_DECISION, TaskState.READY_TO_CARVE,
-                                TaskState.SUPERSEDED, TaskState.CANCELLED}),
     TaskState.NEEDS_DECISION: frozenset({TaskState.READY_TO_CARVE, TaskState.QUEUED,
                                          TaskState.SUPERSEDED, TaskState.CANCELLED}),
     TaskState.READY_TO_CARVE: frozenset({TaskState.CARVED, TaskState.NEEDS_DECISION,

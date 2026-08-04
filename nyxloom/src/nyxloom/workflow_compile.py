@@ -4,7 +4,7 @@ WHY THIS MODULE EXISTS (CR-07a)
 -------------------------------
 The parent plan's §4.3 lists nine compile-time rejection conditions and says
 "the compiler resolves and type-checks them". The CR-07 transition inventory
-adds the harder obligation: the 38 KERNEL edges of the frozen graph must become
+adds the harder obligation: the 35 KERNEL edges of the frozen graph must become
 rejection conditions HERE, before any workflow is migrated onto the mechanism,
 so that CR-07b's manifests are validated by machinery already proven to reject
 the unsafe shapes rather than by machinery written alongside the thing it
@@ -20,9 +20,9 @@ There is no field in this vocabulary whose value is a transition target::
 
 So a manifest cannot say where a kernel edge goes, cannot say which
 predecessors a kernel state has, and cannot say that a kernel edge is absent.
-The 38 negative tests in ``tests/test_workflow_kernel_edges.py`` are therefore
+The 35 negative tests in ``tests/test_workflow_kernel_edges.py`` are therefore
 not testing a list of rules -- they are testing that four distinct ATTEMPTS at
-each of the 38 edges are refused with the edge's own inventory class:
+each of the 35 edges are refused with the edge's own inventory class:
 
 * **redirect / add** -- name the target state as an outcome value
   (:attr:`DiagnosticCode.KERNEL_EDGE_NOT_DECLARABLE`);
@@ -192,7 +192,7 @@ class CompileError(Exception):
 #: optional extras (``triage.rescope``, ``auto_merge.rejected``) are the two
 #: compiler edges the engine reaches by a context-sensitive upgrade in
 #: ``reconcile`` rather than by declaration -- available to a manifest so the
-#: language covers all 17 compiler edges, optional so a carve-less pipeline is
+#: language covers all 16 compiler edges, optional so a carve-less pipeline is
 #: not forced to grow a carve node in order to compile.
 AGENT_OUTCOMES: dict[Role, tuple] = {
     Role.CARVER: (frozenset({"done", "needs_decision", "rescope_superseded"}),

@@ -202,7 +202,6 @@ V_GAP = 50
 DAG_MARGIN = 20
 
 COLORS = {
-    TaskState.DRAFT: "#cccccc",
     TaskState.NEEDS_DECISION: "#ff9900",
     TaskState.READY_TO_CARVE: "#ffcc00",
     TaskState.CARVED: "#ffff00",
@@ -227,7 +226,6 @@ table {{ border-collapse: collapse; margin: 20px 0; }}
 th, td {{ border: 1px solid #333a41; padding: 8px; text-align: left; }}
 th {{ background: #1d2126; }}
 a {{ color: #6ab0ff; }}
-.state-DRAFT {{ background: #cccccc; }}
 .state-NEEDS_DECISION {{ background: #ff9900; }}
 .state-READY_TO_CARVE {{ background: #ffcc00; }}
 .state-CARVED {{ background: #ffff00; }}
@@ -325,7 +323,6 @@ NAV = """
 # KeyError from _render_legend_html rather than silently rendering a blank
 # row — this is what "stays in sync with the enum" means in practice.
 STATE_LEGEND: dict[TaskState, str] = {
-    TaskState.DRAFT: "Freshly authored idea; not yet triaged into a task.",
     TaskState.NEEDS_DECISION: "Blocked on an open item in DECISIONS-INBOX.md before it can be carved.",
     TaskState.READY_TO_CARVE: "Its decisions are resolved; waiting to become a real task (CARVED).",
     TaskState.CARVED: "A task file exists for this handoff; not yet queued for dispatch.",

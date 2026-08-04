@@ -63,12 +63,14 @@ references at all:
     non-xfail tests -- the pinned xfail(strict) markers were REMOVED, since
     a passing strict-xfail test is itself a failure (XPASS)).
 
-The remaining one (DRAFT) is still pinned below as a KNOWN_STATE_GAPS entry
-with a dedicated xfail(strict) test (Oracle O1: it demonstrably fails
-TODAY, on real code, proving the guard is not a tautology) rather than
-silently fixed -- production changes for it are out of scope for THIS
-package (see CLAUDE.md handoff scope). Report to the project owner: it
-still needs a backlog item and a real fix.
+FIXED 2026-08-04 (CR-07d): DRAFT was the remaining gap, pinned below (in the
+git history of this file) as a KNOWN_STATE_GAPS entry with a dedicated
+xfail(strict) test proving it stranded on real code. Removed rather than
+implemented -- nothing ever assigns a task to DRAFT (confirmed at the time:
+"daemon.py's CreateTask hardcodes CARVED"), so the fix is that it is no
+longer a constructible TaskState at all. `types.TaskState._missing_` keeps a
+pre-CR-07d persisted `"DRAFT"` value loading (mapped to NEEDS_DECISION)
+rather than raising. See the KNOWN_STATE_GAPS declaration below, now empty.
 """
 
 from __future__ import annotations
@@ -297,9 +299,11 @@ def _manual_documented_states() -> frozenset[TaskState]:
 # strategic carver, then Transition(SUPERSEDED)) -- genuinely `planned` now,
 # same reasoning as the MERGED/VALIDATING removal above. See
 # test_no_dead_end_ready_to_carve below (no longer xfail).
-KNOWN_STATE_GAPS: frozenset[TaskState] = frozenset({
-    TaskState.DRAFT,
-})
+#
+# TaskState.DRAFT REMOVED 2026-08-04 (CR-07d): not fixed by giving it a
+# reconcile.py branch, but by deleting it as a constructible TaskState --
+# see the module docstring. There is nothing left to track here.
+KNOWN_STATE_GAPS: frozenset[TaskState] = frozenset()
 
 
 def test_every_nonterminal_taskstate_is_planned_manual_or_tracked_gap():
@@ -343,12 +347,12 @@ def test_blocked_and_merge_ready_are_manual_not_tracked_gaps():
     assert not ({TaskState.BLOCKED, TaskState.MERGE_READY} & KNOWN_STATE_GAPS)
 
 
-def test_draft_is_a_tracked_gap_not_planned_or_manual():
-    """Non-hollow anchor: proves the scan genuinely finds DRAFT absent from
-    BOTH buckets, not just that KNOWN_STATE_GAPS is asserted by fiat."""
-    assert TaskState.DRAFT not in _states_referenced_in_reconcile()
-    assert TaskState.DRAFT not in _manual_documented_states()
-    assert TaskState.DRAFT in KNOWN_STATE_GAPS
+def test_known_state_gaps_is_empty():
+    """CR-07d closed the last tracked gap (DRAFT) by removing the state
+    rather than by planning or documenting it -- so there is nothing left
+    for this set to legitimately hold. A future gap should reopen this as a
+    real member with a citation, not silently repopulate it."""
+    assert KNOWN_STATE_GAPS == frozenset()
 
 
 # --- behavioral proofs: construct the favorable input, call plan_project,
@@ -423,26 +427,23 @@ def test_no_dead_end_review_rejected_requeues():
                and _action_touches_task(a, "INV-01") for a in actions)
 
 
-_DRAFT_GAP_REASON = (
-    "ABSENCE bug found while writing this invariant suite (2026-07-17): "
-    "TaskState.DRAFT has outgoing edges in TASK_TRANSITIONS and a "
-    "STATE_LEGEND UI entry in render.py implying it is a real, reachable "
-    "state, but reconcile.py's plan_project has ZERO branch keyed on "
-    "TaskState.DRAFT, and no code anywhere ever assigns DRAFT as a task's "
-    "live state either (daemon.py's CreateTask hardcodes CARVED). A task "
-    "manually placed in DRAFT would strand forever -- the same dead-end "
-    "class as the pre-fix REVIEW_REJECTED bug. No backlog item tracks this "
-    "yet; flagged here for triage, not fixed (production out of scope)."
-)
+# FIXED 2026-08-04 (CR-07d). Used to be xfail(strict=True)-pinned here: "no
+# code anywhere ever assigns DRAFT as a task's live state... a task manually
+# placed in DRAFT would strand forever". The fix is not a reconcile.py branch
+# (nothing ever legitimately produces a DRAFT task) but removing the state:
+# DRAFT is no longer a member of TaskState at all, so the dead end it could
+# strand in no longer exists to strand in.
+def test_draft_is_no_longer_a_constructible_taskstate():
+    assert not hasattr(TaskState, "DRAFT")
+    assert "DRAFT" not in TaskState.__members__
 
 
-@pytest.mark.xfail(strict=True, reason=_DRAFT_GAP_REASON)
-def test_no_dead_end_draft():
-    inp = _base_input("INV-01", TaskState.DRAFT)
-    actions = plan_project(inp)
-    assert any(_action_touches_task(a, "INV-01") for a in actions), (
-        "DRAFT task got zero planned actions -- reconcile.py has no handler for it"
-    )
+def test_a_legacy_draft_value_reads_as_needs_decision_not_a_crash():
+    """types.TaskState._missing_'s read-compat contract: a pre-CR-07d
+    persisted `"DRAFT"` value must not raise ValueError, and must not
+    silently resurrect a removed state -- NEEDS_DECISION forces it through
+    human triage instead."""
+    assert TaskState("DRAFT") is TaskState.NEEDS_DECISION
 
 
 # FIXED 2026-07-19 (nyxloom-P45-ready-to-carve-triage package). Used to be
@@ -753,28 +754,25 @@ def test_known_ignored_event_types_are_true_noops(ev_type):
 # reachability, and target-type safety.
 # ===========================================================================
 
-def test_task_transition_graph_fully_reachable_from_draft():
-    """Every TaskState must be reachable from DRAFT (the conceptual entry
-    point) via TASK_TRANSITIONS edges. An unreachable state would be dead
-    code in the enum (declared, never enterable) -- a milder cousin of the
-    dead-end-state bug Invariant 1 catches (those are ENTERABLE-but-stuck;
-    this is NEVER-enterable). All 15 TaskStates are in fact reachable from
-    DRAFT today (this test passes) -- DRAFT being unreachable IN PRACTICE
-    (no code ever assigns it) is a *dispatch-code* gap (Invariant 1), not a
-    *graph* gap; the graph edges themselves are fully connected.
-    (READY_TO_CARVE/MERGED/VALIDATING previously belonged in that same
-    "unreachable in practice" list too -- P45 2026-07-19 fixed
-    READY_TO_CARVE, the 2026-07-17 post-merge-validation package fixed
-    MERGED/VALIDATING; both are genuinely live now, see Invariant 1 above.)"""
-    seen = {TaskState.DRAFT}
-    frontier = [TaskState.DRAFT]
+def test_task_transition_graph_fully_reachable_from_carved():
+    """Every TaskState must be reachable from CARVED (the conceptual entry
+    point since CR-07d removed DRAFT -- daemon.py's CreateTask hardcodes
+    CARVED, so it is where a task's tracked life actually begins, not a
+    theoretical stand-in the way DRAFT was) via TASK_TRANSITIONS edges. An
+    unreachable state would be dead code in the enum (declared, never
+    enterable) -- a milder cousin of the dead-end-state bug Invariant 1
+    catches (those are ENTERABLE-but-stuck; this is NEVER-enterable). All 14
+    other TaskStates are in fact reachable from CARVED today (this test
+    passes); the graph edges are fully connected."""
+    seen = {TaskState.CARVED}
+    frontier = [TaskState.CARVED]
     while frontier:
         cur = frontier.pop()
         for nxt in TASK_TRANSITIONS[cur]:
             if nxt not in seen:
                 seen.add(nxt)
                 frontier.append(nxt)
-    assert seen == set(TaskState), f"unreachable from DRAFT: {set(TaskState) - seen}"
+    assert seen == set(TaskState), f"unreachable from CARVED: {set(TaskState) - seen}"
 
 
 def test_task_transition_targets_are_all_taskstate_members():

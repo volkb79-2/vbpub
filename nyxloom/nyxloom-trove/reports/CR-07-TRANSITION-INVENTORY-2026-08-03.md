@@ -23,7 +23,18 @@ This is that inventory. It is derived mechanically from
 `types.TASK_TRANSITIONS` (FROZEN CORE), so it is a fact about the shipped
 graph rather than a reading of it.
 
-**The graph has 55 edges across 16 states: 38 kernel, 17 compiler.**
+**Amended 2026-08-04 (CR-07d):** `DRAFT` removed as a constructible,
+executable state -- pinned inert since 2026-07-17 (no code ever assigned a
+task to it; `daemon.py`'s `CreateTask` hardcodes `CARVED`). It contributed
+exactly four of the counts below: one compiler edge (`DRAFT → READY_TO_CARVE`)
+and three kernel edges (`DRAFT → NEEDS_DECISION` K-decision,
+`DRAFT → SUPERSEDED`/`DRAFT → CANCELLED` K-escape). `types.TaskState._missing_`
+now maps a legacy-persisted `"DRAFT"` value to `NEEDS_DECISION` on read; see
+`tests/test_workflow_ir.py` (`test_partition_totals_match_the_inventory_document`,
+`test_kernel_class_counts_match_the_inventory_headings`), which check this
+document's own stated numbers against the derived graph.
+
+**The graph has 51 edges across 15 states: 35 kernel, 16 compiler.**
 
 ## The classification principle
 
@@ -39,11 +50,11 @@ must be unable to express it. `stages.validate_pipeline` already applies this
 reasoning to stage composition (P43's closure invariant); CR-07 generalizes it
 from stages to nodes.
 
-## Kernel — 38 edges in five classes
+## Kernel — 35 edges in five classes
 
-### K-escape (22 edges) — supersede and cancel
+### K-escape (20 edges) — supersede and cancel
 
-`→ SUPERSEDED` and `→ CANCELLED` from all 11 non-terminal states that have
+`→ SUPERSEDED` and `→ CANCELLED` from all 10 non-terminal states that have
 them. These are operator and kernel authority: a re-carve supersedes an
 origin task, an operator cancels. A manifest must not be able to withdraw the
 ability to abandon work.
@@ -85,9 +96,9 @@ zero events.
 *Negative test obligation:* every non-terminal executable node retains a
 `BLOCKED` exit after compilation, whatever the manifest says.
 
-### K-decision (6 edges) — human decision authority
+### K-decision (5 edges) — human decision authority
 
-`→ NEEDS_DECISION` from `DRAFT`, `READY_TO_CARVE`, `CARVED`, `QUEUED`,
+`→ NEEDS_DECISION` from `READY_TO_CARVE`, `CARVED`, `QUEUED`,
 `REVIEW_REJECTED`, `BLOCKED`. The north star's "human owns direction"
 invariant in graph form. B4a/D-060 relies on it for the carve-less pipelines:
 `gated` and `lean` terminate their reject loops here, and that is precisely
@@ -104,7 +115,7 @@ retry the gate. Kernel because it is *operator* authority, and it is recorded
 here specifically so CR-07 does not delete it as dead — it is reachable only
 by human action, which is the reason it looks unreachable to a static reader.
 
-## Compiler — 17 edges
+## Compiler — 16 edges
 
 These are the stage-to-stage edges. `stages.py` already expresses most of them
 as declarative `exit_map`s, so CR-07 is generalizing a mechanism that exists
@@ -118,7 +129,6 @@ rather than inventing one.
     QUEUED          → ACTIVE
     CARVED          → QUEUED
     READY_TO_CARVE  → CARVED
-    DRAFT           → READY_TO_CARVE
     NEEDS_DECISION  → QUEUED | READY_TO_CARVE
     BLOCKED         → QUEUED | READY_TO_CARVE
 
@@ -162,6 +172,13 @@ inventory sharpens that cut:
   compatibility for the removed `DRAFT` value through enum `_missing_` rather
   than as an executable workflow state.
 
+  *(As actually carved: this "CR-07b" umbrella split further once CR-07a
+  landed. The shipped `CR-07b` became the `GuardFacts` derivation alone; the
+  `stages.py`/`effects_exit.py` repair became `CR-07c`; `DRAFT` removal (this
+  paragraph's read-compat item) became `CR-07d`; the compiler-IR-to-dispatch
+  wiring plus the upcaster/schema became `CR-07e`. See the implementation
+  plan amendment's "CR-07c split" ledger row for why.)*
+
 Landing the rejection conditions first is what makes the migration checkable:
 CR-07b's manifests are validated by machinery CR-07a already proved rejects
 the unsafe shapes, instead of by machinery written alongside the thing it
@@ -176,5 +193,6 @@ CR-05/CR-06's decomposition plus a hand-written flow, which already delivers
 most of the maintainability gain.
 
 This inventory makes that trigger measurable rather than a judgement call: the
-17 compiler edges are the entire set the language must express. **If any one
+16 compiler edges (17 at the time this inventory was written, before CR-07d
+removed `DRAFT`) are the entire set the language must express. **If any one
 of them needs an escape hatch, the trigger has fired.**
