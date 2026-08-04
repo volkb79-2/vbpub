@@ -29,12 +29,13 @@ from .types import TaskState, Role, TASK_TRANSITIONS, TERMINAL_TASK_STATES
 log = get_logger("stages")
 
 # States handled by the frozen mechanism or by manual operator action, never
-# owned by a composable stage: intake (DRAFT, NEEDS_DECISION), queue admission
-# (CARVED -> QUEUED), and escalation (BLOCKED). A stage may route a task INTO
-# one of these; the mechanism (or a human) carries it onward, so such an exit is
-# never a dead-end.
+# owned by a composable stage: the human-decision hold (NEEDS_DECISION), queue
+# admission (CARVED -> QUEUED), and escalation (BLOCKED). A stage may route a
+# task INTO one of these; the mechanism (or a human) carries it onward, so such
+# an exit is never a dead-end. CR-07d removed DRAFT (intake) as a constructible
+# state -- it is no longer a member here.
 LIFECYCLE_STATES: frozenset[TaskState] = frozenset({
-    TaskState.DRAFT, TaskState.NEEDS_DECISION, TaskState.CARVED, TaskState.BLOCKED,
+    TaskState.NEEDS_DECISION, TaskState.CARVED, TaskState.BLOCKED,
 })
 # The post-merge region is owned by post_merge_gate when that stage is present,
 # and auto-advanced by the mechanism (VALIDATING -> COMPLETED) when it is not --

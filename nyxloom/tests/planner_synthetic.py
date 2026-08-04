@@ -15,9 +15,11 @@ projections contain a `SELF_REVIEWING` task**. These projects never composed
 the `self_review` stage, so that channel's acceptance was vacuous rather than
 met. A corpus drawn from history can only exercise the history that happened.
 
-Four states are absent from the real corpus, and each owns real rules:
+Three states are absent from the real corpus, and each owns real rules
+(a fourth, DRAFT, was absent for the same reason until CR-07d removed it as
+an executable state entirely -- see nyxloom-trove/reports/
+CR-07-TRANSITION-INVENTORY-2026-08-03.md):
 
-    DRAFT            -- inert today; CR-07 removes it as an executable state
     NEEDS_DECISION   -- contract item 2 (decision holds), item 10's product route
     READY_TO_CARVE   -- contract item 12's re-carve handler, ALL of it (CR-06c)
     SELF_REVIEWING   -- the B5 self-review dispatch (where the defect was)
@@ -34,8 +36,9 @@ iteration order agrees.
 
 CORRECTED BY CR-06c. This paragraph used to claim that of EVERY scenario, and
 it was untrue of three: `self-reviewing-without-implementer`,
-`self-reviewing-leg-in-flight` and `draft` each carry ONE task, deliberately,
-because what they pin is a guard refusing to fire rather than an order. That
+`self-reviewing-leg-in-flight` and `draft` (removed by CR-07d along with the
+DRAFT state itself) each carried ONE task, deliberately, because what they
+pin is a guard refusing to fire rather than an order. That
 is a fine thing for a scenario to do; the docstring promising otherwise was
 the defect, because a reader checking whether this corpus can see an ordering
 bug would have taken the promise for the property.
@@ -171,13 +174,6 @@ SCENARIOS: tuple[tuple[str, dict[str, TaskStateFile], str], ...] = (
         "contract item 2's release edge -- NEEDS_DECISION returns to QUEUED "
         "once its D-deps close. The 'decisions-open' profile holds them; the "
         "others release them.",
-    ),
-    (
-        "draft",
-        _states(_task("t-a", TaskState.DRAFT, minutes=10)),
-        "DRAFT is orphaned in the shipped enum: nothing plans it and CR-07 "
-        "removes it as an executable state. Pinned so its inertness is "
-        "OBSERVED before CR-07 changes it, rather than assumed.",
     ),
     (
         "mixed-unreached-states",

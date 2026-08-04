@@ -3,18 +3,20 @@
 WHY THIS MODULE EXISTS (CR-07a)
 -------------------------------
 ``nyxloom-trove/reports/CR-07-TRANSITION-INVENTORY-2026-08-03.md`` classifies
-all 55 edges of the FROZEN ``types.TASK_TRANSITIONS`` graph as 38 *kernel* and
-17 *compiler*, in five kernel classes. This module turns that inventory from a
-document into a mechanism, and the central discovery is that the split is not a
-list at all:
+all 51 edges of the FROZEN ``types.TASK_TRANSITIONS`` graph as 35 *kernel* and
+16 *compiler*, in five kernel classes (55/38/17 and 22/4/5/6/1 before CR-07d
+removed ``DRAFT`` as a constructible state -- one compiler edge and three
+kernel edges, all of them DRAFT's own, so nothing else in the count moved).
+This module turns that inventory from a document into a mechanism, and the
+central discovery is that the split is not a list at all:
 
     **THE KERNEL/COMPILER SPLIT IS A PARTITION OF THE STATE SPACE BY EDGE
     TARGET.** Every edge into ``{SUPERSEDED, CANCELLED, BLOCKED,
     NEEDS_DECISION, MERGE_READY, MERGED, VALIDATING, COMPLETED}`` is kernel;
-    every edge into ``{DRAFT-free: ACTIVE, QUEUED, CARVED, READY_TO_CARVE,
+    every edge into ``{ACTIVE, QUEUED, CARVED, READY_TO_CARVE,
     SELF_REVIEWING, AWAITING_REVIEW, REVIEW_REJECTED}`` is compiler. The two
     target sets are DISJOINT, and the partition reproduces the inventory's
-    counts exactly: 38/17, and 22/4/5/6/1 across the five classes.
+    counts exactly: 35/16, and 20/4/5/5/1 across the five classes.
 
 That is worth stating loudly because it is what makes the safety property
 *structural* rather than enforced by a checklist. A manifest never writes a
@@ -162,8 +164,8 @@ class JoinCancel(Enum):
 class WaitResume(Enum):
     """The closed outcome vocabulary of a :attr:`NodeKind.WAIT` node.
 
-    Two members cover all six lifecycle edges the inventory classifies as
-    compiler (``DRAFT/CARVED/NEEDS_DECISION/BLOCKED -> QUEUED |
+    Two members cover all five lifecycle edges the inventory classifies as
+    compiler (``CARVED/NEEDS_DECISION/BLOCKED -> QUEUED |
     READY_TO_CARVE``), and each carries a checkable meaning: ``resume_implement``
     must land in the implementation region and ``resume_carve`` in the carve
     region. A label that means something is a label whose target can be
@@ -181,20 +183,20 @@ WAIT_RESUME_REGIONS: dict[WaitResume, frozenset] = {
     WaitResume.RESUME_CARVE: frozenset({TaskState.READY_TO_CARVE, TaskState.CARVED}),
 }
 
-#: States whose onward movement is kernel or operator authority: intake,
-#: escalation, queue admission and the human-decision hold. Mirrors
+#: States whose onward movement is kernel or operator authority: escalation,
+#: queue admission and the human-decision hold. Mirrors
 #: ``stages.LIFECYCLE_STATES`` exactly (pinned by
 #: ``tests/test_workflow_ir.py``); a node on one of these may only be a
 #: :attr:`NodeKind.WAIT` node, because there is nothing for an agent to do
 #: while a human decides.
 KERNEL_OWNED_STATES: frozenset = frozenset({
-    TaskState.DRAFT, TaskState.NEEDS_DECISION, TaskState.CARVED, TaskState.BLOCKED,
+    TaskState.NEEDS_DECISION, TaskState.CARVED, TaskState.BLOCKED,
 })
 
 #: Edge targets that belong to the kernel. This is the ONE declaration this
 #: module makes about the partition; everything else is derived from it and
 #: from ``TASK_TRANSITIONS``. ``tests/test_workflow_ir.py`` checks the derived
-#: counts against the inventory DOCUMENT (38/17 and the five class counts), so
+#: counts against the inventory DOCUMENT (35/16 and the five class counts), so
 #: a wrong entry here fails against the artifact the controller produced rather
 #: than against a copy of itself.
 KERNEL_TARGET_STATES: frozenset = frozenset({
@@ -264,9 +266,9 @@ def _derive_edges() -> tuple[dict, frozenset]:
     return kernel, frozenset(compiler)
 
 
-#: The 38 kernel edges of the frozen graph, with their class.
+#: The 35 kernel edges of the frozen graph, with their class.
 KERNEL_EDGES: dict[tuple[TaskState, TaskState], KernelEdgeClass]
-#: The 17 compiler edges -- "the entire set the language must express"
+#: The 16 compiler edges -- "the entire set the language must express"
 #: (inventory, §Stop-loss). If one of them needs an escape hatch into
 #: imperative code, §5.4's trigger has fired.
 COMPILER_EDGES: frozenset

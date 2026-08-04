@@ -84,7 +84,8 @@ invariant promoted from declaration to *composition* (B2 ports it):
   legacy pipeline without it plans byte-identically to today. Adding the state is the
   sanctioned "new stage kind = code change + matrix test" path.
 
-**Lifecycle/manual edges (not stages):** DRAFT/NEEDS_DECISION (intake, human),
+**Lifecycle/manual edges (not stages):** NEEDS_DECISION (human decision hold;
+CR-07d removed DRAFT, the prior intake state, as unreachable/unconstructible),
 CARVED→QUEUED (queue admission, `ready_queue_target`-driven), BLOCKED→* (operator/
 triage escalation), MERGED→VALIDATING (always, emitted by auto_merge),
 VALIDATING→COMPLETED (immediate when no `post_merge_gate` stage is present).

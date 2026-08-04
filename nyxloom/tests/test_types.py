@@ -12,9 +12,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from nyxloom.types import (
     Actor, ActorKind, Event, EventType, Receipt, ReceiptResult,
-    RESERVED_ROLES, Role, utc_now,
+    RESERVED_ROLES, Role, TaskState, TaskStateFile, utc_now,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -196,3 +198,48 @@ def test_event_type_scope_amendment_members_added_and_round_trip():
     back = Event.from_dict(d)
     assert back.type is EventType.SCOPE_AMENDMENT_APPROVED
     assert back.payload == {"file": "src/demo/x.py", "reason": "needs a shared helper"}
+
+
+# ============================================================================
+# CR-07d 2026-08-04: DRAFT removed as a constructible TaskState. The mirror of
+# TestLegacyRoleValue / TestAttemptFromDict (tests/test_review_independent_
+# rename.py) for TaskState._missing_ -- same enum machinery, same read-compat
+# contract, different concrete deserialization path (TaskStateFile.from_dict
+# rather than Attempt.from_dict).
+# ============================================================================
+
+class TestLegacyDraftValue:
+    """The _missing_ classmethod on TaskState maps the old serialized value."""
+
+    def test_legacy_value_maps_to_needs_decision(self):
+        assert TaskState("DRAFT") is TaskState.NEEDS_DECISION
+
+    def test_current_value_maps_to_itself(self):
+        assert TaskState("NEEDS_DECISION") is TaskState.NEEDS_DECISION
+
+    def test_nonexistent_value_raises(self):
+        with pytest.raises(ValueError):
+            TaskState("not-a-real-state")
+
+
+class TestTaskStateFileFromDict:
+    """O7-shaped end-to-end proof: a pre-CR-07d statefile with a literal
+    "DRAFT" state loads without raising, and lands on NEEDS_DECISION rather
+    than a value nobody chose."""
+
+    def test_a_legacy_draft_statefile_loads_as_needs_decision(self):
+        d = {
+            "schema_version": 1, "task_id": "t-1", "project": "demo",
+            "state": "DRAFT", "since": utc_now().isoformat(),
+        }
+        tsf = TaskStateFile.from_dict(d)
+        assert tsf.state is TaskState.NEEDS_DECISION
+
+    def test_a_current_statefile_round_trips_unchanged(self):
+        d = {
+            "schema_version": 1, "task_id": "t-1", "project": "demo",
+            "state": "QUEUED", "since": utc_now().isoformat(),
+        }
+        tsf = TaskStateFile.from_dict(d)
+        assert tsf.state is TaskState.QUEUED
+        assert tsf.to_dict()["state"] == "QUEUED"

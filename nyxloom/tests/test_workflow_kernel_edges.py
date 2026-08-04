@@ -1,7 +1,7 @@
-"""The negative corpus for all 38 kernel edges.
+"""The negative corpus for all 35 kernel edges.
 
 The CR-07 inventory's obligation, per class, in one parameterized shape. Each
-of the 38 edges is attacked THREE ways and asserted present ONCE:
+of the 35 edges is attacked THREE ways and asserted present ONCE:
 
   A. redirect / add  -- name the kernel target as an outcome value;
   B. remove          -- the reserved node key `suppress`;
@@ -115,7 +115,7 @@ def test_a_compiled_workflow_carries_every_kernel_edge_of_the_states_it_owns(
     owned = frozenset(s for n in compiled_full_vocabulary.nodes for s in n.owns)
     assert edge[0] in owned, (
         "the full-vocabulary workflow no longer owns every non-terminal state, "
-        "so this is no longer a proof about all 38 edges")
+        "so this is no longer a proof about all 35 edges")
     present = {(e.from_state, e.to_state)
                for e in compiled_full_vocabulary.all_edges()
                if e.origin is EdgeOrigin.KERNEL}
@@ -134,10 +134,10 @@ def test_kernel_edge_counts_per_class_match_the_inventory(
         compiled_full_vocabulary):
     report = kernel_edge_report(compiled_full_vocabulary)
     assert {k: len(v) for k, v in report.items()} == {
-        KernelEdgeClass.ESCAPE: 22,
+        KernelEdgeClass.ESCAPE: 20,
         KernelEdgeClass.MERGE_SPINE: 4,
         KernelEdgeClass.BLOCK: 5,
-        KernelEdgeClass.DECISION: 6,
+        KernelEdgeClass.DECISION: 5,
         KernelEdgeClass.OPERATOR_RETRY: 1,
     }
 

@@ -13,11 +13,11 @@
     "state": {
       "enum": [
         "DRAFT", "NEEDS_DECISION", "READY_TO_CARVE", "CARVED", "QUEUED",
-        "ACTIVE", "AWAITING_REVIEW", "REVIEW_REJECTED", "MERGE_READY",
-        "MERGED", "VALIDATING", "COMPLETED", "BLOCKED", "SUPERSEDED",
-        "CANCELLED"
+        "ACTIVE", "SELF_REVIEWING", "AWAITING_REVIEW", "REVIEW_REJECTED",
+        "MERGE_READY", "MERGED", "VALIDATING", "COMPLETED", "BLOCKED",
+        "SUPERSEDED", "CANCELLED"
       ],
-      "description": "Draft 1 task states, inherited unchanged."
+      "description": "CR-07d (2026-08-04): DRAFT is no longer a constructible live state (types.TaskState._missing_ maps it to NEEDS_DECISION on read) -- kept here only so a pre-CR-07d statefile still validates against this schema."
     },
     "since": {"type": "string", "format": "date-time"},
     "handoff_path": {"type": "string", "description": "Repo-relative path of the single-source handoff md"},

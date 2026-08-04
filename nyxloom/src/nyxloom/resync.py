@@ -407,7 +407,7 @@ def _legal_advance_transition(believed: TaskState) -> tuple[TaskState, EventType
                       dstdns-P30 / ui-P10 case) -- emits TASK_TRANSITIONED
                       to MERGED.
       any OTHER non-terminal, non-MERGED believed state (CARVED/QUEUED/
-      ACTIVE/AWAITING_REVIEW/SELF_REVIEWING/REVIEW_REJECTED/BLOCKED/DRAFT/
+      ACTIVE/AWAITING_REVIEW/SELF_REVIEWING/REVIEW_REJECTED/BLOCKED/
       NEEDS_DECISION/READY_TO_CARVE) -- MERGED has exactly one incoming
       edge (from MERGE_READY), so it is NOT directly reachable from any of
       these. Faking a multi-hop chain through the review/gate stages would

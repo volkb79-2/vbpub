@@ -316,7 +316,7 @@ def test_corpus_states_are_attributed_to_their_source():
     from nyxloom.types import TaskState
     real = _real_states()
     synthetic_only = {
-        TaskState.DRAFT, TaskState.NEEDS_DECISION,
+        TaskState.NEEDS_DECISION,
         TaskState.READY_TO_CARVE, TaskState.SELF_REVIEWING,
     }
     assert not (real & synthetic_only), (
