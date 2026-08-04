@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"srdm/internal/mountinfo"
 )
 
 // --- harness ---------------------------------------------------------------
@@ -316,6 +318,144 @@ func TestACopyFromADifferentPeerGroupIsStillAHolder(t *testing.T) {
 	}
 }
 
+// --- D-028: the overlay recognizer (P10) -----------------------------------
+//
+// access: rw mounts an overlay whose lowerdir is the generation's own
+// ExposePath (D-035). An overlay is not a bind: it reports its OWN device,
+// never the lower's, so every test above — matched by device — would be
+// blind to it. These match by the `lowerdir=` mount option instead.
+
+// overlayLine renders an overlay mountinfo entry. deviceOverlayItself is
+// deliberately unrelated to ourDevice: the whole point is that an overlay's
+// device names nothing srdm mounted.
+func overlayLine(id int, point, lowerdirs string) string {
+	return fmt.Sprintf(
+		"%d 30 0:99 / %s rw,relatime - overlay overlay "+
+			"rw,lowerdir=%s,upperdir=/srv/upper,workdir=/srv/work",
+		id, point, lowerdirs)
+}
+
+func TestAnOverlayWhoseLowerdirIsOurExposePathIsAHolder(t *testing.T) {
+	p := newProc(t)
+	p.process(t, "4242", holderNS,
+		overlayLine(90, "/home/container/paks", exposePath), "")
+	r := p.resolver(t, &fakeDocker{})
+
+	rep := resolve(t, r)
+	if !rep.Held() {
+		t.Fatalf("an overlay whose lowerdir is our ExposePath was not found: %+v", rep)
+	}
+	h := rep.Holders[0]
+	if h.Kind != KindOverlay {
+		t.Errorf("Kind = %q, want %q", h.Kind, KindOverlay)
+	}
+	if h.LowerDir != exposePath {
+		t.Errorf("LowerDir = %q, want %q", h.LowerDir, exposePath)
+	}
+	if h.MountPoint != "/home/container/paks" {
+		t.Errorf("MountPoint = %q, want the holder's own path", h.MountPoint)
+	}
+	if !strings.Contains(h.String(), "overlay") {
+		t.Errorf("the holder does not say it was found through an overlay: %s", h)
+	}
+}
+
+// The decisive measurement D-028 records: the overlay's OWN device (0:99 in
+// the fixture) is unrelated to ours (ourDevice, 0:50), and a holder is still
+// found — proving the match is on the PATH, not the device the pre-P10
+// recognizer alone would have looked at.
+func TestAnOverlayIsFoundDespiteHavingAnUnrelatedDevice(t *testing.T) {
+	line := overlayLine(90, "/home/container/paks", exposePath)
+	if strings.Contains(line, ourDevice) {
+		t.Fatalf("the fixture accidentally gives the overlay our device, which would make "+
+			"the companion test pass for the wrong reason: %s", line)
+	}
+	p := newProc(t)
+	p.process(t, "4242", holderNS, line, "")
+	r := p.resolver(t, &fakeDocker{})
+
+	rep := resolve(t, r)
+	if !rep.Held() {
+		t.Fatal("an overlay on a device that shares nothing with ourDevice was not found by path")
+	}
+	if rep.Holders[0].Device != (Device{}) {
+		t.Errorf("an overlay holder carries a Device %s, which names nothing srdm mounted",
+			rep.Holders[0].Device)
+	}
+}
+
+// A colon-separated lowerdir list is a stacked overlay; ANY element
+// resolving under an srdm path is enough — the lower being checked need not
+// be the first one.
+func TestAnyElementOfAColonSeparatedLowerdirCounts(t *testing.T) {
+	p := newProc(t)
+	p.process(t, "4242", holderNS,
+		overlayLine(90, "/home/container/paks", "/other/path:"+exposePath+":/another"), "")
+	r := p.resolver(t, &fakeDocker{})
+
+	if rep := resolve(t, r); !rep.Held() {
+		t.Fatal("an overlay stacking several lowerdirs, one of which is ours, was not found")
+	}
+}
+
+// An overlay whose lowerdir has nothing to do with this generation must not
+// produce a holder — otherwise the recognizer would flag every overlay on
+// the host, srdm's or not.
+func TestAnOverlayOfSomeoneElsesPathIsNotAHolder(t *testing.T) {
+	p := newProc(t)
+	p.process(t, "4242", holderNS,
+		overlayLine(90, "/home/container/paks", "/var/lib/docker/overlay2/abc/lower"), "")
+	r := p.resolver(t, &fakeDocker{})
+
+	if rep := resolve(t, r); rep.Held() {
+		t.Fatalf("an overlay unrelated to this generation was reported as holding it: %+v",
+			rep.Holders)
+	}
+}
+
+// A non-overlay tmpfs mount must never be read as if it carried a
+// `lowerdir=` option — the two recognizers apply to different fstypes.
+func TestATmpfsMountIsNeverMisreadAsAnOverlay(t *testing.T) {
+	p := newProc(t)
+	p.process(t, "4242", holderNS, mountLine(90, otherDevice, "/root", exposePath), "")
+	r := p.resolver(t, &fakeDocker{})
+
+	if rep := resolve(t, r); rep.Held() {
+		t.Fatalf("a plain tmpfs mount at our ExposePath, on an unrelated device, was "+
+			"reported as a holder: %+v", rep.Holders)
+	}
+}
+
+// An overlay mount with no lowerdir= option at all should not happen in
+// practice — the kernel refuses to mount one without it — but the parser
+// must not panic or misread the absence as an empty match.
+func TestOverlayLowerDirsReturnsNilWithNoLowerdirOption(t *testing.T) {
+	e, err := mountinfo.ParseLine(
+		"90 30 0:99 / /t/merged rw,relatime - overlay overlay rw,index=off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := overlayLowerDirs(e); got != nil {
+		t.Errorf("overlayLowerDirs = %v, want nil", got)
+	}
+}
+
+// srdm's own overlay mount (the one it just made for an rw exposure) must
+// not count — exactly as srdm's own bind never does.
+func TestOurOwnOverlayMountIsNotAHolder(t *testing.T) {
+	p := newProc(t)
+	// Another process in srdm's OWN namespace, holding an overlay of our
+	// ExposePath — this is what the daemon's own rw exposure looks like from
+	// inside its own process tree.
+	p.process(t, "999", selfNS, overlayLine(90, "/run/srdm/testgame/vol", exposePath), "")
+	r := p.resolver(t, &fakeDocker{})
+
+	if rep := resolve(t, r); rep.Held() {
+		t.Fatalf("srdm reported its own overlay mount as a consumer of its own generation: %+v",
+			rep.Holders)
+	}
+}
+
 // --- naming the holder -----------------------------------------------------
 
 // A refusal an operator cannot act on is barely better than a leak. The
@@ -421,6 +561,9 @@ func TestAContainerBoundToThePathWithNoMountIsAHolder(t *testing.T) {
 	}
 	if rep.Holders[0].ContainerName != "soulmask-02" {
 		t.Errorf("ContainerName = %q", rep.Holders[0].ContainerName)
+	}
+	if !strings.Contains(rep.Holders[0].String(), "soulmask-02") {
+		t.Errorf("a KindContainer holder's String() does not name it: %s", rep.Holders[0])
 	}
 }
 

@@ -33,14 +33,21 @@
 //     holders itself — running containers by volume path, plus
 //     /proc/*/mountinfo — and refuses while any hold remains.
 //
-// access: rw is single-consumer, and that is a refusal too. With two
-// consumers a write is the 2026-07-29 corruption by construction: the peer
-// holds the deleted old .pak open, the tmpfs exhausts mid-write, and the
-// generation ends with a new .sig and no .pak — survivable for the process
-// that already mmap'd the old inode, fatal for the next start.
+// access: rw (P10, D-027/D-035) is an overlay: the sealed, published
+// exposure as lowerdir, a per-server upper layer under the state dir
+// absorbing every write. That retires the single-consumer restriction P06
+// shipped — any number of servers may hold rw on the SAME generation at
+// once, each seeing only its own writes, because there is no longer a
+// second writer of the same pages to collide with. It also retires
+// in-place unsealing (D-020's measured half, D-022's ownership model):
+// nothing hands the generation to a declared uid anymore, because the
+// generation is never written. What an overlay writes to is a directory
+// srdm itself creates and owns.
 //
-// rw also binds a different mount point from ro — the operation tmpfs's own
-// content root rather than the published read-only exposure — because a bind
-// inherits its source's flags and the published path is read-only. Who may
-// actually write through it is still open; see D-020.
+// The one new hazard is D-028's: an overlay reports its OWN device, never
+// the lower's, so the superblock matching every other holder check relies
+// on is blind to it. internal/consumer gains a second recognizer for
+// exactly this — an overlay whose lowerdir resolves under an srdm path is a
+// holder, matched by path rather than device, because an overlay's device
+// is uninformative and its lowerdir is chosen by the mounter.
 package expose

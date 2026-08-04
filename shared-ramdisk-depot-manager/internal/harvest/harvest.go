@@ -30,12 +30,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"srdm/internal/config"
 	"srdm/internal/consumer"
+	"srdm/internal/expose"
 	"srdm/internal/fsx"
 	"srdm/internal/journal"
 	"srdm/internal/mountinfo"
@@ -67,12 +69,25 @@ type Guard interface {
 	Resolve(ctx context.Context, paths []string) (*consumer.Report, error)
 }
 
+// Exposer is what harvest needs from the exposure layer to read a
+// per-server overlay's merged view (D-035). *expose.HostBind satisfies it.
+type Exposer interface {
+	// Plan returns the bindings an rw exposure for req would use — or
+	// already uses, since Plan is pure and derives the same paths either
+	// way. For an rw request, Binding.Target is the live merged overlay
+	// mount when one is actually held.
+	Plan(rec *publish.Record, prof *profile.Profile, req expose.Request) ([]expose.Binding, error)
+	// RWServers reports which servers currently hold an rw exposure of rec.
+	RWServers(rec *publish.Record) ([]string, error)
+}
+
 // Harvester turns published generations back into releases.
 type Harvester struct {
 	cfg           config.Config
 	jnl           *journal.Journal
 	st            *store.Store
 	guard         Guard
+	exposer       Exposer
 	mountInfoPath string
 }
 
@@ -81,6 +96,13 @@ type Option func(*Harvester)
 
 // WithGuard injects consumer resolution.
 func WithGuard(g Guard) Option { return func(h *Harvester) { h.guard = g } }
+
+// WithExposer injects the exposure layer, so harvest can discover and read
+// an rw exposure's merged view (D-035). Nil (the default) means every
+// harvest reads the generation's own tmpfs directly, exactly as before
+// P10 — correct as long as nothing holds the generation rw, which
+// PhaseQuiesce already requires.
+func WithExposer(e Exposer) Option { return func(h *Harvester) { h.exposer = e } }
 
 // WithMountInfoPath points the published-state check at a specific mount
 // table.
@@ -119,6 +141,18 @@ type Opts struct {
 	ReleaseID string
 	// Channel, when set, is flipped to the new release.
 	Channel string
+	// FromServer selects whose rw overlay merged view to read (D-035).
+	//
+	// Multiple servers may now hold rw on the SAME generation at once
+	// (P10 retires the single-consumer rule), so a generation can no longer
+	// be assumed to have one truth. Left empty, it is DEFAULTED when exactly
+	// one server holds rw and left alone (the generation's own tmpfs,
+	// unchanged since P07) when none does; given explicitly, it is validated
+	// against what RWServers actually reports rather than trusted blind.
+	// More than one holder with nothing named is refused — that refusal is
+	// the honest replacement for the single-consumer limit P06 shipped,
+	// moved from where it cost sharing to where it actually matters.
+	FromServer string
 }
 
 // QuiesceError is harvest declining because something can still write to the
@@ -171,6 +205,37 @@ func (e *NotPublishedError) Error() string {
 		e.Generation, e.Mount, e.Class)
 }
 
+// AmbiguousServerError is harvest declining because more than one server
+// holds rw on the generation and nothing said which one to read (D-035).
+//
+// Moved from where P06's single-consumer rule cost sharing to where it
+// actually matters: two servers may now diverge from the same lower, and
+// there is no single truth to harvest without being told which server's
+// upper to read.
+type AmbiguousServerError struct {
+	Generation string
+	Servers    []string
+}
+
+func (e *AmbiguousServerError) Error() string {
+	return fmt.Sprintf("harvest: %d servers hold access: rw on generation %s (%s); harvest "+
+		"cannot guess which one's writes to read, and reading none of them would silently "+
+		"drop every one — pass --from-server to choose",
+		len(e.Servers), e.Generation, strings.Join(e.Servers, ", "))
+}
+
+// UnknownServerError is harvest declining because --from-server named a
+// server that does not currently hold rw on the generation.
+type UnknownServerError struct {
+	Generation string
+	Server     string
+}
+
+func (e *UnknownServerError) Error() string {
+	return fmt.Sprintf("harvest: server %s does not hold access: rw on generation %s, so "+
+		"there is no overlay merged view to read from it", e.Server, e.Generation)
+}
+
 // CollisionError is two class trees claiming the same path.
 //
 // Disjoint class prefixes make this impossible through an exposure, so it
@@ -220,13 +285,16 @@ func (e *ClassMovedError) Error() string {
 // are refusals for exactly the same reasons they are on the staged path.
 func IsRefusal(err error) bool {
 	var (
-		quiesce   *QuiesceError
-		published *NotPublishedError
-		collision *CollisionError
-		moved     *ClassMovedError
+		quiesce    *QuiesceError
+		published  *NotPublishedError
+		collision  *CollisionError
+		moved      *ClassMovedError
+		ambiguous  *AmbiguousServerError
+		unknownSrv *UnknownServerError
 	)
 	return errors.As(err, &quiesce) || errors.As(err, &published) ||
 		errors.As(err, &collision) || errors.As(err, &moved) ||
+		errors.As(err, &ambiguous) || errors.As(err, &unknownSrv) ||
 		store.IsRefusal(err)
 }
 
@@ -275,11 +343,23 @@ func (h *Harvester) Harvest(ctx context.Context, rec *publish.Record, prof *prof
 		"dirty_capable":  fmt.Sprintf("%t", rec.DirtyCapable),
 	}
 
+	// Which server's overlay to read, if any (D-035). Resolved inside the
+	// quiesce phase, before the transaction opens: an ambiguous or unknown
+	// --from-server is a refusal exactly like the others here, and a
+	// refusal that opened a transaction first would need to remember to
+	// discard it for no reason.
+	var fromServer string
 	if err := h.phase(o.OperationID, PhaseQuiesce, fields, func() error {
 		if err := h.requirePublished(rec); err != nil {
 			return err
 		}
-		return h.refuseIfHeld(ctx, rec, "before the copy", fields)
+		if err := h.refuseIfHeld(ctx, rec, "before the copy", fields); err != nil {
+			return err
+		}
+		var err error
+		fromServer, err = h.resolveFromServer(rec, o.FromServer)
+		fields["from_server"] = fromServer
+		return err
 	}); err != nil {
 		return nil, err
 	}
@@ -290,7 +370,7 @@ func (h *Harvester) Harvest(ctx context.Context, rec *publish.Record, prof *prof
 	}
 
 	if err := h.phase(o.OperationID, PhaseAssemble, fields, func() error {
-		return h.assemble(rec, prof, tx)
+		return h.assemble(rec, prof, tx, fromServer)
 	}); err != nil {
 		// Discarded rather than left for `store recover`, and this is the one
 		// place harvest departs from the staged path deliberately. A failed
@@ -328,6 +408,49 @@ func (h *Harvester) Harvest(ctx context.Context, rec *publish.Record, prof *prof
 			Source: rec.ReleaseID,
 		},
 	})
+}
+
+// resolveFromServer decides which server's overlay merged view, if any,
+// harvest should read (D-035): the operator's --from-server, defaulted or
+// validated against the exposure layer's own account of who currently holds
+// rw.
+//
+// Returning "" means read the generation's own tmpfs directly, exactly as
+// every harvest did before P10 — correct when nothing holds it rw, which
+// PhaseQuiesce's refuseIfHeld already requires for anything OTHER than
+// srdm's own overlay mount (consumer.Resolve excludes srdm's own
+// namespace), so this is never reached with an active writer unaccounted
+// for.
+func (h *Harvester) resolveFromServer(rec *publish.Record, requested string) (string, error) {
+	if h.exposer == nil {
+		if requested != "" {
+			return "", fmt.Errorf("harvest: --from-server %q was given but this harvester has "+
+				"no exposer configured to look it up", requested)
+		}
+		return "", nil
+	}
+	servers, err := h.exposer.RWServers(rec)
+	if err != nil {
+		return "", fmt.Errorf("harvest: finding rw exposures of %s/%s: %w",
+			rec.Profile, rec.Generation, err)
+	}
+	generation := rec.Profile + "/" + rec.Generation
+	if requested != "" {
+		for _, s := range servers {
+			if s == requested {
+				return requested, nil
+			}
+		}
+		return "", &UnknownServerError{Generation: generation, Server: requested}
+	}
+	switch len(servers) {
+	case 0:
+		return "", nil
+	case 1:
+		return servers[0], nil
+	default:
+		return "", &AmbiguousServerError{Generation: generation, Servers: servers}
+	}
 }
 
 // requirePublished checks every class's tmpfs is actually mounted.
@@ -377,7 +500,47 @@ func (h *Harvester) refuseIfHeld(ctx context.Context, rec *publish.Record, when 
 	return nil
 }
 
-// assemble copies every class tree into one transaction tree.
+// walkJob is one directory assemble walks: root on disk, and relPrefix — the
+// path, relative to the release, that root's OWN top corresponds to. Reading
+// the generation's own tmpfs directly, root IS a class's whole content and
+// relPrefix is empty. Reading a server's rw merged view (D-035), root is one
+// binding's Target (a single declared class PATH, not the whole class) and
+// relPrefix is that binding's Path, because the merged mount only covers the
+// subtree the exposure actually bound.
+type walkJob struct {
+	class     string
+	root      string
+	relPrefix string
+}
+
+// walkJobs returns what assemble should walk for rec/prof: the generation's
+// own class trees when fromServer is empty, or fromServer's rw overlay
+// merged views — one job per declared class path, per D-035's binding
+// granularity — when it is not.
+func (h *Harvester) walkJobs(rec *publish.Record, prof *profile.Profile, classes []publish.ClassRecord,
+	fromServer string) ([]walkJob, error) {
+
+	if fromServer == "" {
+		jobs := make([]walkJob, len(classes))
+		for i, c := range classes {
+			jobs[i] = walkJob{class: c.Name, root: c.ContentRoot()}
+		}
+		return jobs, nil
+	}
+	bindings, err := h.exposer.Plan(rec, prof, expose.Request{ServerID: fromServer, Access: expose.AccessRW})
+	if err != nil {
+		return nil, fmt.Errorf("harvest: planning %s's rw exposure to read it: %w", fromServer, err)
+	}
+	jobs := make([]walkJob, len(bindings))
+	for i, b := range bindings {
+		jobs[i] = walkJob{class: b.Class, root: b.Target, relPrefix: b.Path}
+	}
+	return jobs, nil
+}
+
+// assemble copies every class tree — or, given fromServer, every class's
+// binding of that server's rw overlay merged view — into one transaction
+// tree.
 //
 // Publication gives each class its own tmpfs, so what a release is made of is
 // spread across N mounts that overlap only in the structural directories on
@@ -390,29 +553,58 @@ func (h *Harvester) refuseIfHeld(ctx context.Context, rec *publish.Record, when 
 // any rule match this path"; assembly asks "does the rule that matches it
 // still name the tmpfs it came off". The first catches new content, the
 // second catches a profile that moved.
-func (h *Harvester) assemble(rec *publish.Record, prof *profile.Profile, tx *store.Tx) error {
+//
+// Whiteouts need no special handling (D-035, oracle 28): a file deleted
+// through an overlay is invisible to an ordinary directory walk — the kernel
+// hides it from readdir, it never having been "real" from userspace's side
+// to begin with — so walking the MERGED mount already agrees with what the
+// server saw. Walking upper and lower separately and reconciling them in Go
+// would be reimplementing that kernel behaviour with a chance to get it
+// wrong; walking the mount is asking the kernel, which is what harvest does
+// for the tmpfs-direct path too.
+func (h *Harvester) assemble(rec *publish.Record, prof *profile.Profile, tx *store.Tx,
+	fromServer string) error {
+
 	classes := append([]publish.ClassRecord(nil), rec.Classes...)
 	sort.Slice(classes, func(i, j int) bool { return classes[i].Name < classes[j].Name })
+
+	jobs, err := h.walkJobs(rec, prof, classes, fromServer)
+	if err != nil {
+		return err
+	}
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].class != jobs[j].class {
+			return jobs[i].class < jobs[j].class
+		}
+		return jobs[i].relPrefix < jobs[j].relPrefix
+	})
 
 	// What supplied each path, so a second class claiming it is caught rather
 	// than silently overwriting or being overwritten.
 	from := make(map[string]string)
 	isDir := make(map[string]bool)
 
-	for _, c := range classes {
-		root := c.ContentRoot()
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	for _, job := range jobs {
+		c := job.class
+		err := filepath.WalkDir(job.root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			rel, err := filepath.Rel(root, p)
+			relSub, err := filepath.Rel(job.root, p)
 			if err != nil {
 				return err
 			}
-			if rel == "." {
+			var rel string
+			switch {
+			case relSub == "." && job.relPrefix == "":
 				return nil
+			case relSub == ".":
+				rel = job.relPrefix
+			case job.relPrefix == "":
+				rel = filepath.ToSlash(relSub)
+			default:
+				rel = path.Join(job.relPrefix, filepath.ToSlash(relSub))
 			}
-			rel = filepath.ToSlash(rel)
 
 			class, err := prof.Classify(rel)
 			if err != nil {
@@ -424,9 +616,9 @@ func (h *Harvester) assemble(rec *publish.Record, prof *profile.Profile, tx *sto
 			// A structural directory belongs to no class and appears in every
 			// tree that has to reach through it, which is why it is exempt
 			// rather than a collision.
-			if class.Kind != profile.KindStructure && class.Name != c.Name {
+			if class.Kind != profile.KindStructure && class.Name != c {
 				return &ClassMovedError{
-					Path: rel, Published: c.Name, Now: class.Name, Profile: prof.ID,
+					Path: rel, Published: c, Now: class.Name, Profile: prof.ID,
 				}
 			}
 
@@ -434,9 +626,9 @@ func (h *Harvester) assemble(rec *publish.Record, prof *profile.Profile, tx *sto
 				if isDir[rel] && d.IsDir() {
 					return nil
 				}
-				return &CollisionError{Path: rel, First: prev, Second: c.Name}
+				return &CollisionError{Path: rel, First: prev, Second: c}
 			}
-			from[rel] = c.Name
+			from[rel] = c
 			isDir[rel] = d.IsDir()
 
 			info, err := d.Info()

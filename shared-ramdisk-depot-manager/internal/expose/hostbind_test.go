@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"srdm/internal/config"
 	"srdm/internal/consumer"
 	"srdm/internal/journal"
+	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
 	"srdm/internal/wings"
@@ -23,13 +26,14 @@ import (
 // --- harness ---------------------------------------------------------------
 
 type mountCall struct {
-	Source, Target string
-	Flags          uintptr
+	Source, Target, FSType, Data string
+	Flags                        uintptr
 }
 
 func (c mountCall) ReadOnly() bool { return c.Flags&syscall.MS_RDONLY != 0 }
 func (c mountCall) Bind() bool     { return c.Flags&syscall.MS_BIND != 0 }
 func (c mountCall) Remount() bool  { return c.Flags&syscall.MS_REMOUNT != 0 }
+func (c mountCall) Overlay() bool  { return c.FSType == "overlay" }
 
 type fakeMounter struct {
 	ops       []string
@@ -38,7 +42,7 @@ type fakeMounter struct {
 	unmounted []string
 }
 
-func (m *fakeMounter) Mount(source, target, _ string, flags uintptr, _ string) error {
+func (m *fakeMounter) Mount(source, target, fstype string, flags uintptr, data string) error {
 	var f []string
 	for _, spec := range []struct {
 		bit  uintptr
@@ -52,12 +56,23 @@ func (m *fakeMounter) Mount(source, target, _ string, flags uintptr, _ string) e
 			f = append(f, spec.name)
 		}
 	}
-	op := "mount -o " + strings.Join(f, ",")
+	// Identical to the pre-P10 rendering when fstype is empty (every ro/bind
+	// call), so every exact-string assertion written against a plain bind
+	// keeps working unchanged; an overlay call (fstype "overlay") gets a
+	// -t clause and its options appended, which nothing asserts on verbatim.
+	op := "mount"
+	if fstype != "" {
+		op += " -t " + fstype
+	}
+	op += " -o " + strings.Join(f, ",")
 	if source != "" {
 		op += " " + source
 	}
+	if data != "" {
+		op += " (" + data + ")"
+	}
 	m.ops = append(m.ops, op+" -> "+target)
-	m.calls = append(m.calls, mountCall{Source: source, Target: target, Flags: flags})
+	m.calls = append(m.calls, mountCall{Source: source, Target: target, FSType: fstype, Data: data, Flags: flags})
 	return m.mountErr[target]
 }
 
@@ -80,19 +95,6 @@ func (g *fakeGuard) Resolve(context.Context, []string) (*consumer.Report, error)
 	return &rep, nil
 }
 
-type fakeMarker struct {
-	marked []string
-	err    error
-}
-
-func (m *fakeMarker) MarkDirtyCapable(_, profileID, generation string) error {
-	if m.err != nil {
-		return m.err
-	}
-	m.marked = append(m.marked, profileID+"/"+generation)
-	return nil
-}
-
 type fakeInspector struct {
 	propagation string
 	name        string
@@ -111,24 +113,17 @@ type harness struct {
 	cfg       config.Wings
 	mounter   *fakeMounter
 	guard     *fakeGuard
-	marker    *fakeMarker
 	inspector fakeInspector
 	walk      wings.ChownWalk
 	walkErr   error
 	f1        bool
-	chowned   []chownCall
 }
 
-// chownCall is one entry the ownership walk would have handed over. Recorded
-// rather than performed, because the unit gate runs unprivileged and a test
-// that needed root to prove the ownership model would simply not run.
-type chownCall struct {
-	Path     string
-	UID, GID int
-}
-
-// gameOwner is the uid:gid a Wings node runs its server containers as — the
-// identity an rw exposure hands the unsealed tree to.
+// gameOwner is the uid:gid a Wings node runs its server containers as. P10
+// (D-035) retires the config that used to hand a class tree over to it —
+// nothing reads config.Wings.WriteOwner anymore — but the harness still sets
+// it, matching a real node's config carrying the now-vestigial field
+// unremarked.
 var gameOwner = config.WriteOwner{UID: 988, GID: 988}
 
 func newHarness(t *testing.T) *harness {
@@ -146,16 +141,16 @@ func newHarness(t *testing.T) *harness {
 		},
 		mounter:   &fakeMounter{mountErr: map[string]error{}},
 		guard:     &fakeGuard{},
-		marker:    &fakeMarker{},
 		inspector: fakeInspector{propagation: "rslave", name: "wings"},
 		walk:      wings.ChownWalk{Enabled: false, Known: true, Source: "the harness"},
 	}
 }
 
-// liveRecord is testRecord with its class trees actually on disk, sealed as
-// publication leaves them. The rw path needs it: unsealing walks the trees,
-// and a record naming paths that do not exist would prove nothing about what
-// unsealing does to the ones that do.
+// liveRecord is testRecord with its class trees actually on disk, at
+// ExposePath, sealed as publication leaves them. The rw path needs it: an
+// overlay's lowerdir has to exist for mirrorDirTree to walk, and a record
+// naming paths that do not exist would prove nothing about what mounting
+// rw over them does.
 func (h *harness) liveRecord() *publish.Record {
 	h.t.Helper()
 	rec := testRecord()
@@ -165,9 +160,9 @@ func (h *harness) liveRecord() *publish.Record {
 	}
 	for i := range rec.Classes {
 		c := &rec.Classes[i]
-		c.OpMount = filepath.Join(h.dir, ".op", "op-1", c.Name)
+		c.ExposePath = filepath.Join(h.dir, "expose", c.Name)
 		for _, rel := range contents[c.Name] {
-			full := filepath.Join(c.ContentRoot(), filepath.FromSlash(rel))
+			full := filepath.Join(c.ExposePath, filepath.FromSlash(rel))
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				h.t.Fatal(err)
 			}
@@ -195,13 +190,9 @@ func (h *harness) driver(rootPropagation string) *HostBind {
 	cfg := h.cfg
 	cfg.ChownSkipPatch = h.f1
 	d, err := NewHostBind(cfg, h.journal(),
-		WithMounter(h.mounter), WithGuard(h.guard), WithMarker(h.marker),
+		WithMounter(h.mounter), WithGuard(h.guard), WithStateDir(h.dir),
 		WithInspector(h.inspector), WithMountInfoPath(h.mountInfo(rootPropagation)),
-		WithChownWalk(func() (wings.ChownWalk, error) { return h.walk, h.walkErr }),
-		WithChown(func(path string, uid, gid int) error {
-			h.chowned = append(h.chowned, chownCall{Path: path, UID: uid, GID: gid})
-			return nil
-		}))
+		WithChownWalk(func() (wings.ChownWalk, error) { return h.walk, h.walkErr }))
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -492,30 +483,21 @@ func TestAnUnreadableChownWalkSettingRefuses(t *testing.T) {
 
 // --- precondition 3, and the rw rule --------------------------------------
 
-func TestExposeRWIsRefusedWhenAnotherConsumerHolds(t *testing.T) {
+// D-035 retires the single-consumer rule: an overlay's writes land in a
+// per-server upper, never in the generation itself, so a second rw request
+// no longer shares anything with the first to collide over. Oracle 26 is
+// the privileged version of this — that the two really do stay isolated —
+// gated in e2e_test.go; this is the unit-level half, that Expose no longer
+// even asks the question.
+func TestExposeRWNoLongerRefusesASecondConsumer(t *testing.T) {
 	h := newHarness(t)
 	h.guard.report = consumer.Report{Holders: []consumer.Holder{{
-		Kind: consumer.KindMount, MountPoint: "/home/container/paks",
+		Kind: consumer.KindOverlay, MountPoint: "/home/container/paks",
 		ContainerName: "soulmask-01",
 	}}}
 
-	err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRW))
-	if !IsRefusal(err) {
-		t.Fatalf("want a refusal, got %v", err)
-	}
-	var r *RefusalError
-	errors.As(err, &r)
-	if r.Precondition != PreconditionSingleWrite {
-		t.Errorf("Precondition = %q", r.Precondition)
-	}
-	if !strings.Contains(r.Detail, "soulmask-01") {
-		t.Errorf("the refusal does not name the other consumer: %s", r.Detail)
-	}
-	if !strings.Contains(r.Detail, "2026-07-29") {
-		t.Errorf("the refusal does not say what this caused before: %s", r.Detail)
-	}
-	if len(h.marker.marked) != 0 {
-		t.Errorf("a refused rw exposure still marked the generation dirty: %v", h.marker.marked)
+	if err := h.healthy().Expose(ctx(), h.liveRecord(), testProfile(t), request(AccessRW)); err != nil {
+		t.Fatalf("access rw was refused because another server already held it: %v", err)
 	}
 }
 
@@ -616,33 +598,51 @@ func TestExposeReadOnlyMakesEachBindReadOnlyBySeparateRemount(t *testing.T) {
 	}
 }
 
-func TestExposeReadWriteLeavesTheBindsWritable(t *testing.T) {
+// access: rw mounts an OVERLAY now (D-027, D-035), not a plain writable
+// bind: lowerdir is the sealed, published exposure — the SAME Source ro
+// uses — and upperdir/workdir are per-server layers under the state dir.
+func TestExposeReadWriteMountsAnOverlayOfTheSealedExposure(t *testing.T) {
 	h := newHarness(t)
-	if err := h.healthy().Expose(ctx(), h.liveRecord(), testProfile(t), request(AccessRW)); err != nil {
+	rec := h.liveRecord()
+	bindings, err := h.healthy().Plan(rec, testProfile(t), request(AccessRW))
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range h.mounter.calls {
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.mounter.calls) != 3 {
+		t.Fatalf("saw %d mounts, want one per declared class path: %v",
+			len(h.mounter.calls), h.mounter.ops)
+	}
+	for i, c := range h.mounter.calls {
+		if !c.Overlay() {
+			t.Errorf("an rw exposure mounted %s as fstype %q, want overlay", c.Target, c.FSType)
+		}
 		if c.ReadOnly() {
 			t.Errorf("an rw exposure made %s read-only", c.Target)
 		}
-		// And it binds the WRITABLE side of the generation. Binding the
-		// published exposure — which is itself a read-only bind — would
-		// inherit that flag and give EROFS on the first write, whatever this
-		// asked for. Measured.
-		if !strings.Contains(c.Source, "/.op/") {
-			t.Errorf("an rw exposure binds %s, which is the read-only published path; "+
-				"a bind inherits its source's flags", c.Source)
+		b := bindings[i]
+		// The lowerdir has to be the SEALED, PUBLISHED exposure specifically
+		// — oracle 25's whole claim (byte-identical to the release
+		// afterwards) is false if this is anything else, most dangerously if
+		// it were ever the writable upper.
+		want := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", b.Source, b.Upper, b.Work)
+		if c.Data != want {
+			t.Errorf("overlay options for %s are %q, want %q", c.Target, c.Data, want)
 		}
-	}
-	if len(h.mounter.calls) != 3 {
-		t.Errorf("saw %d mounts, want one per declared class path", len(h.mounter.calls))
 	}
 }
 
-// The two access modes bind different mount points of the same superblock,
-// and the read-only one must keep using the published exposure — that is
-// what makes "nothing visible was ever writable" true of it.
-func TestReadOnlyBindsThePublishedExposureAndReadWriteBindsTheOpTmpfs(t *testing.T) {
+// Both access modes read from the SAME Source — the sealed, published
+// exposure — which is the property that makes ro's "nothing visible was
+// ever writable" still true once rw exists beside it: ro is a plain bind of
+// that path, and nothing about mounting an overlay elsewhere touches it.
+// Only rw carries Upper/Work, and each declared class PATH gets its own —
+// two paths in one class (`code` is Engine plus WS/Binaries) cannot share
+// an upper, because overlayfs owns upperdir/workdir exclusively for as
+// long as a mount using them is live.
+func TestBothAccessModesReadFromTheSameSourceOnlyRWCarriesAnOverlayLayer(t *testing.T) {
 	h := newHarness(t)
 	ro, err := h.healthy().Plan(testRecord(), testProfile(t), request(AccessRO))
 	if err != nil {
@@ -652,13 +652,27 @@ func TestReadOnlyBindsThePublishedExposureAndReadWriteBindsTheOpTmpfs(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	seenUpper := map[string]bool{}
 	for i := range ro {
+		if ro[i].Source != rw[i].Source {
+			t.Errorf("ro and rw disagree about Source: %q vs %q", ro[i].Source, rw[i].Source)
+		}
 		if !strings.HasPrefix(ro[i].Source, "/run/srdm/testgame/a1b2c3d4/") {
-			t.Errorf("ro binds %s, want the published exposure", ro[i].Source)
+			t.Errorf("Source = %s, want the published exposure", ro[i].Source)
 		}
-		if !strings.HasPrefix(rw[i].Source, "/run/srdm/.op/op-1/") {
-			t.Errorf("rw binds %s, want the writable op tmpfs", rw[i].Source)
+		if ro[i].Upper != "" || ro[i].Work != "" {
+			t.Errorf("a ro binding carries an overlay layer: %+v", ro[i])
 		}
+		if rw[i].Upper == "" || rw[i].Work == "" {
+			t.Errorf("an rw binding has no overlay layer: %+v", rw[i])
+		}
+		if rw[i].Upper == rw[i].Work {
+			t.Errorf("Upper and Work are the same directory: %s", rw[i].Upper)
+		}
+		if seenUpper[rw[i].Upper] {
+			t.Errorf("two rw bindings share Upper %s", rw[i].Upper)
+		}
+		seenUpper[rw[i].Upper] = true
 		// Same class path, same destination: only the side differs.
 		if ro[i].Path != rw[i].Path || ro[i].Target != rw[i].Target {
 			t.Errorf("the two modes disagree about where content goes: %+v vs %+v",
@@ -667,79 +681,94 @@ func TestReadOnlyBindsThePublishedExposureAndReadWriteBindsTheOpTmpfs(t *testing
 	}
 }
 
-// The flag goes down BEFORE writing becomes possible. Marked-but-not-mounted
-// costs a republish nobody needed; mounted-but-not-marked lets a second
-// consumer join a generation somebody is already writing through.
-func TestExposeRWMarksTheGenerationBeforeMountingIt(t *testing.T) {
+// Oracle 26's precondition, at the unit level: two servers holding rw on the
+// same generation get DIFFERENT overlay layers. Sharing one would mean one
+// server's writes land in the other's upper — the isolation the privileged
+// oracle actually measures against a real kernel.
+func TestPlanGivesDifferentServersDifferentOverlayLayers(t *testing.T) {
 	h := newHarness(t)
-	h.mounter.mountErr[filepath.Join(h.cfg.ServerVolume(serverID), "Engine")] = syscall.EPERM
+	reqA := request(AccessRW)
+	reqB := Request{ServerID: "8f1c2e3d-0000-4000-8000-abcdefabcd02", Access: AccessRW}
 
-	if err := h.healthy().Expose(ctx(), h.liveRecord(), testProfile(t), request(AccessRW)); err == nil {
-		t.Fatal("Expose reported success despite a failed mount")
+	a, err := h.healthy().Plan(testRecord(), testProfile(t), reqA)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(h.marker.marked, []string{"testgame/a1b2c3d4"}) {
-		t.Fatalf("marked = %v; the generation must be marked before writing becomes "+
-			"possible, so a crash between the two cannot leave it unmarked", h.marker.marked)
+	b, err := h.healthy().Plan(testRecord(), testProfile(t), reqB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range a {
+		if a[i].Upper == b[i].Upper {
+			t.Errorf("server A and server B share Upper %s for %s; one server's writes "+
+				"would land in the other's", a[i].Upper, a[i].Path)
+		}
+		if a[i].Work == b[i].Work {
+			t.Errorf("server A and server B share Work %s for %s", a[i].Work, a[i].Path)
+		}
+		// Same generation, same class path: everything but the server-keyed
+		// tail of Upper/Work should agree.
+		if a[i].Source != b[i].Source || a[i].Path != b[i].Path {
+			t.Errorf("server A and server B disagree about Source/Path for the same "+
+				"generation: %+v vs %+v", a[i], b[i])
+		}
 	}
 }
 
-// --- the rw ownership model (D-022) ---------------------------------------
+// --- the overlay's writable layer (D-035) ----------------------------------
 
-// Publication seals a class tree a-w, so an rw exposure that stopped at the
-// MOUNT would permit writes the MODES still refuse to everyone but root — and
-// the one writer rw exists for, the game's own updater, runs as something
-// else. It would report success and change nothing.
-func TestExposeRWUnsealsEachClassTreeAndHandsItToTheWriteOwner(t *testing.T) {
+// Nothing marks or hands a tree to a declared owner anymore: an overlay
+// writes to a directory srdm itself creates and owns, so there is nothing
+// to hand over. What srdm DOES do is mirror the lower's directory tree into
+// the upper, permissively, which is what a merged view needs to be
+// writable by whoever Wings runs the game container as — see mountOverlay's
+// own comment for the measurement this rests on.
+func TestExposeRWMirrorsTheLowerDirectoryTreeIntoTheUpperLayer(t *testing.T) {
 	h := newHarness(t)
 	rec := h.liveRecord()
 
+	bindings, err := h.healthy().Plan(rec, testProfile(t), request(AccessRW))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err != nil {
 		t.Fatal(err)
 	}
 
-	// Every class tree the exposure binds was handed over, whole.
-	for _, c := range rec.Classes {
-		var sawRoot bool
-		for _, call := range h.chowned {
-			if call.Path == c.ContentRoot() {
-				sawRoot = true
+	for _, b := range bindings {
+		// "WS/Content/Paks" is the pak binding's lower — a directory holding
+		// game.pak — and its own directory has to be mirrored too, not just
+		// something beneath it.
+		err := filepath.WalkDir(b.Source, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return err
 			}
-			if strings.HasPrefix(call.Path, c.ContentRoot()) &&
-				(call.UID != gameOwner.UID || call.GID != gameOwner.GID) {
-				t.Errorf("%s was handed to %d:%d, want %s",
-					call.Path, call.UID, call.GID, gameOwner)
+			rel, err := filepath.Rel(b.Source, p)
+			if err != nil {
+				return err
 			}
-		}
-		if !sawRoot {
-			t.Errorf("the %q class tree (%s) was never handed to the write owner",
-				c.Name, c.ContentRoot())
-		}
-	}
-
-	// And the modes came back: owner write, and nothing wider. Exactly one
-	// consumer may write to a generation, so a world-writable tree would grant
-	// it to processes the single-consumer rule just refused.
-	pak := rec.Classes[1]
-	for _, rel := range []string{"WS/Content/Paks", "WS/Content/Paks/game.pak"} {
-		info, err := os.Lstat(filepath.Join(pak.ContentRoot(), filepath.FromSlash(rel)))
+			mirrored := filepath.Join(b.Upper, rel)
+			info, err := os.Stat(mirrored)
+			if err != nil {
+				t.Errorf("%s (mirroring %s) was never created: %v", mirrored, p, err)
+				return nil
+			}
+			if info.Mode().Perm() != 0o777 {
+				t.Errorf("%s is %v, want 0777 — the mode that makes it writable by a uid "+
+					"srdm never declared", mirrored, info.Mode().Perm())
+			}
+			return nil
+		})
 		if err != nil {
 			t.Fatal(err)
-		}
-		if info.Mode().Perm()&0o200 == 0 {
-			t.Errorf("%s is still %v after unsealing, so the declared owner cannot "+
-				"write to it", rel, info.Mode().Perm())
-		}
-		if info.Mode().Perm()&0o022 != 0 {
-			t.Errorf("%s came back %v — unsealing gave group or other write, and only "+
-				"one consumer may write to a generation", rel, info.Mode().Perm())
 		}
 	}
 }
 
-// A read-only exposure must not unseal anything. Its guarantee is the mount,
-// but the seal is the second lock, and an exposure that quietly removed it
-// would leave the next rw consumer writing into a tree nobody marked.
-func TestExposeRODoesNotUnsealAnything(t *testing.T) {
+// A read-only exposure must not create any overlay state: its guarantee is
+// the mount, and creating a writable layer nobody asked for would be state
+// with no purpose and no owner.
+func TestExposeRODoesNotCreateAnOverlayLayer(t *testing.T) {
 	h := newHarness(t)
 	rec := h.liveRecord()
 	h.f1 = true
@@ -747,74 +776,8 @@ func TestExposeRODoesNotUnsealAnything(t *testing.T) {
 	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRO)); err != nil {
 		t.Fatal(err)
 	}
-	if len(h.chowned) != 0 {
-		t.Errorf("a read-only exposure handed %d path(s) to another owner", len(h.chowned))
-	}
-	info, err := os.Lstat(filepath.Join(rec.Classes[1].ContentRoot(), "WS/Content/Paks/game.pak"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o222 != 0 {
-		t.Errorf("a read-only exposure unsealed %v", info.Mode().Perm())
-	}
-}
-
-// With no owner declared, rw is refused rather than exposed. srdm does not
-// guess the number: mode-only unsealing leaves the tree owned by root, an
-// unprivileged updater still cannot create a file in it, and that failure
-// arrives as "the update reported success and did nothing" — which is the
-// 2026-07-21 incident in a new costume.
-func TestExposeRWIsRefusedWhenNoWriteOwnerIsDeclared(t *testing.T) {
-	h := newHarness(t)
-	h.cfg.WriteOwner = nil
-	rec := h.liveRecord()
-
-	err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW))
-	if !IsRefusal(err) {
-		t.Fatalf("want a refusal when no write owner is declared, got %v", err)
-	}
-	var r *RefusalError
-	if errors.As(err, &r) && r.Precondition != PreconditionWriteOwner {
-		t.Errorf("the refusal is %q, want %q", r.Precondition, PreconditionWriteOwner)
-	}
-	if !strings.Contains(err.Error(), "system.user.uid") {
-		t.Errorf("the refusal does not say where the number comes from: %v", err)
-	}
-	// Refused before anything happened: nothing marked, nothing unsealed,
-	// nothing mounted.
-	if len(h.marker.marked) != 0 || len(h.chowned) != 0 || len(h.mounter.calls) != 0 {
-		t.Errorf("a refused rw exposure marked %v, chowned %d and mounted %d",
-			h.marker.marked, len(h.chowned), len(h.mounter.calls))
-	}
-}
-
-// Read-only exposures never mark: nothing can be written through them.
-func TestExposeRODoesNotMarkTheGeneration(t *testing.T) {
-	h := newHarness(t)
-	if err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRO)); err != nil {
-		t.Fatal(err)
-	}
-	if len(h.marker.marked) != 0 {
-		t.Errorf("a read-only exposure marked the generation dirty: %v", h.marker.marked)
-	}
-}
-
-// Without somewhere to record it, an rw exposure is refused: nothing
-// downstream would ever know the generation had been written through.
-func TestExposeRWWithNoMarkerIsRefused(t *testing.T) {
-	h := newHarness(t)
-	d, err := NewHostBind(h.cfg, h.journal(),
-		WithMounter(h.mounter), WithGuard(h.guard), WithInspector(h.inspector),
-		WithMountInfoPath(h.mountInfo("shared:1")),
-		WithChownWalk(func() (wings.ChownWalk, error) { return h.walk, nil }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Expose(ctx(), testRecord(), testProfile(t), request(AccessRW)); !IsRefusal(err) {
-		t.Fatalf("want a refusal, got %v", err)
-	}
-	if len(h.mounter.ops) != 0 {
-		t.Errorf("a refused exposure still mounted something: %v", h.mounter.ops)
+	if _, err := os.Stat(filepath.Join(h.dir, "overlay")); !os.IsNotExist(err) {
+		t.Errorf("a read-only exposure created overlay state: %v", err)
 	}
 }
 
@@ -879,6 +842,38 @@ func TestUnexposeDoesNotRefuseWhileAConsumerHolds(t *testing.T) {
 	}
 }
 
+// Unexpose discards the overlay upper/work layers, once the mount over them
+// is gone (D-035's "retained or discarded" decision — see the LOG). Safe
+// rather than lossy: harvest is what reads a per-server merged view, and
+// every documented rw flow reads it before this ever runs.
+func TestUnexposeDiscardsTheOverlayUpperAndWorkLayers(t *testing.T) {
+	h := newHarness(t)
+	d := h.healthy()
+	rec := h.liveRecord()
+
+	bindings, err := d.Plan(rec, testProfile(t), request(AccessRW))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Expose(ctx(), rec, testProfile(t), request(AccessRW)); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range bindings {
+		if _, err := os.Stat(b.Upper); err != nil {
+			t.Fatalf("Expose never created %s: %v", b.Upper, err)
+		}
+	}
+
+	if err := d.Unexpose(ctx(), rec, testProfile(t), request(AccessRW)); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range bindings {
+		if _, err := os.Stat(filepath.Dir(b.Upper)); !os.IsNotExist(err) {
+			t.Errorf("unexpose left overlay state behind at %s: %v", filepath.Dir(b.Upper), err)
+		}
+	}
+}
+
 // --- the journal -----------------------------------------------------------
 
 func TestARefusalIsJournaledAsARefusalNotAFailure(t *testing.T) {
@@ -909,25 +904,28 @@ func TestARefusalIsJournaledAsARefusalNotAFailure(t *testing.T) {
 }
 
 func TestRefusalsAlwaysCarryAFix(t *testing.T) {
+	dirty := func(h *harness) {
+		h.guard.report = consumer.Report{Holders: []consumer.Holder{{}}}
+	}
 	cases := map[string]func(*harness){
 		"host not shared":    func(h *harness) { h.inspector = fakeInspector{propagation: "rslave"} },
 		"container rprivate": func(h *harness) { h.inspector = fakeInspector{propagation: "rprivate"} },
 		"container unknown":  func(h *harness) { h.inspector = fakeInspector{err: errors.New("no socket")} },
 		"chown walk enabled": func(h *harness) { h.walk = wings.ChownWalk{Enabled: true, Known: true} },
-		"second rw consumer": func(h *harness) { h.guard.report = consumer.Report{Holders: []consumer.Holder{{}}} },
+		"dirty and held":     dirty,
 	}
 	for name, breakIt := range cases {
 		h := newHarness(t)
 		breakIt(h)
-		access := AccessRO
-		if name == "second rw consumer" {
-			access = AccessRW
+		rec := testRecord()
+		if name == "dirty and held" {
+			rec.DirtyCapable = true
 		}
 		root := "shared:1"
 		if name == "host not shared" {
 			root = ""
 		}
-		err := h.driver(root).Expose(ctx(), testRecord(), testProfile(t), request(access))
+		err := h.driver(root).Expose(ctx(), rec, testProfile(t), request(AccessRO))
 		if !IsRefusal(err) {
 			t.Errorf("%s: want a refusal, got %v", name, err)
 			continue
@@ -938,6 +936,214 @@ func TestRefusalsAlwaysCarryAFix(t *testing.T) {
 			t.Errorf("%s: the refusal carries no remedy, which is an outage with extra "+
 				"steps: %s", name, r.Detail)
 		}
+	}
+}
+
+// --- mountOverlay / mirrorDirTree failure paths -----------------------------
+
+// mirrorDirTree fails when the lowerdir it is asked to mirror does not
+// exist, and Expose surfaces that rather than mounting a half-built overlay.
+func TestExposeRWFailsWhenTheSealedExposureDoesNotExist(t *testing.T) {
+	h := newHarness(t)
+	// testRecord's ExposePath names are fake — nothing is on disk there,
+	// unlike liveRecord — so mirrorDirTree's initial WalkDir fails.
+	if err := h.healthy().Expose(ctx(), testRecord(), testProfile(t), request(AccessRW)); err == nil {
+		t.Fatal("Expose rw succeeded although the sealed exposure it mirrors does not exist")
+	}
+}
+
+// A failed overlay mount call is surfaced too, and unwinds anything already
+// mounted — the same contract a failed plain bind has.
+func TestExposeRWFailsWhenTheOverlayMountItselfFails(t *testing.T) {
+	h := newHarness(t)
+	rec := h.liveRecord()
+	volume := h.cfg.ServerVolume(serverID)
+	h.mounter.mountErr[filepath.Join(volume, "Engine")] = syscall.EPERM
+
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err == nil {
+		t.Fatal("Expose rw succeeded despite a failed overlay mount")
+	}
+}
+
+func TestMirrorDirTreeFailsWhenTheLowerDoesNotExist(t *testing.T) {
+	if err := mirrorDirTree(filepath.Join(t.TempDir(), "nonexistent"), t.TempDir()); err == nil {
+		t.Fatal("mirroring a nonexistent lower tree succeeded")
+	}
+}
+
+func TestMirrorDirTreeFailsWhenTheUpperCannotBeCreated(t *testing.T) {
+	dir := t.TempDir()
+	lower := filepath.Join(dir, "lower")
+	if err := os.MkdirAll(lower, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A FILE where mirrorDirTree needs a directory component: MkdirAll fails
+	// ENOTDIR trying to create anything beneath it.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirrorDirTree(lower, filepath.Join(blocker, "upper")); err == nil {
+		t.Fatal("mirroring into an upper whose parent is a plain file succeeded")
+	}
+}
+
+// The upper mirrors fine (it is a fresh path), but overlayfs's own scratch
+// directory cannot be created — here because something already occupies
+// that exact path as a plain file, not a directory.
+func TestExposeRWFailsWhenTheWorkDirCannotBeCreated(t *testing.T) {
+	h := newHarness(t)
+	rec := h.liveRecord()
+	bindings, err := h.healthy().Plan(rec, testProfile(t), request(AccessRW))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := bindings[0].Work
+	if err := os.MkdirAll(filepath.Dir(blocked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err == nil {
+		t.Fatalf("Expose rw succeeded although %s already exists as a plain file", blocked)
+	}
+}
+
+// --- RWServers (D-035): what harvest asks to find who holds rw ------------
+
+// overlayEntry renders one overlay mountinfo line, the shape an rw exposure
+// produces: srdm's own device (uninformative, D-028), a lowerdir option
+// naming the generation, and a target under the volume root.
+func overlayEntry(id int, point, lowerdirs string) string {
+	return fmt.Sprintf(
+		"%d 30 0:99 / %s rw,relatime - overlay overlay "+
+			"rw,lowerdir=%s,upperdir=/state/x/upper,workdir=/state/x/work",
+		id, point, lowerdirs)
+}
+
+// otherDevice is a superblock unrelated to anything srdm published, used to
+// prove a plain tmpfs mount is never mistaken for an overlay.
+const otherDevice = "0:77"
+
+// mountLine renders a plain tmpfs mountinfo line — the shape RWServers must
+// NOT mistake for an overlay, however its target path looks.
+func mountLine(id int, device, point string) string {
+	return fmt.Sprintf("%d 30 %s / %s rw,nosuid,nodev - tmpfs tmpfs rw,size=67108864,mode=755",
+		id, device, point)
+}
+
+func (h *harness) rwServersTable(entries ...string) string {
+	h.t.Helper()
+	path := filepath.Join(h.dir, "mountinfo-rwservers")
+	if err := os.WriteFile(path, []byte(strings.Join(entries, "\n")+"\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	return path
+}
+
+func TestRWServersFindsEveryServerHoldingAnOverlayOfTheGeneration(t *testing.T) {
+	h := newHarness(t)
+	rec := testRecord()
+	volume := h.cfg.VolumeRoot
+	serverB := "8f1c2e3d-0000-4000-8000-abcdefabcd02"
+
+	table := h.rwServersTable(
+		overlayEntry(90, filepath.Join(volume, serverID, "Engine"),
+			rec.Classes[0].ExposePath+"/Engine"),
+		// A second declared path of the SAME class, same server: must not
+		// be double-counted.
+		overlayEntry(91, filepath.Join(volume, serverID, "WS/Binaries"),
+			rec.Classes[0].ExposePath+"/WS/Binaries"),
+		overlayEntry(92, filepath.Join(volume, serverB, "WS/Content/Paks"),
+			rec.Classes[1].ExposePath+"/WS/Content/Paks"),
+		// Noise: an overlay of something else entirely, one under the volume
+		// root but of a generation this record does not name, and a plain
+		// tmpfs at a path that only LOOKS like an rw binding's target.
+		overlayEntry(93, "/var/lib/docker/overlay2/abc/merged", "/var/lib/docker/overlay2/abc/lower"),
+		overlayEntry(95, filepath.Join(volume, serverB, "WS/Binaries"),
+			"/run/srdm/othergame/deadbeef/code/WS/Binaries"),
+		mountLine(94, otherDevice, filepath.Join(volume, serverB, "Engine")),
+	)
+	d, err := NewHostBind(h.cfg, h.journal(), WithMountInfoPath(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	servers, err := d.RWServers(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{serverB, serverID}
+	sort.Strings(want)
+	if !reflect.DeepEqual(servers, want) {
+		t.Fatalf("RWServers = %v, want %v", servers, want)
+	}
+}
+
+func TestRWServersFindsNobodyWhenNothingHoldsRW(t *testing.T) {
+	h := newHarness(t)
+	rec := testRecord()
+	table := h.rwServersTable(mountLine(90, otherDevice, "/somewhere/else"))
+	d, err := NewHostBind(h.cfg, h.journal(), WithMountInfoPath(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers, err := d.RWServers(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 0 {
+		t.Errorf("RWServers = %v, want none", servers)
+	}
+}
+
+func TestRWServersFailsWhenTheMountTableCannotBeRead(t *testing.T) {
+	h := newHarness(t)
+	d, err := NewHostBind(h.cfg, h.journal(),
+		WithMountInfoPath(filepath.Join(h.dir, "nonexistent")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RWServers(testRecord()); err == nil {
+		t.Fatal("RWServers succeeded reading an unreadable mount table")
+	}
+}
+
+// --- RWServers's small helpers, tested directly -----------------------------
+
+// An overlay mount with no lowerdir= option at all should not happen in
+// practice — the kernel refuses to mount one without it — but the parser
+// must not panic or misread the absence as an empty match.
+func TestOverlayLowerDirsReturnsNilWithNoLowerdirOption(t *testing.T) {
+	e, err := mountinfo.ParseLine(
+		"90 30 0:99 / /t/merged rw,relatime - overlay overlay rw,index=off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := overlayLowerDirs(e); got != nil {
+		t.Errorf("overlayLowerDirs = %v, want nil", got)
+	}
+}
+
+func TestAnyLowerUnderIsFalseWhenNothingMatches(t *testing.T) {
+	if anyLowerUnder([]string{"/a/b", "/c/d"}, []string{"/x", "/y"}) {
+		t.Error("anyLowerUnder matched roots that share nothing with the lowerdirs")
+	}
+}
+
+// A target equal to root names no server segment at all — the mount point
+// would have to be the volume root itself, which no rw binding ever is.
+func TestFirstPathComponentRejectsTheRootItself(t *testing.T) {
+	if _, ok := firstPathComponent("/a/b", "/a/b"); ok {
+		t.Error("firstPathComponent accepted a target equal to root")
+	}
+}
+
+func TestFirstPathComponentRejectsATargetOutsideRoot(t *testing.T) {
+	if _, ok := firstPathComponent("/a/b", "/somewhere/else"); ok {
+		t.Error("firstPathComponent accepted a target outside root")
 	}
 }
 

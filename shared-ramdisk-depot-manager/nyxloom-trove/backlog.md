@@ -59,18 +59,6 @@ tree already has is worse than an empty one.
   keep that property, at the cost of a second manifest builder to keep in
   step with the first. Measure the copy against the hash before deciding it
   is worth two implementations.
-- **`access: rw` via an overlay upper layer instead of unsealing in place**
-  (D-027, accepted from measurement — carve as a package). Today `rw`
-  unseals and chowns the shared generation, which marks it `dirty_capable`,
-  bars sharing and source-use, and limits it to one consumer. An overlay
-  with the sealed generation as `lowerdir` and a per-server `upperdir` on
-  the server's own volume keeps the lower pristine and shared while the
-  updater writes only what it touches. Needs: `expose.HostBind` growing an
-  overlay mode, `harvest` reading the merged view, whiteout handling when an
-  update deletes files, teardown-safety re-derivation against a mount that
-  pins lower inodes (D-012/D-018/D-019 all apply and none of them transfer
-  by assumption), and a privileged oracle proving the lower generation is
-  byte-identical after an update through the overlay.
 - **The containerized SteamCMD acquisition driver** (`internal/source/steam`,
   currently a doc-only stub). Wanted for MVP after all: "drop in the appid
   and it prepares the filesystem". Master plan §SteamCMD driver has the
@@ -103,6 +91,19 @@ tree already has is worse than an empty one.
   `srdm-hold-*.service` units against every op directory that still exists,
   which is closer to a systemd unit-listing capability `internal/hold` does
   not have yet than to a bug fix.
+- **`publish.MarkDirtyCapable` is unreachable code** (P10). D-035 replaced
+  in-place unsealing with an overlay, and no `rw` exposure this project
+  builds anymore marks a generation dirty-capable — the `Marker` interface,
+  `expose.WithMarker` and the `cmd/srdm` wiring that called it are all gone.
+  Nothing calls `MarkDirtyCapable` now. It is intentionally left in
+  `internal/publish/publish.go` rather than deleted: that file was out of
+  P10's scope (another package was concurrently working in it), and the
+  READ side of `Record.DirtyCapable` stays genuinely load-bearing — a
+  record written by an older srdm, or a future non-overlay driver, can
+  still carry the flag, and `doctor`'s drift check earns its keep on those.
+  Only the writer is dead. Remove `MarkDirtyCapable` (and reconsider whether
+  `Marker` should even be a package-level export anymore) once nothing
+  plausibly still calls it.
 - **Build identity is not recorded** (P07). The master plan's harvest step 4
   is "run the profile's probes; record build identity where discoverable" —
   the probes run, and there is nowhere to record a build identity, because no

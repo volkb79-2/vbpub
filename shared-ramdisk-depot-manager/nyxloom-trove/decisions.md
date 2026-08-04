@@ -1366,3 +1366,126 @@ owner than "the other half of the same question", so it sits next to it
 rather than in a third file. Both `opctl.checkHeadroom` and
 `doctor.checkUpdateHeadroom` now call these and carry no sizing arithmetic
 of their own.
+
+---
+
+## D-035 — the overlay's upper is mirrored, world-writable, and discarded on unexpose
+
+**Status:** accepted, from measurement. Filed by P10, implementing D-027's
+adoption for `rw`.
+
+Three questions the "what to build" section left to the implementation, each
+closed by something that had to be measured rather than reasoned out.
+
+### Who may write, with no declared owner at all
+
+D-022 handed an unsealed class tree to `wings.write_owner`, an operator-
+declared uid — the whole precondition existed because publication seals a
+class tree `chmod -R a-w`, so a mount that merely PERMITS writing still
+refuses every uid but root at the MODE level. The overlay retires the
+in-place unseal, and with it the reason a declared owner was needed: nothing
+hands the LOWER to anybody, because the lower is never written. But an
+overlay's WRITABLE side still has to be writable by *some* uid, and P10
+does not want to re-introduce a declared identity to name it — the entire
+appeal of "srdm creates and owns the upper" is that it does not need to
+know who Wings runs the container as.
+
+**Measured** (`tools/overlay-write-perm-probe.sh` — probed 2026-08-04, kernel
+`7.1.3+deb13-amd64`, in a privileged container on the host kernel, following
+the same rule that produced D-011/D-015/D-019/D-027): with a sealed lower
+(root-owned, `a-w`, dirs `0555`, files `0444`) and an upper whose TOP
+directory alone is `0777`, an unprivileged uid (65534) can create a file at
+the top of the merged view but **cannot** reach a subdirectory that exists
+only in the lower — its mode there is the lower's, root-owned and
+unwritable, because overlayfs takes a directory's OWN metadata from
+whichever layer has an entry for it, upper winning only when both do.
+Mirroring the lower's FULL directory tree — every directory, none of the
+files — into the upper at `0777` fixes this: every mirrored directory then
+shows the upper's permissive mode in the merged view, while files still come
+from the lower until copy-up.
+
+With that mirroring in place, the same probe measured what an unprivileged
+uid can and cannot do through the merged view:
+
+| operation | result |
+|---|---|
+| create a new file at the top of a mirrored directory | succeeds |
+| create a new file in a mirrored SUBdirectory | succeeds |
+| delete an existing lower-only file, then recreate it | succeeds |
+| `mkdir` a brand-new directory, then write into it | succeeds |
+| true in-place `open(O_WRONLY\|O_TRUNC)` of an existing lower-only file, with no unlink first | **fails, EACCES** — no copy-up is attempted |
+| `rename()` into a directory that was never mirrored | **fails, EACCES** |
+
+The first four are exactly the shape a real updater uses — SteamCMD-style
+depot updates replace files (delete-or-rename, then create) rather than
+truncating an existing one in place, because they already cannot assume
+write access to arbitrary paths on any host. **Adopted:** `mountOverlay`
+mirrors the lower's directory tree into the upper at `0o777` before every
+mount (`mirrorDirTree`), and nothing declares or reads a write-owner uid for
+`rw` at all. `PreconditionWriteOwner` and `config.Wings.WriteOwner`'s
+consumer both go away; the config field itself is left in place (vestigial,
+like `DirtyCapable` below) since an existing node's config may still carry
+it.
+
+The residual — a genuine in-place truncate-without-unlink of an
+untouched-since-publication file — is accepted rather than closed. No
+profile this project targets updates that way, and closing it would mean
+mirroring FILE modes too, which reopens exactly the "grant write to a uid
+srdm does not know" problem mirroring directories was chosen to avoid.
+
+### What survives of D-020 and D-022
+
+Stated explicitly because both documents describe an in-place model this
+package retires, and the next reader should not have to reconcile three
+documents to find out which parts still hold.
+
+**Retired outright:** `hold.Unseal`'s use from `expose` (the call, not the
+function — `internal/hold` still uses it for the class-tree-handover shape
+elsewhere), `PreconditionWriteOwner`, `config.Wings.WriteOwner` as anything
+read, the `Marker` interface and its `Expose`-side call, and
+`PreconditionSingleWrite`'s refusal of a second `rw` consumer (oracle 26:
+any number of servers may now hold `rw` on the same generation).
+
+**Survives:** D-020's measured half — an `rw` exposure cannot be a bind of
+the published path, because a bind inherits its source's per-mount flags —
+is why `ro` and `rw` are still forced apart, just differently: both now
+READ from the same `Source` (the sealed exposure), and it is the MOUNT TYPE
+(bind vs. overlay) rather than the bind's target that differs. D-022's
+"never re-sealed, only republish or harvest repairs a written generation" is
+still true and now trivially so — the overlay's lower is never written at
+all, so there is nothing to re-seal in the first place.
+
+**`Record.DirtyCapable` is now split, and the two halves do not survive
+equally.** The READ side stays genuinely load-bearing: a record written by
+an older srdm, or a future non-overlay driver, can still carry the flag, and
+`doctor`'s drift check (and `expose`'s own `PreconditionDirty`, unchanged)
+still has to mean something when it does. The WRITE side does not survive
+at all — `publish.Publisher.MarkDirtyCapable` has no caller left anywhere in
+the tree, `Marker`/`WithMarker` having been retired with it — and no `rw`
+exposure this project builds will ever set the flag again. Left in place
+rather than deleted: `internal/publish/publish.go` was out of this
+package's scope, and a record schema field cannot be removed out from under
+whatever still deserializes it. Tracked as its own backlog entry.
+
+### Retained or discarded: the upper is discarded on `Unexpose`
+
+The handoff named this the open decision. **Discarded**, and the deciding
+fact is the ORDER the rest of P10 already forces: `harvest` reads a
+server's overlay merged view, which means it has to run WHILE the overlay is
+still mounted — `Unexpose` tears the mount down, and after that there is
+nothing left to read. So the documented flow is already "harvest, then
+unexpose", never the reverse, and by the time `Unexpose` runs, anything in
+the upper worth keeping has already been captured into a release. Discarding
+at that point costs nothing and buys the property the handoff named:
+`Unexpose` means what it says, rather than leaving directories on disk an
+operator has to know to distrust.
+
+The upper is still `StateDir`-resident (not `RunDir`) while it is live,
+which is a SEPARATE property with a separate reason: an update that
+survived a process crash but not a host reboot would be worse than one that
+never started, because it would look intact until the next reboot silently
+discarded it. `RunDir` is wiped on reboot; `StateDir` is not. Keying by
+generation and server means re-exposing the SAME pair after a crash finds
+its own upper again, resuming rather than restarting — the "interrupted
+update resumable" half of the handoff's question, answered by where the
+upper lives rather than by whether `Unexpose` deletes it.

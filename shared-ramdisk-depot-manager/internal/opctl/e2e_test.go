@@ -128,7 +128,7 @@ func newNode(t *testing.T) *node {
 	wingsCfg := cfg.Wings
 	wingsCfg.ChownSkipPatch = true // asserted; precondition 2 is unit-tested
 	drv, err := expose.NewHostBind(wingsCfg, jnl,
-		expose.WithMarker(n.pub), expose.WithInspector(fakeInspector{}))
+		expose.WithStateDir(cfg.StateDir), expose.WithInspector(fakeInspector{}))
 	if err != nil {
 		t.Fatal(err)
 	}

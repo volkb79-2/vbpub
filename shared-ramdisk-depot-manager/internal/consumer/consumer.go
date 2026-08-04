@@ -18,15 +18,25 @@
 // "without the protocol's help — the mode that has to get it right by
 // inspection".
 //
-// Two sources, because they fail differently:
+// Three sources, because they fail differently:
 //
-//   - **/proc/<pid>/mountinfo across mount namespaces** is authoritative
-//     about the hazard. The hazard is a surviving MOUNT, not an open file
-//     descriptor (D-012): an open fd makes the unmount fail EBUSY rather
-//     than succeeding and leaving a ghost. Matching is on the SUPERBLOCK —
-//     the major:minor device — because a consumer's bind has a path srdm has
-//     never seen and cannot predict, while the device is the same number on
-//     both sides of the bind.
+//   - **/proc/<pid>/mountinfo across mount namespaces, matched by device**
+//     is authoritative about a BIND. The hazard is a surviving MOUNT, not an
+//     open file descriptor (D-012): an open fd makes the unmount fail EBUSY
+//     rather than succeeding and leaving a ghost. Matching is on the
+//     SUPERBLOCK — the major:minor device — because a consumer's bind has a
+//     path srdm has never seen and cannot predict, while the device is the
+//     same number on both sides of the bind.
+//   - **/proc/<pid>/mountinfo, matched by lowerdir path** is authoritative
+//     about an OVERLAY (D-028, P10). An overlay is not a bind, and device
+//     matching is blind to it: an overlay mount reports its OWN device,
+//     never the lower's, and the lower's device appears nowhere in the
+//     overlay's mountinfo line. The only trace of the generation is the
+//     `lowerdir=` mount option, which the mounter chose and which names the
+//     source — so this recognizer matches by PATH instead, the opposite
+//     asymmetry from the bind case and for the same underlying reason: use
+//     whichever of {device, path} is actually informative for the mount
+//     shape at hand.
 //   - **Docker** is authoritative about names, and sees a container that has
 //     the bind configured but no process running it yet.
 package consumer
@@ -54,14 +64,21 @@ func (d Device) String() string { return fmt.Sprintf("%d:%d", d.Major, d.Minor) 
 
 // Holder is one live hold on a generation's content.
 type Holder struct {
-	// Kind is how this hold was found: KindMount or KindContainer.
+	// Kind is how this hold was found: KindMount, KindOverlay or
+	// KindContainer.
 	Kind string
 	// MountPoint is where the holder has it, in the holder's own namespace —
 	// a path srdm never chose and cannot predict.
 	MountPoint string
-	// Device is the superblock, and is what actually ties this hold to a
-	// generation srdm published.
+	// Device is the superblock, and is what actually ties a KindMount hold
+	// to a generation srdm published. Meaningless for KindOverlay — an
+	// overlay's own device names nothing srdm mounted (D-028) — where
+	// LowerDir is the tie instead.
 	Device Device
+	// LowerDir is set for KindOverlay: the specific lowerdir= element that
+	// resolved under a generation's path, which IS the tie for an overlay
+	// hold in the way Device is for a bind.
+	LowerDir string
 	// PID is one process in the holding mount namespace. Any of them would
 	// do; this is the one that was found first.
 	PID int
@@ -77,9 +94,15 @@ type Holder struct {
 
 // Holder kinds.
 const (
-	// KindMount is a mount of the generation's superblock in another mount
+	// KindMount is a bind of the generation's superblock in another mount
 	// namespace. This is the one that costs memory.
 	KindMount = "mount"
+	// KindOverlay is an overlay mount in another mount namespace whose
+	// lowerdir resolves under the generation (D-028, P10) — access: rw's
+	// shape. It costs memory the same way a bind does; it is a distinct kind
+	// because it is found by a distinct recognizer, matched by path rather
+	// than by device.
+	KindOverlay = "overlay"
 	// KindContainer is a container configured with a bind of the
 	// generation's path, found through Docker rather than through the mount
 	// table — a container created but not yet running holds no pages, but it
@@ -96,10 +119,15 @@ func (h Holder) String() string {
 		name = fmt.Sprintf("an unattributed process (pid %d, mount namespace %s)",
 			h.PID, h.MountNamespace)
 	}
-	if h.Kind == KindContainer {
+	switch h.Kind {
+	case KindContainer:
 		return fmt.Sprintf("container %s (bind of %s)", name, h.MountPoint)
+	case KindOverlay:
+		return fmt.Sprintf("%s (holding %s via an overlay whose lowerdir is %s)",
+			name, h.MountPoint, h.LowerDir)
+	default:
+		return fmt.Sprintf("%s (holding %s, device %s)", name, h.MountPoint, h.Device)
 	}
-	return fmt.Sprintf("%s (holding %s, device %s)", name, h.MountPoint, h.Device)
 }
 
 // Report is the result of asking who holds a generation.
@@ -175,10 +203,13 @@ func (r *Resolver) SelfNamespace(ns string) { r.selfNS = ns }
 
 // Resolve returns every hold on the given paths.
 //
-// The paths are srdm's own mount points for one generation. Their
-// superblocks are what is looked for elsewhere; the paths themselves appear
-// nowhere in a consumer's namespace, which is exactly why matching on them
-// would find nothing.
+// The paths are srdm's own mount points for one generation. For a BIND
+// holder their superblocks are what is looked for elsewhere — the paths
+// themselves appear nowhere in a consumer's namespace, which is exactly why
+// matching a bind on them would find nothing. For an OVERLAY holder (D-028)
+// it is the reverse: the paths ARE what is looked for, as the `lowerdir=`
+// mount option's value, because an overlay's device names nothing srdm
+// mounted.
 func (r *Resolver) Resolve(ctx context.Context, paths []string) (*Report, error) {
 	rep := &Report{}
 
@@ -187,12 +218,6 @@ func (r *Resolver) Resolve(ctx context.Context, paths []string) (*Report, error)
 		return nil, fmt.Errorf("consumer: reading srdm's own mount table: %w", err)
 	}
 	devices := ourDevices(self, paths)
-	if len(devices) == 0 {
-		// Nothing of this generation is mounted here, so there is no
-		// superblock for anyone to be holding. That is a real answer, not a
-		// gap: after a crash mid-teardown it is the normal one.
-		return rep, nil
-	}
 
 	selfNS := r.selfNS
 	if selfNS == "" {
@@ -202,7 +227,10 @@ func (r *Resolver) Resolve(ctx context.Context, paths []string) (*Report, error)
 		}
 	}
 
-	holders, err := r.mountHolders(devices, selfNS)
+	// No early return when devices is empty: a bind holder needs a device to
+	// match on, but an overlay holder is matched by PATH and does not — and
+	// that path is exactly as valid after srdm's own mount is gone as before.
+	holders, err := r.mountHolders(devices, paths, selfNS)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +266,9 @@ func ourDevices(entries []mountinfo.Entry, paths []string) map[Device]bool {
 	return devices
 }
 
-// mountHolders scans every mount namespace but srdm's own for the devices.
+// mountHolders scans every mount namespace but srdm's own for the devices
+// (a BIND holder) and for an overlay whose lowerdir resolves under one of
+// paths (an OVERLAY holder, D-028).
 //
 // EVERY mount of one of those superblocks counts, with no exception for
 // propagation, and that is a measured position rather than a lazy one.
@@ -253,16 +283,18 @@ func ourDevices(entries []mountinfo.Entry, paths []string) map[Device]bool {
 // So there is nothing to filter on: a mount of the superblock is a mount of
 // the superblock, and every one of them keeps every page alive. See D-019 —
 // which is also why srdm publishes into a private mount root, so that
-// nothing acquires such a copy by accident in the first place.
-func (r *Resolver) mountHolders(devices map[Device]bool, selfNS string) ([]Holder, error) {
+// nothing acquires such a copy by accident in the first place. The same
+// applies to the overlay recognizer: it errs toward counting a holder
+// (D-028's residual note), which is why it is not narrowed further either.
+func (r *Resolver) mountHolders(devices map[Device]bool, paths []string, selfNS string) ([]Holder, error) {
 	pids, err := r.pids()
 	if err != nil {
 		return nil, err
 	}
 
-	// One namespace, one holder: every process in it sees the same mounts,
-	// so reading them per-process would report the same hold once per thread
-	// of a busy container.
+	// One namespace, one holder-per-mount: every process in it sees the same
+	// mounts, so reading them per-process would report the same hold once
+	// per thread of a busy container.
 	seen := make(map[string]bool)
 	var out []Holder
 	for _, pid := range pids {
@@ -283,17 +315,52 @@ func (r *Resolver) mountHolders(devices map[Device]bool, selfNS string) ([]Holde
 		}
 		for _, e := range entries {
 			d := Device{Major: e.Major, Minor: e.Minor}
-			if !devices[d] {
+			if devices[d] {
+				out = append(out, Holder{
+					Kind: KindMount, MountPoint: e.MountPoint, Device: d,
+					PID: pid, MountNamespace: ns,
+				})
 				continue
 			}
-			out = append(out, Holder{
-				Kind: KindMount, MountPoint: e.MountPoint, Device: d,
-				PID: pid, MountNamespace: ns,
-			})
+			if lower, ok := overlayLowerUnder(e, paths); ok {
+				out = append(out, Holder{
+					Kind: KindOverlay, MountPoint: e.MountPoint, LowerDir: lower,
+					PID: pid, MountNamespace: ns,
+				})
+			}
 		}
 	}
 	sortHolders(out)
 	return out, nil
+}
+
+// overlayLowerUnder reports whether e is an overlay mount with at least one
+// `lowerdir=` element at or beneath one of paths, and returns that element.
+//
+// A bind is matched by device because its path is unpredictable; an overlay
+// is matched by path because its device is uninformative and `lowerdir` is
+// chosen by the mounter — D-028's stated asymmetry, not an oversight that
+// the two recognizers work differently.
+func overlayLowerUnder(e mountinfo.Entry, paths []string) (string, bool) {
+	if e.FSType != "overlay" {
+		return "", false
+	}
+	for _, lower := range overlayLowerDirs(e) {
+		if pathWithin(lower, paths) {
+			return lower, true
+		}
+	}
+	return "", false
+}
+
+// overlayLowerDirs parses the colon-separated `lowerdir=` mount option.
+func overlayLowerDirs(e mountinfo.Entry) []string {
+	for _, opt := range e.SuperOptions {
+		if v, ok := strings.CutPrefix(opt, "lowerdir="); ok {
+			return strings.Split(v, ":")
+		}
+	}
+	return nil
 }
 
 func (r *Resolver) pids() ([]int, error) {

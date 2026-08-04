@@ -343,3 +343,98 @@ func TestResolutionDegradesRatherThanFailsWithoutDocker(t *testing.T) {
 		t.Errorf("an unnamed holder does not say so: %s", rep.Holders[0])
 	}
 }
+
+// --- oracle 27 / D-028: the overlay recognizer, for real -------------------
+
+// startOverlayConsumer mounts a real overlay of lower inside a fresh mount
+// namespace — what access: rw's exposure looks like from a consumer's own
+// side, and the shape D-028 measured as invisible to device matching.
+//
+// Upper/work go on /tmp inside the namespace, which is tmpfs and not itself
+// an overlay — D-027's other measured fact, "an overlay cannot be its own
+// upper", would make this mount fail outright on a container whose own root
+// is overlay2-backed.
+func startOverlayConsumer(t *testing.T, lower string) (stop func()) {
+	t.Helper()
+	return spawnNamespace(t, "slave", fmt.Sprintf(
+		"mkdir -p /tmp/ovl.$$/upper /tmp/ovl.$$/work /tmp/ovl.$$/merged && "+
+			"mount -t overlay overlay -o lowerdir=%q,upperdir=/tmp/ovl.$$/upper,workdir=/tmp/ovl.$$/work "+
+			"/tmp/ovl.$$/merged && ", lower))
+}
+
+// The measurement D-028 exists to act on: a real overlay, in a real second
+// mount namespace, whose lowerdir is srdm's own ExposePath. Device matching
+// alone (everything srdm had before P10) would report nothing, because an
+// overlay reports its own device and the lower's never appears in its
+// mountinfo line — only the `lowerdir=` PATH does.
+func TestARealOverlayWhoseLowerdirIsOurExposePathIsFound(t *testing.T) {
+	opMount, exposePath := publishedTmpfs(t)
+
+	if rep := resolveLive(t, opMount, exposePath); rep.Held() {
+		t.Fatalf("srdm reported a holder before any consumer existed: %+v", rep.Holders)
+	}
+
+	stop := startOverlayConsumer(t, exposePath)
+
+	rep := resolveLive(t, opMount, exposePath)
+	if !rep.Held() {
+		t.Fatalf("a real overlay whose lowerdir is our ExposePath was not found: %+v", rep)
+	}
+	var found *Holder
+	for i := range rep.Holders {
+		if rep.Holders[i].Kind == KindOverlay {
+			found = &rep.Holders[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no KindOverlay holder among %+v", rep.Holders)
+	}
+	if found.LowerDir != exposePath {
+		t.Errorf("LowerDir = %q, want %q", found.LowerDir, exposePath)
+	}
+	if !strings.HasSuffix(found.MountPoint, "/merged") {
+		t.Errorf("MountPoint = %q, want the consumer's own merged mount point", found.MountPoint)
+	}
+	t.Logf("found %s", found)
+
+	// And it goes away when the consumer does — the same shape as a bind.
+	stop()
+	if rep := resolveLive(t, opMount, exposePath); rep.Held() {
+		t.Fatalf("a stopped overlay consumer is still reported as holding: %v", holdingPaths(rep))
+	}
+}
+
+// D-028's decisive check, mirrored from tools/overlay-holder-probe.sh: with
+// only the (pre-P10) device recognizer, this holder would be invisible —
+// the unmount would succeed, free nothing, and leave the content readable.
+// Asserted here as "the overlay's own device is unrelated to srdm's",
+// which is what makes device matching blind to it in the first place.
+func TestTheOverlaysOwnDeviceNamesNothingSrdmMounted(t *testing.T) {
+	opMount, exposePath := publishedTmpfs(t)
+	// The namespace's own overlay is not its only holder: it is also a
+	// "slave" propagation namespace, so it receives propagated copies of
+	// srdm's own opMount/exposePath binds (D-019) — real holders, sorted
+	// before "overlay" by Kind, which is why the overlay entry has to be
+	// found by Kind rather than assumed to be Holders[0].
+	stop := startOverlayConsumer(t, exposePath)
+	defer stop()
+
+	rep := resolveLive(t, opMount, exposePath)
+	if !rep.Held() {
+		t.Fatal("the overlay consumer was not found")
+	}
+	var found *Holder
+	for i := range rep.Holders {
+		if rep.Holders[i].Kind == KindOverlay {
+			found = &rep.Holders[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no KindOverlay holder among %+v", rep.Holders)
+	}
+	if d := found.Device; d != (Device{}) {
+		t.Errorf("the overlay holder carries Device %s; an overlay's own device names "+
+			"nothing srdm mounted, so a non-zero one here would mean this matched by "+
+			"device rather than by lowerdir path", d)
+	}
+}

@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 
 	"srdm/internal/config"
 	"srdm/internal/consumer"
-	"srdm/internal/hold"
 	"srdm/internal/journal"
 	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
@@ -22,7 +23,6 @@ import (
 // Phases, journaled before they execute and after they settle.
 const (
 	PhasePreflight = "preflight"
-	PhaseUnseal    = "unseal"
 	PhaseBind      = "bind"
 	PhaseUnbind    = "unbind"
 )
@@ -46,12 +46,6 @@ type Guard interface {
 	Resolve(ctx context.Context, paths []string) (*consumer.Report, error)
 }
 
-// Marker durably records that a generation has been exposed writable.
-// *publish.Publisher satisfies it.
-type Marker interface {
-	MarkDirtyCapable(opID, profileID, generation string) error
-}
-
 // HostBind is the v1 exposure driver: it mounts a generation's per-class
 // read-only binds onto the matching paths under a server's volume.
 //
@@ -72,15 +66,18 @@ type HostBind struct {
 	jnl     *journal.Journal
 	mounter Mounter
 	guard   Guard
-	marker  Marker
+
+	// stateDir roots the per-server overlay upper/work layers an rw exposure
+	// mounts (D-035). Deliberately separate from cfg (config.Wings): the
+	// overlay state has nothing to do with the Wings deployment shape, and
+	// keeping it a plain string keeps HostBind constructible from just the
+	// Wings settings everywhere it always has been.
+	stateDir string
 
 	mountInfoPath string
 	inspector     wings.ContainerInspector
 	// chownWalk is injected in tests; nil means read the node config.
 	chownWalk func() (wings.ChownWalk, error)
-	// chown is the syscall unsealing uses, injected so the ownership model
-	// is exercisable in a gate that runs unprivileged.
-	chown func(name string, uid, gid int) error
 }
 
 // Option configures a HostBind.
@@ -92,8 +89,9 @@ func WithMounter(m Mounter) Option { return func(h *HostBind) { h.mounter = m } 
 // WithGuard injects consumer resolution.
 func WithGuard(g Guard) Option { return func(h *HostBind) { h.guard = g } }
 
-// WithMarker injects the dirty-capable recorder. Required for access: rw.
-func WithMarker(m Marker) Option { return func(h *HostBind) { h.marker = m } }
+// WithStateDir points the rw overlay's upper/work layers at a state root.
+// Defaults to config.DefaultStateDir.
+func WithStateDir(dir string) Option { return func(h *HostBind) { h.stateDir = dir } }
 
 // WithMountInfoPath points the propagation check at a specific mount table.
 func WithMountInfoPath(p string) Option { return func(h *HostBind) { h.mountInfoPath = p } }
@@ -108,12 +106,6 @@ func WithChownWalk(f func() (wings.ChownWalk, error)) Option {
 	return func(h *HostBind) { h.chownWalk = f }
 }
 
-// WithChown injects the chown syscall unsealing uses. Tests record what the
-// ownership walk would have done without needing to be root.
-func WithChown(f func(name string, uid, gid int) error) Option {
-	return func(h *HostBind) { h.chown = f }
-}
-
 // NewHostBind returns the host-bind driver.
 func NewHostBind(cfg config.Wings, jnl *journal.Journal, opts ...Option) (*HostBind, error) {
 	if err := cfg.Validate(); err != nil {
@@ -122,7 +114,7 @@ func NewHostBind(cfg config.Wings, jnl *journal.Journal, opts ...Option) (*HostB
 	if jnl == nil {
 		return nil, errors.New("expose: a journal is required")
 	}
-	h := &HostBind{cfg: cfg, jnl: jnl, mounter: syscallMounter{}, chown: os.Lchown}
+	h := &HostBind{cfg: cfg, jnl: jnl, mounter: syscallMounter{}, stateDir: config.DefaultStateDir}
 	for _, o := range opts {
 		o(h)
 	}
@@ -150,7 +142,7 @@ func (h *HostBind) Name() string { return "host-bind" }
 
 // Plan returns the mounts Expose would make.
 func (h *HostBind) Plan(rec *publish.Record, prof *profile.Profile, req Request) ([]Binding, error) {
-	bindings, err := plan(rec, prof, req, h.cfg.ServerVolume(req.ServerID))
+	bindings, err := plan(rec, prof, req, h.cfg.ServerVolume(req.ServerID), h.stateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -200,71 +192,16 @@ func (h *HostBind) Expose(ctx context.Context, rec *publish.Record, prof *profil
 		return err
 	}
 
-	// The flag goes down BEFORE writing becomes possible, not after. It is a
-	// restriction, so the failure that matters is a crash between the two:
-	// marked-but-not-mounted costs a republish nobody needed, while
-	// mounted-but-not-marked lets a second consumer join a generation
-	// somebody is already writing through.
-	if access == AccessRW {
-		if h.marker == nil {
-			return &RefusalError{
-				Precondition: PreconditionSingleWrite,
-				Detail: "access rw was requested but this driver has no way to record the " +
-					"generation as dirty-capable, so nothing downstream would know it had " +
-					"been written through",
-				Fix: "configure the driver with a marker (the publisher), or expose ro",
-			}
-		}
-		if err := h.marker.MarkDirtyCapable(req.OperationID, rec.Profile, rec.Generation); err != nil {
-			return err
-		}
-		// Unsealing comes after the mark and before the mounts, for the same
-		// reason the mark does: it is the step that makes writing possible,
-		// and everything that restricts a writable generation has to be
-		// durable before it is.
-		if h.cfg.WriteOwner != nil {
-			fields["write_owner"] = h.cfg.WriteOwner.String()
-		}
-		if err := h.phase(req.OperationID, KindExpose, PhaseUnseal, fields, func() error {
-			return h.unseal(rec, bindings, h.cfg.WriteOwner)
-		}); err != nil {
-			return err
-		}
-	}
-
+	// Nothing marks or unseals anymore (D-035): an rw exposure overlays the
+	// sealed generation rather than writing to it, so there is nothing to
+	// hand over and nothing that stops matching the release it came from.
+	// bind() creates and owns the writable layer as part of mounting it.
 	return h.phase(req.OperationID, KindExpose, PhaseBind, fields, func() error {
 		return h.bind(bindings)
 	})
 }
 
-// unseal hands each bound class tree to the declared owner and gives it back
-// its owner write bit.
-//
-// This is the half of D-020 P06 left open, and it is not reversed on
-// unexpose. Re-sealing would restore the MODES of a tree whose CONTENT is no
-// longer the release's — the appearance of a sealed generation without the
-// property, which is worse than an obviously dirty one. A generation exposed
-// writable is repaired by republishing it, which is what makes generations
-// ephemeral rather than things to be mended (D-022).
-func (h *HostBind) unseal(rec *publish.Record, bindings []Binding, owner *config.WriteOwner) error {
-	if owner == nil {
-		// Unreachable: preflight refuses rw with no declared owner. Stated as
-		// an error rather than assumed, because the alternative is unsealing
-		// to nobody or skipping silently, and a silent skip would turn the
-		// removal of that refusal into an exposure that merely does not work.
-		return fmt.Errorf("expose: rw reached the unseal step for %s/%s with no write owner; "+
-			"the preflight refusal is the gate and it did not run",
-			rec.Profile, rec.Generation)
-	}
-	for _, root := range writableRoots(rec, bindings) {
-		if err := hold.Unseal(root, h.chown, owner.UID, owner.GID); err != nil {
-			return fmt.Errorf("expose: unsealing %s for %s: %w", root, owner, err)
-		}
-	}
-	return nil
-}
-
-// preflight is the three hard preconditions, plus the rw rule.
+// preflight is the hard preconditions.
 func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Request,
 	access Access, fields map[string]string) error {
 
@@ -336,8 +273,10 @@ func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Reque
 		fields["chown_walk"] = "disabled"
 	}
 
-	// 3. Consumers stopped, and the rw single-consumer rule. Both are the
-	//    same question asked of the same resolver.
+	// 3. Consumers stopped. There is no single-write rule left to layer onto
+	//    this (D-035): an overlay's writes land in a per-server upper, never
+	//    in the generation itself, so a second rw consumer no longer shares
+	//    anything with the first to collide over.
 	rep, err := h.guard.Resolve(ctx, recordPaths(rec))
 	if err != nil {
 		return fmt.Errorf("expose: resolving consumers of %s/%s: %w",
@@ -347,10 +286,13 @@ func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Reque
 	if len(rep.Degraded) > 0 {
 		fields["degraded"] = strings.Join(rep.Degraded, "; ")
 	}
-	// A generation that has already been written through is not shared. Its
-	// content no longer provably matches the release it came from, so a
-	// second consumer would be reading something nobody verified — and the
-	// first consumer's next write would be doing it underneath them.
+	// A generation already dirty-capable predates this package, or came from
+	// a driver that still writes in place. Its content no longer provably
+	// matches the release it came from, so a second consumer would be
+	// reading something nobody verified — and the first consumer's next
+	// write would be doing it underneath them. New rw exposures never set
+	// this flag (D-035); it stays load-bearing for records that already
+	// carry it.
 	if rec.DirtyCapable && rep.Held() {
 		return &RefusalError{
 			Precondition: PreconditionDirty,
@@ -361,48 +303,15 @@ func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Reque
 				"republishing is how a written-through one is repaired",
 		}
 	}
-	if access == AccessRW && rep.Held() {
-		var who []string
-		for _, holder := range rep.Holders {
-			who = append(who, holder.String())
-		}
-		return &RefusalError{
-			Precondition: PreconditionSingleWrite,
-			Detail: fmt.Sprintf("access rw was requested for %s/%s, which already has %d "+
-				"consumer(s): %s. With two, a write is the 2026-07-29 corruption by "+
-				"construction: the peer holds the deleted old .pak open, the tmpfs "+
-				"exhausts mid-write, and the generation ends with a new .sig and no .pak",
-				rec.Profile, rec.Generation, len(rep.Holders), strings.Join(who, "; ")),
-			Fix: "stop the other consumers, or expose this generation ro",
-		}
-	}
-
-	// 4. Somebody to hand the unsealed tree to. Publication seals a class
-	//    tree a-w, so rw without an owner is a mount that permits writes
-	//    nobody but root can make — and the game's own updater, which is the
-	//    entire reason rw exists, runs as something else. Refused rather than
-	//    exposed, because that failure arrives as an update that reported
-	//    success and changed nothing.
-	if access == AccessRW && h.cfg.WriteOwner == nil {
-		return &RefusalError{
-			Precondition: PreconditionWriteOwner,
-			Detail: "access rw was requested but no write owner is declared. Publication " +
-				"seals a class tree read-only for everyone, so the exposure would permit " +
-				"writes at the mount level that the modes still refuse to every uid except " +
-				"root — an updater running in the game container would report success and " +
-				"write nothing",
-			Fix: "set wings.write_owner to the uid:gid Wings runs its server containers as " +
-				"(system.user.uid and system.user.gid in " + h.cfg.ConfigPath + "), or " +
-				"expose this generation ro",
-		}
-	}
 	return nil
 }
 
 // bind performs the mounts, and unwinds them if any one fails.
 //
 // A half-exposed server is worse than an unexposed one: the game starts,
-// finds some of its content, and fails somewhere further in.
+// finds some of its content, and fails somewhere further in. A refused mount
+// is not a refused exposure either way — this unwind is what makes that true
+// for the overlay bindings exactly as it already did for the ro binds.
 func (h *HostBind) bind(bindings []Binding) (err error) {
 	var done []string
 	defer func() {
@@ -419,6 +328,13 @@ func (h *HostBind) bind(bindings []Binding) (err error) {
 	for _, b := range bindings {
 		if err := os.MkdirAll(b.Target, 0o755); err != nil {
 			return fmt.Errorf("expose: creating %s: %w", b.Target, err)
+		}
+		if b.Upper != "" {
+			if err := h.mountOverlay(b); err != nil {
+				return err
+			}
+			done = append(done, b.Target)
+			continue
 		}
 		if err := h.mounter.Mount(b.Source, b.Target, "", syscall.MS_BIND, ""); err != nil {
 			return fmt.Errorf("expose: binding %s onto %s: %w", b.Source, b.Target, err)
@@ -438,12 +354,84 @@ func (h *HostBind) bind(bindings []Binding) (err error) {
 	return nil
 }
 
+// mountOverlay mounts b.Target as an overlay of b.Source (D-027, D-035):
+// b.Source, the sealed published exposure, as lowerdir; b.Upper as upperdir;
+// b.Work as overlayfs's own scratch directory.
+//
+// Before mounting, mirrorDirTree recreates b.Source's directory structure —
+// directories only, never files — inside b.Upper with permissive
+// (world-writable) modes. That is what makes the writable layer writable to
+// WHOEVER Wings runs the game container as, without srdm having to know or
+// declare that uid: overlayfs merges a directory's CHILDREN from both
+// layers, but takes its own mode and owner from whichever layer has an
+// entry there, upper winning when both do. A lower-only directory's mode is
+// the LOWER's — root-owned and sealed a-w — no matter how permissive the
+// mount point above it is, so a directory that is never mirrored is never
+// writable through the merged view. Measured against a real overlay mount
+// with an unprivileged uid (D-035): mirrored directories accept create,
+// delete and rename; a directory that exists only in the lower does not,
+// and neither does a true in-place O_TRUNC open of a file that has not yet
+// been copied up — real updaters replace files rather than truncate them in
+// place, which is the shape this is built for.
+func (h *HostBind) mountOverlay(b Binding) error {
+	if err := mirrorDirTree(b.Source, b.Upper); err != nil {
+		return fmt.Errorf("expose: preparing the writable overlay layer for %s: %w", b.Target, err)
+	}
+	if err := os.MkdirAll(b.Work, 0o700); err != nil {
+		return fmt.Errorf("expose: creating %s: %w", b.Work, err)
+	}
+	data := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", b.Source, b.Upper, b.Work)
+	if err := h.mounter.Mount("overlay", b.Target, "overlay", 0, data); err != nil {
+		return fmt.Errorf("expose: overlaying %s onto %s: %w", b.Source, b.Target, err)
+	}
+	return nil
+}
+
+// mirrorDirTree recreates every directory under lower inside upper, mode
+// 0o777. See mountOverlay for why this — and not some narrower permission —
+// is what an overlay's upper layer needs to be writable by an uid srdm does
+// not know.
+//
+// Idempotent: re-running it (a server re-exposed after a restart) only ever
+// widens a directory back to 0o777 and never touches anything the writer
+// itself created afterward, which already has the writer's own permissive
+// permissions because the writer made it inside a directory it could
+// already write to.
+func mirrorDirTree(lower, upper string) error {
+	return filepath.WalkDir(lower, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(lower, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(upper, rel)
+		if err := os.MkdirAll(target, 0o777); err != nil {
+			return err
+		}
+		return os.Chmod(target, 0o777)
+	})
+}
+
 // Unexpose removes a server's exposure.
 //
 // It does not consult the consumer guard: removing a bind from a stopped
 // server's volume is how a consumer STOPS holding a generation, so refusing
 // while one holds would make the state unreachable. Publication's teardown
 // is where the refusal belongs, and it runs after this.
+//
+// An rw binding's overlay upper/work layers are discarded here, after the
+// mount is gone (D-035's "retained or discarded" decision, resolved
+// discarded — see the LOG). That is safe rather than lossy because harvest
+// is what reads a per-server overlay's merged view, and every documented rw
+// flow reads it BEFORE calling this: by the time Unexpose runs, anything
+// worth keeping has already been captured into a release. Best-effort:
+// a stray directory left behind wastes disk, not correctness, and must
+// never block a server's teardown.
 func (h *HostBind) Unexpose(ctx context.Context, rec *publish.Record, prof *profile.Profile,
 	req Request) error {
 
@@ -467,6 +455,12 @@ func (h *HostBind) Unexpose(ctx context.Context, rec *publish.Record, prof *prof
 			if err := h.unmountIfMounted(t); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", t, err))
 			}
+		}
+		for _, b := range bindings {
+			if b.Upper == "" {
+				continue
+			}
+			_ = os.RemoveAll(filepath.Dir(b.Upper))
 		}
 		return errors.Join(errs...)
 	})
@@ -504,6 +498,100 @@ func (h *HostBind) Exposed(rec *publish.Record, prof *profile.Profile, req Reque
 		out = append(out, b)
 	}
 	return out, nil
+}
+
+// RWServers returns every server currently holding an rw (overlay) exposure
+// of rec, discovered from srdm's own mount table rather than from Docker or
+// from any stored registry — the same reasoning as D-018, and simpler here:
+// srdm mounted these overlays itself, in its own mount namespace, so it does
+// not need to ask anything external about its own mounts.
+//
+// harvest uses this to default `--from-server` when exactly one server
+// holds rw, and to refuse when more than one does — there is then no single
+// truth to read without being told which.
+func (h *HostBind) RWServers(rec *publish.Record) ([]string, error) {
+	entries, err := mountinfo.Read(h.mountInfoPath)
+	if err != nil {
+		return nil, fmt.Errorf("expose: reading the mount table: %w", err)
+	}
+	lowers := make([]string, 0, len(rec.Classes))
+	for _, c := range rec.Classes {
+		lowers = append(lowers, c.ExposePath)
+	}
+
+	seen := make(map[string]bool)
+	var servers []string
+	for _, e := range entries {
+		if e.FSType != "overlay" {
+			continue
+		}
+		if !underAny(e.MountPoint, h.cfg.VolumeRoot) {
+			continue
+		}
+		if !anyLowerUnder(overlayLowerDirs(e), lowers) {
+			continue
+		}
+		server, ok := firstPathComponent(h.cfg.VolumeRoot, e.MountPoint)
+		if !ok || seen[server] {
+			continue
+		}
+		seen[server] = true
+		servers = append(servers, server)
+	}
+	sort.Strings(servers)
+	return servers, nil
+}
+
+// overlayLowerDirs parses the colon-separated `lowerdir=` mount option. See
+// internal/consumer's copy of the same parse — duplicated rather than
+// shared, because internal/mountinfo is out of this package's scope and the
+// parse is a handful of lines either way.
+func overlayLowerDirs(e mountinfo.Entry) []string {
+	for _, opt := range e.SuperOptions {
+		if v, ok := strings.CutPrefix(opt, "lowerdir="); ok {
+			return strings.Split(v, ":")
+		}
+	}
+	return nil
+}
+
+// anyLowerUnder reports whether any lowerdir element is at or beneath any of
+// roots, matching whole path components.
+func anyLowerUnder(lowerdirs, roots []string) bool {
+	for _, l := range lowerdirs {
+		if underAny(l, roots...) {
+			return true
+		}
+	}
+	return false
+}
+
+// underAny reports whether path is at or beneath any of roots, matching
+// whole path components so "/run/srdm-old" is not beneath "/run/srdm".
+func underAny(path string, roots ...string) bool {
+	path = strings.TrimSuffix(path, "/")
+	for _, root := range roots {
+		root = strings.TrimSuffix(root, "/")
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// firstPathComponent returns the first path segment of target relative to
+// root — the server id, since every rw binding's Target is
+// VolumeRoot/<serverID>/<class path>.
+func firstPathComponent(root, target string) (string, bool) {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", false
+	}
+	seg, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+	if seg == "" {
+		return "", false
+	}
+	return seg, true
 }
 
 // recordPaths is every mount point a published record names.
