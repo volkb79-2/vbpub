@@ -22,7 +22,7 @@ call).
 
 DISPATCH: reuses onboarding_scan.py's read-only + redacted agent-dispatch
 PATTERN (a `frontier-review` tier route via `config.Routes`, read-only tool
-allowlist appended unconditionally, `config.redact()` before the reply is
+allowlist appended unconditionally, `config.redact_text()` before the reply is
 ever parsed or stored) -- re-authored here rather than imported, the same
 "MIRROR, NOT FORK" convention onboarding_scan.py itself already used against
 decision_chat.py/intake_chat.py: a sibling module independently re-authors
@@ -42,7 +42,7 @@ fabricating a draft from nothing; the interactive greenfield north-star-first
 Q&A is an explicit follow-up, out of scope here.
 
 INJECTION BOUNDARY: the agent's reply is model-authored free text; it is (a)
-passed through `config.redact()` before it is ever parsed OR written into a
+passed through `config.redact_text()` before it is ever parsed OR written into a
 spine doc, (b) dispatched with a read-only tool allowlist (no Edit/Write/
 Bash -- READONLY_ARGV_SUFFIX), and (c) NEVER accepted as freeform prose --
 see "structured-output discipline" below.
@@ -536,7 +536,7 @@ def run_questionnaire(project_root: Path, *, trove_name: str = "nyxloom-trove") 
 
     log_path = trove_dir / "agent-logs" / "onboarding-questionnaire-turn.log"
     reply_raw = _run_subprocess_turn(argv, worktree=worktree, log_path=log_path)
-    reply = config.redact(reply_raw)
+    reply = config.redact_text(reply_raw)
 
     draft = _parse_draft_reply(reply)
 

@@ -118,6 +118,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import Any, Callable
 
+from .config import healthy_routes
 from .stages import effective_concurrency, stage_context
 from .types import Role, TaskState, TERMINAL_TASK_STATES
 
@@ -467,9 +468,7 @@ class PlanContext:
             for tsf in inp.states.values()
         )
         frontier_routes = inp.routes.for_role(Role.REVIEW_INDEPENDENT.value)
-        frontier_route_available = any(
-            inp.provider_ok.get(r.route_id, False) for r in frontier_routes
-        )
+        frontier_route_available = bool(healthy_routes(frontier_routes, inp.provider_ok))
         active_count = sum(
             1 for tsf in inp.states.values()
             if tsf.state in (TaskState.ACTIVE, TaskState.AWAITING_REVIEW)

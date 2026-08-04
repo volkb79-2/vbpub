@@ -17,7 +17,7 @@ case.
 
 DISPATCH: reuses decision_chat.py's read-only + redacted agent-dispatch
 PATTERN (a `frontier-review` tier route via `config.Routes`, read-only tool
-allowlist appended unconditionally, `config.redact()` before the reply is
+allowlist appended unconditionally, `config.redact_text()` before the reply is
 ever stored) -- re-authored here rather than imported, the same "MIRROR, NOT
 FORK" convention intake_chat.py (P29) already established against
 decision_chat.py (P18): a sibling module independently re-authors the
@@ -40,7 +40,7 @@ convention decision_chat.py's own docstring uses):
    read `default_branch` and default `redact_patterns` (usually empty at
    onboarding time anyway) -- `_read_default_branch` below reads the one
    value actually needed straight from the trove's own `nyxloom.toml`, and
-   `config.redact()` (module-level, default patterns) covers the rest. No
+   `config.redact_text()` (module-level, default patterns) covers the rest. No
    project registration (paths.project_dir / the daemon registry) is
    touched by this module either -- the raw turn log and the parsed
    assessment both live inside the trove (`agent-logs/` -- already
@@ -53,7 +53,7 @@ convention decision_chat.py's own docstring uses):
    `build_resume`/session-id-capture path here -- only `build_dispatch`.
 
 INJECTION BOUNDARY: the agent's reply is model-authored free text; it is (a)
-passed through `config.redact()` before it is parsed OR stored, (b)
+passed through `config.redact_text()` before it is parsed OR stored, (b)
 dispatched with a read-only tool allowlist (no Edit/Write/Bash --
 READONLY_ARGV_SUFFIX), and (c) NEVER accepted as freeform prose -- see
 "structured-output discipline" below.
@@ -457,7 +457,7 @@ def run_assessment_scan(
 
     log_path = trove_dir / "agent-logs" / "onboarding-scan-turn.log"
     reply_raw = _run_subprocess_turn(argv, worktree=worktree, log_path=log_path)
-    reply = config.redact(reply_raw)
+    reply = config.redact_text(reply_raw)
 
     result = _parse_assessment_reply(reply)
     _record_assessment(trove_dir, result)

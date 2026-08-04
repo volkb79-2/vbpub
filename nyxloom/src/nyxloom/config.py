@@ -460,7 +460,7 @@ class ProjectConfig:
         )
 
     def redact(self, text: str) -> str:
-        return redact(text, self.redact_patterns)
+        return redact_text(text, self.redact_patterns)
 
 
 # ---------------------------------------------------------------------------
@@ -574,8 +574,19 @@ _DEFAULT_REDACT = [
 ]
 
 
-def redact(text: str, patterns: list[str] | None = None) -> str:
-    """Apply default + project redaction patterns; replacement '[REDACTED]'."""
+def redact_text(text: str, patterns: list[str] | None = None) -> str:
+    """Apply default + project redaction patterns; replacement '[REDACTED]'.
+
+    Named distinctly from ``ProjectConfig.redact`` (the method every other
+    call site uses) rather than sharing its name -- CR-08 Slice 2a made
+    ``config.py`` newly reachable by the purity oracle's call-graph walk
+    (via a plain, directly-resolvable function import, ``healthy_routes``,
+    unlike the ``.for_tier()``/``.for_role()`` method-on-attribute calls the
+    walker cannot see at all), which surfaced this collision as a real
+    ambiguity risk: the oracle's name-resolution is text/scope-naive, so a
+    module-level function and a same-named method could resolve to the
+    wrong one silently. Latent before, live now that this module is walked.
+    """
     for pat in _DEFAULT_REDACT + list(patterns or []):
         text = re.sub(pat, "[REDACTED]", text)
     return text
@@ -711,6 +722,39 @@ class Routes:
         if role == "review-independent":          # legacy tier name, pre-D-CORRECT-2
             return self.for_tier("frontier-review")
         return []
+
+
+def healthy_routes(candidates: list[RouteDef], provider_ok: dict[str, bool]) -> list[RouteDef]:
+    """The subset of ``candidates`` whose provider is currently healthy, in
+    the same order.
+
+    CR-08 Slice 2a: the ONE place "is a route healthy" is decided, replacing
+    four independently hand-written copies of the same ``provider_ok.get(...,
+    False)`` filter (``reconcile._check_healthy_route``,
+    ``planning.PlanContext.derive``'s ``frontier_route_available``, and two
+    separately-written "first healthy route" loops in ``rules_dispatch.py``
+    and ``rules_attempts.py``) -- the same drift risk this program's own
+    history keeps finding in duplicated dispatch logic (CR-07a/CR-07c).
+
+    Deliberately a PLAIN FUNCTION over a candidate list and a health map, not
+    a ``Routes`` method: it needs no tier/role knowledge (``for_tier``/
+    ``for_role`` already produced ``candidates``), and living in ``config.py``
+    -- which imports neither ``reconcile.py`` nor ``planning.py`` -- is what
+    lets both the pure planning core and the impure effect boundary import it
+    without a cycle (``reconcile.py`` already imports FROM ``planning.py``,
+    so the reverse is unavailable).
+
+    Zero I/O, zero clock, zero logging -- callable from anywhere, including
+    ``reconcile.plan_project``'s pure core (D-L5, docs/plan-logging.md),
+    following the precedent ``reconcile.attempts_used``/
+    ``effects_dispatch.budget_remaining`` already set (pure predicates safely
+    shared by both sides of the purity boundary) rather than the shape that
+    broke once already at this exact call site: a log call added to
+    ``Routes.for_tier`` itself, reachable from both sides, silently made
+    every pure caller impure (CR-08's route-resolution fix, reverted after
+    independent review; see ``for_tier``'s own docstring above).
+    """
+    return [r for r in candidates if provider_ok.get(r.route_id, False)]
 
 
 # ---------------------------------------------------------------------------
