@@ -33,11 +33,25 @@ Wants=docker.service
 
 [Service]
 Type=simple
-# Creates /run/mdt-buildkitd (correct ownership) before ExecStart, removes
-# it after — /run is tmpfs, so this must happen every boot; RuntimeDirectory=
-# does it natively instead of a one-shot mkdir in install.sh that would only
-# apply to the run install.sh itself happened in.
+# Creates /run/mdt-buildkitd before ExecStart, removes it after — /run is
+# tmpfs, so this must happen every boot; RuntimeDirectory= does it natively
+# instead of a one-shot mkdir in install.sh that would only apply to the run
+# install.sh itself happened in.
+#
+# RuntimeDirectoryMode=0777 is required, not just permissive: this unit has
+# no User=/Group=, so RuntimeDirectory='s default mode (0755, root:root)
+# only lets ROOT write into it — but the container that mounts it is the
+# ROOTLESS buildkit image (deliberately, see above), whose buildkitd process
+# runs as uid 1000 inside its OWN, unrelated user namespace (no
+# --userns-remap on this `docker run`, so that uid is exactly what the HOST
+# kernel sees on the bind-mounted directory too). Without 0777, buildkitd
+# fails at startup: "listen unix /run/buildkit/buildkitd.sock: bind:
+# permission denied" (verified live). The directory holds nothing but this
+# one socket for this one container's lifetime, so world-writable here
+# carries no meaningful exposure beyond what local docker-group access
+# already grants.
 RuntimeDirectory=mdt-buildkitd
+RuntimeDirectoryMode=0777
 # Clear any stale container from an unclean shutdown before starting fresh
 # (the "-" prefix makes a failure here non-fatal — nothing to clear is fine).
 ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
