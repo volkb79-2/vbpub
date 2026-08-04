@@ -4,24 +4,28 @@
 # dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
 # which this owns fully).
 #
-#   sudo ./install.sh [--with-baseline] [--force]
+#   sudo ./install.sh [--with-baseline] [--force] [--restart-docker]
 #
 # Idempotent. First run seeds /etc/mdt/host-setup.env from the example (review
 # it, then re-run to apply your edits). --with-baseline additionally runs the
 # fio benchmark (~4 min of saturated disk — quiet window!). --force backs up
 # an already-installed /etc/mdt/host-setup.env and re-seeds it from the
 # current example (needed to pick up newly-added variables — otherwise this
-# script never touches a config that's already there). See README.md.
+# script never touches a config that's already there). --restart-docker will
+# automatically restart docker.socket and docker.service at the end (warning:
+# disrupts all running containers). See README.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 WITH_BASELINE=0
 FORCE=0
+AUTO_RESTART_DOCKER=0
 for arg in "$@"; do
   case "$arg" in
     --with-baseline) WITH_BASELINE=1 ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --restart-docker) AUTO_RESTART_DOCKER=1 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -167,10 +171,11 @@ print(f"merged into {path}: cgroup-parent={cgroup_parent} (needs a dockerd RESTA
 PY
 
 echo "== scripts =="
-install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh" /usr/local/sbin/mdt-apply-dev-caps.sh
-install -m 0755 "$HERE/scripts/mdt-io-baseline.py"    /usr/local/sbin/mdt-io-baseline.py
-install -m 0755 "$HERE/scripts/mdt-slice-audit.py"    /usr/local/sbin/mdt-slice-audit.py
-install -m 0755 "$HERE/scripts/check.sh"              /usr/local/sbin/mdt-host-check.sh
+install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh"  /usr/local/sbin/mdt-apply-dev-caps.sh
+install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
+install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
+install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
+install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 
 echo "== BFQ scheduler (io.weight needs it; io.max caps work on any scheduler) =="
 install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
@@ -199,13 +204,27 @@ if [ "$WITH_BASELINE" = 1 ]; then
 fi
 
 systemctl start mdt-host-slices.service           # apply runtime caps now
-echo "== done — verify with: mdt-host-check.sh =="
-echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
-echo "   'systemctl restart docker' to take effect — this restarts every running"
-echo "   container. Not done automatically by this script."
-echo "== REMINDER: the new /run/docker-api/docker.sock listener needs a scheduled"
-echo "   'systemctl restart docker.socket docker.service' to take effect — dockerd"
-echo "   only picks up newly-added listen sockets at its own startup, so restarting"
-echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
-echo "   the daemon.json restart above; batch them into the same window. Not done"
-echo "   automatically by this script."
+
+# Optional: automatically restart docker if requested (--restart-docker flag)
+if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
+  echo "== docker restart (--restart-docker flag set) =="
+  echo "restarting docker.socket and docker.service..."
+  systemctl restart docker.socket docker.service
+  if [ $? -eq 0 ]; then
+    echo "docker restarted successfully"
+  else
+    echo "WARNING: docker restart failed — see 'systemctl status docker.socket docker.service' for details"
+    exit 1
+  fi
+else
+  echo "== done — verify with: mdt-host-check.sh =="
+  echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
+  echo "   'systemctl restart docker' to take effect — this restarts every running"
+  echo "   container. Not done automatically by this script."
+  echo "== REMINDER: the new /run/docker-api/docker.sock listener needs a scheduled"
+  echo "   'systemctl restart docker.socket docker.service' to take effect — dockerd"
+  echo "   only picks up newly-added listen sockets at its own startup, so restarting"
+  echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
+  echo "   the daemon.json restart above; batch them into the same window. Not done"
+  echo "   automatically by this script (use --restart-docker flag to enable)."
+fi
