@@ -141,6 +141,10 @@ an unparsable plan always is.
 
 ## Gaps
 
+- **No privileged e2e oracle for adoption/quarantine or reconciliation
+  repair yet.** Gated at the unit level against fakes only; the real-kernel,
+  real-systemd fact — a genuinely crashed operation told apart from a
+  genuinely finished one — is not yet measured. → backlog.
 - **An unparsable operation plan cannot stop its own hold unit.** Named
   above and in `sweepOpDir`'s own comment; journaled, not silent. → backlog.
 - **Generation GC's "no labeled container in any state" term** is unchanged
@@ -154,7 +158,30 @@ an unparsable plan always is.
 
 ```
 tools/gate.sh <worktree> unit       → gofmt, build, vet, all oracles green
-tools/canary-run.sh                 → PLACEHOLDER — see below
-tools/gate.sh <worktree> coverage   → PLACEHOLDER — see below
-nyxloom lint                        → PLACEHOLDER — see below
+tools/gate.sh <worktree> e2e        → 39 privileged oracles green (regression;
+                                       none are new to P08b — see below)
+tools/canary-run.sh                 → 72 canaries rejected, 0 survived
+tools/gate.sh <worktree> coverage   → 261/344 changed lines (75.9% >= 75.0%)
+nyxloom lint nyxloom-trove/handoffs/*.md → clean
 ```
+
+5 new canaries (`P08b-adopt-ignores-kernel`, `...-quarantine-discards-good-work`,
+`...-restore-trusts-a-stale-record`, `...-reconcile-clears-what-is-assigned`,
+`...-clear-ignores-holders`), plus one pre-existing canary
+(`P04-unheld-invisible`) repointed at `classCompleteness`, the function its
+target mutation moved into when `Reconcile`'s per-record loop was factored
+out so `AdoptOrQuarantine` and `IsComplete` could share it — caught by the
+canary run itself reporting "the mutation matched nothing", exactly the
+failure mode it exists to catch.
+
+**Not run this pass: privileged e2e oracles specific to P08b's new
+mechanisms.** The existing 39 privileged oracles were re-run as a regression
+check against `Publish`'s changed sequence (the new plan write/remove) and
+`Reconcile`'s refactor, and stayed green — see below. But `AdoptOrQuarantine`,
+`IsComplete`, `RepairReadOnly` and `ClearForRepublish` are gated here only
+at the unit level, against fakes. The one fact that is not yet MEASURED
+rather than argued: that a real crashed operation — a real killed process,
+real leftover mounts, a real hold unit systemd still reports active — is
+correctly told apart from a genuinely finished one by the real kernel and
+the real systemd, not by a fake standing in for either. Stated as a gap
+rather than skipped silently.

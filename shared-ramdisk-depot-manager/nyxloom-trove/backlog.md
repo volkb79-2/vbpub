@@ -59,6 +59,17 @@ tree already has is worse than an empty one.
   keep that property, at the cost of a second manifest builder to keep in
   step with the first. Measure the copy against the hash before deciding it
   is worth two implementations.
+- **No privileged e2e oracle for adoption/quarantine or reconciliation
+  repair** (P08b). `AdoptOrQuarantine`, `IsComplete`, `RepairReadOnly` and
+  `ClearForRepublish` are gated at the unit level against fakes for a
+  mounter, a holder and a mount table. The fact still unmeasured against the
+  real kernel: a genuinely killed process's leftover plan, mounts and hold
+  unit, told apart from a genuinely finished operation, by real systemd and
+  real `/proc/self/mountinfo` rather than by a fake standing in for either —
+  the same category of fact D-011/D-013 exist because a fake would have
+  guessed wrong about. Wants a `kill -9` of the daemon mid-`Publish` in the
+  privileged harness, then `AdoptOrQuarantine` against what that really
+  leaves behind.
 - **An unparsable operation plan cannot stop its own hold unit** (P08b). If
   `internal/publish`'s durable operation plan (`OpPlanFile`) is found
   corrupted — practically only disk damage, since srdm alone ever writes it
