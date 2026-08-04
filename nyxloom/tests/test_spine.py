@@ -195,6 +195,53 @@ class TestS1SchemaValidity:
         findings = lint.lint_spine(cfg)["nyxloom-trove/2-product-definition.md"]
         assert any(f.rule == "S1" for f in findings)
 
+    def test_a_structured_acceptance_item_may_stay_a_plain_string(self, tmp_path):
+        """CR-12a: acceptance[] items are additive -- a plain string (the
+        pre-existing, still-majority shape) stays schema-valid unchanged."""
+        cfg = _write_project(
+            tmp_path,
+            'product_definition = "nyxloom-trove/2-product-definition.md"\n',
+            {"nyxloom-trove/2-product-definition.md": VALID_PRODUCT_DEF},
+        )
+        results = lint.lint_spine(cfg)
+        assert _findings_for(results, "nyxloom-trove/2-product-definition.md") == []
+
+    def test_a_structured_acceptance_item_with_evidence_passes(self, tmp_path):
+        structured = VALID_PRODUCT_DEF.replace(
+            'acceptance: ["it does the thing"]',
+            "acceptance:\n"
+            "          - id: F001-A1\n"
+            "            text: it does the thing\n"
+            "            status: proven\n"
+            "            evidence: [\"tests/test_x.py::test_y\"]",
+        )
+        cfg = _write_project(
+            tmp_path,
+            'product_definition = "nyxloom-trove/2-product-definition.md"\n',
+            {"nyxloom-trove/2-product-definition.md": structured},
+        )
+        results = lint.lint_spine(cfg)
+        assert _findings_for(results, "nyxloom-trove/2-product-definition.md") == []
+
+    def test_a_proven_structured_acceptance_item_with_no_evidence_fails_s1(self, tmp_path):
+        """CR-12a: status=proven with no evidence citations is exactly the
+        hollow, silently-skipped claim S1 exists to close -- schema-
+        enforced, not left to a project's own ad hoc tests to catch."""
+        hollow = VALID_PRODUCT_DEF.replace(
+            'acceptance: ["it does the thing"]',
+            "acceptance:\n"
+            "          - id: F001-A1\n"
+            "            text: it does the thing\n"
+            "            status: proven",
+        )
+        cfg = _write_project(
+            tmp_path,
+            'product_definition = "nyxloom-trove/2-product-definition.md"\n',
+            {"nyxloom-trove/2-product-definition.md": hollow},
+        )
+        findings = lint.lint_spine(cfg)["nyxloom-trove/2-product-definition.md"]
+        assert any(f.rule == "S1" for f in findings)
+
     def test_valid_north_star_passes(self, tmp_path):
         cfg = _write_project(
             tmp_path,

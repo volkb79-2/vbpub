@@ -6,12 +6,22 @@ features:
 - id: F001
   title: Direction spine
   acceptance:
-  - The four spine docs (north-star/product-definition/roadmap/backlog) exist as managed
-    markdown with schema-validated frontmatter.
-  - nyxloom lint S1-S5 flags a corrupt, schema-invalid, or duplicate-id spine doc
-    as a hard error (fail-closed), never a silent skip.
-  - The frontmatter is the machine-trusted surface; the markdown body is human narrative
-    the machine never parses for correctness.
+  - id: F001-A1
+    text: The four spine docs (north-star/product-definition/roadmap/backlog) exist as managed markdown with schema-validated frontmatter.
+    status: proven
+    evidence:
+    - tests/test_spine.py::TestS1SchemaValidity::test_valid_product_definition_passes
+    - tests/test_spine.py::TestS1SchemaValidity::test_valid_north_star_passes
+  - id: F001-A2
+    text: nyxloom lint S1-S5 flags a corrupt, schema-invalid, or duplicate-id spine doc as a hard error (fail-closed), never a silent skip.
+    status: proven
+    evidence:
+    - tests/test_spine.py::TestS4FailClosed::test_unparsable_frontmatter_is_hard_error
+    - tests/test_spine.py::TestS1SchemaValidity::test_missing_required_field_fails_s1
+    - tests/test_spine.py::TestS5UniqueIds::test_duplicate_product_definition_id_fails_s5
+  - id: F001-A3
+    text: The frontmatter is the machine-trusted surface; the markdown body is human narrative the machine never parses for correctness.
+    status: absent
   status: shipped
   milestone: M1
 - id: F002
@@ -28,10 +38,22 @@ features:
 - id: F003
   title: Event-sourced task lifecycle
   acceptance:
-  - Every task moves through carve -> queue -> implement -> review -> merge -> validate
-    -> complete, with explicit reject / blocked / superseded legs.
-  - 'No state is a dead end: a stuck task always progresses or escalates.'
-  - An illegal state transition is rejected before it is appended to the event log.
+  - id: F003-A1
+    text: Every task moves through carve -> queue -> implement -> review -> merge -> validate -> complete, with explicit reject / blocked / superseded legs.
+    status: proven
+    evidence:
+    - tests/test_invariants.py::test_task_transition_graph_fully_reachable_from_carved
+  - id: F003-A2
+    text: 'No state is a dead end: a stuck task always progresses or escalates.'
+    status: proven
+    evidence:
+    - tests/test_invariants.py::test_every_nonterminal_taskstate_is_planned_manual_or_tracked_gap
+    - tests/test_invariants.py::test_known_state_gaps_is_empty
+  - id: F003-A3
+    text: An illegal state transition is rejected before it is appended to the event log.
+    status: proven
+    evidence:
+    - tests/test_storage.py::test_illegal_transition_via_append_and_apply_appends_no_event
   status: shipped
   milestone: M1
 - id: F004

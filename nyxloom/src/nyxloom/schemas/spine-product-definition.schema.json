@@ -25,7 +25,40 @@
           "title": {"type": "string", "minLength": 1},
           "acceptance": {
             "type": "array",
-            "items": {"type": "string", "minLength": 1},
+            "items": {
+              "oneOf": [
+                {"type": "string", "minLength": 1},
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "text", "status"],
+                  "description": "CR-12a: a STRUCTURED criterion -- id/text/status/evidence -- for the small subset of features migrated onto per-criterion evidence tracking. Optional per item; an item may stay a plain string.",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^F[0-9]{3,}-A[0-9]+$",
+                      "description": "Stable within this feature; '<feature id>-A<n>'"
+                    },
+                    "text": {"type": "string", "minLength": 1},
+                    "status": {
+                      "enum": ["proven", "absent"],
+                      "description": "Deliberately not the charter's full four-state vocabulary (absent/building/proven/degraded) -- 'building'/'degraded' have no forcing function yet; see the CR-12 split ledger row."
+                    },
+                    "evidence": {
+                      "type": "array",
+                      "items": {"type": "string", "minLength": 1},
+                      "description": "Pytest node ids (e.g. 'tests/test_x.py::TestFoo::test_bar'), resolved by nyxloom.product_evidence.evidence_resolves"
+                    }
+                  },
+                  "if": {"properties": {"status": {"const": "proven"}}},
+                  "then": {
+                    "required": ["evidence"],
+                    "properties": {"evidence": {"minItems": 1}},
+                    "description": "A hollow 'proven, no evidence' claim is exactly the silent-skip S1 exists to close -- schema-enforced, not left to a project's own tests to catch."
+                  }
+                }
+              ]
+            },
             "minItems": 1,
             "description": ">=1 checkable criterion (EARS-style), schema-enforced (also the S2 cross-doc requirement)"
           },
