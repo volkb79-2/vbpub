@@ -115,6 +115,14 @@ mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
 
+# Directory-mountable Docker API socket (/run/docker-api/docker.sock),
+# alongside the default /run/docker.sock — see units/docker-api-socket.conf
+# for why. No template variables (a fixed, well-known path, like
+# /run/mdt-buildkitd above), so installed directly rather than rendered.
+mkdir -p /etc/systemd/system/docker.socket.d
+install -m 0644 "$HERE/units/docker-api-socket.conf" \
+  /etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf
+
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.
 #   (dev.slice now carries the one IO ceiling for both tiers — see units/dev.slice.in)
@@ -195,3 +203,9 @@ echo "== done — verify with: mdt-host-check.sh =="
 echo "== REMINDER: /etc/docker/daemon.json's cgroup-parent change needs a scheduled"
 echo "   'systemctl restart docker' to take effect — this restarts every running"
 echo "   container. Not done automatically by this script."
+echo "== REMINDER: the new /run/docker-api/docker.sock listener needs a scheduled"
+echo "   'systemctl restart docker.socket docker.service' to take effect — dockerd"
+echo "   only picks up newly-added listen sockets at its own startup, so restarting"
+echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
+echo "   the daemon.json restart above; batch them into the same window. Not done"
+echo "   automatically by this script."

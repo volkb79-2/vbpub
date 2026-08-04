@@ -53,7 +53,20 @@
   // `ls ~/mdt--mounted-folders/` shows the whole set.
   "mounts": [
     // ── Docker / host integration ──────────────────────────────────────────────
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    // A DIRECTORY-level bind mount, not a file-level one — see
+    // host-setup/units/docker-api-socket.conf for why: a file-level
+    // `-v /var/run/docker.sock:/var/run/docker.sock` pins one socket inode,
+    // and goes stale (Docker access unrecoverable short of a rebuild) the
+    // next time dockerd restarts and recreates that file — verified live, an
+    // unrelated `apt upgrade` was enough. Binding the whole directory instead
+    // means a file dockerd recreates INSIDE it stays visible with no remount.
+    // HOST PREREQUISITE: mdt host-setup/install.sh's docker.socket drop-in
+    // (adds this as an ADDITIONAL listener — /run/docker.sock keeps working
+    // for other host tooling), applied via a scheduled
+    // `systemctl restart docker.socket docker.service` (see install.sh's own
+    // end-of-run reminder — disruptive, restarts every container, batch it
+    // with any other pending daemon.json change).
+    "source=/run/docker-api,target=/run/docker-api,type=bind",
     // Host-managed BuildKit worker (mdt-buildkitd.service, dev-buildkitd.slice
     // — see host-setup/plan-buildkitd-service.md). OPTIONAL and commented out:
     // an unconditional mount here would break container start on any host that
@@ -93,7 +106,9 @@
 
   // ─── 7. Container environment ──────────────────────────────────────────────────
   "containerEnv": {
-    "DOCKER_HOST": "unix:///var/run/docker.sock",
+    // Points at the directory-mounted socket above, not the default
+    // /var/run/docker.sock path — see that mount's own comment.
+    "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
     // This is the ONE place both tier names are declared — every tool that
