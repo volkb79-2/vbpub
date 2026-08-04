@@ -124,6 +124,16 @@ canary manifest-renamed-to-jsonl lib/store.py \
   '        return name' \
   tests/test_store.py::test_non_stream_filenames_keep_their_own_extension
 
+# 7. Log-derived phase marks must timestamp from the log line's own RFC3339
+#    clock, never from when we happened to read it: container log delivery
+#    buffers, sometimes by seconds, and a mark timestamped at arrival time
+#    would be systematically late relative to the 250ms sample series it
+#    exists to be correlated against — silently wrong on every real run.
+canary log-timestamp-uses-arrival-time lib/logtail.py \
+  '        when = epoch if epoch is not None else time.time()' \
+  '        when = time.time()' \
+  tests/test_logtail.py::TestHandleLine::test_literal_match_emits_a_mark_with_the_logs_own_timestamp
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "canaries: $pass rejected, $fail SURVIVED — the gate is not discriminating"

@@ -51,6 +51,27 @@ case "$target" in
   *) die "unknown target \"$target\" (expected unit or coverage)" ;;
 esac
 
+# --- preflight: every source file must actually be in git ------------------
+# The repo's root .gitignore carries a Python-boilerplate `lib/` rule (for venv
+# layouts). This package's source package is also called lib/, so every one of
+# its 17 modules was silently excluded from a commit — `git add -A` reported
+# success, the tests stayed green because they run against the working tree,
+# and the merged branch contained a package with no library in it. The gate is
+# the right place to catch that: it is the last thing that looks at the tree
+# before it is trusted.
+if command -v git >/dev/null 2>&1 && git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1; then
+  untracked="$(cd "$project_dir" && git ls-files --others --exclude-standard --directory \
+                 -- . 2>/dev/null | grep -E '\.(py|sh|toml)$' || true)"
+  ignored_src="$(cd "$project_dir" && git ls-files --others --ignored --exclude-standard \
+                   -- . 2>/dev/null | grep -E '^(lib|tools)/.*\.(py|sh)$' || true)"
+  if [ -n "$ignored_src" ]; then
+    printf 'gate: source files are IGNORED by git and would not be committed:\n' >&2
+    printf '  %s\n' $ignored_src >&2
+    die "add an exception to .gitignore (see !scripts/damon-analysis/lib/ for precedent)"
+  fi
+  [ -n "$untracked" ] && printf 'gate: warning — untracked source files:\n%s\n' "$untracked" >&2
+fi
+
 image="${CGPROFILE_GATE_IMAGE:-tester-unified:local}"
 docker image inspect "$image" >/dev/null 2>&1 || die "gate image $image is not present.
 Build it from the repo root:

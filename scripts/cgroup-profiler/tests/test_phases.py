@@ -209,6 +209,21 @@ class TestPhasesFromMarks:
         assert phases[0].source == "wrapper"
         assert phases[0].meta == {"cmd": "make"}
 
+    def test_an_unknown_source_string_is_treated_no_differently_than_mark_or_wrapper(self):
+        # Mark.source is a free string (lib/model.py); logtail.py's tailer
+        # writes "log", a value this function has never heard of. It must
+        # not filter, special-case, or otherwise treat it as noise — an
+        # explicit boundary is an explicit boundary regardless of who wrote
+        # it, and analyze.auto_phases relies on that to never rename it.
+        marks = [
+            Mark(t=0.0, name="startup", kind="phase", mono=0.0, source="mark"),
+            Mark(t=0.0, name="world-load-begin", kind="phase", mono=10.0, source="log",
+                 meta={"source_container": "soulmask", "line": "LogLoad: LoadMap: /Game/Base"}),
+        ]
+        phases = phases_from_marks(marks, t_start=0.0, t_end=20.0)
+        assert [(p.name, p.source) for p in phases] == [("startup", "mark"), ("world-load-begin", "log")]
+        assert phases[1].meta["source_container"] == "soulmask"
+
     def test_only_event_marks_falls_back_to_one_phase_like_no_marks_at_all(self):
         # `marks` is non-empty, but none of them are `kind="phase"` — the
         # boundaries list ends up empty just like the zero-marks case, and

@@ -23,7 +23,13 @@ eggs/
 .eggs/
 lib/
 lib64/
+# These `lib/` rules exist for venv layouts (venv/lib/...), but they also swallow
+# any project whose own source package happens to be called `lib/`. That has now
+# silently dropped two projects' entire source trees from a commit, so each one
+# needs an explicit exception here. `git add -A` reports success either way —
+# the files simply never appear.
 !scripts/damon-analysis/lib/
+!scripts/cgroup-profiler/lib/
 parts/
 sdist/
 var/
