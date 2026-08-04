@@ -135,6 +135,28 @@ def budget_remaining(cfg: ProjectConfig,
     return cfg.policy.max_cost - spent
 
 
+def route_currently_paused(ctx: effects.EffectContext, route: Any) -> bool:
+    """Is ``route`` paused RIGHT NOW, per the live
+    :class:`~nyxloom.effects.ProviderPauseRegistry` -- not the
+    ``provider_ok`` snapshot baked once before the pass's action loop.
+
+    ``ctx.provider_pause`` is ``None`` when no registry is wired (e.g. a
+    test-constructed context exercising an unrelated check) -- degrades to
+    "not paused" rather than crashing; this mirrors every other advisory
+    signal here (a probe that cannot run only ever REMOVES a dispatch
+    option, so an absent registry silently doing nothing is at worst a
+    missed refusal, never a wrongful one -- the plan-time ``provider_ok``
+    check upstream already covers the ordinary case).
+    """
+    registry = ctx.provider_pause
+    if registry is None:
+        return False
+    paused_until = registry.paused_until(getattr(route, "route_id", None))
+    if paused_until is None:
+        return False
+    return ctx.ports.clock.monotonic() < paused_until
+
+
 def admissible(ctx: effects.EffectContext, kind: str,
                route: Any = None) -> tuple[bool, str]:
     """May this launch happen right now? Reason string when not.
@@ -154,6 +176,24 @@ def admissible(ctx: effects.EffectContext, kind: str,
     already ran, so it drains). An exhausted budget blocks ALL kinds,
     including the review and resume legs the planner never gated, which are
     the most expensive to launch into a spent budget.
+
+    ROUTE HEALTH (CR-11a) is checked next, only when a ``route`` is given: a
+    route can be paused by ANOTHER task's outcome DURING this same pass --
+    ``LifecycleEffector.pause_provider`` mutates the same
+    :class:`~nyxloom.effects.ProviderPauseRegistry` this reads, from a LIMIT
+    receipt processed earlier in the same pass's action list -- but
+    ``ReconcileInput.provider_ok`` is a snapshot baked ONCE before the pass's
+    action loop starts and is never refreshed. Without this, a route paused
+    by task A's LIMIT receipt could still launch task B's already-planned
+    dispatch/resume into it later in the SAME pass, self-correcting only
+    after burning attempts against a route already known bad -- the gap
+    CR-08 Slice 2 named as CR-11's charter, not CR-08's, and sharpest for
+    ``ResumeAttempt``'s ordinary (non-poisoned) branch, which the PLANNER
+    never route-health-gates at all (unlike dispatch/fresh-start, which at
+    least check the STALE plan-time snapshot). A pause is a time-bounded
+    backoff (``PROVIDER_PAUSE_SECONDS``), so this refusal is SELF-HEALING
+    exactly like pause-mode/budget above -- it clears on its own once the
+    deadline passes, never a permanent stall.
 
     CONTAINMENT (CR-13a, D-R7) is checked LAST and only when a ``route`` is
     given: it is the most expensive question (two calls to the docker daemon)
@@ -181,6 +221,9 @@ def admissible(ctx: effects.EffectContext, kind: str,
     budget = budget_remaining(ctx.cfg, ctx.states)
     if budget is not None and budget <= 0:
         return (False, "budget-exhausted")
+    if route is not None and route_currently_paused(ctx, route):
+        route_id = getattr(route, "route_id", "?")
+        return (False, f"route-paused:{route_id}")
     if route is not None and containment.requires_containment(route):
         reason = containment.unavailable_reason(
             route, repo_root=str(ctx.cfg.root), run=ctx.ports.processes.run)

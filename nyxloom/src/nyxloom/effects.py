@@ -534,6 +534,19 @@ class EffectContext:
     #: distinguishes them. The pass owns this value and hands it down; an
     #: effector must not reach for a verdict that outlived its pass.
     snapshot_audit: Any = None
+    #: CR-11a: the SAME :class:`ProviderPauseRegistry` instance the daemon
+    #: constructs and :class:`~nyxloom.effects_lifecycle.LifecycleEffector`
+    #: mutates mid-pass (a route paused by one task's LIMIT receipt, while
+    #: other actions from the SAME pass's plan are still executing). Handed
+    #: down the same way ``snapshot_audit`` is, rather than living only on
+    #: the one effector that happens to write it, so ``admissible`` --
+    #: called from every launch family, not just lifecycle -- can read a
+    #: FRESH pause state at the moment of effect instead of trusting the
+    #: ``provider_ok`` snapshot baked once before the pass's action loop
+    #: started. ``None`` when no registry is wired (e.g. a test-constructed
+    #: context that never calls a route-bearing launch); the route-health
+    #: check degrades to a no-op in that case, never to a crash.
+    provider_pause: Any = None
 
     def events(self) -> Sequence[Event]:
         return self.ports.event_log.require(self.project)
