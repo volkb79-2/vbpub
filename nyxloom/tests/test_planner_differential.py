@@ -64,7 +64,7 @@ import legacy_planner
 import planner_corpus
 import planner_synthetic
 from nyxloom import planning, reconcile
-from nyxloom.types import AttemptState, CarverStatus, Role
+from nyxloom.types import AttemptState, CarverStatus, Role, TaskState
 
 
 def _real_states() -> set:
@@ -148,6 +148,8 @@ def compare(inp) -> list[str]:
             f"(order: legacy={[a[0] for a in old_actions]} new={[a[0] for a in new_actions]})"
         )
     old_trace, new_trace = _breadcrumbs(old), _breadcrumbs(new)
+    old_trace, trace_problems = apply_declared_breadcrumb_repairs(old_trace, new_trace, inp)
+    deltas.extend(trace_problems)
     if not _is_subsequence(old_trace, new_trace):
         missing = [n for n in old_trace if n not in new_trace]
         deltas.append(f"trace lost breadcrumbs: {missing!r} (new={new_trace!r})")
@@ -395,6 +397,14 @@ class Divergence:
     #: delta in its own right: it means the observed difference is NOT the one
     #: this entry claims.
     repair: Callable[[list, list, object], tuple[list, list[str]]] | None = None
+    #: Optional companion to `repair`, for a divergence that also changes
+    #: which breadcrumbs get emitted (a reordering repair never needs this --
+    #: the same breadcrumbs still appear in both traces; a DELETION repair
+    #: does, since the dropped action's own breadcrumb note is dropped too).
+    #: `(legacy_breadcrumbs, new_breadcrumbs, inp) -> (repaired_legacy_
+    #: breadcrumbs, problems)`, same non-empty-problems-is-a-delta contract
+    #: as `repair`.
+    breadcrumb_repair: Callable[[tuple, tuple, object], tuple[tuple, list[str]]] | None = None
 
 
 #: Actions the attempt ladder can plan, taken from the rule's own declaration
@@ -521,6 +531,95 @@ def _blocks_are_contiguous(task_ids: list[str]) -> bool:
     return len(runs) == len(set(runs))
 
 
+def _is_reasonless_needs_decision_park(task_id: str, inp) -> bool:
+    """True when `task_id` is CURRENTLY NEEDS_DECISION with no D-dep
+    declared at all -- the exact shape rules_lifecycle.decision_hold's
+    fixed release condition now refuses to auto-release (see
+    `_drop_reason_blind_decision_hold_releases`'s own docstring for why)."""
+    tsf = inp.states.get(task_id)
+    if tsf is None or tsf.state is not TaskState.NEEDS_DECISION:
+        return False
+    fm_entry = inp.frontmatters.get(task_id)
+    if fm_entry is None:
+        return False
+    fm, _relpath = fm_entry
+    return not fm.decision_deps()
+
+
+def _drop_reason_blind_decision_hold_releases(old: list, new: list, inp) -> tuple[list, list[str]]:
+    """Model the decision_hold release-blindness fix (2026-08-04, found
+    scoping CR-11b): the legacy planner releases ANY NEEDS_DECISION task
+    with no currently-open D-dep straight back to QUEUED -- including one
+    that never declared a D-dep at all (rules_lifecycle.reject_triage's
+    "product"/architectural-no-carve/attempts-exhausted-no-carve
+    escalations never mint one). The fixed planner requires the task to
+    have genuinely declared at least one D-dep before releasing, so a
+    reason-less park now stays parked.
+
+    This is a DELETION, not a reordering: the fix removes an action, it
+    does not move one. The model is correspondingly narrow -- it drops
+    ONLY a `Transition(to=QUEUED)` whose target task is CURRENTLY
+    NEEDS_DECISION in `inp.states` AND whose frontmatter declares NO D-dep
+    at all (`fm.decision_deps() == []`), and reports every OTHER
+    NEEDS_DECISION->QUEUED transition it finds as a problem instead of
+    silently keeping it -- so a real, unrelated release-path regression
+    (e.g. the genuine "D-dep closed" case breaking) is reported, never
+    absorbed by this entry. See `_drop_reason_blind_decision_hold_
+    breadcrumbs` for this deletion's trace-level companion -- dropping the
+    action alone leaves its `state-transition` breadcrumb note stranded in
+    the legacy trace with nothing to match in the new one.
+    """
+    problems: list[str] = []
+    repaired: list = []
+    for action in old:
+        if not (type(action).__name__ == "Transition"
+                and action.to is TaskState.QUEUED):
+            repaired.append(action)
+            continue
+        tsf = inp.states.get(action.task_id)
+        if tsf is None or tsf.state is not TaskState.NEEDS_DECISION:
+            repaired.append(action)
+            continue
+        if not _is_reasonless_needs_decision_park(action.task_id, inp):
+            fm, _ = inp.frontmatters.get(action.task_id, (None, None))
+            deps = fm.decision_deps() if fm is not None else None
+            problems.append(
+                f"{action.task_id}: legacy plans NEEDS_DECISION->QUEUED for a "
+                f"task that DOES declare a D-dep ({deps!r}) -- the declared "
+                f"repair only models the reason-less (no D-dep) release, so "
+                f"this is a different divergence, not this one")
+            repaired.append(action)
+            continue
+        # modeled divergence: a reason-less NEEDS_DECISION->QUEUED release --
+        # the fixed planner never emits it, so it is dropped, not kept.
+    return repaired, problems
+
+
+def _drop_reason_blind_decision_hold_breadcrumbs(
+        old_trace: tuple, new_trace: tuple, inp) -> tuple[tuple, list[str]]:
+    """The trace-level companion to `_drop_reason_blind_decision_hold_
+    releases`: the legacy trace carries a `('state-transition', task_id,
+    'NEEDS_DECISION->QUEUED')` breadcrumb for every action that repair
+    drops -- the fixed planner never plans the transition, so it never
+    emits the note either. Drops ONLY that exact breadcrumb shape for a
+    task `_is_reasonless_needs_decision_park` confirms is this divergence's
+    shape; any OTHER breadcrumb naming the same phrase for a task that is
+    NOT a reason-less park is reported, never silently dropped."""
+    problems: list[str] = []
+    repaired: list = []
+    for crumb in old_trace:
+        kind, task_id, detail = crumb
+        if kind == "state-transition" and detail == "NEEDS_DECISION->QUEUED":
+            if _is_reasonless_needs_decision_park(task_id, inp):
+                continue  # modeled divergence -- drop it, not keep it
+            problems.append(
+                f"{task_id}: legacy trace carries a NEEDS_DECISION->QUEUED "
+                f"breadcrumb for a task that is not a reason-less park -- "
+                f"outside this model's claimed shape")
+        repaired.append(crumb)
+    return tuple(repaired), problems
+
+
 KNOWN_DIVERGENCES: dict[str, Divergence] = {
     "self-reviewing-pair": Divergence(
         scenario="self-reviewing-pair",
@@ -534,6 +633,45 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
             "only because the HISTORICAL corpus contains no SELF_REVIEWING "
             "task at all, which is the blind spot this synthetic set exists "
             "to close."),
+    ),
+    # ORDER MATTERS here too: this DELETION must run BEFORE
+    # attempt-ladder-sorted-task-order's window-based reorder repair. That
+    # repair locates its window as the maximal common prefix/suffix of the
+    # two (partially repaired) plans and assumes the window's MULTISET is
+    # unchanged (a pure reorder) -- an unrepaired reason-less
+    # NEEDS_DECISION->QUEUED action sitting inside that window would make
+    # the two plans differ by COUNT, not just order, and the ladder repair
+    # would correctly refuse to touch it ("gained or lost an action"). The
+    # LIFECYCLE-channel deletion this repair performs is otherwise
+    # independent of the WAVE/ATTEMPT-channel repairs below.
+    "decision-hold-reason-blind-release": Divergence(
+        repair=_drop_reason_blind_decision_hold_releases,
+        breadcrumb_repair=_drop_reason_blind_decision_hold_breadcrumbs,
+        pin="test_the_decision_hold_divergence_only_ever_drops_a_reasonless_release",
+        why=(
+            "2026-08-04 (found scoping CR-11b): rules_lifecycle.decision_hold's "
+            "release condition was `NEEDS_DECISION and not open_d_deps -> "
+            "QUEUED` -- vacuously true both when a task's D-deps are now all "
+            "resolved AND when the task never declared a D-dep at all. "
+            "fm.decision_deps() is static frontmatter, never mutated by any "
+            "transition, so a task with none declared could never have been "
+            "parked by decision_hold's OWN entry branch (which requires "
+            "open_d_deps non-empty to fire) -- it must have arrived via "
+            "reject_triage's human-judgment escalations (product / "
+            "architectural-no-carve / attempts-exhausted-no-carve), none of "
+            "which mint a D-dep. The old condition silently reversed every "
+            "one of them on the VERY NEXT reconcile pass, re-dispatching work "
+            "a reviewer explicitly said needed a human decision, with no "
+            "operator-visible event and no D-NNN decision for an operator to "
+            "act on even if they noticed. Confirmed empirically with a "
+            "two-pass repro before the fix. Release now requires "
+            "fm.decision_deps() to be non-empty -- a reason-less park stays "
+            "parked, correctly requiring an operator to act rather than "
+            "being silently, mechanically undone. This is a real correctness "
+            "fix, not a decomposition artifact; it is declared here (a "
+            "DELETION model, not a reordering) rather than folded into a "
+            "scenario exemption, so the general comparison keeps checking "
+            "everything else the way it always has."),
     ),
     # ORDER MATTERS, and only here. The resume-session repair must run FIRST:
     # `LaunchReview` sits in the WAVE channel, AFTER the attempt run, so an
@@ -585,6 +723,21 @@ def apply_declared_repairs(old: list, new: list, inp) -> tuple[list, list[str]]:
         old, found = divergence.repair(old, new, inp)
         problems.extend(f"{name}: {p}" for p in found)
     return old, problems
+
+
+def apply_declared_breadcrumb_repairs(old_trace: tuple, new_trace: tuple,
+                                      inp) -> tuple[tuple, list[str]]:
+    """Put the legacy trace through every declared breadcrumb repair, in
+    declared order -- the trace-level companion to `apply_declared_repairs`,
+    needed only by a divergence that DELETES an action (a reordering
+    divergence's breadcrumbs still all appear in both traces unchanged)."""
+    problems: list[str] = []
+    for name, divergence in KNOWN_DIVERGENCES.items():
+        if divergence.breadcrumb_repair is None:
+            continue
+        old_trace, found = divergence.breadcrumb_repair(old_trace, new_trace, inp)
+        problems.extend(f"{name}: {p}" for p in found)
+    return old_trace, problems
 
 
 @pytest.mark.parametrize("profile", corpus_profiles.PROFILE_NAMES)
@@ -715,6 +868,85 @@ def test_the_attempt_ladder_divergence_is_exactly_a_block_reordering():
         f"only {moved} of {len(planner_corpus.projections())} projections "
         f"reorder -- CR-06b measured 199 under this profile, so either the "
         f"repair was reverted or the corpus no longer exercises it")
+
+
+def test_the_decision_hold_divergence_only_ever_drops_a_reasonless_release():
+    """Pin the repair-scoped decision-hold divergence, in both directions,
+    across every environment profile the "needs-decision-pair" scenario is
+    built under (its own comment claims the 'decisions-open' profile
+    differs from the rest -- irrelevant here, since NEITHER task ever
+    declares a D-dep, so the legacy planner released both under EVERY
+    profile including 'decisions-open': `open_d_deps` was always
+    vacuously empty regardless of `decisions_open`'s contents).
+
+    Four claims, so the exemption cannot widen into cover:
+    1. the legacy (unrepaired) plan genuinely disagrees with the new one --
+       if it now agreed, the divergence would be stale and should be
+       retired rather than left standing as a permanent excuse;
+    2. the ONLY difference is a subset relationship (new is legacy minus
+       some actions) -- never a reorder, never a gained action;
+    3. every action legacy has and new lacks is a NEEDS_DECISION->QUEUED
+       Transition for a task with an empty fm.decision_deps() -- the exact
+       and only shape this model claims to drop;
+    4. applying the repair reproduces the new plan exactly, with zero
+       reported problems.
+    """
+    states = dict(next(s for n, s in planner_synthetic.projections()
+                       if n == "needs-decision-pair"))
+    checked = 0
+    trace_saw_a_repair = False
+    for profile in corpus_profiles.PROFILE_NAMES:
+        inp = corpus_profiles.build(states, profile)
+        # NOT list()-wrapped here -- _breadcrumbs below needs the original
+        # PlanResult's `.trace` attribute, which a plain `list(...)` cast
+        # would strip. `_drop_reason_blind_decision_hold_releases` only
+        # needs `old`/`new` to be iterable, so the PlanResult itself (list-
+        # like by its own docstring) works directly.
+        old = legacy_planner.plan_project(inp)
+        new = reconcile.plan_project(inp)
+
+        old_norm, new_norm = _normalize_plan(old), _normalize_plan(new)
+        assert old_norm != new_norm, (
+            f"{profile}: the frozen baseline now agrees -- retire this "
+            f"divergence entry")
+
+        only_legacy = [a for a in old if _normalize_action(a) not in new_norm]
+        only_new = [a for a in new if _normalize_action(a) not in old_norm]
+        assert not only_new, (
+            f"{profile}: the new plan has actions the legacy plan lacks "
+            f"({only_new!r}) -- this is not a pure deletion, the exemption "
+            f"does not cover it")
+        assert only_legacy, f"{profile}: expected legacy to plan >=1 extra action"
+        for action in only_legacy:
+            assert type(action).__name__ == "Transition" and action.to is TaskState.QUEUED, (
+                f"{profile}: {action!r} is not a NEEDS_DECISION->QUEUED "
+                f"Transition -- outside this model's claimed shape")
+            tsf = inp.states[action.task_id]
+            fm, _ = inp.frontmatters[action.task_id]
+            assert tsf.state is TaskState.NEEDS_DECISION and not fm.decision_deps(), (
+                f"{profile}: {action.task_id} is not a reason-less "
+                f"NEEDS_DECISION park -- outside this model's claimed shape")
+
+        repaired, problems = _drop_reason_blind_decision_hold_releases(old, new, inp)
+        assert not problems, f"{profile}: {problems}"
+        assert _normalize_plan(repaired) == new_norm, (
+            f"{profile}: dropping the reason-less releases does not "
+            f"reproduce the new plan exactly")
+
+        old_trace, new_trace = _breadcrumbs(old), _breadcrumbs(new)
+        repaired_trace, trace_problems = _drop_reason_blind_decision_hold_breadcrumbs(
+            old_trace, new_trace, inp)
+        assert not trace_problems, f"{profile}: {trace_problems}"
+        assert _is_subsequence(repaired_trace, new_trace), (
+            f"{profile}: dropping the reason-less release breadcrumbs does "
+            f"not make the legacy trace a subsequence of the new one")
+        if old_trace:
+            trace_saw_a_repair = trace_saw_a_repair or len(repaired_trace) < len(old_trace)
+        checked += 1
+    assert checked == len(corpus_profiles.PROFILE_NAMES)
+    assert trace_saw_a_repair, (
+        "no profile's trace ever needed the breadcrumb repair -- the "
+        "frozen baseline's trace now agrees, retire breadcrumb_repair")
 
 
 def test_the_review_resume_divergence_only_ever_breaks_a_tie():
