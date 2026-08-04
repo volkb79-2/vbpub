@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Entry point. Picks the interpreter by which half of the tool is being run.
+#
+# The collector (`_collect`, and `mark`, which any container may call) is
+# standard-library only by contract, so it runs on the bare system python3 —
+# that is what keeps the contract honest, and it is what lets `mark` work from
+# inside a gate container that has no venv. Everything else needs pandas and
+# plotly and so runs on the profiler's own venv.
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+case "${1:-}" in
+  _collect|mark)
+    exec python3 "$here/cgprofile.py" "$@"
+    ;;
+esac
+
+if [[ -x "$here/venv/bin/python" ]]; then
+  exec "$here/venv/bin/python" "$here/cgprofile.py" "$@"
+fi
+
+echo "cgprofile: venv not built — run $here/setup.sh once, then retry." >&2
+echo "           (\`cgprofile mark\` and the collector work without it.)" >&2
+exec python3 "$here/cgprofile.py" "$@"
