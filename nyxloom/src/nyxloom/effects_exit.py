@@ -591,6 +591,14 @@ class ExitEffector:
             if not members:
                 return events  # stale/superseded exit, or already consumed by a sibling this pass
 
+            # CR-07f: the target for each verdict comes from stages.py's
+            # declared review_independent.exit_map -- the SAME source
+            # stages.validate_pipeline reads -- rather than a second,
+            # independently-maintained copy of the rule (the drift-risk
+            # class CR-07a found and CR-07c fixed for implement.done).
+            review_targets = dict(stages.effective_exit_map(
+                stages.STAGE_REGISTRY["review_independent"], cfg.pipeline))
+
             if result is ReceiptResult.DONE:
                 for member in members:
                     # P59b (A7): bind the verdict to THIS review attempt,
@@ -667,7 +675,7 @@ class ExitEffector:
                         attempt_id=action.attempt_id, wave_id=attempt.wave_id))
                     if verdict == "approved":
                         events.append(self._transition(ctx, member,
-                                                        TaskState.MERGE_READY, None))
+                                                        review_targets["approved"], None))
                     else:
                         note = f"review verdict: {verdict} (receipt: {result.value})"
                         if verdict_why:
@@ -680,7 +688,7 @@ class ExitEffector:
                         if repair_details is not None:
                             note += f" -- reviewer repair invalidated: {repair_details.get('reason')}"
                         events.append(self._transition(ctx, member,
-                                                        TaskState.REVIEW_REJECTED, note))
+                                                        review_targets["rejected"], note))
             else:
                 # P56 2026-07-20 (M7). A non-DONE review receipt
                 # (LIMIT/ERROR/BLOCKED) is an INFRA failure of the review
@@ -702,7 +710,7 @@ class ExitEffector:
                         {"result": "incomplete"}, task_id=member,
                         attempt_id=action.attempt_id, wave_id=attempt.wave_id))
                     events.append(self._transition(ctx, member,
-                                                    TaskState.REVIEW_REJECTED,
+                                                    review_targets["rejected"],
                                                     f"review verdict: incomplete (receipt: {result.value})"))
             return events
 
@@ -724,15 +732,23 @@ class ExitEffector:
             verdict = (self._typed_verdict(project, task_id, action.attempt_id,
                                             results.ResultKind.SELF_REVIEW)[0]
                        if result is ReceiptResult.DONE else "missing")
-            if verdict == "rejected":
-                events.append(self._transition(
-                    ctx, task_id, TaskState.QUEUED,
-                    "self-review verdict: rejected -- fresh fix attempt"))
+            # CR-07f: the target comes from stages.py's declared
+            # self_review.exit_map -- the SAME source stages.validate_pipeline
+            # reads -- rather than a second, independently-maintained copy of
+            # the rule. Only "approved"/"rejected" are declared labels; any
+            # other verdict (including "missing", a non-DONE receipt or an
+            # unreadable typed result) degrades to AWAITING_REVIEW -- self-
+            # review is an OPTIONAL pre-gate, so it never BLOCKS a task
+            # because its cheap self-check could not complete.
+            self_review_targets = dict(stages.effective_exit_map(
+                stages.STAGE_REGISTRY["self_review"], cfg.pipeline))
+            target = self_review_targets.get(verdict, TaskState.AWAITING_REVIEW)
+            if target is TaskState.QUEUED:
+                note = "self-review verdict: rejected -- fresh fix attempt"
             else:
-                events.append(self._transition(
-                    ctx, task_id, TaskState.AWAITING_REVIEW,
-                    None if verdict == "approved"
-                    else f"self-review {verdict} (receipt: {result.value}) -- proceeding to frontier review"))
+                note = (None if verdict == "approved"
+                        else f"self-review {verdict} (receipt: {result.value}) -- proceeding to frontier review")
+            events.append(self._transition(ctx, task_id, target, note))
             return events
 
         if result is ReceiptResult.DONE:

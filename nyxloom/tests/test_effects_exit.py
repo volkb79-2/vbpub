@@ -142,20 +142,29 @@ class TestSelfReviewStaleExit:
         assert storage.load_state("demo", task_id).state is TaskState.CARVED
 
 
-# --- implement.done's target comes from stages.py, not a private copy ------
+# --- implement.done's, self_review's and review_independent's targets all --
+# --- come from stages.py, not a private copy --------------------------------
 #
 # CR-07c's repair: effects_exit.py must resolve implement.done's target via
 # stages.effective_exit_map rather than re-implementing the
 # "self_review" in cfg.pipeline check inline (the shape that let stages.py's
-# declaration and this module's engine drift apart under CR-07a). Structural,
-# not behavioural, so a future edit that reintroduces a private duplicate is
-# caught even if it happens to compute the same answer today.
-def test_implement_done_routing_calls_stages_effective_exit_map():
+# declaration and this module's engine drift apart under CR-07a). CR-07f
+# extends the same repair to self_review's and review_independent's verdict
+# routing -- both already had a byte-identical stages.py declaration with no
+# cross-check pinning them to it, the same drift-risk class CR-07a found and
+# CR-07c fixed, just not yet exercised. Structural, not behavioural, so a
+# future edit that reintroduces a private duplicate is caught even if it
+# happens to compute the same answer today. Counts call sites rather than
+# checking membership -- three ROLE branches now depend on this function
+# (IMPLEMENTER's generic DONE path, SELF_REVIEW, REVIEW_INDEPENDENT), and a
+# membership check alone would not notice one of them silently reverting to
+# a hardcoded literal while the other two still called through.
+def test_implement_done_self_review_and_review_independent_all_call_stages_effective_exit_map():
     tree = ast.parse(textwrap.dedent(
         inspect.getsource(effects_exit.ExitEffector.emit_attempt_exit)))
-    calls = {node.func.attr for node in ast.walk(tree)
-              if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
-    assert "effective_exit_map" in calls
+    calls = [node.func.attr for node in ast.walk(tree)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+    assert calls.count("effective_exit_map") == 3
 
 
 def test_the_generic_done_branch_is_reached_by_implementer_alone():
