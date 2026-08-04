@@ -40,10 +40,14 @@ INTERFACE CONTRACT:
                                   the wrong thing.
     tier-dangling-route critical  a tier's routes=[...] entry names a route
                                   id absent from [routes.*]. Routes.for_tier/
-                                  for_role do `self.routes[rid]` with NO
-                                  guard -- this is a live KeyError crash
-                                  waiting to happen the first time that tier
-                                  is actually selected, not a hypothetical.
+                                  for_role drop the dangling id and return
+                                  what does resolve (CR-08: never KeyError),
+                                  so this is silent quantity loss -- fewer
+                                  candidates than the operator declared --
+                                  rather than a crash; still critical, since
+                                  a tier that silently loses its only route
+                                  degrades to tier-empty's dead-tier case with
+                                  no warning at the point of loss.
     tier-empty          warning   a tier is declared with an empty routes
                                   list (dead tier -- for_tier/for_role always
                                   return [] for it).
@@ -159,8 +163,8 @@ def check_schema(routes: config.Routes) -> list[DoctorFinding]:
                     kind="tier-dangling-route",
                     severity="critical",
                     message=(f"tier {tier!r}: references undefined route "
-                              f"{rid!r} (Routes.for_tier/for_role would "
-                              "KeyError the first time this tier is used)"),
+                              f"{rid!r} (Routes.for_tier/for_role silently "
+                              "drops it -- fewer candidates than declared)"),
                     project=None,
                     refs=[tier, rid],
                 ))
