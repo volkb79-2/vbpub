@@ -11,9 +11,9 @@ from datetime import datetime, timedelta, timezone
 
 from nyxloom.handoff_trace import HandoffTrace, TraceLeg, build_trace
 from nyxloom.types import (
-    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
+    Actor, ActorKind, Attempt, AttemptState, Basis, Blocker, BlockerType, Event,
     EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState,
-    TaskStateFile,
+    TaskStateFile, Usage,
 )
 
 PROJECT = "demo"
@@ -370,3 +370,69 @@ def test_superseded_and_cancelled_transition_legs():
     assert [leg.outcome for leg in trace.legs] == ["SUPERSEDED", "CANCELLED"]
     assert trace.legs[0].summary == "re-carved: scope stale"
     assert trace.legs[1].summary is None
+
+
+# ---------------------------------------------------------------------------
+# CR-14a: cost surfaced in the attempt leg's detail
+
+def test_attempt_leg_surfaces_recorded_cost():
+    task_id = "demo-T11"
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model")
+    usage = Usage(basis=Basis.ACTUAL, cost=0.42, currency="USD")
+    done = Attempt(attempt_id="att-1", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+                  route=route, started=_ts(1), ended=_ts(30),
+                  receipt=Receipt(result=ReceiptResult.DONE, exit_code=0), usage=usage)
+    events = [
+        _ev(1, EventType.ATTEMPT_CREATED,
+           {"attempt": Attempt(attempt_id="att-1", role=Role.IMPLEMENTER,
+                               state=AttemptState.CREATED, route=route, started=_ts(1)).to_dict()},
+           task_id=task_id, attempt_id="att-1", ts=_ts(1)),
+        _ev(2, EventType.ATTEMPT_EXITED, {"attempt": done.to_dict()},
+           task_id=task_id, attempt_id="att-1", ts=_ts(30)),
+    ]
+
+    trace = build_trace(task_id, events)
+
+    assert trace.legs[0].detail["cost"] == 0.42
+    assert trace.legs[0].detail["currency"] == "USD"
+
+
+def test_attempt_leg_omits_cost_when_no_usage_was_recorded():
+    """No Usage at all (e.g. the attempt never exited, or usage extraction
+    failed) -- absent, not a misleading 0."""
+    task_id = "demo-T12"
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model")
+    events = [
+        _ev(1, EventType.ATTEMPT_CREATED,
+           {"attempt": Attempt(attempt_id="att-1", role=Role.IMPLEMENTER,
+                               state=AttemptState.CREATED, route=route, started=_ts(1)).to_dict()},
+           task_id=task_id, attempt_id="att-1", ts=_ts(1)),
+    ]
+
+    trace = build_trace(task_id, events)
+
+    assert "cost" not in trace.legs[0].detail
+    assert "currency" not in trace.legs[0].detail
+
+
+def test_attempt_leg_omits_cost_when_usage_has_no_priced_cost():
+    """Usage recorded (e.g. token counts) but no cost -- a route with no
+    prices.toml entry -- absent, not a misleading 0."""
+    task_id = "demo-T13"
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model")
+    usage = Usage(basis=Basis.UNKNOWN, tokens_in=100)
+    done = Attempt(attempt_id="att-1", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+                  route=route, started=_ts(1), ended=_ts(30),
+                  receipt=Receipt(result=ReceiptResult.DONE, exit_code=0), usage=usage)
+    events = [
+        _ev(1, EventType.ATTEMPT_CREATED,
+           {"attempt": Attempt(attempt_id="att-1", role=Role.IMPLEMENTER,
+                               state=AttemptState.CREATED, route=route, started=_ts(1)).to_dict()},
+           task_id=task_id, attempt_id="att-1", ts=_ts(1)),
+        _ev(2, EventType.ATTEMPT_EXITED, {"attempt": done.to_dict()},
+           task_id=task_id, attempt_id="att-1", ts=_ts(30)),
+    ]
+
+    trace = build_trace(task_id, events)
+
+    assert "cost" not in trace.legs[0].detail

@@ -135,6 +135,15 @@ def _attempt_leg(evs: list[Event]) -> TraceLeg:
         "model": attempt.route.model,
         "cli": attempt.route.cli,
     }
+    # CR-14a: cost is already-recorded, already-authoritative data (the
+    # SAME Usage the wrapper priced and the daemon persisted) -- it was
+    # simply never threaded into this leg's detail bag. Absent (no usage
+    # recorded, or recorded with no priceable cost -- e.g. a route with no
+    # prices.toml entry) rather than a misleading "0".
+    if attempt.usage is not None and attempt.usage.cost is not None:
+        detail["cost"] = attempt.usage.cost
+        if attempt.usage.currency is not None:
+            detail["currency"] = attempt.usage.currency
     return TraceLeg(
         sequence=first_ev.sequence, kind="attempt", stage=attempt.role.value,
         outcome=outcome, started=iso(attempt.started),
