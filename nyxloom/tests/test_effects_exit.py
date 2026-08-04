@@ -154,3 +154,15 @@ def test_implement_done_routing_calls_stages_effective_exit_map():
     calls = {node.func.attr for node in ast.walk(tree)
               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     assert "effective_exit_map" in calls
+
+
+def test_the_generic_done_branch_is_reached_by_implementer_alone():
+    """`emit_attempt_exit`'s generic `ReceiptResult.DONE` branch (the one that
+    calls `effective_exit_map`) is written with no `attempt.role` guard,
+    because CARVER, REVIEW_INDEPENDENT and SELF_REVIEW each return earlier in
+    the function -- so it is reached only when `attempt.role is Role.IMPLEMENTER`.
+    That is a claim about every OTHER member of `Role`, derived from the enum
+    rather than hand-listed, so a role added later fails this test rather than
+    silently falling through a branch nobody re-examined."""
+    assert set(Role) - {Role.IMPLEMENTER} == {
+        Role.CARVER, Role.REVIEW_INDEPENDENT, Role.SELF_REVIEW}
