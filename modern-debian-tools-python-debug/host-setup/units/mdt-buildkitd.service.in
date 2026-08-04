@@ -25,6 +25,19 @@
 # --security-opt seccomp=unconfined --security-opt apparmor=unconfined trio
 # is the SAME relaxation the mdt devcontainer already grants itself, for the
 # identical FUSE (fuse-overlayfs) reason — not a new category of exposure.
+#
+# --oci-worker-no-process-sandbox: without it, every RUN step's nested runc
+# fails with "error mounting proc to rootfs ... operation not permitted"
+# (verified live, 2026-08-04) — the container's own unprivileged user
+# namespace can't recursively unshare a second one for the per-exec mount
+# namespace under this host's runc/kernel combination, even with
+# unprivileged_userns_clone=1 and seccomp/apparmor unconfined. This is
+# buildkit's own documented flag for exactly "running as an unprivileged
+# user" (its startup warning names this case explicitly), not a workaround
+# outside the rootless design — trades per-RUN-step process isolation
+# (a build step could in principle signal another process in the same
+# worker) for working nested execution at all, which for a shared,
+# non-multi-tenant dev builder is the correct trade.
 [Unit]
 Description=mdt host-setup — host-managed BuildKit worker (dev-buildkitd.slice)
 Documentation=file:/etc/mdt/host-setup.env
@@ -64,7 +77,8 @@ ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
   -v /run/mdt-buildkitd:/run/buildkit \
   -v mdt-buildkitd-cache:/home/user/.local/share/buildkit \
   @DEV_BUILDKITD_IMAGE@ \
-  --addr unix:///run/buildkit/buildkitd.sock
+  --addr unix:///run/buildkit/buildkitd.sock \
+  --oci-worker-no-process-sandbox
 ExecStop=/usr/bin/docker stop -t 30 mdt-buildkitd
 Restart=on-failure
 RestartSec=5

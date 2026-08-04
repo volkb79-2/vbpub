@@ -261,3 +261,29 @@ already there" behavior.
    BuildKit cache; whether/how to bound it (BuildKit's own `--oci-worker-gc`
    flags, or leave to manual `docker system df`/`buildctl du` review) is
    not decided yet.
+
+## 9. First real build — found+fixed a rootless-sandbox bug (2026-08-04)
+
+First consumer build (dstdns's `docker buildx bake all-services --load`
+against a `remote` driver builder pointed at this unit's socket) failed on
+every image with a `RUN` step: `runc run failed: ... error mounting "proc"
+to rootfs at "/proc": ... operation not permitted`. Root cause: this host's
+runc/kernel combination cannot recursively unshare a second user+mount
+namespace from inside the container's own unprivileged one — needed for
+BuildKit's per-`RUN`-step process sandbox — even with
+`kernel.unprivileged_userns_clone=1` and both `seccomp=unconfined` and
+`apparmor=unconfined` already set. Verified in isolation (a throwaway
+rootless `buildkitd` with the same flags, probed directly via `buildctl`)
+before touching the shared unit.
+
+**Fix:** added `--oci-worker-no-process-sandbox` to `ExecStart=` in
+`units/mdt-buildkitd.service.in` — BuildKit's own documented flag for this
+exact case (its startup warning names "running as an unprivileged user"
+explicitly). Trade-off: a build step could in principle signal another
+process in the same worker (no per-step process-namespace isolation); for a
+shared, non-multi-tenant dev builder this is the correct trade, not a
+workaround outside the rootless design. Applied live via
+`systemctl daemon-reload && systemctl restart mdt-buildkitd.service`;
+confirmed the running worker reports
+`org.mobyproject.buildkit.worker.oci.process-mode: no-sandbox` and a real
+`apt-get install` `RUN` step now completes.
