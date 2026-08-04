@@ -39,7 +39,14 @@ from .types import (
 log = get_logger("effects.lifecycle")
 
 #: How long a route stays paused after a provider limit. A module constant so
-#: a test can shrink it for determinism; read at pause time, never captured.
+#: a test can shrink it for determinism. CR-08 Slice 4a: also written into
+#: PROVIDER_STATE_CHANGED's payload at pause time (see pause_provider) --
+#: closing the durable-replay prerequisite gap: re-deriving a pause's expiry
+#: from "whatever this constant is TODAY" rather than the event's own recorded
+#: duration would silently break "restart preserves a pause exactly" the
+#: moment this constant is ever tuned. Persisting it is not itself a replay
+#: mechanism -- ProviderPauseRegistry stays in-memory-only here; that
+#: decision is deferred (see the ledger's CR-08 Slice 4 split row).
 PROVIDER_PAUSE_SECONDS = 3600
 
 
@@ -200,12 +207,20 @@ class LifecycleEffector:
         local throttle in the event log without needing a second event type.
         The pause itself is in-memory backoff, so it is set even though the
         events are what make it visible.
+
+        ``duration_seconds`` is stamped into the event payload (CR-08 Slice
+        4a) so the pause this event records can be reconstructed EXACTLY by
+        a future durable-replay mechanism, without re-reading
+        ``PROVIDER_PAUSE_SECONDS`` as it stands at replay time -- the
+        constant may be retuned between when this event was written and
+        when it is ever replayed.
         """
         out: list[Event] = []
         if route_id:
             self.provider_pause.pause(route_id, PROVIDER_PAUSE_SECONDS)
         out.append(ctx.append(EventType.PROVIDER_STATE_CHANGED,
-                              {"route_id": route_id, "state": state},
+                              {"route_id": route_id, "state": state,
+                               "duration_seconds": PROVIDER_PAUSE_SECONDS},
                               task_id=task_id))
         out.append(ctx.append(EventType.NEEDS_OPERATOR,
                               {"route_id": route_id, "reason": "provider-limited"},

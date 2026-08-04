@@ -621,6 +621,7 @@
       {
         "attempt_id": null,
         "payload": {
+          "duration_seconds": 3600,
           "route_id": "r1",
           "state": "limited"
         },
