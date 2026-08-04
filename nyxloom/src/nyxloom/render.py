@@ -1964,7 +1964,8 @@ def _render_intake(www: Path, registry: dict[str, Path]) -> None:
     (www / "intake.html").write_text(html_content, encoding="utf-8")
 
 
-def _render_trace_leg_row(leg: handoff_trace.TraceLeg, cfg: config.ProjectConfig) -> str:
+def _render_trace_leg_row(leg: handoff_trace.TraceLeg,
+                           cfg: config.ProjectConfig | None) -> str:
     """One <tr> for the B26 processing-trace table. Every dynamic string is
     html.escape'd -- `summary` and `detail` values may carry untrusted,
     agent-authored text (Receipt.blocked_reason, a gate's output_tail, a
@@ -1976,16 +1977,22 @@ def _render_trace_leg_row(leg: handoff_trace.TraceLeg, cfg: config.ProjectConfig
     that `summary` is THE untrusted, potentially agent-authored free-text
     field for every leg kind; this page's neighboring log-excerpt section
     already redacts (see `_render_task_page`), and this table did not.
-    `detail`'s values are deliberately left unredacted: every leg kind's
-    detail bag carries only identity/structural data (route/gate/commit
-    ids, enum-like state names, fixed code-authored instructional strings
-    such as `unblock_condition`) -- never untrusted free text -- so
-    redacting them would risk stripping real evidence identity for no
-    security benefit, the exact failure mode the acceptance criterion
-    ("removes secrets without removing evidence identity or causal
-    links") warns against."""
+    `cfg` is `None` only when `_render_task_page`'s own config load
+    failed (a rare, already-logged degradation) -- `summary` then passes
+    through un-redacted, no worse than this function's pre-CR-14a
+    behavior (which never redacted it at all). `detail`'s values are
+    deliberately left unredacted regardless: every leg kind's detail bag
+    carries only identity/structural data (route/gate/commit ids,
+    enum-like state names, fixed code-authored instructional strings such
+    as `unblock_condition`) -- never untrusted free text -- so redacting
+    them would risk stripping real evidence identity for no security
+    benefit, the exact failure mode the acceptance criterion ("removes
+    secrets without removing evidence identity or causal links") warns
+    against."""
     detail_str = ", ".join(f"{k}={v}" for k, v in leg.detail.items())
-    summary = cfg.redact(leg.summary) if leg.summary else leg.summary
+    summary = leg.summary
+    if summary and cfg is not None:
+        summary = cfg.redact(summary)
     return f"""
       <tr class="trace-leg" data-kind="{html.escape(leg.kind)}">
         <td>{html.escape(str(leg.sequence))}</td>
@@ -2003,7 +2010,7 @@ def _render_trace_leg_row(leg: handoff_trace.TraceLeg, cfg: config.ProjectConfig
 
 def _render_processing_trace_html(tsf: TaskStateFile,
                                     project_events: list[Event],
-                                    cfg: config.ProjectConfig) -> str:
+                                    cfg: config.ProjectConfig | None) -> str:
     """B26: leg-by-leg processing trace for this task, derived entirely
     from already-recorded events (handoff_trace.build_trace is pure; this
     function is the render-side I/O boundary/consumer)."""
@@ -2033,8 +2040,22 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path,
     task_dir.mkdir(parents=True, exist_ok=True)
     # CR-14a: hoisted so the processing-trace table can redact its own
     # summary text (below) the same way the log-excerpt section already
-    # does -- was previously loaded only inside that section's own loop.
-    cfg = config.ProjectConfig.load(root)
+    # does -- was previously loaded only inside that section's own loop,
+    # where a load failure was locally swallowed (degraded to "No log")
+    # rather than propagating. Guarded here the same way, and the same
+    # way every OTHER ProjectConfig.load(root) call site in this module
+    # is guarded (_render_config/_render_decisions/_render_findings/
+    # _render_intake) -- an unguarded load here would abort render_all's
+    # entire per-task loop (every remaining project's task pages, plus
+    # live.html/logs.html) on one project's config fault, not just
+    # degrade this one section. `cfg=None` on failure degrades both
+    # redaction call sites below to pass-through (no worse than this
+    # function's pre-CR-14a behavior, which never redacted the trace
+    # table at all) rather than losing the whole render pass.
+    try:
+        cfg = config.ProjectConfig.load(root)
+    except Exception:
+        cfg = None
 
     # Frontmatter table (P13 review-fix: TaskStateFile never had a
     # .frontmatter attribute — parse the handoff file like dag.html does).
@@ -2112,6 +2133,8 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path,
                     if len(content) > 65536:
                         content = content[-65536:]
                     log_text = content.decode("utf-8", errors="replace")
+                    if cfg is None:
+                        break  # config unavailable -- degrade to "No log" (see above)
                     log_excerpt = cfg.redact(log_text)
                     break
             except Exception:
