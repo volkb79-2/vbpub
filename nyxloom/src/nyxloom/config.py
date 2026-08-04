@@ -7,6 +7,7 @@ executable (SPEC §3, security boundary).
 
 from __future__ import annotations
 
+import enum
 import os
 import re
 import tomllib
@@ -755,6 +756,98 @@ def healthy_routes(candidates: list[RouteDef], provider_ok: dict[str, bool]) -> 
     independent review; see ``for_tier``'s own docstring above).
     """
     return [r for r in candidates if provider_ok.get(r.route_id, False)]
+
+
+class RouteExclusionReason(enum.Enum):
+    """Why a candidate route was excluded from a `select_route` result.
+
+    Closed vocabulary, not free text -- `select_route` applies exactly one
+    filter (`healthy_routes`) today, so there is exactly one member. A future
+    filter pulled into the pure core (e.g. part of `admissible()`'s
+    containment/pause/budget checks, currently effect-boundary-only -- see
+    the CR-08 Slice 2 split row) would add a member here rather than
+    smuggling a second free-text reason string past this type.
+    """
+
+    PROVIDER_UNHEALTHY = "provider-unhealthy"
+
+
+@dataclass(frozen=True)
+class RouteExclusion:
+    """One candidate route `select_route` did not select, and why."""
+
+    route_id: str
+    reason: RouteExclusionReason
+
+
+@dataclass(frozen=True)
+class SelectionResult:
+    """The explanation object CR-08's charter asks for: winner, runners-up,
+    filtered reasons, expected cost/confidence, and input snapshot version.
+
+    ``expected_cost``/``confidence`` are ALWAYS ``None`` today, deliberately.
+    Real values would need `capability_map`/`Prices` data that is 100%
+    inert in production -- `capability_map`'s catalog is absent from the
+    live `routes.toml`, no `prices.toml` exists anywhere in this repo, and
+    `Prices` is read in exactly one place (`wrapper.py`, AFTER an attempt
+    already ran, to price tokens post hoc for accounting) -- never before
+    dispatch, to choose a route. Typed fields now, real semantics later is
+    the same "structure now, real values later" move CR-08 Slice 4a already
+    made for `duration_seconds`. Building real cost-based scoring needs a
+    data-sourcing decision plus new `ReconcileInput` plumbing to thread
+    `Prices` into the pure planning snapshot the way `Routes`/`provider_ok`
+    already are -- genuinely separate, CR-10-adjacent work, not something
+    this shape gets for free.
+
+    ``snapshot_version`` is `Routes.revision` -- already in-memory on the
+    exact `Routes` object the caller selected against, zero new I/O.
+    """
+
+    winner: RouteDef | None
+    runners_up: tuple[RouteDef, ...]
+    filtered: tuple[RouteExclusion, ...]
+    expected_cost: float | None
+    confidence: float | None
+    snapshot_version: str
+
+
+def select_route(candidates: list[RouteDef], provider_ok: dict[str, bool],
+                 *, snapshot_version: str) -> SelectionResult:
+    """The declared-order, health-filtered selection `rules_dispatch.py`'s
+    and `rules_attempts.py`'s implement-dispatch sites already make, wrapped
+    in a typed explanation object -- CR-08 Slice 3a.
+
+    Reuses `healthy_routes` rather than re-filtering by hand, so there is
+    still exactly ONE place "is a route healthy" is decided. `winner` is the
+    first healthy candidate in `candidates`' own order (byte-identical to
+    today's `healthy_routes(candidates, provider_ok)[0]`); `runners_up` is
+    the rest of the healthy list in the same order; `filtered` names every
+    OTHER candidate and the one reason this function currently discriminates
+    on.
+
+    Scoped DELIBERATELY to the implement-dispatch shape: review/carve/
+    diagnosis dispatch (`effects_dispatch.route_for_role`, `effects_carve.py`,
+    `effects_carver.py`) does not apply a health filter at all today, so
+    calling this function for those roles would silently ADD a health check
+    they never had -- a real behavior change needing its own acceptance
+    criteria, not a side effect of an explanation wrapper. Not yet called
+    from any real dispatch site; `rules_dispatch.py`/`rules_attempts.py`
+    still call `healthy_routes(...)[0]` directly, proven identical to this
+    function's `winner` by differential test rather than assumed.
+    """
+    healthy = healthy_routes(candidates, provider_ok)
+    healthy_ids = {r.route_id for r in healthy}
+    filtered = tuple(
+        RouteExclusion(r.route_id, RouteExclusionReason.PROVIDER_UNHEALTHY)
+        for r in candidates if r.route_id not in healthy_ids)
+    return SelectionResult(
+        winner=healthy[0] if healthy else None,
+        runners_up=tuple(healthy[1:]),
+        filtered=filtered,
+        expected_cost=None,
+        confidence=None,
+        snapshot_version=snapshot_version,
+    )
 
 
 # ---------------------------------------------------------------------------
