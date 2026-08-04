@@ -433,6 +433,106 @@ def test_dispatch_no_healthy_route():
     assert reason == "no-healthy-route"
 
 
+def test_dispatch_skips_a_declined_route_even_if_healthy():
+    """CR-09a: route-1 is healthy but already declared incapable of this
+    task's origin (declined_routes) -- dispatch selects route-2 instead of
+    the first-declared-but-declined route-1."""
+    cfg = make_config()
+    routes = make_routes(tier="flash-high", route_ids=["route-1", "route-2"])
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        declined_routes={"P01": frozenset({"route-1"})},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer)]
+    assert len(dispatches) == 1
+    assert dispatches[0].route_id == "route-2"
+
+
+def test_dispatch_eligible_no_healthy_route_when_the_only_healthy_route_is_declined():
+    """CR-09a: dispatch_eligible's check 8 and the selection loop must stay
+    in sync -- when the ONLY healthy route for this tier is already
+    declined, the task is INELIGIBLE (not eligible-then-strands-empty)."""
+    cfg = make_config()
+    routes = make_routes(tier="flash-high", route_ids=["route-1", "route-2"])
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": False},
+        declined_routes={"P01": frozenset({"route-1"})},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer)]
+    assert len(dispatches) == 0
+    eligible, reason = dispatch_eligible(fm, tsf, inp)
+    assert not eligible
+    assert reason == "no-healthy-route"
+
+
+def test_dispatch_a_declined_route_for_a_different_task_does_not_affect_this_one():
+    """NEGATIVE: declined_routes is keyed per task id -- an entry for a
+    DIFFERENT task must never leak into this task's route selection."""
+    cfg = make_config()
+    routes = make_routes(tier="flash-high", route_ids=["route-1", "route-2"])
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.QUEUED)
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        declined_routes={"some-other-task": frozenset({"route-1"})},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer)]
+    assert len(dispatches) == 1
+    assert dispatches[0].route_id == "route-1"
+
+
 # ============================================================================
 # ORACLE 4: caps
 # ============================================================================
@@ -1379,6 +1479,43 @@ def test_o1_poisoned_latest_active_clear_guards_fresh_dispatch():
     assert len(dispatches) == 1
     resumes = [a for a in actions if isinstance(a, ResumeAttempt)]
     assert len(resumes) == 0
+
+
+def test_fresh_start_dispatch_skips_a_declined_route_even_if_healthy():
+    """CR-09a: the P34 fresh-start re-cut (rules_attempts.py) applies the
+    SAME route exclusion as the lifecycle dispatch loop -- a poisoned resume
+    with two healthy routes, one already declared incapable of this task's
+    origin, picks the OTHER one."""
+    cfg = make_config()
+    routes = make_routes(route_ids=["route-1", "route-2"])
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att.session_handle = "sess-poisoned"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        declined_routes={"P01": frozenset({"route-1"})},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        resume_failures={"att-1": 2},
+    )
+
+    actions = plan_project(inp)
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert len(dispatches) == 1
+    assert dispatches[0].route_id == "route-2"
 
 
 def test_o2_below_threshold_still_resumes():

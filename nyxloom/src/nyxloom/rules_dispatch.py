@@ -33,7 +33,7 @@ observable, not a debug aid.
 
 from __future__ import annotations
 
-from .config import healthy_routes
+from .config import healthy_routes, undeclined_routes
 from .planning import PlanContext, RuleEmitter
 from .reconcile import DispatchImplementer, dispatch_eligible
 from .types import TaskState
@@ -77,6 +77,12 @@ def implementer_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
         eligible, reason = dispatch_eligible(fm, tsf, inp)
         if eligible:
             healthy = healthy_routes(inp.routes.for_tier(fm.tier), inp.provider_ok)
+            # CR-09a: never reselect a route a reviewer already declared
+            # incapable of this task's origin, even if it also appears in
+            # this (bumped) tier's route list -- dispatch_eligible's check 8
+            # applies the identical filter, so an eligible task's loop is
+            # never emptied by this alone.
+            healthy = undeclined_routes(healthy, inp.declined_routes.get(fm_id, frozenset()))
             if healthy:
                 route_def = healthy[0]
                 emit(DispatchImplementer(task_id=fm_id, route_id=route_def.route_id))

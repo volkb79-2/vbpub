@@ -491,7 +491,21 @@ class CarveEffector:
         gracefully to None (missing report, missing/unparsable handoff) -- consumed
         by `_carve_packet_body_lines`'s rescope branch to distinguish an
         `incapable` tier-bump from every other re-scope reason; None on either key
-        falls back to the existing generic re-scope text unchanged."""
+        falls back to the existing generic re-scope text unchanged.
+
+        CR-09a: also assembles `target_tier` (`config.next_implement_tier`
+        over the origin_tier, only when reject_class is "incapable") -- the
+        mechanically-computed replacement tier the carve packet now STATES
+        rather than leaving to the carver-LLM's own notion of "a stronger
+        tier". None when origin_tier/reject_class are unavailable, or when
+        origin_tier is already the highest `implement-<N>` tier the live
+        routes config declares; the packet falls back to the pre-CR-09a
+        generic language in that case. Route-level exclusion (never
+        reselecting the origin's own declined route even within
+        target_tier) is enforced separately and unconditionally at dispatch
+        time by `daemon._declined_routes`/`config.undeclined_routes` --
+        independent of whatever tier name ultimately lands in the new
+        handoff, so it holds even if a carver ignores this instruction."""
         origin = states.get(origin_task_id)
         handoff_path = origin.handoff_path if origin else None
         input_revision: str | None = None
@@ -514,6 +528,18 @@ class CarveEffector:
         # already proven available before any action was planned; this copy
         # only decorates the carver packet, so .value is the right read.
         head_revision = self._head_revision(cfg).value
+        reject_class = effects_review.parse_reject_class(self._ports.git, cfg, origin_task_id)
+        # CR-09a: mechanically compute the tier bump instead of leaving "a
+        # stronger tier" to the carver-LLM's own judgment -- config.
+        # next_implement_tier only ever returns a name actually declared in
+        # the live routes config, never a hallucinated/nonexistent one
+        # (`implement-3` does not exist today). None when origin_tier isn't
+        # a plain numbered implement tier, is already the highest one
+        # declared, or reject_class isn't "incapable" -- _carve_packet_body_
+        # lines falls back to the existing generic re-scope text unchanged.
+        target_tier: str | None = None
+        if reject_class == "incapable" and origin_tier is not None:
+            target_tier = config.next_implement_tier(config.Routes.load(), origin_tier)
         return {
             "origin_task_id": origin_task_id,
             "handoff_path": handoff_path,
@@ -521,8 +547,9 @@ class CarveEffector:
             "input_revision": input_revision,
             "head_revision": head_revision,
             "drifted": reconcile._premise_drifted(input_revision, head_revision),
-            "reject_class": effects_review.parse_reject_class(self._ports.git, cfg, origin_task_id),
+            "reject_class": reject_class,
             "origin_tier": origin_tier,
+            "target_tier": target_tier,
         }
 
     def _carve_packet_body_lines(self, cfg: ProjectConfig, project: str, seq: int,
@@ -673,17 +700,50 @@ class CarveEffector:
             # `incapable`-classified rejection (the model wasn't capable of a
             # correctly-scoped task -- a structural/repeated capability gap, NOT
             # a design defect) gets a DIFFERENT intro paragraph: tier bump, scope
-            # held constant, explicitly NOT a re-scope. Only fires when BOTH the
+            # held constant, explicitly NOT a re-scope. Fires when BOTH the
             # class is `incapable` AND an origin tier was actually recovered
             # (Work 3's graceful degradation) -- every other case (architectural,
             # stale-premise, reject_class absent/unrecognised, or origin_tier
             # unavailable) falls through to the EXISTING generic re-scope text,
             # UNCHANGED byte-for-byte (see
             # test_carve_packet_rescope_architectural_intro_byte_identical_to_pre_incapable).
+            # CR-09a: within the `incapable` case, a THIRD variable -- whether
+            # `config.next_implement_tier` recovered a `target_tier` -- picks
+            # between stating the exact required tier name (mechanical) and
+            # the original vague-"stronger tier" language (target_tier is
+            # None: origin_tier isn't a plain numbered implement tier, or is
+            # already the highest one the live routes config declares).
             # Purely additive: a new branch, never a rewrite of the old one.
             reject_class = rescope.get("reject_class")
             origin_tier = rescope.get("origin_tier")
-            if reject_class == "incapable" and origin_tier is not None:
+            target_tier = rescope.get("target_tier")
+            if reject_class == "incapable" and origin_tier is not None and target_tier is not None:
+                # CR-09a: the target tier is now MECHANICALLY computed
+                # (config.next_implement_tier over the live routes config),
+                # so the carver is told the exact required name rather than
+                # asked to judge "a stronger tier" itself.
+                intro = (
+                    f"You are RE-SCOPING one rejected task for project '{project}'. Task "
+                    f"'{origin_id}' was implemented, REVIEWED, and REJECTED -- the "
+                    f"reviewer judged the SCOPE fine but the assigned tier "
+                    f"'{origin_tier}' INCAPABLE of it (a model-capability failure, "
+                    "NOT a design/scope defect -- do not confuse this with an "
+                    "architectural rescope). Write a fresh, corrected handoff for the "
+                    f"SAME work. The new handoff's `tier:` field MUST be exactly "
+                    f"'{target_tier}' -- this is computed, not your choice to make. "
+                    "Do NOT redesign the scope -- only re-target it at the required "
+                    "tier. Record this task's id, "
+                    f"'{origin_id}', as the new handoff's `source.ref` (parent task "
+                    "id) so the follow-up review is seeded with why a stronger tier "
+                    "ran. Do NOT simply re-emit the original handoff unchanged, and "
+                    "do NOT implement the work yourself."
+                )
+            elif reject_class == "incapable" and origin_tier is not None:
+                # target_tier is None: origin_tier isn't a plain numbered
+                # implement tier, or is already the highest one the live
+                # routes config declares. Falls back to the pre-CR-09a
+                # vague-"stronger tier" language, unchanged, rather than
+                # stating a tier name that might not exist.
                 intro = (
                     f"You are RE-SCOPING one rejected task for project '{project}'. Task "
                     f"'{origin_id}' was implemented, REVIEWED, and REJECTED -- the "

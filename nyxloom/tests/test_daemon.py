@@ -35,8 +35,9 @@ from nyxloom import (
     render, results, snapshot, storage, wrapper,
 )
 from nyxloom.types import (
-    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, EventType,
-    GateResult, Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
+    Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, CarverStatus, Event,
+    EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile,
+    utc_now,
 )
 
 
@@ -792,19 +793,24 @@ def test_carve_dispatch_no_frontier_route_pushes_needs_operator_no_task(
 # verdict + input_revision drift, and the ORIGINAL task is superseded (RESCOPED
 # outcome) ONLY after the re-scope carve actually launches (critique A10/M20).
 
-def _write_origin_handoff(root, task_id, input_revision):
+def _write_origin_handoff(root, task_id, input_revision, tier="flash-high"):
     """A minimal schema-valid handoff for `task_id` with a chosen input_revision,
     written (untracked) to the on-disk working tree so _rescope_context's
     parse_handoff can read it. MUST be written while HEAD is on main and AFTER any
     _make_feature_branch/_commit_review_report calls (those check out and back,
-    which would drop an untracked file from the working tree)."""
+    which would drop an untracked file from the working tree).
+
+    CR-09a: `tier` defaults to the pre-existing 'flash-high' (a legacy tier
+    name -- every existing caller keeps getting exactly that, unchanged) but
+    is overridable so a test can exercise `next_implement_tier` against a
+    real numbered `implement-<N>` tier."""
     text = (
         "---\n"
         "schema_version: 1\n"
         f"id: {task_id}\n"
         "project: demo\n"
         "title: Origin sample\n"
-        "tier: flash-high\n"
+        f"tier: {tier}\n"
         f'input_revision: "{input_revision}"\n'
         "source: {kind: roadmap, ref: docs/ROADMAP.md}\n"
         "scope:\n"
@@ -957,6 +963,30 @@ def test_carve_packet_rescope_incapable_intro_instructs_tier_bump(
     packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
     assert "flash-high" in packet
     assert "HIGHER" in packet
+    assert "Do NOT redesign the scope" in packet
+    assert "architectural or stale-premise" not in packet
+    assert "source.ref" in packet
+
+
+def test_carve_packet_rescope_incapable_intro_states_mechanical_target_tier(
+        tmp_state, sample_project, patch_siblings):
+    """CR-09a: when target_tier is present (mechanically computed), the
+    packet states the EXACT required tier name and drops the old vague
+    'HIGHER than X' language -- the carver is told what to write, not asked
+    to judge it."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "demo-P01", "handoff_path": "handoff/demo-P01.md",
+        "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
+        "drifted": False, "reject_class": "incapable", "origin_tier": "implement-1",
+        "target_tier": "implement-2",
+    }
+    packet = d._carve._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert "implement-1" in packet
+    assert "MUST be exactly 'implement-2'" in packet
+    assert "computed, not your choice to make" in packet
+    assert "HIGHER" not in packet
     assert "Do NOT redesign the scope" in packet
     assert "architectural or stale-premise" not in packet
     assert "source.ref" in packet
@@ -1139,6 +1169,56 @@ def test_rescope_context_reads_reject_class_and_origin_tier(
     ctx = d._carve._rescope_context(cfg, states, "demo-P01")
     assert ctx["reject_class"] == "incapable"
     assert ctx["origin_tier"] == "flash-high"
+
+
+def test_rescope_context_computes_mechanical_target_tier(
+        tmp_state, sample_project, patch_siblings):
+    """CR-09a: when reject_class == 'incapable' and origin_tier is a plain
+    numbered implement tier actually declared in the live routes config,
+    target_tier is the mechanically-computed next one -- no carver-LLM
+    judgment involved."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML
+        + "\n[tiers.implement-1]\nroutes = [\"fake-cli\"]\n"
+        + "\n[tiers.implement-2]\nroutes = [\"fake-cli\"]\n")
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "# Review\n\nStructurally weak.\n\nVERDICT: REJECTED\nREJECT_CLASS: incapable\n")
+    rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef", tier="implement-1")
+    _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._carve._rescope_context(cfg, states, "demo-P01")
+    assert ctx["origin_tier"] == "implement-1"
+    assert ctx["target_tier"] == "implement-2"
+
+
+def test_rescope_context_target_tier_none_when_already_highest(
+        tmp_state, sample_project, patch_siblings):
+    """NEGATIVE: origin_tier is already the highest implement-<N> tier the
+    live routes config declares (today's real deployed case -- implement-3
+    does not exist) -- target_tier degrades to None, never fabricates a
+    nonexistent tier name."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML
+        + "\n[tiers.implement-1]\nroutes = [\"fake-cli\"]\n"
+        + "\n[tiers.implement-2]\nroutes = [\"fake-cli\"]\n")
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "# Review\n\nStructurally weak.\n\nVERDICT: REJECTED\nREJECT_CLASS: incapable\n")
+    rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef", tier="implement-2")
+    _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._carve._rescope_context(cfg, states, "demo-P01")
+    assert ctx["origin_tier"] == "implement-2"
+    assert ctx["target_tier"] is None
 
 
 # -- D-R3 (2026-07-26, refined): _incapable_escalation_note ------------------
@@ -4279,6 +4359,129 @@ def test_triage_classes_binds_latest_rejected_event(tmp_state, sample_project):
     out = d._triage_classes("demo", states)
 
     assert out == {"t-tc-pos": "architectural", "t-tc-incap": "incapable"}
+
+
+def _minimal_frontmatter(task_id, tier, source_ref=None):
+    from nyxloom.types import Frontmatter, Oracle, Scope, Source
+
+    return Frontmatter(
+        schema_version=1, id=task_id, project="demo", title="t", tier=tier,
+        input_revision="0000000",
+        source=Source(kind="review", ref=source_ref),
+        scope=Scope(touch=["src/demo/x.py"]),
+        oracles=[Oracle(id="O1", observable="x", negative="y", gate="pytest-q")],
+        gates=["pytest-q"], escalate_if=["x"],
+    )
+
+
+def _review_recorded_event(task_id, result, reject_class=None):
+    payload = {"result": result}
+    if reject_class is not None:
+        payload["reject_class"] = reject_class
+    return Event(
+        schema_version=1, sequence=0, timestamp=utc_now(), project="demo",
+        actor=Actor(ActorKind.OPERATOR, "test"), type=EventType.REVIEW_RECORDED,
+        payload=payload, task_id=task_id,
+    )
+
+
+def _tsf_with_implementer_attempts(task_id, route_ids):
+    """A TaskStateFile carrying one terminal IMPLEMENTER attempt per route id
+    in ``route_ids``, in order -- the LAST one is what a real reject cycle's
+    most recent attempt would be."""
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+        state=TaskState.SUPERSEDED, since=utc_now(),
+    )
+    for i, route_id in enumerate(route_ids):
+        route = Route(route_id=route_id, cli="fake", model="fake-model")
+        tsf.attempts.append(Attempt(
+            attempt_id=f"{task_id}-a{i}", role=Role.IMPLEMENTER,
+            state=AttemptState.EXITED, route=route, started=utc_now()))
+    return tsf
+
+
+# D-R3 (2026-07-26) + CR-09a: `_declined_routes` -- the daemon-precomputed,
+# event-log-derived input that lets reconcile stay pure while still
+# excluding a route a reviewer already declared "incapable" of a task's
+# origin, even from a bumped tier that still lists that route.
+
+def test_declined_routes_binds_the_origins_last_implementer_route(tmp_state, sample_project):
+    """POSITIVE: a rescoped task's frontmatter names its origin via
+    source.ref; the origin was rejected 'incapable'; the origin's LAST
+    IMPLEMENTER attempt's route id is the one excluded for the new task."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    states = {
+        "origin": _tsf_with_implementer_attempts("origin", ["route-a", "route-b"]),
+    }
+    frontmatters = {
+        "new": (_minimal_frontmatter("new", "implement-2", source_ref="origin"), "handoff/new.md"),
+        "origin": (_minimal_frontmatter("origin", "implement-1"), "handoff/origin.md"),
+    }
+    events = [_review_recorded_event("origin", "rejected", reject_class="incapable")]
+
+    out = d._declined_routes("demo", states, frontmatters, events=events)
+
+    # route-b is the LAST implementer attempt's route, not route-a.
+    assert out == {"new": frozenset({"route-b"})}
+
+
+def test_declined_routes_negative_wrong_reject_class(tmp_state, sample_project):
+    """NEGATIVE: the origin was rejected 'architectural', not 'incapable' --
+    the route was never judged incapable, so nothing is excluded."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    states = {"origin": _tsf_with_implementer_attempts("origin", ["route-a"])}
+    frontmatters = {
+        "new": (_minimal_frontmatter("new", "implement-2", source_ref="origin"), "handoff/new.md"),
+        "origin": (_minimal_frontmatter("origin", "implement-1"), "handoff/origin.md"),
+    }
+    events = [_review_recorded_event("origin", "rejected", reject_class="architectural")]
+
+    out = d._declined_routes("demo", states, frontmatters, events=events)
+    assert out == {}
+
+
+def test_declined_routes_negative_no_source_ref(tmp_state, sample_project):
+    """NEGATIVE: an ordinary task with no source.ref (not a rescope at all)
+    is absent from the output, never crashes on a None origin_id."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    states = {}
+    frontmatters = {
+        "plain": (_minimal_frontmatter("plain", "implement-1"), "handoff/plain.md"),
+    }
+    events = []
+
+    out = d._declined_routes("demo", states, frontmatters, events=events)
+    assert out == {}
+
+
+def test_declined_routes_negative_origin_not_in_states(tmp_state, sample_project):
+    """NEGATIVE: source.ref names a task no longer in `states` (e.g. a
+    fully-archived origin) -- degrades to no exclusion, never crashes."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    states = {}
+    frontmatters = {
+        "new": (_minimal_frontmatter("new", "implement-2", source_ref="ghost"), "handoff/new.md"),
+    }
+    events = [_review_recorded_event("ghost", "rejected", reject_class="incapable")]
+
+    out = d._declined_routes("demo", states, frontmatters, events=events)
+    assert out == {}
+
+
+def test_declined_routes_negative_self_reference_guard(tmp_state, sample_project):
+    """NEGATIVE: source.ref pointing at the task's own id (malformed/
+    degenerate input) is skipped rather than treated as its own origin."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    states = {"self-ref": _tsf_with_implementer_attempts("self-ref", ["route-a"])}
+    frontmatters = {
+        "self-ref": (_minimal_frontmatter("self-ref", "implement-1", source_ref="self-ref"),
+                     "handoff/self-ref.md"),
+    }
+    events = [_review_recorded_event("self-ref", "rejected", reject_class="incapable")]
+
+    out = d._declined_routes("demo", states, frontmatters, events=events)
+    assert out == {}
 
 
 def test_dispatch_implementer_embeds_prior_review_verdict(
