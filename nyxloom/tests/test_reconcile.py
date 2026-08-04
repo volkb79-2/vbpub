@@ -3954,6 +3954,44 @@ def test_review_rejected_product_class_escalates_to_needs_decision():
     assert "product" in (t.notes or "").lower()
 
 
+def test_product_class_escalation_stays_parked_on_the_next_pass():
+    """SELF-CORRECT (found scoping CR-11b, 2026-08-04): the bug this test
+    proves fixed -- pass 1 escalates a 'product'-classified rejection to
+    NEEDS_DECISION (test_review_rejected_product_class_escalates_to_needs_
+    decision above); this task declares no D-dep (reject_triage never
+    mints one). Before the fix, rules_lifecycle.decision_hold's release
+    condition (`not open_d_deps`) was vacuously true for a task that never
+    had a D-dep at all, so PASS 2 would silently fire NEEDS_DECISION->
+    QUEUED, re-dispatching a task a reviewer explicitly said needed a
+    human decision -- with no operator visibility and no event marking the
+    reversal. Confirmed empirically: this is exactly the two-pass repro
+    that reproduced the bug during CR-11b's scoping. Fixed: decision_hold
+    now requires the task to have genuinely declared a D-dep before
+    releasing, so a reason-less park (this shape) stays parked."""
+    fm = make_frontmatter(id="P01")  # no depends_on -- reject_triage never adds one
+    tsf = make_tsf(task_id="P01", state=TaskState.NEEDS_DECISION)
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=make_config(max_attempts_per_task=3),
+        routes=make_routes(),
+        states={tsf.task_id: tsf},
+        frontmatters={fm.id: (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+
+    assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+
 def test_review_rejected_architectural_class_routes_to_re_carve():
     """Tier-2 'architectural': a design/scope defect no same-base retry can fix
     -> READY_TO_CARVE, OVERRIDING the budget-remaining re-queue."""

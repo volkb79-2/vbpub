@@ -69,12 +69,19 @@ class TaskState(enum.Enum):
         # removal, rather than raising ValueError on a pre-CR-07d row. Routed
         # to NEEDS_DECISION -- one of DRAFT's own former edges -- rather than
         # silently reviving a removed state or a default nobody vouched for.
-        # NOT a guarantee of human review: rules_lifecycle.decision_hold
-        # releases NEEDS_DECISION straight back to QUEUED on the very next
-        # reconcile pass unless the task's frontmatter names an open D-dep,
-        # which a legacy DRAFT row -- never having existed on real data --
-        # would not carry. The read-compat contract is "does not crash and
-        # does not resurrect a removed state", not "forces triage".
+        # SELF-CORRECT (found scoping CR-11b, 2026-08-04): this comment used
+        # to say rules_lifecycle.decision_hold releases a bare NEEDS_DECISION
+        # (no D-dep) straight back to QUEUED next pass -- that was itself a
+        # bug (it silently reversed reject_triage's real human-judgment
+        # escalations too, which also carry no D-dep) and has been fixed:
+        # release now requires the task to have genuinely declared a D-dep
+        # that is now resolved. A legacy DRAFT row -- never having existed on
+        # real data -- carries no D-dep, so it now stays parked in
+        # NEEDS_DECISION pending an operator, the same as any other
+        # reason-less park. The read-compat contract is unaffected: "does not
+        # crash and does not resurrect a removed state", not "forces triage"
+        # -- parking for review is a safe, pre-existing legal outcome of
+        # NEEDS_DECISION, not a new obligation this mapping adds.
         if value == "DRAFT":
             return cls.NEEDS_DECISION
         return None

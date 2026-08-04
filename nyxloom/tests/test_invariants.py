@@ -162,11 +162,12 @@ def _routes(tier: str = "flash-high") -> Routes:
     )
 
 
-def _fm(task_id: str = "INV-01", tier: str = "flash-high") -> Frontmatter:
+def _fm(task_id: str = "INV-01", tier: str = "flash-high",
+        depends_on: list[str] | None = None) -> Frontmatter:
     return Frontmatter(
         schema_version=1, id=task_id, project="inv", title="t", tier=tier,
         input_revision="abc", source=Source(kind="roadmap"), scope=Scope(touch=["x"]),
-        oracles=[], gates=[], escalate_if=[],
+        oracles=[], gates=[], escalate_if=[], depends_on=depends_on or [],
     )
 
 
@@ -360,10 +361,42 @@ def test_known_state_gaps_is_empty():
 # tracked gaps, xfail because none is) --------------------------------------
 
 def test_no_dead_end_needs_decision():
-    inp = _base_input("INV-01", TaskState.NEEDS_DECISION)
+    """SELF-CORRECT (found scoping CR-11b, 2026-08-04): a NEEDS_DECISION
+    task only auto-releases to QUEUED when it genuinely declared a D-dep
+    that is now resolved -- rules_lifecycle.decision_hold's own entry
+    branch. A task with NO D-dep declared could never have been parked by
+    THAT branch (which requires open_d_deps to fire), so it must have
+    arrived via reject_triage's human-judgment escalation and must NOT be
+    silently released -- see test_needs_decision_with_no_d_dep_is_not_a_
+    dead_end_but_stays_parked below for that (corrected) half of the
+    invariant. "No dead end" for that case means visibly escalated and
+    awaiting an operator, not mechanically self-resolving -- the same
+    shape BLOCKED already uses for reasons that need a human, not a
+    reflexive auto-clear."""
+    inp = _base_input("INV-01", TaskState.NEEDS_DECISION,
+                      fm=_fm("INV-01", depends_on=["D-1"]))
     actions = plan_project(inp)
     assert any(isinstance(a, Transition) and a.to is TaskState.QUEUED
                and _action_touches_task(a, "INV-01") for a in actions)
+
+
+def test_needs_decision_with_no_d_dep_is_not_a_dead_end_but_stays_parked():
+    """The other half of the corrected invariant: a NEEDS_DECISION task
+    that declares NO D-dep (reject_triage's escalation shape -- "product"
+    decisions, an architectural/drift rejection with no carve stage,
+    attempts exhausted with no carve stage) must NOT be silently released
+    back to QUEUED -- that would re-dispatch work a reviewer explicitly
+    said needed a human decision, with no operator visibility. Staying
+    parked here is the correct, intentional outcome, not a bug: the task
+    remains visible (it IS in NEEDS_DECISION, an operator-facing state)
+    and awaits an explicit human action, which is what "escalates" means
+    in this program's own "no state is a dead end: a stuck task always
+    progresses OR escalates" contract -- escalation is not required to be
+    mechanically self-clearing."""
+    inp = _base_input("INV-01", TaskState.NEEDS_DECISION)
+    actions = plan_project(inp)
+    assert not any(isinstance(a, Transition) and _action_touches_task(a, "INV-01")
+                   for a in actions)
 
 
 def test_no_dead_end_carved():
@@ -446,18 +479,24 @@ def test_a_legacy_draft_value_reads_as_needs_decision_not_a_crash():
     assert TaskState("DRAFT") is TaskState.NEEDS_DECISION
 
 
-def test_a_legacy_draft_derived_task_releases_to_queued_next_pass():
-    """The read-compat contract is NOT "forces human review" -- independent
-    review traced rules_lifecycle.decision_hold and found that a
-    NEEDS_DECISION task with no open D-dep releases straight back to QUEUED
-    on the very next reconcile pass, and a legacy DRAFT row -- never having
-    existed on real data -- would carry no D-dep. Pinned here so that
-    behavioral consequence is proven rather than assumed from the enum
-    mapping alone."""
+def test_a_legacy_draft_derived_task_stays_parked_pending_an_operator():
+    """SELF-CORRECT (found scoping CR-11b, 2026-08-04): this test used to
+    pin the OPPOSITE behavior -- decision_hold auto-releasing a bare
+    NEEDS_DECISION task (no D-dep) straight back to QUEUED, which a legacy
+    DRAFT row -- never having existed on real data -- would trigger. That
+    release condition was itself a real bug (see
+    test_needs_decision_with_no_d_dep_is_not_a_dead_end_but_stays_parked):
+    it also silently reversed reject_triage's genuine human-judgment
+    escalations, which likewise carry no D-dep. Fixed: a reason-less
+    NEEDS_DECISION now stays parked. The read-compat contract this test
+    pins is unaffected by the fix -- "does not crash and does not
+    resurrect a removed state" -- staying parked pending an operator is a
+    safe, legal, pre-existing NEEDS_DECISION outcome, not a new "forces
+    triage" obligation the DRAFT mapping adds."""
     inp = _base_input("LEG-1", TaskState.NEEDS_DECISION)
     actions = plan_project(inp)
-    assert any(isinstance(a, Transition) and a.to is TaskState.QUEUED
-               and _action_touches_task(a, "LEG-1") for a in actions)
+    assert not any(isinstance(a, Transition) and _action_touches_task(a, "LEG-1")
+                   for a in actions)
 
 
 # FIXED 2026-07-19 (nyxloom-P45-ready-to-carve-triage package). Used to be
