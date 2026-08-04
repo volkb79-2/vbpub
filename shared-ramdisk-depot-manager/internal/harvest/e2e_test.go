@@ -346,7 +346,7 @@ func (n *node) harvester(t *testing.T) *Harvester {
 }
 
 // harvesterWithExposer wires d in, so a harvest can discover and read a
-// server's rw overlay merged view (D-029) exactly as `srdm harvest` does.
+// server's rw overlay merged view (D-035) exactly as `srdm harvest` does.
 func (n *node) harvesterWithExposer(t *testing.T, d *expose.HostBind) *Harvester {
 	t.Helper()
 	h, err := New(n.cfg, n.jnl, n.st, WithExposer(d))
@@ -434,7 +434,7 @@ func spawnConsumer(t *testing.T, path string) (stop func()) {
 	return stop
 }
 
-// --- D-022 / D-029: who may write through an rw exposure -------------------
+// --- D-022 / D-035: who may write through an rw exposure -------------------
 
 // The measurement P06 could not make and deferred here, because harvest is
 // the only reason to write through an exposure at all.
@@ -443,7 +443,7 @@ func spawnConsumer(t *testing.T, path string) (stop func()) {
 // still refused them at the MODE level: root could write through, and the
 // game container — which is the entire point — could not. P10 replaces
 // in-place unsealing with a per-server overlay upper layer srdm itself
-// creates and owns, permissively (D-029) — this asserts THAT model closes
+// creates and owns, permissively (D-035) — this asserts THAT model closes
 // it, from the only vantage point that can tell the difference: an
 // unprivileged uid, with no wings.write_owner declared at all.
 func TestAnUnprivilegedWriterCanWriteThroughAnRWExposureAndNotThroughRO(t *testing.T) {
@@ -515,7 +515,7 @@ func pakIndex(rec *publish.Record) int {
 
 // --- oracle 23 / oracle 28: the harvest round trip --------------------------
 
-// The master plan's oracle 23, end to end, updated for D-029's overlay: update
+// The master plan's oracle 23, end to end, updated for D-035's overlay: update
 // in place through rw -> harvest reads the merged view WHILE it is still
 // exposed -> the resulting release's manifest matches a from-scratch stage of
 // the same content, byte for byte, and carries harvested-from provenance.
@@ -524,7 +524,7 @@ func pakIndex(rec *publish.Record) int {
 // unsealing the write landed in the generation's own tmpfs, so harvest could
 // read it any time before teardown — the comment this test used to carry said
 // "unexpose, then harvest". Under an overlay the write lives in a per-server
-// upper that Unexpose DISCARDS (D-029's own decision — see the LOG), so the
+// upper that Unexpose DISCARDS (D-035's own decision — see the LOG), so the
 // order is now: quiesce the WRITER (nothing here spawns a separate mount
 // namespace, so there is nothing else to stop) -> harvest while the overlay
 // is still mounted -> only THEN unexpose and tear down.
@@ -559,7 +559,7 @@ func TestHarvestRoundTripsToTheSameManifestAsAFromScratchStage(t *testing.T) {
 	}
 
 	// Harvest while the overlay is STILL mounted: --from-server defaults to
-	// the sole holder, discovered from srdm's own mount table (D-029). The
+	// the sole holder, discovered from srdm's own mount table (D-035). The
 	// generation is not marked dirty-capable — that flag is vestigial for an
 	// overlay exposure, because the lower it would warn about was never
 	// written.
@@ -568,7 +568,7 @@ func TestHarvestRoundTripsToTheSameManifestAsAFromScratchStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if live.DirtyCapable {
-		t.Error("an overlay rw exposure marked the generation dirty-capable; D-029 retires " +
+		t.Error("an overlay rw exposure marked the generation dirty-capable; D-035 retires " +
 			"that for overlay exposures")
 	}
 
@@ -647,7 +647,7 @@ func TestAWhiteoutThroughTheOverlayIsAbsentFromTheHarvest(t *testing.T) {
 
 	// Delete a file that exists only in the lower — a real whiteout, not an
 	// absence: unlink is a directory-permission operation, which the
-	// mirrored upper grants (D-029), and the kernel writes a whiteout entry
+	// mirrored upper grants (D-035), and the kernel writes a whiteout entry
 	// into the upper marking it gone in the merged view.
 	deleted := filepath.Join(n.volume, "WS/Binaries", "server")
 	if err := os.Remove(deleted); err != nil {

@@ -21,7 +21,7 @@ const (
 	// immediately rather than corrupting a generation half-way.
 	AccessRO Access = "ro"
 	// AccessRW permits writing through to the generation, via a per-server
-	// overlay upper layer (D-027, D-029): the sealed generation is the
+	// overlay upper layer (D-027, D-035): the sealed generation is the
 	// lowerdir, so it is never itself written, and any number of servers may
 	// hold rw at once — each sees only its own writes, in its own upper.
 	// This retires the 2026-07-29 corruption at the root rather than by
@@ -53,7 +53,7 @@ type Binding struct {
 	// nowhere else.
 	Path string
 	// Source is inside the published generation — the sealed, read-only
-	// exposure. Both access modes read from here now (D-029): the ro binding
+	// exposure. Both access modes read from here now (D-035): the ro binding
 	// binds it directly, and the rw binding overlays it as the lowerdir.
 	// Neither is ever the thing that changes.
 	Source string
@@ -65,7 +65,7 @@ type Binding struct {
 	ReadOnly bool
 	// Upper and Work are set only for an rw binding: the per-server,
 	// per-generation writable overlay layer and overlayfs's own scratch
-	// directory (D-029). Empty means this binding is a plain read-only bind
+	// directory (D-035). Empty means this binding is a plain read-only bind
 	// of Source.
 	Upper string
 	Work  string
@@ -137,7 +137,7 @@ const (
 // somewhere the game does not look, and would shadow everything else under
 // that ancestor.
 //
-// Both access modes read from the same Source now (D-029): the sealed,
+// Both access modes read from the same Source now (D-035): the sealed,
 // published exposure. ro binds it directly; rw overlays it as the lowerdir,
 // with a per-server upper layer under stateDir absorbing every write. The
 // generation itself is never the thing that changes, in either mode.

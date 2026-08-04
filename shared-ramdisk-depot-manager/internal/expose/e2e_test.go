@@ -83,7 +83,7 @@ func newNode(t *testing.T) *node {
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(dir, "state")
 	cfg.RunDir = filepath.Join(dir, "run")
-	// WriteOwner is vestigial as of P10 (D-029): an overlay rw exposure
+	// WriteOwner is vestigial as of P10 (D-035): an overlay rw exposure
 	// writes to a directory srdm itself creates and owns, permissively, so
 	// nothing reads this anymore. Left set anyway, matching a real node's
 	// config that has not been cleaned up — it must be harmless, not just
@@ -418,7 +418,7 @@ func TestExposeRefusesWhenTheHostSideIsPrivate(t *testing.T) {
 // which is only true if the republished content really does come from the
 // store.
 //
-// P10 (D-029) changes WHY this holds without changing what it claims: the
+// P10 (D-035) changes WHY this holds without changing what it claims: the
 // write lands in a per-server overlay upper rather than in place, so
 // nothing marks the generation dirty-capable anymore — that flag is
 // vestigial for an overlay exposure, because the lower is never written and
@@ -450,7 +450,7 @@ func TestAWriteThroughAnRWExposureDoesNotSurviveRepublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	if live.DirtyCapable {
-		t.Error("an overlay rw exposure marked the generation dirty-capable; D-029 retires " +
+		t.Error("an overlay rw exposure marked the generation dirty-capable; D-035 retires " +
 			"that for overlay exposures, since the lower is never written")
 	}
 
@@ -483,7 +483,7 @@ func TestAWriteThroughAnRWExposureDoesNotSurviveRepublish(t *testing.T) {
 
 // --- oracle 25: the overlay leaves the release untouched -------------------
 
-// D-027/D-029's whole point: with the sealed generation as lowerdir, a write
+// D-027/D-035's whole point: with the sealed generation as lowerdir, a write
 // through the merged view lands in the per-server upper and never touches
 // it. Checked directly against the class trees' own content at ExposePath —
 // the same bytes a `ro` exposure or a second `rw` consumer would read — not
@@ -532,7 +532,7 @@ func TestAGenerationExposedRWThroughAnOverlayStaysByteIdenticalToItsRelease(t *t
 
 // exposedBytes reads rel directly off the class tree it classifies into, at
 // ExposePath — the sealed, published side every access mode reads from
-// (D-029) — bypassing whatever is currently exposed to a server.
+// (D-035) — bypassing whatever is currently exposed to a server.
 func (n *node) exposedBytes(t *testing.T, rec *publish.Record, rel string) []byte {
 	t.Helper()
 	class, err := n.prof.Classify(rel)
@@ -555,7 +555,7 @@ func (n *node) exposedBytes(t *testing.T, rec *publish.Record, rel string) []byt
 
 // --- oracle 26: two servers may hold rw on the same generation -----------
 
-// D-029 retires the single-consumer rule host-bind shipped with P06: an
+// D-035 retires the single-consumer rule host-bind shipped with P06: an
 // overlay's writes land in a per-server upper, so a second rw consumer no
 // longer shares anything with the first to collide over. Both directions of
 // the old failure mode are asserted here — neither is refused, and each

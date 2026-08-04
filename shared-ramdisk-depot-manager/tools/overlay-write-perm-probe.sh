@@ -2,7 +2,7 @@
 # With a SEALED lower (root-owned, a-w — exactly what publication leaves) and
 # an upperdir srdm creates itself, what does an UNPRIVILEGED uid actually need
 # in order to write through the merged view, with no declared write-owner at
-# all (D-029)? Does the top-level upperdir alone suffice, or does the whole
+# all (D-035)? Does the top-level upperdir alone suffice, or does the whole
 # lower directory tree have to be MIRRORED into the upper, permissively? And
 # does a true in-place O_TRUNC on an existing lower-only file ever work
 # without help?

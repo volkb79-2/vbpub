@@ -33,7 +33,7 @@
 //     holders itself — running containers by volume path, plus
 //     /proc/*/mountinfo — and refuses while any hold remains.
 //
-// access: rw (P10, D-027/D-029) is an overlay: the sealed, published
+// access: rw (P10, D-027/D-035) is an overlay: the sealed, published
 // exposure as lowerdir, a per-server upper layer under the state dir
 // absorbing every write. That retires the single-consumer restriction P06
 // shipped — any number of servers may hold rw on the SAME generation at

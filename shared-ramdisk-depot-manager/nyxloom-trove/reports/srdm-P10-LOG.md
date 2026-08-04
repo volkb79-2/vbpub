@@ -26,7 +26,7 @@ to know or declare that uid: overlayfs takes a directory's own metadata from
 whichever layer has an entry for it, upper winning when both do, so a
 directory that is never mirrored stays root-owned and sealed no matter how
 permissive the mount point above it is. This is measured, not assumed —
-D-029, `tools/overlay-write-perm-probe.sh` — and it retires
+D-035, `tools/overlay-write-perm-probe.sh` — and it retires
 `PreconditionWriteOwner`, `config.Wings.WriteOwner` as anything read, and
 the `Marker`/`MarkDirtyCapable` call: nothing hands the generation to a
 declared owner, because nothing unseals it. `Record.DirtyCapable` stays a
@@ -54,7 +54,7 @@ target path is unpredictable and its device is the only thing tying it back.
 holder needs one, an overlay holder does not, and that path stays valid
 after srdm's own mount is gone.
 
-**`internal/harvest`: `--from-server`, and the merged-view walk (D-029).**
+**`internal/harvest`: `--from-server`, and the merged-view walk (D-035).**
 `Opts.FromServer` selects whose overlay to read. A new `Exposer` interface
 (`Plan` + `RWServers`; `*expose.HostBind` satisfies it) is injected via
 `WithExposer`; `HostBind.RWServers` discovers current `rw` holders straight
@@ -90,7 +90,7 @@ otherwise build.
 
 ## Decisions filed
 
-**D-029** — the overlay's upper is mirrored, world-writable, and discarded
+**D-035** — the overlay's upper is mirrored, world-writable, and discarded
 on unexpose. Three things measured or decided, all in `decisions.md`:
 
 - who may write with no declared owner at all (mirror the lower's directory
@@ -193,7 +193,7 @@ outcome.
 
 ## Gaps
 
-- **`publish.MarkDirtyCapable` is now unreachable code.** D-029 retires the
+- **`publish.MarkDirtyCapable` is now unreachable code.** D-035 retires the
   `Marker` interface and its `Expose`-side call; nothing anywhere in the
   tree calls `MarkDirtyCapable` anymore. `internal/publish/publish.go` is
   outside this package's touch scope (forbidden, and another agent was
@@ -202,7 +202,7 @@ outcome.
   and stays load-bearing — a record written by an older srdm, or a future
   non-overlay driver, can still carry it, and `doctor`'s drift check earns
   its keep on those. Only the writer is dead. → backlog
-  (`publish.MarkDirtyCapable is unreachable code`), and D-029 now states
+  (`publish.MarkDirtyCapable is unreachable code`), and D-035 now states
   this split explicitly.
 - **No `--from-server` CLI flag.** `harvest.Opts.FromServer` exists and is
   exercised directly by unit and e2e tests; the CLI-level override for
@@ -225,7 +225,7 @@ outcome.
   mirrored, files are not. No profile this project targets updates that
   way; closing it would mean mirroring file modes too, reopening exactly
   the "grant write to an unknown uid" problem directory mirroring was
-  chosen to avoid. Stated in D-029 rather than treated as a defect.
+  chosen to avoid. Stated in D-035 rather than treated as a defect.
 - **A stopped-but-configured server holding rw is not distinguished from a
   running one** by `RWServers` — it reads the mount table, which does not
   distinguish "the container that made this mount is still running" from
@@ -238,7 +238,7 @@ outcome.
 
 ```
 tools/gate.sh <worktree> unit       → gofmt, build, vet, all packages green
-tools/gate.sh <worktree> e2e        → 468 passed, 0 failed
+tools/gate.sh <worktree> e2e        → 473 passed, 0 failed
 tools/canary-run.sh                 → 72 canaries rejected, 0 survived
 tools/gate.sh <worktree> coverage   → 254/258 changed executable lines (98.4% >= 75.0% floor;
                                        the remaining 4 are named, not chased — see below)
@@ -252,7 +252,7 @@ nyxloom lint nyxloom-trove/handoffs/*.md → clean
 4 existing canaries removed with the code they targeted no longer existing
 (`P06-rw-multi-consumer`, `P06-never-marks-dirty`, `P07-rw-never-unsealed`,
 `P07-rw-owner-optional` — the single-consumer refusal, the dirty mark and
-the write-owner precondition all retired by D-029).
+the write-owner precondition all retired by D-035).
 
 6 existing canaries repointed. One behaviourally, at the branch that now
 selects overlay vs. plain bind rather than at the deleted `sourceBase`

@@ -719,7 +719,7 @@ func TestAHarvestJournalsUnderOneOperationID(t *testing.T) {
 	}
 }
 
-// --- D-029: --from-server ---------------------------------------------------
+// --- D-035: --from-server ---------------------------------------------------
 //
 // access: rw is an overlay now, and any number of servers may hold one on
 // the SAME generation. harvest can no longer assume the generation's own

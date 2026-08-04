@@ -1125,7 +1125,7 @@ believed.
 
 ---
 
-## D-029 — the overlay's upper is mirrored, world-writable, and discarded on unexpose
+## D-035 — the overlay's upper is mirrored, world-writable, and discarded on unexpose
 
 **Status:** accepted, from measurement. Filed by P10, implementing D-027's
 adoption for `rw`.

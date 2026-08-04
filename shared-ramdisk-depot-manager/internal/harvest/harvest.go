@@ -70,7 +70,7 @@ type Guard interface {
 }
 
 // Exposer is what harvest needs from the exposure layer to read a
-// per-server overlay's merged view (D-029). *expose.HostBind satisfies it.
+// per-server overlay's merged view (D-035). *expose.HostBind satisfies it.
 type Exposer interface {
 	// Plan returns the bindings an rw exposure for req would use — or
 	// already uses, since Plan is pure and derives the same paths either
@@ -98,7 +98,7 @@ type Option func(*Harvester)
 func WithGuard(g Guard) Option { return func(h *Harvester) { h.guard = g } }
 
 // WithExposer injects the exposure layer, so harvest can discover and read
-// an rw exposure's merged view (D-029). Nil (the default) means every
+// an rw exposure's merged view (D-035). Nil (the default) means every
 // harvest reads the generation's own tmpfs directly, exactly as before
 // P10 — correct as long as nothing holds the generation rw, which
 // PhaseQuiesce already requires.
@@ -141,7 +141,7 @@ type Opts struct {
 	ReleaseID string
 	// Channel, when set, is flipped to the new release.
 	Channel string
-	// FromServer selects whose rw overlay merged view to read (D-029).
+	// FromServer selects whose rw overlay merged view to read (D-035).
 	//
 	// Multiple servers may now hold rw on the SAME generation at once
 	// (P10 retires the single-consumer rule), so a generation can no longer
@@ -206,7 +206,7 @@ func (e *NotPublishedError) Error() string {
 }
 
 // AmbiguousServerError is harvest declining because more than one server
-// holds rw on the generation and nothing said which one to read (D-029).
+// holds rw on the generation and nothing said which one to read (D-035).
 //
 // Moved from where P06's single-consumer rule cost sharing to where it
 // actually matters: two servers may now diverge from the same lower, and
@@ -343,7 +343,7 @@ func (h *Harvester) Harvest(ctx context.Context, rec *publish.Record, prof *prof
 		"dirty_capable":  fmt.Sprintf("%t", rec.DirtyCapable),
 	}
 
-	// Which server's overlay to read, if any (D-029). Resolved inside the
+	// Which server's overlay to read, if any (D-035). Resolved inside the
 	// quiesce phase, before the transaction opens: an ambiguous or unknown
 	// --from-server is a refusal exactly like the others here, and a
 	// refusal that opened a transaction first would need to remember to
@@ -411,7 +411,7 @@ func (h *Harvester) Harvest(ctx context.Context, rec *publish.Record, prof *prof
 }
 
 // resolveFromServer decides which server's overlay merged view, if any,
-// harvest should read (D-029): the operator's --from-server, defaulted or
+// harvest should read (D-035): the operator's --from-server, defaulted or
 // validated against the exposure layer's own account of who currently holds
 // rw.
 //
@@ -503,7 +503,7 @@ func (h *Harvester) refuseIfHeld(ctx context.Context, rec *publish.Record, when 
 // walkJob is one directory assemble walks: root on disk, and relPrefix — the
 // path, relative to the release, that root's OWN top corresponds to. Reading
 // the generation's own tmpfs directly, root IS a class's whole content and
-// relPrefix is empty. Reading a server's rw merged view (D-029), root is one
+// relPrefix is empty. Reading a server's rw merged view (D-035), root is one
 // binding's Target (a single declared class PATH, not the whole class) and
 // relPrefix is that binding's Path, because the merged mount only covers the
 // subtree the exposure actually bound.
@@ -515,7 +515,7 @@ type walkJob struct {
 
 // walkJobs returns what assemble should walk for rec/prof: the generation's
 // own class trees when fromServer is empty, or fromServer's rw overlay
-// merged views — one job per declared class path, per D-029's binding
+// merged views — one job per declared class path, per D-035's binding
 // granularity — when it is not.
 func (h *Harvester) walkJobs(rec *publish.Record, prof *profile.Profile, classes []publish.ClassRecord,
 	fromServer string) ([]walkJob, error) {
@@ -554,7 +554,7 @@ func (h *Harvester) walkJobs(rec *publish.Record, prof *profile.Profile, classes
 // still name the tmpfs it came off". The first catches new content, the
 // second catches a profile that moved.
 //
-// Whiteouts need no special handling (D-029, oracle 28): a file deleted
+// Whiteouts need no special handling (D-035, oracle 28): a file deleted
 // through an overlay is invisible to an ordinary directory walk — the kernel
 // hides it from readdir, it never having been "real" from userspace's side
 // to begin with — so walking the MERGED mount already agrees with what the

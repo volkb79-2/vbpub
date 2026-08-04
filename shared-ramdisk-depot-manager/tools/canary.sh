@@ -367,7 +367,7 @@ canary "P06-exposure-writable" "TestExposeReadOnlyMakesEachBindReadOnly" \
 
 # Skip the overlay mount for rw and fall through to a plain bind of the
 # sealed, published exposure. A bind inherits its source's flags, so the
-# result is silently read-only whatever was asked for (D-029; the pre-P10
+# result is silently read-only whatever was asked for (D-035; the pre-P10
 # version of this canary caught the equivalent failure in sourceBase, which
 # this replaces).
 canary "P10-rw-skips-overlay" "TestExposeReadWriteMountsAnOverlayOfTheSealedExposure" \
@@ -378,7 +378,7 @@ canary "P10-rw-skips-overlay" "TestExposeReadWriteMountsAnOverlayOfTheSealedExpo
 # --- P07: harvest, and the copy/seal mode discipline -----------------------
 
 # Unseal to the world. Only internal/hold's own oracle exercises this now
-# (P10 retires expose's in-place unseal call, D-029), but the mechanism
+# (P10 retires expose's in-place unseal call, D-035), but the mechanism
 # itself is unchanged and still load-bearing wherever hold.Unseal is used.
 canary "P07-unseal-world-writable" "TestUnsealRestoresOwnerWriteAndHandsTheTreeOver" \
   "internal/hold/worker.go" \
@@ -589,7 +589,7 @@ canary "P08b-clear-ignores-holders" "TestClearForRepublishRefusesWhileHeld" \
   's#^\tif err := p.refuseIfHeld(ctx, opID, KindReconcile, rec); err != nil {$#\tif err := error(nil); err != nil {#' \
   "a generation is cleared for republish while a consumer still holds it"
 
-# --- P10: access: rw via an overlay upper layer (D-027/D-028/D-029) --------
+# --- P10: access: rw via an overlay upper layer (D-027/D-028/D-035) --------
 
 # Overlay the writable layer as the LOWER and the sealed release as the
 # UPPER — swapped from what mountOverlay actually builds. Oracle 25's whole

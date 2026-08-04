@@ -321,7 +321,7 @@ func TestACopyFromADifferentPeerGroupIsStillAHolder(t *testing.T) {
 // --- D-028: the overlay recognizer (P10) -----------------------------------
 //
 // access: rw mounts an overlay whose lowerdir is the generation's own
-// ExposePath (D-029). An overlay is not a bind: it reports its OWN device,
+// ExposePath (D-035). An overlay is not a bind: it reports its OWN device,
 // never the lower's, so every test above — matched by device — would be
 // blind to it. These match by the `lowerdir=` mount option instead.
 

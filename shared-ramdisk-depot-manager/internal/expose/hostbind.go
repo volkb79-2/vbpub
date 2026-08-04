@@ -68,7 +68,7 @@ type HostBind struct {
 	guard   Guard
 
 	// stateDir roots the per-server overlay upper/work layers an rw exposure
-	// mounts (D-029). Deliberately separate from cfg (config.Wings): the
+	// mounts (D-035). Deliberately separate from cfg (config.Wings): the
 	// overlay state has nothing to do with the Wings deployment shape, and
 	// keeping it a plain string keeps HostBind constructible from just the
 	// Wings settings everywhere it always has been.
@@ -192,7 +192,7 @@ func (h *HostBind) Expose(ctx context.Context, rec *publish.Record, prof *profil
 		return err
 	}
 
-	// Nothing marks or unseals anymore (D-029): an rw exposure overlays the
+	// Nothing marks or unseals anymore (D-035): an rw exposure overlays the
 	// sealed generation rather than writing to it, so there is nothing to
 	// hand over and nothing that stops matching the release it came from.
 	// bind() creates and owns the writable layer as part of mounting it.
@@ -274,7 +274,7 @@ func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Reque
 	}
 
 	// 3. Consumers stopped. There is no single-write rule left to layer onto
-	//    this (D-029): an overlay's writes land in a per-server upper, never
+	//    this (D-035): an overlay's writes land in a per-server upper, never
 	//    in the generation itself, so a second rw consumer no longer shares
 	//    anything with the first to collide over.
 	rep, err := h.guard.Resolve(ctx, recordPaths(rec))
@@ -291,7 +291,7 @@ func (h *HostBind) preflight(ctx context.Context, rec *publish.Record, req Reque
 	// matches the release it came from, so a second consumer would be
 	// reading something nobody verified — and the first consumer's next
 	// write would be doing it underneath them. New rw exposures never set
-	// this flag (D-029); it stays load-bearing for records that already
+	// this flag (D-035); it stays load-bearing for records that already
 	// carry it.
 	if rec.DirtyCapable && rep.Held() {
 		return &RefusalError{
@@ -354,7 +354,7 @@ func (h *HostBind) bind(bindings []Binding) (err error) {
 	return nil
 }
 
-// mountOverlay mounts b.Target as an overlay of b.Source (D-027, D-029):
+// mountOverlay mounts b.Target as an overlay of b.Source (D-027, D-035):
 // b.Source, the sealed published exposure, as lowerdir; b.Upper as upperdir;
 // b.Work as overlayfs's own scratch directory.
 //
@@ -368,7 +368,7 @@ func (h *HostBind) bind(bindings []Binding) (err error) {
 // the LOWER's — root-owned and sealed a-w — no matter how permissive the
 // mount point above it is, so a directory that is never mirrored is never
 // writable through the merged view. Measured against a real overlay mount
-// with an unprivileged uid (D-029): mirrored directories accept create,
+// with an unprivileged uid (D-035): mirrored directories accept create,
 // delete and rename; a directory that exists only in the lower does not,
 // and neither does a true in-place O_TRUNC open of a file that has not yet
 // been copied up — real updaters replace files rather than truncate them in
@@ -425,7 +425,7 @@ func mirrorDirTree(lower, upper string) error {
 // is where the refusal belongs, and it runs after this.
 //
 // An rw binding's overlay upper/work layers are discarded here, after the
-// mount is gone (D-029's "retained or discarded" decision, resolved
+// mount is gone (D-035's "retained or discarded" decision, resolved
 // discarded — see the LOG). That is safe rather than lossy because harvest
 // is what reads a per-server overlay's merged view, and every documented rw
 // flow reads it BEFORE calling this: by the time Unexpose runs, anything

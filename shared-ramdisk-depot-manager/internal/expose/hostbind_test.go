@@ -120,7 +120,7 @@ type harness struct {
 }
 
 // gameOwner is the uid:gid a Wings node runs its server containers as. P10
-// (D-029) retires the config that used to hand a class tree over to it —
+// (D-035) retires the config that used to hand a class tree over to it —
 // nothing reads config.Wings.WriteOwner anymore — but the harness still sets
 // it, matching a real node's config carrying the now-vestigial field
 // unremarked.
@@ -483,7 +483,7 @@ func TestAnUnreadableChownWalkSettingRefuses(t *testing.T) {
 
 // --- precondition 3, and the rw rule --------------------------------------
 
-// D-029 retires the single-consumer rule: an overlay's writes land in a
+// D-035 retires the single-consumer rule: an overlay's writes land in a
 // per-server upper, never in the generation itself, so a second rw request
 // no longer shares anything with the first to collide over. Oracle 26 is
 // the privileged version of this — that the two really do stay isolated —
@@ -598,7 +598,7 @@ func TestExposeReadOnlyMakesEachBindReadOnlyBySeparateRemount(t *testing.T) {
 	}
 }
 
-// access: rw mounts an OVERLAY now (D-027, D-029), not a plain writable
+// access: rw mounts an OVERLAY now (D-027, D-035), not a plain writable
 // bind: lowerdir is the sealed, published exposure — the SAME Source ro
 // uses — and upperdir/workdir are per-server layers under the state dir.
 func TestExposeReadWriteMountsAnOverlayOfTheSealedExposure(t *testing.T) {
@@ -715,7 +715,7 @@ func TestPlanGivesDifferentServersDifferentOverlayLayers(t *testing.T) {
 	}
 }
 
-// --- the overlay's writable layer (D-029) ----------------------------------
+// --- the overlay's writable layer (D-035) ----------------------------------
 
 // Nothing marks or hands a tree to a declared owner anymore: an overlay
 // writes to a directory srdm itself creates and owns, so there is nothing
@@ -843,7 +843,7 @@ func TestUnexposeDoesNotRefuseWhileAConsumerHolds(t *testing.T) {
 }
 
 // Unexpose discards the overlay upper/work layers, once the mount over them
-// is gone (D-029's "retained or discarded" decision — see the LOG). Safe
+// is gone (D-035's "retained or discarded" decision — see the LOG). Safe
 // rather than lossy: harvest is what reads a per-server merged view, and
 // every documented rw flow reads it before this ever runs.
 func TestUnexposeDiscardsTheOverlayUpperAndWorkLayers(t *testing.T) {
@@ -1011,7 +1011,7 @@ func TestExposeRWFailsWhenTheWorkDirCannotBeCreated(t *testing.T) {
 	}
 }
 
-// --- RWServers (D-029): what harvest asks to find who holds rw ------------
+// --- RWServers (D-035): what harvest asks to find who holds rw ------------
 
 // overlayEntry renders one overlay mountinfo line, the shape an rw exposure
 // produces: srdm's own device (uninformative, D-028), a lowerdir option

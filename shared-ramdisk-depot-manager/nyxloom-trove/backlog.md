@@ -91,7 +91,7 @@ tree already has is worse than an empty one.
   `srdm-hold-*.service` units against every op directory that still exists,
   which is closer to a systemd unit-listing capability `internal/hold` does
   not have yet than to a bug fix.
-- **`publish.MarkDirtyCapable` is unreachable code** (P10). D-029 replaced
+- **`publish.MarkDirtyCapable` is unreachable code** (P10). D-035 replaced
   in-place unsealing with an overlay, and no `rw` exposure this project
   builds anymore marks a generation dirty-capable — the `Marker` interface,
   `expose.WithMarker` and the `cmd/srdm` wiring that called it are all gone.

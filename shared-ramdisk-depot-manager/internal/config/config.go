@@ -96,7 +96,7 @@ type Wings struct {
 	// produces the EROFS start failure this exists to prevent, with srdm's
 	// refusal removed from in front of it.
 	ChownSkipPatch bool
-	// WriteOwner is vestigial as of P10 (D-029), kept for the same reason
+	// WriteOwner is vestigial as of P10 (D-035), kept for the same reason
 	// Record.DirtyCapable is: an older srdm may still carry it in a config
 	// document, and nothing should choke on the field being set.
 	//
