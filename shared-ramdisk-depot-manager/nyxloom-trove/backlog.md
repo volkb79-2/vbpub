@@ -59,6 +59,27 @@ tree already has is worse than an empty one.
   keep that property, at the cost of a second manifest builder to keep in
   step with the first. Measure the copy against the hash before deciding it
   is worth two implementations.
+- **`access: rw` via an overlay upper layer instead of unsealing in place**
+  (D-027, accepted from measurement — carve as a package). Today `rw`
+  unseals and chowns the shared generation, which marks it `dirty_capable`,
+  bars sharing and source-use, and limits it to one consumer. An overlay
+  with the sealed generation as `lowerdir` and a per-server `upperdir` on
+  the server's own volume keeps the lower pristine and shared while the
+  updater writes only what it touches. Needs: `expose.HostBind` growing an
+  overlay mode, `harvest` reading the merged view, whiteout handling when an
+  update deletes files, teardown-safety re-derivation against a mount that
+  pins lower inodes (D-012/D-018/D-019 all apply and none of them transfer
+  by assumption), and a privileged oracle proving the lower generation is
+  byte-identical after an update through the overlay.
+- **The containerized SteamCMD acquisition driver** (`internal/source/steam`,
+  currently a doc-only stub). Wanted for MVP after all: "drop in the appid
+  and it prepares the filesystem". Master plan §SteamCMD driver has the
+  shape — unprivileged uid inside the egg's own runner image, `app_info_print`
+  for build identity, unconditional `validate`, identity from
+  `appmanifest_<appid>.acf`, stage jobs confined to `srdm-stage.slice`, and
+  one fsync'd typed result record handed back so the daemon never parses
+  foreign data. Note it needs the **build-identity recording** entry below,
+  which is the same piece of work for the staged path.
 - **No privileged e2e oracle for adoption/quarantine or reconciliation
   repair** (P08b). `AdoptOrQuarantine`, `IsComplete`, `RepairReadOnly` and
   `ClearForRepublish` are gated at the unit level against fakes for a

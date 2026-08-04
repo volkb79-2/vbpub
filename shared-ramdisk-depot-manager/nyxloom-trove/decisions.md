@@ -973,3 +973,82 @@ therefore treats a missing durable copy as a hard failure per profile
 (reported, not guessed past), and republishing is the one path that keeps
 the durable copy honest going forward: every successful `activate` (and
 boot's own reuse of it) rewrites it.
+
+---
+
+## D-027 — overlayfs copies up on a NO-OP chown; rejected for `ro`, adopted for `rw`
+
+**Status:** accepted, from measurement. Probed 2026-08-04 on the case-study
+host (kernel `7.1.3+deb13-amd64`) in a privileged container on the host
+kernel, because the answer decides an architecture and could not be reasoned
+out — the same rule that produced D-011, D-015 and D-019.
+
+**The proposal.** Put a writable overlay layer on top of the read-only
+generation, so vanilla Wings' pre-boot chown walk sees a writable filesystem
+and unexpected consumer mutations land harmlessly in the upper layer instead
+of failing the server's start. It would remove F1 from the MVP path.
+
+**The measurement.** `lowerdir` = the generation, `upperdir`+`workdir` on
+ext4 and on tmpfs, 8 MiB file already owned exactly as the chown would set
+it. Verdict column is **allocated blocks**, not apparent size: a metacopy'd
+upper file must *report* the lower file's size for the merged view to be
+correct, so `st_size` cannot distinguish the two and `st_blocks` can.
+
+| operation | default opts | `metacopy=on` |
+|---|---|---|
+| chown to the **same** owner | **full 8 MiB copied** | metadata only (0 KiB tmpfs / 4 KiB ext4 inode overhead) |
+| chmod to the **same** mode | **full 8 MiB copied** | metadata only |
+| `touch` (mtime only) | **full 8 MiB copied** | **full 8 MiB copied** |
+| chown to a different owner | full 8 MiB copied | metadata only |
+| read | no copy-up | no copy-up |
+| write | full copy-up | full copy-up |
+
+**overlayfs does not compare values.** Any `setattr` touching uid, gid or
+mode forces copy-up whether or not it changes anything; the no-op case is
+not special-cased. Confirmed end to end by simulating the walk: a 40-file,
+11 MiB tree **already owned `1000:1000`**, walked with
+`find … -exec chown 1000:1000 {} \;` exactly as vanilla Wings does,
+duplicated **all 40 files and the entire 11 MiB** into the upper layer.
+
+Two further measured facts:
+
+- **`metacopy` is OFF by default** (`/sys/module/overlay/parameters/metacopy`
+  = `N`). It is a mount option that must be asked for, and it does **not**
+  cover timestamps — `touch` still forces a full data copy even with it on.
+- **An overlay cannot be its own upper**: `upperdir` on an overlayfs
+  (a container's own root) is refused outright — *"filesystem on … not
+  supported as upperdir"*. Upper must be ext4/xfs/tmpfs.
+
+`st_ino` in the merged view stayed **stable** across copy-up, so the
+inode-identity test this idea was proposed to be judged on actually passes.
+It is the wrong test: what matters is whether the *page cache* is shared,
+and after a data copy-up it is not, whatever the inode number says.
+
+**Rejected for `ro`.** srdm exists so that N containers share one copy of
+the pages. A chown walk over a merged view duplicates the whole tree per
+server, synchronously, at every server boot — the precise failure srdm is
+built to prevent, reintroduced at the worst moment. `metacopy=on` reduces it
+to metadata, but it is off by default, has to be enabled host-wide, does not
+cover `touch`, and buys back only the ownership self-repair that
+`check_permissions_on_boot: false` gives up for free — while F1 gives it up
+for nothing. Not worth a mount layer per server plus re-deriving teardown
+safety (D-012/D-018/D-019) against a mount that pins lower inodes.
+
+**Adopted for `rw`.** The same measurement is a *recommendation* here, and
+the "write → full copy-up" row is the feature rather than the cost: a
+generation exposed writable today has to be UNSEALED and chowned in place
+(D-020/D-022), which marks it `dirty_capable`, bars it from being shared or
+used as a source, and limits it to exactly one consumer. Under an overlay
+the updater's writes land in a per-server upper, bounded by what it actually
+touches; the lower generation stays sealed, pristine and shared; other
+servers reading it are unaffected; and `harvest` reads the merged view. The
+review that rejected "overlayfs with tmpfs upper then commit"
+(`../wings-cgroups/shared-ramdisk-update-lifecycle-1-codex.md:237`, scored
+48/100) rejected the **commit** half — whiteouts, upper/lower
+reconciliation, non-atomic disk commit. That does not apply: srdm's commit
+path is `harvest`, which re-walks, re-hashes and promotes through the same
+`store.Promote` a staged release uses.
+
+**aufs is not an option and does not need evaluating.** The kernel offers
+only `overlay` in `/proc/filesystems`; aufs was never merged into mainline
+and Debian carries no module for it. It is not a fallback, it is absent.

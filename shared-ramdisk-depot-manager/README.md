@@ -14,6 +14,50 @@ exposes them read-only to the containers that consume them.
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)
 
+## What it actually does
+
+The problem: N game servers on one host each want their own copy of a
+multi-GB content tree. That means N copies in page cache, N independent
+updates, and no way to say "these two servers are running the same bytes".
+
+srdm makes the content a **release** — hashed per file, classified, probed,
+frozen — and then a **generation**: that release resident in tmpfs, held by
+per-class systemd units that carry its memory policy, sealed read-only, and
+bind-mounted into each consuming server's volume. One copy of the pages,
+shared, provably identical to the release, and impossible for a server to
+corrupt.
+
+```
+content on disk
+  → srdm store promote    hash every file, classify, probe → an immutable release
+  → srdm activate         publish into tmpfs, hold it, expose it to every assigned server
+  → [servers run against the shared read-only content]
+  → srdm attach/detach    add or remove a consumer
+  → srdm harvest          fold an in-place update back into a NEW release
+  → srdm rollback         swap back to the previous one
+  → srdm gc               drop releases nothing points at
+```
+
+Three ideas carry the design:
+
+- **Intent and reality are separate, and reconciliation is the comparison.**
+  What an operator asked for is recorded (`internal/assign`); who is actually
+  holding a generation is a kernel fact resolved fresh from
+  `/proc/*/mountinfo` every time it is asked (`internal/consumer`). Neither
+  is derived from the other — see D-018 and D-024.
+- **The charge and the policy cannot separate.** Each class's pages are
+  faulted by that class's own hold-unit worker, *inside* the cgroup carrying
+  that class's `memory.min` / zswap policy. Not applied afterwards to pages
+  charged somewhere else.
+- **Nothing becomes visible until it is whole.** Population happens in an
+  operation-private tmpfs; a generation appears only as a read-only bind of
+  an already-verified, already-sealed tree. Nothing is renamed into
+  visibility and nothing visible was ever writable.
+
+Everything that changes state is one root process under an `flock` — **there
+is no daemon** (D-025). `srdm-restore.service` rebuilds every assignment at
+boot; `srdm reconcile` repairs drift on demand.
+
 ## Status — P01–P08b landed, v1 MVP complete
 
 The v1 pipeline is a loop and it survives everything short of losing the
