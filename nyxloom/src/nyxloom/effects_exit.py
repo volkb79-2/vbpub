@@ -47,7 +47,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
 from . import (
-    carver_session, effects, effects_review, paths, reconcile, results, storage,
+    carver_session, effects, effects_review, paths, reconcile, results, stages, storage,
 )
 from .config import ProjectConfig
 from .log import get_logger
@@ -740,13 +740,17 @@ class ExitEffector:
             # composed into the pipeline (the warm self-check before the
             # expensive frontier reviewer); else straight to frontier review
             # -- byte-identical to pre-B5 for a legacy (no-self_review)
-            # pipeline (and for any non-IMPLEMENTER role that reaches here).
-            if attempt.role == Role.IMPLEMENTER and "self_review" in cfg.pipeline:
-                events.append(self._transition(ctx, task_id,
-                                                TaskState.SELF_REVIEWING, None))
-            else:
-                events.append(self._transition(ctx, task_id,
-                                                TaskState.AWAITING_REVIEW, None))
+            # pipeline. attempt.role is IMPLEMENTER here unconditionally: every
+            # other role (CARVER, REVIEW_INDEPENDENT, SELF_REVIEW) returns
+            # above before this point, and those are all four members of Role
+            # (test_a_non_implementer_done_receipt_is_unreachable pins it).
+            # The target comes from stages.effective_exit_map -- the SAME
+            # function validate_pipeline and the shadow-compile projection
+            # read -- rather than a second, independently-maintained copy of
+            # this rule (CR-07c: the two copies had already drifted once).
+            target = dict(stages.effective_exit_map(
+                stages.STAGE_REGISTRY["implement"], cfg.pipeline))["done"]
+            events.append(self._transition(ctx, task_id, target, None))
         elif result is ReceiptResult.BLOCKED:
             blocker = Blocker(type=BlockerType.CONTRACT, unblock_condition="triage BLOCKED reason",
                                detail=(receipt.blocked_reason or "")[:200])

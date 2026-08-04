@@ -8,10 +8,15 @@ against the stage registry's ``exit_map`` triples, plus per-node equality of
 entry/exit/ownership/role/concurrency/packet-context. Anything a stage record
 says that the compiled node does not, or the reverse, fails.
 
-There is exactly ONE declared divergence, it is named in
-``workflow_shadow.DECLARED_DIVERGENCES``, and the legacy pipeline -- the same
-flow without ``self_review`` -- is equality with NOTHING subtracted, which is
-what proves the divergence is the self-review adjacency and nothing else.
+CR-07a found a real divergence here (implement's `done` exit is declared
+``-> AWAITING_REVIEW`` unconditionally but the engine routes it to
+``SELF_REVIEWING`` whenever ``self_review`` is composed) and pinned it rather
+than fixing it. CR-07c closed it: ``stages.effective_exit_map`` is now the
+single function the projection, ``validate_pipeline`` and the engine
+(``effects_exit.py``) all read, so there is no longer a second, divergable
+copy of the rule for this module to project around. The legacy pipeline --
+the same flow without ``self_review`` -- still needs zero adjustment, proved
+below by plain set equality with nothing discarded or substituted.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import pytest
 from nyxloom import workflow_shadow as ws
 from nyxloom.stages import PRESETS, STAGE_REGISTRY, validate_pipeline
 from nyxloom.types import TaskState
-from nyxloom.workflow_compile import CompileError, DiagnosticCode, compile_workflow
+from nyxloom.workflow_compile import compile_workflow
 from nyxloom.workflow_ir import (
     COMPILER_EDGES,
     EdgeOrigin,
@@ -160,27 +165,25 @@ def test_a_gateless_preset_still_completes_through_the_kernel():
     assert digest(ir).startswith("sha256:")
 
 
-# --- the defect the differential found -------------------------------------
+# --- the defect the differential found, and its repair ---------------------
 
 
 @pytest.mark.parametrize("preset", PRESET_CASES)
-def test_the_declared_form_of_every_self_reviewing_preset_is_unreachable(preset):
-    """`stages.py` declares implement's `done` exit as -> AWAITING_REVIEW
-    unconditionally, and every shipped preset composes `self_review`. Nothing
-    routes INTO SELF_REVIEWING in the declared record, and
-    ``validate_pipeline`` cannot see it: rule 3 counts a stage's entry_state as
-    "handled" merely because the stage is present.
-
-    This is a real defect in the existing declaration, found by the new
-    machinery rather than asserted by it -- and it is why the projection
-    follows ``effects_exit.py`` instead of the stage record.
+def test_the_declared_form_of_every_self_reviewing_preset_now_compiles(preset):
+    """CR-07a found that `stages.py` declared implement's `done` exit as
+    -> AWAITING_REVIEW unconditionally while every shipped preset composes
+    `self_review`, so nothing routed INTO SELF_REVIEWING in the declared
+    record and ``validate_pipeline`` could not see it (rule 3 counts a
+    stage's entry_state as "handled" merely because the stage is present).
+    CR-07c repairs the declaration itself (``stages.effective_exit_map``),
+    so the preset's projection -- now the ONLY declared form, `declared_source`
+    is gone -- compiles clean instead of raising UNREACHABLE_NODE.
     """
     assert "self_review" in PRESETS[preset]
-    validate_pipeline(list(PRESETS[preset]))          # the stage layer accepts it
-    with pytest.raises(CompileError) as excinfo:
-        compile_workflow(ws.declared_source(PRESETS[preset]), origin=preset)
-    assert DiagnosticCode.UNREACHABLE_NODE in excinfo.value.codes()
-    assert "self_review" in str(excinfo.value)
+    validate_pipeline(list(PRESETS[preset]))
+    ir = compile_workflow(ws.preset_source(PRESETS[preset]), origin=preset)
+    targets = {e.to_state for e in ir.node("implement").edges if e.label == "done"}
+    assert targets == {TaskState.SELF_REVIEWING}
 
 
 def test_the_kernel_entry_edge_is_carried_not_dropped():
@@ -198,11 +201,6 @@ def test_the_kernel_entry_edge_is_carried_not_dropped():
     assert len(carried) == 1
     assert carried[0].kernel_class is KernelEdgeClass.MERGE_SPINE
     assert carried[0].label is None
-
-
-def test_the_divergence_is_declared_and_singular():
-    assert list(ws.DECLARED_DIVERGENCES) == ["implement.done"]
-    assert "effects_exit.py" in ws.DECLARED_DIVERGENCES["implement.done"]
 
 
 # --- the stop-loss measurement ---------------------------------------------
@@ -262,11 +260,3 @@ def test_the_projection_refuses_an_unknown_stage_kind():
 
 def test_preset_names_are_the_shipped_presets():
     assert ws.preset_names() == tuple(PRESET_CASES)
-
-
-def test_declared_source_is_a_no_op_without_self_review():
-    """Its only edit is the divergence, so on the legacy pipeline it must
-    return the projection unchanged -- otherwise the control above is testing a
-    different document from the one it claims."""
-    assert ws.declared_source(ws.LEGACY_PIPELINE) == ws.preset_source(
-        ws.LEGACY_PIPELINE)

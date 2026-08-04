@@ -25,39 +25,42 @@ would have meant either inventing a second implementer node (two nodes owning
 
 WHAT THE PROJECTION HAD TO ADD, AND WHY IT IS NOT AN ESCAPE HATCH
 -----------------------------------------------------------------
-Two additions, both DATA, both forced by the IR being stricter than
-``validate_pipeline`` -- which is the point of the exercise rather than a
-concession:
+One addition, DATA, forced by the IR being stricter than ``validate_pipeline``
+-- which is the point of the exercise rather than a concession:
 
-1. **Wait nodes for the lifecycle hand-off.** ``stages.LIFECYCLE_STATES``
-   exempts ``CARVED``/``NEEDS_DECISION``/``BLOCKED``/``DRAFT`` from the
-   dead-end rule on the grounds that "a stage may route a task INTO one of
-   these; the mechanism (or a human) carries it onward". It never says WHERE
-   onward is. A compiler outcome into a kernel-owned state must name a wait
-   node here, so ``carve``'s ``done -> CARVED`` acquires the declared
-   continuation ``CARVED -> QUEUED`` that queue admission has always performed
-   in ``reconcile``. The exemption becomes an obligation; nothing became code.
+**Wait nodes for the lifecycle hand-off.** ``stages.LIFECYCLE_STATES`` exempts
+``CARVED``/``NEEDS_DECISION``/``BLOCKED``/``DRAFT`` from the dead-end rule on
+the grounds that "a stage may route a task INTO one of these; the mechanism
+(or a human) carries it onward". It never says WHERE onward is. A compiler
+outcome into a kernel-owned state must name a wait node here, so ``carve``'s
+``done -> CARVED`` acquires the declared continuation ``CARVED -> QUEUED``
+that queue admission has always performed in ``reconcile``. The exemption
+becomes an obligation; nothing became code.
 
-2. **The self-review routing.** ``stages.py`` declares ``implement``'s ``done``
-   exit as ``-> AWAITING_REVIEW`` unconditionally, but the engine routes
-   ``done -> SELF_REVIEWING`` whenever ``self_review`` is composed
-   (``effects_exit.py``: ``if attempt.role == Role.IMPLEMENTER and
-   "self_review" in cfg.pipeline``). The declared record and the behaviour
-   disagree, and ``validate_pipeline`` cannot see it: rule 3 treats a stage's
-   ``entry_state`` as "handled", so ``self_review`` counts as handled by virtue
-   of EXISTING, and nothing checks that anything routes into it. Under this
-   compiler the declared form of the same pipeline fails
-   ``UNREACHABLE_NODE`` -- ``tests/test_workflow_shadow.py`` pins that as a real
-   defect found rather than as a projection convenience.
+THE SELF-REVIEW ROUTING (CR-07a found it, CR-07c closed it)
+-------------------------------------------------------------
+CR-07a found that ``stages.py`` declared ``implement``'s ``done`` exit as
+``-> AWAITING_REVIEW`` unconditionally while the engine
+(``effects_exit.py``) routed ``done -> SELF_REVIEWING`` whenever
+``self_review`` was composed -- a real, live defect (every shipped preset
+composes ``self_review``, so the declared record was wrong since B5,
+2026-07-20) that ``validate_pipeline`` could not see: rule 3 treats a stage's
+``entry_state`` as "handled" by virtue of existing, so nothing checked that
+anything routed INTO it. CR-07a pinned the disagreement (compiling the
+declared form of every self-reviewing preset raised ``UNREACHABLE_NODE``)
+rather than fixing it, on the grounds that repairing the layer being replaced
+belongs to the package that replaces it.
 
-   The projection therefore routes ``done`` to the node that actually receives
-   it. That is the conditional DISAPPEARING into data, which is the opposite of
-   an escape hatch: the ``if`` in ``effects_exit.py`` exists because a stage
-   record cannot say "in this pipeline, done goes here", and a manifest can.
-   :data:`DECLARED_DIVERGENCES` names it, singular and exact, and the shadow of
-   :data:`LEGACY_PIPELINE` (the same flow without ``self_review``) is equality
-   with nothing subtracted -- which is what proves the divergence is the
-   self-review adjacency and nothing else.
+CR-07c is that repair: ``stages.effective_exit_map`` is now the SINGLE
+function ``validate_pipeline``, ``effects_exit.py``'s dispatch and this
+module's :func:`preset_source` all read to resolve ``implement.done``'s
+target for a given pipeline, so the declared and the actual form cannot
+diverge again the way they did before -- there is only one place left that
+knows the rule. This module no longer needs a second, projection-local copy
+of it (the deleted ``_successor_state``), nor a document that is deliberately
+compiled and refused to prove the two disagreed (the deleted
+``declared_source`` / ``DECLARED_DIVERGENCES``): ``preset_source`` IS the
+declared form now, because the declaration itself is composition-aware.
 
 This module is the only one in the package that imports ``stages``. The
 compiler must not know what a stage is; the thing that compares them must.
@@ -65,7 +68,7 @@ compiler must not know what a stage is; the thing that compares them must.
 
 from __future__ import annotations
 
-from .stages import PRESETS, STAGE_REGISTRY, Stage
+from .stages import PRESETS, STAGE_REGISTRY, Stage, effective_exit_map
 from .types import Role, TaskState
 from .workflow_ir import (
     COMPILER_EDGES,
@@ -77,23 +80,12 @@ from .workflow_ir import (
 )
 
 #: The pipeline that is byte-identical to the pre-B5 engine: every preset minus
-#: ``self_review``. Shadowing it is how :data:`DECLARED_DIVERGENCES` is proved
-#: to be exactly one thing rather than a general licence.
+#: ``self_review``. Used by the full-vocabulary shadow (the second document in
+#: :func:`full_vocabulary_sources`) and by the corpus's "shadow-legacy" case.
 LEGACY_PIPELINE: tuple = (
     "carve", "implement", "review_independent", "triage", "auto_merge",
     "post_merge_gate",
 )
-
-#: The single point at which a compiled preset differs from what ``stages.py``
-#: DECLARES, with the production site that decides it. Read by the shadow test,
-#: which subtracts exactly this and demands equality on everything else.
-DECLARED_DIVERGENCES: dict = {
-    "implement.done": (
-        "stages.py declares implement's `done` exit as -> AWAITING_REVIEW "
-        "unconditionally; effects_exit.py routes it to SELF_REVIEWING whenever "
-        "the self_review stage is composed. The projection follows the engine, "
-        "not the declaration."),
-}
 
 #: Prompt names the projection assigns per role. CR-07a has no prompt registry
 #: -- prompts are wrapper/adapter assets -- so these exist to satisfy §4.3
@@ -140,19 +132,6 @@ def _concurrency(stage: Stage) -> object:
     return "inherit" if stage.concurrency is None else stage.concurrency
 
 
-def _successor_state(stage: Stage, label: str, declared: TaskState,
-                     pipeline: tuple) -> TaskState:
-    """The state a stage exit ACTUALLY lands in for this pipeline.
-
-    One rule, and it is the one ``effects_exit.py`` implements: an
-    implementer's ``done`` goes to the self-review leg when the pipeline has
-    one. See :data:`DECLARED_DIVERGENCES`.
-    """
-    if stage.name == "implement" and label == "done" and "self_review" in pipeline:
-        return TaskState.SELF_REVIEWING
-    return declared
-
-
 def _owner_of(state: TaskState, pipeline: tuple) -> str:
     for name in pipeline:
         stage = STAGE_REGISTRY[name]
@@ -190,8 +169,7 @@ def preset_source(pipeline: tuple, *, workflow_id: str = "shadow",
             node["context"] = sorted(stage.context)
         outcomes: dict = {}
         kernel_outcomes: dict = {}
-        for label, declared in stage.exit_map:
-            target = _successor_state(stage, label, declared, pipeline)
+        for label, target in effective_exit_map(stage, pipeline):
             if classify_edge(stage.exit_from, target) is not None:
                 kernel_outcomes[label] = verb_for(stage.exit_from, target).value
             elif target in KERNEL_OWNED_STATES:
@@ -228,21 +206,6 @@ def _wait_node(state: TaskState, pipeline: tuple) -> dict:
         if (state, target) in COMPILER_EDGES:
             outcomes[label.value] = stage_name
     return {"entry_state": state.value, "outcomes": outcomes}
-
-
-def declared_source(pipeline: tuple, **kwargs) -> dict:
-    """The projection of what ``stages.py`` DECLARES, divergences included.
-
-    Identical to :func:`preset_source` except that ``implement.done`` follows
-    the stage record rather than the engine. It exists to be COMPILED AND
-    REFUSED: for any preset containing ``self_review`` it produces an
-    unreachable node, which is the defect described in this module's docstring
-    made executable.
-    """
-    source = preset_source(pipeline, **kwargs)
-    if "implement" in source["nodes"] and "self_review" in pipeline:
-        source["nodes"]["implement"]["outcomes"]["done"] = "review_independent"
-    return source
 
 
 def _full_vocabulary_base() -> dict:
