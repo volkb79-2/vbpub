@@ -729,9 +729,10 @@ class TestNextImplementTier:
 
 
 class TestSelectRoute:
-    """CR-08 Slice 3a: the explanation-object wrapper around
-    `healthy_routes(...)[0]` -- winner, runners-up, filtered reasons,
-    cost/confidence (typed but inert), snapshot version."""
+    """CR-08 Slice 3a/5: the explanation-object wrapper around
+    `undeclined_routes(healthy_routes(...), declined)[0]` -- winner,
+    runners-up, filtered reasons, cost/confidence (typed but inert),
+    snapshot version."""
 
     def _routes(self):
         from nyxloom.config import RouteDef
@@ -746,7 +747,7 @@ class TestSelectRoute:
 
         a, b, c = self._routes()
         result = select_route([a, b, c], {"a": False, "b": True, "c": True},
-                              snapshot_version="rev-1")
+                              frozenset(), snapshot_version="rev-1")
         assert result.winner is b
         assert result.runners_up == (c,)
 
@@ -757,7 +758,7 @@ class TestSelectRoute:
 
         a, b, c = self._routes()
         result = select_route([a, b, c], {"a": False, "b": True, "c": False},
-                              snapshot_version="rev-1")
+                              frozenset(), snapshot_version="rev-1")
         assert result.filtered == (
             RouteExclusion("a", RouteExclusionReason.PROVIDER_UNHEALTHY),
             RouteExclusion("c", RouteExclusionReason.PROVIDER_UNHEALTHY),
@@ -767,7 +768,7 @@ class TestSelectRoute:
         from nyxloom.config import select_route
 
         a, b, c = self._routes()
-        result = select_route([a, b, c], {}, snapshot_version="rev-1")
+        result = select_route([a, b, c], {}, frozenset(), snapshot_version="rev-1")
         assert result.winner is None
         assert result.runners_up == ()
         assert {exc.route_id for exc in result.filtered} == {"a", "b", "c"}
@@ -779,7 +780,7 @@ class TestSelectRoute:
         from nyxloom.config import select_route
 
         a, b, c = self._routes()
-        result = select_route([a, b, c], {"a": True}, snapshot_version="rev-1")
+        result = select_route([a, b, c], {"a": True}, frozenset(), snapshot_version="rev-1")
         assert result.expected_cost is None
         assert result.confidence is None
 
@@ -787,43 +788,96 @@ class TestSelectRoute:
         from nyxloom.config import select_route
 
         a, b, c = self._routes()
-        result = select_route([a], {"a": True}, snapshot_version="routes-rev-42")
+        result = select_route([a], {"a": True}, frozenset(), snapshot_version="routes-rev-42")
         assert result.snapshot_version == "routes-rev-42"
 
     def test_empty_candidates_yields_no_winner(self):
         from nyxloom.config import select_route
 
-        result = select_route([], {}, snapshot_version="rev-1")
+        result = select_route([], {}, frozenset(), snapshot_version="rev-1")
         assert result.winner is None
         assert result.runners_up == ()
         assert result.filtered == ()
 
+    def test_a_declined_route_is_skipped_even_when_healthy(self):
+        """CR-08 Slice 5: the bug this fix closes -- the first HEALTHY
+        candidate must not win if it was already declared incapable."""
+        from nyxloom.config import select_route
+
+        a, b, c = self._routes()
+        result = select_route([a, b, c], {"a": True, "b": True, "c": True},
+                              frozenset({"a"}), snapshot_version="rev-1")
+        assert result.winner is b
+        assert result.runners_up == (c,)
+
+    def test_filtered_distinguishes_declined_from_unhealthy(self):
+        """A candidate never healthy at all is PROVIDER_UNHEALTHY even if
+        it also happens to be declined (the health filter runs first and
+        never reaches the declined check for it); only a candidate that
+        WAS healthy but excluded by the declined filter is
+        DECLINED_INCAPABLE -- mirrors the real filters' own layered
+        order, healthy-then-declined, never conflating the two."""
+        from nyxloom.config import (
+            RouteExclusion, RouteExclusionReason, select_route,
+        )
+
+        a, b, c = self._routes()
+        # a: unhealthy AND declined -> PROVIDER_UNHEALTHY (health filter wins)
+        # b: healthy AND declined -> DECLINED_INCAPABLE
+        # c: unhealthy, not declined -> PROVIDER_UNHEALTHY
+        result = select_route([a, b, c], {"a": False, "b": True, "c": False},
+                              frozenset({"a", "b"}), snapshot_version="rev-1")
+        assert result.winner is None
+        assert result.filtered == (
+            RouteExclusion("a", RouteExclusionReason.PROVIDER_UNHEALTHY),
+            RouteExclusion("b", RouteExclusionReason.DECLINED_INCAPABLE),
+            RouteExclusion("c", RouteExclusionReason.PROVIDER_UNHEALTHY),
+        )
+
+    def test_declining_the_only_healthy_route_yields_no_winner(self):
+        from nyxloom.config import select_route
+
+        a, b, c = self._routes()
+        result = select_route([a, b, c], {"a": True, "b": False, "c": False},
+                              frozenset({"a"}), snapshot_version="rev-1")
+        assert result.winner is None
+        assert result.runners_up == ()
+
 
 class TestSelectRouteDifferentialAgainstRealDispatchSites:
-    """`select_route(...).winner` must match `healthy_routes(...)[0]` --
-    the same one-line expression `rules_dispatch.py` and `rules_attempts.py`
-    call directly at their real dispatch sites -- for every candidate/
-    health combination those two real call sites can encounter. Both this
-    test and `select_route` itself call `healthy_routes`, so this pins
-    `select_route`'s winner-selection to `healthy_routes`'s semantics
-    rather than independently re-deriving "first healthy route" from
-    scratch; `TestSelectRoute`'s literal-expected-value cases are what
-    actually pin `healthy_routes`'s own behavior. `select_route` is not
-    yet wired into either call site."""
+    """`select_route(...).winner` must match
+    `undeclined_routes(healthy_routes(...), declined)[0]` -- the same
+    expression `rules_dispatch.py` and `rules_attempts.py` call directly
+    at their real dispatch sites -- for every candidate/health/declined
+    combination those two real call sites can encounter. Both this test
+    and `select_route` itself call `healthy_routes`/`undeclined_routes`,
+    so this pins `select_route`'s winner-selection to those functions'
+    semantics rather than independently re-deriving "first healthy,
+    undeclined route" from scratch; `TestSelectRoute`'s literal-expected-
+    value cases are what actually pin `healthy_routes`'/
+    `undeclined_routes`'s own behavior. `select_route` is not yet wired
+    into either call site."""
 
-    @pytest.mark.parametrize("provider_ok", [
-        {},                                            # nothing healthy
-        {"a": True},                                    # only the first
-        {"c": True},                                    # only the last
-        {"a": True, "b": True, "c": True},               # all healthy
-        {"a": False, "b": True, "c": True},              # first excluded
-        {"a": True, "b": False, "c": False},             # only first healthy
-        {"a": False, "b": False, "c": True},             # only last healthy
+    @pytest.mark.parametrize("provider_ok,declined", [
+        ({}, frozenset()),                                          # nothing healthy
+        ({"a": True}, frozenset()),                                  # only the first
+        ({"c": True}, frozenset()),                                  # only the last
+        ({"a": True, "b": True, "c": True}, frozenset()),            # all healthy
+        ({"a": False, "b": True, "c": True}, frozenset()),           # first excluded
+        ({"a": True, "b": False, "c": False}, frozenset()),          # only first healthy
+        ({"a": False, "b": False, "c": True}, frozenset()),          # only last healthy
+        ({"a": True, "b": True, "c": True}, frozenset({"a"})),       # first declined
+        ({"a": True, "b": True, "c": True}, frozenset({"a", "b"})),  # first two declined
+        ({"a": True, "b": True, "c": True}, frozenset({"a", "b", "c"})),  # all declined
+        ({"a": False, "b": True, "c": True}, frozenset({"b"})),      # unhealthy AND declined overlap
     ], ids=["none", "first-only", "last-only", "all", "first-excluded",
-            "only-first", "only-last"])
-    def test_winner_matches_the_real_dispatch_sites_first_healthy_pick(
-            self, provider_ok):
-        from nyxloom.config import RouteDef, healthy_routes, select_route
+            "only-first", "only-last", "first-declined", "first-two-declined",
+            "all-declined", "unhealthy-and-declined-overlap"])
+    def test_winner_matches_the_real_dispatch_sites_pick(
+            self, provider_ok, declined):
+        from nyxloom.config import (
+            RouteDef, healthy_routes, select_route, undeclined_routes,
+        )
 
         candidates = [
             RouteDef(route_id="a", cli="claude", model="haiku"),
@@ -833,10 +887,10 @@ class TestSelectRouteDifferentialAgainstRealDispatchSites:
 
         # The REAL logic, character-for-character what rules_dispatch.py and
         # rules_attempts.py both execute today.
-        healthy = healthy_routes(candidates, provider_ok)
-        real_winner_id = healthy[0].route_id if healthy else None
+        available = undeclined_routes(healthy_routes(candidates, provider_ok), declined)
+        real_winner_id = available[0].route_id if available else None
 
-        result = select_route(candidates, provider_ok, snapshot_version="rev-1")
+        result = select_route(candidates, provider_ok, declined, snapshot_version="rev-1")
         selected_winner_id = result.winner.route_id if result.winner else None
 
         assert selected_winner_id == real_winner_id
