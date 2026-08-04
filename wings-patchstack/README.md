@@ -20,6 +20,30 @@ is moving off it.
 | `resources` | R1–R8 | not started (Phase 6) |
 | `integration` | I1 | not started (combined branch only) |
 
+## Why `lifecycle`, `resources` and `integration` are still "not started"
+
+Not an oversight, and not blocking anything today. The master plan orders
+its own delivery in phases (§Kickoff plan): v1 ships on `host-bind` exposure
+with **F1 as the only Wings patch it needs** — `srdm`'s v1 packages (P01–P08b,
+`shared-ramdisk-depot-manager/nyxloom-trove/roadmap.md`) are what v1 is, and
+they are complete. `lifecycle` (L1/L1b/L2/L3) needs the provider **socket**
+D-025 confirmed does not exist in v1 at all — L1 is a start-attempt
+transaction keyed on a protocol request id, validated leases and a
+`docker.lifecycle_providers` socket config that has nothing to resolve
+against until v2. `resources`'s R-series is the companion cgroups redesign
+for that same provider-driven shape. `integration`'s I1 exists only to bind
+the two together on the combined branch.
+
+Building any of the three now would mean writing Wings patches against a
+protocol nothing on the srdm side speaks yet, and gating them would need
+fixtures for messages srdm cannot send — exactly the "no provider-less
+interim, no 0011 bridge" decision the wings-cgroups project memory records.
+**v2 (master-plan Phases 4–7) starts after v1 proves itself in production**
+(`srdm`'s P09: Soulmask profile, managed egg, migration rehearsal) — "the
+cutover is a config flip, not a migration," per the roadmap, precisely
+because nothing built for v1 gets thrown away. P09 is the next package on
+the critical path, not `lifecycle`.
+
 ## F1 — the only patch on the MVP path
 
 `srdm`'s v1 exposure driver (`host-bind`, `access: ro`) binds read-only
