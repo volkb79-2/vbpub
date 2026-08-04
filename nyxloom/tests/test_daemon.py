@@ -4484,6 +4484,20 @@ def test_declined_routes_negative_self_reference_guard(tmp_state, sample_project
     assert out == {}
 
 
+def test_effect_context_carries_the_daemons_own_provider_pause_registry(
+        tmp_state, sample_project):
+    """CR-11a: admissible()'s fresh route-health check reads
+    ctx.provider_pause -- which must be the SAME ProviderPauseRegistry
+    instance the daemon constructs and LifecycleEffector mutates mid-pass
+    (self._provider_backoff), not a fresh/disconnected one, or a route
+    paused by one task's LIMIT receipt would never be visible to another
+    task's admission check later in the same pass."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    ctx = d._effect_context("demo", cfg, {})
+    assert ctx.provider_pause is d._provider_backoff
+
+
 def test_dispatch_implementer_embeds_prior_review_verdict(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):

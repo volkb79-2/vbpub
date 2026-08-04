@@ -796,7 +796,8 @@ class Daemon:
         # and cannot reach one that outlived its pass.
         return effects.EffectContext(project=project, cfg=cfg, states=states,
                                      ports=self._ports,
-                                     snapshot_audit=self._snapshot_audit.get(project))
+                                     snapshot_audit=self._snapshot_audit.get(project),
+                                     provider_pause=self._provider_backoff)
 
     # -- lifecycle ------------------------------------------------------
 

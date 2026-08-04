@@ -38,12 +38,28 @@ class _Files:
         return self.content
 
 
-def _ctx(cfg, states=None, *, files=None, audit=None):
-    ports = dataclasses.replace(effects.EffectPorts.system(),
-                                files=files or _Files(present=False))
+def _ctx(cfg, states=None, *, files=None, audit=None, provider_pause=None, clock=None):
+    replacements = {"files": files or _Files(present=False)}
+    if clock is not None:
+        replacements["clock"] = clock
+    ports = dataclasses.replace(effects.EffectPorts.system(), **replacements)
     return effects.EffectContext(project="demo", cfg=cfg,
                                  states=states or {}, ports=ports,
-                                 snapshot_audit=audit)
+                                 snapshot_audit=audit, provider_pause=provider_pause)
+
+
+class _FakeClock:
+    """CR-11a: a pinned monotonic clock so a route-pause deadline can be
+    placed deterministically before/after "now" without a real sleep."""
+
+    def __init__(self, mono: float = 100.0) -> None:
+        self.mono = mono
+
+    def now(self):
+        return utc_now()
+
+    def monotonic(self) -> float:
+        return self.mono
 
 
 def _attempt_costing(amount: float, currency: str = "USD") -> Attempt:
@@ -194,6 +210,122 @@ class TestAdmissible:
         autonomous decision."""
         assert effects_dispatch.admissible(
             _ctx(sample_project, audit=None), "carve")[0] is True
+
+
+# ---------------------------------------------------------------------------
+# admission's route-health precondition (CR-11a)
+
+
+class TestRouteCurrentlyPaused:
+    """The FRESH, effect-boundary read of ProviderPauseRegistry --
+    deliberately NOT the plan-time provider_ok snapshot, so a route paused
+    by another task's outcome mid-pass is caught before THIS launch too."""
+
+    def test_no_registry_wired_degrades_to_not_paused(self, sample_project):
+        """provider_pause defaults to None (a test-constructed context
+        exercising an unrelated check) -- must never crash."""
+        ctx = _ctx(sample_project, provider_pause=None)
+        assert effects_dispatch.route_currently_paused(ctx, _route()) is False
+
+    def test_an_unpaused_route_is_not_paused(self, sample_project):
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        assert effects_dispatch.route_currently_paused(ctx, _route()) is False
+
+    def test_a_route_paused_with_time_remaining_is_paused(self, sample_project):
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r1", 60)
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        assert effects_dispatch.route_currently_paused(ctx, _route()) is True
+
+    def test_a_route_whose_pause_has_expired_is_not_paused(self, sample_project):
+        """The deadline itself is the boundary -- clock == paused_until is
+        NOT still paused (matches _provider_ok's `now < paused_until`)."""
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r1", 60)
+        clock.mono = 160.0
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        assert effects_dispatch.route_currently_paused(ctx, _route()) is False
+
+    def test_a_different_routes_pause_does_not_leak(self, sample_project):
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r2", 3600)
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        assert effects_dispatch.route_currently_paused(ctx, _route(route_id="r1")) is False
+
+
+class TestAdmissibleRefusesAPausedRoute:
+    """CR-11a: admissible() itself refuses a launch into a currently-paused
+    route, closing the gap CR-08 Slice 2 named as CR-11's charter -- a route
+    paused by one task's LIMIT receipt mid-pass could otherwise still admit
+    another task's already-planned dispatch/resume into the SAME route
+    later in the SAME pass."""
+
+    def test_refuses_dispatch_into_a_currently_paused_route(self, tmp_state, sample_project):
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r1", 60)
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        ok, reason = effects_dispatch.admissible(ctx, "dispatch", _route(route_id="r1"))
+        assert (ok, reason) == (False, "route-paused:r1")
+
+    def test_admits_once_the_pause_expires(self, tmp_state, sample_project):
+        """Self-healing: the SAME check that refused now admits, once the
+        deadline passes, with no operator action -- unlike a permanent
+        stall, this is exactly the pause/budget refusal shape above."""
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r1", 60)
+        clock.mono = 160.0
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(route_id="r1", trust="operator"))
+        assert (ok, reason) == (True, "")
+
+    def test_a_paused_route_does_not_refuse_a_launch_into_a_different_route(
+            self, tmp_state, sample_project):
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r2", 3600)
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(route_id="r1", trust="operator"))
+        assert (ok, reason) == (True, "")
+
+    def test_a_paused_route_does_not_refuse_a_launch_with_no_route_given(
+            self, tmp_state, sample_project):
+        """The self-review/bare-carve shape (route resolved later, or not
+        at all) -- route health has nothing to check without a route, same
+        as containment."""
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r1", 60)
+        ctx = _ctx(sample_project, provider_pause=registry, clock=clock)
+        ok, reason = effects_dispatch.admissible(ctx, "self-review")
+        assert (ok, reason) == (True, "")
+
+    def test_route_pause_is_checked_before_containment(self, tmp_state, sample_project, monkeypatch):
+        """Cheap-refusal-first ordering (the docstring's own stated
+        principle): a route that is BOTH paused AND would need an
+        unavailable containment refuses on the cheaper route-paused reason,
+        never reaching the two docker calls."""
+        clock = _FakeClock(mono=100.0)
+        registry = effects.ProviderPauseRegistry(clock)
+        registry.pause("r1", 60)
+        processes = _Processes(version_rc=1)
+        ctx = _ctx_with(sample_project, processes, provider_pause=registry, clock=clock)
+        env = {"NYXLOOM_CONTAINMENT_IMAGE": "agent:local",
+               "NYXLOOM_CONTAINMENT_HOST_MAP": "/tmp=/tmp"}
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        ok, reason = effects_dispatch.admissible(
+            ctx, "dispatch", _route(route_id="r1", trust=None))
+        assert (ok, reason) == (False, "route-paused:r1")
+        assert processes.calls == []
 
 
 # ---------------------------------------------------------------------------
