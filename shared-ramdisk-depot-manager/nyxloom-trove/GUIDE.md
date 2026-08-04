@@ -117,12 +117,28 @@ Declaring them opts the project into the numeric-prefixed direction spine
 rules S1–S4 then enforce. The plain `roadmap.md` / `backlog.md` this trove
 holds stay valid; adopt the spine as its own package if it is ever wanted.
 
+## Where the plan lives
+
+**`PLAN.md`, in this directory, is authoritative** — the product definition,
+the invariants, the architecture as built, the measured ground, the
+direction and the acceptance oracles. Read it before anything else. It is
+in-project on purpose: it can be a `[refs]` entry, it is edited by the
+package that changes what it describes, and it needs no correction list read
+alongside it.
+
+`../wings-cgroups/**` is now **read-only history**. It was the master plan
+until 2026-08-04; it is superseded, and it is wrong in the twenty-odd places
+PLAN.md §The measured ground enumerates. Do not cite it as authority and do
+not edit it to reflect a change made here — a change there was always a
+decision rather than an implementation, and now it is not even that.
+PLAN.md §Historical documents says what each file is still good for (chiefly
+the provider protocol spec, if `provider` exposure is ever built).
+
 ## What must not be touched
 
-`../wings-cgroups/**` holds the **design** documents. A change there is a
-decision, not an implementation — take it to the design session, not to a
-package. Likewise `../scripts/gstammtisch-guide/**` is the live host's
-files, and `../wings-patchstack/**` is the Wings patch stack.
+`../scripts/gstammtisch-guide/**` is the live host's files, and
+`../wings-patchstack/**` is the Wings patch stack — both belong to the
+wider program, not to an srdm package.
 
 ## Committing from the shared main checkout
 

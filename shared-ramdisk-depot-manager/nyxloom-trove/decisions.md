@@ -4,6 +4,14 @@ Product calls, one `D-<NNN>` each. A decision is a *product* gap — a name, a
 contract, a user-facing choice — recorded and worked around, never a reason
 to stop. Mechanical blockers are BLOCKED exits instead.
 
+> **"The master plan"** in the entries below means
+> `../../wings-cgroups/shared-ramdisk-update-lifecycle-5-fable.md`, which
+> governed this project until 2026-08-04 and is now superseded by
+> [`PLAN.md`](PLAN.md). Those references are deliberately left as written:
+> most of these decisions exist *because* the plan said one thing and the
+> kernel did another, and rewriting them would erase the reasoning. PLAN.md
+> §The measured ground is the same list, collected.
+
 ---
 
 ## D-001 — `WS/Config` classification: shared or per-instance?

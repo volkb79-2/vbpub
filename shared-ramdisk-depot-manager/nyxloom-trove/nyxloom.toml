@@ -31,14 +31,19 @@ agent_logs           = "nyxloom-trove/agent-logs"
 # about, and a path reaching into a sibling project is a dependency it cannot
 # own.
 #
-# srdm's governing documents deliberately live OUTSIDE this tree: the master
-# plan and its resources companion are in ../wings-cgroups/, the patch stack
-# in ../wings-patchstack/, and the system srdm replaces in
-# ../scripts/gstammtisch-guide/. They are DESIGN documents for the whole
-# program, not srdm's own — a change there is a decision, not an
-# implementation, and this package must never edit them. README.md and
-# nyxloom-trove/GUIDE.md link them, which is where a reader looks anyway.
+# Until 2026-08-04 srdm's governing document lived OUTSIDE this tree, in
+# ../wings-cgroups/, and could therefore never be a ref — CFG3 refused it,
+# so the plan was permanently second-class to the lint that governs every
+# other document here. `plan` below closes that: nyxloom-trove/PLAN.md is
+# now the authoritative product definition, architecture, measured ground
+# and oracle list, in-project and under the same rules as the rest.
+#
+# ../wings-cgroups/ is read-only history; ../wings-patchstack/ is the Wings
+# patch stack; ../scripts/gstammtisch-guide/ is the live host's files. None
+# of the three is an srdm package's to edit. PLAN.md §Historical documents
+# says what each is still good for.
 [refs]
+plan            = "nyxloom-trove/PLAN.md"
 readme          = "README.md"
 gate_guide      = "nyxloom-trove/GUIDE.md"
 store_format    = "docs/store-format.md"

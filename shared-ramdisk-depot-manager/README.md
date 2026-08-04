@@ -5,11 +5,17 @@ hash-verified generations**, holds them resident in a shared tmpfs so N
 containers share one copy of the pages instead of N page-cache copies, and
 exposes them read-only to the containers that consume them.
 
-- **Design**: [`../wings-cgroups/shared-ramdisk-update-lifecycle-5-fable.md`](../wings-cgroups/shared-ramdisk-update-lifecycle-5-fable.md)
-  — the master plan. Read §Exposure drivers, §Publication topology,
-  §Generation slices, §Worker contract, §Acceptance oracles.
-- **Resources companion**: [`../wings-cgroups/shared-ramdisk-update-lifecycle-cgroups-2-fable.md`](../wings-cgroups/shared-ramdisk-update-lifecycle-cgroups-2-fable.md)
+- **The plan** — authoritative, and self-contained:
+  [`nyxloom-trove/PLAN.md`](nyxloom-trove/PLAN.md). Start here. It carries the
+  product definition, the invariants, the architecture as built, **the
+  measured ground** (every place the kernel corrected the design), the
+  direction, and the acceptance oracles.
+- **Decisions**: [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) —
+  every `D-NNN`. **Roadmap**: [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
 - **Wings patches**: [`../wings-patchstack/`](../wings-patchstack/)
+- **Historical**: `../wings-cgroups/` — the superseded master plan and its
+  companions. Read-only history; PLAN.md §Historical documents says what each
+  is still good for.
 - **Operating guide** (gates, cgroup placement, what not to touch):
   [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md)
 - **Store format**: [`docs/store-format.md`](docs/store-format.md)

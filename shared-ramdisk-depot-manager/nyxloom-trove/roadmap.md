@@ -1,13 +1,19 @@
 # srdm roadmap
 
-Phases as the master plan orders them (§Kickoff plan, reordered by decision
-10 so the vanilla-Wings product ships first). This file is the *plan*;
-each package becomes a handoff in `handoffs/` when it is carved.
+**Package order and state.** The product definition, architecture,
+invariants, measured ground and acceptance oracles are in
+[`PLAN.md`](PLAN.md), which is authoritative; this file is only *what gets
+built in what order*. Each package becomes a handoff in `handoffs/` when it
+is carved and leaves a LOG in `reports/` when it lands.
 
-The MVP gate is master-plan oracles **19–24**. Phase 1 does not ship
-without them, and every one of them needs a privileged harness — which is
-why the wave order below starts where it does rather than with the next
-feature.
+Waves 0–3 shipped the v1 MVP, whose gate was oracles **19–24** (PLAN.md
+§Acceptance oracles) — all green. The wave order below starts where it does,
+rather than with the next feature, because every one of those oracles needs
+a privileged harness and the harness had to exist first.
+
+Waves 4+ follow PLAN.md §Direction, which is where the program changed
+course: srdm takes over node resource governance, `access: rw` moves to an
+overlay, and acquisition gains the SteamCMD driver.
 
 ---
 
@@ -460,16 +466,57 @@ gave it a loop:
   need to stop its own hold unit — `AdoptOrQuarantine` sweeps its mounts by
   path and leaves the unit orphaned, journaled as a residual. → backlog.
 
-### Wave 4 — the real acceptance test
+### Wave 4 — capability, then the real acceptance test
+
+| id | package | state | depends on |
+|---|---|---|---|
+| **P10** | `access: rw` via an overlay upper layer (D-027) | **next** | P08b |
+| **P11** | build-identity recording, then the containerized SteamCMD driver | queued | P10 |
+| **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | queued | P10, and F1 or `check_permissions_on_boot: false` |
+
+**P10 goes before P09**, which reorders the old plan. P09 is the migration of
+two live servers onto one generation, and `rw` as it stands is
+single-consumer: unsealing the shared generation in place marks it
+`dirty_capable` and bars sharing (D-020/D-022). Rehearsing a cluster
+migration against a mode that cannot serve a cluster would rehearse the wrong
+thing. The overlay removes that limit by construction rather than by
+relaxing a check — sealed generation as `lowerdir`, per-server `upperdir`,
+lower stays pristine and shared. Known-hard parts, none of which transfer by
+assumption: whiteout handling when an update deletes files, `harvest` reading
+a merged view, and teardown safety re-derived against a mount that pins lower
+inodes (D-012/D-018/D-019 all apply).
+
+**P11** is two things in order. Build identity has no representation at all
+today — no profile can express "capture this version string" — and both the
+staged path and Steam need it, so it is one piece of work rather than a
+Steam rider. Then the driver itself: appid in, prepared tree out, as an
+unprivileged uid inside the egg's own runner image handing back one fsync'd
+typed result record (PLAN.md §Direction 3).
+
+**P09** is where **D-001** (`WS/Config` shared or per-instance) is answered
+by a runtime write audit rather than assumed, and where `soulmask_tmpfs` is
+retired. The migration runbook is the gate; nothing about it is a unit test.
+
+### Wave 5 — srdm takes over node resources
 
 | id | package | depends on |
 |---|---|---|
-| **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | P08b, and F1 or `check_permissions_on_boot: false` |
+| **P12** | server slice governance host-side: pre-create and configure per-server slices from the assignment, apply policy, reconcile drift, `doctor` the node budget | P09 |
+| **P13** | the Wings contract: placement patch, and the readiness signal for staged bands | P12 |
 
-Master-plan Phase 3. This is where **D-001** (`WS/Config` shared or
-per-instance) is answered by the runtime write audit rather than assumed,
-and where `soulmask_tmpfs` is retired. The migration runbook is the gate;
-nothing about it is a unit test.
+PLAN.md §Direction 1 is the argument. The order matters: **P12 before P13**,
+because properties are host-side and need no Wings change, so the whole
+resource engine can be built and gated against slices srdm creates itself
+before a single line of Wings is touched. P13 then adds only what srdm
+provably cannot do — `HostConfig.CgroupParent` placement, and a readiness
+event for startup→steady band transitions. That also replaces the `resources`
+R1–R8 series in `../wings-patchstack/` with two small patches, which is a
+much easier upstream ask.
+
+The first thing P12 should produce is the check nothing performs today: the
+host's actual RAM against the **sum** of `srdm.slice`'s floors and the
+servers' floors. Content and servers are one budget and no component
+currently knows both numbers.
 
 ---
 
@@ -478,13 +525,21 @@ nothing about it is a unit test.
 **F1** — the Wings chown-skip patch, in `../../wings-patchstack/`. Parallel
 to all of the above and owned by that stack, not this project. It is the
 MVP dependency for `host-bind` + `access: ro`: without it a node must set
-`system.check_permissions_on_boot: false`. P06 can be built and gated
-against the config workaround, so F1 never blocks srdm — it only decides
-how much a node has to concede to adopt it.
+`system.check_permissions_on_boot: false`. P06 was built and gated against
+the config workaround, so F1 never blocked srdm — it only decides how much a
+node has to concede to adopt it. `gofmt`/`build`/`test` green 2026-08-04;
+oracles 17–18 and the pelican export are still open.
 
-**v2** (master-plan Phases 4–7) — provider protocol freeze, L1/L1b, the
-`provider` exposure driver, cutover. Everything Waves 0–4 build is reused
-unchanged; the cutover is a config flip, not a migration.
+**The Wings v2 contract** — reduced by PLAN.md §Direction 1 from the eight
+`resources` patches to two: placement (`HostConfig.CgroupParent`) and a
+readiness signal. Carved as **P13** above rather than left to the patch
+stack, because P12 has to exist first for either to be worth anything.
+
+**`provider` exposure** — still optional, still justified by invariant 7
+(PLAN.md §Direction 4): it is what makes Wings' disk accounting, backups,
+SFTP and archive extraction structurally unable to see managed content.
+Not blocking, and not scheduled. Its protocol is specified in full in the
+historical plan; open that document only if this is actually being built.
 
 ---
 
