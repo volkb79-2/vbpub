@@ -876,6 +876,57 @@ def test_tester_gate_omits_cgroup_parent_dev_background_when_absent(monkeypatch,
     assert not any("CGROUP_PARENT_DEV_BACKGROUND" in part for part in argv)
 
 
+def test_git_common_dir_returns_none_for_an_ordinary_checkout(tmp_path):
+    _init_repo(tmp_path)
+
+    assert tester_gate._git_common_dir(tmp_path) is None
+
+
+def test_git_common_dir_resolves_a_linked_worktree_to_the_shared_git_dir(tmp_path):
+    main_repo = tmp_path / "main"
+    _init_repo(main_repo)
+    (main_repo / "f.txt").write_text("x")
+    _git("add", "f.txt", cwd=main_repo)
+    _git("commit", "-q", "-m", "init", cwd=main_repo)
+    worktree = tmp_path / "wt"
+    _git("worktree", "add", "-q", "-b", "release-test", str(worktree), cwd=main_repo)
+
+    common = tester_gate._git_common_dir(worktree)
+
+    assert common == (main_repo / ".git").resolve()
+
+
+def test_build_docker_command_mounts_the_shared_git_dir_for_a_linked_worktree(monkeypatch, tmp_path):
+    """The exact failure this closes: a release-transaction worktree's `.git`
+    is a FILE pointing at an absolute host path outside the mounted subtree
+    — without this extra mount, any git command needing history (not just
+    the checked-out files) fails inside the gate container with `fatal: not
+    a git repository`, even though the worktree itself mounted cleanly."""
+    main_repo = tmp_path / "main"
+    _init_repo(main_repo)
+    (main_repo / "f.txt").write_text("x")
+    _git("add", "f.txt", cwd=main_repo)
+    _git("commit", "-q", "-m", "init", cwd=main_repo)
+    worktree = tmp_path / "wt"
+    _git("worktree", "add", "-q", "-b", "release-test2", str(worktree), cwd=main_repo)
+
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda p: p)
+
+    argv = tester_gate.build_docker_command(worktree, "cmru", ["true"], memory="3g", memory_swap="16g")
+
+    common_dir = str((main_repo / ".git").resolve())
+    assert f"type=bind,src={common_dir},dst={common_dir},readonly" in argv
+
+
+def test_build_docker_command_adds_no_extra_mount_for_an_ordinary_checkout(monkeypatch, tmp_path):
+    _init_repo(tmp_path)
+    monkeypatch.setattr(tester_gate, "_physical_path", lambda p: p)
+
+    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g")
+
+    assert argv.count("--mount") == 1
+
+
 def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tmp_path):
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
     monkeypatch.setattr(

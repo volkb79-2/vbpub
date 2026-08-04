@@ -49,6 +49,37 @@ def _physical_path(path: Path, mountinfo: str | None = None) -> Path:
     return source / resolved.relative_to(destination)
 
 
+def _git_common_dir(repo_root: Path) -> Path | None:
+    """Resolve the shared ``.git`` directory for ``repo_root``, if it lives
+    OUTSIDE ``repo_root`` — i.e. ``repo_root`` is a linked worktree (exactly
+    what every cmru release transaction runs gates from: an isolated
+    ``git worktree add`` checkout, never the raw developer checkout).
+
+    A linked worktree's ``.git`` is a FILE containing ``gitdir: <absolute
+    path>`` pointing at the real repo's object database elsewhere on disk.
+    Mounting only the worktree subtree (as :func:`build_docker_command`
+    otherwise would) leaves that absolute path unresolvable inside the gate
+    container — ``fatal: not a git repository`` for anything needing git
+    history (e.g. a test diffing its source against an old commit), even
+    though the worktree's checked-out files themselves are all present.
+
+    Returns ``None`` for an ordinary (non-worktree) checkout, where the
+    mounted tree already contains everything git needs.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--git-common-dir"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = (repo_root / common).resolve()
+    if common == (repo_root / ".git").resolve():
+        return None
+    return common
+
+
 _DIND_IMAGE = "docker:dind"
 _DIND_READY_TIMEOUT = 30.0
 
@@ -255,6 +286,13 @@ def build_docker_command(
     its own test suite) needs this ambient var visible *inside* the
     container, independent of the ``--cgroup-parent`` placement of the
     container itself.
+
+    When ``repo_root`` is a linked worktree (see :func:`_git_common_dir`),
+    the shared ``.git`` directory is bind-mounted read-only at the SAME
+    absolute path it has outside the container — matching, byte-for-byte,
+    the absolute ``gitdir:`` path already written into the worktree's own
+    ``.git`` file — so git operations needing history (not just the
+    checked-out working tree) resolve correctly inside the gate container.
     """
     relative = Path(relative_cwd)
     if relative.is_absolute() or ".." in relative.parts:
@@ -270,6 +308,10 @@ def build_docker_command(
         "--memory-swap", memory_swap,
         "--cpus", cpus,
     ]
+    common_dir = _git_common_dir(repo_root)
+    if common_dir is not None:
+        host_common_dir = _physical_path(common_dir)
+        argv += ["--mount", f"type=bind,src={host_common_dir},dst={common_dir},readonly"]
     if cgroup_parent:
         argv.append(f"--cgroup-parent={cgroup_parent}")
     if device_read_iops:
