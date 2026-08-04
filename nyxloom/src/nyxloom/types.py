@@ -67,9 +67,14 @@ class TaskState(enum.Enum):
         # so TaskStateFile.from_dict (_FIELD_TYPES {"state": TaskState} ->
         # TaskState(value)) keeps loading statefiles/events written before the
         # removal, rather than raising ValueError on a pre-CR-07d row. Routed
-        # to NEEDS_DECISION -- the human-triage state, and one of DRAFT's own
-        # former edges -- rather than silently reviving a removed state or a
-        # default that would decide a transition nobody vouched for.
+        # to NEEDS_DECISION -- one of DRAFT's own former edges -- rather than
+        # silently reviving a removed state or a default nobody vouched for.
+        # NOT a guarantee of human review: rules_lifecycle.decision_hold
+        # releases NEEDS_DECISION straight back to QUEUED on the very next
+        # reconcile pass unless the task's frontmatter names an open D-dep,
+        # which a legacy DRAFT row -- never having existed on real data --
+        # would not carry. The read-compat contract is "does not crash and
+        # does not resurrect a removed state", not "forces triage".
         if value == "DRAFT":
             return cls.NEEDS_DECISION
         return None

@@ -522,7 +522,7 @@ def _placement_diagnostics(entry: TaskState, exit_state: TaskState,
     if kernel_owned and kind is not NodeKind.WAIT:
         diags.append(Diagnostic(
             DiagnosticCode.STATE_NOT_NODE_OWNABLE,
-            f"{kernel_owned} are kernel-owned: intake, queue admission, the "
+            f"{kernel_owned} are kernel-owned: queue admission, the "
             f"human-decision hold and escalation move under kernel or operator "
             f"authority, so only a wait node (no handler) may sit there", loc))
     if kind is NodeKind.WAIT and not kernel_owned:

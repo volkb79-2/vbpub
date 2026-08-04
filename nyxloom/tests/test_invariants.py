@@ -441,9 +441,23 @@ def test_draft_is_no_longer_a_constructible_taskstate():
 def test_a_legacy_draft_value_reads_as_needs_decision_not_a_crash():
     """types.TaskState._missing_'s read-compat contract: a pre-CR-07d
     persisted `"DRAFT"` value must not raise ValueError, and must not
-    silently resurrect a removed state -- NEEDS_DECISION forces it through
-    human triage instead."""
+    silently resurrect a removed state -- it lands on NEEDS_DECISION, one of
+    DRAFT's own former edges, instead."""
     assert TaskState("DRAFT") is TaskState.NEEDS_DECISION
+
+
+def test_a_legacy_draft_derived_task_releases_to_queued_next_pass():
+    """The read-compat contract is NOT "forces human review" -- independent
+    review traced rules_lifecycle.decision_hold and found that a
+    NEEDS_DECISION task with no open D-dep releases straight back to QUEUED
+    on the very next reconcile pass, and a legacy DRAFT row -- never having
+    existed on real data -- would carry no D-dep. Pinned here so that
+    behavioral consequence is proven rather than assumed from the enum
+    mapping alone."""
+    inp = _base_input("LEG-1", TaskState.NEEDS_DECISION)
+    actions = plan_project(inp)
+    assert any(isinstance(a, Transition) and a.to is TaskState.QUEUED
+               and _action_touches_task(a, "LEG-1") for a in actions)
 
 
 # FIXED 2026-07-19 (nyxloom-P45-ready-to-carve-triage package). Used to be
