@@ -524,10 +524,30 @@ gave it a loop:
 
 | id | package | state | milestone | depends on |
 |---|---|---|---|---|
+| **P14** | `srdm update` — the orchestrated rolling cluster update | **next** | M2 | P08b |
 | **P10** | `access: rw` via an overlay upper layer (D-027), and the overlay holder recognizer (D-028) | **next** | M2 | P08b |
 | **P09b** | the waiver's operational bill: backup ignore rules, disk accounting, SFTP | queued | M2 | P06 |
 | **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | queued | M2 | P10, P09b, and F1 or `check_permissions_on_boot: false` |
 | **P11** | build-identity recording, then the containerized SteamCMD driver | queued | M3 | P09 |
+
+**P14 is M2's exit condition, not an addition to it.** M2 says "a content
+update is performed through srdm rather than around it", and today it cannot
+be: `activate` refuses while a consumer holds the generation (oracle 24, and
+rightly), so the real procedure is *stop every server by hand in the Panel,
+run srdm, start every server by hand* — with the whole cohort offline for
+the entire window. srdm already publishes the new generation **before**
+touching the old, so two coexist for the duration of an `activate`; that is
+exactly what a rolling update needs and nothing uses it yet. `srdm update`
+takes the lock once, then per server stops → swaps → starts, one at a time,
+so at most one server is ever down. The cost is holding two generations
+resident, which is refused up front rather than discovered mid-cohort.
+
+The piece srdm does not have is **power**: it cannot stop and start a
+server, and must not do it through Docker even though it holds that socket
+— Wings owns the container lifecycle, and a container dying underneath it is
+a crash it will act on, racing the swap. So P14 adds `internal/power` as an
+interface with a Panel-API implementation, the same shape `expose.Driver`
+already uses.
 
 **P10 goes before P09**, which reorders the old plan. P09 is the migration of
 two live servers onto one generation, and `rw` as it stands is
