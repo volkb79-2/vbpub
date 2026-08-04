@@ -1,0 +1,24 @@
+# Soulmask server startup phases, for `cgprofile --log-match-file`.
+#
+# These are NOT invented for this tool. Every pattern below is lifted verbatim
+# from the estate's own egg — game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json
+# — so a phase boundary the profiler draws is the same boundary wings acts on:
+#
+#   WINGS_CG_PHASE_EVENTS  supplies the first three (informational, drives no
+#                          cgroup behaviour, recorded to the Panel activity log)
+#   config.startup.done    supplies "Create Dungeon Successed"
+#   WINGS_CG_STEADY_MATCH  supplies the steady trigger — the line that ENDS the
+#                          startup phase and makes wings apply the STEADY band
+#
+# That last one is why this file matters for a memory investigation: the moment
+# it matches is the moment the server's cgroup limits change underneath it, so
+# a step in the memory series either side of it is a different kind of event
+# than one in the middle of a phase.
+#
+# Syntax is the egg's: `name=literal-substring`, or `name=regex:<regex>`.
+
+steam-update-started=Checking for available updates
+steam-update-done=regex:Success! App '3017300' (already up to date|fully installed)
+world-load-begin=LogLoad: LoadMap:
+dungeon-ready=Create Dungeon Successed
+steady=registe server soulmask session succeed

@@ -322,6 +322,23 @@ class TestAutoPhases:
                [(p.name, p.t0, p.t1, p.source) for p in known]
         assert not any(p.name.startswith("auto-") for p in result)
 
+    def test_a_log_sourced_known_phase_outranks_auto_n_the_same_as_a_mark_one(self, sample_records):
+        # logtail.py writes source="log" — a string this function has never
+        # heard of. It must be treated exactly like "mark"/"wrapper": kept
+        # verbatim, never demoted to an auto-N label. Reuses _known()'s exact
+        # boundaries (proven elsewhere to trigger no internal changepoint)
+        # so this isolates the "does source='log' survive" question from
+        # "does a real ramp split a known phase", which is covered above.
+        df = analyze.to_frame(sample_records)
+        known = self._known()
+        known[1] = Phase(name="world-load-begin", t0=known[1].t0, t1=known[1].t1, source="log",
+                         meta={"source_container": "soulmask"})
+        result = analyze.auto_phases(df, known, 0.0, 39.0)
+        assert [(p.name, p.source) for p in result] == [
+            ("startup", "mark"), ("world-load-begin", "log"), ("idle", "mark"),
+        ]
+        assert not any(p.name.startswith("auto-") for p in result)
+
     def test_no_known_phases_produces_pure_auto_segments(self, sample_records):
         df = analyze.to_frame(sample_records)
         result = analyze.auto_phases(df, [], 0.0, 39.0)

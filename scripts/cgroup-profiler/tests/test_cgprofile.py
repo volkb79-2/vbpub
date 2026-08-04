@@ -44,6 +44,7 @@ from lib import analyze as analyze_lib
 from lib import caps as caps_lib
 from lib import damon as damon_lib
 from lib import limits as limits_lib
+from lib import logtail as logtail_lib
 from lib import metrics as metrics_lib
 from lib import report_html as report_html_lib
 from lib import report_md as report_md_lib
@@ -345,6 +346,126 @@ class TestCapsFrom:
         assert caps == {"/dev.slice/dev-background.slice": {"memory.high": "max"}}
 
 
+# ── log tailing wiring ───────────────────────────────────────────────────
+
+class TestParseLogTailSpec:
+    def test_bare_container_ref(self):
+        assert cg._parse_log_tail_spec("container:my-app") == ("my-app", None)
+
+    def test_container_ref_with_label(self):
+        assert cg._parse_log_tail_spec("container:my-app@as=soulmask") == ("my-app", "soulmask")
+
+    def test_missing_container_prefix_is_rejected(self):
+        with pytest.raises(SystemExit):
+            cg._parse_log_tail_spec("my-app")
+
+    def test_empty_container_ref_is_rejected(self):
+        with pytest.raises(SystemExit):
+            cg._parse_log_tail_spec("container:@as=x")
+
+    def test_unknown_option_is_rejected(self):
+        with pytest.raises(SystemExit):
+            cg._parse_log_tail_spec("container:my-app@bogus=1")
+
+
+class TestCollectLogPatterns:
+    def _args(self, **overrides):
+        ns = argparse.Namespace(log_match=[], log_match_file=[])
+        for key, value in overrides.items():
+            setattr(ns, key, value)
+        return ns
+
+    def test_no_attributes_at_all_is_empty(self):
+        assert cg._collect_log_patterns(argparse.Namespace()) == []
+
+    def test_log_match_values_are_parsed(self):
+        patterns = cg._collect_log_patterns(self._args(log_match=["a=hello", "b=regex:wor.d"]))
+        assert [p.name for p in patterns] == ["a", "b"]
+
+    def test_a_malformed_log_match_value_is_a_clean_cli_error(self):
+        with pytest.raises(SystemExit):
+            cg._collect_log_patterns(self._args(log_match=["no-equals-sign"]))
+
+    def test_log_match_file_is_loaded_and_merged_with_log_match(self, tmp_path: Path):
+        path = tmp_path / "patterns.txt"
+        path.write_text("from-file=hello\n")
+        patterns = cg._collect_log_patterns(
+            self._args(log_match_file=[str(path)], log_match=["from-cli=world"])
+        )
+        assert [p.name for p in patterns] == ["from-file", "from-cli"]
+
+    def test_missing_log_match_file_is_a_clean_cli_error(self, tmp_path: Path):
+        with pytest.raises(SystemExit):
+            cg._collect_log_patterns(self._args(log_match_file=[str(tmp_path / "nope.txt")]))
+
+    def test_malformed_line_inside_log_match_file_is_a_clean_cli_error(self, tmp_path: Path):
+        path = tmp_path / "bad.txt"
+        path.write_text("no-equals-sign\n")
+        with pytest.raises(SystemExit):
+            cg._collect_log_patterns(self._args(log_match_file=[str(path)]))
+
+
+class FakeLogTailer:
+    instances: List["FakeLogTailer"] = []
+
+    def __init__(self, container, patterns, run_path, label=None, docker=None, kind="phase"):
+        self.container = container
+        self.patterns = list(patterns)
+        self.run_path = run_path
+        self.label = label
+        self.started = False
+        self.stopped = False
+        FakeLogTailer.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class TestStartStopLogTailers:
+    def setup_method(self):
+        FakeLogTailer.instances = []
+
+    def _args(self, **overrides):
+        ns = argparse.Namespace(log_tail=[], log_match=[], log_match_file=[])
+        for key, value in overrides.items():
+            setattr(ns, key, value)
+        return ns
+
+    def test_no_log_tail_specs_starts_nothing(self, tmp_path: Path):
+        assert cg._start_log_tailers(self._args(), str(tmp_path)) == []
+
+    def test_no_attributes_at_all_starts_nothing(self, tmp_path: Path):
+        assert cg._start_log_tailers(argparse.Namespace(), str(tmp_path)) == []
+
+    def test_log_tail_with_no_patterns_is_a_clean_cli_error(self, tmp_path: Path):
+        with pytest.raises(SystemExit):
+            cg._start_log_tailers(self._args(log_tail=["container:c1"]), str(tmp_path))
+
+    def test_starts_one_tailer_per_spec_with_the_shared_pattern_set(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(logtail_lib, "LogTailer", FakeLogTailer)
+        args = self._args(
+            log_tail=["container:c1", "container:c2@as=other"],
+            log_match=["a=hello"],
+        )
+        tailers = cg._start_log_tailers(args, str(tmp_path))
+        assert len(tailers) == 2
+        assert all(t.started for t in tailers)
+        assert [t.container for t in tailers] == ["c1", "c2"]
+        assert tailers[1].label == "other"
+        assert [p.name for p in tailers[0].patterns] == ["a"]
+
+    def test_stop_calls_stop_on_every_tailer(self):
+        tailers = [FakeLogTailer("c1", [], "/run"), FakeLogTailer("c2", [], "/run")]
+        cg._stop_log_tailers(tailers)
+        assert all(t.stopped for t in tailers)
+
+    def test_stop_of_an_empty_list_is_a_noop(self):
+        cg._stop_log_tailers([])
+
+
 # ── argument parsing ─────────────────────────────────────────────────────
 
 class TestArgumentParsing:
@@ -397,6 +518,22 @@ class TestArgumentParsing:
         ])
         assert args.target == ["a", "b"]
         assert args.observe == ["c"]
+
+    def test_run_and_attach_accept_log_tail_flags(self):
+        for sub, tail in (("run", ["--"]), ("attach", [])):
+            args = cg.build_parser().parse_args([
+                sub, "--log-tail", "container:c1", "--log-match", "a=b",
+                "--log-match-file", "/tmp/x", *tail,
+            ])
+            assert args.log_tail == ["container:c1"]
+            assert args.log_match == ["a=b"]
+            assert args.log_match_file == ["/tmp/x"]
+
+    def test_targets_and_doctor_have_no_log_tail_flags(self):
+        targets_args_ns = cg.build_parser().parse_args(["targets"])
+        doctor_args_ns = cg.build_parser().parse_args(["doctor"])
+        assert not hasattr(targets_args_ns, "log_tail")
+        assert not hasattr(doctor_args_ns, "log_tail")
 
     def test_doctor_has_only_helper_image(self):
         args = cg.build_parser().parse_args(["doctor"])
@@ -1157,6 +1294,38 @@ class TestCmdRun:
         assert marks[1]["name"] == "echo:done"
         assert marks[1]["meta"]["exit_code"] == 17
 
+    def test_log_tailers_start_after_the_collector_and_stop_before_stop_run(self, monkeypatch, tmp_path: Path):
+        FakeLogTailer.instances = []
+        monkeypatch.setattr(logtail_lib, "LogTailer", FakeLogTailer)
+        run = store_lib.RunDir(str(tmp_path), run_id="run-logtail")
+        order = []
+        monkeypatch.setattr(cg, "_start_run", lambda args: order.append("start_run") or (run, FakePopen()))
+        monkeypatch.setattr(
+            cg, "_stop_run", lambda run_, child_, timeout=30.0: order.append("stop_run"),
+        )
+        real_start_tailers, real_stop_tailers = cg._start_log_tailers, cg._stop_log_tailers
+        monkeypatch.setattr(
+            cg, "_start_log_tailers",
+            lambda args_, path: order.append("start_tailers") or real_start_tailers(args_, path),
+        )
+        monkeypatch.setattr(
+            cg, "_stop_log_tailers",
+            lambda tailers: order.append("stop_tailers") or real_stop_tailers(tailers),
+        )
+
+        def fake_subprocess_run(command, env=None, check=False):
+            order.append("wrapped_command")
+            return subprocess.CompletedProcess(command, returncode=0)
+
+        monkeypatch.setattr(cg.subprocess, "run", fake_subprocess_run)
+        args = run_args(["echo", "hi"], log_tail=["container:c1"], log_match=["a=hello"])
+        assert cg.cmd_run(args) == 0
+        assert order == ["start_run", "start_tailers", "wrapped_command", "stop_tailers", "stop_run"]
+        assert len(FakeLogTailer.instances) == 1
+        tailer = FakeLogTailer.instances[0]
+        assert tailer.started is True
+        assert tailer.stopped is True
+
     def test_explicit_phase_name_overrides_the_default(self, monkeypatch, tmp_path: Path):
         run = store_lib.RunDir(str(tmp_path), run_id="run-phase")
         monkeypatch.setattr(cg, "_start_run", lambda args: (run, FakePopen()))
@@ -1236,6 +1405,20 @@ class TestCmdAttach:
         monkeypatch.setattr(cg, "_stop_run", lambda run_, child_, timeout=30.0: stop_calls.append(1))
         assert cg.cmd_attach(attach_args()) == 0
         assert stop_calls == [1]
+
+    def test_log_tailers_are_started_and_stopped_around_the_attach_loop(self, monkeypatch, tmp_path: Path):
+        FakeLogTailer.instances = []
+        monkeypatch.setattr(logtail_lib, "LogTailer", FakeLogTailer)
+        run = store_lib.RunDir(str(tmp_path), run_id="run-attach-logtail")
+        child = FakePopen(exit_code=0)
+        monkeypatch.setattr(cg, "_start_run", lambda args: (run, child))
+        monkeypatch.setattr(cg, "_stop_run", lambda run_, child_, timeout=30.0: None)
+        args = attach_args(log_tail=["container:c1"], log_match=["a=hello"])
+        assert cg.cmd_attach(args) == 0
+        assert len(FakeLogTailer.instances) == 1
+        tailer = FakeLogTailer.instances[0]
+        assert tailer.started is True
+        assert tailer.stopped is True
 
     def test_stops_when_the_duration_deadline_is_reached_without_real_sleeping(self, monkeypatch, tmp_path: Path):
         run = store_lib.RunDir(str(tmp_path), run_id="run-attach-duration")

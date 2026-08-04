@@ -35,7 +35,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
@@ -417,6 +417,76 @@ def _caps_from(args: argparse.Namespace) -> Dict[str, Dict[str, str]]:
     return caps
 
 
+# ── log tailing: driver-tier only, see lib/logtail.py's module docstring ────
+
+def _parse_log_tail_spec(spec: str) -> Tuple[str, Optional[str]]:
+    """``container:<name|id>[@as=LABEL]`` -> ``(container_ref, label)``.
+
+    Reuses ``targets_mod._parse_options`` for the ``@as=...`` half rather
+    than inventing a second ``@opt`` grammar — this package already has one.
+    Unlike ``--target``'s ``container:`` scheme, the container reference is
+    never resolved to a full id here: ``docker logs`` accepts a name, a short
+    id or a full id equally well, and this runs in the driver process, which
+    already has the socket — there is no collector-side handoff to prepare
+    for.
+    """
+    if not spec.startswith("container:"):
+        _err(f"--log-tail needs container:<name|id>[@as=LABEL], got {spec!r}")
+    value, options = targets_mod._parse_options(spec[len("container:"):])
+    if not value:
+        _err(f"--log-tail needs a container name or id, got {spec!r}")
+    extra = set(options) - {"as"}
+    if extra:
+        _err(f"--log-tail: unknown option(s) {sorted(extra)} in {spec!r}")
+    return value, options.get("as")
+
+
+def _collect_log_patterns(args: argparse.Namespace):
+    from lib import logtail as logtail_mod
+
+    patterns = []
+    for path in getattr(args, "log_match_file", None) or []:
+        try:
+            patterns.extend(logtail_mod.load_patterns(path))
+        except OSError as exc:
+            _err(f"--log-match-file {path}: {exc}")
+        except logtail_mod.LogPatternError as exc:
+            _err(f"--log-match-file {path}: {exc}")
+    for raw in getattr(args, "log_match", None) or []:
+        try:
+            patterns.append(logtail_mod.parse_pattern(raw))
+        except logtail_mod.LogPatternError as exc:
+            _err(str(exc))
+    return patterns
+
+
+def _start_log_tailers(args: argparse.Namespace, run_path: str) -> List[object]:
+    """Start one ``LogTailer`` per ``--log-tail``, only once the collector is
+    already ready — a mark timestamped before ``samples.jsonl`` exists has
+    nothing to be correlated against.
+    """
+    specs = getattr(args, "log_tail", None) or []
+    if not specs:
+        return []
+    from lib import logtail as logtail_mod
+
+    patterns = _collect_log_patterns(args)
+    if not patterns:
+        _err("--log-tail given with no --log-match/--log-match-file — nothing to look for")
+    tailers = []
+    for spec in specs:
+        container, label = _parse_log_tail_spec(spec)
+        tailer = logtail_mod.LogTailer(container, patterns, run_path, label=label)
+        tailer.start()
+        tailers.append(tailer)
+    return tailers
+
+
+def _stop_log_tailers(tailers: Sequence[object]) -> None:
+    for tailer in tailers:
+        tailer.stop()
+
+
 # ── driver commands ─────────────────────────────────────────────────────────
 
 def _start_run(args: argparse.Namespace):
@@ -471,6 +541,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     from lib import phases as phases_mod
 
     run, child = _start_run(args)
+    tailers = _start_log_tailers(args, run.path)
     label = args.phase or os.path.basename(args.command[0])
     phases_mod.emit_mark(run.path, label, kind="phase",
                          meta={"argv": args.command}, source="wrapper")
@@ -491,6 +562,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         _note(f"settling for {args.settle:.0f}s to capture the tail")
         time.sleep(args.settle)
 
+    _stop_log_tailers(tailers)
     _stop_run(run, child)
     _note(f"command exited {result.returncode} after {elapsed:.1f}s")
     if not args.no_report:
@@ -501,6 +573,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_attach(args: argparse.Namespace) -> int:
     """Attach mode: watch something already running."""
     run, child = _start_run(args)
+    tailers = _start_log_tailers(args, run.path)
     stop_path = args.until_file
     _note(f"attached — run id {run.run_id}")
     try:
@@ -515,6 +588,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
             time.sleep(0.2)
     except KeyboardInterrupt:
         _note("interrupted — stopping collector")
+    _stop_log_tailers(tailers)
     _stop_run(run, child)
     if not args.no_report:
         _report(run.path, args)
@@ -687,6 +761,24 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                              "writes plotly.min.js beside the report instead")
 
 
+def _add_log_tail_args(parser: argparse.ArgumentParser) -> None:
+    """``run``/``attach`` only — this is driver-tier (see lib/logtail.py);
+    ``targets``/``doctor`` never start a run, so they have nothing to tail.
+    """
+    parser.add_argument("--log-tail", action="append", default=[],
+                        metavar="container:NAME[@as=LABEL]",
+                        help="tail a container's log and turn matching lines into phase "
+                             "marks (see --log-match); repeatable")
+    parser.add_argument("--log-match", action="append", default=[], metavar="NAME=PATTERN",
+                        help="name=<substring>, or name=regex:<python regex>. Append "
+                             "@repeat to the name (name@repeat=...) to record every "
+                             "occurrence instead of just the first; repeatable")
+    parser.add_argument("--log-match-file", action="append", default=[], metavar="PATH",
+                        help="a file of name=pattern lines (# comments and blank lines "
+                             "skipped), same syntax as --log-match; repeatable, merged "
+                             "with any --log-match given")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cgprofile",
@@ -699,6 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = sub.add_parser("run", help="wrap a command and profile it")
     _add_common(run_parser)
+    _add_log_tail_args(run_parser)
     run_parser.add_argument("--phase", default=None, help="name for the wrapped command's phase")
     run_parser.add_argument("--settle", type=float, default=10.0,
                             help="keep sampling this long after the command exits, to "
@@ -708,6 +801,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     attach_parser = sub.add_parser("attach", help="profile something already running")
     _add_common(attach_parser)
+    _add_log_tail_args(attach_parser)
     attach_parser.add_argument("--duration", "-d", type=float, default=None)
     attach_parser.add_argument("--until-file", default=None,
                                help="stop when this path appears")
