@@ -36,6 +36,7 @@ import (
 	"srdm/internal/expose"
 	"srdm/internal/harvest"
 	"srdm/internal/journal"
+	"srdm/internal/power"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
 	"srdm/internal/store"
@@ -100,6 +101,20 @@ type Controller struct {
 	drv Driver
 	asg *assign.Store
 	hrv *harvest.Harvester
+	// pwr is the power surface. Optional: only Update needs it, the same way
+	// hrv is optional and only Harvest needs it.
+	pwr power.Driver
+	// rdy checks a server's readiness signal beyond "the power status
+	// reports it running". Optional even when Update itself is used:
+	// readiness unconfigured means "trust the power status alone" (D-031).
+	rdy power.ReadinessChecker
+	// readiness is what to check with rdy — the resolved profile.Readiness,
+	// translated into power's own type by the caller (cmd/srdm) so this
+	// package does not depend on internal/profile for it.
+	readiness power.Readiness
+	// memInfoPath points Update's headroom check at a meminfo-shaped file.
+	// Empty means the real /proc/meminfo (headroomDefaultMemInfoPath).
+	memInfoPath string
 }
 
 // Option configures a Controller.
@@ -108,6 +123,24 @@ type Option func(*Controller)
 // WithHarvester injects the harvester. Optional: only Harvest needs it.
 func WithHarvester(h *harvest.Harvester) Option {
 	return func(c *Controller) { c.hrv = h }
+}
+
+// WithPower injects the power surface. Optional: only Update needs it.
+func WithPower(d power.Driver) Option {
+	return func(c *Controller) { c.pwr = d }
+}
+
+// WithReadiness injects the readiness checker and what to check with it.
+// Optional: an unconfigured Readiness (the zero value) means Update trusts
+// the power status's own "running" state alone.
+func WithReadiness(checker power.ReadinessChecker, r power.Readiness) Option {
+	return func(c *Controller) { c.rdy = checker; c.readiness = r }
+}
+
+// WithMemInfoPath points Update's headroom check at a meminfo-shaped file
+// other than /proc/meminfo, so the check is exercisable against a fixture.
+func WithMemInfoPath(path string) Option {
+	return func(c *Controller) { c.memInfoPath = path }
 }
 
 // New returns a Controller.
@@ -164,11 +197,12 @@ func (e *HeldError) Error() string {
 func IsRefusal(err error) bool {
 	var held *HeldError
 	var busy *BusyError
-	if errors.As(err, &held) || errors.As(err, &busy) {
+	var headroom *HeadroomError
+	if errors.As(err, &held) || errors.As(err, &busy) || errors.As(err, &headroom) {
 		return true
 	}
 	return expose.IsRefusal(err) || publish.IsRefusal(err) || harvest.IsRefusal(err) ||
-		store.IsRefusal(err)
+		store.IsRefusal(err) || power.IsRefusal(err)
 }
 
 // Activate makes releaseID the profile's active generation and moves every
@@ -363,7 +397,7 @@ func (c *Controller) moveServers(ctx context.Context, opID string, a *assign.Ass
 }
 
 // Attach adds a server to a profile's assignment and exposes it.
-func (c *Controller) Attach(ctx context.Context, opID, serverID, access string,
+func (c *Controller) Attach(ctx context.Context, opID, serverID, access string, role assign.Role,
 	prof *profile.Profile) error {
 
 	lock, err := Acquire(c.cfg)
@@ -386,7 +420,7 @@ func (c *Controller) Attach(ctx context.Context, opID, serverID, access string,
 			"not published: %w", prof.ID, a.Release, err)
 	}
 	fields := map[string]string{
-		"profile": prof.ID, "server": serverID, "access": access,
+		"profile": prof.ID, "server": serverID, "access": access, "role": string(role),
 		"release_id": a.Release, "generation": rec.Generation,
 	}
 
@@ -404,7 +438,7 @@ func (c *Controller) Attach(ctx context.Context, opID, serverID, access string,
 		return err
 	}
 	return c.phase(opID, KindAttach, PhaseAssign, fields, func() error {
-		if err := a.AddServer(serverID, access); err != nil {
+		if err := a.AddServer(serverID, access, role); err != nil {
 			return err
 		}
 		return c.asg.Save(a)

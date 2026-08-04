@@ -65,6 +65,8 @@ func run(args []string) error {
 		return cmdJournal(args[1:])
 	case "activate":
 		return cmdActivate(args[1:])
+	case "update":
+		return cmdUpdate(args[1:])
 	case "rollback":
 		return cmdRollback(args[1:])
 	case "attach":
@@ -122,6 +124,18 @@ func usage() {
 Operations — each takes --profile <file>, and each is one root process
 under a lock:
   srdm activate --profile <file> --release <id> [--write-owner uid:gid]
+  srdm update   --profile <file> --release <id>
+                            ordered cohort update: every slave stops, then
+                            main, the release switches while nothing is
+                            running, main starts and proves it is ready
+                            (the profile's readiness pattern, if any), then
+                            every slave starts — so a content update goes
+                            through srdm instead of stop-by-hand/srdm/
+                            start-by-hand (--wings-api-url is required;
+                            the node's token is read from Wings' own
+                            config.yml, never from a flag)
+  srdm update   --profile <file> --from <dir> --release <id>
+                            sugar: promote <dir> into --release, then update
   srdm rollback --profile <file>
   srdm attach   --profile <file> --server <uuid> [--access ro|rw] [--write-owner uid:gid]
   srdm detach   --profile <file> --server <uuid>

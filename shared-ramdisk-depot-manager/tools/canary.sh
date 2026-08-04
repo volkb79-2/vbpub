@@ -618,6 +618,63 @@ canary "P08b-clear-ignores-holders" "TestClearForRepublishRefusesWhileHeld" \
   's#^\tif err := p.refuseIfHeld(ctx, opID, KindReconcile, rec); err != nil {$#\tif err := error(nil); err != nil {#' \
   "a generation is cleared for republish while a consumer still holds it"
 
+# --- P14: srdm update, the ordered cohort cycle ----------------------------
+
+# O29: stop every slave before main, start main before every slave. Swap
+# which one is stopped first — a slave would then be told to stop AFTER
+# main, meaning the whole cohort is never fully down before the switch and
+# a still-running slave could be swapped or torn down underneath.
+canary "O29-stop-order-swapped" "TestUpdateCyclesEverySlaveBeforeMainThenMainBeforeSlaves" \
+  "internal/opctl/update.go" \
+  's#^\tif err := stopSlaves(); err != nil {$#\tif err := ZZTMPZZ(); err != nil {#; s#^\tif err := stopMain(); err != nil {$#\tif err := stopSlaves(); err != nil {#; s#^\tif err := ZZTMPZZ(); err != nil {$#\tif err := stopMain(); err != nil {#' \
+  "the cohort stop order no longer puts every slave down before main"
+
+# The mirror on the way back up: start main before any slave, gated on
+# readiness. Swap the two and a slave starts before main is even asked to —
+# racing a slave connection against content nothing has confirmed is ready.
+canary "O29-start-order-swapped" "TestUpdateCyclesEverySlaveBeforeMainThenMainBeforeSlaves" \
+  "internal/opctl/update.go" \
+  's#^\tif err := startMain(); err != nil {$#\tif err := ZZTMPZZ(); err != nil {#; s#^\tif err := startSlaves(); err != nil {$#\tif err := startMain(); err != nil {#; s#^\tif err := ZZTMPZZ(); err != nil {$#\tif err := startSlaves(); err != nil {#' \
+  "a slave can start before main does"
+
+# O30: the assignment is recorded once the cohort is confirmed on the new
+# generation, before the old generation is torn down. Make the "record"
+# step a no-op that keeps the OLD release, so nothing ever actually moves —
+# a crash after this teardown would leave the assignment naming a
+# generation that no longer exists AND was never actually current.
+canary "O30-assignment-never-updated" "TestUpdateRecordsTheAssignmentAfterTheCohortIsConfirmedAndBeforeTeardown" \
+  "internal/opctl/update.go" \
+  's#^\t\ta.SetRelease(releaseID)$#\t\ta.SetRelease(a.Release)#' \
+  "the assignment is never actually updated to the new release"
+
+# O31: when the cycle fails, the whole cohort rolls back onto the old
+# generation. Skip the rollback call entirely and a failed update leaves
+# whatever the forward cycle reached standing — a split cohort, some
+# servers on the new release and some on the old, which is the exact
+# failure an ordered cycle exists to prevent.
+canary "O31-rollback-skipped" "TestUpdateRollsBackTheWholeCohortWhenMainNeverBecomesReady" \
+  "internal/opctl/update.go" \
+  's#^\t\trbErr := c.cycleCohortTo(ctx, opID, prof, main, a.Slaves(), rec, oldRec)$#\t\tvar rbErr error#' \
+  "a failed update never rolls the cohort back"
+
+# O32: refuse before anything is stopped when the host cannot hold two
+# generations at once. Disable the refusal and the cohort goes down with
+# nothing checked, which for the case oracle 32 names is the publish then
+# failing on ENOSPC with the cohort already offline.
+canary "O32-headroom-check-disabled" "TestUpdateRefusesWhenTheHostCannotHoldTwoGenerations" \
+  "internal/opctl/headroom.go" \
+  's#^\tif have < need {$#\tif false {#' \
+  "the update proceeds without checking the host can hold two generations"
+
+# O33: main's readiness is a real wait, not decoration. Make it a no-op and
+# a main that never actually finished loading is treated as ready — slaves
+# start against it, and the whole reason this package cycles the cohort in
+# order rather than all at once is defeated.
+canary "O33-readiness-wait-disabled" "TestUpdateRollsBackTheWholeCohortWhenMainNeverBecomesReady|TestUpdateNeverStartsASlaveWhenMainNeverBecomesReadyEvenOnRollback" \
+  "internal/opctl/update.go" \
+  's#^\treturn c.rdy.WaitReady(ctx, mainID, c.readiness, anchor)$#\treturn nil#' \
+  "main's readiness signal is never actually waited for"
+
 rm -rf "$WORK"
 
 printf '\n%d canary/canaries rejected, %d survived\n' "$pass" "$fail"

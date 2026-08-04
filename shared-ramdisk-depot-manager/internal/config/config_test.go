@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultIsValid(t *testing.T) {
@@ -55,6 +56,57 @@ func TestValidateRejectsMalformedConfigs(t *testing.T) {
 				t.Fatalf("error %q does not mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// An unconfigured Panel is the shipped default, and update's own refusal
+// (not config validation) is what tells an operator to set it — Validate
+// must not pre-empt that with a confusing error on every OTHER verb.
+func TestUnconfiguredWingsAPIValidates(t *testing.T) {
+	cfg := Default()
+	if cfg.Wings.APIConfigured() {
+		t.Fatal("the default Wings reports its API configured")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("an unconfigured wings API failed validation: %v", err)
+	}
+}
+
+func TestWingsValidateRejectsAMalformedAPIURL(t *testing.T) {
+	cfg := Default()
+	cfg.Wings.APIURL = "127.0.0.1:8080" // no scheme
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a wings.api_url with no scheme")
+	}
+	if !strings.Contains(err.Error(), "http:// or https://") {
+		t.Errorf("error %q does not explain the requirement", err)
+	}
+}
+
+func TestWingsValidateRejectsANegativeAPITimeout(t *testing.T) {
+	cfg := Default()
+	cfg.Wings.APIURL = "https://127.0.0.1:8080"
+	cfg.Wings.APIStopTimeout = -1
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("Validate() = %v, want a refusal naming the negative timeout", err)
+	}
+}
+
+func TestWingsEffectiveAPITimeoutsFallBackToDefaults(t *testing.T) {
+	var w Wings
+	if got := w.EffectiveAPIStopTimeout(); got != DefaultWingsAPIStopTimeout {
+		t.Errorf("EffectiveAPIStopTimeout() = %v, want %v", got, DefaultWingsAPIStopTimeout)
+	}
+	if got := w.EffectiveAPIStartTimeout(); got != DefaultWingsAPIStartTimeout {
+		t.Errorf("EffectiveAPIStartTimeout() = %v, want %v", got, DefaultWingsAPIStartTimeout)
+	}
+	if got := w.EffectiveAPIPollInterval(); got != DefaultWingsAPIPollInterval {
+		t.Errorf("EffectiveAPIPollInterval() = %v, want %v", got, DefaultWingsAPIPollInterval)
+	}
+	w.APIStopTimeout = 5 * time.Second
+	if got := w.EffectiveAPIStopTimeout(); got != 5*time.Second {
+		t.Errorf("an explicit APIStopTimeout was overridden by the default: %v", got)
 	}
 }
 

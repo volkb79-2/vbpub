@@ -17,6 +17,7 @@ import (
 	"srdm/internal/expose"
 	"srdm/internal/harvest"
 	"srdm/internal/journal"
+	"srdm/internal/power"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
 	"srdm/internal/store"
@@ -39,8 +40,13 @@ type rig struct {
 	asg  *assign.Store
 	pub  *fakePublisher
 	drv  *fakeDriver
+	pwr  *fakePower
+	rdy  *fakeReadiness
 	ctl  *Controller
 	prof *profile.Profile
+	// memInfoPath is the fixture Update's headroom check reads. newRig sets
+	// it generous; r.setMemAvailable overwrites it in place.
+	memInfoPath string
 	// log is every step the fakes took, in order. The oracles about
 	// sequencing read this and nothing else.
 	log []string
@@ -73,6 +79,8 @@ func newRig(t *testing.T) *rig {
 	r := &rig{t: t, cfg: cfg, jnl: jnl, st: st, asg: asg, prof: testProfile(t)}
 	r.pub = &fakePublisher{rig: r, records: map[string]*publish.Record{}}
 	r.drv = &fakeDriver{rig: r}
+	r.pwr = newFakePower(r)
+	r.rdy = newFakeReadiness(r)
 
 	// A real harvester, because it is cheap and needs no privilege: wiring a
 	// fake would only test that the fake was called, while the real one
@@ -82,7 +90,15 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.ctl, err = New(cfg, jnl, st, r.pub, r.drv, WithHarvester(hrv))
+	// A generous default meminfo fixture, so nothing but a test that
+	// deliberately shrinks it (r.setMemAvailable) ever meets the headroom
+	// refusal by accident.
+	r.memInfoPath = filepath.Join(dir, "meminfo")
+	r.setMemAvailable(16 << 30)
+
+	r.ctl, err = New(cfg, jnl, st, r.pub, r.drv, WithHarvester(hrv), WithPower(r.pwr),
+		WithMemInfoPath(r.memInfoPath),
+		WithReadiness(r.rdy, power.Readiness{Kind: power.ReadinessKindLogMatch, Pattern: "ready"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +147,10 @@ func (r *rig) release(id string) *store.Release {
 }
 
 // assigned puts the profile on a release with servers already attached, as if
-// an earlier activation had done it.
+// an earlier activation had done it. The FIRST server named becomes the
+// cohort's main and every later one a slave — a convention harmless to every
+// test that never looks at roles, and exactly what the Update oracle tests
+// need without a second helper.
 func (r *rig) assigned(releaseID string, servers ...string) *assign.Assignment {
 	r.t.Helper()
 	r.release(releaseID)
@@ -140,8 +159,12 @@ func (r *rig) assigned(releaseID string, servers ...string) *assign.Assignment {
 		r.t.Fatal(err)
 	}
 	a.SetRelease(releaseID)
-	for _, s := range servers {
-		if err := a.AddServer(s, "ro"); err != nil {
+	for i, s := range servers {
+		role := assign.RoleSlave
+		if i == 0 {
+			role = assign.RoleMain
+		}
+		if err := a.AddServer(s, "ro", role); err != nil {
 			r.t.Fatal(err)
 		}
 	}
@@ -512,7 +535,7 @@ func TestAttachExposesBeforeItRecords(t *testing.T) {
 	r := newRig(t)
 	r.assigned("rel-1")
 
-	if err := r.ctl.Attach(ctx(), "op-1", "server-a", "ro", r.prof); err != nil {
+	if err := r.ctl.Attach(ctx(), "op-1", "server-a", "ro", assign.RoleSlave, r.prof); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	if len(r.log) != 1 || !strings.HasPrefix(r.log[0], "expose server-a") {
@@ -528,7 +551,7 @@ func TestAFailedAttachRecordsNothing(t *testing.T) {
 	r.assigned("rel-1")
 	r.drv.exposeErr = map[string]error{"server-a": errors.New("propagation refused")}
 
-	if err := r.ctl.Attach(ctx(), "op-1", "server-a", "ro", r.prof); err == nil {
+	if err := r.ctl.Attach(ctx(), "op-1", "server-a", "ro", assign.RoleSlave, r.prof); err == nil {
 		t.Fatal("a failed exposure reported success")
 	}
 	if _, ok := r.loadAssignment().Server("server-a"); ok {
