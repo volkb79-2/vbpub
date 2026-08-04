@@ -597,6 +597,10 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
     # exhausted with no carve stage) WITHOUT ever declaring a D-dep --
     # decision_hold's fixed release condition correctly leaves such a task
     # parked indefinitely, rather than silently mis-releasing it as before.
+    # CR-11b (2026-08-04) adds a second, structurally identical producer of
+    # this exact shape: rules_dispatch.implementer_dispatch parks a QUEUED
+    # task whose input_revision has drifted from current main the same
+    # reason-less way, so this check covers both without distinguishing them.
     # But that means a reason-less park now has ONLY pull-based visibility
     # (the dashboard, `nyxloom status`, a generic daily-digest count) --
     # check 11 above only ever flags the OPEN-D-dep case, so this is the one
@@ -637,7 +641,8 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
                             'task parked in NEEDS_DECISION with no declared '
                             'decision dependency -- likely a review-triage '
                             'escalation (product/architectural/attempts-'
-                            'exhausted) awaiting an explicit operator action, '
+                            'exhausted) or a stale-premise dispatch hold '
+                            '(CR-11b), awaiting an explicit operator action, '
                             'not a D-NNN decision'),
                         project=cfg.project_id,
                         refs=[tsf.task_id],

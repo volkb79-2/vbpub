@@ -174,9 +174,9 @@ PROFILES: tuple[tuple[str, dict, str], ...] = (
     ("drain-handoffs", {"project_paused": True, "pause_mode": "drain-handoffs"},
      "pause_mode: the half that still launches agents"),
     ("no-healthy-route", {"provider_ok": {}},
-     "dispatch_eligible check 8 and frontier_route_available"),
+     "dispatch_eligible check 9 and frontier_route_available"),
     ("budget-exhausted", {"budget_remaining": 0.0},
-     "dispatch_eligible check 6 and budget_allows"),
+     "dispatch_eligible check 7 and budget_allows"),
     ("guarded-automatic", {"_policy": {"merge_mode": "guarded-automatic"}},
      "contract item 13: AutoMergeTask on MERGE_READY"),
     ("wave-aged", {"wave_open_after_seconds": 0},
@@ -204,7 +204,7 @@ PROFILES: tuple[tuple[str, dict, str], ...] = (
     ("stalled-logs", {"log_quiet_seconds": None},   # replaced below, per input
      "contract item 4: the stall ladder"),
     ("lease-held", {"leases_free": {"corpus/stack": False}},
-     "dispatch_eligible check 7"),
+     "dispatch_eligible check 8"),
 )
 
 

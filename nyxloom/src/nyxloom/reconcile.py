@@ -163,7 +163,7 @@ INTERFACE CONTRACT (frozen). Semantics:
    carve authority).
 10. REJECT LOOP (self-correct package, 2026-07-16; exhausted-budget half
     closed by P45 2026-07-19): REVIEW_REJECTED with attempts remaining (same
-    accounting as dispatch_eligible check 5: receipted attempts excluding
+    accounting as dispatch_eligible check 6: receipted attempts excluding
     'limit' results, < policy.max_attempts_per_task) -> Transition to
     QUEUED (re-work). Self-limiting like item 2's CARVED->QUEUED (the
     transition moves the task out of REVIEW_REJECTED, so it does not refire
@@ -1124,9 +1124,10 @@ def _check_healthy_route(fm: Frontmatter, task_id: str, inp: ReconcileInput) -> 
 
 def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) -> tuple[bool, str]:
     """(eligible, reason-if-not). Reasons are short fixed strings:
-    'paused', 'deps-unmerged:<id>', 'decision-hold:<D-id>', 'wip-cap',
-    'attempts-exhausted', 'budget-exhausted', 'lease-unavailable:<name>',
-    'no-healthy-route'. First failing check wins (checked in that order)."""
+    'paused', 'deps-unmerged:<id>', 'decision-hold:<D-id>', 'premise-drifted',
+    'wip-cap', 'attempts-exhausted', 'budget-exhausted',
+    'lease-unavailable:<name>', 'no-healthy-route'. First failing check wins
+    (checked in that order)."""
 
     # 1. paused check (task or project)
     ok, reason = _check_paused(tsf, inp)
@@ -1150,7 +1151,21 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
         if d_id in inp.decisions_open:
             return (False, f'decision-hold:{d_id}')
 
-    # 4. wip-cap check (B3/P71: the implement stage's effective concurrency --
+    # 4. premise-drift check (CR-11b: the PLAN-time half of critique I4's
+    # stale-premise guard -- reject_triage already re-checks this at
+    # REVIEW_REJECTED; this closes the gap for a QUEUED task that never even
+    # reaches review with a stale `input_revision`, mirroring decision-hold's
+    # own belt-and-braces shape immediately above: `rules_dispatch.
+    # implementer_dispatch` (item 3) is what actually PARKS the task in
+    # NEEDS_DECISION this pass -- there is no separate lifecycle rule for
+    # this one, unlike decision-hold's item-2 rule -- and this check is what
+    # stops that SAME call from ALSO dispatching the identical task in the
+    # SAME pass -- both read the exact same pure predicate off the exact
+    # same immutable snapshot, so they can never disagree.
+    if _premise_drifted(fm.input_revision, inp.head_revision):
+        return (False, 'premise-drifted')
+
+    # 5. wip-cap check (B3/P71: the implement stage's effective concurrency --
     # a [stage.implement] override wins, else policy.max_active_tasks -> parity)
     active_count = sum(
         1 for tid, st in inp.states.items()
@@ -1160,23 +1175,23 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
             "implement", inp.cfg.stage_overrides, inp.cfg.policy.max_active_tasks):
         return (False, 'wip-cap')
 
-    # 5. attempts-exhausted check (P60 M8: single role-filtered accessor --
+    # 6. attempts-exhausted check (P60 M8: single role-filtered accessor --
     # excludes LIMIT attempts AND non-implementer attempts, so a review does
     # not count against the implementer dispatch budget).
     if attempts_used(tsf) >= inp.cfg.policy.max_attempts_per_task:
         return (False, 'attempts-exhausted')
 
-    # 6. budget-exhausted check
+    # 7. budget-exhausted check
     ok, reason = _check_budget(inp)
     if not ok:
         return (ok, reason)
 
-    # 7. lease-unavailable check
+    # 8. lease-unavailable check
     ok, reason = _check_lease(fm, inp)
     if not ok:
         return (ok, reason)
 
-    # 8. no-healthy-route check
+    # 9. no-healthy-route check
     ok, reason = _check_healthy_route(fm, tsf.task_id, inp)
     if not ok:
         return (ok, reason)
@@ -1211,7 +1226,7 @@ def fresh_start_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInpu
 def attempts_used(tsf: TaskStateFile) -> int:
     """P60 2026-07-20 (M8, Fable-xhigh critique). THE single receipt-based
     implementer-attempt-budget accessor, replacing three subtly-different
-    inline formulas (dispatch_eligible check 5, the REVIEW_REJECTED re-queue
+    inline formulas (dispatch_eligible check 6, the REVIEW_REJECTED re-queue
     counter, and the ERROR-path daemon count) plus the resume path's copy.
     Those formulas were role-BLIND -- a reviewer/carver attempt also lands in
     tsf.attempts with a DONE receipt, so a single reject cycle (implement +
