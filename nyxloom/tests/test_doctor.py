@@ -657,6 +657,142 @@ def test_doctor_decision_hold_unresolved_silent_for_queued(sample_project):
         assert unresolved == []
 
 
+def test_doctor_decision_hold_unresolved_silent_when_discovery_unimplemented(sample_project):
+    """A backend that hasn't implemented handoff discovery yet (raises
+    NotImplementedError) must not crash check 12 -- it just cannot confirm
+    the reason-less-park shape for that task, so it stays silent on it."""
+    parked_state = TaskStateFile(
+        schema_version=1,
+        task_id='demo-P10-test',
+        project=sample_project.project_id,
+        state=TaskState.NEEDS_DECISION,
+        since=utc_now(),
+        handoff_path='handoff/demo-P10-test.md',
+    )
+    save_demo_state(sample_project, parked_state)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.side_effect = NotImplementedError
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert unresolved == []
+
+
+def test_doctor_decision_hold_unresolved_silent_on_unparseable_handoff(sample_project):
+    """A handoff file that fails to parse must not crash check 12 or count
+    as a reason-less park -- it costs the check a finding, never manufactures
+    a false one (the advisory-degradation classification on that except)."""
+    parked_state = TaskStateFile(
+        schema_version=1,
+        task_id='demo-P11-test',
+        project=sample_project.project_id,
+        state=TaskState.NEEDS_DECISION,
+        since=utc_now(),
+        handoff_path='handoff/demo-P11-test.md',
+    )
+    save_demo_state(sample_project, parked_state)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.frontmatter.parse_handoff') as mock_parse, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = [sample_project.root / 'handoff' / 'demo-P11-test.md']
+        mock_parse.side_effect = ValueError('corrupt frontmatter')
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert unresolved == []
+
+
+def test_doctor_decision_hold_unresolved_silent_when_no_handoff_id_matches(sample_project):
+    """A discovered handoff belonging to some OTHER task must not be
+    mistaken for the parked task's own frontmatter -- check 12 must keep
+    scanning past a non-matching id rather than stopping or misreporting."""
+    parked_state = TaskStateFile(
+        schema_version=1,
+        task_id='demo-P12-test',
+        project=sample_project.project_id,
+        state=TaskState.NEEDS_DECISION,
+        since=utc_now(),
+        handoff_path='handoff/demo-P12-test.md',
+    )
+    save_demo_state(sample_project, parked_state)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.frontmatter.parse_handoff') as mock_parse, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = [sample_project.root / 'handoff' / 'demo-other-task.md']
+        other_fm = MagicMock()
+        other_fm.id = 'demo-other-task'
+        other_fm.task_deps.return_value = []
+        other_fm.decision_deps.return_value = []
+        mock_parse.return_value = (other_fm, 'body')
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert unresolved == []
+
+
+def test_doctor_decision_hold_unresolved_silent_on_store_read_failure(sample_project):
+    """A store-level failure reading statefiles must not crash the whole
+    doctor sweep -- check 12's outer guard swallows it (advisory-
+    degradation: costs this check's findings, never a wrong one).
+
+    `storage.list_states` is shared by nearly every numbered check, most of
+    which only degrade NotImplementedError, not an arbitrary failure -- so
+    this can't blanket-fail every call without taking earlier checks down
+    with it (a pre-existing property of doctor.py, not something check 12
+    introduces). Check 12 is the LAST caller of `storage.list_states` in
+    doctor_project (source order), so failing only the final call in the
+    sequence isolates check 12's own outer guard without touching that."""
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = []
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        real_list_states = storage.list_states
+        total_calls = 0
+
+        def _counting(project_id):
+            nonlocal total_calls
+            total_calls += 1
+            return real_list_states(project_id)
+
+        with patch('nyxloom.doctor.storage.list_states', side_effect=_counting):
+            doctor_project(sample_project)  # dry run: discover the real call count
+
+        call_count = 0
+
+        def _fail_on_last_call(project_id):
+            nonlocal call_count
+            call_count += 1
+            if call_count == total_calls:
+                raise RuntimeError('store unreachable')
+            return real_list_states(project_id)
+
+        with patch('nyxloom.doctor.storage.list_states', side_effect=_fail_on_last_call):
+            findings = doctor_project(sample_project)
+
+        unresolved = [f for f in findings if f.kind == 'decision-hold-unresolved']
+        assert unresolved == []
+
+
 # ============================================================================
 # CR-16 (RISK-007): liveness_findings -- reconcile-deadman, tick-error-streak,
 # notify-transport-unreachable. Folded into doctor_project's sweep AND
