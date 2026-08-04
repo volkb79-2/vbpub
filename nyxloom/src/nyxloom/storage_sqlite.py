@@ -52,7 +52,8 @@ from typing import Any, Iterator
 
 from . import paths
 from .projection import (
-    SCHEMA_VERSION, apply_event, _trace, _validate_before_append,
+    SCHEMA_VERSION, apply_event, upcast_event_payload, upcast_state_dict,
+    _trace, _validate_before_append,
 )
 from .types import Actor, ActorKind, Event, EventType, TaskStateFile, iso, parse_iso, utc_now
 
@@ -157,19 +158,28 @@ def _schema_present(conn: sqlite3.Connection) -> bool:
 def _row_to_event(row: tuple, project: str) -> Event:
     (seq, schema_version, ts, actor_kind, actor_id, type_, payload,
      task_id, attempt_id, wave_id, decision_id) = row
+    event_type = EventType(type_)
     return Event(
         schema_version=schema_version,
         sequence=seq,
         timestamp=parse_iso(ts),
         project=project,
         actor=Actor(kind=ActorKind(actor_kind), id=actor_id),
-        type=EventType(type_),
-        payload=json.loads(payload),
+        type=event_type,
+        payload=upcast_event_payload(schema_version, event_type, json.loads(payload)),
         task_id=task_id,
         attempt_id=attempt_id,
         wave_id=wave_id,
         decision_id=decision_id,
     )
+
+
+def _row_to_state(data: str) -> TaskStateFile:
+    """The one place a `states.data` JSON blob becomes a `TaskStateFile` --
+    `load_state`/`list_states`/`_committed_states` all read through here so
+    CR-07e's upcast hook has exactly one seam to sit in, not three near-
+    duplicate copies of it."""
+    return TaskStateFile.from_dict(upcast_state_dict(json.loads(data)))
 
 
 def _insert_event(
@@ -229,8 +239,25 @@ def _upsert_state_row(conn: sqlite3.Connection, state: TaskStateFile) -> None:
     """UPSERT one task's projection row on an already-open
     connection/transaction. This is the atomicity oracle's injection seam:
     a test monkeypatches this function to simulate a failure that happens
-    AFTER the event INSERT but before the projection change is durable."""
+    AFTER the event INSERT but before the projection change is durable.
+
+    CR-07e: always stamps SCHEMA_VERSION, ignoring whatever `state.
+    schema_version` says, mirroring `_insert_event`'s existing behaviour --
+    NOT the "preserve the historical written-at version" contract
+    `upcast_state_dict` documents. That contract is safe for events (an
+    append-only log entry never gets rewritten), but a `TaskStateFile` is a
+    continuously-upserted CURRENT record: `apply_event` mutates the
+    in-memory object in place without touching `.schema_version`, so a
+    legacy row upcast on read and then written back through this function
+    would otherwise persist an already-current shape under its OLD version
+    number -- causing the NEXT read to upcast it a second time, silently
+    (independent review caught this empirically: a non-idempotent
+    upcaster applied itself three times across one read-mutate-read cycle
+    before this fix). The row's SHAPE is what `upcast_state_dict` upgrades;
+    this function is what makes the PERSISTED VERSION NUMBER agree with it.
+    """
     d = state.to_dict()
+    d["schema_version"] = SCHEMA_VERSION
     conn.execute(
         "INSERT INTO states "
         "(task_id, project, state, since, handoff_path, notes, attempts, "
@@ -358,7 +385,7 @@ def load_state(project: str, task_id: str) -> TaskStateFile | None:
     if row is None:
         return None
     _trace("statefile-read", project=project, task=task_id)
-    return TaskStateFile.from_dict(json.loads(row[0]))
+    return _row_to_state(row[0])
 
 
 def save_state(state: TaskStateFile) -> None:
@@ -516,7 +543,7 @@ def list_states(project: str) -> dict[str, TaskStateFile]:
         conn.close()
     out: dict[str, TaskStateFile] = {}
     for (data,) in rows:
-        tsf = TaskStateFile.from_dict(json.loads(data))
+        tsf = _row_to_state(data)
         out[tsf.task_id] = tsf
     return out
 
@@ -525,7 +552,7 @@ def _committed_states(conn: sqlite3.Connection) -> dict[str, TaskStateFile]:
     """The projection as COMMITTED, read on an already-open transaction."""
     out: dict[str, TaskStateFile] = {}
     for (data,) in conn.execute("SELECT data FROM states ORDER BY task_id"):
-        tsf = TaskStateFile.from_dict(json.loads(data))
+        tsf = _row_to_state(data)
         out[tsf.task_id] = tsf
     return out
 

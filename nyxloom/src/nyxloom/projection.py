@@ -50,6 +50,99 @@ def _trace(msg: str, **kw: Any) -> None:
 
 SCHEMA_VERSION = 1
 
+
+# ---------------------------------------------------------------------------
+# CR-07e: the versioned-event upcaster skeleton
+#
+# The plan amendment assigned "schema and projection version tables plus
+# upcasters" to CR-04; CR-04a/b/c never built it (SCHEMA_VERSION has never
+# incremented, so nothing forced the question). This is that mechanism,
+# proved with zero real upcasters -- every persisted row today is already at
+# SCHEMA_VERSION, so every real read is the empty-loop identity path. It is a
+# prerequisite for landing any FUTURE schema change (including CR-07's own
+# lifecycle/node schema) safely; it does not itself decide what that schema
+# looks like.
+#
+# Two registries because events and statefiles disagree on axes: an event's
+# shape depends on its EventType (a TASK_TRANSITIONED payload and a
+# GATE_RESULT payload are unrelated shapes sharing one schema_version), so
+# EVENT_UPCASTERS is keyed on (from_version, EventType). A TaskStateFile has
+# exactly one shape, so STATE_UPCASTERS is keyed on from_version alone.
+#
+# Residual, reported rather than solved: TASK_CREATED's payload carries a
+# NESTED TaskStateFile dict (apply_event's `TaskStateFile.from_dict(
+# ev.payload["statefile"])`) that does NOT separately route through
+# STATE_UPCASTERS -- upcast_event_payload hands a registered upcaster the
+# WHOLE payload dict, nested "statefile" key included, so a future
+# EVENT_UPCASTERS[(v, EventType.TASK_CREATED)] upcaster is responsible for
+# transforming that nested shape itself if it changed. Not a bug (no real
+# upcaster exists to get this wrong yet) and not solved here: building
+# generic recursive-upcast dispatch now, before any real schema change
+# names what "nested" even means for it, would be exactly the kind of
+# speculative machinery this package's zero-real-upcasters scope avoids.
+
+class UpcastError(Exception):
+    """A persisted row's schema_version has no registered path forward to
+    SCHEMA_VERSION.
+
+    Raised rather than silently handing back a shape nothing validated --
+    the fault-matrix contract `tests/test_storage_sqlite.py` already names:
+    "failed upcast produce no authorizing effect". A row this cannot upcast
+    must refuse to become a live object, not decay into a partially
+    understood one.
+    """
+
+
+#: One upcaster per (from_version, EventType): the payload dict AT
+#: from_version -> the payload dict AT from_version + 1. Empty today --
+#: nothing to prove except that the DISPATCH mechanism itself works.
+EVENT_UPCASTERS: dict[tuple[int, EventType], Any] = {}
+
+#: One upcaster per from_version: a TaskStateFile.to_dict() shape AT
+#: from_version -> the shape AT from_version + 1. Keyed by version alone --
+#: unlike events, a statefile has no per-type axis to key on.
+STATE_UPCASTERS: dict[int, Any] = {}
+
+
+def upcast_event_payload(schema_version: int, event_type: EventType,
+                          payload: dict) -> dict:
+    """Walk `payload` forward from `schema_version` to `SCHEMA_VERSION`, one
+    registered upcaster per hop.
+
+    A row already at `SCHEMA_VERSION` takes zero hops and returns `payload`
+    unchanged -- the path every real row takes today. `Event.schema_version`
+    itself is left as the row's ORIGINALLY RECORDED version (a historical
+    fact about when the event was written); only the payload SHAPE is
+    upcast, to what current code expects.
+    """
+    version = schema_version
+    while version < SCHEMA_VERSION:
+        upcaster = EVENT_UPCASTERS.get((version, event_type))
+        if upcaster is None:
+            raise UpcastError(
+                f"no upcaster registered for {event_type.value!r} at schema "
+                f"version {version} (need a path to {SCHEMA_VERSION})")
+        payload = upcaster(payload)
+        version += 1
+    return payload
+
+
+def upcast_state_dict(data: dict) -> dict:
+    """Walk `data` (a `TaskStateFile.to_dict()` shape) forward from its own
+    recorded `schema_version` to `SCHEMA_VERSION`. Same contract as
+    :func:`upcast_event_payload`, mirrored for the one-axis case."""
+    version = data.get("schema_version", SCHEMA_VERSION)
+    while version < SCHEMA_VERSION:
+        upcaster = STATE_UPCASTERS.get(version)
+        if upcaster is None:
+            raise UpcastError(
+                f"no upcaster registered for TaskStateFile at schema "
+                f"version {version} (need a path to {SCHEMA_VERSION})")
+        data = upcaster(data)
+        version += 1
+    return data
+
+
 _EARLY_ATTEMPT_STATES = frozenset({AttemptState.CREATED, AttemptState.PREFLIGHTING})
 
 
