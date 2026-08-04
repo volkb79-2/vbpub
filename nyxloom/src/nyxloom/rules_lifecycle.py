@@ -47,16 +47,39 @@ def decision_hold(ctx: PlanContext, emit: RuleEmitter, task: PlanTask) -> None:
     """Contract item 2: a QUEUED task with an unresolved D-dep parks in
     NEEDS_DECISION; a NEEDS_DECISION task whose D-deps all resolved returns to
     QUEUED. The notes name the D-ids (enum/id vocabulary only -- module
-    contract item 8's payload-injection rule)."""
+    contract item 8's payload-injection rule).
+
+    SELF-CORRECT (found scoping CR-11b, 2026-08-04): the release condition
+    used to be a bare ``not open_d_deps`` -- true both when this task's
+    declared D-deps are now all resolved (the genuine "hold released" case)
+    AND when the task never declared any D-dep at all. ``fm.decision_deps()``
+    is static frontmatter, read fresh every pass and never mutated by any
+    transition, so a task with NO D-dep declared could never have been
+    parked here by THIS rule's own entry branch (which requires
+    ``open_d_deps`` to be non-empty to fire) -- it must have arrived via a
+    DIFFERENT rule. The only other producer of a `NEEDS_DECISION` transition
+    is ``reject_triage``'s human-judgment escalations ("product" / an
+    architectural-or-drift rejection with no carve stage / attempts
+    exhausted with no carve stage) -- and the old bare condition silently
+    reversed every one of them on the VERY NEXT pass, re-dispatching work a
+    reviewer explicitly said needed a human decision, with no operator
+    visibility and no way to have prevented it (those escalations never
+    declare a D-dep, so there was nothing to keep them parked). Requiring
+    ``task.fm.decision_deps()`` to be non-empty restricts release to tasks
+    THIS rule genuinely parked -- a reason-less park (reject_triage's shape)
+    now stays parked, correctly requiring an operator to act on it rather
+    than being silently, mechanically undone."""
     if task.state is None:
         return
-    open_d_deps = [d for d in task.fm.decision_deps() if d in ctx.inp.decisions_open]
+    declared_d_deps = task.fm.decision_deps()
+    open_d_deps = [d for d in declared_d_deps if d in ctx.inp.decisions_open]
 
     if task.state.state == TaskState.QUEUED and open_d_deps:
         notes = ", ".join(open_d_deps)
         emit(Transition(task_id=task.task_id, to=TaskState.NEEDS_DECISION, notes=notes))
         emit.note("state-transition", task.task_id, "QUEUED->NEEDS_DECISION")
-    elif task.state.state == TaskState.NEEDS_DECISION and not open_d_deps:
+    elif (task.state.state == TaskState.NEEDS_DECISION and declared_d_deps
+          and not open_d_deps):
         emit(Transition(task_id=task.task_id, to=TaskState.QUEUED, notes=None))
         emit.note("state-transition", task.task_id, "NEEDS_DECISION->QUEUED")
 
