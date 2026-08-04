@@ -13,6 +13,7 @@ import ast
 import dataclasses
 import inspect
 import subprocess
+import textwrap
 
 import pytest
 
@@ -150,7 +151,8 @@ class TestSelfReviewStaleExit:
 # not behavioural, so a future edit that reintroduces a private duplicate is
 # caught even if it happens to compute the same answer today.
 def test_implement_done_routing_calls_stages_effective_exit_map():
-    tree = ast.parse(inspect.getsource(effects_exit))
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(effects_exit.ExitEffector.emit_attempt_exit)))
     calls = {node.func.attr for node in ast.walk(tree)
               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     assert "effective_exit_map" in calls
