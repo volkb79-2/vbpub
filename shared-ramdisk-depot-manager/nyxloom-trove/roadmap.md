@@ -17,6 +17,60 @@ overlay, and acquisition gains the SteamCMD driver.
 
 ---
 
+## Milestones
+
+A wave is an ordering constraint; a **milestone is a claim about the product**
+that is either true or not. Each one below names its exit condition, because
+"P11 is done" is not a thing anybody outside this project can evaluate.
+
+| | milestone | exit condition | packages |
+|---|---|---|---|
+| **M1** | **v1 MVP** — ✅ **reached 2026-08-04** | the loop is drivable and survives a reboot, gated end to end. *Proven by oracles, not in production* | P01–P08b |
+| **M2** | **production adoption** | the Soulmask cluster actually runs on srdm on the case-study node, `soulmask_tmpfs` is retired, and a content update is performed through srdm rather than around it | P10, **P09b**, P09 |
+| **M3** | **unattended acquisition** | an operator supplies an appid and nothing else; srdm acquires, verifies, records build identity and promotes a release with no hand-staging | P11 |
+| **M4** | **srdm owns the node** | content and servers are one budget under one policy file with one reconciler; Wings carries two small patches and no resource logic | P12, P13 |
+
+M5 — `provider` exposure, holding invariant 7 in full — is deliberately
+beyond the horizon and conditional (PLAN.md §Direction 4). It becomes worth
+scheduling only if M2 shows the waiver's operational bill actually hurting.
+
+**M2 is the milestone that matters.** Everything in M1 is proven by oracles
+in a gate container; nothing is proven by a game server that people play on.
+Until M2, srdm is a well-tested program rather than a working system.
+
+### P09b — the waiver's operational bill
+
+**This is the gap the milestone review found, and it is on M2's critical
+path.** `host-bind` waives invariant 7 knowingly, and PLAN.md says the bill
+is "itemized rather than discovered" — but only two of its line items have
+ever been addressed (the chown walk, via F1; propagation, via `rslave`). The
+rest were named and never handled, and they land precisely at production
+adoption:
+
+- **Backups.** Wings archives the server volume, and under host-bind the
+  class paths are *inside* it. Every backup of every server would include the
+  whole shared tree — for the case-study node, ~2.4 GB duplicated per server
+  per backup. The mitigation exists (`.pteroignore`), but nothing generates
+  or verifies it.
+- **Disk accounting.** Wings computes server disk usage by walking that same
+  volume, so shared content counts against **every** server's quota. Two
+  servers sharing one 2.4 GB generation are each billed 2.4 GB for the same
+  pages srdm exists to stop duplicating.
+- **SFTP and archive extraction** traverse it too — reads are harmless,
+  writes through SFTP into a read-only class path give a confusing `EROFS`
+  rather than a refusal that explains itself.
+
+Scope: generate the ignore rules from the profile (srdm already knows every
+declared class path — that is exactly what `expose.Plan` computes), a
+`doctor` check that they are present and current, and documentation of the
+accounting consequence with the quota guidance that follows from it.
+
+Small, and genuinely blocking: migrating a cluster onto srdm and *then*
+discovering every backup grew by 2.4 GB per server is the kind of thing that
+gets a tool removed rather than fixed.
+
+---
+
 ## The ordering decision, stated up front
 
 The obvious next package is publication topology. It is the wrong one to
@@ -468,11 +522,12 @@ gave it a loop:
 
 ### Wave 4 — capability, then the real acceptance test
 
-| id | package | state | depends on |
-|---|---|---|---|
-| **P10** | `access: rw` via an overlay upper layer (D-027) | **next** | P08b |
-| **P11** | build-identity recording, then the containerized SteamCMD driver | queued | P10 |
-| **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | queued | P10, and F1 or `check_permissions_on_boot: false` |
+| id | package | state | milestone | depends on |
+|---|---|---|---|---|
+| **P10** | `access: rw` via an overlay upper layer (D-027), and the overlay holder recognizer (D-028) | **next** | M2 | P08b |
+| **P09b** | the waiver's operational bill: backup ignore rules, disk accounting, SFTP | queued | M2 | P06 |
+| **P09** | Soulmask profile, managed egg, install guard, migration rehearsal | queued | M2 | P10, P09b, and F1 or `check_permissions_on_boot: false` |
+| **P11** | build-identity recording, then the containerized SteamCMD driver | queued | M3 | P09 |
 
 **P10 goes before P09**, which reorders the old plan. P09 is the migration of
 two live servers onto one generation, and `rw` as it stands is
@@ -486,7 +541,14 @@ assumption: whiteout handling when an update deletes files, `harvest` reading
 a merged view, and teardown safety re-derived against a mount that pins lower
 inodes (D-012/D-018/D-019 all apply).
 
-**P11** is two things in order. Build identity has no representation at all
+**P11 moved behind P09**, which is a change from the earlier sketch. It is
+M3 work, and M3 is worth nothing until M2 holds: an unattended acquisition
+path that feeds a system nobody is running in production automates a
+hypothetical. It is also the package most likely to change shape *because*
+of what M2 teaches — the build identity worth recording is whatever the
+migration turns out to need to tell two releases apart.
+
+P11 is two things in order. Build identity has no representation at all
 today — no profile can express "capture this version string" — and both the
 staged path and Steam need it, so it is one piece of work rather than a
 Steam rider. Then the driver itself: appid in, prepared tree out, as an

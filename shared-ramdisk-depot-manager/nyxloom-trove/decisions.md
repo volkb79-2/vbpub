@@ -1060,3 +1060,65 @@ path is `harvest`, which re-walks, re-hashes and promotes through the same
 **aufs is not an option and does not need evaluating.** The kernel offers
 only `overlay` in `/proc/filesystems`; aufs was never merged into mainline
 and Debian carries no module for it. It is not a fallback, it is absent.
+
+---
+
+## D-028 — an overlay holder is INVISIBLE to superblock matching; teardown must learn `lowerdir`
+
+**Status:** accepted, from measurement. Probed 2026-08-04 while carving P10,
+before writing any of it. `tools/overlay-holder-probe.sh` re-runs it.
+
+D-027 adopted an overlay for `access: rw`. This is the constraint that
+adoption carries, and it would have shipped as a silent leak if the shape had
+been assumed instead of measured.
+
+**`internal/consumer` matches on the superblock** — `major:minor` — because a
+consumer's *bind* is at a path srdm never chose while the device number is the
+same on both sides of a bind (D-012, D-018). **An overlay is not a bind, and
+that reasoning does not transfer.**
+
+Measured:
+
+```
+the RO bind  : 2554 2468 0:380 /root /t/expose  ro - tmpfs   tmpfs
+the overlay  : 2557 2468 0:390 /     /t/merged  rw - overlay overlay
+                          ^^^^^                       lowerdir=/t/expose,...
+```
+
+The overlay reports **its own device** (`0:390`), never the lower's
+(`0:380`). A file read through it has `st_dev` of the overlay. The lower
+device number appears **nowhere** in the mountinfo line — the only trace of
+the generation is the `lowerdir=` **path** in the mount options. So the guard,
+as written, sees nothing.
+
+And the consequence, measured end to end rather than inferred:
+
+```
+generation tmpfs unmounted OK          ← the unmount SUCCEEDS
+content still readable through the overlay?  payload   ← and frees nothing
+```
+
+That is precisely the D-019 shape: an operation that reports success, returns
+no memory, and leaves the content readable to a consumer — with the guard
+reporting "nothing is holding this". Teardown would be refused by nothing.
+
+**Accepted:** `internal/consumer` gains a second recognizer. An `overlay`
+mount whose `lowerdir=` (any element of a colon-separated list) resolves under
+an srdm root counts as a holder of that generation, exactly as a bind of its
+superblock does. The two recognizers are complementary and the asymmetry is
+the point:
+
+- a **bind** is matched by *device*, because its path is unpredictable;
+- an **overlay** is matched by *path*, because its device is uninformative —
+  and the path is reliable here precisely because `lowerdir` is *chosen by
+  the mounter* and names the source, which a bind's target never does.
+
+**Residual, stated rather than discovered:** an overlay whose `lowerdir`
+points at some *other* bind of an srdm path, made at a path srdm does not
+recognize, is still invisible. D-019's rule applies unchanged — over-filtering
+is a silent leak, under-filtering is a visible refusal — so the recognizer
+must err toward counting a holder, and publication's private op root
+(`MS_PRIVATE`, D-019) is what keeps such copies from being obtainable in the
+first place. An oracle asserts the recognizer sees a real overlay in a real
+second mount namespace, which is the only way this is known rather than
+believed.
