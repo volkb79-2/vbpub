@@ -688,14 +688,16 @@ class TestSelectRoute:
 
 
 class TestSelectRouteDifferentialAgainstRealDispatchSites:
-    """`select_route(...).winner` must be byte-identical to what
-    `rules_dispatch.py`'s and `rules_attempts.py`'s own
-    `healthy_routes(...)[0]` logic actually picks, for every candidate/
-    health combination those two real call sites can encounter -- proven,
-    not assumed, the same rigor CR-08 Slice 2a applied ("proven byte-
-    identical to current behavior... by differential test"). `select_route`
-    is not yet wired into either call site, so this is the only thing
-    standing between the two implementations silently diverging."""
+    """`select_route(...).winner` must match `healthy_routes(...)[0]` --
+    the same one-line expression `rules_dispatch.py` and `rules_attempts.py`
+    call directly at their real dispatch sites -- for every candidate/
+    health combination those two real call sites can encounter. Both this
+    test and `select_route` itself call `healthy_routes`, so this pins
+    `select_route`'s winner-selection to `healthy_routes`'s semantics
+    rather than independently re-deriving "first healthy route" from
+    scratch; `TestSelectRoute`'s literal-expected-value cases are what
+    actually pin `healthy_routes`'s own behavior. `select_route` is not
+    yet wired into either call site."""
 
     @pytest.mark.parametrize("provider_ok", [
         {},                                            # nothing healthy
