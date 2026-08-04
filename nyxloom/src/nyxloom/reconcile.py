@@ -385,7 +385,7 @@ from .carver_session import (
     HumanIntake, ValidatedCarveProposal,
 )
 from . import planning, snapshot
-from .config import ProjectConfig, RouteDef, Routes, healthy_routes
+from .config import ProjectConfig, RouteDef, Routes, healthy_routes, undeclined_routes
 from .planning import PlanContext, RuleMatch
 from .stages import effective_concurrency
 from .types import (
@@ -866,6 +866,14 @@ class ReconcileInput:
     # stamped) and falls back to the mechanical attempt-budget path -- graceful
     # degradation, byte-identical to the pre-B4b routing.
     triage_class: dict[str, str] = field(default_factory=dict)
+    # CR-09a: task id -> route ids excluded from IMPLEMENTER selection
+    # because a reviewer already stamped `reject_class == "incapable"`
+    # against that route for this task's origin (`fm.source.ref`, single-hop
+    # -- see `daemon._declined_routes`). reconcile stays pure -- it reads
+    # this precomputed dict rather than the event log, exactly like
+    # triage_class. A task absent from this dict has no known-declined
+    # route, byte-identical to the pre-CR-09a routing.
+    declined_routes: dict[str, frozenset[str]] = field(default_factory=dict)
     # F019 P1b 2026-07-25 (plan-f019-failure-diagnosis.md §P1): the two
     # daemon-computed inputs that drive gate-failure diagnosis routing. reconcile
     # stays pure -- it reads these precomputed sets rather than the event log,
@@ -1101,8 +1109,15 @@ def _check_lease(fm: Frontmatter, inp: ReconcileInput) -> tuple[bool, str]:
     return (True, '')
 
 
-def _check_healthy_route(fm: Frontmatter, inp: ReconcileInput) -> tuple[bool, str]:
-    if not healthy_routes(inp.routes.for_tier(fm.tier), inp.provider_ok):
+def _check_healthy_route(fm: Frontmatter, task_id: str, inp: ReconcileInput) -> tuple[bool, str]:
+    healthy = healthy_routes(inp.routes.for_tier(fm.tier), inp.provider_ok)
+    # CR-09a: stay in sync with rules_dispatch.py's/rules_attempts.py's
+    # selection loops -- a task judged eligible here because SOME healthy
+    # route exists must never then find its selection loop empty because
+    # that route was the one already declined (undeclined_routes applied
+    # identically at both eligibility and selection).
+    available = undeclined_routes(healthy, inp.declined_routes.get(task_id, frozenset()))
+    if not available:
         return (False, 'no-healthy-route')
     return (True, '')
 
@@ -1162,7 +1177,7 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
         return (ok, reason)
 
     # 8. no-healthy-route check
-    ok, reason = _check_healthy_route(fm, inp)
+    ok, reason = _check_healthy_route(fm, tsf.task_id, inp)
     if not ok:
         return (ok, reason)
 
@@ -1187,7 +1202,7 @@ def fresh_start_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInpu
     ok, reason = _check_lease(fm, inp)
     if not ok:
         return (ok, reason)
-    ok, reason = _check_healthy_route(fm, inp)
+    ok, reason = _check_healthy_route(fm, tsf.task_id, inp)
     if not ok:
         return (ok, reason)
     return (True, '')

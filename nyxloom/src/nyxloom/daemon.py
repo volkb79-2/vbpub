@@ -1453,6 +1453,7 @@ class Daemon:
         pause_mode = self._pause_mode(project)
         project_paused = pause_mode != "run"
         triage_class = self._triage_classes(project, states, events=events)
+        declined_routes = self._declined_routes(project, states, frontmatters, events=events)
         gate_diagnosis_pending, gate_diagnosis_attempts = self._gate_diagnosis_state(
             project, cfg, states, events=events)
         provider_ok = self._provider_ok(routes, builder=b)
@@ -1553,6 +1554,7 @@ class Daemon:
             blocked_underspecified_already_open=blocked_underspecified_already_open,
             head_revision=head_revision,
             triage_class=triage_class,
+            declined_routes=declined_routes,
             gate_diagnosis_pending=gate_diagnosis_pending,
             gate_diagnosis_attempts=gate_diagnosis_attempts,
             days_since_test_health_carve=self._days_since_test_health_carve(
@@ -1664,6 +1666,67 @@ class Daemon:
                 # one fired (tier bump vs. re-scope).
                 if cls in ("fixable", "architectural", "incapable", "product", "transient"):
                     out[task_id] = cls
+        return out
+
+    def _declined_routes(
+        self, project: str, states: dict[str, TaskStateFile],
+        frontmatters: dict[str, tuple],
+        *, events: Sequence[Event] | None = None,
+    ) -> dict[str, frozenset[str]]:
+        """CR-09a (routing-model-redesign.md D-R3, extended): for a task
+        whose handoff names an origin task via ``source.ref`` that a
+        reviewer's LATEST ``REVIEW_RECORDED`` classified
+        ``reject_class == "incapable"``, the origin's last IMPLEMENTER
+        route id -- excluded from re-selection at the bumped tier even
+        though that tier's route list may still contain it (a route can be
+        declared in more than one tier, e.g. ``codex-terra-med`` in both
+        ``implement-1`` and ``implement-2``; D-R3's original carve-prompt
+        tier bump left this gap open, since it only asked the carver-LLM to
+        pick "a stronger tier", never touching route SELECTION at all).
+
+        Single-hop only, resolving ``source.ref`` the same way
+        ``effects_review.incapable_escalation_note`` already does for the
+        SAME field. A chain of two-or-more incapable rescopes is a real,
+        separate case named here rather than silently dropped: the origin's
+        own handoff/frontmatter is typically no longer present in
+        ``frontmatters`` (built by scanning the LIVE handoffs directory) by
+        the time a SECOND rescope happens, so walking further needs an
+        archive-aware read this slice does not add.
+
+        reconcile stays pure -- it reads this precomputed dict rather than
+        the event log, exactly like ``_triage_classes``. Both
+        ``frontmatters`` and ``events`` are already acquired once per pass
+        by the fan-in above, so this adds no new I/O.
+
+        Deliberately NOT gated on the origin's CURRENT state (unlike
+        ``_triage_classes``, which only classifies tasks CURRENTLY in
+        REVIEW_REJECTED): by the time its descendant exists, the origin has
+        normally already transitioned to READY_TO_CARVE and then
+        SUPERSEDED, so filtering on current state here would silently miss
+        every real lineage. The reject_class read is a plain re-scan of the
+        latest REVIEW_RECORDED per task id, independent of current state.
+        """
+        events = self._require_events(project, events)
+        latest_payload: dict[str, dict] = {}
+        for ev in events:
+            if ev.type is EventType.REVIEW_RECORDED and ev.task_id:
+                latest_payload[ev.task_id] = ev.payload or {}
+        out: dict[str, frozenset[str]] = {}
+        for task_id, (fm, _relpath) in frontmatters.items():
+            origin_id = fm.source.ref if fm.source else None
+            if not origin_id or origin_id == task_id:
+                continue
+            payload = latest_payload.get(origin_id)
+            if payload is None or payload.get("result") != "rejected" \
+                    or payload.get("reject_class") != "incapable":
+                continue
+            origin_tsf = states.get(origin_id)
+            if origin_tsf is None:
+                continue
+            for att in reversed(origin_tsf.attempts):
+                if att.role is Role.IMPLEMENTER:
+                    out[task_id] = frozenset((att.route.route_id,))
+                    break
         return out
 
     def _gate_diagnosis_state(

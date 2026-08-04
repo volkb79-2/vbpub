@@ -758,6 +758,75 @@ def healthy_routes(candidates: list[RouteDef], provider_ok: dict[str, bool]) -> 
     return [r for r in candidates if provider_ok.get(r.route_id, False)]
 
 
+def undeclined_routes(candidates: list[RouteDef], declined: frozenset[str]) -> list[RouteDef]:
+    """The subset of ``candidates`` whose route id is not in ``declined``, in
+    the same order.
+
+    CR-09a: a route can be listed in more than one tier (e.g.
+    ``codex-terra-med`` appears in both ``implement-1`` and ``implement-2``
+    in the live ``routes.host.toml``), so bumping a task's tier after a
+    ``reject_class == "incapable"`` verdict does not, by itself, guarantee
+    the SAME route is never reselected -- the higher tier can still contain
+    it. This is the one place that exclusion is applied, called from both
+    ``reconcile._check_healthy_route``/``fresh_start_eligible`` (eligibility)
+    and the two "first healthy route" selection loops in
+    ``rules_dispatch.py``/``rules_attempts.py`` (selection), so the two
+    stay in sync -- a task judged eligible because SOME healthy route exists
+    can never then find its selection loop empty because that route turned
+    out to be the declined one.
+
+    Deliberately a plain function over a candidate list and a route-id set,
+    not a ``Routes`` method or a parameter added to ``healthy_routes`` --
+    same reasoning as ``healthy_routes`` itself (config.py imports neither
+    ``reconcile.py`` nor ``planning.py``, so both sides of the D-L5 purity
+    boundary can import it without a cycle). Zero I/O, zero clock, zero
+    logging.
+    """
+    if not declined:
+        return candidates
+    return [r for r in candidates if r.route_id not in declined]
+
+
+_IMPLEMENT_TIER_RE = re.compile(r"^implement-(\d+)$")
+
+
+def next_implement_tier(routes: Routes, origin_tier: str) -> str | None:
+    """The next-higher-numbered ``implement-<N>`` tier actually declared in
+    ``routes.tiers``, or ``None`` if ``origin_tier`` is not a plain numbered
+    implement tier, is already the highest one declared, or no higher one is
+    configured.
+
+    CR-09a: replaces the carver-LLM's free judgment of "a stronger tier"
+    (D-R3's original incapable-rescope prompt) with a mechanical computation
+    over the LIVE routes config, so the target tier is never a hallucinated
+    or nonexistent name -- ``implement-3`` does not exist in the deployed
+    ``routes.host.toml`` today (confirmed at CR-09 scoping time), so a naive
+    ``int(tier.rsplit("-",1)[1]) + 1`` string-build could target a tier that
+    is not there; this instead only ever returns a name found in
+    ``routes.tiers``.
+
+    Matches by the numeric suffix, not TOML declaration order, so an
+    ``implement-1-free`` (opt-in free-endpoint tier, orthogonal to the
+    severity ladder, not a "higher band") sitting between ``implement-1``
+    and ``implement-2`` in the file never gets mistaken for "the next tier
+    after implement-1" -- ``_IMPLEMENT_TIER_RE`` only matches a bare integer
+    suffix.
+    """
+    match = _IMPLEMENT_TIER_RE.match(origin_tier)
+    if match is None:
+        return None
+    origin_band = int(match.group(1))
+    numbered: dict[int, str] = {}
+    for tier in routes.tiers:
+        m = _IMPLEMENT_TIER_RE.match(tier)
+        if m:
+            numbered[int(m.group(1))] = tier
+    higher = sorted(band for band in numbered if band > origin_band)
+    if not higher:
+        return None
+    return numbered[higher[0]]
+
+
 class RouteExclusionReason(enum.Enum):
     """Why a candidate route was excluded from a `select_route` result.
 

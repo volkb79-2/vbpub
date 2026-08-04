@@ -46,7 +46,7 @@ shared sort, not a second copy of it.
 
 from __future__ import annotations
 
-from .config import healthy_routes
+from .config import healthy_routes, undeclined_routes
 from .planning import PlanContext, RuleEmitter
 from .reconcile import (
     DispatchImplementer, EmitAttemptExit, InterruptAttempt, MarkInterrupted,
@@ -319,6 +319,12 @@ def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
                             # "first healthy route" selection (item 3 above).
                             healthy = healthy_routes(
                                 inp.routes.for_tier(fm_for_task.tier), inp.provider_ok)
+                            # CR-09a: same exclusion as the lifecycle
+                            # dispatch loop (item 3 above) -- never
+                            # reselect a route already declared incapable
+                            # of this task's origin.
+                            healthy = undeclined_routes(
+                                healthy, inp.declined_routes.get(task_id, frozenset()))
                             if healthy:
                                 emit(DispatchImplementer(
                                     task_id=task_id, route_id=healthy[0].route_id))

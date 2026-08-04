@@ -616,6 +616,118 @@ class TestHealthyRoutes:
         assert healthy_routes([], {"anything": True}) == []
 
 
+class TestUndeclinedRoutes:
+    """CR-09a: the one place a task's already-declared-incapable route is
+    excluded, applied identically at both eligibility
+    (reconcile._check_healthy_route) and selection (rules_dispatch.py's/
+    rules_attempts.py's "first healthy route" loops)."""
+
+    def test_filters_out_declined_route_preserving_order(self):
+        from nyxloom.config import RouteDef, undeclined_routes
+
+        a = RouteDef(route_id="a", cli="claude", model="haiku")
+        b = RouteDef(route_id="b", cli="claude", model="sonnet")
+        c = RouteDef(route_id="c", cli="claude", model="opus")
+
+        assert undeclined_routes([a, b, c], frozenset({"b"})) == [a, c]
+
+    def test_empty_declined_set_returns_candidates_unchanged(self):
+        """The common case -- no CR-09a history for this task -- must be a
+        true no-op, not merely an equal-valued new list, so callers with no
+        declined-route entry pay nothing extra."""
+        from nyxloom.config import RouteDef, undeclined_routes
+
+        candidates = [RouteDef(route_id="a", cli="claude", model="haiku")]
+        assert undeclined_routes(candidates, frozenset()) is candidates
+
+    def test_declining_every_candidate_returns_empty_not_none(self):
+        from nyxloom.config import RouteDef, undeclined_routes
+
+        a = RouteDef(route_id="a", cli="claude", model="haiku")
+        assert undeclined_routes([a], frozenset({"a"})) == []
+
+    def test_a_declined_route_id_absent_from_candidates_is_a_no_op(self):
+        from nyxloom.config import RouteDef, undeclined_routes
+
+        a = RouteDef(route_id="a", cli="claude", model="haiku")
+        assert undeclined_routes([a], frozenset({"nonexistent-route"})) == [a]
+
+
+class TestNextImplementTier:
+    """CR-09a: replaces the carver-LLM's free judgment of "a stronger tier"
+    with a mechanical computation over the LIVE routes config, so the
+    target tier is never a hallucinated/nonexistent name."""
+
+    def _routes(self, tiers: dict[str, list[str]]):
+        from nyxloom.config import Routes
+
+        return Routes(revision="test", tiers=tiers, routes={})
+
+    def test_picks_the_next_numbered_tier(self):
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({"implement-1": [], "implement-2": []})
+        assert next_implement_tier(routes, "implement-1") == "implement-2"
+
+    def test_skips_a_gap_to_the_next_declared_number(self):
+        """The mapping is over WHAT'S ACTUALLY DECLARED, not origin+1 --
+        origin=implement-1 with only implement-1 and implement-4 configured
+        must land on implement-4, never fabricate implement-2/3."""
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({"implement-1": [], "implement-4": []})
+        assert next_implement_tier(routes, "implement-1") == "implement-4"
+
+    def test_none_when_already_the_highest_declared_tier(self):
+        """The real, deployed case today: implement-2 is the highest live
+        tier (implement-3 does not exist in routes.host.toml) -- must
+        degrade to None, never invent 'implement-3'."""
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({"implement-1": [], "implement-2": []})
+        assert next_implement_tier(routes, "implement-2") is None
+
+    def test_none_when_origin_tier_is_not_declared_at_all(self):
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({"implement-1": [], "implement-2": []})
+        assert next_implement_tier(routes, "implement-9") is None
+
+    def test_none_when_origin_tier_is_not_a_plain_numbered_implement_tier(self):
+        """A legacy/non-numbered tier name (e.g. 'flash-high', the pre-B16
+        naming this program's own history keeps encountering) or a review
+        tier ('review-3') must degrade to None -- never mis-parsed as band 0
+        or crash on the regex match."""
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({"implement-1": [], "implement-2": []})
+        assert next_implement_tier(routes, "flash-high") is None
+        assert next_implement_tier(routes, "review-3") is None
+
+    def test_free_tier_is_never_mistaken_for_the_next_band(self):
+        """'implement-1-free' is an opt-in tier orthogonal to the severity
+        ladder, not 'the tier after implement-1' -- even though it may sit
+        between implement-1 and implement-2 in TOML declaration order (the
+        live routes.host.toml's actual layout)."""
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({
+            "implement-1": [], "implement-2": [], "implement-1-free": [],
+            "review-3": [],
+        })
+        assert next_implement_tier(routes, "implement-1") == "implement-2"
+
+    def test_matches_by_number_not_by_toml_declaration_order(self):
+        """implement-2 declared BEFORE implement-1 in the dict (TOML order is
+        not semantic here) still yields implement-2 as the tier after
+        implement-1 -- the regex-extracted integer is the ordering key, not
+        dict iteration order."""
+        from nyxloom.config import next_implement_tier
+
+        routes = self._routes({"implement-2": [], "implement-1": []})
+        assert next_implement_tier(routes, "implement-1") == "implement-2"
+
+
 class TestSelectRoute:
     """CR-08 Slice 3a: the explanation-object wrapper around
     `healthy_routes(...)[0]` -- winner, runners-up, filtered reasons,
