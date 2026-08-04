@@ -644,8 +644,15 @@ historical plan; open that document only if this is actually being built.
 
 ## Gate debt to retire along the way
 
-- Raise `[gates.coverage]`'s floor as the suite matures. It is 75 today
-  against a measured 78.0%; it is a floor, not a target (D-007).
+- **FIRST: the coverage gate silently skipped a whole package's new code**
+  (P14, 2026-08-04). Proven by a differential base test; see `backlog.md`.
+  Until that is diagnosed, a covergate percentage is a lower bound on what
+  was *examined*, not a statement about the change — and raising the floor
+  below would harden a number that is measuring less than it claims.
+- Raise `[gates.coverage]`'s floor as the suite matures — **after** the item
+  above, not before. It is 75 today; P10 measured 98.4% and P08b 75.9%. It is
+  a floor, not a target (D-007), and the operator's standing bar for new code
+  is 100% line and branch.
 - Add a canary per new oracle. A gate that has never been seen to fail for
   the right reason is not known to test anything.
 - **D-008**: durability (as distinct from ordering) is unobservable in the

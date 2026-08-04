@@ -17,6 +17,30 @@ tree already has is worse than an empty one.
 
 ---
 
+- **The coverage gate silently did not measure P14's new code** (found
+  2026-08-04 during the P10+P14 merge — **the highest-value item here**).
+  On merged `main`, `tools/gate.sh coverage` reports `254/258 (98.4%)` —
+  which is P10's standalone figure, unchanged. A differential test settles
+  it: measuring from `10b174a5` (before both merges) and from `83c2ff79`
+  (after P14's merge, so P10 only) returns the **identical** 254/258. P14's
+  ~1,500 new non-test lines — `internal/power/*`, `internal/opctl/update.go`,
+  `internal/publish/sizing.go` — contribute nothing to either numerator or
+  denominator.
+  Not a diff problem: `git diff --relative --unified=0 10b174a5 HEAD --
+  internal` run by hand DOES list P14's files, and `merge-base` resolves
+  correctly. So the loss is downstream, in the intersection with the cover
+  profile — a changed line absent from the profile is counted as neither
+  covered nor uncovered, it simply disappears, and the percentage stays
+  reassuring. That is exactly the **vacuous pass** D-007 was written to
+  prevent, returning by a different route: D-007 guarded against a `.py`
+  filter skipping every `.go` file and passing at 0/0; this passes at 254/258
+  while ignoring a whole package.
+  First thing to check: whether `internal/power` appears in
+  `/tmp/srdm-cover.out` at all after `go test ./... -coverpkg=./...`, and
+  whether `HasExecutableCode` or `stripModulePrefix` drops it. Until it is
+  understood, **treat any covergate percentage as a lower bound on what was
+  examined, not a statement about the whole change** — and P14's real
+  changed-line coverage is currently UNKNOWN, not 98.4%.
 - **Measure the parked hold worker's own footprint** (P04). The worker is
   charged to the class cgroup alongside the content it holds, so its
   resident size comes straight off the class floor.
