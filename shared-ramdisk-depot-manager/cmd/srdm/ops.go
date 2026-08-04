@@ -115,12 +115,17 @@ func newOpEnv(cfg config.Config, profilePath string, needProfile bool) (*opEnv, 
 		jnl.Close()
 		return nil, err
 	}
-	drv, err := expose.NewHostBind(cfg.Wings, jnl, expose.WithMarker(pub))
+	drv, err := expose.NewHostBind(cfg.Wings, jnl, expose.WithStateDir(cfg.StateDir))
 	if err != nil {
 		jnl.Close()
 		return nil, err
 	}
-	hrv, err := harvest.New(cfg, jnl, st)
+	// drv also satisfies harvest.Exposer: RWServers + Plan, so `srdm harvest`
+	// discovers a sole rw holder and reads its overlay merged view without
+	// an operator having to say --from-server (D-029). Choosing among
+	// several still needs the CLI flag P10 did not carve time to add — see
+	// the LOG's Gaps.
+	hrv, err := harvest.New(cfg, jnl, st, harvest.WithExposer(drv))
 	if err != nil {
 		jnl.Close()
 		return nil, err

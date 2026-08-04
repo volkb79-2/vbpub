@@ -57,6 +57,7 @@ type node struct {
 	jnl     *journal.Journal
 	prof    *profile.Profile
 	rel     *store.Release
+	st      *store.Store
 	pub     *publish.Publisher
 	rec     *publish.Record
 	volume  string
@@ -82,11 +83,12 @@ func newNode(t *testing.T) *node {
 	cfg := config.Default()
 	cfg.StateDir = filepath.Join(dir, "state")
 	cfg.RunDir = filepath.Join(dir, "run")
-	// An rw exposure unseals the class trees and hands them to a declared
-	// owner (D-022); without one it is refused. 65534 is an unprivileged
-	// stand-in for the uid Wings runs its servers as — root writes through it
-	// here regardless, which is all these oracles need. That an UNPRIVILEGED
-	// writer can too is harvest's measurement, in internal/harvest.
+	// WriteOwner is vestigial as of P10 (D-029): an overlay rw exposure
+	// writes to a directory srdm itself creates and owns, permissively, so
+	// nothing reads this anymore. Left set anyway, matching a real node's
+	// config that has not been cleaned up — it must be harmless, not just
+	// unused. That an UNPRIVILEGED writer can actually write through the
+	// overlay is harvest's measurement, in internal/harvest.
 	owner := config.WriteOwner{UID: 65534, GID: 65534}
 	cfg.Wings = config.Wings{
 		BindRoot:   filepath.Join(dir, "pterodactyl"),
@@ -175,6 +177,7 @@ func (n *node) stage(t *testing.T) *store.Release {
 	if err != nil {
 		t.Fatal(err)
 	}
+	n.st = st
 	tx, err := st.Begin("op-stage")
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +220,7 @@ func (n *node) driver(t *testing.T, opts ...Option) *HostBind {
 	cfg := n.cfg.Wings
 	cfg.ChownSkipPatch = true // the node asserts F1; precondition 2 is unit-tested
 	base := []Option{
-		WithMarker(n.pub),
+		WithStateDir(n.cfg.StateDir),
 		WithInspector(fakeE2EInspector{}),
 	}
 	d, err := NewHostBind(cfg, n.jnl, append(base, opts...)...)
@@ -414,6 +417,14 @@ func TestExposeRefusesWhenTheHostSideIsPrivate(t *testing.T) {
 // ephemeral, and republishing is how a written-through one is repaired —
 // which is only true if the republished content really does come from the
 // store.
+//
+// P10 (D-029) changes WHY this holds without changing what it claims: the
+// write lands in a per-server overlay upper rather than in place, so
+// nothing marks the generation dirty-capable anymore — that flag is
+// vestigial for an overlay exposure, because the lower is never written and
+// so nothing about it needs the warning. Unexpose discards the upper once
+// the mount over it is gone, which is what actually makes the write not
+// survive; teardown and republish are what make the FRESH generation clean.
 func TestAWriteThroughAnRWExposureDoesNotSurviveRepublish(t *testing.T) {
 	n := newNode(t)
 	rec := n.publishGeneration(t, "op-1")
@@ -423,7 +434,7 @@ func TestAWriteThroughAnRWExposureDoesNotSurviveRepublish(t *testing.T) {
 		t.Fatalf("Expose rw: %v", err)
 	}
 
-	// Write through it, into the generation's own tmpfs.
+	// Write through it, into the per-server overlay upper.
 	written := filepath.Join(n.volume, "WS/Content/Paks", "written-through.pak")
 	if err := os.WriteFile(written, []byte("a write nobody promoted"), 0o644); err != nil {
 		t.Fatalf("writing through the rw exposure: %v", err)
@@ -432,14 +443,15 @@ func TestAWriteThroughAnRWExposureDoesNotSurviveRepublish(t *testing.T) {
 		t.Fatalf("the write did not land, so this test proves nothing: %v", err)
 	}
 
-	// The generation is now marked as having been writable, durably.
-	marked, err := n.pub.LoadRecord("testgame", rec.Generation)
+	// The generation is NOT marked dirty-capable: an overlay's lower is
+	// never written, so there is nothing for that flag to warn about.
+	live, err := n.pub.LoadRecord("testgame", rec.Generation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !marked.DirtyCapable {
-		t.Error("an rw exposure did not mark the generation dirty-capable, so nothing " +
-			"downstream would know it had been written through")
+	if live.DirtyCapable {
+		t.Error("an overlay rw exposure marked the generation dirty-capable; D-029 retires " +
+			"that for overlay exposures, since the lower is never written")
 	}
 
 	// Republish: unexpose, tear down, publish again from the store.
@@ -469,6 +481,134 @@ func TestAWriteThroughAnRWExposureDoesNotSurviveRepublish(t *testing.T) {
 	}
 }
 
+// --- oracle 25: the overlay leaves the release untouched -------------------
+
+// D-027/D-029's whole point: with the sealed generation as lowerdir, a write
+// through the merged view lands in the per-server upper and never touches
+// it. Checked directly against the class trees' own content at ExposePath —
+// the same bytes a `ro` exposure or a second `rw` consumer would read — not
+// through the exposure that was just written to, which is the side
+// EXPECTED to show the write.
+func TestAGenerationExposedRWThroughAnOverlayStaysByteIdenticalToItsRelease(t *testing.T) {
+	n := newNode(t)
+	rec := n.publishGeneration(t, "op-1")
+	d := n.driver(t)
+
+	if err := d.Expose(context.Background(), rec, n.prof, request(AccessRW)); err != nil {
+		t.Fatalf("Expose rw: %v", err)
+	}
+
+	target := filepath.Join(n.volume, "WS/Content/Paks", "game.pak")
+	if err := os.WriteFile(target, []byte("an update, through the overlay"), 0o644); err != nil {
+		t.Fatalf("writing through the rw exposure: %v", err)
+	}
+	// The write landed — otherwise the rest of this proves nothing.
+	if body, err := os.ReadFile(target); err != nil || string(body) != "an update, through the overlay" {
+		t.Fatalf("the write did not land through the merged view: %q, %v", body, err)
+	}
+
+	// The generation's own tree — the overlay's lowerdir — is untouched:
+	// every class's content, read directly at ExposePath, still matches
+	// what was published, for every path the write itself did not touch AND
+	// for the one it did.
+	for rel, want := range content {
+		if strings.HasPrefix(rel, "WS/Saved") {
+			continue // per-instance state, never published at all
+		}
+		if got := n.exposedBytes(t, rec, rel); string(got) != want {
+			t.Errorf("the generation's own %s changed after a write through the overlay: "+
+				"%q, want %q", rel, got, want)
+		}
+	}
+
+	// And the store's release, which the generation was populated from, was
+	// never touched either — nothing about this exposure ever had a path
+	// back to it.
+	if err := n.st.Verify(n.rel.ID); err != nil {
+		t.Errorf("release %s no longer verifies after a write through an rw exposure of the "+
+			"generation it populated: %v", n.rel.ID, err)
+	}
+}
+
+// exposedBytes reads rel directly off the class tree it classifies into, at
+// ExposePath — the sealed, published side every access mode reads from
+// (D-029) — bypassing whatever is currently exposed to a server.
+func (n *node) exposedBytes(t *testing.T, rec *publish.Record, rel string) []byte {
+	t.Helper()
+	class, err := n.prof.Classify(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rec.Classes {
+		if c.Name != class.Name {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(c.ExposePath, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	t.Fatalf("generation %s records no class %q", rec.Generation, class.Name)
+	return nil
+}
+
+// --- oracle 26: two servers may hold rw on the same generation -----------
+
+// D-029 retires the single-consumer rule host-bind shipped with P06: an
+// overlay's writes land in a per-server upper, so a second rw consumer no
+// longer shares anything with the first to collide over. Both directions of
+// the old failure mode are asserted here — neither is refused, and each
+// sees only its own writes, never the other's.
+func TestTwoServersMayHoldRWOnTheSameGenerationEachSeeingOnlyItsOwnWrites(t *testing.T) {
+	n := newNode(t)
+	rec := n.publishGeneration(t, "op-1")
+	d := n.driver(t)
+
+	const secondServer = "8f1c2e3d-0000-4000-8000-abcdefabcd02"
+	reqA := request(AccessRW)
+	reqB := Request{ServerID: secondServer, Access: AccessRW, OperationID: "op-expose-b"}
+
+	if err := d.Expose(context.Background(), rec, n.prof, reqA); err != nil {
+		t.Fatalf("Expose rw for server A: %v", err)
+	}
+	// Refused under P06; must succeed under P10.
+	if err := d.Expose(context.Background(), rec, n.prof, reqB); err != nil {
+		t.Fatalf("Expose rw for server B, while A already held rw: %v", err)
+	}
+
+	volumeB := n.cfg.Wings.ServerVolume(secondServer)
+	targetA := filepath.Join(n.volume, "WS/Content/Paks", "game.pak")
+	targetB := filepath.Join(volumeB, "WS/Content/Paks", "game.pak")
+
+	if err := os.WriteFile(targetA, []byte("server A's update"), 0o644); err != nil {
+		t.Fatalf("writing through server A's exposure: %v", err)
+	}
+	if err := os.WriteFile(targetB, []byte("server B's update"), 0o644); err != nil {
+		t.Fatalf("writing through server B's exposure: %v", err)
+	}
+
+	bodyA, err := os.ReadFile(targetA)
+	if err != nil || string(bodyA) != "server A's update" {
+		t.Errorf("server A no longer sees its own write: %q, %v", bodyA, err)
+	}
+	bodyB, err := os.ReadFile(targetB)
+	if err != nil || string(bodyB) != "server B's update" {
+		t.Errorf("server B no longer sees its own write: %q, %v", bodyB, err)
+	}
+	if string(bodyA) == string(bodyB) {
+		t.Fatalf("both servers read %q — this test's premise is broken", bodyA)
+	}
+
+	// And unexposing one never touches the other's.
+	if err := d.Unexpose(context.Background(), rec, n.prof, reqA); err != nil {
+		t.Fatalf("Unexpose A: %v", err)
+	}
+	if body, err := os.ReadFile(targetB); err != nil || string(body) != "server B's update" {
+		t.Errorf("unexposing server A disturbed server B's write: %q, %v", body, err)
+	}
+}
+
 // --- the driver against a real Wings config -------------------------------
 
 // The one key srdm reads out of the node config, read from a real file
@@ -484,7 +624,7 @@ func TestTheChownWalkIsReadFromTheRealNodeConfig(t *testing.T) {
 	}
 	// No F1 asserted, so the walk decides.
 	cfg := n.cfg.Wings
-	d, err := NewHostBind(cfg, n.jnl, WithMarker(n.pub), WithInspector(fakeE2EInspector{}))
+	d, err := NewHostBind(cfg, n.jnl, WithStateDir(n.cfg.StateDir), WithInspector(fakeE2EInspector{}))
 	if err != nil {
 		t.Fatal(err)
 	}

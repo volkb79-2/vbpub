@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"srdm/internal/config"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
 )
@@ -19,12 +20,14 @@ const (
 	// AccessRO is the default and the safe mode: writes fail EROFS
 	// immediately rather than corrupting a generation half-way.
 	AccessRO Access = "ro"
-	// AccessRW permits writing through to the generation's tmpfs, and is
-	// allowed only with exactly one consumer. With two, a write is the
-	// 2026-07-29 incident by construction: the peer holds the deleted old
-	// .pak open, the tmpfs exhausts mid-write, and the generation ends with
-	// a new .sig and no .pak — survivable for the process that already
-	// mmap'd the old inode, fatal for the next start.
+	// AccessRW permits writing through to the generation, via a per-server
+	// overlay upper layer (D-027, D-029): the sealed generation is the
+	// lowerdir, so it is never itself written, and any number of servers may
+	// hold rw at once — each sees only its own writes, in its own upper.
+	// This retires the 2026-07-29 corruption at the root rather than by
+	// refusing a second consumer: there is no longer a second writer of the
+	// SAME pages to collide with, because there is only ever one writer per
+	// upper.
 	AccessRW Access = "rw"
 )
 
@@ -49,12 +52,23 @@ type Binding struct {
 	// managed content appears at exactly the declared class paths and
 	// nowhere else.
 	Path string
-	// Source is inside the published generation.
+	// Source is inside the published generation — the sealed, read-only
+	// exposure. Both access modes read from here now (D-029): the ro binding
+	// binds it directly, and the rw binding overlays it as the lowerdir.
+	// Neither is ever the thing that changes.
 	Source string
 	// Target is inside the server's volume.
 	Target string
 	// ReadOnly is the per-mount flag, which is what actually produces EROFS.
+	// True for a plain bind of Source; false for an overlay, whether or not
+	// Upper is set — overlays are never additionally made read-only.
 	ReadOnly bool
+	// Upper and Work are set only for an rw binding: the per-server,
+	// per-generation writable overlay layer and overlayfs's own scratch
+	// directory (D-029). Empty means this binding is a plain read-only bind
+	// of Source.
+	Upper string
+	Work  string
 }
 
 // Driver exposes a published generation to one consumer.
@@ -107,12 +121,7 @@ const (
 	PreconditionPropagation = "propagation"
 	PreconditionChownWalk   = "chown-walk"
 	PreconditionConsumers   = "consumers-stopped"
-	PreconditionSingleWrite = "rw-single-consumer"
 	PreconditionDirty       = "generation-dirty"
-	// PreconditionWriteOwner is `access: rw` having somebody to hand the
-	// unsealed tree to. Without it the mount permits writes that the modes
-	// still refuse to everyone but root.
-	PreconditionWriteOwner = "rw-write-owner"
 	// PreconditionBoundedWaiver is the invariant-14 waiver staying inside
 	// its declared bounds: managed content at exactly the declared class
 	// paths, and per-instance state neither bound nor shadowed.
@@ -127,7 +136,12 @@ const (
 // place in the volume. Binding the class root instead would put content
 // somewhere the game does not look, and would shadow everything else under
 // that ancestor.
-func plan(rec *publish.Record, prof *profile.Profile, req Request, volume string) ([]Binding, error) {
+//
+// Both access modes read from the same Source now (D-029): the sealed,
+// published exposure. ro binds it directly; rw overlays it as the lowerdir,
+// with a per-server upper layer under stateDir absorbing every write. The
+// generation itself is never the thing that changes, in either mode.
+func plan(rec *publish.Record, prof *profile.Profile, req Request, volume, stateDir string) ([]Binding, error) {
 	if req.ServerID == "" {
 		return nil, errors.New("expose: a request needs a server id")
 	}
@@ -144,6 +158,7 @@ func plan(rec *publish.Record, prof *profile.Profile, req Request, volume string
 	for _, c := range rec.Classes {
 		managed[c.Name] = c
 	}
+	overlayRoot := config.Config{StateDir: stateDir}
 
 	var out []Binding
 	for _, class := range prof.Classes {
@@ -161,13 +176,20 @@ func plan(rec *publish.Record, prof *profile.Profile, req Request, volume string
 		}
 		for _, p := range class.Paths {
 			clean := path.Clean(strings.TrimPrefix(p, "/"))
-			out = append(out, Binding{
+			b := Binding{
 				Class:    class.Name,
 				Path:     clean,
-				Source:   path.Join(sourceBase(cr, access), clean),
+				Source:   path.Join(cr.ExposePath, clean),
 				Target:   path.Join(volume, clean),
 				ReadOnly: access == AccessRO,
-			})
+			}
+			if access == AccessRW {
+				b.Upper = overlayRoot.OverlayUpperDir(rec.Profile, rec.Generation, class.Name,
+					clean, req.ServerID)
+				b.Work = overlayRoot.OverlayWorkDir(rec.Profile, rec.Generation, class.Name,
+					clean, req.ServerID)
+			}
+			out = append(out, b)
 		}
 	}
 	if len(out) == 0 {
@@ -177,53 +199,6 @@ func plan(rec *publish.Record, prof *profile.Profile, req Request, volume string
 	// inside — mounting the other way round hides it.
 	sort.Slice(out, func(i, j int) bool { return out[i].Target < out[j].Target })
 	return out, nil
-}
-
-// sourceBase is the side of the generation an exposure binds.
-//
-// The two access modes bind DIFFERENT mount points of the same superblock,
-// and that is forced rather than chosen. Publication's exposure is a
-// read-only bind, and a bind inherits its source's per-mount flags — so
-// binding it and then remounting rw would either fail or, worse, quietly
-// hand back something still read-only. Measured: an rw exposure built on the
-// published path gives EROFS on the first write.
-//
-// So rw binds the operation tmpfs's own content root, which is the writable
-// mount of the same pages. Nothing else changes: it is the same superblock,
-// the same hold unit, the same charge.
-//
-// The content's MODES are still sealed a-w by publication, so who may
-// actually write through an rw exposure is a separate question from whether
-// the mount permits it — see D-020. Root can; a game container running as an
-// unprivileged uid cannot until that is decided.
-func sourceBase(cr publish.ClassRecord, access Access) string {
-	if access == AccessRW {
-		return cr.ContentRoot()
-	}
-	return cr.ExposePath
-}
-
-// writableRoots is the set of class content roots an rw exposure has to
-// unseal: one per class the bindings touch, deduplicated and ordered.
-//
-// The whole class root, not the bound subpaths. A class tree is one unit —
-// it was populated, verified and sealed as one — and the game's updater
-// rewrites paths within it that no binding names individually. Nothing else
-// can reach the tree either way: it lives under the operation-private root,
-// which is 0700 and mounted MS_PRIVATE (D-019).
-func writableRoots(rec *publish.Record, bindings []Binding) []string {
-	touched := make(map[string]bool, len(bindings))
-	for _, b := range bindings {
-		touched[b.Class] = true
-	}
-	var out []string
-	for _, c := range rec.Classes {
-		if touched[c.Name] {
-			out = append(out, sourceBase(c, AccessRW))
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // excludedPaths is every path the profile says is per-instance state.

@@ -341,26 +341,12 @@ canary "P06-chownwalk-fails-open" "TestEverythingAmbiguousFailsClosed" \
   's#return ChownWalk{Enabled: true, Source: path}, fmt.Errorf(#return ChownWalk{Enabled: false, Known: true, Source: path}, fmt.Errorf(#' \
   "an unreadable node config is read as the chown walk being off"
 
-# Let a second consumer onto an rw generation. With two, a write is the
-# 2026-07-29 corruption by construction.
-canary "P06-rw-multi-consumer" "TestExposeRWIsRefusedWhenAnotherConsumerHolds" \
-  "internal/expose/hostbind.go" \
-  's#^\tif access == AccessRW \&\& rep.Held() {$#\tif false {#' \
-  "a second consumer joins a writable generation"
-
 # Share a generation somebody has already written through, so the newcomer
 # reads content nobody verified.
 canary "P06-dirty-shared" "TestASharedGenerationIsRefusedOnceItIsDirty" \
   "internal/expose/hostbind.go" \
   's#^\tif rec.DirtyCapable \&\& rep.Held() {$#\tif false {#' \
   "a written-through generation is shared with a second consumer"
-
-# Never record that a generation was exposed writable, so nothing downstream
-# knows its content no longer matches the release.
-canary "P06-never-marks-dirty" "TestExposeRWMarksTheGenerationBeforeMountingIt" \
-  "internal/expose/hostbind.go" \
-  's#if err := h.marker.MarkDirtyCapable(req.OperationID, rec.Profile, rec.Generation); err != nil {#if err := error(nil); err != nil {#' \
-  "an rw exposure leaves the generation unmarked"
 
 # Bind a class path that covers per-instance state. The mount HIDES what is
 # beneath it, so the saves are not overwritten — they become invisible, and
@@ -379,37 +365,22 @@ canary "P06-exposure-writable" "TestExposeReadOnlyMakesEachBindReadOnly" \
   's#syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY#syscall.MS_BIND|syscall.MS_REMOUNT#' \
   "a read-only exposure is left writable"
 
-# Bind the published read-only path for an rw exposure. A bind inherits its
-# source's flags, so the result is read-only whatever was asked for —
-# measured, and the reason the two modes bind different mount points.
-canary "P06-rw-binds-the-ro-side" "TestExposeReadWriteLeavesTheBindsWritable|TestReadOnlyBindsThePublishedExposure" \
-  "internal/expose/expose.go" \
-  's#^\t\treturn cr.ContentRoot()$#\t\treturn cr.ExposePath#' \
-  "an rw exposure binds the read-only side and is silently read-only"
-
-# --- P07: harvest, and the rw ownership model -----------------------------
-
-# Expose rw and stop at the MOUNT. Publication seals a class tree a-w, so the
-# result permits writes that the modes still refuse to every uid but root —
-# and the one writer rw exists for, the game's own updater, is not root. The
-# update reports success and changes nothing.
-canary "P07-rw-never-unsealed" "TestExposeRWUnsealsEachClassTree" \
+# Skip the overlay mount for rw and fall through to a plain bind of the
+# sealed, published exposure. A bind inherits its source's flags, so the
+# result is silently read-only whatever was asked for (D-029; the pre-P10
+# version of this canary caught the equivalent failure in sourceBase, which
+# this replaces).
+canary "P10-rw-skips-overlay" "TestExposeReadWriteMountsAnOverlayOfTheSealedExposure" \
   "internal/expose/hostbind.go" \
-  's#\t\tif err := hold.Unseal(root, h.chown, owner.UID, owner.GID); err != nil {#\t\tif err := error(nil); err != nil {#' \
-  "an rw exposure leaves the content sealed against the only writer it has"
+  's#^\t\tif b\.Upper != "" {$#\t\tif false {#' \
+  "an rw exposure falls through to a plain (silently read-only) bind"
 
-# Hand the unsealed tree to nobody. srdm does not guess the uid: a tree
-# unsealed to root is one an unprivileged updater still cannot create a file
-# in, and that failure arrives as an update that did nothing.
-canary "P07-rw-owner-optional" "TestExposeRWIsRefusedWhenNoWriteOwnerIsDeclared" \
-  "internal/expose/hostbind.go" \
-  's#^\tif access == AccessRW \&\& h.cfg.WriteOwner == nil {$#\tif false {#' \
-  "rw is exposed with no owner to hand the tree to"
+# --- P07: harvest, and the copy/seal mode discipline -----------------------
 
-# Unseal to the world. Exactly one consumer may write to a generation, so
-# group and other write hand it to processes the single-consumer rule just
-# refused.
-canary "P07-unseal-world-writable" "TestUnsealRestoresOwnerWrite|TestExposeRWUnsealsEachClassTree" \
+# Unseal to the world. Only internal/hold's own oracle exercises this now
+# (P10 retires expose's in-place unseal call, D-029), but the mechanism
+# itself is unchanged and still load-bearing wherever hold.Unseal is used.
+canary "P07-unseal-world-writable" "TestUnsealRestoresOwnerWriteAndHandsTheTreeOver" \
   "internal/hold/worker.go" \
   's#info.Mode().Perm()|0o200|keep#info.Mode().Perm()|0o222|keep#' \
   "unsealing gives group and other write"
@@ -617,6 +588,43 @@ canary "P08b-clear-ignores-holders" "TestClearForRepublishRefusesWhileHeld" \
   "internal/publish/teardown.go" \
   's#^\tif err := p.refuseIfHeld(ctx, opID, KindReconcile, rec); err != nil {$#\tif err := error(nil); err != nil {#' \
   "a generation is cleared for republish while a consumer still holds it"
+
+# --- P10: access: rw via an overlay upper layer (D-027/D-028/D-029) --------
+
+# Overlay the writable layer as the LOWER and the sealed release as the
+# UPPER — swapped from what mountOverlay actually builds. Oracle 25's whole
+# claim (the release stays byte-identical) is false the instant lowerdir is
+# not the sealed exposure specifically.
+canary "P10-O25-lowerdir-swapped" "TestExposeReadWriteMountsAnOverlayOfTheSealedExposure" \
+  "internal/expose/hostbind.go" \
+  's#data := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", b.Source, b.Upper, b.Work)#data := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", b.Upper, b.Source, b.Work)#' \
+  "an rw exposure overlays the writable layer as lowerdir and the release as upperdir"
+
+# Drop the server id from an overlay's upper/work path, so two servers
+# holding rw on the same generation share one upper. Oracle 26's isolation
+# — each server sees only its own writes — depends entirely on this key.
+canary "P10-O26-shared-upper" "TestPlanGivesDifferentServersDifferentOverlayLayers" \
+  "internal/config/config.go" \
+  's#^\t\tfilepath.FromSlash(path), serverID)$#\t\tfilepath.FromSlash(path))#' \
+  "two servers holding rw on the same generation share one overlay upper layer"
+
+# Never look for an overlay holder at all. Oracle 27/D-028: an overlay
+# reports its own device and the lower's appears nowhere in its mountinfo
+# line, so without this recognizer teardown would report nothing is holding
+# a generation a game container is actively writing through.
+canary "P10-O27-overlay-recognizer-disabled" "TestAnOverlayWhoseLowerdirIsOurExposePathIsAHolder" \
+  "internal/consumer/consumer.go" \
+  's#^\tif e.FSType != "overlay" {$#\tif true {#' \
+  "the overlay holder recognizer never matches anything"
+
+# Ignore --from-server (and the auto-detected sole holder) and always read
+# the generation's own tmpfs. Oracle 28: with a server's writes sitting in
+# its own overlay upper, this would silently harvest a release that never
+# saw the update at all, rather than refusing or reading the merged view.
+canary "P10-O28-from-server-ignored" "TestHarvestDefaultsFromServerWhenExactlyOneServerHoldsRW" \
+  "internal/harvest/harvest.go" \
+  's#^\tif fromServer == "" {$#\tif true {#' \
+  "harvest reads the generation's own tmpfs even when a server holds rw"
 
 rm -rf "$WORK"
 

@@ -323,7 +323,7 @@ func (n *node) driver(t *testing.T) *expose.HostBind {
 	cfg := n.cfg.Wings
 	cfg.ChownSkipPatch = true // the node asserts F1; precondition 2 is unit-tested
 	d, err := expose.NewHostBind(cfg, n.jnl,
-		expose.WithMarker(n.pub), expose.WithInspector(fakeInspector{}))
+		expose.WithStateDir(n.cfg.StateDir), expose.WithInspector(fakeInspector{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,6 +339,17 @@ func (fakeInspector) BindPropagation(context.Context, string) (string, string, e
 func (n *node) harvester(t *testing.T) *Harvester {
 	t.Helper()
 	h, err := New(n.cfg, n.jnl, n.st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// harvesterWithExposer wires d in, so a harvest can discover and read a
+// server's rw overlay merged view (D-029) exactly as `srdm harvest` does.
+func (n *node) harvesterWithExposer(t *testing.T, d *expose.HostBind) *Harvester {
+	t.Helper()
+	h, err := New(n.cfg, n.jnl, n.st, WithExposer(d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,16 +434,18 @@ func spawnConsumer(t *testing.T, path string) (stop func()) {
 	return stop
 }
 
-// --- D-022: who may write through an rw exposure --------------------------
+// --- D-022 / D-029: who may write through an rw exposure -------------------
 
 // The measurement P06 could not make and deferred here, because harvest is
 // the only reason to write through an exposure at all.
 //
 // P06 left rw permitting writes at the MOUNT level while publication's seal
 // still refused them at the MODE level: root could write through, and the
-// game container — which is the entire point — could not. This asserts the
-// model that closes it, from the only vantage point that can tell the
-// difference: an unprivileged uid.
+// game container — which is the entire point — could not. P10 replaces
+// in-place unsealing with a per-server overlay upper layer srdm itself
+// creates and owns, permissively (D-029) — this asserts THAT model closes
+// it, from the only vantage point that can tell the difference: an
+// unprivileged uid, with no wings.write_owner declared at all.
 func TestAnUnprivilegedWriterCanWriteThroughAnRWExposureAndNotThroughRO(t *testing.T) {
 	n := newNode(t)
 	rec := n.publishGeneration(t, "op-1", n.rel)
@@ -453,7 +466,8 @@ func TestAnUnprivilegedWriterCanWriteThroughAnRWExposureAndNotThroughRO(t *testi
 	}
 
 	// Now rw. This is the claim: not "root can write", which was already true
-	// and useless, but that the uid the game runs as can.
+	// and useless, but that the uid the game runs as can — with nothing
+	// declaring it srdm's side.
 	if err := d.Expose(context.Background(), rec, n.prof, request(expose.AccessRW)); err != nil {
 		t.Fatalf("Expose rw: %v", err)
 	}
@@ -462,15 +476,19 @@ func TestAnUnprivilegedWriterCanWriteThroughAnRWExposureAndNotThroughRO(t *testi
 			"the game's own updater keeps working unchanged; if only root can write through "+
 			"it, it buys nothing", code, describeWrite(code))
 	}
-	// It landed in the generation's own tmpfs, not on the volume's disk
-	// underneath the mount.
-	body, err := os.ReadFile(filepath.Join(rec.Classes[pakIndex(rec)].ContentRoot(),
-		"WS/Content/Paks/patch01.pak"))
+	// It landed in the per-server overlay upper — readable straight back
+	// through the same merged view — and the generation's own tree, the
+	// overlay's lowerdir, never saw it.
+	body, err := os.ReadFile(target)
 	if err != nil {
-		t.Fatalf("the write did not reach the generation's tmpfs: %v", err)
+		t.Fatalf("the write did not persist through the merged view: %v", err)
 	}
 	if !strings.Contains(string(body), "updater") {
-		t.Errorf("the tmpfs holds %q", body)
+		t.Errorf("the merged view holds %q", body)
+	}
+	if _, err := os.Stat(filepath.Join(rec.Classes[pakIndex(rec)].ExposePath,
+		"WS/Content/Paks/patch01.pak")); !os.IsNotExist(err) {
+		t.Errorf("the write reached the generation's own tree (the overlay's lowerdir): %v", err)
 	}
 }
 
@@ -479,7 +497,8 @@ func describeWrite(code int) string {
 	case writeEROFS:
 		return "EROFS — the mount refused, so rw bound the read-only side"
 	case writeEACCES:
-		return "EACCES — the modes refused, so the tree was never unsealed"
+		return "EACCES — the write landed on a directory the overlay never mirrored, or " +
+			"the mirroring itself is broken"
 	default:
 		return "an unexpected failure"
 	}
@@ -494,11 +513,21 @@ func pakIndex(rec *publish.Record) int {
 	return 0
 }
 
-// --- oracle 23: the harvest round trip ------------------------------------
+// --- oracle 23 / oracle 28: the harvest round trip --------------------------
 
-// The master plan's oracle 23, end to end: update in place through rw ->
-// harvest -> the resulting release's manifest matches a from-scratch stage of
+// The master plan's oracle 23, end to end, updated for D-029's overlay: update
+// in place through rw -> harvest reads the merged view WHILE it is still
+// exposed -> the resulting release's manifest matches a from-scratch stage of
 // the same content, byte for byte, and carries harvested-from provenance.
+//
+// The ordering is the change P10 makes to the procedure. Under in-place
+// unsealing the write landed in the generation's own tmpfs, so harvest could
+// read it any time before teardown — the comment this test used to carry said
+// "unexpose, then harvest". Under an overlay the write lives in a per-server
+// upper that Unexpose DISCARDS (D-029's own decision — see the LOG), so the
+// order is now: quiesce the WRITER (nothing here spawns a separate mount
+// namespace, so there is nothing else to stop) -> harvest while the overlay
+// is still mounted -> only THEN unexpose and tear down.
 //
 // "Byte for byte" is asserted as one string rather than by walking two trees:
 // the manifest's content digest covers every entry's type, path, mode, class
@@ -529,25 +558,30 @@ func TestHarvestRoundTripsToTheSameManifestAsAFromScratchStage(t *testing.T) {
 		t.Fatalf("the update could not replace a file: %d (%s)", code, describeWrite(code))
 	}
 
-	// Quiesce: the exposure itself is a hold, so the procedure is stop the
-	// server, unexpose, then harvest. Harvest reads the generation's own tmpfs
-	// and needs no exposure to do it.
-	if err := d.Unexpose(context.Background(), rec, n.prof, request(expose.AccessRW)); err != nil {
-		t.Fatal(err)
-	}
-
+	// Harvest while the overlay is STILL mounted: --from-server defaults to
+	// the sole holder, discovered from srdm's own mount table (D-029). The
+	// generation is not marked dirty-capable — that flag is vestigial for an
+	// overlay exposure, because the lower it would warn about was never
+	// written.
 	live, err := n.pub.LoadRecord("testgame", rec.Generation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !live.DirtyCapable {
-		t.Fatal("the generation was written through but is not marked dirty-capable")
+	if live.DirtyCapable {
+		t.Error("an overlay rw exposure marked the generation dirty-capable; D-029 retires " +
+			"that for overlay exposures")
 	}
 
-	harvested, err := n.harvester(t).Harvest(context.Background(), live, n.prof,
+	harvested, err := n.harvesterWithExposer(t, d).Harvest(context.Background(), live, n.prof,
 		Opts{ReleaseID: "rel-harvested"})
 	if err != nil {
 		t.Fatalf("Harvest: %v", err)
+	}
+
+	// NOW quiesce for real: unexpose (which discards the overlay upper this
+	// harvest already read from) and tear the generation down.
+	if err := d.Unexpose(context.Background(), rec, n.prof, request(expose.AccessRW)); err != nil {
+		t.Fatal(err)
 	}
 
 	// The same content, staged from scratch as an operator would.
@@ -593,6 +627,60 @@ func TestHarvestRoundTripsToTheSameManifestAsAFromScratchStage(t *testing.T) {
 	if err != nil || !strings.Contains(string(body), "updater") {
 		t.Errorf("the update did not survive a republish from the harvested release: %q, %v",
 			body, err)
+	}
+}
+
+// Oracle 28's whiteout half: a file DELETED through the overlay is absent
+// from the harvest, and the harvest does not silently fall back to the
+// lower's copy of a file the update replaced. Walking upper and lower
+// separately in Go could get this wrong; walking the merged mount — what
+// assemble() actually does — cannot, because the kernel already resolved it
+// before userspace ever sees a directory listing.
+func TestAWhiteoutThroughTheOverlayIsAbsentFromTheHarvest(t *testing.T) {
+	n := newNode(t)
+	rec := n.publishGeneration(t, "op-1", n.rel)
+	d := n.driver(t)
+
+	if err := d.Expose(context.Background(), rec, n.prof, request(expose.AccessRW)); err != nil {
+		t.Fatalf("Expose rw: %v", err)
+	}
+
+	// Delete a file that exists only in the lower — a real whiteout, not an
+	// absence: unlink is a directory-permission operation, which the
+	// mirrored upper grants (D-029), and the kernel writes a whiteout entry
+	// into the upper marking it gone in the merged view.
+	deleted := filepath.Join(n.volume, "WS/Binaries", "server")
+	if err := os.Remove(deleted); err != nil {
+		t.Fatalf("deleting through the overlay: %v", err)
+	}
+	if _, err := os.Stat(deleted); !os.IsNotExist(err) {
+		t.Fatalf("the delete did not take through the merged view: %v", err)
+	}
+
+	live, err := n.pub.LoadRecord("testgame", rec.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harvested, err := n.harvesterWithExposer(t, d).Harvest(context.Background(), live, n.prof,
+		Opts{ReleaseID: "rel-whiteout"})
+	if err != nil {
+		t.Fatalf("Harvest: %v", err)
+	}
+
+	for _, e := range harvested.Manifest.Entries {
+		if e.Path == "WS/Binaries/server" {
+			t.Fatalf("the harvest includes %q, which was deleted through the overlay; a "+
+				"whiteout was read as if it were a real file, or the lower's copy leaked "+
+				"through", e.Path)
+		}
+	}
+	// Everything else the update never touched is still there, unwhitened.
+	if _, err := os.ReadFile(filepath.Join(harvested.RootDir(), "Engine/libengine.so")); err != nil {
+		t.Errorf("the harvest lost content the update never touched: %v", err)
+	}
+
+	if err := d.Unexpose(context.Background(), rec, n.prof, request(expose.AccessRW)); err != nil {
+		t.Fatal(err)
 	}
 }
 

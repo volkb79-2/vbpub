@@ -96,16 +96,16 @@ type Wings struct {
 	// produces the EROFS start failure this exists to prevent, with srdm's
 	// refusal removed from in front of it.
 	ChownSkipPatch bool
-	// WriteOwner is who a class tree is handed to when `access: rw` unseals
-	// it — the uid:gid Wings runs its server containers as.
+	// WriteOwner is vestigial as of P10 (D-029), kept for the same reason
+	// Record.DirtyCapable is: an older srdm may still carry it in a config
+	// document, and nothing should choke on the field being set.
 	//
-	// nil means undeclared, and `access: rw` is then REFUSED. srdm does not
-	// guess it: mode-only unsealing leaves the tree owned by root, an
-	// unprivileged updater still cannot create a file in it, and the failure
-	// would arrive as "the update silently did nothing" rather than as a
-	// refusal. The number lives in Wings' own config as system.user.uid /
-	// system.user.gid; srdm asks the operator for it rather than scanning a
-	// nested YAML key it could misread (D-021's reasoning, D-022's decision).
+	// It was who a class tree was handed to when `access: rw` unsealed it IN
+	// PLACE (D-022) — the uid:gid Wings runs its server containers as, with
+	// `access: rw` refused when it was undeclared. P10 replaced in-place
+	// unsealing with a per-server overlay upper layer that srdm itself
+	// creates and owns, so there is no tree to hand over and nothing reads
+	// this field anymore. Left set, it is simply ignored.
 	WriteOwner *WriteOwner
 }
 
@@ -371,3 +371,37 @@ func (c Config) ProfileDocument(profileID string) string {
 // held by a process that no longer exists, and the first boot after a crash
 // is exactly when srdm most needs to be able to act.
 func (c Config) LockPath() string { return filepath.Join(c.RunDir, "srdm.lock") }
+
+// --- access: rw overlay layers ----------------------------------------------
+//
+// D-027 adopted an overlay for `access: rw`: the sealed generation as
+// `lowerdir`, a per-server `upperdir`/`workdir` above it. Under StateDir, not
+// RunDir — deliberately (P10's "what to build" §1): an in-place update that
+// survived a process crash but not a host reboot would be worse than one that
+// never started, so the writable layer has to live on the filesystem that
+// survives a reboot, keyed so re-exposing the SAME generation to the SAME
+// server finds its own writes still there.
+
+// OverlayDir is the root of every server's writable overlay layers.
+func (c Config) OverlayDir() string { return filepath.Join(c.StateDir, "overlay") }
+
+// OverlayServerDir is one server's overlay state for one declared class path
+// of one generation — the unit two simultaneously-mounted overlays can never
+// share, because overlayfs owns `upperdir`/`workdir` exclusively for as long
+// as a mount using them is live.
+func (c Config) OverlayServerDir(profileID, generation, class, path, serverID string) string {
+	return filepath.Join(c.OverlayDir(), profileID, generation, class,
+		filepath.FromSlash(path), serverID)
+}
+
+// OverlayUpperDir is the writable layer an rw exposure's writes actually
+// land in.
+func (c Config) OverlayUpperDir(profileID, generation, class, path, serverID string) string {
+	return filepath.Join(c.OverlayServerDir(profileID, generation, class, path, serverID), "upper")
+}
+
+// OverlayWorkDir is overlayfs's own scratch directory, required to be on the
+// same filesystem as OverlayUpperDir and touched by nothing but the kernel.
+func (c Config) OverlayWorkDir(profileID, generation, class, path, serverID string) string {
+	return filepath.Join(c.OverlayServerDir(profileID, generation, class, path, serverID), "work")
+}

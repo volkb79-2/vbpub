@@ -12,6 +12,7 @@ import (
 
 	"srdm/internal/config"
 	"srdm/internal/consumer"
+	"srdm/internal/expose"
 	"srdm/internal/journal"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
@@ -716,4 +717,218 @@ func TestAHarvestJournalsUnderOneOperationID(t *testing.T) {
 				"harvest-"+genID, want, kinds)
 		}
 	}
+}
+
+// --- D-029: --from-server ---------------------------------------------------
+//
+// access: rw is an overlay now, and any number of servers may hold one on
+// the SAME generation. harvest can no longer assume the generation's own
+// tmpfs is the one truth: fakeExposer stands in for *expose.HostBind, and
+// its bindings point at plain directories rather than real overlay merged
+// views — assemble() only ever reads Binding.Target and Binding.Path, so a
+// unit-level fixture proves the SELECTION logic; the privileged e2e suite
+// proves a real merged view, whiteouts included.
+
+type fakeExposer struct {
+	bindings []expose.Binding
+	planErr  error
+	servers  []string
+	rwErr    error
+}
+
+func (e *fakeExposer) Plan(*publish.Record, *profile.Profile, expose.Request) ([]expose.Binding, error) {
+	if e.planErr != nil {
+		return nil, e.planErr
+	}
+	return e.bindings, nil
+}
+
+func (e *fakeExposer) RWServers(*publish.Record) ([]string, error) {
+	if e.rwErr != nil {
+		return nil, e.rwErr
+	}
+	return e.servers, nil
+}
+
+// exposedTree stands in for a server's rw overlay merged view: a plain
+// directory tree with content, and the bindings a real Plan() would report
+// for it — one per declared class path, matching plan()'s own granularity,
+// so a class with two declared paths (code: Engine, WS/Binaries) gets two
+// separate Targets rather than one shared root.
+func exposedTree(t *testing.T, content map[string]string) []expose.Binding {
+	t.Helper()
+	root := t.TempDir()
+	for rel, body := range content {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	declared := map[string]string{"Engine": "code", "WS/Binaries": "code", "WS/Content/Paks": "pak"}
+	var out []expose.Binding
+	for path, class := range declared {
+		full := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, expose.Binding{Class: class, Path: path, Target: full})
+	}
+	return out
+}
+
+func (f *fixture) harvesterWithExposer(t *testing.T, e Exposer) *Harvester {
+	t.Helper()
+	h, err := New(f.cfg, f.jnl, f.st, WithGuard(f.guard), WithMountInfoPath(f.table), WithExposer(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// The default: with an exposer configured and exactly one server holding
+// rw, harvest reads THAT server's merged view without being told to.
+func TestHarvestDefaultsFromServerWhenExactlyOneServerHoldsRW(t *testing.T) {
+	f := newFixture(t)
+	updated := map[string]string{
+		"Engine/libengine.so":      "engine bytes",
+		"WS/Binaries/server":       "server bytes",
+		"WS/Content/Paks/game.pak": "an update, through the overlay",
+	}
+	e := &fakeExposer{bindings: exposedTree(t, updated), servers: []string{"srv-a"}}
+
+	rel, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof, Opts{ReleaseID: "rel-h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromScratch := f.stageEquivalent(t, "rel-scratch", updated)
+	if rel.Manifest.ContentDigest != fromScratch {
+		t.Errorf("harvest did not read the exposer's merged view: digest %s, want the "+
+			"updated content's %s", rel.Manifest.ContentDigest, fromScratch)
+	}
+}
+
+// With nobody holding rw, harvest reads the generation's own tmpfs exactly
+// as it did before P10 — confirmed by digest, not just by absence of error.
+func TestHarvestReadsTheGenerationsOwnTreeWhenNobodyHoldsRW(t *testing.T) {
+	f := newFixture(t)
+	e := &fakeExposer{servers: nil}
+
+	rel, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof, Opts{ReleaseID: "rel-h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromScratch := f.stageEquivalent(t, "rel-scratch", map[string]string{
+		"Engine/libengine.so":      "engine bytes",
+		"WS/Binaries/server":       "server bytes",
+		"WS/Content/Paks/game.pak": "pak bytes",
+	})
+	if rel.Manifest.ContentDigest != fromScratch {
+		t.Errorf("harvest with no rw holder did not read the generation's own tmpfs: "+
+			"digest %s, want %s", rel.Manifest.ContentDigest, fromScratch)
+	}
+}
+
+// Two servers hold rw and nothing said which: there is no single truth, and
+// guessing would silently drop one server's writes.
+func TestHarvestRefusesAmbiguousServersWithNoFromServerGiven(t *testing.T) {
+	f := newFixture(t)
+	e := &fakeExposer{servers: []string{"srv-a", "srv-b"}}
+
+	_, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof, Opts{ReleaseID: "rel-h"})
+	var amb *AmbiguousServerError
+	if !errors.As(err, &amb) {
+		t.Fatalf("want *AmbiguousServerError, got %v", err)
+	}
+	if !IsRefusal(err) {
+		t.Error("an ambiguous --from-server is a refusal, not a fault")
+	}
+	if len(amb.Servers) != 2 {
+		t.Errorf("Servers = %v, want both named", amb.Servers)
+	}
+}
+
+// --from-server naming a server that does not hold rw is refused rather
+// than silently reading nothing or reading the wrong thing.
+func TestHarvestRefusesAnUnknownFromServer(t *testing.T) {
+	f := newFixture(t)
+	e := &fakeExposer{servers: []string{"srv-a"}}
+
+	_, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof,
+		Opts{ReleaseID: "rel-h", FromServer: "srv-z"})
+	var unk *UnknownServerError
+	if !errors.As(err, &unk) {
+		t.Fatalf("want *UnknownServerError, got %v", err)
+	}
+	if unk.Server != "srv-z" {
+		t.Errorf("Server = %q, want %q", unk.Server, "srv-z")
+	}
+}
+
+// An explicit --from-server among several is accepted, and reads the
+// generation's own tree here (fakeExposer.Plan does not vary by server —
+// that per-server difference is what the e2e suite measures against real
+// overlays); this proves only that naming ONE of several is not refused.
+func TestHarvestAcceptsAnExplicitFromServerAmongSeveral(t *testing.T) {
+	f := newFixture(t)
+	e := &fakeExposer{
+		bindings: exposedTree(t, map[string]string{
+			"Engine/libengine.so":      "engine bytes",
+			"WS/Binaries/server":       "server bytes",
+			"WS/Content/Paks/game.pak": "pak bytes",
+		}),
+		servers: []string{"srv-a", "srv-b"},
+	}
+
+	if _, err := f.harvesterWithExposer(t, e).Harvest(ctx(), f.rec, f.prof,
+		Opts{ReleaseID: "rel-h", FromServer: "srv-b"}); err != nil {
+		t.Fatalf("naming one of several rw holders was refused: %v", err)
+	}
+}
+
+// --from-server with no exposer configured has nothing to validate it
+// against, and is refused rather than silently ignored.
+func TestFromServerWithNoExposerConfiguredIsRefused(t *testing.T) {
+	f := newFixture(t)
+	_, err := f.harvestOpts(t, Opts{ReleaseID: "rel-h", FromServer: "srv-a"})
+	if err == nil {
+		t.Fatal("--from-server was accepted with no exposer configured to look it up")
+	}
+}
+
+// harvestOpts is f.harvest with caller-supplied Opts, for the --from-server
+// tests that need to set fields f.harvest's own fixed Opts does not.
+func (f *fixture) harvestOpts(t *testing.T, o Opts) (*store.Release, error) {
+	t.Helper()
+	return f.harvester(t).Harvest(ctx(), f.rec, f.prof, o)
+}
+
+// stageEquivalent builds a from-scratch release with the given content and
+// returns its manifest digest, so a harvest can be compared against it
+// without keeping two releases with the same id.
+func (f *fixture) stageEquivalent(t *testing.T, releaseID string, content map[string]string) string {
+	t.Helper()
+	tx, err := f.st.Begin("op-stage-" + releaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range content {
+		full := filepath.Join(tx.Root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rel, err := f.st.Promote(tx, f.prof, store.PromoteOpts{
+		ReleaseID:  releaseID,
+		Provenance: store.Provenance{Kind: store.ProvenanceStaged},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rel.Manifest.ContentDigest
 }
