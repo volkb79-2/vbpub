@@ -264,7 +264,7 @@ oracles across the project now, and 44 canaries, none surviving.
 |---|---|---|
 | **P07** | `harvest` — adopt an in-place-updated generation as a release | **done** |
 | **P08** | the operator surface: assignments, `activate`/`rollback`, retention/GC, the CLI verbs | **done** |
-| **P08b** | boot restore, reconciliation acting, adoption and quarantine, doctor online | next |
+| **P08b** | boot restore, reconciliation acting, adoption and quarantine, doctor online | **done** |
 
 **Why P08 is two packages.** It was carved as one, and the bullet list it
 carried — retention, the daemon, the admin socket, boot restore, adoption and
@@ -372,41 +372,93 @@ detach removing one server's mounts and not the other's; teardown leaving a
 profile assigned-but-unpublished, which is the state P08b is defined against.
 Plus 27 unit oracles and 9 new canaries, none surviving.
 
-**P08b** closes the operational loop: `srdm-restore.service`
-(`After=local-fs.target`, no Docker dependency) republishing assigned
-generations at boot; reconciliation acting on `NeedsRepublish`, `NotReadOnly`
-and `Unheld` rather than reporting them; the worker-contract rules for
-adoption and quarantine of operations whose hold units outlived the process
-that started them; `doctor`'s online half, including acting on the drift it
-already reports. *Gate*: reboot republish before a consumer starts; orphan
-adoption and quarantine.
+**What P08b settled.** D-025 confirmed first, as required: v1 ships no
+daemon, so the boot path is a `oneshot` unit and reconciliation-acting is a
+CLI verb (`srdm restore`, `srdm reconcile`) rather than daemon work. That
+decided the shape of everything else — no admin socket, no long-lived
+process, `internal/opctl.Restore` and `.Reconcile` are ordinary lock-holding
+operations exactly like `Activate`.
+
+Restoring after a reboot exposed a bug reconciliation-acting then had to fix
+rather than merely add to: `Activate`'s `publishOrAdopt` trusted a
+`LoadRecord` hit unconditionally, which is exactly wrong the instant after a
+reboot — every published record survives (`StateDir` is persistent) naming
+mounts that do not (`RunDir` is not), and Reconcile's own doc comment says so
+in as many words. `Publisher.IsComplete` (the same per-record completeness
+check `Reconcile` already computed, factored out so one record can be asked
+about in isolation) is what makes `publishOrAdopt` — and therefore `Restore`,
+which is `Activate` run once per assignment with nobody watching — safe to
+call unconditionally instead of only when something already looks wrong.
+
+**D-026** came out of this, filed and confirmed the same day: nothing
+durable ever kept a profile *document*, only its id, and `srdm-restore.service`
+has an id and no `--profile` flag to hand it. `cfg.ProfilesDir()` keeps the
+last profile document that successfully drove a state-changing operation,
+written by the CLI at the same moment everything else durable is — a side
+effect of the operation that made it true, not a step an operator can
+forget to run before the one boot that needs it.
+
+Adoption and quarantine turned out to need their own durable, but
+volatile, record: `Publish` now writes an operation *plan* under `RunDir`
+(wiped by a reboot together with everything it describes, which is what
+makes it safe to trust unconditionally once found) before it mounts
+anything, and removes it once the published record makes the plan's account
+official. `AdoptOrQuarantine` is the v1, lock-instead-of-daemon reading of
+the master plan's own worker-contract rule ("adopts operations whose units
+are still active, quarantines operations whose units are gone without a
+result record") applied to the DAEMON's own process dying rather than the
+worker's — the worker outliving the process that started it is D-011/D-013's
+normal shape, not a crash.
+
+Reconciliation-acting splits by what it is safe to do without a profile
+document: `NotReadOnly` is always a plain remount, safe against any holder
+because nothing is unmounted; a `NeedsRepublish` generation nobody is
+currently assigned to is cleared for good, the same as an orphan one level
+up; a `NeedsRepublish` generation that IS somebody's current assignment is
+left to `Activate`/`Restore`, which alone carry what rebuilding it needs.
+Every clearing step refuses exactly as `Teardown` does when a consumer still
+holds the content — reconciliation repairs drift, it does not evict a
+running server to do it.
+
+*Gated*: `TestRestoreRebuildsAGenerationThatDidNotSurviveTheReboot` for the
+publishOrAdopt fix against the exact reboot-shaped state Reconcile's own
+comment describes; `TestAdoptOrQuarantineAdoptsAFullyRealizedPlan` /
+`...TearsDownAnIncompletePlan` for both halves of the worker-contract rule;
+`TestReconcileClearsUnassignedGenerationsAndReportsAssignedOnes` for the
+assigned/unassigned split; held-consumer refusal for both `ClearForRepublish`
+and the boot path. 5 new canaries, none surviving (`P08b-adopt-ignores-kernel`,
+`P08b-quarantine-discards-good-work`, `P08b-restore-trusts-a-stale-record`,
+`P08b-reconcile-clears-what-is-assigned`, `P08b-clear-ignores-holders`).
 
 **Inherited obligations**, each already built but unreachable until P08b
-gives it a loop:
+gave it a loop:
 
 - ~~`activate` and `rollback` must call `Publisher.Holders` and refuse
   exactly as teardown does~~ — **done in P08**, and gated against a real
   second mount namespace.
 - ~~Publication, hold, exposure and harvest have no operator entry point~~ —
-  **done in P08**. `daemon`, `stage` and `operation` remain unimplemented and
-  each says by name what it is waiting for: `daemon` on D-025, `stage` on
-  `srdm store promote` already being it, `operation` on the journal already
-  holding what it would print.
-- Reconciliation reports and does not repair. `NeedsRepublish`, `NotReadOnly`
-  and `Unheld` are surfaced by P03/P04 and acted on by nobody; the boot path
-  is where acting on them belongs.
-- **Generation GC's remaining term** (D-002 is otherwise closed). The master
-  plan's rule includes "no labeled container in **any state**", and P05
-  answers only the narrower running-container question, because that is what
-  teardown safety is about. A stopped definition holds no pages but still
-  pins what it will need on its next start, and `consumer.DockerLister`
-  offers `RunningContainers` alone. In v1 this is latent rather than urgent —
-  labels are v2, and gc collects releases while a container references a
-  generation — but the boot path is where a stopped-but-configured consumer
-  first matters, because it is the one that will start.
-- **The lock is per node, not per profile** (D-025's stated cost). Two
-  profiles cannot be operated on concurrently. Free on a node with one game;
-  the fix is a per-profile lock file rather than a daemon.
+  **done in P08**. `stage` remains a named verb pointing at `srdm store
+  promote`, and `operation` at `srdm journal show --op`; `daemon` remains
+  named and pointing at D-025, now confirmed rather than proposed.
+- ~~Reconciliation reports and does not repair~~ — **done in P08b**:
+  `internal/opctl.Reconcile` acts on `NeedsRepublish`, `NotReadOnly` and
+  `Unheld`; `srdm-restore.service` (`systemd/srdm-restore.service`, a
+  reference unit per D-003) is the boot path that runs it and then activates
+  every assignment.
+- **Generation GC's remaining term** (D-002 is otherwise closed) is
+  UNCHANGED by P08b and stays latent rather than urgent: the master plan's
+  "no labeled container in any state" is v2 (labels), and P08b's boot path
+  does not change what GC considers a hold — it only restores what an
+  assignment already declared. Still open for whichever package brings
+  labels.
+- **The lock is per node, not per profile** (D-025's stated cost) is
+  UNCHANGED: `Reconcile` and `Restore` both take the single node-wide lock,
+  same as every other verb. Two profiles still cannot be operated on
+  concurrently; the fix, if it is ever wanted, is a per-profile lock file.
+- **New, found while building this**: an operation plan that fails to parse
+  (practically only disk damage) cannot recover the class names it would
+  need to stop its own hold unit — `AdoptOrQuarantine` sweeps its mounts by
+  path and leaves the unit orphaned, journaled as a residual. → backlog.
 
 ### Wave 4 — the real acceptance test
 

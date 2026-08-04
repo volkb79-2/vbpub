@@ -59,6 +59,18 @@ tree already has is worse than an empty one.
   keep that property, at the cost of a second manifest builder to keep in
   step with the first. Measure the copy against the hash before deciding it
   is worth two implementations.
+- **An unparsable operation plan cannot stop its own hold unit** (P08b). If
+  `internal/publish`'s durable operation plan (`OpPlanFile`) is found
+  corrupted — practically only disk damage, since srdm alone ever writes it
+  — `AdoptOrQuarantine` falls back to sweeping the operation's mounts by path
+  and cannot recover the class names needed to `Forget` the hold unit that
+  goes with them, so it is left running with nothing mounted underneath it
+  (stated in `sweepOpDir`'s own comment and journaled). Closing it needs
+  either a second, independent record of which units an operation started
+  (defeating some of the plan's own simplicity) or a host-wide sweep of
+  `srdm-hold-*.service` units against every op directory that still exists,
+  which is closer to a systemd unit-listing capability `internal/hold` does
+  not have yet than to a bug fix.
 - **Build identity is not recorded** (P07). The master plan's harvest step 4
   is "run the profile's probes; record build identity where discoverable" —
   the probes run, and there is nowhere to record a build identity, because no

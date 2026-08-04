@@ -174,6 +174,22 @@ type fakePublisher struct {
 	publishErr  error
 	teardownErr error
 	holdersErr  error
+
+	// incomplete names generations IsComplete should report as NOT fully
+	// realized in the kernel, even though a record exists for them — the
+	// state every generation is in immediately after a reboot. Complete by
+	// default, which is what makes re-activation adopt rather than rebuild
+	// in the rest of this file's tests.
+	incomplete  map[string]bool
+	completeErr error
+
+	reconcileResult    *publish.Reconciliation
+	reconcileErr       error
+	teardownOrphansErr error
+	repairReadOnlyErr  error
+	clearErr           error
+	adoptResult        *publish.OpRecovery
+	adoptErr           error
 }
 
 func (f *fakePublisher) publishRecord(releaseID string) *publish.Record {
@@ -228,6 +244,62 @@ func (f *fakePublisher) Holders(_ context.Context, profileID, generation string)
 		return nil, fmt.Errorf("no record for %s/%s", profileID, generation)
 	}
 	return &consumer.Report{Holders: f.holders[generation]}, nil
+}
+
+// IsComplete defaults to true: a fake record represents a live, healthy
+// generation unless a test explicitly marks it otherwise, which is what lets
+// re-activation adopt rather than rebuild.
+func (f *fakePublisher) IsComplete(_ context.Context, rec *publish.Record) (bool, error) {
+	if f.completeErr != nil {
+		return false, f.completeErr
+	}
+	return !f.incomplete[rec.Generation], nil
+}
+
+func (f *fakePublisher) Reconcile(_ context.Context, opID string) (*publish.Reconciliation, error) {
+	f.rig.note("reconcile")
+	if f.reconcileErr != nil {
+		return nil, f.reconcileErr
+	}
+	if f.reconcileResult != nil {
+		return f.reconcileResult, nil
+	}
+	return &publish.Reconciliation{}, nil
+}
+
+func (f *fakePublisher) TeardownOrphans(opID string, res *publish.Reconciliation) error {
+	f.rig.note("teardown-orphans %d", len(res.Orphans))
+	return f.teardownOrphansErr
+}
+
+func (f *fakePublisher) RepairReadOnly(opID, exposePath string) error {
+	f.rig.note("repair-ro %s", exposePath)
+	return f.repairReadOnlyErr
+}
+
+func (f *fakePublisher) ClearForRepublish(_ context.Context, opID, profileID,
+	generation string) (*publish.Record, error) {
+	rec, ok := f.records[generation]
+	if !ok {
+		return nil, fmt.Errorf("no record for %s/%s", profileID, generation)
+	}
+	if f.clearErr != nil {
+		return nil, f.clearErr
+	}
+	f.rig.note("clear %s/%s", profileID, generation)
+	delete(f.records, generation)
+	return rec, nil
+}
+
+func (f *fakePublisher) AdoptOrQuarantine(_ context.Context, opID string) (*publish.OpRecovery, error) {
+	f.rig.note("adopt-or-quarantine")
+	if f.adoptErr != nil {
+		return nil, f.adoptErr
+	}
+	if f.adoptResult != nil {
+		return f.adoptResult, nil
+	}
+	return &publish.OpRecovery{}, nil
 }
 
 type fakeDriver struct {

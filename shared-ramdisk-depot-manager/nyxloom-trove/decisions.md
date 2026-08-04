@@ -888,8 +888,10 @@ it was holding.
 
 ## D-025 — v1 has no daemon; the CLI is one-shot under a lock
 
-**Status:** proposed. **Confirm before P08b**, which is where the admin
-socket would otherwise be built.
+**Status:** accepted. Confirmed 2026-08-04, before P08b — which is why P08b
+builds a boot-restore `oneshot` unit and a repair path invoked from the CLI
+and `doctor`, not a socket. Every purpose the master plan lists for a daemon
+was v2, already a unit, or bought nothing over an `flock`; see below.
 
 The master plan lists `daemon` among the CLI subcommands, puts an admin
 socket at `/run/srdm/admin.sock` (0600, root), and says "the CLI refuses when
@@ -930,3 +932,44 @@ discover the operations were shaped around a socket that bought nothing.
 profiles cannot be operated on concurrently. On a node with one game that is
 free; on a node with several it is a serialization nobody asked for, and the
 fix is a per-profile lock file rather than a daemon.
+
+---
+
+## D-026 — a durable copy of the profile document, keyed by id
+
+**Status:** accepted. Filed and confirmed 2026-08-04, discovered while
+building P08b's boot restore.
+
+Every operation that takes `--profile <file>` loads it fresh from the path
+an operator gave and never keeps a copy; nothing durable holds a profile
+document, only its `id` — in the assignment, in a published record, in the
+journal. That was never a problem, because every reader of an id so far has
+also been an operator who could be handed the file again.
+
+`srdm-restore.service` breaks that. It runs `After=local-fs.target`, with no
+operator and no `--profile` flag — its only input is `internal/assign`'s own
+statement that a profile has a release, and the assignment names the profile
+by id alone. Reaching `internal/opctl.Restore` from a boot unit means
+answering "what does profile `soulmask` classify its content as" with
+nothing but the id, and there was no answer to give.
+
+**Accepted:** `cfg.ProfilesDir()` (`<state-dir>/profiles/<id>.json`) keeps
+the last profile document that successfully drove a state-changing
+operation, written by `newOpEnv` at the same moment as everything else
+durable — as a side effect of the operation that made it true, the same rule
+`internal/assign` and the published record already follow. No new verb, no
+separate "register this profile" step an operator can forget to run before
+the one boot that needs it.
+
+**Why this belongs here and not as an assumption:** a wrong guess here is
+silent in exactly the way D-025's was not. Guessing `daemon` down would have
+produced `EROFS` starts and drift — an error at the door. A profile document
+that goes stale (an operator edits the source file and forgets to re-run any
+verb, or the state dir predates the last edit) would republish the WRONG
+classification with no chown-walk-style refusal anywhere to catch it — the
+class boundaries, the memory floors and the noexec bit all come from the
+profile, and every one of them would be silently the old ones. Boot restore
+therefore treats a missing durable copy as a hard failure per profile
+(reported, not guessed past), and republishing is the one path that keeps
+the durable copy honest going forward: every successful `activate` (and
+boot's own reuse of it) rewrites it.

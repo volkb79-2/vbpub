@@ -43,12 +43,14 @@ import (
 
 // Operation kinds, as they appear in the journal.
 const (
-	KindActivate = "activate"
-	KindRollback = "rollback"
-	KindAttach   = "attach"
-	KindDetach   = "detach"
-	KindRelease  = "release-generation"
-	KindGC       = "gc"
+	KindActivate  = "activate"
+	KindRollback  = "rollback"
+	KindAttach    = "attach"
+	KindDetach    = "detach"
+	KindRelease   = "release-generation"
+	KindGC        = "gc"
+	KindReconcile = "reconcile"
+	KindRestore   = "restore"
 )
 
 // Phases.
@@ -59,6 +61,7 @@ const (
 	PhaseAssign   = "assign"
 	PhaseTeardown = "teardown"
 	PhaseCollect  = "collect"
+	PhaseAdopt    = "adopt"
 )
 
 // Driver is the exposure surface. *expose.HostBind satisfies it.
@@ -75,6 +78,17 @@ type Publisher interface {
 	Teardown(ctx context.Context, opID, profileID, generation string) error
 	LoadRecord(profileID, generation string) (*publish.Record, error)
 	Holders(ctx context.Context, profileID, generation string) (*consumer.Report, error)
+
+	// The reconciliation-and-repair surface, P08b. Reconcile and
+	// TeardownOrphans already existed; IsComplete, RepairReadOnly,
+	// ClearForRepublish and AdoptOrQuarantine are what turn the drift they
+	// find into something acted on rather than only reported.
+	Reconcile(ctx context.Context, opID string) (*publish.Reconciliation, error)
+	TeardownOrphans(opID string, res *publish.Reconciliation) error
+	IsComplete(ctx context.Context, rec *publish.Record) (bool, error)
+	RepairReadOnly(opID, exposePath string) error
+	ClearForRepublish(ctx context.Context, opID, profileID, generation string) (*publish.Record, error)
+	AdoptOrQuarantine(ctx context.Context, opID string) (*publish.OpRecovery, error)
 }
 
 // Controller sequences operations.
@@ -166,12 +180,24 @@ func IsRefusal(err error) bool {
 // repairing the present must not destroy the way back.
 func (c *Controller) Activate(ctx context.Context, opID, releaseID string,
 	prof *profile.Profile) (*publish.Record, error) {
+
+	lock, err := Acquire(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Release() }()
 	return c.activate(ctx, opID, KindActivate, releaseID, prof)
 }
 
 // Rollback activates the release the profile was on before the last change.
 func (c *Controller) Rollback(ctx context.Context, opID string,
 	prof *profile.Profile) (*publish.Record, error) {
+
+	lock, err := Acquire(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.Release() }()
 
 	a, err := c.asg.Load(prof.ID)
 	if err != nil {
@@ -185,6 +211,10 @@ func (c *Controller) Rollback(ctx context.Context, opID string,
 	return c.activate(ctx, opID, KindRollback, a.Previous, prof)
 }
 
+// activate assumes the operation lock is already held — every exported
+// caller acquires it (Activate, Rollback, and Restore, which activates once
+// per assigned profile under a single lock held for the whole boot pass
+// rather than one per profile).
 func (c *Controller) activate(ctx context.Context, opID, kind, releaseID string,
 	prof *profile.Profile) (rec *publish.Record, err error) {
 
@@ -193,11 +223,6 @@ func (c *Controller) activate(ctx context.Context, opID, kind, releaseID string,
 			return nil, fmt.Errorf("opctl: %w", err)
 		}
 	}
-	lock, err := Acquire(c.cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = lock.Release() }()
 
 	a, err := c.asg.Load(prof.ID)
 	if err != nil {
@@ -268,18 +293,37 @@ func (c *Controller) activate(ctx context.Context, opID, kind, releaseID string,
 	return rec, nil
 }
 
-// publishOrAdopt publishes the target release, or adopts the generation if it
-// is already published.
+// publishOrAdopt publishes the target release, or adopts the generation if
+// it is already published AND still whole in the kernel.
 //
 // Republishing over a live generation would mean two publications of the same
 // content racing for the same unit names, and the second would fail on the
-// first's units — so the existing record is the answer when there is one.
+// first's units — so an existing, complete record is the answer when there
+// is one. A record alone is not enough to conclude that, though: it is
+// exactly what every generation on the node still has after a reboot, with
+// nothing mounted and no unit holding it (Reconcile's own words). Trusting
+// LoadRecord without asking the kernel would hand `moveServers` a record
+// naming mounts that do not exist, and bind exposures to it that fail or,
+// worse, resolve to nothing — which is what made this the wrong idempotent
+// path for `Restore` to reuse until it was fixed here (P08b).
 func (c *Controller) publishOrAdopt(ctx context.Context, opID string, prof *profile.Profile,
 	rel *store.Release) (*publish.Record, error) {
 
 	gen := publish.GenerationID(rel.ID)
 	if rec, err := c.pub.LoadRecord(prof.ID, gen); err == nil {
-		return rec, nil
+		complete, err := c.pub.IsComplete(ctx, rec)
+		if err != nil {
+			return nil, err
+		}
+		if complete {
+			return rec, nil
+		}
+		// Clear whatever remains of the broken generation before rebuilding
+		// it — Publish itself would otherwise collide with leftover hold
+		// units carrying the same, generation-derived names.
+		if _, err := c.pub.ClearForRepublish(ctx, opID, prof.ID, gen); err != nil {
+			return nil, err
+		}
 	}
 	return c.pub.Publish(ctx, opID, prof.ID, rel, prof)
 }

@@ -265,38 +265,16 @@ func (p *Publisher) Reconcile(ctx context.Context, opID string) (*Reconciliation
 	}
 	for _, rec := range records {
 		name := rec.Profile + "/" + rec.Generation
-		complete := true
 		for _, c := range rec.Classes {
 			claimed[c.OpMount] = true
 			claimed[c.ExposePath] = true
-
-			_, opOK := mountinfo.At(entries, c.OpMount)
-			exposeMnt, exposeOK := mountinfo.At(entries, c.ExposePath)
-			if !opOK || !exposeOK {
-				complete = false
-				continue
-			}
-			if !exposeMnt.ReadOnly() {
-				res.NotReadOnly = append(res.NotReadOnly, c.ExposePath)
-				complete = false
-			}
-			if c.HoldUnit == "" {
-				continue
-			}
-			// An error here is systemd being unreachable, not a unit being
-			// absent — `systemctl show` reports a unit it has never heard of
-			// as inactive, with a zero exit. So this cannot conclude
-			// anything and must not guess: guessing "unheld" would schedule
-			// a republish of a healthy generation.
-			active, err := p.holder.IsActive(ctx, c.HoldUnit)
-			if err != nil {
-				return nil, fmt.Errorf("publish: reconcile %s: %w", name, err)
-			}
-			if !active {
-				res.Unheld = append(res.Unheld, c.HoldUnit)
-				complete = false
-			}
 		}
+		complete, notReadOnly, unheld, err := p.classCompleteness(ctx, entries, rec)
+		if err != nil {
+			return nil, fmt.Errorf("publish: reconcile %s: %w", name, err)
+		}
+		res.NotReadOnly = append(res.NotReadOnly, notReadOnly...)
+		res.Unheld = append(res.Unheld, unheld...)
 		if complete {
 			res.Healthy = append(res.Healthy, name)
 		} else {
@@ -342,6 +320,111 @@ func (p *Publisher) Reconcile(ctx context.Context, opID string) (*Reconciliation
 			"orphan_count":    itoa(int64(len(res.Orphans))),
 		},
 	})
+}
+
+// classCompleteness is what Reconcile decides per record, factored out so
+// AdoptOrQuarantine and IsComplete can ask the identical question about one
+// record without re-deriving every other record's answer alongside it.
+func (p *Publisher) classCompleteness(ctx context.Context, entries []mountinfo.Entry,
+	rec *Record) (complete bool, notReadOnly, unheld []string, err error) {
+
+	complete = true
+	for _, c := range rec.Classes {
+		_, opOK := mountinfo.At(entries, c.OpMount)
+		exposeMnt, exposeOK := mountinfo.At(entries, c.ExposePath)
+		if !opOK || !exposeOK {
+			complete = false
+			continue
+		}
+		if !exposeMnt.ReadOnly() {
+			notReadOnly = append(notReadOnly, c.ExposePath)
+			complete = false
+		}
+		if c.HoldUnit == "" {
+			continue
+		}
+		// An error here is systemd being unreachable, not a unit being
+		// absent — `systemctl show` reports a unit it has never heard of as
+		// inactive, with a zero exit. So this cannot conclude anything and
+		// must not guess: guessing "unheld" would schedule a republish of a
+		// healthy generation.
+		active, aerr := p.holder.IsActive(ctx, c.HoldUnit)
+		if aerr != nil {
+			return false, nil, nil, aerr
+		}
+		if !active {
+			unheld = append(unheld, c.HoldUnit)
+			complete = false
+		}
+	}
+	return complete, notReadOnly, unheld, nil
+}
+
+// IsComplete reports whether a record's own classes are fully realized in
+// the kernel right now: every class mounted, every exposure read-only, every
+// hold unit active.
+//
+// A record surviving on disk is never enough on its own — that is the whole
+// of what Reconcile measures — and this is the same question asked about
+// one record in isolation, for a caller (opctl's re-activation of an
+// already-assigned release) that needs the answer before trusting a
+// LoadRecord hit rather than after cataloguing every generation on the node.
+func (p *Publisher) IsComplete(ctx context.Context, rec *Record) (bool, error) {
+	entries, err := p.mountInfo()
+	if err != nil {
+		return false, fmt.Errorf("publish: checking %s/%s: %w", rec.Profile, rec.Generation, err)
+	}
+	complete, _, _, err := p.classCompleteness(ctx, entries, rec)
+	return complete, err
+}
+
+// RepairReadOnly remounts an exposure read-only in place.
+//
+// Always safe against a live consumer, which is what makes it the one repair
+// reconciliation may perform without checking for holders first: nothing is
+// unmounted, the bind stays the same superblock a consumer may already have
+// open, and the only effect is that it stops accepting writes it should
+// never have accepted — the state a publication interrupted between the
+// bind and the read-only remount is left in.
+func (p *Publisher) RepairReadOnly(opID, exposePath string) error {
+	return p.phase(opID, KindReconcile, PhaseExpose,
+		map[string]string{"expose_path": exposePath}, func() error {
+			return p.mounter.Mount("", exposePath, "",
+				syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
+		})
+}
+
+// ClearForRepublish tears down whatever remains of a generation reconciliation
+// found incomplete, leaving a clean slate for a fresh Publish, and returns the
+// record it cleared so the caller — which alone has the store and the profile
+// needed to rebuild — knows what release to rebuild from.
+//
+// Refuses precisely as Teardown does when a consumer still holds the content:
+// a broken generation a server is still reading is not repaired out from
+// under it. That is an operator's call to schedule, not reconciliation's to
+// force.
+func (p *Publisher) ClearForRepublish(ctx context.Context, opID, profileID, generation string) (*Record, error) {
+	rec, err := p.LoadRecord(profileID, generation)
+	if err != nil {
+		return nil, fmt.Errorf("publish: clearing %s/%s for republish: %w", profileID, generation, err)
+	}
+	if err := p.refuseIfHeld(ctx, opID, KindReconcile, rec); err != nil {
+		return nil, err
+	}
+	if err := p.phase(opID, KindReconcile, PhaseTeardown, recFields(rec), func() error {
+		return p.releaseRecord(ctx, rec)
+	}); err != nil {
+		return nil, err
+	}
+	if err := p.phase(opID, KindReconcile, PhaseRecord, recFields(rec), func() error {
+		if err := os.Remove(p.cfg.PublishedRecord(profileID, generation)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // TeardownOrphans unmounts every mount reconciliation could not attribute.

@@ -111,22 +111,29 @@ shared-ramdisk-depot-manager/
 │   ├── profile/              classification, probes, class memory policy
 │   ├── store/                the transactional release store        ← P01
 │   ├── journal/              durable records, JSONL, journald      ← P01
-│   ├── doctor/               diagnostics; offline subset            ← P01
+│   ├── doctor/               diagnostics; drift now acted on, not ← P01,
+│   │                         only reported                          P08b
 │   ├── fsx/                  durability primitives (atomic write, fsync)
 │   ├── cgroupfs/             cgroup v2 attribute reader            ← P02
 │   ├── systemdx/             transient units, via the systemd CLI  ← P02
 │   ├── mountinfo/            /proc/*/mountinfo, with propagation   ← P03
-│   ├── publish/              publication topology, reconciliation  ← P03
+│   ├── publish/              publication topology, reconciliation ← P03,
+│   │                         and repair                              P08b
 │   ├── hold/                 hold units, class policy, the worker  ← P04
 │   ├── consumer/             who is still holding a generation     ← P05
 │   ├── expose/               exposure drivers: host-bind, ro|rw    ← P06
 │   ├── wings/                the node's propagation and chown walk ← P06
+│   ├── harvest/               adopt an in-place update as a release ← P07
+│   ├── assign/                declared intent: release + servers    ← P08
+│   ├── opctl/                 activate/rollback/attach/…, restore  ← P08,
+│   │                         and reconciliation                     P08b
 │   ├── source/steam/         SteamCMD driver (off the MVP path)
 │   ├── providerapi/          v2 only
 │   └── adminapi/             the operator socket
 ├── gate/                     srdm's own gate container (unit + e2e)
 ├── tools/                    gate runner, canaries, cgroup verifier
-├── systemd/                  srdm.slice — a REFERENCE unit, not installed
+├── systemd/                  srdm.slice, srdm-restore.service — REFERENCE
+│                              units, not installed                    ← P08b
 ├── examples/                 a working profile document
 ├── docs/
 └── nyxloom-trove/            handoffs, decisions, roadmap, guide

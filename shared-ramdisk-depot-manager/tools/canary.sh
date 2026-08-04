@@ -224,7 +224,7 @@ canary "P04-every-failure-is-a-refusal" "TestAWorkerFailingForAnyOtherReason" \
 # mount table cannot show, and which this is the only check for.
 canary "P04-unheld-invisible" "TestReconcileFlagsAClassWhoseHoldUnitIsGone" \
   "internal/publish/teardown.go" \
-  's#^\t\t\tif !active {$#\t\t\tif active \&\& !active {#' \
+  's#^\t\tif !active {$#\t\tif active \&\& !active {#' \
   "reconciliation cannot see a class nothing is holding"
 
 # Skip the worker's verification, so a class that does not match its manifest
@@ -574,6 +574,49 @@ canary "P08-gc-dry-run-deletes" "TestGCDryRunReportsAndRemovesNothing" \
   "internal/opctl/gc.go" \
   's#^\tif dryRun || len(res.Removed) == 0 {$#\tif len(res.Removed) == 0 {#' \
   "a dry run deletes releases"
+
+# --- P08b: boot restore and reconciliation acting --------------------------
+
+# Adopt an operation plan whatever the kernel says. A process that crashed
+# with a class only half-populated then gets its record written anyway, and
+# the next reader trusts mounts and units that were never finished.
+canary "P08b-adopt-ignores-kernel" "TestAdoptOrQuarantineTearsDownAnIncompletePlan" \
+  "internal/publish/opadopt.go" \
+  's#^\t\tif complete {$#\t\tif true {#' \
+  "an incomplete operation plan is adopted instead of torn down"
+
+# Quarantine a plan whatever the kernel says. A generation that finished in
+# every way that matters — mounted, sealed, held — is torn down anyway,
+# discarding verified content for no safety gained.
+canary "P08b-quarantine-discards-good-work" "TestAdoptOrQuarantineAdoptsAFullyRealizedPlan" \
+  "internal/publish/opadopt.go" \
+  's#^\t\tif complete {$#\t\tif false {#' \
+  "a fully realized operation plan is torn down instead of adopted"
+
+# Trust a published record without asking the kernel. This is the exact bug
+# P08b fixed in publishOrAdopt: after a reboot every record survives with
+# nothing it names actually mounted, and Restore would hand a broken record
+# to exposure instead of rebuilding it.
+canary "P08b-restore-trusts-a-stale-record" "TestRestoreRebuildsAGenerationThatDidNotSurviveTheReboot" \
+  "internal/opctl/opctl.go" \
+  's#^\t\tcomplete, err := c.pub.IsComplete(ctx, rec)$#\t\tcomplete, err := true, error(nil)#' \
+  "a record surviving on disk is trusted without checking the kernel"
+
+# Rebuild an assigned profile's own degraded generation from inside the
+# general reconciliation pass instead of leaving it for Activate/Restore,
+# which alone carry the profile document and the re-exposure sequence.
+canary "P08b-reconcile-clears-what-is-assigned" "TestReconcileClearsUnassignedGenerationsAndReportsAssignedOnes" \
+  "internal/opctl/restore.go" \
+  's#^\t\tif current\[profileID\] == gen {$#\t\tif false {#' \
+  "reconcile clears a profile's own currently-assigned generation"
+
+# Clear a broken generation for republish without checking for a live
+# consumer first — the same D-018 hazard teardown refuses, arriving by a
+# different route.
+canary "P08b-clear-ignores-holders" "TestClearForRepublishRefusesWhileHeld" \
+  "internal/publish/teardown.go" \
+  's#^\tif err := p.refuseIfHeld(ctx, opID, KindReconcile, rec); err != nil {$#\tif err := error(nil); err != nil {#' \
+  "a generation is cleared for republish while a consumer still holds it"
 
 rm -rf "$WORK"
 

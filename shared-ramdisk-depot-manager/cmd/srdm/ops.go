@@ -22,6 +22,7 @@ import (
 
 	"srdm/internal/config"
 	"srdm/internal/expose"
+	"srdm/internal/fsx"
 	"srdm/internal/harvest"
 	"srdm/internal/journal"
 	"srdm/internal/opctl"
@@ -94,6 +95,9 @@ func newOpEnv(cfg config.Config, profilePath string, needProfile bool) (*opEnv, 
 	var err error
 	if profilePath != "" {
 		if prof, err = profile.Load(profilePath); err != nil {
+			return nil, err
+		}
+		if err := persistProfile(cfg, profilePath, prof); err != nil {
 			return nil, err
 		}
 	}
@@ -438,4 +442,118 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// persistProfile keeps a durable copy of the profile document an operation
+// just used, keyed by its id (D-026).
+//
+// The boot path has an assignment naming a profile by id and nobody to hand
+// it a --profile flag; this is what lets it find the document again. Written
+// as a side effect of every state-changing verb succeeding at loading one,
+// which is the same rule internal/assign and the published record already
+// follow: durable the moment the thing it records becomes true, not as a
+// separate step an operator has to remember.
+func persistProfile(cfg config.Config, path string, prof *profile.Profile) error {
+	if prof == nil {
+		return nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(cfg.ProfilesDir(), 0o755); err != nil {
+		return err
+	}
+	return fsx.WriteFileSync(cfg.ProfileDocument(prof.ID), body, 0o644)
+}
+
+// ------------------------------------------------------------- reconcile --
+
+func cmdReconcile(args []string) error {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	cfg, _, opID := opFlags(fs)
+	asJSON := fs.Bool("json", false, "emit the report as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *opID == "" {
+		*opID = "reconcile"
+	}
+	env, err := newOpEnv(*cfg, "", false)
+	if err != nil {
+		return err
+	}
+	defer env.close()
+
+	rep, err := env.ctl.Reconcile(env.ctx, *opID)
+	if err != nil {
+		return refused(err)
+	}
+	return printRestoreReport(rep, *asJSON)
+}
+
+// ---------------------------------------------------------------- restore --
+
+func cmdRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	cfg, _, opID := opFlags(fs)
+	asJSON := fs.Bool("json", false, "emit the report as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *opID == "" {
+		*opID = "restore"
+	}
+	// No --profile: restore's whole point is having nobody to give it one
+	// (srdm-restore.service, After=local-fs.target). Every profile it
+	// touches comes from an assignment plus the durable profile copy D-026
+	// keeps.
+	env, err := newOpEnv(*cfg, "", false)
+	if err != nil {
+		return err
+	}
+	defer env.close()
+
+	rep, err := env.ctl.Restore(env.ctx, *opID)
+	if err != nil {
+		return refused(err)
+	}
+	if err := printRestoreReport(rep, *asJSON); err != nil {
+		return err
+	}
+	if len(rep.Failed) > 0 {
+		return fmt.Errorf("restore: %d profile(s) could not be brought back", len(rep.Failed))
+	}
+	return nil
+}
+
+func printRestoreReport(rep *opctl.RestoreReport, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	printList := func(label string, items []string) {
+		for _, item := range items {
+			fmt.Printf("%-14s %s\n", label, item)
+		}
+	}
+	printList("adopted", rep.Adopted)
+	printList("quarantined", rep.Quarantined)
+	printList("ro-fixed", rep.ReadOnlyFixed)
+	printList("orphan-gone", rep.OrphansRemoved)
+	printList("cleared", rep.Cleared)
+	printList("needs-activate", rep.NeedsActivate)
+	printList("restored", rep.Restored)
+	printList("BLOCKED", rep.Blocked)
+	for _, name := range sortedKeys(rep.Failed) {
+		fmt.Printf("%-14s %s: %s\n", "FAILED", name, rep.Failed[name])
+	}
+	total := len(rep.Adopted) + len(rep.Quarantined) + len(rep.ReadOnlyFixed) +
+		len(rep.OrphansRemoved) + len(rep.Cleared) + len(rep.NeedsActivate) +
+		len(rep.Restored) + len(rep.Blocked) + len(rep.Failed)
+	if total == 0 {
+		fmt.Println("nothing to reconcile")
+	}
+	return nil
 }

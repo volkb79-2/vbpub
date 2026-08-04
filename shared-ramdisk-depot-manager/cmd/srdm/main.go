@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -22,6 +23,7 @@ import (
 	"srdm/internal/hold"
 	"srdm/internal/journal"
 	"srdm/internal/profile"
+	"srdm/internal/publish"
 	"srdm/internal/store"
 )
 
@@ -77,6 +79,10 @@ func run(args []string) error {
 		return cmdGC(args[1:])
 	case "status":
 		return cmdStatus(args[1:])
+	case "reconcile":
+		return cmdReconcile(args[1:])
+	case "restore":
+		return cmdRestore(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -123,8 +129,11 @@ under a lock:
   srdm harvest  --profile <file> --release <new-id>
   srdm gc       --profile <file> [--dry-run] [--retention N]
   srdm status   [--profile <file>] [--json]
+  srdm reconcile [--json]   repairs drift without an operator's --profile:
+                            resolves crashed operations, remounts a bind
+                            read-only, clears unassigned broken generations
 
-  srdm doctor  [--offline] [--profile <file>] [--json]
+  srdm doctor  [--offline] [--repair] [--profile <file>] [--json]
   srdm store   promote  --profile <file> --release <id> --from <dir> [--channel <c>] [--op <id>]
   srdm store   activate --profile <id> --channel <c> --release <id> [--op <id>]
   srdm store   verify   [--release <id>]
@@ -134,8 +143,14 @@ under a lock:
   srdm journal show --op <id>
   srdm version
 
-Not for operators — srdm runs this on itself, as a hold unit's ExecStart:
+Not for operators — srdm runs these on itself:
   srdm hold-worker --release-dir <dir> --release-id <id> --class <c> --target <dir>
+                            a hold unit's ExecStart
+  srdm restore [--json]    srdm-restore.service, After=local-fs.target, at
+                            every boot: republishes and re-exposes every
+                            profile with an assignment, using the durable
+                            profile copy (D-026) rather than an operator's
+                            --profile flag
 
 Common flags — accepted by every subcommand, written AFTER it:
   --state-dir <path>   persistent root (default `+config.DefaultStateDir+`)
@@ -177,9 +192,17 @@ func cmdDoctor(args []string) error {
 	cfg := commonFlags(fs)
 	profilePath := fs.String("profile", "", "profile document, for the class-floor check")
 	asJSON := fs.Bool("json", false, "emit checks as JSON")
-	// P01 only has the offline subset; the flag exists so the eventual
-	// online checks do not change the invocation operators learn now.
-	fs.Bool("offline", true, "run only checks that need no daemon (P01: all of them)")
+	repair := fs.Bool("repair", false, "act on generation-topology drift: resolve crashed "+
+		"operations, remount a writable bind read-only, and clear broken generations "+
+		"nothing is assigned to (P08b — the online half; a profile's OWN degraded "+
+		"generation is rebuilt by `srdm activate` or by srdm-restore.service at boot, "+
+		"neither of which this flag runs)")
+	// P01 only had the offline subset; the flag exists so its invocation does
+	// not change now that P08b adds the generation-topology check below,
+	// which reads live mount and systemd state rather than only static files.
+	fs.Bool("offline", true, "run only checks that need no daemon (v1 has none — see D-025 — "+
+		"so every check below already runs; this flag is accepted for the invocation the "+
+		"master plan describes and never changes what runs)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -192,6 +215,11 @@ func cmdDoctor(args []string) error {
 	}
 
 	checks := doctor.Run(*cfg, p, doctor.Options{})
+	topology, err := checkGenerationTopology(*cfg, p)
+	if err != nil {
+		return err
+	}
+	checks = append(checks, topology)
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -210,10 +238,80 @@ func cmdDoctor(args []string) error {
 			}
 		}
 	}
+
+	if *repair {
+		env, err := newOpEnv(*cfg, "", false)
+		if err != nil {
+			return err
+		}
+		defer env.close()
+		rep, err := env.ctl.Reconcile(env.ctx, "doctor-repair")
+		if err != nil {
+			return refused(err)
+		}
+		if !*asJSON {
+			fmt.Println("repair:")
+		}
+		if err := printRestoreReport(rep, *asJSON); err != nil {
+			return err
+		}
+	}
+
 	if failed := doctor.Failed(checks); len(failed) > 0 {
 		return fmt.Errorf("%d check(s) failed", len(failed))
 	}
 	return nil
+}
+
+// checkGenerationTopology is doctor's P08b addition: it reports the same
+// drift `srdm reconcile` would act on — crashed operations, writable
+// exposures, unheld classes, orphan mounts — but only reports it. doctor
+// stays read-only unless `--repair` is given; a diagnostic command that
+// sometimes mutates state as a side effect of being run is not one an
+// operator can trust to be safe to run.
+func checkGenerationTopology(cfg config.Config, p *profile.Profile) (doctor.Check, error) {
+	c := doctor.Check{ID: "generation-topology", Title: "published generations match the kernel"}
+
+	jnl, err := openJournal(cfg, p)
+	if err != nil {
+		return doctor.Check{}, err
+	}
+	defer jnl.Close()
+	pub, err := publish.New(cfg, jnl)
+	if err != nil {
+		return doctor.Check{}, err
+	}
+	res, err := pub.Reconcile(context.Background(), "doctor")
+	if err != nil {
+		c.Status = doctor.StatusFail
+		c.Detail = err.Error()
+		c.Fix = "check that " + cfg.PublishedDir() + " and the mount table are both readable"
+		return c, nil
+	}
+
+	if len(res.NeedsRepublish) == 0 && len(res.Orphans) == 0 {
+		c.Status = doctor.StatusPass
+		c.Detail = fmt.Sprintf("%d generation(s) healthy", len(res.Healthy))
+		return c, nil
+	}
+	c.Status = doctor.StatusFail
+	var parts []string
+	if len(res.NeedsRepublish) > 0 {
+		parts = append(parts, "needs republish: "+strings.Join(res.NeedsRepublish, ", "))
+	}
+	if len(res.NotReadOnly) > 0 {
+		parts = append(parts, "writable exposures: "+strings.Join(res.NotReadOnly, ", "))
+	}
+	if len(res.Unheld) > 0 {
+		parts = append(parts, "unheld classes: "+strings.Join(res.Unheld, ", "))
+	}
+	if len(res.Orphans) > 0 {
+		parts = append(parts, "orphan mounts: "+strings.Join(res.Orphans, ", "))
+	}
+	c.Detail = strings.Join(parts, "; ")
+	c.Fix = "run `srdm doctor --repair` or `srdm reconcile`; a profile's own degraded " +
+		"generation is rebuilt by `srdm activate`, or by srdm-restore.service at the next boot"
+	return c, nil
 }
 
 // ----------------------------------------------------------------- store --

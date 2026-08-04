@@ -1,0 +1,40 @@
+# srdm-restore.service — REFERENCE unit. srdm does not install this (same
+# rule as srdm.slice, D-003): writing /etc/systemd/system and reloading
+# systemd needs host root, which srdm does not and must not have.
+#
+# Install (operator, needs root):
+#   sudo cp systemd/srdm-restore.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable srdm-restore.service
+#
+# P08b: this is what makes an assignment survive a reboot. RunDir
+# (/run/srdm) is tmpfs — every mount and every hold unit srdm made is gone
+# the instant the kernel is, and the durable state left behind (the
+# assignment, the published record, D-026's profile copy) is exactly what
+# `srdm restore` reads to rebuild it, with no operator and no --profile flag.
+#
+# `After=local-fs.target`, deliberately not `network.target` or
+# `docker.service`: the republish path needs no Docker (D-025's own
+# reasoning — the boot unit is a oneshot, not daemon work) and StateDir/
+# RunDir are both local filesystems. Ordering `srdm-restore.service` before
+# whatever starts Wings' own containers is that unit's job, not this one's —
+# the master plan's own answer to a `Before=docker.service` review comment is
+# a Wings-side bounded boot-restore retry, not a dependency edge here, and
+# `srdm restore` fails closed and idempotently: run it again and it repairs
+# from wherever it stopped.
+[Unit]
+Description=srdm — restore assigned generations after boot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/srdm restore
+# Not RemainAfterExit: this is a one-time pass, not a held resource. A
+# second boot re-runs it from scratch against whatever the assignments say
+# THEN, which is the correct behavior after an operator changes one between
+# boots.
+RemainAfterExit=no
+User=root
+
+[Install]
+WantedBy=multi-user.target

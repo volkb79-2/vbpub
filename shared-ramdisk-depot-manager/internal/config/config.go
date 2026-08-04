@@ -304,6 +304,20 @@ func (c Config) OpClassRoot(opID, class string) string {
 	return filepath.Join(c.OpClassDir(opID, class), "root")
 }
 
+// OpPlanFile is the durable statement of what an operation intends to
+// publish, written before any mount or hold unit exists and removed once
+// the published record makes it official.
+//
+// Under RunDir beside the mounts and units it describes, deliberately: a
+// reboot wipes both together, so the plan can never outlive the state it
+// would otherwise misdescribe. It exists for the process-dies-without-reboot
+// case — the one D-013's "worker outlives the process that started it"
+// leaves unaddressed for the DAEMON's own process, as opposed to the
+// worker's (P08b, adoption and quarantine).
+func (c Config) OpPlanFile(opID string) string {
+	return filepath.Join(c.OpDir(opID), "plan.json")
+}
+
 // GenerationDir is a published generation's visible root.
 func (c Config) GenerationDir(profileID, generation string) string {
 	return filepath.Join(c.RunDir, profileID, generation)
@@ -332,6 +346,24 @@ func (c Config) PublishedRecord(profileID, generation string) string {
 // have to survive the reboot at which the difference between them becomes
 // the boot path's whole job.
 func (c Config) AssignmentsDir() string { return filepath.Join(c.StateDir, "assignments") }
+
+// ProfilesDir holds a durable copy of every profile document srdm has been
+// given, keyed by id.
+//
+// D-026: a profile document is otherwise only ever a path an operator passes
+// on the command line, loaded fresh and never kept. Boot restore has no
+// operator to ask — it has an assignment naming a profile ID, and nothing
+// else — so the last profile document that successfully drove a
+// state-changing operation is kept here, written at the same moment and by
+// the same rule as everything else durable: as a side effect of the
+// operation that made it true, not as a separate administrative step an
+// operator can forget.
+func (c Config) ProfilesDir() string { return filepath.Join(c.StateDir, "profiles") }
+
+// ProfileDocument is one profile's durable copy.
+func (c Config) ProfileDocument(profileID string) string {
+	return filepath.Join(c.ProfilesDir(), profileID+".json")
+}
 
 // LockPath is the mutual exclusion between operations that change state.
 //

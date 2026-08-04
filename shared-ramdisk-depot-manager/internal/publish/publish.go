@@ -372,6 +372,17 @@ func (p *Publisher) Publish(ctx context.Context, opID, profileID string,
 		built.Classes = append(built.Classes, *cr)
 	}
 
+	// The plan is durable BEFORE anything is mounted, under the same root
+	// its mounts and units live in — a reboot wipes them together, so the
+	// plan can never outlive what it describes. It is what lets a LATER
+	// process answer "was this operation finished" after THIS one dies
+	// mid-flight without a reboot in between (P08b, adoption and
+	// quarantine): the process's own defer below only runs if it survives
+	// to unwind its stack, which a SIGKILL or an OOM kill does not allow.
+	if err := p.writePlan(built); err != nil {
+		return nil, fmt.Errorf("publish: recording the operation plan: %w", err)
+	}
+
 	// Anything already mounted, held or reserved for this operation is torn
 	// down on failure, so a partial publication never survives the call that
 	// made it.
@@ -413,7 +424,31 @@ func (p *Publisher) Publish(ctx context.Context, opID, profileID string,
 	}); err != nil {
 		return nil, err
 	}
+	// The plan is committed: the published record is now the authoritative
+	// account of this operation, and the plan naming it "not yet finished"
+	// would be a stale answer to a question that no longer has that answer.
+	_ = os.Remove(p.cfg.OpPlanFile(opID))
 	return built, nil
+}
+
+// writePlan durably records what an operation is about to build.
+//
+// Not fsync'd: it lives under RunDir, which on every real deployment is
+// tmpfs — there is no backing store for fsync to reach, and the plan's
+// entire durability story is "the process that would have removed it did
+// not get to run", not "survives a power loss". A reboot removes it exactly
+// as it removes the mounts and units it names, which is the property that
+// makes it safe to trust unconditionally once found (P08b).
+func (p *Publisher) writePlan(rec *Record) error {
+	body, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := p.cfg.OpPlanFile(rec.OperationID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(body, '\n'), 0o600)
 }
 
 // isolateOpRoot makes the operation-private root a mount point of its own,
