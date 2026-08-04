@@ -66,6 +66,16 @@ func TestReadNodeTokensRefusesWhenTokenIsMissing(t *testing.T) {
 	}
 }
 
+// A directory opens successfully (os.Open does not distinguish) but fails
+// to scan as text — the scanner's own error path, distinct from "the file
+// does not exist".
+func TestReadNodeTokensReportsAScanError(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readNodeTokens(dir); err == nil {
+		t.Fatal("reading a directory as a config file was accepted")
+	}
+}
+
 func TestReadNodeTokensRefusesWhenTheFileCannotBeRead(t *testing.T) {
 	if _, err := readNodeTokens(filepath.Join(t.TempDir(), "does-not-exist.yml")); !IsRefusal(err) {
 		t.Fatalf("want a refusal for an unreadable config, got %v", err)
@@ -89,6 +99,14 @@ type fakeWings struct {
 	states     map[string]string
 	logs       map[string][]string
 	signals    []string
+
+	// Failure injection, all zero/false by default (a healthy node).
+	statusCode      int  // override for GET /api/servers/<id>; 0 = 200
+	statusMalformed bool // write unparsable JSON for GET /api/servers/<id>
+	powerCode       int  // override for POST .../power; 0 = 202
+	logsCode        int  // override for GET .../logs; 0 = 200
+	logsMalformed   bool
+	listCode        int // override for GET /api/servers; 0 = 200
 }
 
 func newFakeWings(t *testing.T, goodBearer string) (*fakeWings, *httptest.Server) {
@@ -100,7 +118,11 @@ func newFakeWings(t *testing.T, goodBearer string) (*fakeWings, *httptest.Server
 			return
 		}
 		if r.URL.Path == "/api/servers" {
-			w.WriteHeader(http.StatusOK)
+			code := f.listCode
+			if code == 0 {
+				code = http.StatusOK
+			}
+			w.WriteHeader(code)
 			_, _ = w.Write([]byte(`{"data":[]}`))
 			return
 		}
@@ -108,7 +130,15 @@ func newFakeWings(t *testing.T, goodBearer string) (*fakeWings, *httptest.Server
 		id, action, _ := strings.Cut(rest, "/")
 		switch {
 		case action == "" && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusOK)
+			code := f.statusCode
+			if code == 0 {
+				code = http.StatusOK
+			}
+			w.WriteHeader(code)
+			if f.statusMalformed {
+				_, _ = w.Write([]byte(`{not json`))
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"state": f.states[id]})
 		case action == "power" && r.Method == http.MethodPost:
 			var body struct {
@@ -116,9 +146,21 @@ func newFakeWings(t *testing.T, goodBearer string) (*fakeWings, *httptest.Server
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.signals = append(f.signals, id+":"+body.Action)
-			w.WriteHeader(http.StatusAccepted)
+			code := f.powerCode
+			if code == 0 {
+				code = http.StatusAccepted
+			}
+			w.WriteHeader(code)
 		case strings.HasPrefix(action, "logs") && r.Method == http.MethodGet:
-			w.WriteHeader(http.StatusOK)
+			code := f.logsCode
+			if code == 0 {
+				code = http.StatusOK
+			}
+			w.WriteHeader(code)
+			if f.logsMalformed {
+				_, _ = w.Write([]byte(`{not json`))
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string][]string{"data": f.logs[id]})
 		default:
 			http.NotFound(w, r)
@@ -261,5 +303,200 @@ func TestWingsDriverNameIsStable(t *testing.T) {
 	}
 	if d.Name() != "wings" {
 		t.Errorf("Name() = %q, want %q", d.Name(), "wings")
+	}
+}
+
+// Bearers exists so a caller can register the token with the journal's
+// scrubber (D-032); it must hand back every candidate and must not let the
+// caller mutate the driver's own copy through the returned slice.
+func TestBearersReturnsEveryCandidateAsACopy(t *testing.T) {
+	path := writeWingsConfig(t, "token_id: abc123\ntoken: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: "https://127.0.0.1:1", ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Bearers()
+	if len(got) != 2 || got[0] != "secret-value" || got[1] != "abc123.secret-value" {
+		t.Fatalf("Bearers() = %v", got)
+	}
+	got[0] = "mutated"
+	if d.Bearers()[0] != "secret-value" {
+		t.Error("mutating the returned slice changed the driver's own bearers")
+	}
+}
+
+func TestStatusOfAnUnrecognizedStateIsUnknown(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.states["server-a"] = "crashed" // not one of the four documented states
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Status(ctx(), "server-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != StateUnknown {
+		t.Errorf("Status() = %q, want %q", got, StateUnknown)
+	}
+}
+
+func TestStatusFailsOnANonOKResponse(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.statusCode = http.StatusInternalServerError
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Status(ctx(), "server-a"); err == nil {
+		t.Fatal("Status succeeded against a 500 response")
+	}
+}
+
+func TestStatusFailsOnUnparsableJSON(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.statusMalformed = true
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Status(ctx(), "server-a"); err == nil {
+		t.Fatal("Status succeeded against an unparsable body")
+	}
+}
+
+// A power signal Wings rejects outright must fail BEFORE ever polling
+// settle — there is nothing to wait for if the stop/start was never
+// accepted.
+func TestStopFailsWhenThePowerSignalIsRejected(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.powerCode = http.StatusBadRequest
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Stop(ctx(), "server-a"); err == nil {
+		t.Fatal("Stop succeeded despite the power signal being rejected")
+	}
+	if len(fake.signals) != 1 {
+		t.Errorf("signals sent: %v, want exactly one attempt", fake.signals)
+	}
+}
+
+func TestStartFailsWhenThePowerSignalIsRejected(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.powerCode = http.StatusBadRequest
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Start(ctx(), "server-a"); err == nil {
+		t.Fatal("Start succeeded despite the power signal being rejected")
+	}
+}
+
+func TestLogsFailsOnANonOKResponse(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.logsCode = http.StatusInternalServerError
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Logs(ctx(), "server-a", 50); err == nil {
+		t.Fatal("Logs succeeded against a 500 response")
+	}
+}
+
+func TestLogsFailsOnUnparsableJSON(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.logsMalformed = true
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Logs(ctx(), "server-a", 50); err == nil {
+		t.Fatal("Logs succeeded against an unparsable body")
+	}
+}
+
+// size <= 0 falls back to DefaultLogTailSize rather than asking Wings for a
+// nonsensical or unbounded tail.
+func TestLogsDefaultsTheSizeWhenNonPositive(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.logs["server-a"] = []string{"a line"}
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Logs(ctx(), "server-a", 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReachableFailsOnANonOKResponse(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.listCode = http.StatusServiceUnavailable
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: ts.URL, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Reachable(ctx()); err == nil {
+		t.Fatal("Reachable succeeded against a 503 response")
+	}
+}
+
+// A transport-level failure (the node is simply not there) is `do`'s own
+// error path, shared by every method built on it — Status, Stop/Start's
+// signal, Logs and Reachable all propagate it the same way.
+func TestDoFailsOnATransportError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := ts.URL
+	ts.Close() // nothing is listening here anymore
+
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{APIURL: url, ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Status(ctx(), "server-a"); err == nil {
+		t.Fatal("Status succeeded against a closed listener")
+	}
+	if err := d.Reachable(ctx()); err == nil {
+		t.Fatal("Reachable succeeded against a closed listener")
+	}
+	if _, err := d.Logs(ctx(), "server-a", 10); err == nil {
+		t.Fatal("Logs succeeded against a closed listener")
+	}
+}
+
+// settle must respect context cancellation rather than spinning until its
+// own timeout regardless of the caller giving up first.
+func TestSettleStopsWhenTheContextIsCancelled(t *testing.T) {
+	fake, ts := newFakeWings(t, "secret-value")
+	fake.states["server-a"] = "starting" // never reaches offline
+	path := writeWingsConfig(t, "token: secret-value\n")
+	d, err := NewWingsDriver(WingsConfig{
+		APIURL: ts.URL, ConfigPath: path,
+		StopTimeout: time.Hour, PollInterval: time.Millisecond, // would hang without cancellation
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cctx, cancel := context.WithCancel(ctx())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	if err := d.Stop(cctx, "server-a"); err == nil {
+		t.Fatal("Stop reported success after its context was cancelled")
 	}
 }

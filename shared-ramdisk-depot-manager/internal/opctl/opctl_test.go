@@ -326,8 +326,9 @@ func (f *fakePublisher) AdoptOrQuarantine(_ context.Context, opID string) (*publ
 }
 
 type fakeDriver struct {
-	rig       *rig
-	exposeErr map[string]error
+	rig         *rig
+	exposeErr   map[string]error
+	unexposeErr map[string]error
 }
 
 func (f *fakeDriver) Name() string { return "fake" }
@@ -345,6 +346,9 @@ func (f *fakeDriver) Expose(_ context.Context, rec *publish.Record, _ *profile.P
 func (f *fakeDriver) Unexpose(_ context.Context, rec *publish.Record, _ *profile.Profile,
 	req expose.Request) error {
 	f.rig.note("unexpose %s <- %s", req.ServerID, rec.Generation)
+	if err := f.unexposeErr[req.ServerID]; err != nil {
+		return err
+	}
 	return nil
 }
 

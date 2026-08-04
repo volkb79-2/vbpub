@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"srdm/internal/assign"
 	"srdm/internal/power"
 	"srdm/internal/publish"
 )
@@ -442,5 +443,177 @@ func TestUpdateChecksEveryServerAnswersStatusBeforePublishing(t *testing.T) {
 	}
 	if len(r.log) != 0 {
 		t.Errorf("an update that could not confirm every server's power state did %v", r.log)
+	}
+}
+
+func TestUpdateRefusesANonexistentRelease(t *testing.T) {
+	r := newRig(t)
+	r.assigned("rel-1", "main-1")
+	// rel-typo was never promoted into the store.
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-typo", r.prof)
+	if err == nil {
+		t.Fatal("Update succeeded against a release that was never promoted")
+	}
+	if len(r.log) != 0 {
+		t.Errorf("updating to a nonexistent release did %v", r.log)
+	}
+}
+
+// The assignment names an old release whose published record cannot be
+// read — corrupted or vanished between the headroom check and here.
+// Update must report that plainly rather than binding a swap to a
+// generation it cannot describe.
+func TestUpdateFailsWhenTheOldGenerationsRecordCannotBeRead(t *testing.T) {
+	r := newRig(t)
+	r.assigned("rel-1", "main-1")
+	r.release("rel-2")
+	delete(r.pub.records, publish.GenerationID("rel-1"))
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-2", r.prof)
+	if err == nil {
+		t.Fatal("Update succeeded despite the old generation's record being unreadable")
+	}
+	// The new generation was already published before this failure — that
+	// publish is not rolled back (nothing was ever exposed to it), but the
+	// assignment must still name the untouched old release.
+	if got := r.loadAssignment().Release; got != "rel-1" {
+		t.Errorf("assignment is %q after a failed update, want rel-1", got)
+	}
+}
+
+func TestUpdateRefusesACohortWithTwoMainsDeclared(t *testing.T) {
+	r := newRig(t)
+	a := r.assigned("rel-1")
+	if err := a.AddServer("server-a", "ro", assign.RoleMain); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AddServer("server-b", "ro", assign.RoleMain); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.asg.Save(a); err != nil {
+		t.Fatal(err)
+	}
+	r.release("rel-2")
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-2", r.prof)
+	if err == nil || !strings.Contains(err.Error(), "2 servers declared main") {
+		t.Fatalf("want a refusal naming the extra main, got %v", err)
+	}
+	if len(r.log) != 0 {
+		t.Errorf("an update with two mains did %v", r.log)
+	}
+}
+
+// --- cycleCohortTo's own branches, not just Update's outer preflight -------
+
+func TestUpdateRollsBackWhenASlaveFailsToStop(t *testing.T) {
+	r := newRig(t)
+	r.assigned("rel-1", "main-1", "slave-1")
+	r.release("rel-2")
+	r.pwr.stopErr = map[string]error{"slave-1": errors.New("the server is wedged")}
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-2", r.prof)
+	if err == nil {
+		t.Fatal("Update succeeded despite a slave refusing to stop")
+	}
+	if got := r.loadAssignment().Release; got != "rel-1" {
+		t.Errorf("a rolled-back update recorded %q", got)
+	}
+	// Nothing was ever switched: the failure is in the very first step, so
+	// there is no exposure to roll back — only the (harmless, idempotent)
+	// restart attempts rollback always makes.
+	for _, step := range r.log {
+		if strings.HasPrefix(step, "unexpose") || strings.HasPrefix(step, "expose") {
+			t.Errorf("an exposure changed despite the cohort never fully stopping: %v", r.log)
+		}
+	}
+}
+
+func TestUpdateRollsBackWhenAnExposeFails(t *testing.T) {
+	r := newRig(t)
+	r.assigned("rel-1", "main-1", "slave-1")
+	r.release("rel-2")
+	r.drv.exposeErr = map[string]error{"slave-1": errors.New("mount refused")}
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-2", r.prof)
+	if err == nil {
+		t.Fatal("Update succeeded despite a server failing to expose to the new generation")
+	}
+	if got := r.loadAssignment().Release; got != "rel-1" {
+		t.Errorf("a rolled-back update recorded %q", got)
+	}
+	for _, step := range r.log {
+		if strings.HasPrefix(step, "teardown") {
+			t.Errorf("a rolled-back update tore down a generation: %v", r.log)
+		}
+	}
+}
+
+func TestUpdateRollsBackWhenAnUnexposeFails(t *testing.T) {
+	r := newRig(t)
+	r.assigned("rel-1", "main-1", "slave-1")
+	r.release("rel-2")
+	r.drv.unexposeErr = map[string]error{"main-1": errors.New("unmount refused")}
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-2", r.prof)
+	if err == nil {
+		t.Fatal("Update succeeded despite a server failing to unexpose the old generation")
+	}
+	if got := r.loadAssignment().Release; got != "rel-1" {
+		t.Errorf("a rolled-back update recorded %q", got)
+	}
+}
+
+func TestUpdateRollsBackWhenASlaveFailsToStart(t *testing.T) {
+	r := newRig(t)
+	r.assigned("rel-1", "main-1", "slave-1")
+	r.release("rel-2")
+	r.pwr.failFirstStart = map[string]bool{"slave-1": true}
+
+	_, err := r.ctl.Update(ctx(), "op-1", "rel-2", r.prof)
+	if err == nil {
+		t.Fatal("Update succeeded despite a slave failing to start on the new generation")
+	}
+	if got := r.loadAssignment().Release; got != "rel-1" {
+		t.Errorf("a rolled-back update recorded %q", got)
+	}
+	// main made it all the way up on the new generation before slave-1
+	// failed; rollback must still bring main back down and restore it on
+	// the old generation rather than leaving it stranded on the new one.
+	if countOf(r.log, "stop main-1") < 2 {
+		t.Errorf("main was not stopped again during rollback: %v", r.log)
+	}
+}
+
+// --- readiness wiring: configured but nothing to check with ----------------
+
+// Update itself never constructs this state (WithReadiness always sets the
+// checker and the config together) — this exercises anchorMainReadiness
+// and waitMainReady directly, against a Controller mutated in-package to
+// the shape a caller could still reach by calling New with WithReadiness's
+// checker argument nil.
+func TestReadinessConfiguredWithNoCheckerWiredIsAnError(t *testing.T) {
+	r := newRig(t)
+	r.ctl.rdy = nil
+
+	if _, err := r.ctl.anchorMainReadiness(ctx(), "main-1"); err == nil {
+		t.Fatal("anchorMainReadiness succeeded with readiness configured and no checker")
+	}
+	if err := r.ctl.waitMainReady(ctx(), "main-1", nil); err == nil {
+		t.Fatal("waitMainReady succeeded with readiness configured and no checker")
+	}
+}
+
+func TestReadinessUnconfiguredSkipsAnchorAndWait(t *testing.T) {
+	r := newRig(t)
+	r.ctl.readiness.Kind = ""
+
+	anchor, err := r.ctl.anchorMainReadiness(ctx(), "main-1")
+	if err != nil || anchor != nil {
+		t.Fatalf("anchorMainReadiness() = %v, %v; want nil, nil when unconfigured", anchor, err)
+	}
+	if err := r.ctl.waitMainReady(ctx(), "main-1", nil); err != nil {
+		t.Fatalf("waitMainReady() = %v; want nil when unconfigured", err)
 	}
 }

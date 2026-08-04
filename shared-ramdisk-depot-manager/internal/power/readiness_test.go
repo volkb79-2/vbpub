@@ -3,6 +3,7 @@ package power
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -148,5 +149,26 @@ func TestNewWingsLogReadinessUsesDefaults(t *testing.T) {
 	}
 	if w.pollInterval != DefaultReadinessPollInterval {
 		t.Errorf("pollInterval = %v, want %v", w.pollInterval, DefaultReadinessPollInterval)
+	}
+}
+
+func TestEffectiveTimeoutFallsBackToTheDefaultWhenUnset(t *testing.T) {
+	var r Readiness
+	if got := r.effectiveTimeout(); got != DefaultReadinessTimeout {
+		t.Errorf("effectiveTimeout() = %v, want %v", got, DefaultReadinessTimeout)
+	}
+	r.Timeout = 30 * time.Second
+	if got := r.effectiveTimeout(); got != 30*time.Second {
+		t.Errorf("an explicit Timeout was overridden by the default: %v", got)
+	}
+}
+
+func TestReadinessTimeoutErrorMessageNamesServerPatternAndTimeout(t *testing.T) {
+	err := &ReadinessTimeoutError{ServerID: "server-a", Pattern: "ready", Timeout: "5m0s"}
+	msg := err.Error()
+	for _, want := range []string{"server-a", "ready", "5m0s"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("ReadinessTimeoutError.Error() = %q, want it to contain %q", msg, want)
+		}
 	}
 }
