@@ -393,6 +393,70 @@ class TestUpdateRoutes:
         assert paths.routes_path().read_text(encoding="utf-8") == original
 
 
+class TestRoutesForTierDanglingRoute:
+    """CR-08: a tier listing a route id `[routes.*]` no longer declares must
+    refuse the dangling id, not KeyError the whole caller -- the live-path
+    half of the fix route_doctor's `tier-dangling-route` finding already
+    diagnosed offline (tests/test_route_doctor.py)."""
+
+    def test_for_tier_drops_the_dangling_id_and_keeps_the_rest(self, tmp_path):
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.implement-1]\n'
+            'routes = ["claude-haiku", "ghost", "claude-sonnet"]\n\n'
+            '[routes.claude-haiku]\n'
+            'cli = "claude"\n'
+            'model = "haiku"\n\n'
+            '[routes.claude-sonnet]\n'
+            'cli = "claude"\n'
+            'model = "sonnet"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        result = routes.for_tier("implement-1")
+        assert [r.route_id for r in result] == ["claude-haiku", "claude-sonnet"]
+
+    def test_for_tier_on_an_entirely_dangling_tier_returns_empty_not_raises(
+            self, tmp_path):
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.implement-1]\n'
+            'routes = ["ghost"]\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        assert routes.for_tier("implement-1") == []
+
+    def test_for_role_inherits_the_refusal_via_its_tier_fallback(self, tmp_path):
+        """for_role's tier-named-after-role fallback calls for_tier directly
+        -- confirm the refusal propagates through that path too, not just
+        the explicit for_tier call."""
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.frontier-review]\n'
+            'routes = ["ghost", "fake-review"]\n\n'
+            '[routes.fake-review]\n'
+            'cli = "claude"\n'
+            'model = "opus"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        matches = routes.for_role("review-independent")
+        assert [r.route_id for r in matches] == ["fake-review"]
+
+
 class TestRoutesForRole:
     """Routes.for_role: the B16/D-R1 decoupling of call sites from tier
     names -- prefers route(s) carrying a matching RouteDef.role_default, and

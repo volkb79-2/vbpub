@@ -152,15 +152,17 @@ class TestCheckSchema:
         assert f.severity == "critical"
         assert f.refs == ["implement-1", "ghost"]
 
-    def test_tier_dangling_route_matches_a_real_for_tier_keyerror(self):
-        """The finding exists precisely BECAUSE Routes.for_tier has no
-        guard against a dangling entry -- prove the KeyError it warns about
-        is real, not a hypothetical."""
+    def test_tier_dangling_route_matches_what_for_tier_now_refuses(self):
+        """The offline diagnostic and the live path agree: `for_tier` no
+        longer raises `KeyError` on a dangling entry (fixed at the root for
+        CR-08's stale-route-id finding) -- it drops the dangling id and
+        returns what DOES resolve, the same refuse-not-raise discipline
+        `effects_dispatch.route_by_id` already proved. `check_schema` still
+        catches it offline, at a stage before anything is dropped silently."""
         routes = _routes(tiers={"implement-1": ["ghost"]}, routes={})
         findings = route_doctor.check_schema(routes)
         assert findings[0].kind == "tier-dangling-route"
-        with pytest.raises(KeyError):
-            routes.for_tier("implement-1")
+        assert routes.for_tier("implement-1") == []
 
     def test_empty_tier_is_warning(self):
         routes = _routes(tiers={"implement-1": []}, routes={})

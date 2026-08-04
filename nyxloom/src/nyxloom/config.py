@@ -651,7 +651,36 @@ class Routes:
         return cls(revision=str(data.get("revision", "unversioned")), tiers=tiers, routes=routes)
 
     def for_tier(self, tier: str) -> list[RouteDef]:
-        return [self.routes[rid] for rid in self.tiers.get(tier, [])]
+        """Routes declared for ``tier``, filtered to ids that actually
+        resolve -- never ``KeyError``.
+
+        A tier may list a route id ``[routes.*]`` no longer declares (an
+        operator editing ``routes.toml`` mid-edit, or a stale tier left
+        behind by a rename); ``route_doctor`` already diagnoses this offline
+        as ``tier-dangling-route critical``. A bare ``self.routes[rid]``
+        lookup here used to turn that into a live ``KeyError`` that killed
+        the caller's ENTIRE result, not just the one dangling id --
+        ``reconcile.dispatch_eligible``'s health check and
+        ``planning.frontier_route_available`` (feeding six ``rules_carve.py``
+        gates) both zero out a project's whole plan for the pass, and
+        ``render.py``'s ``_render_routing`` freezes the whole dashboard --
+        every pass, repeating, until an operator manually runs
+        ``route_doctor`` to find out why. This is the live path's half of
+        that fix: a dangling id is dropped and logged, matching
+        ``effects_dispatch.route_by_id``'s refuse-not-raise discipline
+        (CR-13a) generalized from the effect boundary to the source data.
+        ``for_role`` inherits this for free -- it calls ``for_tier`` for
+        every one of its own fallback paths.
+        """
+        resolved: list[RouteDef] = []
+        for rid in self.tiers.get(tier, []):
+            route = self.routes.get(rid)
+            if route is None:
+                log.error("tier-dangling-route", tier=tier, route_id=rid,
+                          reason=f"tier-dangling-route:{tier}:{rid}")
+                continue
+            resolved.append(route)
+        return resolved
 
     def for_role(self, role: str) -> list[RouteDef]:
         """Routes a role defaults to — decouples call sites from tier names.
