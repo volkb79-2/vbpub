@@ -35,7 +35,7 @@ import sqlite3
 
 import pytest
 
-from nyxloom import storage, storage_sqlite
+from nyxloom import projection, storage, storage_sqlite
 from nyxloom.types import (
     Actor, ActorKind, EventType, TaskState, TaskStateFile, utc_now,
 )
@@ -677,6 +677,95 @@ def test_a_corrupt_database_raises_rather_than_reading_as_empty(sqlite_backend):
         storage.list_states(project)
     with pytest.raises(sqlite3.DatabaseError):
         list(storage.iter_events(project))
+
+
+# ---------------------------------------------------------------------------
+# CR-07e: the versioned-event upcaster skeleton, proved against real rows in
+# a real database. The plan assigned this mechanism to CR-04; it never
+# landed. Zero real upcasters exist yet (SCHEMA_VERSION has never
+# incremented), so these tests hand-construct a "legacy" row at a synthetic
+# lower version and register a throwaway upcaster via monkeypatch -- proving
+# the DISPATCH mechanism, not any real schema migration.
+
+def test_a_legacy_event_row_is_upcast_on_read(sqlite_backend, monkeypatch):
+    project, task_id = "sp07e-event-upcast", "t-event-upcast"
+    _seed(project, task_id, TaskState.QUEUED)
+
+    conn = storage_sqlite._connect(project)
+    try:
+        conn.execute(
+            "UPDATE events SET schema_version = 0, "
+            "payload = '{\"legacy\": true}' WHERE task_id = ?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setitem(
+        projection.EVENT_UPCASTERS, (0, EventType.TASK_CREATED),
+        lambda payload: {**payload, "upcasted_from": 0})
+
+    events = [e for e in storage.iter_events(project) if e.task_id == task_id]
+    assert len(events) == 1
+    assert events[0].payload == {"legacy": True, "upcasted_from": 0}
+    # The row's ORIGINALLY RECORDED version is a historical fact, not
+    # overwritten by the upcast -- only the payload SHAPE is transformed.
+    assert events[0].schema_version == 0
+
+
+def test_a_legacy_state_row_is_upcast_on_read(sqlite_backend, monkeypatch):
+    project, task_id = "sp07e-state-upcast", "t-state-upcast"
+    _seed(project, task_id, TaskState.QUEUED)
+
+    conn = storage_sqlite._connect(project)
+    try:
+        row = conn.execute(
+            "SELECT data FROM states WHERE task_id = ?", (task_id,)).fetchone()
+        data = json.loads(row[0])
+        data["schema_version"] = 0
+        conn.execute(
+            "UPDATE states SET schema_version = 0, data = ? WHERE task_id = ?",
+            (json.dumps(data), task_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    def _upcast(d):
+        return {**d, "notes": "upcasted-from-v0"}
+
+    monkeypatch.setitem(projection.STATE_UPCASTERS, 0, _upcast)
+
+    assert storage.load_state(project, task_id).notes == "upcasted-from-v0"
+    assert storage.list_states(project)[task_id].notes == "upcasted-from-v0"
+
+
+def test_a_row_with_no_registered_upcaster_refuses_rather_than_reading_wrong(
+        sqlite_backend):
+    """The fault-matrix contract this file's header names: "failed upcast
+    produce no authorizing effect". A row behind SCHEMA_VERSION with no
+    registered path forward must not become a live object -- reading it
+    raises projection.UpcastError, not a ValueError from a mismatched shape
+    reaching TaskStateFile.from_dict, and not a silent pass-through."""
+    project, task_id = "sp07e-unupcastable", "t-unupcastable"
+    _seed(project, task_id, TaskState.QUEUED)
+
+    conn = storage_sqlite._connect(project)
+    try:
+        row = conn.execute(
+            "SELECT data FROM states WHERE task_id = ?", (task_id,)).fetchone()
+        data = json.loads(row[0])
+        data["schema_version"] = 0
+        conn.execute(
+            "UPDATE states SET schema_version = 0, data = ? WHERE task_id = ?",
+            (json.dumps(data), task_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # No upcaster registered for version 0 -- the default, unmodified state.
+    with pytest.raises(projection.UpcastError):
+        storage.load_state(project, task_id)
+    with pytest.raises(projection.UpcastError):
+        storage.list_states(project)
 
 
 def test_a_locked_database_raises_rather_than_silently_skipping_the_write(
