@@ -33,6 +33,13 @@ INTERFACE CONTRACT (frozen):
                                 exists (unless task terminal).
     decision-hold      info     QUEUED/NEEDS_DECISION task whose D-dep is
                                 OPEN (refs the D-id) — visibility, not error.
+    decision-hold-unresolved
+                        warning NEEDS_DECISION task with NO declared D-dep
+                                at all (a reject_triage human-judgment
+                                escalation decision_hold now correctly
+                                leaves parked rather than auto-releasing;
+                                refs the task id) — the absence check 11
+                                doesn't cover.
 
 CR-16 2026-08-03 (liveness, channel health, silent-failure detection;
 RISK-007) adds three checks, folded into doctor_project's sweep AND
@@ -616,6 +623,11 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
                     # manufacture one -- same shape as check 11's skip.
                     continue
                 if fm.id != tsf.task_id:
+                    # Strict, unlike check 11's looser prefix match: this
+                    # check asserts an ABSENCE (no D-dep at all), so
+                    # attributing a same-prefix sibling's decision_deps() to
+                    # the wrong task could manufacture a false claim rather
+                    # than just miss one.
                     continue
                 if not fm.decision_deps():
                     findings.append(DoctorFinding(
