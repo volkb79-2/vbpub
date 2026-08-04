@@ -8,7 +8,10 @@ NotifyConfig(...) directly still keeps the url it passes.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import logging
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -434,6 +437,57 @@ class TestRoutesForTierDanglingRoute:
         routes = Routes.load(path=p)
 
         assert routes.for_tier("implement-1") == []
+
+    def test_for_tier_and_for_role_never_log(self):
+        """D-L5 (docs/plan-logging.md): reconcile.plan_project is PURE -- no
+        clock, no I/O, no logger import -- and Routes.for_tier/for_role are
+        called from BOTH that pure core (reconcile.dispatch_eligible,
+        planning.PlanContext.derive) AND impure effect-boundary code, so a
+        log call inside either method would make every pure caller impure
+        too. The AST-based purity oracle (test_planning.py's
+        test_no_rule_can_reach_an_impure_capability) cannot catch this: it
+        does not resolve method calls on instance attributes like
+        `inp.routes.for_tier(...)`, only module-level/module-alias calls --
+        confirmed a real blind spot by independent review, not a
+        hypothetical. This test closes it directly: no `log.` attribute
+        access anywhere in either method's own body."""
+        from nyxloom.config import Routes
+
+        for name in ("for_tier", "for_role"):
+            tree = ast.parse(textwrap.dedent(
+                inspect.getsource(getattr(Routes, name))))
+            log_calls = [node for node in ast.walk(tree)
+                         if isinstance(node, ast.Attribute)
+                         and isinstance(node.value, ast.Name)
+                         and node.value.id == "log"]
+            assert not log_calls, f"Routes.{name} must not call the logger"
+
+    def test_a_dangling_id_produces_no_log_output(self, tmp_path):
+        """Behavioural partner of the structural test above: prove it, not
+        just declare it. A real dangling-id lookup through the real
+        structlog pipeline emits nothing."""
+        import structlog
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.implement-1]\n'
+            'routes = ["ghost"]\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        captured: list = []
+        old_config = structlog.get_config()
+        try:
+            structlog.configure(processors=[
+                lambda logger, name, event_dict: captured.append(event_dict)
+                or event_dict])
+            assert routes.for_tier("implement-1") == []
+        finally:
+            structlog.configure(**old_config)
+        assert captured == []
 
     def test_for_role_inherits_the_refusal_via_its_tier_fallback(self, tmp_path):
         """for_role's tier-named-after-role fallback calls for_tier directly

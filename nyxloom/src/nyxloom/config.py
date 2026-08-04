@@ -661,25 +661,36 @@ class Routes:
         lookup here used to turn that into a live ``KeyError`` that killed
         the caller's ENTIRE result, not just the one dangling id --
         ``reconcile.dispatch_eligible``'s health check and
-        ``planning.frontier_route_available`` (feeding six ``rules_carve.py``
-        gates) both zero out a project's whole plan for the pass, and
-        ``render.py``'s ``_render_routing`` freezes the whole dashboard --
-        every pass, repeating, until an operator manually runs
+        ``planning.PlanContext.derive``'s ``frontier_route_available``
+        (computed once per pass and cached, then read by six
+        ``rules_carve.py`` gates) both zero out a project's whole plan for
+        the pass, and ``render.py``'s ``_render_routing`` freezes the whole
+        dashboard -- every pass, repeating, until an operator manually runs
         ``route_doctor`` to find out why. This is the live path's half of
-        that fix: a dangling id is dropped and logged, matching
-        ``effects_dispatch.route_by_id``'s refuse-not-raise discipline
-        (CR-13a) generalized from the effect boundary to the source data.
+        that fix: a dangling id is DROPPED, not logged here.
+
+        Deliberately NOT ``effects_dispatch.route_by_id``'s pattern (log at
+        the point of refusal): this method is called from BOTH effect-
+        boundary code (impure by design, fine to log) AND the pure planning
+        core -- ``reconcile.plan_project`` and everything ``PlanContext.derive``
+        touches carry a hard, load-bearing no-I/O contract (D-L5,
+        docs/plan-logging.md), and a shared primitive cannot pick which side
+        of that boundary it is being called from. Logging here would make
+        every caller impure, including the ones that must not be, and the
+        AST-based purity oracle (``tests/test_planning.py``) cannot catch it
+        -- it does not resolve method calls on instance attributes like
+        ``inp.routes.for_tier(...)``, only module-level/module-alias calls.
+        Diagnosability is not lost: ``route_doctor.check_schema`` already
+        finds this offline, independently of this method (it compares
+        ``tiers`` against ``routes`` directly, never calling ``for_tier``).
         ``for_role`` inherits this for free -- it calls ``for_tier`` for
         every one of its own fallback paths.
         """
         resolved: list[RouteDef] = []
         for rid in self.tiers.get(tier, []):
             route = self.routes.get(rid)
-            if route is None:
-                log.error("tier-dangling-route", tier=tier, route_id=rid,
-                          reason=f"tier-dangling-route:{tier}:{rid}")
-                continue
-            resolved.append(route)
+            if route is not None:
+                resolved.append(route)
         return resolved
 
     def for_role(self, role: str) -> list[RouteDef]:
