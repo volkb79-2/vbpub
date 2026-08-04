@@ -2054,7 +2054,11 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path,
     # table at all) rather than losing the whole render pass.
     try:
         cfg = config.ProjectConfig.load(root)
-    except Exception:
+    except Exception:  # census: advisory-degradation (CR-14a)
+        # Can only ever REDUCE what this page shows (redaction skipped,
+        # log excerpt degrades to "No log") -- never grants anything a
+        # clean load would not have.
+        log.debug("task page config load failed", project=project, task_id=tsf.task_id)
         cfg = None
 
     # Frontmatter table (P13 review-fix: TaskStateFile never had a
