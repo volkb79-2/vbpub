@@ -135,6 +135,41 @@ def _predigest_specs(specs: Sequence[str]) -> List[str]:
     return out
 
 
+def _limits_snapshot(limits_mod, eff) -> Dict[str, object]:
+    """Serialise one cgroup's effective limits into the manifest.
+
+    Both forms are written on purpose. ``described`` is what a human reads at
+    the top of the report; ``resolved`` is what ``analyze.make_proposals``
+    reasons over, and it has to be structured because "memory.high 6.0G (bound
+    by /wings.slice/...)" is not something a proposal generator can compare
+    against host RAM. Writing only the prose form — which an earlier version of
+    this function did — left every real run producing no proposals at all,
+    silently, because the consumer had nothing it could parse.
+
+    ``chain`` is deliberately excluded: it is the full LimitSet of every
+    ancestor, it dominates the manifest's size, and every fact downstream needs
+    has already been resolved out of it into the scalars below.
+    """
+    resolved = {
+        field: getattr(eff, field)
+        for field in (
+            "memory_max", "memory_max_by",
+            "memory_high", "memory_high_by",
+            "memory_swap_max", "memory_swap_max_by",
+            "strict_min", "recursive_min", "strict_low", "recursive_low",
+            "protection_mode",
+            "cpu_cores", "cpu_cores_by",
+            "io_max", "io_max_by",
+            "pids_max", "warnings",
+        )
+    }
+    return {
+        "resolved": resolved,
+        "described": limits_mod.describe(eff),
+        "fingerprint": limits_mod.fingerprint(eff),
+    }
+
+
 def _tag_role(specs: Sequence[str], role: str) -> List[str]:
     out = []
     for spec in specs:
@@ -190,7 +225,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
              "container_id": t.container_id, "pid": t.pid}
             for t in all_targets
         ],
-        "limits": {cg: limits_mod.describe(eff) for cg, eff in limit_map.items()},
+        "limits": {cg: _limits_snapshot(limits_mod, eff) for cg, eff in limit_map.items()},
         "host": metrics_mod.sample_host(),
         "config": {"hot_interval": args.hot_interval, "idle_interval": args.idle_interval},
     })
@@ -313,8 +348,9 @@ class _nullcontext:
 # ── helper launch ───────────────────────────────────────────────────────────
 
 def _launch_helper(run_path: str, collect_args: List[str],
-                   image: Optional[str]) -> subprocess.Popen:
-    spec = access.build_helper_spec(HERE, os.path.dirname(run_path), image)
+                   image: Optional[str],
+                   cgroup_parent: Optional[str] = None) -> subprocess.Popen:
+    spec = access.build_helper_spec(HERE, os.path.dirname(run_path), image, cgroup_parent)
     docker_args = spec.docker_args()
     # Plain python3, not the venv: the collector is standard-library only by
     # contract, and running it on the bare interpreter is what keeps it that way.
@@ -403,7 +439,8 @@ def _start_run(args: argparse.Namespace):
             stdout=sys.stderr, stderr=sys.stderr,
         )
     else:
-        child = _launch_helper(run.path, collect_args, args.helper_image)
+        child = _launch_helper(run.path, collect_args, args.helper_image,
+                               getattr(args, "helper_cgroup_parent", None))
 
     _wait_for(os.path.join(run.path, READY_FILE), args.start_timeout, "the collector to start")
     return run, child
@@ -537,7 +574,8 @@ def cmd_targets(args: argparse.Namespace) -> int:
     if mode == "helper":
         _note("resolving through a helper container (no host cgroup view here)")
         specs = _tag_role(_predigest_specs(args.target), "subject")
-        spec = access.build_helper_spec(HERE, HERE, args.helper_image)
+        spec = access.build_helper_spec(HERE, HERE, args.helper_image,
+                                       getattr(args, "helper_cgroup_parent", None))
         command = [access.docker_bin(), *spec.docker_args(), "python3",
                    os.path.join(HERE, "cgprofile.py"), "targets", "--mode", "direct"]
         for item in specs:
@@ -594,8 +632,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"\nresolved mode          {mode}")
     if mode == "helper":
         try:
-            spec = access.build_helper_spec(HERE, DEFAULT_OUT, args.helper_image)
+            spec = access.build_helper_spec(HERE, DEFAULT_OUT, args.helper_image,
+                                           getattr(args, "helper_cgroup_parent", None))
             print(f"  helper image         {spec.image}")
+            print(f"  placed in            {spec.cgroup_parent}")
             print(f"  repo  {spec.repo_host_path} -> {spec.repo_mount_path}")
             print(f"  out   {spec.out_host_path} -> {spec.out_mount_path}")
         except access.AccessError as exc:
@@ -631,6 +671,11 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mode", choices=("auto", "direct", "helper"), default="auto")
     parser.add_argument("--helper-image", default=None,
                         help="image for the privileged helper (default: this container's own)")
+    parser.add_argument("--helper-cgroup-parent", default=None,
+                        help="where to place the helper container itself. Defaults to "
+                             "$CGPROFILE_HELPER_CGROUP_PARENT or "
+                             "$CGROUP_PARENT_DEV_INTERACTIVE — never the daemon default, "
+                             "which on this host is the tier gate runs are profiled in")
     parser.add_argument("--out-dir", default=DEFAULT_OUT)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--start-timeout", type=float, default=90.0)
@@ -690,6 +735,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = sub.add_parser("doctor", help="what can this process reach?")
     doctor_parser.add_argument("--helper-image", default=None)
+    doctor_parser.add_argument("--helper-cgroup-parent", default=None)
     doctor_parser.set_defaults(func=cmd_doctor)
 
     collect_parser = sub.add_parser("_collect", help=argparse.SUPPRESS)

@@ -924,8 +924,9 @@ class TestLaunchHelper:
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo", repo_mount_path=cg.HERE,
             out_host_path="/host/out", out_mount_path=str(tmp_path),
+            cgroup_parent="dev-interactive.slice",
         )
-        monkeypatch.setattr(access, "build_helper_spec", lambda repo, out, image: spec)
+        monkeypatch.setattr(access, "build_helper_spec", lambda repo, out, image, cgroup_parent=None: spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
         captured = {}
 
@@ -945,7 +946,26 @@ class TestLaunchHelper:
         # docker_args() (--privileged, the bind mounts, etc.) sit between the
         # binary and the plain-python3 collector invocation.
         assert "--privileged" in command
+        assert "--cgroup-parent=dev-interactive.slice" in command
         assert "starting helper container" in capsys.readouterr().err
+
+    def test_cgroup_parent_argument_is_threaded_to_build_helper_spec(self, monkeypatch, tmp_path: Path):
+        spec = access.HelperSpec(
+            image="img:local", repo_host_path="/h/repo", repo_mount_path=cg.HERE,
+            out_host_path="/h/out", out_mount_path=str(tmp_path), cgroup_parent="whatever.slice",
+        )
+        captured = {}
+
+        def fake_build_helper_spec(repo, out, image, cgroup_parent=None):
+            captured["cgroup_parent"] = cgroup_parent
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", fake_build_helper_spec)
+        monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(cg.subprocess, "Popen", lambda command, **k: FakePopen(command))
+        run_path = str(tmp_path / "run-2")
+        cg._launch_helper(run_path, ["--run-dir", run_path], None, cgroup_parent="my-explicit.slice")
+        assert captured["cgroup_parent"] == "my-explicit.slice"
 
 
 def fake_ready_popen(run_dir_holder: Dict[str, str], exit_code: Optional[int] = 0):
@@ -1050,9 +1070,10 @@ class TestStartRun:
         holder: Dict[str, str] = {}
         called = {}
 
-        def fake_launch(run_path, collect_args, image):
+        def fake_launch(run_path, collect_args, image, cgroup_parent=None):
             called["run_path"] = run_path
             called["image"] = image
+            called["cgroup_parent"] = cgroup_parent
             open(os.path.join(run_path, cg.READY_FILE), "w").close()
             return FakePopen(collect_args)
 
@@ -1062,11 +1083,34 @@ class TestStartRun:
             target=["cgroup:/dev.slice"], observe=[], out_dir=str(tmp_path), run_id="run-helper",
             mode="helper", hot_interval=0.25, idle_interval=2.0, discovery_interval=2.0, max_depth=4,
             duration=None, follow_children=False, damon=False, cap=[], helper_image="img:local",
-            start_timeout=5.0,
+            helper_cgroup_parent="dev-interactive.slice", start_timeout=5.0,
         )
         run, child = cg._start_run(args)
         assert called["run_path"] == run.path
         assert called["image"] == "img:local"
+        assert called["cgroup_parent"] == "dev-interactive.slice"
+
+    def test_helper_mode_with_no_cgroup_parent_attribute_passes_none(self, monkeypatch, tmp_path: Path):
+        # _add_common always defines --helper-cgroup-parent, but _start_run
+        # reads it via getattr(..., None) so it degrades gracefully if a
+        # caller ever builds args without it.
+        called = {}
+
+        def fake_launch(run_path, collect_args, image, cgroup_parent=None):
+            called["cgroup_parent"] = cgroup_parent
+            open(os.path.join(run_path, cg.READY_FILE), "w").close()
+            return FakePopen(collect_args)
+
+        monkeypatch.setattr(cg, "_launch_helper", fake_launch)
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "helper")
+        args = argparse.Namespace(
+            target=["cgroup:/dev.slice"], observe=[], out_dir=str(tmp_path), run_id="run-helper-2",
+            mode="helper", hot_interval=0.25, idle_interval=2.0, discovery_interval=2.0, max_depth=4,
+            duration=None, follow_children=False, damon=False, cap=[], helper_image=None,
+            start_timeout=5.0,
+        )
+        cg._start_run(args)
+        assert called["cgroup_parent"] is None
 
 
 # ── cmd_run ───────────────────────────────────────────────────────────────
@@ -1337,7 +1381,7 @@ class TestCmdReport:
 def targets_args(**overrides) -> argparse.Namespace:
     ns = argparse.Namespace(
         target=["cgroup:/dev.slice/dev-background.slice"], mode="direct", follow_children=False,
-        max_depth=4, helper_image=None,
+        max_depth=4, helper_image=None, helper_cgroup_parent=None,
     )
     for key, value in overrides.items():
         setattr(ns, key, value)
@@ -1390,9 +1434,15 @@ class TestCmdTargets:
         monkeypatch.setattr(targets_mod, "docker_bin", lambda: None)  # keep _predigest_specs hermetic
         spec = access.HelperSpec(
             image="img:local", repo_host_path="/h/repo", repo_mount_path=cg.HERE,
-            out_host_path="/h/out", out_mount_path=cg.HERE,
+            out_host_path="/h/out", out_mount_path=cg.HERE, cgroup_parent="dev-interactive.slice",
         )
-        monkeypatch.setattr(access, "build_helper_spec", lambda repo, out, image: spec)
+        captured_spec_call = {}
+
+        def fake_build_helper_spec(repo, out, image, cgroup_parent=None):
+            captured_spec_call["cgroup_parent"] = cgroup_parent
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", fake_build_helper_spec)
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
         captured = {}
 
@@ -1401,10 +1451,14 @@ class TestCmdTargets:
             return subprocess.CompletedProcess(command, returncode=3)
 
         monkeypatch.setattr(cg.subprocess, "run", fake_run)
-        result = cg.cmd_targets(targets_args(mode="helper", target=["cgroup:/dev.slice"]))
+        result = cg.cmd_targets(targets_args(
+            mode="helper", target=["cgroup:/dev.slice"], helper_cgroup_parent="dev-interactive.slice",
+        ))
         assert result == 3
         assert "--target" in captured["command"]
         assert "targets" in captured["command"]
+        assert "--cgroup-parent=dev-interactive.slice" in captured["command"]
+        assert captured_spec_call["cgroup_parent"] == "dev-interactive.slice"
 
 
 # ── cmd_doctor ───────────────────────────────────────────────────────────
@@ -1452,20 +1506,125 @@ class TestCmdDoctor:
         spec = access.HelperSpec(
             image="img:local", repo_host_path="/h/repo", repo_mount_path=cg.HERE,
             out_host_path="/h/out", out_mount_path=cg.DEFAULT_OUT,
+            cgroup_parent="dev-interactive.slice",
         )
-        monkeypatch.setattr(access, "build_helper_spec", lambda repo, out, image: spec)
-        assert cg.cmd_doctor(argparse.Namespace(helper_image=None)) == 0
+        captured = {}
+
+        def fake_build_helper_spec(repo, out, image, cgroup_parent=None):
+            captured["cgroup_parent"] = cgroup_parent
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", fake_build_helper_spec)
+        args = argparse.Namespace(helper_image=None, helper_cgroup_parent="explicit.slice")
+        assert cg.cmd_doctor(args) == 0
         out = capsys.readouterr().out
         assert "resolved mode          helper" in out
         assert "img:local" in out
+        assert "placed in            dev-interactive.slice" in out
+        assert captured["cgroup_parent"] == "explicit.slice"
+
+    def test_helper_mode_with_no_cgroup_parent_attribute_passes_none(self, monkeypatch, capsys):
+        # doctor_parser always defines --helper-cgroup-parent, but the read
+        # goes through getattr(..., None) the same way _start_run's does.
+        monkeypatch.setattr(access, "describe_access", lambda: self._base_access_info(False))
+        monkeypatch.setattr(cg, "_venv_python", lambda: None)
+        spec = access.HelperSpec(
+            image="img:local", repo_host_path="/h/repo", repo_mount_path=cg.HERE,
+            out_host_path="/h/out", out_mount_path=cg.DEFAULT_OUT,
+            cgroup_parent="dev-interactive.slice",
+        )
+        captured = {}
+
+        def fake_build_helper_spec(repo, out, image, cgroup_parent=None):
+            captured["cgroup_parent"] = cgroup_parent
+            return spec
+
+        monkeypatch.setattr(access, "build_helper_spec", fake_build_helper_spec)
+        cg.cmd_doctor(argparse.Namespace(helper_image=None))
+        assert captured["cgroup_parent"] is None
 
     def test_helper_mode_unavailable_reports_why_and_returns_one(self, monkeypatch, capsys):
         monkeypatch.setattr(access, "describe_access", lambda: self._base_access_info(False))
         monkeypatch.setattr(cg, "_venv_python", lambda: None)
 
-        def raise_access_error(repo, out, image):
+        def raise_access_error(repo, out, image, cgroup_parent=None):
             raise access.AccessError("no helper image found")
 
         monkeypatch.setattr(access, "build_helper_spec", raise_access_error)
         assert cg.cmd_doctor(argparse.Namespace(helper_image=None)) == 1
         assert "helper unavailable" in capsys.readouterr().out
+
+
+# ── manifest limit snapshots (added during integration) ─────────────────────
+
+class TestLimitsSnapshot:
+    """The manifest is the only channel between the collector and the
+    analyser, so what it records about limits is a contract, not a detail.
+    Writing only the prose form left every real run producing no proposals.
+    """
+
+    @staticmethod
+    def _eff():
+        from lib import limits
+
+        return limits.Effective(
+            cgroup="/dev.slice/dev-background.slice",
+            chain=[],
+            memory_max=8 * 1024**3, memory_max_by="/dev.slice/dev-background.slice",
+            memory_high=6 * 1024**3, memory_high_by="/dev.slice/dev-background.slice",
+            memory_swap_max=48 * 1024**3, memory_swap_max_by="/dev.slice/dev-background.slice",
+            strict_min=0, recursive_min=0, strict_low=0, recursive_low=0,
+            protection_mode="strict",
+            cpu_cores=None, cpu_cores_by=None,
+            io_max={}, io_max_by={},
+            pids_max=None,
+            warnings=["something was discarded"],
+        )
+
+    def test_snapshot_has_all_three_forms(self):
+        from lib import limits
+        import cgprofile
+
+        snap = cgprofile._limits_snapshot(limits, self._eff())
+        assert set(snap) == {"resolved", "described", "fingerprint"}
+        assert isinstance(snap["described"], list)
+        assert isinstance(snap["fingerprint"], str)
+
+    def test_resolved_carries_the_scalars_a_proposal_needs(self):
+        from lib import limits
+        import cgprofile
+
+        resolved = cgprofile._limits_snapshot(limits, self._eff())["resolved"]
+        assert resolved["memory_max"] == 8 * 1024**3
+        assert resolved["memory_high_by"] == "/dev.slice/dev-background.slice"
+        assert resolved["protection_mode"] == "strict"
+        assert resolved["warnings"] == ["something was discarded"]
+
+    def test_chain_is_excluded_because_it_dominates_the_manifest(self):
+        from lib import limits
+        import cgprofile
+
+        assert "chain" not in cgprofile._limits_snapshot(limits, self._eff())["resolved"]
+
+    def test_snapshot_is_json_serialisable(self):
+        # It goes straight into manifest.json; a non-serialisable value here
+        # loses the whole manifest, and with it the run.
+        import json
+        from lib import limits
+        import cgprofile
+
+        json.dumps(cgprofile._limits_snapshot(limits, self._eff()))
+
+    def test_analyze_can_actually_read_what_we_write(self):
+        """The end-to-end point: the shape the writer emits is the shape the
+        proposal generator consumes. These two were mismatched, and nothing
+        failed — proposals just silently never appeared."""
+        from lib import analyze, limits
+        from lib.model import Analysis
+        import cgprofile
+
+        snap = cgprofile._limits_snapshot(limits, self._eff())
+        analysis = Analysis(limits={"/dev.slice/dev-background.slice": snap})
+        got = analyze._effective_limits(analysis)
+        assert got, "analyze could not read the writer's own output"
+        assert got["/dev.slice/dev-background.slice"]["memory_max"] == 8 * 1024**3
