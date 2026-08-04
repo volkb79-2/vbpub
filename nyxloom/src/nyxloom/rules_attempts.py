@@ -46,6 +46,7 @@ shared sort, not a second copy of it.
 
 from __future__ import annotations
 
+from .config import healthy_routes
 from .planning import PlanContext, RuleEmitter
 from .reconcile import (
     DispatchImplementer, EmitAttemptExit, InterruptAttempt, MarkInterrupted,
@@ -316,9 +317,8 @@ def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
                             # fresh DispatchImplementer, no session_handle
                             # carried -- mirrors the lifecycle dispatch's
                             # "first healthy route" selection (item 3 above).
-                            routes_for_tier = inp.routes.for_tier(fm_for_task.tier)
-                            for route_def in routes_for_tier:
-                                if inp.provider_ok.get(route_def.route_id, False):
-                                    emit(DispatchImplementer(
-                                        task_id=task_id, route_id=route_def.route_id))
-                                    break
+                            healthy = healthy_routes(
+                                inp.routes.for_tier(fm_for_task.tier), inp.provider_ok)
+                            if healthy:
+                                emit(DispatchImplementer(
+                                    task_id=task_id, route_id=healthy[0].route_id))

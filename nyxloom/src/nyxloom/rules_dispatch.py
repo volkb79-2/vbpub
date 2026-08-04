@@ -33,6 +33,7 @@ observable, not a debug aid.
 
 from __future__ import annotations
 
+from .config import healthy_routes
 from .planning import PlanContext, RuleEmitter
 from .reconcile import DispatchImplementer, dispatch_eligible
 from .types import TaskState
@@ -75,13 +76,11 @@ def implementer_dispatch(ctx: PlanContext, emit: RuleEmitter) -> None:
 
         eligible, reason = dispatch_eligible(fm, tsf, inp)
         if eligible:
-            # Find first healthy route
-            routes_for_tier = inp.routes.for_tier(fm.tier)
-            for route_def in routes_for_tier:
-                if inp.provider_ok.get(route_def.route_id, False):
-                    emit(DispatchImplementer(task_id=fm_id, route_id=route_def.route_id))
-                    dispatched += 1
-                    emit.note("dispatch", fm_id, f"route:{route_def.route_id}")
-                    break
+            healthy = healthy_routes(inp.routes.for_tier(fm.tier), inp.provider_ok)
+            if healthy:
+                route_def = healthy[0]
+                emit(DispatchImplementer(task_id=fm_id, route_id=route_def.route_id))
+                dispatched += 1
+                emit.note("dispatch", fm_id, f"route:{route_def.route_id}")
         else:
             emit.note("dispatch-skip", fm_id, reason)

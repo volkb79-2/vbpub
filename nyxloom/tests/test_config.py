@@ -580,6 +580,42 @@ class TestRoutesForRole:
         assert [r.route_id for r in matches] == ["fake-review"]
 
 
+class TestHealthyRoutes:
+    """CR-08 Slice 2a: the ONE place "is a route healthy" is decided, in
+    place of four independently hand-written copies of the same
+    `provider_ok.get(route_id, False)` filter."""
+
+    def test_filters_to_healthy_candidates_preserving_order(self):
+        from nyxloom.config import RouteDef, healthy_routes
+
+        a = RouteDef(route_id="a", cli="claude", model="haiku")
+        b = RouteDef(route_id="b", cli="claude", model="sonnet")
+        c = RouteDef(route_id="c", cli="claude", model="opus")
+        provider_ok = {"a": True, "b": False, "c": True}
+
+        assert healthy_routes([a, b, c], provider_ok) == [a, c]
+
+    def test_a_route_absent_from_provider_ok_is_treated_as_unhealthy(self):
+        """`.get(route_id, False)`'s default -- a route provider_ok never
+        probed (not `False`, simply MISSING) must not be treated as healthy
+        by omission."""
+        from nyxloom.config import RouteDef, healthy_routes
+
+        a = RouteDef(route_id="a", cli="claude", model="haiku")
+        assert healthy_routes([a], {}) == []
+
+    def test_no_healthy_candidates_returns_empty_not_none(self):
+        from nyxloom.config import RouteDef, healthy_routes
+
+        a = RouteDef(route_id="a", cli="claude", model="haiku")
+        assert healthy_routes([a], {"a": False}) == []
+
+    def test_empty_candidates_returns_empty(self):
+        from nyxloom.config import healthy_routes
+
+        assert healthy_routes([], {"anything": True}) == []
+
+
 class TestPricesLoad:
     """Prices.load: absent-file vs. present-file resolution (§5 config
     rubric: "a config load/resolve -> DEBUG")."""

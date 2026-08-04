@@ -385,7 +385,7 @@ from .carver_session import (
     HumanIntake, ValidatedCarveProposal,
 )
 from . import planning, snapshot
-from .config import ProjectConfig, RouteDef, Routes
+from .config import ProjectConfig, RouteDef, Routes, healthy_routes
 from .planning import PlanContext, RuleMatch
 from .stages import effective_concurrency
 from .types import (
@@ -1102,9 +1102,7 @@ def _check_lease(fm: Frontmatter, inp: ReconcileInput) -> tuple[bool, str]:
 
 
 def _check_healthy_route(fm: Frontmatter, inp: ReconcileInput) -> tuple[bool, str]:
-    routes_for_tier = inp.routes.for_tier(fm.tier)
-    has_healthy = any(inp.provider_ok.get(r.route_id, False) for r in routes_for_tier)
-    if not has_healthy:
+    if not healthy_routes(inp.routes.for_tier(fm.tier), inp.provider_ok):
         return (False, 'no-healthy-route')
     return (True, '')
 
