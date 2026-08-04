@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustProfile(t *testing.T) *Profile {
@@ -227,6 +228,78 @@ func TestManagedFloorSumIgnoresUnmanagedClasses(t *testing.T) {
 	want := int64(350 << 20)
 	if got := p.ManagedFloorSum(); got != want {
 		t.Fatalf("ManagedFloorSum() = %d, want %d", got, want)
+	}
+}
+
+func TestUnconfiguredReadinessValidates(t *testing.T) {
+	p := mustProfile(t)
+	if p.Readiness.Configured() {
+		t.Fatal("the default Readiness reports itself configured")
+	}
+}
+
+func TestReadinessValidateRejectsMalformedConfigs(t *testing.T) {
+	cases := []struct {
+		name  string
+		ready Readiness
+		want  string
+	}{
+		{"unknown kind", Readiness{Kind: "rcon-probe", Pattern: "x"}, "not \"log-match\""},
+		{"empty pattern", Readiness{Kind: ReadinessKindLogMatch}, "pattern is empty"},
+		{"bad regex", Readiness{Kind: ReadinessKindLogMatch, Pattern: "regex:(unclosed"}, "does not compile"},
+		{"bad timeout", Readiness{Kind: ReadinessKindLogMatch, Pattern: "x", Timeout: "soon"}, "not a positive duration"},
+		{"zero timeout", Readiness{Kind: ReadinessKindLogMatch, Pattern: "x", Timeout: "0s"}, "not a positive duration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Profile{SchemaVersion: SchemaVersion, ID: "x",
+				Classes:   []Class{{Name: "a", Kind: KindManaged, Paths: []string{"A"}}},
+				Readiness: tc.ready,
+			}
+			err := p.Validate()
+			if err == nil {
+				t.Fatal("Validate accepted a malformed Readiness")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The convention this adopts (WINGS_CG_PHASE_EVENTS): a plain pattern is a
+// substring match, "regex:" makes it a regular expression. A valid profile
+// carries either shape.
+func TestReadinessAcceptsPlainAndRegexPatterns(t *testing.T) {
+	for _, pattern := range []string{
+		"registe server soulmask session succeed",
+		`regex:Success! App '\d+' \(already up to date\)`,
+	} {
+		p := &Profile{SchemaVersion: SchemaVersion, ID: "x",
+			Classes:   []Class{{Name: "a", Kind: KindManaged, Paths: []string{"A"}}},
+			Readiness: Readiness{Kind: ReadinessKindLogMatch, Pattern: pattern, Timeout: "600s"},
+		}
+		if err := p.Validate(); err != nil {
+			t.Errorf("pattern %q: %v", pattern, err)
+		}
+	}
+}
+
+func TestReadinessEffectiveTimeoutFallsBackToTheDefault(t *testing.T) {
+	var r Readiness
+	if got := r.EffectiveTimeout(); got != DefaultReadinessTimeout {
+		t.Errorf("EffectiveTimeout() = %v, want %v", got, DefaultReadinessTimeout)
+	}
+	r.Timeout = "30s"
+	if got := r.EffectiveTimeout(); got != 30*time.Second {
+		t.Errorf("EffectiveTimeout() = %v, want 30s", got)
+	}
+	// An unparsable timeout (should never reach here past Validate, but
+	// EffectiveTimeout must not panic if it does) falls back rather than
+	// zeroing out the wait.
+	r.Timeout = "garbage"
+	if got := r.EffectiveTimeout(); got != DefaultReadinessTimeout {
+		t.Errorf("an unparsable timeout was not defaulted: %v", got)
 	}
 }
 

@@ -59,5 +59,10 @@
       "kind": "absent",
       "path": "steamapps/downloading"
     }
-  ]
+  ],
+  "readiness": {
+    "kind": "log-match",
+    "pattern": "registe server soulmask session succeed",
+    "timeout": "600s"
+  }
 }

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Default roots. Both are deliberately single-token "srdm" paths.
@@ -107,6 +108,65 @@ type Wings struct {
 	// system.user.gid; srdm asks the operator for it rather than scanning a
 	// nested YAML key it could misread (D-021's reasoning, D-022's decision).
 	WriteOwner *WriteOwner
+
+	// --- the node API, P14 -------------------------------------------------
+	//
+	// `srdm update` talks to WINGS' OWN node API directly, not the
+	// Pterodactyl Panel's — the Panel can be unreachable while the node
+	// keeps running, and an update orchestrator that depends on it anyway
+	// is a needless second point of failure. Modeled on
+	// wings-cgroups/wingsctl/wingsctl.py (D-032).
+
+	// APIURL is Wings' node API base address, e.g. "https://127.0.0.1:8080"
+	// or the node's real listener. There is no default: wingsctl's own
+	// 127.0.0.1:8080 default does not hold once a node's api.port is
+	// reconfigured (the case-study node runs 443), so guessing would be
+	// wrong exactly when it mattered. Empty means unconfigured; `update`
+	// refuses and names the flag.
+	APIURL string
+	// APIInsecure skips TLS verification against APIURL — only for a
+	// self-signed certificate chain, and off by default: silently skipping
+	// verification is not a default this project will guess into.
+	APIInsecure bool
+	// APIStopTimeout, APIStartTimeout and APIPollInterval bound how long
+	// `update` waits for a server to settle offline or reach running. Zero
+	// means the package defaults (2m / 5m / 2s) — starting a game
+	// legitimately takes longer than stopping one, so the two are not the
+	// same number.
+	APIStopTimeout  time.Duration
+	APIStartTimeout time.Duration
+	APIPollInterval time.Duration
+}
+
+// Wings node-API defaults.
+const (
+	DefaultWingsAPIStopTimeout  = 2 * time.Minute
+	DefaultWingsAPIStartTimeout = 5 * time.Minute
+	DefaultWingsAPIPollInterval = 2 * time.Second
+)
+
+// APIConfigured reports whether enough is set to build a node-API driver.
+func (w Wings) APIConfigured() bool { return w.APIURL != "" }
+
+func (w Wings) EffectiveAPIStopTimeout() time.Duration {
+	if w.APIStopTimeout > 0 {
+		return w.APIStopTimeout
+	}
+	return DefaultWingsAPIStopTimeout
+}
+
+func (w Wings) EffectiveAPIStartTimeout() time.Duration {
+	if w.APIStartTimeout > 0 {
+		return w.APIStartTimeout
+	}
+	return DefaultWingsAPIStartTimeout
+}
+
+func (w Wings) EffectiveAPIPollInterval() time.Duration {
+	if w.APIPollInterval > 0 {
+		return w.APIPollInterval
+	}
+	return DefaultWingsAPIPollInterval
 }
 
 // WriteOwner is the identity that may write through an `access: rw` exposure.
@@ -166,6 +226,23 @@ func (w Wings) Validate() error {
 	if w.WriteOwner != nil && (w.WriteOwner.UID < 0 || w.WriteOwner.GID < 0) {
 		return fmt.Errorf("config: wings.write_owner is %s; leave it unset rather than "+
 			"negative — unset refuses access: rw, which is the safe answer", w.WriteOwner)
+	}
+	if w.APIConfigured() {
+		if !strings.HasPrefix(w.APIURL, "http://") && !strings.HasPrefix(w.APIURL, "https://") {
+			return fmt.Errorf("config: wings.api_url %q must be an http:// or https:// URL", w.APIURL)
+		}
+		for _, f := range []struct {
+			name string
+			val  time.Duration
+		}{
+			{"wings.api_stop_timeout", w.APIStopTimeout},
+			{"wings.api_start_timeout", w.APIStartTimeout},
+			{"wings.api_poll_interval", w.APIPollInterval},
+		} {
+			if f.val < 0 {
+				return fmt.Errorf("config: %s is negative", f.name)
+			}
+		}
 	}
 	return nil
 }

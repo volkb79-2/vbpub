@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"srdm/internal/assign"
 	"srdm/internal/config"
 	"srdm/internal/harvest"
 	"srdm/internal/publish"
@@ -23,7 +24,7 @@ func TestOperationsOnAProfileWithNoActiveReleaseSayWhatToDoInstead(t *testing.T)
 
 	cases := map[string]func() error{
 		"attach": func() error {
-			return r.ctl.Attach(ctx(), "op-1", "server-a", "ro", r.prof)
+			return r.ctl.Attach(ctx(), "op-1", "server-a", "ro", assign.RoleSlave, r.prof)
 		},
 		"teardown": func() error {
 			return r.ctl.ReleaseGeneration(ctx(), "op-1", r.prof)
@@ -61,7 +62,7 @@ func TestOperationsNeedingMountsSayWhenTheGenerationIsNotPublished(t *testing.T)
 
 	for name, run := range map[string]func() error{
 		"attach": func() error {
-			return r.ctl.Attach(ctx(), "op-1", "server-b", "ro", r.prof)
+			return r.ctl.Attach(ctx(), "op-1", "server-b", "ro", assign.RoleSlave, r.prof)
 		},
 		"teardown": func() error {
 			return r.ctl.ReleaseGeneration(ctx(), "op-1", r.prof)

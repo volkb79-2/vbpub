@@ -20,12 +20,14 @@ import (
 	"sort"
 	"strings"
 
+	"srdm/internal/assign"
 	"srdm/internal/config"
 	"srdm/internal/expose"
 	"srdm/internal/fsx"
 	"srdm/internal/harvest"
 	"srdm/internal/journal"
 	"srdm/internal/opctl"
+	"srdm/internal/power"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
 	"srdm/internal/store"
@@ -55,6 +57,17 @@ func opFlags(fs *flag.FlagSet) (*config.Config, *string, *string) {
 		"assert the running Wings build carries F1 (the pre-boot chown-walk skip)")
 	fs.IntVar(&cfg.Retention, "retention", cfg.Retention,
 		"releases per profile gc keeps beyond the ones it may never remove")
+	fs.StringVar(&cfg.Wings.APIURL, "wings-api-url", cfg.Wings.APIURL,
+		"Wings' own node API base URL (not the Panel's) — only `update` needs it, "+
+			"e.g. https://127.0.0.1:8080")
+	fs.BoolVar(&cfg.Wings.APIInsecure, "wings-api-insecure", false,
+		"skip TLS verification against --wings-api-url (only for a self-signed cert)")
+	fs.DurationVar(&cfg.Wings.APIStopTimeout, "wings-api-stop-timeout", 0,
+		"how long update waits for a server to settle offline (default 2m)")
+	fs.DurationVar(&cfg.Wings.APIStartTimeout, "wings-api-start-timeout", 0,
+		"how long update waits for a server to reach running (default 5m)")
+	fs.DurationVar(&cfg.Wings.APIPollInterval, "wings-api-poll-interval", 0,
+		"how often update polls Wings while waiting (default 2s)")
 	return cfg, profilePath, opID
 }
 
@@ -125,7 +138,35 @@ func newOpEnv(cfg config.Config, profilePath string, needProfile bool) (*opEnv, 
 		jnl.Close()
 		return nil, err
 	}
-	ctl, err := opctl.New(cfg, jnl, st, pub, drv, opctl.WithHarvester(hrv))
+	opts := []opctl.Option{opctl.WithHarvester(hrv)}
+	// A power driver is wired in whenever Wings' node API is configured,
+	// whatever verb is running — harmless, since only Update ever calls it.
+	// Only `update` fails when it is not: every other verb has no use for
+	// it, so an operator who has not set --wings-api-url yet is not blocked
+	// from running them.
+	if pwr, perr := power.NewWingsDriver(power.WingsConfig{
+		APIURL: cfg.Wings.APIURL, APIInsecure: cfg.Wings.APIInsecure, ConfigPath: cfg.Wings.ConfigPath,
+		StopTimeout:  cfg.Wings.EffectiveAPIStopTimeout(),
+		StartTimeout: cfg.Wings.EffectiveAPIStartTimeout(),
+		PollInterval: cfg.Wings.EffectiveAPIPollInterval(),
+	}); perr == nil {
+		// THE TOKEN IS A SECRET. Registered the moment it exists and before
+		// this journal writes anything, exactly as a profile's own
+		// Credentials are (D-032) — never logged, never put in an error,
+		// never a journal field.
+		jnl.AddSecrets(pwr.Bearers()...)
+		opts = append(opts, opctl.WithPower(pwr))
+		if prof != nil && prof.Readiness.Configured() {
+			opts = append(opts, opctl.WithReadiness(power.NewWingsLogReadiness(pwr), power.Readiness{
+				Kind: prof.Readiness.Kind, Pattern: prof.Readiness.Pattern,
+				Timeout: prof.Readiness.EffectiveTimeout(),
+			}))
+		}
+	} else if !power.IsRefusal(perr) {
+		jnl.Close()
+		return nil, perr
+	}
+	ctl, err := opctl.New(cfg, jnl, st, pub, drv, opts...)
 	if err != nil {
 		jnl.Close()
 		return nil, err
@@ -185,6 +226,65 @@ func cmdActivate(args []string) error {
 	return nil
 }
 
+// ------------------------------------------------------------------ update --
+
+func cmdUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	cfg, profilePath, opID := opFlags(fs)
+	releaseID := fs.String("release", "", "release to update to (required)")
+	from := fs.String("from", "", "stage this directory into --release first, then update to it")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *releaseID == "" {
+		return errors.New("update: --release is required")
+	}
+	if *opID == "" {
+		*opID = "update-" + *releaseID
+	}
+	env, err := newOpEnv(*cfg, *profilePath, true)
+	if err != nil {
+		return err
+	}
+	defer env.close()
+
+	if *from != "" {
+		if err := stageRelease(env, *from, *releaseID); err != nil {
+			return err
+		}
+	}
+
+	rec, err := env.ctl.Update(env.ctx, *opID, *releaseID, env.prof)
+	if err != nil {
+		return refused(err)
+	}
+	fmt.Printf("%s: release %s is live as generation %s (ordered cohort update)\n",
+		env.prof.ID, rec.ReleaseID, rec.Generation)
+	return nil
+}
+
+// stageRelease is --from's sugar: promote a staged directory into a release
+// before update swaps the cohort onto it, so the practical case — "here is
+// a directory, make the cluster run it" — is genuinely one command.
+func stageRelease(env *opEnv, from, releaseID string) error {
+	st, err := store.Open(env.cfg, env.jnl)
+	if err != nil {
+		return err
+	}
+	tx, err := st.Begin(releaseID + "-stage")
+	if err != nil {
+		return err
+	}
+	if err := fsx.CopyTree(from, tx.Root); err != nil {
+		return err
+	}
+	_, err = st.Promote(tx, env.prof, store.PromoteOpts{
+		ReleaseID:  releaseID,
+		Provenance: store.Provenance{Kind: store.ProvenanceStaged, Source: from},
+	})
+	return err
+}
+
 func cmdRollback(args []string) error {
 	fs := flag.NewFlagSet("rollback", flag.ContinueOnError)
 	cfg, profilePath, opID := opFlags(fs)
@@ -220,6 +320,10 @@ func cmdAttach(args []string) error {
 	cfg, profilePath, opID := opFlags(fs)
 	serverID := fs.String("server", "", "Wings server uuid (required)")
 	access := fs.String("access", string(expose.AccessRO), "ro or rw")
+	role := fs.String("role", string(assign.RoleSlave),
+		"main or slave — `update` orders a cohort cycle by this: every slave stops before "+
+			"main, and no slave starts before main signals ready. Exactly one server per "+
+			"profile may be main; re-attaching an already-attached server updates its role")
 	owner := writeOwnerFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -239,10 +343,10 @@ func cmdAttach(args []string) error {
 	}
 	defer env.close()
 
-	if err := env.ctl.Attach(env.ctx, *opID, *serverID, *access, env.prof); err != nil {
+	if err := env.ctl.Attach(env.ctx, *opID, *serverID, *access, assign.Role(*role), env.prof); err != nil {
 		return refused(err)
 	}
-	fmt.Printf("%s: server %s attached %s\n", env.prof.ID, *serverID, *access)
+	fmt.Printf("%s: server %s attached %s (role=%s)\n", env.prof.ID, *serverID, *access, *role)
 	return nil
 }
 

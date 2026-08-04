@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"srdm/internal/journal"
 )
@@ -100,9 +102,86 @@ type Profile struct {
 	// It is never serialized into the journal: Secrets feeds the journal's
 	// scrubber, and no journal record ever embeds a Profile.
 	Credentials map[string]string `json:"credentials,omitempty"`
+	// Readiness is how `srdm update` knows this profile's MAIN server is
+	// actually ready — beyond "the Panel/Wings reports it running" — before
+	// any slave is started against it. It lives here rather than in node
+	// config because the ready line is a property of the game BUILD, which
+	// travels with the content a profile describes, not with the node.
+	// Empty means unconfigured: update trusts the power status alone
+	// (D-031).
+	Readiness Readiness `json:"readiness,omitempty"`
 
 	// index is the resolved longest-prefix lookup, built by Validate.
 	index []indexEntry
+}
+
+// ReadinessKindLogMatch is the one member of today's readiness vocabulary.
+const ReadinessKindLogMatch = "log-match"
+
+// Readiness describes a server's ready-beyond-running signal.
+//
+// Format matches the convention srdm's own operators already use for
+// log-derived events (the v1 cgroup patch stack's WINGS_CG_PHASE_EVENTS): a
+// plain Pattern is a substring match, and a "regex:" prefix makes it a
+// regular expression — adopted rather than invented, because it is already
+// what egg authors on this project know.
+type Readiness struct {
+	// Kind selects how readiness is confirmed. Empty means unconfigured;
+	// ReadinessKindLogMatch is the only other value today.
+	Kind string `json:"kind,omitempty"`
+	// Pattern matches a line in the server's own log. "regex:<expr>" is a
+	// regular expression; anything else is a plain substring match.
+	Pattern string `json:"pattern,omitempty"`
+	// Timeout is a Go duration string (e.g. "600s"). Empty means
+	// DefaultReadinessTimeout.
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// DefaultReadinessTimeout applies when Timeout is empty.
+const DefaultReadinessTimeout = 5 * time.Minute
+
+// Configured reports whether a readiness check was asked for at all.
+func (r Readiness) Configured() bool { return r.Kind != "" }
+
+// EffectiveTimeout parses Timeout, or returns DefaultReadinessTimeout when
+// it is empty. Call only after Validate has confirmed Timeout parses.
+func (r Readiness) EffectiveTimeout() time.Duration {
+	if r.Timeout == "" {
+		return DefaultReadinessTimeout
+	}
+	d, err := time.ParseDuration(r.Timeout)
+	if err != nil || d <= 0 {
+		return DefaultReadinessTimeout
+	}
+	return d
+}
+
+// validate checks a Readiness is usable. Unconfigured always validates.
+func (r Readiness) validate(profileID string) error {
+	if !r.Configured() {
+		return nil
+	}
+	if r.Kind != ReadinessKindLogMatch {
+		return fmt.Errorf("profile %q: readiness.kind %q is not %q, the only kind this "+
+			"build knows", profileID, r.Kind, ReadinessKindLogMatch)
+	}
+	if r.Pattern == "" {
+		return fmt.Errorf("profile %q: readiness.kind is %q but readiness.pattern is empty",
+			profileID, ReadinessKindLogMatch)
+	}
+	if expr, ok := strings.CutPrefix(r.Pattern, "regex:"); ok {
+		if _, err := regexp.Compile(expr); err != nil {
+			return fmt.Errorf("profile %q: readiness.pattern %q does not compile: %w",
+				profileID, r.Pattern, err)
+		}
+	}
+	if r.Timeout != "" {
+		if d, err := time.ParseDuration(r.Timeout); err != nil || d <= 0 {
+			return fmt.Errorf("profile %q: readiness.timeout %q is not a positive duration "+
+				"(want a Go duration string like \"600s\")", profileID, r.Timeout)
+		}
+	}
+	return nil
 }
 
 type indexEntry struct {
@@ -215,6 +294,10 @@ func (p *Profile) Validate() error {
 				"scrub anything shorter than %d, so it would leak",
 				p.ID, k, len(v), journal.MinSecretLength)
 		}
+	}
+
+	if err := p.Readiness.validate(p.ID); err != nil {
+		return err
 	}
 
 	// Longest prefix wins, so a specific rule can carve a subtree out of a

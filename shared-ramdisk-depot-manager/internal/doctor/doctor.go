@@ -65,6 +65,10 @@ type Options struct {
 	// ChownWalk reads Wings' pre-boot walk setting. It defaults to scanning
 	// the node config for the one key that matters.
 	ChownWalk func(cfg config.Wings) func() (wings.ChownWalk, error)
+	// MemInfoPath defaults to /proc/meminfo. Read by the update-headroom
+	// check (P14): an operator should learn a node cannot hold two
+	// generations on a quiet afternoon, not with a cohort half down.
+	MemInfoPath string
 }
 
 func (o Options) inspector() wings.ContainerInspector {
@@ -84,6 +88,7 @@ func (o Options) chownWalk(cfg config.Wings) func() (wings.ChownWalk, error) {
 const (
 	defaultCgroupRoot    = "/sys/fs/cgroup"
 	defaultMountInfoPath = "/proc/self/mountinfo"
+	defaultMemInfoPath   = "/proc/meminfo"
 )
 
 func (o Options) cgroupRoot() string {
@@ -98,6 +103,13 @@ func (o Options) mountInfoPath() string {
 		return o.MountInfoPath
 	}
 	return defaultMountInfoPath
+}
+
+func (o Options) memInfoPath() string {
+	if o.MemInfoPath != "" {
+		return o.MemInfoPath
+	}
+	return defaultMemInfoPath
 }
 
 func (o Options) unitProperty() func(string, string) (string, error) {
@@ -123,6 +135,7 @@ func Run(cfg config.Config, p *profile.Profile, opts Options) []Check {
 		checkControllers(opts),
 		checkRecursiveProt(opts),
 		checkParentSlice(cfg, p, opts),
+		checkUpdateHeadroom(cfg, p, opts),
 	}
 	checks = append(checks, checkWings(cfg, opts)...)
 	checks = append(checks, checkStoreIntegrity(cfg)...)

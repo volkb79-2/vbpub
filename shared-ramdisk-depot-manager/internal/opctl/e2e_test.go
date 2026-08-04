@@ -330,7 +330,7 @@ func TestActivateAttachAndSwapMoveTheServerOntoTheNewContent(t *testing.T) {
 	}
 
 	// Attach, and the content arrives at the declared class paths.
-	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", n.prof); err != nil {
+	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", assign.RoleSlave, n.prof); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	if got := n.paking(); got != "pak of rel-1" {
@@ -384,7 +384,7 @@ func TestRollbackPutsTheServerBackOnThePreviousRelease(t *testing.T) {
 	if _, err := n.ctl.Activate(ctx(), "op-1", n.rid("rel-1"), n.prof); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", n.prof); err != nil {
+	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", assign.RoleSlave, n.prof); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := n.ctl.Activate(ctx(), "op-3", n.rid("rel-2"), n.prof); err != nil {
@@ -414,7 +414,7 @@ func TestActivateIsRefusedWhileARealConsumerHoldsTheGeneration(t *testing.T) {
 	if _, err := n.ctl.Activate(ctx(), "op-1", n.rid("rel-1"), n.prof); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", n.prof); err != nil {
+	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", assign.RoleSlave, n.prof); err != nil {
 		t.Fatal(err)
 	}
 	rec, err := n.pub.LoadRecord("testgame", publish.GenerationID(n.rid("rel-1")))
@@ -466,7 +466,7 @@ func TestDetachRemovesOnlyThatServersMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, id := range []string{serverID, otherID} {
-		if err := n.ctl.Attach(ctx(), fmt.Sprintf("op-attach-%d", i), id, "ro", n.prof); err != nil {
+		if err := n.ctl.Attach(ctx(), fmt.Sprintf("op-attach-%d", i), id, "ro", assign.RoleSlave, n.prof); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -504,7 +504,7 @@ func TestTeardownLeavesAnAssignedButUnpublishedProfile(t *testing.T) {
 	if _, err := n.ctl.Activate(ctx(), "op-1", n.rid("rel-1"), n.prof); err != nil {
 		t.Fatal(err)
 	}
-	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", n.prof); err != nil {
+	if err := n.ctl.Attach(ctx(), "op-2", serverID, "ro", assign.RoleSlave, n.prof); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.ctl.ReleaseGeneration(ctx(), "op-3", n.prof); err != nil {

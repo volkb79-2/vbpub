@@ -1122,3 +1122,247 @@ must err toward counting a holder, and publication's private op root
 first place. An oracle asserts the recognizer sees a real overlay in a real
 second mount namespace, which is the only way this is known rather than
 believed.
+
+---
+
+## D-029 — rollback re-runs the identical safe cycle targeting the old generation; "in reverse" is not step-reversal
+
+**Status:** accepted. Filed by P14 while implementing the handoff's rollback
+correction: "rollback on failure walks the same order in reverse against
+the OLD generation."
+
+Read literally, "in reverse" suggests undoing each step in the opposite
+order it happened — the classic stack-unwind shape. That reading does not
+survive contact with what an ordered cohort cycle actually is. The forward
+cycle's step order (every slave stops, then main, then the exposure
+switches, then main starts and proves ready, then every slave starts) is
+not an arbitrary sequence with an undo — it is the ONLY order that never
+lets a slave run against an unconfirmed main, in EITHER direction. Literally
+reversing it — starting main before stopping it, say — would not restore
+anything; it would just be wrong.
+
+**Decided:** `opctl.cycleCohortTo` is one function, used both for the
+forward move (old generation → new) and for rollback (new → old, called
+with the `from`/`to` generations swapped). "The same order, in reverse" is
+implemented as: the release direction reverses, the STEP order does not —
+because main-stopped-last / main-started-first is what makes any move
+between two generations safe, and that property does not flip with
+direction. Stated here because the alternative reading was plausible enough
+to implement by accident, and a reviewer meeting only the code would have
+no way to know which one was intended.
+
+**Consequence for the assignment.** Because rollback is a full call to the
+same cycle rather than a partial undo, and the assignment is recorded only
+once the ENTIRE forward cycle succeeds (oracle 30), a rollback never has to
+revert a recorded release — there is nothing to revert. The assignment
+still names the old release throughout, trivially, because it was never
+touched.
+
+---
+
+## D-030 — server roles: `assign.Server` gains `Role`, schema bumps to v2, a v1 document is refused with a fix rather than migrated
+
+**Status:** accepted, operator-directed correction mid-package.
+
+P14's first design was a rolling, one-server-at-a-time update — wrong for a
+Soulmask cohort, where every server but one (SLAVE) depends on the
+remaining one (MAIN) already being up. An ordered cohort cycle needs to
+know, durably, which server is which: guessing would mean guessing which
+one is safe to stop last and start first, and a wrong guess here is not a
+smaller version of the bug, it is a slave started before the server it
+depends on.
+
+**Decided:** `assign.Server` gains `Role` (`"main"` or `"slave"`).
+`Assignment.Main()` returns the one server with `Role == RoleMain` or an
+error naming the shortfall — zero mains and two mains are both refused, for
+the same reason: there is no safe way to pick one when the assignment does
+not say. `SchemaVersion` bumps from 1 to 2, and a v1 document (P08 and
+earlier — no roles at all) is **refused with a fix** rather than migrated:
+`Load` names the mismatch and tells the operator to re-declare every server
+with `srdm attach --role main|slave`. Guessing "the first server listed is
+main" was considered and rejected — a wrong guess here is silent until the
+next `update`, at which point it takes the wrong server down last, which
+for a game cluster is the failure this whole package exists to prevent.
+
+`cmd/srdm attach` gains `--role`, defaulting to `slave` — the safer default
+when an operator forgets it, since a cohort short a slave still runs, a
+cohort with no declared main cannot be updated at all until one is named.
+
+---
+
+## D-031 — readiness lives in the profile, not node config; unconfigured trusts the power status alone
+
+**Status:** accepted.
+
+`srdm update` needs to know when a cohort's MAIN server is actually ready —
+not just "the power status says running", because Soulmask's main only
+starts accepting slave connections once its own world load finishes, and a
+slave that connects before that joins a session nobody finished
+initializing (oracle 33).
+
+**Where the pattern lives, decided twice.** The first pass put it in
+`config.Readiness`, reasoning that it kept the change inside P14's declared
+touch scope (`internal/config`, not `internal/profile`). The operator
+corrected this: the ready line is a property of the game BUILD, which is
+what a profile already describes and travels with — not a property of the
+node. **Decided: `profile.Readiness`**, alongside `Credentials` and the
+class list, and `internal/profile` is now touched by this package for
+exactly this field. The scope argument was real but subordinate to what the
+data actually is.
+
+**Format, adopted rather than invented.** A plain `Pattern` is a substring
+match; a `"regex:"` prefix makes it a regular expression — the same
+convention this project's own eggs already use for log-derived events (the
+v1 cgroup patch stack's `WINGS_CG_PHASE_EVENTS`). Operators already know
+this shape.
+
+**Which line, and why it matters.** The Soulmask egg
+(`game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`) exposes two
+different signals: `config.startup.done` (`"Create Dungeon Successed"`),
+which is what WINGS itself uses to decide the server "started", and
+`WINGS_CG_STEADY_MATCH` (`"registe server soulmask session succeed"`),
+which is what the v1 cgroup patch stack uses for the startup→steady
+transition. **They are not interchangeable.** "Wings thinks it started" is
+not "the game is serving sessions" — starting slaves on the `done` line
+risks them connecting to a main that is up but not yet accepting sessions.
+`examples/soulmask.profile.json` ships the STEADY line, and
+`TestShippedSoulmaskExampleLoadsAndClassifies` pins it so a future edit
+cannot quietly swap it back to the wrong one.
+
+**Unconfigured is a real state.** `Readiness.Configured()` false (the
+default) means `update` trusts the power status's own "running" report
+alone. Not a gap — a deployment with no known ready line has nothing more
+honest to check.
+
+---
+
+## D-032 — `srdm update` talks to Wings' own node API, not the Pterodactyl Panel's; the token is a secret
+
+**Status:** accepted, operator-directed correction mid-package. Closes the
+"Whether srdm talks to the Panel or to Wings directly" question the P14
+handoff named as expected of this package.
+
+The first implementation built `internal/power.PanelDriver` against the
+Pterodactyl Panel's client API. The operator redirected it: **talk to Wings
+directly.** The Panel can be unreachable while the node it manages keeps
+running — an update orchestrator that depended on the Panel anyway would be
+a needless second point of failure for the one thing it absolutely has to
+be able to do, and there is a working reference implementation in this
+repo, `wings-cgroups/wingsctl/wingsctl.py`, built for exactly that reason.
+
+**Decided, ported rather than reinvented, from wingsctl.py:**
+
+- Endpoints: `POST /api/servers/<uuid>/power` (`{"action":"start"|"stop"|
+  "restart"|"kill"}`), `GET /api/servers/<uuid>` (status), `GET
+  /api/servers/<uuid>/logs?size=N` (log tail, readiness's evidence source —
+  see D-033), `GET /api/servers` (reachability).
+- Auth: Wings' own `config.yml`, top-level `token` and `token_id` keys
+  (confirmed present on the case-study node). Bearer, trying the bare
+  `token` first, then the compound `token_id.token` — Wings v1 authorizes
+  against the bare value, some builds expect the compound form, and trying
+  both in that order is wingsctl's own fallback.
+- Base URL and TLS verification are **configuration, not a default**:
+  wingsctl's own `127.0.0.1:8080` default does not hold once a node's
+  `api.port` is reconfigured (the case-study node runs 443 with TLS), so
+  `wings.api_url` is empty by default and `update` refuses, naming the
+  flag, rather than guessing a port that would be wrong exactly when it
+  mattered. `wings.api_insecure` defaults to false — skipping TLS
+  verification is not a default this project will guess into.
+
+**THE TOKEN IS A SECRET**, exactly as a profile's own `Credentials` are.
+`power.WingsDriver.Bearers()` exists so a caller can register every
+candidate with the journal's scrubber (`journal.AddSecrets`) the moment the
+driver is built and before anything else can possibly emit a record naming
+it — `cmd/srdm`'s `newOpEnv` does this immediately after a successful
+`NewWingsDriver`. Never logged, never put in an error message, never a
+journal field. `cmd/srdm.TestNewOpEnvRegistersTheWingsTokenWithTheJournal`
+is the equivalent of `internal/journal`'s own
+`TestRegisteredSecretsNeverReachAnySink` /
+`TestAddSecretsScrubsSubsequentRecords`, exercised against the actual
+construction path an operator's CLI invocation runs.
+
+---
+
+## D-033 — readiness is anchored by a log-tail snapshot taken before start, not by a server-side time filter
+
+**Status:** accepted, with a residual risk stated rather than hidden.
+
+Oracle 33's first property is "only lines from the CURRENT start count" —
+a matching line surviving from the server's PREVIOUS run must never report
+ready. The obvious mechanism is a server-side `since` filter, and the first
+draft (against a hypothetical Docker log stream) used exactly that. It does
+not carry over: Wings' own node API log endpoint
+(`GET /api/servers/<uuid>/logs?size=N`) returns a bounded tail with **no
+per-line timestamp** and no time-filter parameter — it is polled, not
+streamed with a filter the caller controls.
+
+**Decided:** `power.ReadinessChecker` is split into two calls.
+`Anchor(ctx, serverID)` snapshots the server's current log tail and must be
+called **immediately before** the caller issues the server's start —
+`opctl.cycleCohortTo` does exactly this, capturing the anchor, then calling
+`Start`, then `WaitReady`. `WaitReady` polls the same tail and only
+counts a line **not present in the anchor** — content-set membership
+standing in for a timestamp the API does not give this code.
+
+**The residual risk, stated rather than assumed away.** There is a real
+gap between the anchor snapshot and the moment the NEW process actually
+starts writing its own log — Wings recreates the container on start
+(confirmed behaviour on the case-study node), which should make the log
+genuinely fresh, but this code does not rely on that as its only defence,
+per the correction that asked for it not to. Two residual failure modes,
+both stated:
+
+1. A ready line that is **byte-identical** across runs (no per-run
+   timestamp in the message itself) and happens to already be in the
+   anchor from a PREVIOUS run's tail that Wings had not yet rotated out —
+   would be invisible even once genuinely reproduced, because the anchor
+   already contains that exact string. Fails SAFE: the update times out
+   and rolls back rather than falsely declaring ready.
+2. A genuinely new ready line that both appears AND scrolls back out of
+   the bounded tail between two polls — cannot happen for `WaitReady`'s own
+   poll (a match is checked the instant the line is fetched, before the
+   next poll could evict it), but a poll interval much longer than the
+   log's write rate would widen the window in which this is possible.
+   `DefaultReadinessPollInterval` (2s) is chosen to keep that window small
+   against a game server's actual log rate, not proven bounded to zero.
+
+Both failure directions the design could take are safe ones: a stale match
+that does not count, or a fresh match that is missed, both end in a timeout
+and a rollback — never a false "ready" that starts slaves against a main
+that has not actually finished loading.
+
+---
+
+## D-034 — the headroom arithmetic has exactly one implementation, in `internal/publish`, not one each in `opctl` and `doctor`
+
+**Status:** accepted, operator-directed correction after both call sites
+already existed.
+
+`opctl.checkHeadroom` (the preflight refusal) and `doctor`'s
+`update-headroom` check both need the same two numbers: what a release
+would occupy resident (the same per-class rounding `publish.ClassSize`
+already applies) and what the host has available (`/proc/meminfo`'s
+`MemAvailable`). The first pass wrote each independently —
+`opctl.generationBytes`/`opctl.availableHostBytes` and
+`doctor.headroomGenerationBytes`/`doctor.availableMemInfoBytes` — reasoning
+that `doctor` and `opctl` should not depend on each other (true, and still
+the reason neither imports the other directly). That reasoning does not
+extend to the arithmetic ITSELF: two copies of "would this fit" is not two
+independent facts, it is one fact answered twice, and the two answers can
+silently disagree the day `SizeHeadroomPercent` or `SizeGranularity`
+changes in only one copy — doctor reporting a node has room while `update`
+refuses the identical release, or the reverse.
+
+**Decided:** `publish.GenerationBytes` and `publish.AvailableHostBytes`
+(`internal/publish/sizing.go`, new file) are the one implementation of
+each. `internal/publish` is elsewhere forbidden to this package — this is a
+narrow, explicit exception for exactly this pair of pure functions, made
+because the alternative (the duplication itself) was judged worse than the
+exception; `publish.go`'s own publication sequence, teardown and
+reconciliation are untouched. `GenerationBytes` sits beside `ClassSize`,
+which already owns the rounding rule the whole reason this needed
+consolidating in the first place; `AvailableHostBytes` has no more natural
+owner than "the other half of the same question", so it sits next to it
+rather than in a third file. Both `opctl.checkHeadroom` and
+`doctor.checkUpdateHeadroom` now call these and carry no sizing arithmetic
+of their own.

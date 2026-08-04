@@ -3,6 +3,7 @@ package profile
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The shipped example is the first thing an operator copies. If it stops
@@ -70,5 +71,23 @@ func TestShippedSoulmaskExampleLoadsAndClassifies(t *testing.T) {
 	// The example must carry no credentials. It is a document people copy.
 	if len(p.Credentials) != 0 {
 		t.Error("the shipped example carries credentials")
+	}
+
+	// P14: the STEADY line (registe server soulmask session succeed), not
+	// Wings' own "done" line (Create Dungeon Successed) — main is up is not
+	// main is accepting sessions, and starting slaves on the former risks
+	// them connecting to a main that has not finished initializing.
+	if !p.Readiness.Configured() {
+		t.Fatal("the shipped example carries no readiness pattern")
+	}
+	if p.Readiness.Kind != ReadinessKindLogMatch {
+		t.Errorf("readiness.kind = %q, want %q", p.Readiness.Kind, ReadinessKindLogMatch)
+	}
+	if p.Readiness.Pattern != "registe server soulmask session succeed" {
+		t.Errorf("readiness.pattern = %q, want the STEADY line, not the startup.done line",
+			p.Readiness.Pattern)
+	}
+	if got, want := p.Readiness.EffectiveTimeout(), 600*time.Second; got != want {
+		t.Errorf("readiness timeout = %v, want %v", got, want)
 	}
 }

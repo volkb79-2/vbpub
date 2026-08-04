@@ -37,7 +37,28 @@ import (
 )
 
 // SchemaVersion is the assignment document version.
-const SchemaVersion = 1
+//
+// 2 since P14 (`srdm update`): a Soulmask cohort has exactly one MAIN server
+// slaves connect to, and an ordered cohort cycle has to know which one —
+// stopping and starting in the wrong order against the wrong server is not
+// a smaller version of the bug, it is a slave joining a session on content
+// nobody finished switching. Role is therefore part of the document rather
+// than an update-time flag: it is who the server IS to the cluster, the
+// same durable-fact category Access already is.
+const SchemaVersion = 2
+
+// Role is what a server is to its cohort.
+type Role string
+
+const (
+	// RoleMain is the server every slave connects to. Exactly one per
+	// profile — MainServer refuses otherwise, naming the fix.
+	RoleMain Role = "main"
+	// RoleSlave is a server that depends on the profile's main.
+	RoleSlave Role = "slave"
+)
+
+func (r Role) valid() bool { return r == RoleMain || r == RoleSlave }
 
 // Server is one consumer of a profile's active generation.
 type Server struct {
@@ -47,6 +68,10 @@ type Server struct {
 	// so the durable format does not depend on the exposure layer's types —
 	// a v2 provider driver reads the same documents.
 	Access string `json:"access"`
+	// Role is "main" or "slave". `update` orders a cohort cycle by it:
+	// every slave stops before main, and no slave starts before main has
+	// signalled ready.
+	Role Role `json:"role"`
 }
 
 // Assignment is one profile's declared state.
@@ -112,6 +137,19 @@ func (s *Store) Load(profileID string) (*Assignment, error) {
 		return nil, fmt.Errorf("assign: decode %s: %w", s.path(profileID), err)
 	}
 	if a.SchemaVersion != SchemaVersion {
+		if a.SchemaVersion == 1 {
+			// Refused rather than migrated (D-030): a v1 document has no
+			// role, and guessing which of its servers is MAIN is guessing
+			// which one an ordered cohort cycle is safe to start last. A
+			// wrong guess here is not a smaller bug — it is a slave started
+			// before the server it depends on, or a "main" stop/start
+			// order applied to a server that was never main at all.
+			return nil, fmt.Errorf("assign: %s is a v1 document (want v%d) — it has no server "+
+				"roles, and this project does not guess which server is MAIN. Re-declare each "+
+				"server with `srdm attach --role main|slave` (re-attaching an already-attached "+
+				"server updates its role in place) to produce a v%d document",
+				s.path(profileID), SchemaVersion, SchemaVersion)
+		}
 		return nil, fmt.Errorf("assign: %s has schema_version %d (want %d)",
 			s.path(profileID), a.SchemaVersion, SchemaVersion)
 	}
@@ -194,20 +232,68 @@ func (a *Assignment) Server(id string) (Server, bool) {
 	return Server{}, false
 }
 
-// AddServer records a consumer, replacing its access if it is already there.
-func (a *Assignment) AddServer(id, access string) error {
+// AddServer records a consumer, replacing its access and role if it is
+// already there — which is how a server's role is corrected, deliberately:
+// there is no separate "re-role" verb, attach already IS "declare what this
+// server is" and a second call is how that declaration changes.
+func (a *Assignment) AddServer(id, access string, role Role) error {
 	if id == "" {
 		return errors.New("assign: a server needs an id")
+	}
+	if !role.valid() {
+		return fmt.Errorf("assign: role %q is neither %q nor %q", role, RoleMain, RoleSlave)
 	}
 	for i := range a.Servers {
 		if a.Servers[i].ID == id {
 			a.Servers[i].Access = access
+			a.Servers[i].Role = role
 			return nil
 		}
 	}
-	a.Servers = append(a.Servers, Server{ID: id, Access: access})
+	a.Servers = append(a.Servers, Server{ID: id, Access: access, Role: role})
 	a.sortServers()
 	return nil
+}
+
+// Main returns the profile's one main server, or an error naming the
+// shortfall — zero mains and two mains are both refused, because an ordered
+// cohort cycle needs exactly one server to stop last and start first, and
+// there is no safe way to pick one when the assignment does not say.
+func (a *Assignment) Main() (Server, error) {
+	var mains []Server
+	for _, srv := range a.Servers {
+		if srv.Role == RoleMain {
+			mains = append(mains, srv)
+		}
+	}
+	switch len(mains) {
+	case 1:
+		return mains[0], nil
+	case 0:
+		return Server{}, fmt.Errorf("assign: profile %q has no server declared main; "+
+			"an ordered cohort cycle needs exactly one — attach one with --role main "+
+			"(or re-attach an existing server to change its role)", a.Profile)
+	default:
+		ids := make([]string, len(mains))
+		for i, m := range mains {
+			ids[i] = m.ID
+		}
+		sort.Strings(ids)
+		return Server{}, fmt.Errorf("assign: profile %q has %d servers declared main (%s); "+
+			"an ordered cohort cycle needs exactly one — re-attach every extra one with "+
+			"--role slave", a.Profile, len(mains), strings.Join(ids, ", "))
+	}
+}
+
+// Slaves returns every non-main server, in the assignment's stable order.
+func (a *Assignment) Slaves() []Server {
+	var out []Server
+	for _, srv := range a.Servers {
+		if srv.Role != RoleMain {
+			out = append(out, srv)
+		}
+	}
+	return out
 }
 
 // RemoveServer drops a consumer, reporting whether it was there.
