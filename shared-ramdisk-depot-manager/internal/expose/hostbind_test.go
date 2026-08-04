@@ -17,6 +17,7 @@ import (
 	"srdm/internal/config"
 	"srdm/internal/consumer"
 	"srdm/internal/journal"
+	"srdm/internal/mountinfo"
 	"srdm/internal/profile"
 	"srdm/internal/publish"
 	"srdm/internal/wings"
@@ -987,6 +988,29 @@ func TestMirrorDirTreeFailsWhenTheUpperCannotBeCreated(t *testing.T) {
 	}
 }
 
+// The upper mirrors fine (it is a fresh path), but overlayfs's own scratch
+// directory cannot be created — here because something already occupies
+// that exact path as a plain file, not a directory.
+func TestExposeRWFailsWhenTheWorkDirCannotBeCreated(t *testing.T) {
+	h := newHarness(t)
+	rec := h.liveRecord()
+	bindings, err := h.healthy().Plan(rec, testProfile(t), request(AccessRW))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := bindings[0].Work
+	if err := os.MkdirAll(filepath.Dir(blocked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.healthy().Expose(ctx(), rec, testProfile(t), request(AccessRW)); err == nil {
+		t.Fatalf("Expose rw succeeded although %s already exists as a plain file", blocked)
+	}
+}
+
 // --- RWServers (D-029): what harvest asks to find who holds rw ------------
 
 // overlayEntry renders one overlay mountinfo line, the shape an rw exposure
@@ -1034,8 +1058,12 @@ func TestRWServersFindsEveryServerHoldingAnOverlayOfTheGeneration(t *testing.T) 
 			rec.Classes[0].ExposePath+"/WS/Binaries"),
 		overlayEntry(92, filepath.Join(volume, serverB, "WS/Content/Paks"),
 			rec.Classes[1].ExposePath+"/WS/Content/Paks"),
-		// Noise: an overlay of something else entirely, and a plain tmpfs.
+		// Noise: an overlay of something else entirely, one under the volume
+		// root but of a generation this record does not name, and a plain
+		// tmpfs at a path that only LOOKS like an rw binding's target.
 		overlayEntry(93, "/var/lib/docker/overlay2/abc/merged", "/var/lib/docker/overlay2/abc/lower"),
+		overlayEntry(95, filepath.Join(volume, serverB, "WS/Binaries"),
+			"/run/srdm/othergame/deadbeef/code/WS/Binaries"),
 		mountLine(94, otherDevice, filepath.Join(volume, serverB, "Engine")),
 	)
 	d, err := NewHostBind(h.cfg, h.journal(), WithMountInfoPath(table))
@@ -1080,6 +1108,42 @@ func TestRWServersFailsWhenTheMountTableCannotBeRead(t *testing.T) {
 	}
 	if _, err := d.RWServers(testRecord()); err == nil {
 		t.Fatal("RWServers succeeded reading an unreadable mount table")
+	}
+}
+
+// --- RWServers's small helpers, tested directly -----------------------------
+
+// An overlay mount with no lowerdir= option at all should not happen in
+// practice — the kernel refuses to mount one without it — but the parser
+// must not panic or misread the absence as an empty match.
+func TestOverlayLowerDirsReturnsNilWithNoLowerdirOption(t *testing.T) {
+	e, err := mountinfo.ParseLine(
+		"90 30 0:99 / /t/merged rw,relatime - overlay overlay rw,index=off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := overlayLowerDirs(e); got != nil {
+		t.Errorf("overlayLowerDirs = %v, want nil", got)
+	}
+}
+
+func TestAnyLowerUnderIsFalseWhenNothingMatches(t *testing.T) {
+	if anyLowerUnder([]string{"/a/b", "/c/d"}, []string{"/x", "/y"}) {
+		t.Error("anyLowerUnder matched roots that share nothing with the lowerdirs")
+	}
+}
+
+// A target equal to root names no server segment at all — the mount point
+// would have to be the volume root itself, which no rw binding ever is.
+func TestFirstPathComponentRejectsTheRootItself(t *testing.T) {
+	if _, ok := firstPathComponent("/a/b", "/a/b"); ok {
+		t.Error("firstPathComponent accepted a target equal to root")
+	}
+}
+
+func TestFirstPathComponentRejectsATargetOutsideRoot(t *testing.T) {
+	if _, ok := firstPathComponent("/a/b", "/somewhere/else"); ok {
+		t.Error("firstPathComponent accepted a target outside root")
 	}
 }
 

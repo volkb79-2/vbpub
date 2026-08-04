@@ -137,14 +137,56 @@ minimal change with no behavioural effect on `internal/opctl`'s own logic,
 made because leaving the build broken is worse than a one-line adjustment
 to a consumer of a removed API.
 
+**The changed-line coverage floor found two real unit-test gaps**, both
+closed rather than argued around: `RWServers` and its four small helpers
+(`overlayLowerDirs`, `anyLowerUnder`, `underAny`, `firstPathComponent`) had
+no unit test at all — every path that reached them was privileged-e2e-only,
+which the coverage gate's plain `go test ./...` never compiles. And
+`Holder.String()`'s new `KindOverlay` case was covered, but the refactor
+from an `if`/`default` into a three-armed `switch` made the *pre-existing*
+`KindContainer` case a changed line too, and nothing had ever called
+`.String()` on a `KindContainer` holder before. Both closed with direct unit
+tests rather than by loosening what counts as "changed".
+
+**Coverage measurement needs the git worktree's common dir mounted too.**
+This agent's checkout is a linked `git worktree` (`.git` is a file pointing
+at `/workspaces/vbpub/.git/worktrees/<name>`, outside the checkout itself),
+and `tools/covergate` shells out to `git`. `tools/gate.sh coverage`'s single
+bind mount of the worktree root is not enough for `git rev-list`/`git diff`
+against `main` to resolve; it needed the host's `<repo>/.git` mounted
+read-only at the same absolute path alongside it. Not a defect in
+`gate.sh` — it assumes a plain clone, which is what a purpose-carved
+worktree normally is — recorded here because the next agent in a linked
+worktree will hit the exact same wall.
+
 ## Gaps
 
+- **`publish.MarkDirtyCapable` is now unreachable code.** D-029 retires the
+  `Marker` interface and its `Expose`-side call; nothing anywhere in the
+  tree calls `MarkDirtyCapable` anymore. `internal/publish/publish.go` is
+  outside this package's touch scope (forbidden, and another agent was
+  concurrently working in it), so the function itself is left in place
+  rather than deleted. The READ side of `Record.DirtyCapable` is unaffected
+  and stays load-bearing — a record written by an older srdm, or a future
+  non-overlay driver, can still carry it, and `doctor`'s drift check earns
+  its keep on those. Only the writer is dead. → backlog
+  (`publish.MarkDirtyCapable is unreachable code`), and D-029 now states
+  this split explicitly.
 - **No `--from-server` CLI flag.** `harvest.Opts.FromServer` exists and is
   exercised directly by unit and e2e tests; the CLI-level override for
   choosing among several ambiguous rw holders would need
   `internal/opctl.Controller.Harvest`'s signature to change, which is
   outside this package's touch scope. The automatic default (exactly one
-  holder) already reaches the CLI unaided. → backlog.
+  holder) already reaches the CLI unaided, and the refusal half — several
+  holders with nothing named — is real and tested without it: see
+  `TestHarvestRefusesAmbiguousServersWithNoFromServerGiven` (unit,
+  `internal/harvest/harvest_test.go`) and
+  `TestHarvestAcceptsAnExplicitFromServerAmongSeveral` (unit, same file) for
+  the two halves; `HostBind.RWServers` is what both are built on, e2e-tested
+  live against `TestARealOverlayWhoseLowerdirIsOurExposePathIsFound`'s
+  shape in `internal/consumer/e2e_test.go`. What is missing is only the
+  CLI's ability to let an operator NAME which of several ambiguous holders
+  to read — the refusal itself needs no flag to exist.
 - **The residual truncate-without-unlink case.** A genuine in-place
   `open(O_WRONLY|O_TRUNC)` of a file that has never been touched since
   publication fails `EACCES` through the overlay — directories are
@@ -164,9 +206,9 @@ to a consumer of a removed API.
 
 ```
 tools/gate.sh <worktree> unit       → gofmt, build, vet, all packages green
-tools/gate.sh <worktree> e2e        → PENDING FINAL NUMBERS
-tools/canary-run.sh                 → PENDING FINAL NUMBERS
-tools/gate.sh <worktree> coverage   → PENDING FINAL NUMBERS
+tools/gate.sh <worktree> e2e        → 468 passed, 0 failed
+tools/canary-run.sh                 → PENDING FINAL CONFIRMATION
+tools/gate.sh <worktree> coverage   → 247/258 changed executable lines (95.7% >= 75.0% floor)
 nyxloom lint nyxloom-trove/handoffs/*.md → clean
 ```
 

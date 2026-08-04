@@ -1198,7 +1198,7 @@ documents to find out which parts still hold.
 **Retired outright:** `hold.Unseal`'s use from `expose` (the call, not the
 function — `internal/hold` still uses it for the class-tree-handover shape
 elsewhere), `PreconditionWriteOwner`, `config.Wings.WriteOwner` as anything
-read, the `Marker`/`MarkDirtyCapable` call from `Expose`, and
+read, the `Marker` interface and its `Expose`-side call, and
 `PreconditionSingleWrite`'s refusal of a second `rw` consumer (oracle 26:
 any number of servers may now hold `rw` on the same generation).
 
@@ -1209,11 +1209,19 @@ READ from the same `Source` (the sealed exposure), and it is the MOUNT TYPE
 (bind vs. overlay) rather than the bind's target that differs. D-022's
 "never re-sealed, only republish or harvest repairs a written generation" is
 still true and now trivially so — the overlay's lower is never written at
-all, so there is nothing to re-seal in the first place. `Record.DirtyCapable`
-survives as a field, deliberately vestigial: an older srdm's record, or a
-future non-overlay driver, can still set it, and `doctor`'s drift check
-still has to mean something when it does. No `rw` exposure built by this
-package ever sets it again.
+all, so there is nothing to re-seal in the first place.
+
+**`Record.DirtyCapable` is now split, and the two halves do not survive
+equally.** The READ side stays genuinely load-bearing: a record written by
+an older srdm, or a future non-overlay driver, can still carry the flag, and
+`doctor`'s drift check (and `expose`'s own `PreconditionDirty`, unchanged)
+still has to mean something when it does. The WRITE side does not survive
+at all — `publish.Publisher.MarkDirtyCapable` has no caller left anywhere in
+the tree, `Marker`/`WithMarker` having been retired with it — and no `rw`
+exposure this project builds will ever set the flag again. Left in place
+rather than deleted: `internal/publish/publish.go` was out of this
+package's scope, and a record schema field cannot be removed out from under
+whatever still deserializes it. Tracked as its own backlog entry.
 
 ### Retained or discarded: the upper is discarded on `Unexpose`
 
