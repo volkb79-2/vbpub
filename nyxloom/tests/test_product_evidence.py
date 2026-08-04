@@ -190,6 +190,24 @@ class TestLoadCriteriaDiscriminates:
     def test_a_missing_doc_yields_no_criteria_rather_than_raising(self, tmp_path):
         assert product_evidence.load_criteria(tmp_path) == []
 
+    def test_a_non_dict_feature_entry_is_skipped_rather_than_raising(self, tmp_path):
+        """Defensive against a malformed `features` list (already someone
+        else's S1 finding, or an unschema'd hand-edit) -- a bare string in
+        the list must not raise AttributeError on `.get`."""
+        doc = tmp_path / "nyxloom-trove" / "2-product-definition.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            _DOC_HEADER
+            + "- not-a-mapping\n"
+              "- id: F001\n  title: X\n  status: shipped\n"
+              "  acceptance:\n"
+              "  - id: F001-A1\n    text: 'a claim'\n    status: proven\n"
+              "    evidence: ['tests/test_x.py::test_y']\n"
+            + "---\n\nBody\n")
+        criteria = product_evidence.load_criteria(tmp_path)
+        assert len(criteria) == 1
+        assert criteria[0].id == "F001-A1"
+
     def test_an_unparsable_doc_yields_no_criteria_rather_than_raising(self, tmp_path):
         doc = tmp_path / "nyxloom-trove" / "2-product-definition.md"
         doc.parent.mkdir(parents=True)
