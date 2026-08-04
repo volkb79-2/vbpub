@@ -30,8 +30,8 @@ from conftest import SAMPLE_ROUTES_TOML
 from nyxloom import (
     effects_carve,
     adapters, carver_session, cli, control_auth, daemon, decision_chat, decisions, doctor,
-    effects_attempt, effects_dispatch, effects_gates, effects_review, lint, log,
-    notify, paths, reconcile,
+    effects_attempt, effects_dispatch, effects_gates, effects_lifecycle, effects_review, lint,
+    log, notify, paths, reconcile,
     render, results, snapshot, storage, wrapper,
 )
 from nyxloom.types import (
@@ -1414,7 +1414,8 @@ def test_emit_attempt_exit_limit(tmp_state, sample_project, patch_siblings, monk
     types = [e.type for e in events]
     assert EventType.PROVIDER_STATE_CHANGED in types
     psc = next(e for e in events if e.type is EventType.PROVIDER_STATE_CHANGED)
-    assert psc.payload == {"route_id": "fake-cli", "state": "limited"}
+    assert psc.payload == {"route_id": "fake-cli", "state": "limited",
+                           "duration_seconds": effects_lifecycle.PROVIDER_PAUSE_SECONDS}
     assert EventType.NEEDS_OPERATOR in types
 
     d.run_pass("demo")
@@ -2469,7 +2470,8 @@ def test_transient_escalate_at_cap_pauses_and_requeues(tmp_state, sample_project
     assert EventType.PROVIDER_STATE_CHANGED in ev_types
     assert EventType.NEEDS_OPERATOR in ev_types
     psc = next(e for e in events if e.type is EventType.PROVIDER_STATE_CHANGED)
-    assert psc.payload == {"route_id": "fake-cli", "state": "throttled"}
+    assert psc.payload == {"route_id": "fake-cli", "state": "throttled",
+                           "duration_seconds": effects_lifecycle.PROVIDER_PAUSE_SECONDS}
 
     # On the NEXT snapshot, the just-paused route reads unhealthy -- the
     # EXISTING first-healthy-route selector then re-routes elsewhere.
