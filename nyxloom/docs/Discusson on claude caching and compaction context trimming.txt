@@ -1,0 +1,61 @@
+# Discusson on claude caching
+
+The mental model to drop is "the cache lives in a process." It doesn't — Anthropic's prompt cache is server-side and content-addressed: keyed by (your org, the exact token sequence up to a cache_control breakpoint). Any API call from anywhere that sends an identical prefix within the TTL hits the cache, full stop. Whether the local client is the same running binary is irrelevant to the cache lookup — only the bytes matter.
+
+- A "resumed" session (SendMessage to a named agent), even across a fresh binary start: mechanically, resuming means the harness replays that agent's growing message array and appends your new turn, then sends the whole thing as a new API call. Since everything up through the last turn is byte-identical to what was already sent (and cached) in a prior call for that same agent, the new call is a cache hit on that entire prefix — the process restarting changes nothing, because the cache doesn't know or care which process sent the bytes.
+- TTL: my current session's own tooling tells me this session runs on a 1-hour cache TTL by default, dropping to 5 minutes only if the account enters usage overage. That's actually more generous than the 5-minute figure CLAUDE.md's "cache-warmth heartbeat" section assumes — worth flagging as possibly stale in that doc (written for the conservative case), not something I'd trust blindly either way without re-checking. Net effect either way: resuming an agent within that window is a cache hit; resuming after it expires is a full cold re-read.
+- A forked session: a fork's first API call sends the parent's current transcript as its own prefix — and since the parent just sent that same prefix in one of its own recent calls (almost certainly still warm), the fork's first turn is a cache hit on all of it. That's the literal mechanism behind "forks are cheap because they share your prompt cache" — it's not a metaphor, it's the same content-hash lookup.
+
+The economics: a cache read costs roughly a tenth of a fresh input token; a cache write costs more (~1.25× for the 5-min tier, ~2× for the 1-hour tier). So the whole strategy only pays for itself when a prefix gets reused multiple times inside the TTL — which is exactly what session-reuse and forking are for, and exactly why a fresh Agent call per package (no shared prefix with anything) is the expensive option.
+
+
+
+❯ we talked about the Agent concurrency model and your dispatch feels right, how could even optimize more? the agent's context is based on state in file , thats how it can be resumed, correct? how about resusing a agent but compacting it (while not running of course, wihtout using expensive anthripic endpoint for it)? are there projects out there to do this? wouldnt this be something you could even do mechanically or with a cheap self-hosted cpu-based LLM? like clean details from previous work, implement some kind of sliding window, forgot details but keep summaries and insights to still know work-related context and make better decisions for current and future work? like memories work?
+
+Your premise is right, and the follow-through question is a genuinely good one — let me answer it precisely rather than hand-wave.
+
+How resumption actually works, confirmed: each subagent's full history (system prompt, every tool call and result, every reasoning turn) persists as a JSONL transcript file — I've seen the paths (/tmp/.../tasks/<agentId>.output, explicitly flagged as "do not read directly"). When I SendMessage to resume one, the harness replays that transcript, appends my new message, and sends the whole growing array as a fresh API call. That's exactly the caching mechanic I described earlier — same prefix, cache hit, no magic beyond content-addressing.
+
+Is compacting that transcript with something cheaper than a full Claude call a real idea? Yes — it's not novel, it's established practice elsewhere:
+
+- MemGPT (now Letta) is built almost entirely around this: a small "core memory" that's always in-context, plus "archival memory" that gets evicted/summarized out and retrieved on demand — and its memory-management calls are explicitly meant to be cheap relative to the main reasoning calls, because summarizing what already happened is a much easier task than deciding what to do next.
+- LangChain's ConversationSummaryBufferMemory does exactly "sliding window + running summary," and it's model-agnostic — nothing stops that summarization step from being a small local model instead of the frontier one.
+- Stanford's "Generative Agents" paper (the Smallville simulation) used precisely this: raw observations in a sliding window, periodic LLM-generated "reflections" promoted into longer-term memory, retrieved later by relevance — the cheap/local-model framing fits naturally there too, since reflection is bounded and extractive, not open-ended.
+
+★ Insight ─────────────────────────────────────
+There are two genuinely different ways to do this cheaply, and they don't require the same amount of intelligence: mechanical filtering (zero inference) exploits the fact that a Claude Code agent transcript is already semi-structured — every tool result that mattered has usually already been digested into a subsequent prose turn (the agent explains what it found). A script could keep [system prompt + every prose turn + a manifest of files touched/commits made] and drop [raw tool outputs whose content is already summarized downstream] — no model needed at all. Semantic compaction (condensing five long docker-log dumps into "confirmed X, ruled out Y") genuinely needs some inference, but that's a bounded, extractive task — well within reach of a quantized 1-3B model on CPU (Qwen2.5-1.5B, Phi-3-mini, Llama-3.2-3B via llama.cpp), nowhere near needing Sonnet or Opus.
+─────────────────────────────────────────────────
+
+The honest gap: I don't currently have a sanctioned way to actually do this in Claude Code today. The transcript file is harness-managed state, not something I have a documented, safe write-path into — I've been told not to even read it, let alone rewrite it mid-session. So the mechanism is real and well-precedented elsewhere, but it'd need to be a harness-level feature (Anthropic building a "compact this subagent's transcript with a lightweight local model" primitive), not something I can wire up unilaterally with my current toolset — I also don't have a local/cheap-model tool exposed in this environment to even run the summarization step myself if I tried.
+
+What I can do that approximates it, manually: the same pattern this project already uses on me — periodically have an agent write a compact "state so far" note to a file, and if I ever needed to truly reset a bloated agent, kill it and seed a fresh one from that note instead of resuming the full transcript. That's mechanical context-transfer, but the summarization step itself still runs through the agent's own (Claude) inference, not a cheap external model — I'd need read access to the raw transcript to hand it to something else, which I don't have here.
+
+The "like memories work?" connection is exactly right, and worth being precise about: my own memory system already validates this whole pattern — cross-session, it's curated and distilled (types, not raw transcript), written expensively once at a decision point, read for free afterward. What's missing is the intra-session equivalent: nothing periodically distills a very long single agent session the way memory distills across sessions. Given this conversation's own agents are staying well within the 1-hour cache TTL between resumes, the immediate cost benefit of fixing that is smaller than it looks — caching already absorbs most of the "expensive re-read" cost. The real payoff would show up in a session long enough to approach the context-window ceiling, which is a genuine risk in exactly this kind of long-running, many-resumes pattern.
+
+If you want to push on this as a real feature idea rather than a working pattern in this session, that's product feedback for Claude Code itself (github.com/anthropics/claude-code/issues) rather than something that belongs in dstdns's or nyxloom's own backlog — it's about the agent tooling, not either project.
+
+
+
+
+❯ `When I SendMessage to resume one, the harness replays that transcript, appends my new message, and sends the whole growing array as a fresh API call. That's exactly the caching mechanic I described earlier — same prefix, cache hit` - so if we trimmed some parts of the transcript (custom compaction/mechanical filtering), how would that affect the caching? the API would see identical context until the place we trimmed something, it still knows the following content, but it was "moved" up front due to missing in between content. would this be treated as a "new prefix" from the moved part on and potentially hurt cost?
+
+Exactly right, and worth being precise about why — this is a hard constraint of how the caching actually works, not a minor inefficiency.
+
+★ Insight ─────────────────────────────────────
+Anthropic's cache is a prefix hash lookup, not a content-addressable store over arbitrary spans. A cache_control breakpoint says "hash everything from the start of this request up to here, and check if that exact hash was seen before." It has no concept of "this chunk is the same content, just at a different offset" — it only knows "identical bytes from position zero to here, or not." So if you remove or rewrite anything in the middle, every token after that edit point is now preceded by a different byte sequence than it was last time, even though the tokens themselves are unchanged. The hash from that point forward simply won't match anything cached. It's not "moved and still recognized" — it's "different prefix, full stop."
+─────────────────────────────────────────────────
+
+Concretely, what happens on the next call after a mid-transcript trim:
+
+- Everything before your first edit still matches the old cache entry — that part is a clean hit, same as always.
+- Everything from the edit point onward is a cache miss on that call — paid at the cache-write rate (roughly 1.25–2× a normal input token, depending on the 5-min vs 1-hour tier), not the ~0.1× read rate, even though most of that trailing content is textually identical to what was already cached a moment ago.
+- After that one call, though, the new (shorter) sequence becomes its own cache entry. Every resume after that hits cleanly against the compacted version. The old, now-orphaned longer-prefix entry just goes unused and expires.
+
+So it's not a pure loss — it's the same shape as any cache write: pay once, save on every reuse after. Whether it's worth it depends entirely on how many more times you'll resume that agent afterward. Trim right before the conversation basically ends, and you paid a reprocessing cost for zero benefit. Trim early with many turns still ahead, and it pays for itself quickly.
+
+Two implications that follow directly from this, and matter if anyone actually builds the compaction idea from a moment ago:
+
+1. Where you trim matters a lot. Cutting content near the start of the transcript invalidates almost the entire cache (everything after shifts). This is why real systems (MemGPT, Claude Code's own /compact) don't scatter edits through the middle — they collapse a whole block of old content into one summary placed right after the system prompt, then leave the recent tail completely untouched after it. That structure still breaks the cache once, right at the summary, but it's a single clean break rather than a cascading one.
+2. Batch it, don't trickle it. Each trim event is its own cache-write hit. Doing five small incremental trims costs five markups; doing one larger trim that covers the same ground costs one. This is the same economics as "don't recompile on every keystroke" — the fixed cost per edit event dominates if you pay it too often.
+
+For what it's worth, this is exactly why I've been treating context management as a batching problem all session (letting the Sonnet lane run through several packages before I re-engage, rather than resuming after every single turn) — same underlying cache-prefix logic, just applied at the level of when I choose to send a new message rather than editing what's already there.
