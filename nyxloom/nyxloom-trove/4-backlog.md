@@ -241,3 +241,12 @@ items:
 Un-scheduled items and sub-packages, each folding into a product-definition
 feature (or standalone for ops). `context_estimate` is the carver's read-
 context estimate (a scheduler input); `component` is the wave-grouping proxy.
+
+
+# non-formatted manual backlog reminders
+
+items that must be folded in somewhere, should not be forgotten
+
+- Legacy Data API endpoints retire November 4, 2026, /api/v2/data/llms/models => /api/v2/language/models/free, see https://artificialanalysis.ai/data-api/migrate-v2-data
+- "One optional refinement, only if you want it: the Opus reviewer could sanity-check a freshly-carved handoff's oracle satisfiability as a cheap add-on before I dispatch it (same "allowed small in-scope enhancements" spirit as its code review). I'd only add that if carving quality becomes a problem — no evidence of that yet, so I'd default to skipping it, same reasoning as escalate-only Opus: don't add a step until it's earning its keep."
+- consider: "the implementer runs its own per-package gate (to our standards, canary, mutation,...), foreground, waits for real output, and only commits/hands back on genuine pass with the actual output pasted into its LOG. (the standing rule "an implementer's self-report is not evidence" still holds, it's just evidence)"
