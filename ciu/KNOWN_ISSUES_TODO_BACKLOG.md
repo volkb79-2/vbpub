@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-03 (CIU-13 fixed).
+Last updated: 2026-08-05 (CIU-14 filed).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -45,6 +45,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-10 | Pre-set `PHYSICAL_REPO_ROOT` contamination from a sibling repo's sourced `ciu.env` corrupts `ciu env generate` for a nested repo | High | FIXED |
 | CIU-11 | `standalone_root` (S1.2) guard did not fire on `ciu render`: `deploy.py` detected the standalone root from the already-resolved `repo_root` (the contaminated value) instead of the invocation dir, so `ciu render` from a sibling repo with a stale `$REPO_ROOT` rendered the *other* repo's stacks silently; `ciu up` (engine) checked `working_dir` and was correct. Fixed by a shared `enforce_standalone_root(invocation_dir)` helper both paths call. | High | FIXED |
 | CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | FIXED |
+| CIU-14 | `governance.ksm_optin` bind-mounts the configured shim path unconditionally, with no existence check — a missing source file silently phantom-mounts an empty directory instead of failing, so KSM opt-in contributes zero savings with no error surfaced anywhere but container-internal `ld.so` stderr | Medium | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -439,3 +440,70 @@ Code + tests + SPEC (S15.14/S15.15/S15.16) landed together with the CIU-13 fix
 above; not filed as a separate numbered issue per this file's convention that
 proactively-implemented enhancements (cf. the `--host --thin` note in the
 2026-07-21 audit above) are tracked via git history rather than a bug entry here.
+
+---
+
+### CIU-14 detail: `ksm_optin` bind-mounts a missing shim silently instead of failing
+
+**Reported by:** dstdns, 2026-08-05, provisioning a Mode-B worktree instance
+(`round1-secondary-stack`) for isolated package-gate testing.
+**Severity:** Medium — not a security fail-open like CIU-13, but a silent
+efficacy fail-open: the operator believes KSM opt-in is active (governance
+notes report `ksm_optin=<path>`, not `off`) while it is doing nothing at all,
+with zero savings and zero error surfaced outside container-internal logs.
+
+**Mechanism.** `governance.py:889-899` (`generate_overlay`'s injection loop):
+```python
+ksm_src = str(config.get("_ksm_optin_source") or "")
+if ksm_src:
+    frag["environment"] = [f"LD_PRELOAD={KSM_PRELOAD_TARGET}"]
+    frag["volumes"] = [{
+        "type": "bind",
+        "source": ksm_src,
+        "target": KSM_PRELOAD_TARGET,
+        "read_only": True,
+    }]
+```
+`ksm_src` (resolved in `composefile.py:781-789` from `governance.ksm_optin`,
+made physical via `to_physical_path`) is used as a bind-mount source with no
+`Path(ksm_src).is_file()` check. Docker's own bind-mount behavior silently
+creates an empty directory at a missing host source path rather than
+erroring, so the container starts "successfully" with an empty directory at
+`/opt/ksm/ksm-optin.so` and `LD_PRELOAD` pointed at it.
+
+**Live repro (dstdns, 2026-08-05).** `tools/ksm-optin/ksm-optin.so` was, at
+the time, a **gitignored build artifact** present only in checkouts where it
+had been built by hand (dstdns's main checkout, built 2026-07-17 — see
+dstdns's own fix for this half, `.gitignore`/tracking the artifact, filed
+separately as a consumer-side change, not a CIU issue). A fresh
+`git worktree add` does not carry it. `ciu up`'s bind mount into the new
+worktree's containers silently backfilled an empty directory. Every one of
+the new instance's 8 containers logged (visible only via `docker logs`, not
+surfaced by `ciu up` itself):
+```
+ERROR: ld.so: object '/opt/ksm/ksm-optin.so' from LD_PRELOAD cannot be preloaded (cannot read file data): ignored.
+```
+and showed `ksm_merge_any: no` / `ksm_process_profit: 0` in `/proc/<pid>/ksm_stat`
+for every process — KSM opt-in contributed **zero** savings to the entire
+instance, with the governance notes line still reporting
+`ksm_optin=tools/ksm-optin/ksm-optin.so` (present, "on") the whole time.
+
+**Suggested fix.** Before emitting the bind-mount fragment in
+`generate_overlay` (or earlier, right after `_ksm_optin_source` is resolved
+in `composefile.py`), check `Path(ksm_src).is_file()`. If it's configured but
+missing: fail the render/up with a clear error naming the missing path and
+the config key that requested it (`governance.ksm_optin = "<path>"`), rather
+than silently emitting a working-looking bind-mount fragment. This is the
+same class of fix as CIU-13 (a governance mechanism that should fail closed,
+not open) — consider whether other `governance` bind-mount-from-config-path
+injections have the same gap (worth a quick audit of `generate_overlay` for
+other unconditional `frag["volumes"]` sites built from a config-supplied
+path).
+
+**Out of scope for this entry, noted for completeness:** a separate,
+optional enhancement was suggested alongside this bug — a CLI-level
+`--ksm`/`--no-ksm` toggle for ad-hoc runs, as an alternative to editing
+`governance.ksm_optin` in the TOML layer. That's a convenience feature
+request, not a fix for this bug (a CLI toggle wouldn't have caught a
+configured-but-missing shim either) — worth considering separately, not
+conflated with CIU-14's fail-loud fix above.
