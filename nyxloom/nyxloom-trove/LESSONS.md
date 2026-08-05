@@ -1260,3 +1260,56 @@ init/capability/security subagent workflows unless the handoff asks for them or 
 specific risk trigger fires. The independent reviewer is valuable for local causal
 test corrections; it should not spend most of its budget proving it is allowed to
 read a small diff. B29 tracks the product work.
+
+## PL12 — `coverage_gate.py`'s changed/executable intersection is blind to a
+changed line that `coverage.py` never attributes to any bucket
+
+`scope: product` · `upstream: proposed`
+
+Reported by dstdns, 2026-08-05, filed there as B065 after `dstdns-P77`'s own
+declared gate returned an unexplained `diff-coverage OK: 0/0` on a real,
+meaningful source change. The implementer traced it to the raw coverage JSON:
+line 656 (a `return {` opener) was in `executed_lines`, but every one of the
+changed lines 657–674 — the interior of that multi-line dict literal, where
+the actual behavioural change lived — appeared in **none** of
+`executed_lines`, `missing_lines`, or `excluded_lines`. `coverage.py` only
+ever attributes trace hits to the *first* physical line of a multi-line
+statement; the continuation lines are real source, genuinely executed, but
+carry no line-level trace record of their own.
+
+**Confirmed live in this repo's own `src/nyxloom/coverage_gate.py:245`
+(`evaluate()`): the same blindness exists here, unfixed.** `executable =
+missing | executed`, then `changed_exec = lines & executable` — a changed
+line absent from both `missing` and `executed` (this exact multi-line-literal
+case) is silently dropped by that intersection before it ever reaches the
+numerator or denominator. This is the *same shape* as two bugs this module's
+own docstring already documents finding and fixing — B63 (a changed file
+coverage.py can't measure at all, wrongly counted as uncovered) and GA5 (a
+`pragma: no cover`-excluded changed line silently vanishing from the ratio,
+letting an implementer opt a diff out of its own gate) — but this third case
+is worse than either: it isn't a file coverage.py can't see, and it isn't a
+line anyone asked to exclude. It's ordinary source, mid-statement, that
+`coverage.py`'s own line-granularity trace format cannot represent — and
+today `evaluate()` has no bucket for "syntactically part of a changed
+statement, but never separately traceable," so it just disappears, the same
+way excluded lines used to before GA5 gave them their own tracked bucket.
+
+**Not yet fixed here — filed as the product-scoped proposal.** The GA5 fix's
+own shape (give the untracked case an explicit bucket that the `passed`
+property can see, rather than letting the set intersection silently absorb
+it) is the natural template: for each changed line inside `added[path]`,
+before intersecting with `executable`, check whether it falls inside a
+statement whose *starting* line IS in `executable` (via `ast`/`tokenize` —
+multi-line dict/list/set/tuple literals, multi-line function calls, and
+parenthesized multi-line expressions are the known shapes) and if so, count
+it as inheriting that statement's coverage status rather than dropping it.
+A conservative interim alternative: surface any changed line matching
+neither bucket as its own flagged category (mirroring `excluded`) so a gate
+run at least reports "N lines could not be attributed" instead of silently
+inflating the percentage — worse ergonomics than the full fix, but strictly
+better than today's silent vanish. dstdns is fixing its own independent
+`scripts/coverage_gate.py` copy for this same finding (not derived from this
+module — see `reference/STANDARD.md`'s note that consumers may vendor,
+live-import, or independently implement); whichever fix lands here should be
+checked against that copy too, in case one implementation's fix generalizes
+better than the other's.
