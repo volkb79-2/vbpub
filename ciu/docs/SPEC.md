@@ -1467,6 +1467,13 @@ overlay injects into every non-exempt service:
 - a read-only bind of the shim's PHYSICAL path (S1.3/S1.4) to
   `/opt/ksm/ksm-optin.so`.
 
+The configured path is fail-closed: before CIU emits the overlay, the resolved
+physical path MUST be an existing regular file (`Path.is_file()`). A missing
+path, directory, or broken symlink is a configuration error (S10.3 exit 2)
+naming `governance.ksm_optin` and the resolved path. CIU MUST NOT rely on
+Docker's bind-mount behavior, which would otherwise create a phantom directory
+and leave `LD_PRELOAD` ineffective. Set `ksm_optin = ""` to disable the opt-in.
+
 Rules: the shim MUST be dependency-free — a libc-linked shim is FATAL
 under the other libc's loader (measured: glibc `ld.so` exits 127 on a
 musl-linked preload; a zero-dependency `.so` loads under both).

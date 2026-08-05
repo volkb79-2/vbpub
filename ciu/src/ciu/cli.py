@@ -14,7 +14,14 @@ from .config_constants import WORKSPACE_ENV
 
 _USAGE = """\
 CIU {ver} — Container Infrastructure Utility (compose · init · up)
-Uses: ciu.global.toml + ciu.env
+Uses: ciu.global.toml + ciu.env (run from a CIU-enabled repository)
+
+Usage: ciu <verb> [options]
+       ciu --version
+
+Run `ciu <verb> --help` for the complete options and examples for one verb.
+Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
+            · 3 environment/bootstrap error
 
   ENVIRONMENT
     env                         show ciu.env key=value pairs (read-only)
@@ -42,6 +49,7 @@ Uses: ciu.global.toml + ciu.env
 
   DEV-LOOP BUILDS
     bake [targets ...] [--no-cache]      docker buildx bake --load
+    dev <stack> [--profile NAME]          run a stack's live dev loop (HMR)
 
   SECRETS
     secrets list   [-d PATH]             list materialised secret names
@@ -49,7 +57,9 @@ Uses: ciu.global.toml + ciu.env
 
   REMOTE (requires hosts file — see .ciu.hosts.toml)
     ssh <host> [--admin] [-- cmd...]            remote shell or command (access plane)
+    render --host <name> [selection flags]      render on a remote host
     up  --host <name> [selection flags]         push-deploy: bundle-sync + render-on-target
+    down/health --host <name> [--thin]          remote lifecycle/health action
 """
 
 
@@ -86,28 +96,43 @@ ciu iops-baseline [--path PATH] [--runtime N] [--force]
   --force         re-measure even when the existing result is < 30 days old
 """,
     "render": """\
-ciu render [--profile NAME] [--define-root PATH]
+ciu render [--profile NAME] [--phases N,M] [--define-root PATH]
+ciu render --host NAME [selection flags]
   Render ciu.global.toml + per-stack ciu.toml from their Jinja2 templates.
 
-  --profile NAME       host profile to render for (default: active profile)
+  --profile NAME       host profile to render for (repeatable; default: active profile)
+  --phases N,M         restrict rendering to the given phase numbers
   --define-root PATH   override repo root (no parent walking)
+  --host NAME          sync/execute the render on a configured remote host
 """,
     "profiles": """\
 ciu profiles
   List available host profiles. Takes no options.
 """,
     "up": """\
-ciu up [--profile NAME | --dir PATH] [--phases N,M] [--dry-run] [-y] [--ignore-errors]
-ciu up --host NAME [selection...]            # push-deploy, render-on-target (needs docker on target)
-ciu up --host NAME --thin [--bootstrap | --rollback] [selection...]  # docker-optional push→activate
+ciu up [--profile NAME | --dir PATH] [selection/options]
+ciu up --host NAME [selection...]                              # render-on-target
+ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-optional
   Render + materialise secrets + start the Docker Compose stack(s).
 
-  --profile NAME     deploy the named host profile (default: active profile)
-  --dir PATH         deploy a single stack directory (engine path)
+  Profile/multi-stack mode:
+  --profile NAME     deploy the named host profile (repeatable; default: active profile)
   --phases N,M       restrict to the given phase numbers
-  --dry-run          render everything but do not call docker
+  --dry-run          render and validate, but do not call Docker
+  --no-preflight     skip host/provisioning preflight checks (break-glass)
+  --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack
+
+  Single-stack mode (`--dir`) additionally accepts engine options:
+  --dir PATH         deploy one stack directory
+  --render-toml      stop after rendering TOML
+  --print-context    print the template context
+  --reset            remove this stack's containers/volumes/artifacts first
+  --skip-hostdir-check / --skip-hooks / --skip-secrets
+                     skip the named single-stack step
+  --shipped          run the committed docker-compose.yml path
+  -f NAME            select the stack template (advanced)
 
   Remote (SPEC S14):
   --host NAME        push-deploy to a host from the inventory (.ciu.hosts.toml)
@@ -118,27 +143,33 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...]  # docker-op
   --rollback         (with --thin) run the 'rollback' verb only (no fresh push)
 """,
     "down": """\
-ciu down [--profile NAME]
+ciu down [--profile NAME] [--phases N,M] [--define-root PATH]
+ciu down --host NAME [--profile NAME]
   Stop project containers; volumes are preserved (use `ciu clean` to remove them).
 
-  --profile NAME   restrict to the named host profile (default: active profile)
+  --profile NAME     restrict to the named host profile (repeatable)
+  --phases N,M       restrict to the given phase numbers
+  --define-root PATH override repo root (alias: --root-folder)
+  --host NAME        run the stop action on a configured remote host
 """,
     "clean": """\
-ciu clean [--profile NAME] [-y] [--ignore-errors]
+ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
   Tear down completely: remove ALL project containers (running AND exited, incl.
   init/sidecars), `docker compose down -v --remove-orphans`, remove project
   volumes and `vol-*` hostdirs, and remove rendered artifacts. The post-clean
   invariant (S6.4) is enforced: zero project containers AND zero project volumes
   remain, else clean fails (exit 1).
 
-  --profile NAME     restrict to the named host profile (default: active profile)
+  --profile NAME     restrict to the named host profile (repeatable)
+  --phases N,M       restrict to the given phase numbers
+  --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack (best-effort per stack)
 """,
     "health": """\
-ciu health [--profile NAME]
+ciu health [--profile NAME] [--phases N,M] [--define-root PATH]
 ciu health --preflight [--strict]
-ciu health --host NAME [--thin]
+ciu health --host NAME [--thin] [selection]
   Run the health gate (S7.7) over the selection, or probe images for missing
   healthcheck tools (--preflight).
 
@@ -148,6 +179,8 @@ ciu health --host NAME [--thin]
   --host NAME      run the health gate on a remote host (SPEC S14)
   --thin           (with --host) run the docker-optional 'health' activation
                    verb instead of remote `ciu health` (S14.6)
+  --phases N,M     restrict to the given phase numbers
+  --define-root PATH override repo root (alias: --root-folder)
 """,
     "diagnose": """\
 ciu diagnose [--project NAME] [--logs N] [--json]
@@ -180,32 +213,34 @@ ciu dev <stack> [--profile NAME] [--no-prebuild]
   --define-root PATH override repo root (no parent walking)
 """,
     "secrets": """\
-ciu secrets list [-d PATH]
-ciu secrets reset [--name N] [-y]
+ciu secrets list [-d PATH] [--define-root PATH]
+ciu secrets reset [-d PATH] [--name N] [-y] [--define-root PATH]
   Inspect or delete materialised secret store files (S4.25).
 
   -d PATH        stack directory (default: cwd)
+  --define-root PATH
+                 override repository root (alias: --root-folder)
   --name N       restrict reset to one secret name
   -y, --yes      assume yes to prompts
 """,
     "check": """\
-ciu check [--profile NAME] [--live] [--define-root PATH]
+ciu check [--profile NAME] [--live] [--phases N,M] [--define-root PATH]
   Validate the requires/provides dependency graph across the selection (no deploy).
 
-  --profile NAME     host profile to check (default: active profile)
-  --live             also probe live state (Vault/Postgres/MinIO/Consul/Docker)
-  --define-root PATH override repo root (no parent walking)
+  --profile NAME     restrict to the named host profile (repeatable)
+  --live             probe live Vault/Postgres/MinIO/Consul/Docker state too
+  --define-root PATH override repo root (alias: --root-folder)
   --phases N,M       restrict to the given phase numbers
 """,
     "graph": """\
 ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
-  Render the requires/provides dependency graph to STDOUT (pipe it into docs).
-  Edges go consumer --ref--> provider; a require nobody provides is drawn dashed
-  to an UNPROVIDED sentinel.
+  Render the requires/provides dependency graph to STDOUT; this never deploys.
+  Pipe Mermaid or DOT output into documentation/Graphviz as needed.
 
   --format FMT       mermaid (default), dot (Graphviz), or json
-  --profile NAME     host profile to graph (default: active profile)
+  --profile NAME     restrict to the named host profile (repeatable)
   --phases N,M       restrict to the given phase numbers
+  --define-root PATH override repo root (alias: --root-folder)
 """,
     "ssh": """\
 ciu ssh <host> [--admin] [-- <cmd...>]

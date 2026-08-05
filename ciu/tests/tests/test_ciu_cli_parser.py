@@ -167,9 +167,27 @@ class TestPerVerbHelp:
         # Every dispatchable verb (except the bare top-level) is covered.
         expected = {
             "env", "render", "profiles", "up", "down", "clean",
-            "health", "bake", "dev", "secrets", "iops-baseline",
+            "health", "diagnose", "bake", "dev", "secrets", "iops-baseline",
+            "check", "graph", "ssh",
         }
         assert expected <= set(cli._VERB_HELP)
+
+    @pytest.mark.parametrize(
+        "verb, expected_text",
+        [
+            ("diagnose", "--json"),
+            ("check", "--live"),
+            ("graph", "--format"),
+            ("ssh", "--admin"),
+        ],
+    )
+    def test_every_dispatchable_help_screen_is_specific(
+        self, capsys, monkeypatch, verb: str, expected_text: str
+    ):
+        out = self._help_out(capsys, monkeypatch, [verb, "--help"])
+        assert f"ciu {verb}" in out
+        assert expected_text in out
+        assert "Container Infrastructure Utility" not in out
 
     def test_env_generate_help_is_not_intercepted(self):
         # `env generate --help` must fall through to its own argparse help.

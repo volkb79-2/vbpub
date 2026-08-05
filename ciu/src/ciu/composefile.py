@@ -784,11 +784,17 @@ def generate_overlay(
                 if not ksm_path.is_absolute():
                     base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
                     ksm_path = base / ksm_path
-                gov_cfg["_ksm_optin_source"] = str(
-                    to_physical_path(
-                        ksm_path, repo_root=repo_root, physical_root=physical_root
-                    )
+                physical_ksm_path = to_physical_path(
+                    ksm_path, repo_root=repo_root, physical_root=physical_root
                 )
+                if not physical_ksm_path.is_file():
+                    raise ValueError(
+                        "[S15.11] governance.ksm_optin is configured as "
+                        f"{ksm_rel!r}, but the resolved shim is not an existing "
+                        f"file: {physical_ksm_path}. Build or restore the shim, "
+                        "or set governance.ksm_optin = \"\" to disable KSM opt-in."
+                    )
+                gov_cfg["_ksm_optin_source"] = str(physical_ksm_path)
             governance_injections, gov_notes = governance_mod.build_injections(
                 compose_service_blocks, gov_cfg
             )

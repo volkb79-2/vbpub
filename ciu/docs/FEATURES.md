@@ -71,6 +71,11 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
 
+For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
+index and `ciu <verb> --help` for the verb's accepted options. The help output
+also documents legacy engine options that remain available only through
+`ciu up --dir`, such as `--render-toml`, `--reset`, and `--shipped`.
+
 ### Withdrawn flat forms → public verbs
 
 The `ciu` dispatcher rejects the flat engine forms below. They are retained
@@ -208,6 +213,10 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
 - **Host-key pinning is fail-closed (S14.4a).** A missing `known_host` in the hosts
   inventory causes `ciu ssh` and `ciu up --host` to refuse the connection. Set
   `CIU_SSH_INSECURE_TOFU=1` only during initial bootstrap to discover and pin the key.
+- **KSM opt-in is fail-closed (S15.11).** When `governance.ksm_optin` is set,
+  `ciu render`/`ciu up` first checks the resolved physical path is an existing
+  regular file. A missing shim is a configuration error; CIU never lets Docker
+  phantom-mount an empty directory and report KSM as active.
 - **`--thin` is the docker-optional push→activate path (S14.6).** `ciu up --host <name>
   --thin` pushes an artifact to `bundle_dir` (rsync, with a tar+scp fallback for hosts
   without rsync) and runs the project's shell activation contract

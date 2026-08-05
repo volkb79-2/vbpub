@@ -95,7 +95,13 @@ def test_secrets_forwards_subcommand_without_reinterpreting_arguments(monkeypatc
 def test_top_level_and_unknown_verb_have_distinct_user_facing_outcomes(monkeypatch, capsys):
     """No verb is help; an arbitrary verb is an actionable command error."""
     assert _run(monkeypatch, []) == 0
-    assert "Container Infrastructure Utility" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Container Infrastructure Utility" in out
+    for public_verb in (
+        "env", "iops-baseline", "render", "profiles", "up", "down", "clean", "health",
+        "diagnose", "check", "graph", "bake", "dev", "secrets", "ssh",
+    ):
+        assert public_verb in out
 
     assert _run(monkeypatch, ["not-a-verb"]) == 2
     assert "unknown verb 'not-a-verb'" in capsys.readouterr().err

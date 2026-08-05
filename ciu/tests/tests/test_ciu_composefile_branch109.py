@@ -63,18 +63,20 @@ class TestComposefileBranchCoverage109:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(governance_mod, "detect_device", lambda: "")
-        absolute_shim = "/outside/ksm-optin.so"
+        absolute_shim = tmp_path / "outside" / "ksm-optin.so"
+        absolute_shim.parent.mkdir()
+        absolute_shim.write_bytes(b"not-loaded-by-test")
         overlay = generate_overlay(
             tmp_path / "stack",
             {},
             [],
             compose_yaml_text="services:\n  api: {image: example}\n",
-            governance={"enabled": True, "ksm_optin": absolute_shim, "cgroup_parent": "dev-background.slice"},
+            governance={"enabled": True, "ksm_optin": str(absolute_shim), "cgroup_parent": "dev-background.slice"},
             repo_root=tmp_path / "logical",
             physical_root=tmp_path / "physical",
         )
 
         assert overlay is not None
         service = yaml.safe_load(overlay.read_text(encoding="utf-8"))["services"]["api"]
-        assert service["volumes"][0]["source"] == absolute_shim
+        assert service["volumes"][0]["source"] == str(absolute_shim)
         assert service["environment"] == ["LD_PRELOAD=/opt/ksm/ksm-optin.so"]

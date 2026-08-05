@@ -242,6 +242,28 @@ and live-probes each phase's requirements just before that phase deploys.
 Key/value pairs injected into the compose process env (non-secret; for secrets
 use `[<root>.secrets]`).
 
+### `[<root>.governance]` — stack resource policy [S15]
+
+Governance is opt-in. The table is shallow-merged over the global
+`[governance]` table, and `enabled = true` places every non-exempt service
+under the resolved cgroup and resource policy. The KSM preload shim is also
+opt-in:
+
+```toml
+[app.governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+ksm_optin = "tools/ksm-optin/ksm-optin.so"  # repo-relative or absolute
+exempt_services = ["vault"]
+```
+
+`ksm_optin` must name an existing regular, universal (dependency-free) `.so`.
+CIU resolves repo-relative paths to the physical Docker-daemon path and fails
+`ciu render`/`ciu up` with a configuration error before writing an overlay
+when the file is missing, a directory, or a broken symlink. Set it to `""` to
+keep KSM disabled. See [SPEC S15.11](SPEC.md#s1511--ksm-opt-in-injection-ksm_optin)
+for the loader-compatibility and `LD_PRELOAD` rules.
+
 ### `[<root>.hooks]` — hook points [S9.1]
 
 ```toml

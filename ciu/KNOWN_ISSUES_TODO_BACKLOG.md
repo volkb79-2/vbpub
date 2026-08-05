@@ -45,7 +45,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-10 | Pre-set `PHYSICAL_REPO_ROOT` contamination from a sibling repo's sourced `ciu.env` corrupts `ciu env generate` for a nested repo | High | FIXED |
 | CIU-11 | `standalone_root` (S1.2) guard did not fire on `ciu render`: `deploy.py` detected the standalone root from the already-resolved `repo_root` (the contaminated value) instead of the invocation dir, so `ciu render` from a sibling repo with a stale `$REPO_ROOT` rendered the *other* repo's stacks silently; `ciu up` (engine) checked `working_dir` and was correct. Fixed by a shared `enforce_standalone_root(invocation_dir)` helper both paths call. | High | FIXED |
 | CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | FIXED |
-| CIU-14 | `governance.ksm_optin` bind-mounts the configured shim path unconditionally, with no existence check — a missing source file silently phantom-mounts an empty directory instead of failing, so KSM opt-in contributes zero savings with no error surfaced anywhere but container-internal `ld.so` stderr | Medium | OPEN |
+| CIU-14 | `governance.ksm_optin` bind-mounts the configured shim path unconditionally, with no existence check — a missing source file silently phantom-mounts an empty directory instead of failing, so KSM opt-in contributes zero savings with no error surfaced anywhere but container-internal `ld.so` stderr | Medium | FIXED |
 
 ## Resolved / not-a-gap
 
@@ -507,3 +507,13 @@ optional enhancement was suggested alongside this bug — a CLI-level
 request, not a fix for this bug (a CLI toggle wouldn't have caught a
 configured-but-missing shim either) — worth considering separately, not
 conflated with CIU-14's fail-loud fix above.
+
+**Resolution (2026-08-05).** `composefile.generate_overlay` now resolves the
+configured path to its physical Docker-daemon path and requires
+`Path.is_file()` before adding `LD_PRELOAD` or the bind fragment. Missing
+files, directories, and broken symlinks raise a `[S15.11]` configuration
+error (exit 2) that names both `governance.ksm_optin` and the resolved path.
+Regression coverage verifies relative logical-to-physical paths, valid absolute
+paths, and rejection before an overlay is written. The normative contract is
+documented in `docs/SPEC.md` S15.11 and the user-facing configuration/feature
+docs.

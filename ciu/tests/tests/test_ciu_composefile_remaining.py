@@ -159,6 +159,9 @@ class TestOverlayAndEnvironmentBoundaries:
         shim = repo / "hooks" / "ksm-optin.so"
         shim.parent.mkdir()
         shim.write_bytes(b"not-loaded-by-test")
+        physical_shim = physical / "hooks" / "ksm-optin.so"
+        physical_shim.parent.mkdir()
+        physical_shim.write_bytes(b"not-loaded-by-test")
         monkeypatch.setattr(governance_mod, "detect_device", lambda: "")
         overlay = generate_overlay(
             stack, {}, [],
@@ -170,6 +173,28 @@ class TestOverlayAndEnvironmentBoundaries:
         rendered = overlay.read_text(encoding="utf-8")
         assert str(physical / "hooks" / "ksm-optin.so") in rendered
         assert "LD_PRELOAD=/opt/ksm/ksm-optin.so" in rendered
+
+    def test_ksm_governance_rejects_missing_shim_before_writing_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "")
+        with pytest.raises(
+            ValueError,
+            match=r"\[S15\.11\].*governance\.ksm_optin.*not an existing file",
+        ):
+            generate_overlay(
+                tmp_path / "stack",
+                {},
+                [],
+                compose_yaml_text="services:\n  api: {image: example}\n",
+                governance={
+                    "enabled": True,
+                    "ksm_optin": "missing/ksm-optin.so",
+                    "cgroup_parent": "dev-background.slice",
+                },
+                repo_root=tmp_path,
+                physical_root=tmp_path,
+            )
 
     def test_profiles_filter_empty_values_and_missing_or_none_exposed_secret_is_not_added(self, tmp_path: Path) -> None:
         token = spec("token", expose_env="TOKEN")

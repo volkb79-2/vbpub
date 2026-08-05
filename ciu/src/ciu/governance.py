@@ -882,12 +882,13 @@ def build_injections(
             blk["weight"] = io_weight
         if "blkio_config" not in author_keys and blk:
             frag["blkio_config"] = blk
-        # S15.11 — KSM opt-in: additive env + bind, injected unconditionally
-        # for non-exempt services (environment/volumes are MERGE keys in the
-        # overlay, so the S15.3 author-precedence rule for scalar keys does
-        # not apply; an author-set LD_PRELOAD would win the per-key env merge
-        # anyway). `_ksm_optin_source` is the already-physical shim path,
-        # resolved by generate_overlay.
+        # S15.11 — KSM opt-in: additive env + bind, injected for every
+        # non-exempt service once generate_overlay has validated the configured
+        # source as an existing physical file. (environment/volumes are MERGE
+        # keys in the overlay, so the S15.3 author-precedence rule for scalar
+        # keys does not apply; an author-set LD_PRELOAD would win the per-key
+        # env merge anyway.) `_ksm_optin_source` is the already-physical shim
+        # path, resolved and validated by generate_overlay.
         ksm_src = str(config.get("_ksm_optin_source") or "")
         if ksm_src:
             frag["environment"] = [f"LD_PRELOAD={KSM_PRELOAD_TARGET}"]
