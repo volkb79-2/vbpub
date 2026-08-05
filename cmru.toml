@@ -61,7 +61,7 @@ cwd       = "ciu"
 strategy = "scm"
 bump     = "conventional"
 [project.ciu.env]
-CIU_RELEASE_NOTES = "## CIU CLI wheel\nOrchestration health now resolves every active exact `container_name` from each rendered Compose stack; phase-entry `name` remains display-only. Ephemeral one-shot stacks can opt out with strict `health = false`. The suite coverage floor is ratcheted to 75%.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+CIU_RELEASE_NOTES = "## CIU CLI wheel\nGovernance KSM opt-in now fails closed when its configured physical shim is missing, a directory, or a broken symlink instead of allowing Docker to phantom-mount an empty directory. The CLI usage index and per-verb help now cover the full public dispatcher, including provisioning and remote verbs, with updated configuration and SPEC documentation.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 [project.ciu.steps.run-tests]
 commands = [
   { label = "CIU: tester-unified coverage gate", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "ciu", "--", "/opt/tester-venv/bin/python", "run-ciu-tests.py"], cwd = "." },
