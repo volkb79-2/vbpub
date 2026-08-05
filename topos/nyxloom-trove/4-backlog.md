@@ -298,3 +298,11 @@ B-043, B-044, and B-045 are fresh user feature requests (KSM/ZRAM/ZSWAP/BFQ
 flag visibility and per-process memory-saving reporting; a tiered
 slice/cgroup column display; a `zswapmon` competitive review) not yet folded
 into any scoped roadmap feature.
+
+# non-formatted manual backlog reminders
+
+items that must be folded in somewhere, should not be forgotten
+
+- support for Kitty keyboard protocol/ modern terminal 
+- defined cgroup values focussed view (use case: add columns for any type of set cgroup type , show all set limits/guarantees like `memory.min`, MemoryMax, MemorySwapMax, IOReadIOPSMax, IOReadBandwidthMax. so you see the whole tree.)
+- automatically warn on inconsistent cgroup config / not in effect (e.g. parent missing `memory.min`/ `memory.low`  while a leaf has it set. role of memory_recursiveprot)
