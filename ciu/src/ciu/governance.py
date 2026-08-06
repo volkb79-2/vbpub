@@ -132,6 +132,39 @@ KSM_PRELOAD_TARGET = "/opt/ksm/ksm-optin.so"
 # is additive: nothing that worked before changes meaning.
 BUILTIN_KSM = "builtin"
 
+# S15.18 (CIU-17) — ad-hoc KSM override for ONE run, without editing the TOML
+# layer. `ciu up --ksm` / `--no-ksm` set this; it is also usable directly, like
+# every other ambient CIU_* toggle (CIU_WARNINGS_AS_ERRORS, CIU_SKIP_DOOD_PREFLIGHT).
+# The flag sets the env var rather than threading a parameter through, so there
+# is ONE resolution point for both surfaces instead of two that can disagree.
+KSM_ENV_VAR = "CIU_KSM"
+
+
+def resolve_ksm_optin(configured: str) -> str:
+    """The effective ``ksm_optin``, after any ambient override (S15.18).
+
+    ``CIU_KSM`` accepts:
+      - ``"builtin"`` / ``"1"`` / ``"on"``  -> force the CIU-shipped shim
+      - ``"0"`` / ``"off"`` / ``""``        -> force KSM opt-in OFF
+      - any other value                     -> treated as a path to a shim
+
+    Read fresh on every call (no cached state), so a long-lived process or a
+    test that changes the environment sees it immediately.
+
+    An UNSET variable returns *configured* unchanged — the override is opt-in
+    and never invents a policy the config did not state.
+    """
+    raw = os.environ.get(KSM_ENV_VAR)
+    if raw is None:
+        return configured
+    value = raw.strip()
+    lowered = value.lower()
+    if lowered in ("1", "on", "true", "yes", BUILTIN_KSM):
+        return BUILTIN_KSM
+    if lowered in ("0", "off", "false", "no", ""):
+        return ""
+    return value  # an explicit path, for pinning a specific shim ad hoc
+
 # The compose service-level keys governance may inject. Precedence (S15.3):
 # any of these keys already present in the AUTHOR's rendered service block
 # is left untouched — governance only fills in what the author didn't set.

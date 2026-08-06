@@ -549,6 +549,125 @@ def registry_preflight(config: dict) -> None:
 
 
 # ===========================================================================
+# Image-revision preflight (S17, CIU-18) — fail CLOSED on stale artifacts
+# ===========================================================================
+
+
+def image_revision_preflight(
+    repo_root: Path,
+    selection: list[dict],
+    *,
+    ignore_mismatch: bool = False,
+    no_preflight: bool = False,
+) -> None:
+    """S17 — refuse to deploy an image built from a different commit.
+
+    `bake` stamps ``org.opencontainers.image.revision`` on every image it builds
+    (S17.1). Stamping alone only makes provenance *visible*; this makes it
+    *binding*. Without it, a live/integration result is evidence about an
+    unknown artifact — it reads as a fact about the code while actually being a
+    fact about whichever image happened to be lying around. That is the failure
+    a consumer already classes as a defect (dstdns AGENTS.md §4.1a) with nothing
+    enforcing it.
+
+    Scope is self-selecting and deliberately narrow:
+
+    - Only images carrying the label are checked. CIU's bake is the only thing
+      that sets it, so ``postgres:16`` and friends are skipped without needing a
+      list of "our" images to maintain.
+    - An image with NO label is skipped silently. It is either external or was
+      built before S17; refusing on absence would break every existing install
+      on upgrade, and absence is not evidence of mismatch.
+    - A DIRTY working tree cannot match any image by construction (uncommitted
+      changes are in no artifact anywhere), so the check WARNS and does not
+      refuse. Refusing there would fire on every dev-loop deploy and be turned
+      off permanently within a day — a rule nobody can keep is worse than none.
+
+    Raises ValueError (S10.3 → exit 2) on a genuine mismatch, unless
+    *ignore_mismatch* (``--ignore-mismatch``/``--force``) downgrades it to a
+    warning, or *no_preflight* skips it entirely — the same break-glass flags
+    the sibling preflights honor.
+    """
+    import yaml
+
+    from .config_constants import CIU_COMPOSE_OUTPUT
+
+    if no_preflight:
+        return
+
+    expected = engine.get_git_hash()
+    if expected == "dev":
+        return  # not a git checkout — nothing to compare against
+
+    if expected.endswith("-dirty"):
+        warn(
+            "[S17] working tree is dirty — image provenance NOT verified. "
+            "Uncommitted changes are in no image, so no artifact can match this "
+            "tree; commit before treating a live result as evidence about this "
+            "code."
+        )
+        return
+
+    mismatches: list[tuple[str, str]] = []
+    for entry in selection:
+        stack_dir = repo_root / entry["path"]
+        compose_path = stack_dir / CIU_COMPOSE_OUTPUT
+        if not compose_path.is_file():
+            continue
+        try:
+            doc = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue  # render problems are not this preflight's to report
+        for svc in (doc.get("services") or {}).values():
+            image = (svc or {}).get("image")
+            if not image:
+                continue
+            actual = _image_revision_label(str(image))
+            if actual and actual != expected:
+                mismatches.append((str(image), actual))
+
+    if not mismatches:
+        return
+
+    detail = "\n".join(
+        f"  {image}: built from {actual}, deploying {expected}"
+        for image, actual in sorted(set(mismatches))
+    )
+    message = (
+        f"[S17] {len(set(mismatches))} image(s) were built from a different "
+        f"commit than the one being deployed:\n{detail}\n"
+        "Rebuild (`ciu bake`) so a live result describes the code under test, "
+        "or pass --ignore-mismatch to deploy anyway (the result then describes "
+        "the OLD artifact, whatever it says)."
+    )
+    if ignore_mismatch:
+        warn(message)
+        return
+    raise ValueError(message)
+
+
+def _image_revision_label(image: str) -> str:
+    """The image's ``org.opencontainers.image.revision``, or "" when unknown.
+
+    Returns "" for an absent image too: a missing image is compose's problem to
+    report, and inventing a mismatch verdict for it would be a wrong answer
+    dressed as a safety check.
+    """
+    try:
+        res = procutil.docker(
+            ["image", "inspect", image, "--format",
+             '{{index .Config.Labels "org.opencontainers.image.revision"}}'],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return ""
+    if res.returncode != 0:
+        return ""
+    value = (res.stdout or "").strip()
+    return "" if value in ("", "<no value>") else value
+
+
+# ===========================================================================
 # Governance slice preflight (D-G9 checks 1 & 3, S15.8/S15.16) — fail CLOSED
 # ===========================================================================
 
@@ -1776,6 +1895,11 @@ Examples:
                          help="Preflight: treat any missing-tool warning as a hard failure (exit 1)")
     control.add_argument("--no-preflight", dest="no_preflight", action="store_true",
                          help="Skip provisioning + governance-slice preflight checks (break-glass)")
+    control.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
+                         action="store_true",
+                         help="S17: deploy even when an image was built from a "
+                              "different commit (the live result then describes "
+                              "the OLD artifact)")
     control.add_argument("--live", action="store_true",
                          help="With --check: also probe live state (Vault/Postgres/MinIO/Consul/Docker)")
     control.add_argument("--format", dest="graph_format", default="mermaid",
@@ -1902,6 +2026,12 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             probe=False,  # static lint up-front; live probing runs per-phase in action_deploy
         )
         registry_preflight(profile.config)
+        image_revision_preflight(
+            repo_root, selection,
+            ignore_mismatch=(getattr(args, 'ignore_mismatch', False)
+                             or getattr(args, 'force', False)),
+            no_preflight=getattr(args, 'no_preflight', False),
+        )
         governance_slice_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),

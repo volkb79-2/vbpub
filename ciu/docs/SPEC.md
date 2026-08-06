@@ -1521,6 +1521,25 @@ artifact exists):
   failed verification) is a configuration/environment error naming the cause;
   CIU never proceeds with an unverified shim.
 
+### S15.18 — Ad-hoc KSM override (`--ksm` / `--no-ksm`, `CIU_KSM`)
+
+A **run-scoped** override of `governance.ksm_optin`, for the case where the
+configured policy is right but this one invocation should differ (measuring the
+delta, reproducing a report, deploying onto a host without KSM). It **never
+writes to the TOML layer** — the configured value is untouched on disk and the
+very next run uses it again.
+
+`ciu up --ksm` / `--no-ksm` set the ambient `CIU_KSM`, which
+`governance.resolve_ksm_optin` reads: the flag and the env var are one
+resolution point, not two that can disagree, and every other ambient `CIU_*`
+toggle already works this way. Passing both flags is an error (exit 2).
+
+`CIU_KSM` accepts `builtin`/`1`/`on`/`true`/`yes` (force the shipped shim),
+`0`/`off`/`false`/`no`/empty (force off), or any other value as an explicit shim
+path. **Unset returns the configured value unchanged** — the override is opt-in
+and never invents a policy the config did not state. The S15.7 notes line
+reports the EFFECTIVE value, so a run under an override says so.
+
 ### S15.12 — Named-slice existence preflight (D-G9 check 1)
 
 Closes the S15.8 gap: for every selected stack whose resolved governance
@@ -1961,3 +1980,70 @@ contract (S14.6), fail-closed host-key pinning, optional
 overlay (author-set keys always win), with baseline-derived `read_iops` and
 autodetected blkio `device`, zero-footprint for stacks that don't opt in.
 Migration recipes: docs/MIGRATION-V2.md.
+
+---
+
+## S16 — Worktree instances (`ciu worktree`)
+
+A git worktree of a CIU repo is already a distinct instance: `INSTANCE_ID` is a
+hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
+container prefix and volumes. `ciu worktree` is the verb that composes what CIU
+already knows into one operation.
+
+- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR]`** —
+  creates `<repo>/<dir>/NAME` on a new branch NAME off `--base` (default
+  `main`), then generates that checkout's OWN `ciu.env`. `--profile` writes
+  `CIU_SERVICES_PROFILE` into it (S7.5 narrowing). It does NOT deploy: `add`
+  prepares an instance, it does not decide you want it running.
+- **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
+  under that worktree's own `ciu.env`, and only then `git worktree remove`.
+  **The order is normative.** `ciu down` preserves volumes, so it strands
+  `vol-*` dirs owned by image UIDs that an unprivileged `rm -rf` cannot delete;
+  and removing the checkout first destroys the rendered config that tells CIU
+  what to clean. A failed clean ABORTS the removal unless `--force`.
+- **`worktree list`** — registered worktrees, primary marked.
+
+Both sub-operations run as SUBPROCESSES under the target worktree's environment.
+In-process would violate S1.1 (`--define-root` must agree with `REPO_ROOT`,
+which describes the PRIMARY checkout) and, for generation, would derive the new
+instance's identity from the old instance's environment. The worktree's
+`ciu.env` is read by explicit path, never via a search that consults
+`$REPO_ROOT` — that search would find the PRIMARY's file and operate on the
+wrong instance.
+
+## S17 — Image provenance
+
+### S17.1 — Stamping
+
+`ciu bake` (and `--build`) set `org.opencontainers.image.revision` on every
+image, from the source revision including a `-dirty` suffix for an unclean tree.
+The suffix is load-bearing: a dirty build that claimed a clean commit would be a
+more convincing version of the problem, not a fix. When the revision is unknown
+(not a git checkout) NOTHING is stamped — a label reading `dev` looks like an
+answer and would be trusted as one.
+
+### S17.2 — Enforcement (fail CLOSED)
+
+`image_revision_preflight` refuses to deploy when a rendered service's image
+carries a revision label that differs from the commit being deployed
+(`ValueError` → S10.3 exit 2). Stamping alone only makes provenance visible;
+this makes it binding. Without it a live/integration result is evidence about an
+unknown artifact — it reads as a fact about the code while being a fact about
+whichever image was lying around.
+
+Scope is self-selecting, and the non-refusals are as normative as the refusal:
+
+- Only labelled images are checked. CIU's bake is the only thing that sets the
+  label, so external images (`postgres:16`) are skipped without maintaining a
+  list of "ours".
+- An **unlabelled** image is skipped silently: it is external or pre-S17, and
+  absence is not evidence of mismatch. (`docker --format` renders a missing key
+  as the literal `<no value>`; that is treated as absent.)
+- An **absent** image is not a mismatch — that is compose's failure to report.
+- A **dirty** working tree WARNS and does not refuse. Uncommitted changes are in
+  no artifact anywhere, so nothing can match; refusing would fire on every
+  dev-loop deploy and be disabled permanently, and a rule nobody can keep
+  enforces nothing.
+
+`--ignore-mismatch` (alias `--force`) downgrades the refusal to a warning;
+`--no-preflight` skips the check entirely, like its sibling preflights.

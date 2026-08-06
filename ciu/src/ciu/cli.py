@@ -19,6 +19,10 @@ Uses: ciu.global.toml + ciu.env (run from a CIU-enabled repository)
 Usage: ciu <verb> [options]
        ciu version
 
+Run-scoped overrides (never written back to the TOML layer):
+  --ksm / --no-ksm       force KSM opt-in on/off for THIS run (S15.18)
+  --ignore-mismatch      deploy despite an image built from another commit (S17)
+
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
             · 3 environment/bootstrap error
@@ -438,6 +442,18 @@ def main() -> None:
 
     verb = raw[0]
     rest = raw[1:]
+
+    # S15.18 (CIU-17) — ad-hoc KSM override, stripped here so it works on any
+    # verb that renders (up, render, ...) without each one declaring it. It sets
+    # the ambient CIU_KSM that governance.resolve_ksm_optin reads, so the flag
+    # and the env var are ONE resolution point, not two that can disagree.
+    if "--ksm" in rest or "--no-ksm" in rest:
+        if "--ksm" in rest and "--no-ksm" in rest:
+            print("ciu: --ksm and --no-ksm are mutually exclusive.", file=sys.stderr)
+            raise SystemExit(2)
+        from .governance import BUILTIN_KSM, KSM_ENV_VAR
+        os.environ[KSM_ENV_VAR] = BUILTIN_KSM if "--ksm" in rest else "off"
+        rest = [a for a in rest if a not in ("--ksm", "--no-ksm")]
 
     # CIU-7 / S10.1: intercept `-h`/`--help` per verb BEFORE forwarding to the
     # legacy deploy/engine argparse, so each verb shows its own options.

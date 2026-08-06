@@ -778,7 +778,12 @@ def generate_overlay(
             # S15.11: resolve the KSM shim to a PHYSICAL path once, up front
             # (bind sources must be host paths, S1.3/S1.4). Repo-relative
             # values resolve against the repo root.
-            ksm_rel = str(gov_cfg.get("ksm_optin") or "")
+            # S15.18 (CIU-17): an ambient CIU_KSM (set by `ciu up --ksm` /
+            # `--no-ksm`) overrides the configured value for this run only.
+            ksm_rel = governance_mod.resolve_ksm_optin(
+                str(gov_cfg.get("ksm_optin") or "")
+            )
+            gov_cfg["ksm_optin"] = ksm_rel  # so the S15.7 notes line is honest
             if ksm_rel == governance_mod.BUILTIN_KSM:
                 # S15.17 — CIU ships the shim source and builds it on demand
                 # into this checkout's .ciu/ksm/. Removes the per-consumer copy
@@ -788,22 +793,30 @@ def generate_overlay(
                 # re-verified), so this is a no-op after the first render.
                 from . import ksm as ksm_mod
                 base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
-                if physical_root is None:
-                    raise ValueError(
-                        '[S15.17] governance.ksm_optin = "builtin" needs the '
-                        "physical repo root to build the shim (the build's bind "
-                        "source must be a path the Docker daemon can see, "
-                        "S1.3/S1.4). Run `ciu env generate`, or point "
-                        "governance.ksm_optin at a prebuilt .so."
-                    )
+                # physical_root=None is the NORMAL call shape (engine.py passes
+                # it that way): to_physical_path resolves it from the
+                # environment. Resolve it the same way rather than refusing —
+                # the build needs it eagerly, but the source of truth is the
+                # same one every other bind source here uses.
+                phys = physical_root
+                if phys is None:
+                    env_phys = os.environ.get("PHYSICAL_REPO_ROOT")
+                    if not env_phys:
+                        raise ValueError(
+                            '[S15.17] governance.ksm_optin = "builtin" needs the '
+                            "physical repo root to build the shim (the build's "
+                            "bind source must be a path the Docker daemon can "
+                            "see, S1.3/S1.4), but PHYSICAL_REPO_ROOT is not set "
+                            "and none was passed. Run `ciu env generate`, or "
+                            "point governance.ksm_optin at a prebuilt .so."
+                        )
+                    phys = Path(env_phys)
                 try:
-                    ksm_path = ksm_mod.build(Path(base), physical_root)
+                    ksm_path = ksm_mod.build(Path(base), phys)
                 except ksm_mod.KsmBuildError as exc:
                     raise ValueError(str(exc)) from exc
                 gov_cfg["_ksm_optin_source"] = str(
-                    to_physical_path(
-                        ksm_path, repo_root=repo_root, physical_root=physical_root
-                    )
+                    to_physical_path(ksm_path, repo_root=repo_root, physical_root=phys)
                 )
             elif ksm_rel:
                 ksm_path = Path(ksm_rel)
