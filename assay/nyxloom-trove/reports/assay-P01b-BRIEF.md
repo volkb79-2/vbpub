@@ -14,11 +14,10 @@ admitted by **additive branches** in `$defs/claim/allOf`:
 ```
 
 Add the branch, add a `$defs` entry closed by `additionalProperties: false`, add
-the field to `Claim`. That is the whole edit. The payload is then legal in that
-branch and **nowhere else** — `coverage` on an R0 claim is already rejected and
-nobody wrote a rule against it. Do **not** widen the claim to
-`additionalProperties: true` to make room; that deletes the guard, and
-`test_an_unknown_claim_key_is_rejected` will say so.
+the field to `Claim`. That is the whole edit. The payload is then legal there and
+**nowhere else** — `coverage` on an R0 claim is already rejected and nobody wrote
+a rule against it. Do **not** widen the claim to `additionalProperties: true` to
+make room; that deletes the guard.
 
 ## Two rules that are not conventions
 
@@ -49,21 +48,21 @@ it into "the model emits the right thing".
   where the truth was **5**. `grep -c` the mutant before trusting a count.
 * The `standalone` fixture (wheel build + offline install) is now in
   `conftest.py`, session-scoped. Reuse it; do not copy it.
-* `tests/fixtures/verdicts/` holds the independent oracle (A-041). Add a field
-  and you update all six by hand. That is the cost, and it is the point.
+* `tests/fixtures/verdicts/` is the independent oracle (A-041). Add a field and
+  you update all six by hand. That is the cost, and it is the point.
 
 ## Spec ambiguities I had to interpret
 
-All were ruled on by the controller before implementation.
+All ruled on by the controller before implementation.
 
-* **DESIGN-GUIDE §6 is wrong about the `GateResult` superset.** The artifact
-  carries assay's own names — no `gate_id`, `phase` or `environment`. assay has
-  no source for nyxloom's phase vocabulary and no environment knowledge (§7);
-  and nyxloom's `_Serde.from_dict` rejects unknown keys, so a literal superset
-  could never have been fed to it. The guide is being corrected.
+* **DESIGN-GUIDE §6 is wrong about the `GateResult` superset** and is being
+  corrected. The artifact carries assay's own names — no `gate_id`, `phase` or
+  `environment`: assay has no source for nyxloom's phase vocabulary and no
+  environment knowledge (§7), and nyxloom's `_Serde.from_dict` rejects unknown
+  keys, so a literal superset could never have been fed to it.
 * **A-055 is superseded.** Coverage is defined here and claims carry their own
-  `reason_code`. P09 owns attestation and adjudication payloads, not coverage.
+  `reason_code`. P09 owns attestation and adjudication payloads.
 * **Claim `status` is the six `Outcome` values.** `PENDING` (A-O08) is a schema
-  edit for whoever ships the first async producer.
+  edit for the first async producer.
 * **The handoff said to define the enums in `verdict.py`.** A-066 says
   `errors.py` owns them; decisions.md won.
