@@ -1,0 +1,15 @@
+# Build residue (A-057). An in-place `pip install .` writes both of these into
+# the bind-mounted worktree, which would otherwise show up as uncommitted
+# changes under the source roots — i.e. it would perturb P02's DIRTY_TREE tests
+# and P11's self-hosting run.
+build/
+dist/
+src/*.egg-info/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.json
+htmlcov/
