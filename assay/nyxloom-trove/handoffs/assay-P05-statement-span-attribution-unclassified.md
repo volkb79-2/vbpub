@@ -13,6 +13,9 @@ scope:
   touch:
     - "src/assay/evaluate.py"
     - "src/assay/adapters/python.py"
+    # A-071: `unclassified` is your claim payload field. Additive branch only.
+    - "src/assay/verdict.py"
+    - "src/assay/schemas/**"
     - "tests/**"
   forbid:
     - "src/assay/coverage/**"

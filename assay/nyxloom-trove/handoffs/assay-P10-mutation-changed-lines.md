@@ -15,6 +15,10 @@ scope:
     - "src/assay/adapters/python.py"
     - "src/assay/adapters/go.py"
     - "src/assay/cli.py"
+    # A-071: the R2 mutation claim payload is yours. Additive branch only --
+    # widening the claim object is the one edit that would delete P01b's guard.
+    - "src/assay/verdict.py"
+    - "src/assay/schemas/**"
     - "tests/**"
   forbid:
     - "src/assay/adapters/protocol.py"

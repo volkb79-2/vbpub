@@ -18,6 +18,11 @@ scope:
     - "src/assay/adapters/__init__.py"
     - "src/assay/adapters/protocol.py"
     - "src/assay/adapters/python.py"
+    # A-071: you own your claim payload. Add the R1 coverage fields as an
+    # ADDITIVE branch following the pattern P01b states in the schema's own
+    # $comment; never widen the claim to additionalProperties: true.
+    - "src/assay/verdict.py"
+    - "src/assay/schemas/**"
     - "tests/**"
   forbid:
     - "src/assay/coverage/**"
