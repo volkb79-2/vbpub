@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-06 (CIU-15 filed + fixed; CIU-16/CIU-17 filed).
+Last updated: 2026-08-06 (CIU-15/16/19 filed + fixed; CIU-17/18 filed).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -49,6 +49,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-15 | CIU-14's own fix stats the **physical** (Docker-daemon) path to prove the shim exists. That path is by definition not resolvable from inside a devcontainer, so `ciu up` fails `[S15.11] ... not an existing file` on **every** DooD render even with the shim present — an unconditional fail-closed in exactly the environment the check protects | High | FIXED |
 | CIU-16 | `ciu version` is not a verb (only `ciu --version`), inconsistent with the estate's other CLIs | Low | FIXED |
 | CIU-17 | No CLI-level `--ksm` / `--no-ksm` override for an ad-hoc run; toggling KSM requires editing `governance.ksm_optin` in the TOML layer. Raised alongside CIU-14 and explicitly ruled out of its scope as a convenience feature, then never filed on its own | Low | OPEN |
+| CIU-19 | `reset_service`'s orphan sweep filtered on `<prefix>.component=<service>` ALONE, which is not instance-scoped — a second checkout of the same repo labels its containers identically, so `ciu clean` in one instance deleted the same-named service out of **every** instance on the host. Observed live while building `ciu worktree` (S16): cleaning a worktree instance removed the PRIMARY instance's `db-init`. With a full stack up, that is someone's database | High | FIXED |
 | CIU-18 | Image provenance is STAMPED but not ENFORCED. `bake` now sets `org.opencontainers.image.revision` (with a `-dirty` suffix) on every baked image, so a container can be traced to its commit — but nothing yet REFUSES to run a live/integration lane against an image whose label does not match the commit under test. Until it does, a live result can still silently describe an unknown artifact, which the consuming project's own policy (dstdns AGENTS.md §4.1a) already calls a defect. Needs the `ciu test` surface sketched in `docs/DESIGN-NOTES.md` D7 | Medium | OPEN |
 
 ## Resolved / not-a-gap

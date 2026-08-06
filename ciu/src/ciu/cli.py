@@ -34,6 +34,12 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     render                      render ciu.global.toml from Jinja2 template
     profiles                    list available host profiles
 
+  WORKTREE INSTANCES (S16)
+    worktree add NAME [--base REF] [--profile P1,P2]
+                                create a worktree + its own CIU instance
+    worktree rm NAME [-y]       ciu clean, THEN remove the checkout (in that order)
+    worktree list               registered worktrees
+
   STACK ORCHESTRATION
     up   [--profile NAME | --dir PATH]   start Docker Compose stack
     down [--profile NAME]                stop stack (preserve volumes)
@@ -357,6 +363,65 @@ def _ksm(rest: list[str]) -> int:
     return 0
 
 
+def _worktree(rest: list[str]) -> int:
+    """Handle `ciu worktree add|rm|list` (S16)."""
+    import argparse as _ap
+
+    from . import worktree as wt_mod
+    from .dev import resolve_repo_root
+
+    p = _ap.ArgumentParser(prog="ciu worktree", add_help=False)
+    sub = p.add_subparsers(dest="action", required=True)
+
+    p_add = sub.add_parser("add", add_help=False)
+    p_add.add_argument("name")
+    p_add.add_argument("--base", default="main", metavar="REF")
+    p_add.add_argument("--profile", default=None, metavar="P1,P2")
+    p_add.add_argument("--worktree-dir", dest="worktree_dir",
+                       default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
+
+    p_rm = sub.add_parser("rm", add_help=False)
+    p_rm.add_argument("name")
+    p_rm.add_argument("-y", "--yes", action="store_true", default=False)
+    p_rm.add_argument("--force", action="store_true", default=False)
+
+    sub.add_parser("list", add_help=False)
+
+    for parser in (p, p_add, p_rm):
+        parser.add_argument("--define-root", dest="define_root", default=None,
+                            metavar="PATH")
+    opts = p.parse_args(rest)
+
+    # The PRIMARY checkout. `git worktree` operations are repo-wide, so they run
+    # from here even when the target is another checkout.
+    repo_root = resolve_repo_root(getattr(opts, "define_root", None), Path.cwd())
+
+    try:
+        if opts.action == "add":
+            path = wt_mod.add(
+                repo_root, opts.name, base=opts.base, profile=opts.profile,
+                worktree_dir=opts.worktree_dir,
+            )
+            print(f"worktree ready: {path}")
+            print(f"  next: cd {path} && source ciu.env && ciu up")
+            return 0
+
+        if opts.action == "rm":
+            path = wt_mod.remove(
+                repo_root, opts.name, yes=opts.yes, force=opts.force
+            )
+            print(f"removed: {path}")
+            return 0
+
+        for info in wt_mod.list_worktrees(repo_root):
+            tag = "  (primary)" if info.is_primary else ""
+            print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
+        return 0
+    except wt_mod.WorktreeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
 def main() -> None:
     raw = sys.argv[1:]
 
@@ -587,6 +652,9 @@ def main() -> None:
 
     elif verb == "ksm":
         raise SystemExit(_ksm(rest))
+
+    elif verb == "worktree":
+        raise SystemExit(_worktree(rest))
 
     elif verb == "bake":
         from .engine import bake_revision_args

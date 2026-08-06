@@ -293,6 +293,59 @@ class TestResetServiceOrphanedContainers:
         # Anchored label equality: <prefix>.component=<service> (S6.4).
         assert any(f"label=dstdns.component={tmp_path.name}" in c for c in ps_calls)
 
+    def test_orphan_sweep_is_scoped_to_THIS_instance(self, tmp_path):
+        """CIU-19 — the component label is NOT instance-scoped.
+
+        A worktree instance (S16) is a second checkout of the same repo, so its
+        containers carry the SAME `<prefix>.component=<service>` label; only the
+        compose project name carries the instance id. Filtering on the component
+        alone therefore matched every instance on the host, and `ciu clean` in
+        one instance deleted the same-named service out of ALL of them —
+        observed live: cleaning a worktree instance removed the PRIMARY
+        instance's db-init container. With a full stack up that is someone's
+        database.
+        """
+        config = _base_config()
+        # The shared fixture omits environment_tag, so EVERY other test in this
+        # file exercises the unscoped path -- which is why the scoped one was
+        # never covered. Supply the S8.7 pair explicitly here.
+        config["deploy"]["environment_tag"] = "abc123"
+
+        def run(cmd, **kw):
+            if "ps" in cmd:
+                return _ok(stdout="orphan-1\n")
+            return _ok()
+
+        with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
+            reset_service(config, tmp_path, assume_yes=True)
+
+        ps = next(c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0])
+        expected = engine.compose_project_name(config, tmp_path)
+        assert f"label=com.docker.compose.project={expected}" in ps, (
+            "orphan sweep must be scoped to this instance's compose project; "
+            f"got {ps}"
+        )
+
+    def test_orphan_sweep_warns_when_it_cannot_scope(self, tmp_path, capsys):
+        """Without the S8.7 naming pair there is nothing to scope BY, and the
+        host-wide component sweep is deliberately kept (it is what catches
+        legacy pre-scoping containers). It must say so out loud rather than
+        quietly reaching across instances."""
+        config = _base_config()  # no environment_tag -> nothing to scope by
+
+        def run(cmd, **kw):
+            if "ps" in cmd:
+                return _ok(stdout="")
+            return _ok()
+
+        with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
+            reset_service(config, tmp_path, assume_yes=True)
+
+        out = capsys.readouterr().out
+        assert "across EVERY instance" in out
+        ps = next(c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0])
+        assert not any("com.docker.compose.project=" in a for a in ps)
+
 
 class TestResetServiceValidation:
     def test_requires_project_name(self, tmp_path):

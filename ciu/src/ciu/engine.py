@@ -801,11 +801,44 @@ def reset_service(
             print(f"[INFO]     Removed secret store dir: {stack_secrets}", flush=True)
 
     # Step 4: orphan cleanup with anchored label equality filter (S6.4).
+    #
+    # CIU-19: the component filter alone is NOT instance-scoped. A second
+    # checkout of the same repo (a worktree instance, S16) labels its containers
+    # with the SAME `<prefix>.component=<service>` — only the compose project
+    # name carries the instance id. Filtering on the component alone therefore
+    # matched every instance on the host, so `ciu clean` in one instance deleted
+    # the same-named service out of ALL of them. Observed live: cleaning a
+    # worktree instance removed the PRIMARY instance's db-init container.
+    #
+    # Both filters are ANDed by docker, and `compose_project_name` is the same
+    # value used for `down -p` a few lines above — so this scopes the sweep to
+    # exactly the containers this reset already owns.
     print("[INFO]   Step 4/4: Cleaning orphaned containers...", flush=True)
     try:
         label_filter = f"label={label_prefix}.component={service_name}"
+        extra_filters: list[str] = []
+        try:
+            extra_filters = [
+                "--filter",
+                "label=com.docker.compose.project="
+                f"{compose_project_name(config, stack_dir)}",
+            ]
+        except ValueError:
+            # No S8.7 naming pair — reset's minimal-config/legacy contract. The
+            # component-only sweep is what catches legacy containers created
+            # before project scoping existed, so it is KEPT here deliberately.
+            # It is also host-wide, hence the warning: with nothing to scope by,
+            # "every container with this component label" is the only handle we
+            # have, and the operator should know that is what ran.
+            print(
+                "[WARN] [S6.4] deploy.project_name/environment_tag not set — "
+                "orphan sweep matches this component label across EVERY "
+                "instance on the host, not just this one",
+                flush=True,
+            )
         result = procutil.run_cmd(
-            ["docker", "ps", "-a", "--filter", label_filter, "--format", "{{.Names}}"],
+            ["docker", "ps", "-a", "--filter", label_filter, *extra_filters,
+             "--format", "{{.Names}}"],
             check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
