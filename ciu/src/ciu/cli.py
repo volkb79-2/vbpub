@@ -21,7 +21,6 @@ Usage: ciu <verb> [options]
 
 Run-scoped overrides (never written back to the TOML layer):
   --ksm / --no-ksm       force KSM opt-in on/off for THIS run (S15.18)
-  --ignore-mismatch      deploy despite an image built from another commit (S17)
 
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
@@ -43,6 +42,11 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 create a worktree + its own CIU instance
     worktree rm NAME [-y]       ciu clean, THEN remove the checkout (in that order)
     worktree list               registered worktrees
+
+  EVIDENCE
+    provenance [--ignore-mismatch]
+                                verify RUNNING containers were built from the
+                                commit under test, before a live lane runs (S17.2)
 
   STACK ORCHESTRATION
     up   [--profile NAME | --dir PATH]   start Docker Compose stack
@@ -367,6 +371,64 @@ def _ksm(rest: list[str]) -> int:
     return 0
 
 
+def _provenance(rest: list[str]) -> int:
+    """Handle `ciu provenance [--ignore-mismatch]` (S17.2).
+
+    Verify that the RUNNING containers were built from the commit under test,
+    before a live/integration lane is allowed to produce evidence. Standalone
+    today; this is the check `ciu test` will call once that surface exists
+    (docs/DESIGN-NOTES.md D7).
+    """
+    import argparse as _ap
+
+    from .deploy import load_global_config, verify_running_provenance
+    from .dev import resolve_repo_root
+    from .engine import get_git_hash
+
+    p = _ap.ArgumentParser(prog="ciu provenance", add_help=False)
+    p.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
+                   action="store_true", default=False)
+    p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
+    opts = p.parse_args(rest)
+
+    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    try:
+        config = load_global_config(repo_root)
+    except Exception as exc:
+        print(f"ciu provenance: could not load the global config: {exc}",
+              file=sys.stderr)
+        return 2
+
+    deploy_cfg = config.get("deploy", {})
+    project, env_tag = deploy_cfg.get("project_name"), deploy_cfg.get("environment_tag")
+    if not project or not env_tag:
+        # No instance identity means no way to tell THIS instance's containers
+        # from a sibling worktree's, and a host-wide verdict would be wrong in
+        # both directions. Refuse to answer rather than answer wrongly.
+        print("ciu provenance: deploy.project_name and deploy.environment_tag "
+              "are required to scope the check to this instance (S8.7).",
+              file=sys.stderr)
+        return 2
+
+    try:
+        verify_running_provenance(f"{project}-{env_tag}",
+                                  ignore_mismatch=opts.ignore_mismatch)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # Do NOT claim "OK" for a run that could not check anything. The dirty and
+    # non-git paths WARN and return, so printing a green line after them would
+    # contradict the warning one line above and hand the reader a verdict the
+    # tool never reached — the exact shape of misleading evidence this check
+    # exists to prevent.
+    rev = get_git_hash()
+    if rev == "dev" or rev.endswith("-dirty"):
+        return 0
+    print(f"provenance OK — running containers match {rev}")
+    return 0
+
+
 def _worktree(rest: list[str]) -> int:
     """Handle `ciu worktree add|rm|list` (S16)."""
     import argparse as _ap
@@ -671,6 +733,9 @@ def main() -> None:
 
     elif verb == "worktree":
         raise SystemExit(_worktree(rest))
+
+    elif verb == "provenance":
+        raise SystemExit(_provenance(rest))
 
     elif verb == "bake":
         from .engine import bake_revision_args

@@ -51,18 +51,14 @@ class TestKsmToggle:
         assert governance.resolve_ksm_optin("builtin") == governance.BUILTIN_KSM
 
 
-def _selection(tmp_path: Path, compose_text: str) -> list[dict]:
-    from ciu.config_constants import CIU_COMPOSE_OUTPUT
+def _docker_ps(rows):
+    """Fake procutil.docker for both `ps` (rows) and `image inspect` (labels)."""
+    names, labels = rows
 
-    stack = tmp_path / "applications" / "api"
-    stack.mkdir(parents=True)
-    (stack / CIU_COMPOSE_OUTPUT).write_text(compose_text, encoding="utf-8")
-    return [{"path": "applications/api"}]
-
-
-def _docker_returning(labels: dict[str, str]):
-    """Fake procutil.docker: `image inspect` answers from *labels* by image name."""
     def fake(cmd, **_kw):
+        if cmd and cmd[0] == "ps":
+            out = "".join(f"{n}\t{i}\t{p}\n" for n, i, p in names)
+            return subprocess.CompletedProcess(cmd, 0, out, "")
         image = cmd[2] if len(cmd) > 2 else ""
         if image not in labels:
             return subprocess.CompletedProcess(cmd, 1, "", "No such image")
@@ -70,84 +66,86 @@ def _docker_returning(labels: dict[str, str]):
     return fake
 
 
-class TestImageRevisionPreflight:
-    COMPOSE = "services:\n  api:\n    image: example/api:latest\n"
+PREFIX = "proj-abc"
+ONE_RUNNING = ([("proj-abc-api", "example/api:latest", "proj-abc-api")],
+               {"example/api:latest": "abc12345"})
 
-    def test_matching_revision_passes(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": "abc12345"}))
-        deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
 
-    def test_mismatched_revision_REFUSES(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": "deadbeef"}))
-        with pytest.raises(ValueError, match=r"\[S17\].*built from a different commit"):
-            deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
+def _rows(revision, project="proj-abc-api"):
+    return ([("proj-abc-api", "example/api:latest", project)],
+            {"example/api:latest": revision})
 
-    def test_ignore_mismatch_downgrades_to_a_warning(self, tmp_path, monkeypatch, capsys):
+
+class TestRunningProvenance:
+    """S17.2 is a TEST-time gate over RUNNING containers, not a deploy-time one:
+    at deploy the question is 'did I bake?', which surfaces at once. The question
+    that yields bad EVIDENCE is asked against an already-running stack."""
+
+    def test_matching_revision_passes(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": "deadbeef"}))
-        deploy.image_revision_preflight(
-            tmp_path, _selection(tmp_path, self.COMPOSE), ignore_mismatch=True
-        )
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("abc12345")))
+        deploy.verify_running_provenance(PREFIX)
+
+    def test_mismatched_revision_REFUSES(self, monkeypatch):
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
+        with pytest.raises(ValueError, match=r"\[S17\].*different commit"):
+            deploy.verify_running_provenance(PREFIX)
+
+    def test_ignore_mismatch_downgrades_to_a_warning(self, monkeypatch, capsys):
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
+        deploy.verify_running_provenance(PREFIX, ignore_mismatch=True)
         out = capsys.readouterr().out
         assert "S17" in out and "deadbeef" in out
 
-    def test_unlabelled_image_is_SKIPPED_not_refused(self, tmp_path, monkeypatch):
-        """External images (postgres:16) carry no revision label. Refusing on
-        absence would break every deploy on upgrade, and absence is not evidence
-        of mismatch."""
+    def test_a_SIBLING_instance_is_not_reported_as_stale(self, monkeypatch):
+        """A worktree instance (S16) legitimately runs a different commit. Its
+        containers carry a different compose project, and scoping by that prefix
+        is what stops this check from failing every multi-instance host."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": ""}))
-        deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
+        monkeypatch.setattr(
+            deploy.procutil, "docker",
+            _docker_ps(_rows("deadbeef", project="OTHER-instance-api")),
+        )
+        deploy.verify_running_provenance(PREFIX)  # must not raise
 
-    def test_no_value_label_is_treated_as_absent(self, tmp_path, monkeypatch):
-        """docker's --format renders a missing key as the literal '<no value>';
-        comparing that string against a revision would refuse every unlabelled
-        image."""
+    def test_unlabelled_image_is_SKIPPED_not_refused(self, monkeypatch):
+        """External images (postgres:16) carry no revision label; refusing on
+        absence would break every install on upgrade, and absence is not
+        evidence of mismatch."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": "<no value>"}))
-        deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("")))
+        deploy.verify_running_provenance(PREFIX)
 
-    def test_absent_image_is_not_a_mismatch(self, tmp_path, monkeypatch):
-        """A missing image is compose's problem to report; inventing a mismatch
-        verdict for it would be a wrong answer dressed as a safety check."""
+    def test_no_value_label_is_treated_as_absent(self, monkeypatch):
+        """docker --format renders a missing key as the literal '<no value>';
+        comparing that against a revision would refuse every unlabelled image."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker", _docker_returning({}))
-        deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("<no value>")))
+        deploy.verify_running_provenance(PREFIX)
 
-    def test_dirty_tree_warns_and_does_not_refuse(self, tmp_path, monkeypatch, capsys):
+    def test_dirty_tree_warns_and_does_not_refuse(self, monkeypatch, capsys):
         """Uncommitted changes are in NO image, so nothing can match. Refusing
-        here would fire on every dev-loop deploy and get switched off for good —
-        a rule nobody can keep enforces nothing."""
+        would fire on every dev-loop run and get switched off for good."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345-dirty")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": "deadbeef"}))
-        deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
+        deploy.verify_running_provenance(PREFIX)
         assert "dirty" in capsys.readouterr().out
 
-    def test_non_git_checkout_is_silent(self, tmp_path, monkeypatch):
+    def test_non_git_checkout_is_silent(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "dev")
-        monkeypatch.setattr(deploy.procutil, "docker",
-                            _docker_returning({"example/api:latest": "deadbeef"}))
-        deploy.image_revision_preflight(tmp_path, _selection(tmp_path, self.COMPOSE))
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
+        deploy.verify_running_provenance(PREFIX)
 
-    def test_no_preflight_skips_entirely(self, tmp_path, monkeypatch):
-        def explode(*_a, **_kw):  # pragma: no cover - must never run
-            raise AssertionError("docker inspected despite --no-preflight")
-
+    def test_nothing_running_is_not_a_mismatch(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker", explode)
-        deploy.image_revision_preflight(
-            tmp_path, _selection(tmp_path, self.COMPOSE), no_preflight=True
-        )
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(([], {})))
+        deploy.verify_running_provenance(PREFIX)
 
-    def test_missing_rendered_compose_is_not_a_mismatch(self, tmp_path, monkeypatch):
+    def test_docker_unavailable_does_not_manufacture_a_verdict(self, monkeypatch):
+        def boom(*_a, **_kw):
+            raise FileNotFoundError("docker")
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker", _docker_returning({}))
-        deploy.image_revision_preflight(tmp_path, [{"path": "applications/absent"}])
+        monkeypatch.setattr(deploy.procutil, "docker", boom)
+        deploy.verify_running_provenance(PREFIX)

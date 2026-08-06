@@ -2022,14 +2022,27 @@ more convincing version of the problem, not a fix. When the revision is unknown
 (not a git checkout) NOTHING is stamped — a label reading `dev` looks like an
 answer and would be trusted as one.
 
-### S17.2 — Enforcement (fail CLOSED)
+### S17.2 — Enforcement at TEST time (`ciu provenance`, fail CLOSED)
 
-`image_revision_preflight` refuses to deploy when a rendered service's image
-carries a revision label that differs from the commit being deployed
-(`ValueError` → S10.3 exit 2). Stamping alone only makes provenance visible;
-this makes it binding. Without it a live/integration result is evidence about an
-unknown artifact — it reads as a fact about the code while being a fact about
-whichever image was lying around.
+`verify_running_provenance` refuses when a RUNNING container's image carries a
+revision label differing from the commit under test (`ValueError` → S10.3
+exit 2). Exposed as `ciu provenance [--ignore-mismatch]`.
+
+**This is a test-time gate, not a deploy-time one, and the distinction is the
+design.** At deploy the question is "did I remember to bake?", which the
+operator discovers immediately. The question that produces bad EVIDENCE is asked
+later, against a stack that is already up: *does this passing integration run
+describe the code I think it does?* By then the containers are running, so the
+thing to inspect is the image each RUNNING container actually has — not what a
+compose file declares it would use. `ciu up` therefore does NOT perform this
+check.
+
+Scoped to containers whose compose project starts with this instance's
+`<project>-<env_tag>` prefix, so a sibling worktree instance (S16) —
+legitimately running a different commit — is never reported as this instance
+being stale. Without a derivable instance identity the command REFUSES to answer
+(exit 2) rather than return a host-wide verdict that is wrong in both
+directions.
 
 Scope is self-selecting, and the non-refusals are as normative as the refusal:
 

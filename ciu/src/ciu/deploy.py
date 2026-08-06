@@ -553,97 +553,114 @@ def registry_preflight(config: dict) -> None:
 # ===========================================================================
 
 
-def image_revision_preflight(
-    repo_root: Path,
-    selection: list[dict],
+def verify_running_provenance(
+    project_prefix: str,
     *,
     ignore_mismatch: bool = False,
-    no_preflight: bool = False,
 ) -> None:
-    """S17 — refuse to deploy an image built from a different commit.
+    """S17.2 — refuse to run a live lane against containers built from another commit.
 
-    `bake` stamps ``org.opencontainers.image.revision`` on every image it builds
-    (S17.1). Stamping alone only makes provenance *visible*; this makes it
-    *binding*. Without it, a live/integration result is evidence about an
-    unknown artifact — it reads as a fact about the code while actually being a
-    fact about whichever image happened to be lying around. That is the failure
-    a consumer already classes as a defect (dstdns AGENTS.md §4.1a) with nothing
+    **This is a TEST-time check, not a deploy-time one, and the distinction is
+    the whole point.** At deploy time the question is "did I remember to bake?",
+    which the operator discovers immediately. The question that produces bad
+    EVIDENCE is asked later, against a stack that is already up: *does this
+    passing integration run describe the code I think it does?* By then the
+    containers are running, so the thing to inspect is the image each RUNNING
+    container actually has — not what a compose file declares it would use.
+
+    `bake` stamps ``org.opencontainers.image.revision`` (S17.1), which makes
+    provenance *visible*; this makes it *binding*. Without it a live result is
+    evidence about an unknown artifact — it reads as a fact about the code while
+    being a fact about whichever image happened to be running. dstdns's own
+    policy (AGENTS.md §4.1a) already classes that as a defect, with nothing
     enforcing it.
 
-    Scope is self-selecting and deliberately narrow:
+    Scoped to containers whose compose project starts with *project_prefix*, so
+    a sibling worktree instance (S16) — legitimately running a DIFFERENT commit
+    — is never mistaken for this instance being stale.
 
-    - Only images carrying the label are checked. CIU's bake is the only thing
-      that sets it, so ``postgres:16`` and friends are skipped without needing a
-      list of "our" images to maintain.
-    - An image with NO label is skipped silently. It is either external or was
-      built before S17; refusing on absence would break every existing install
-      on upgrade, and absence is not evidence of mismatch.
-    - A DIRTY working tree cannot match any image by construction (uncommitted
-      changes are in no artifact anywhere), so the check WARNS and does not
-      refuse. Refusing there would fire on every dev-loop deploy and be turned
-      off permanently within a day — a rule nobody can keep is worse than none.
+    The non-refusals are as load-bearing as the refusal:
+
+    - Only labelled images are checked. CIU's bake is the only thing that sets
+      the label, so ``postgres:16`` is skipped without maintaining a list of
+      "our" images.
+    - An UNLABELLED image is skipped: external, or built before S17. Absence is
+      not evidence of mismatch, and refusing on it would break every install on
+      upgrade.
+    - A DIRTY tree WARNS instead of refusing. Uncommitted changes are in no
+      artifact anywhere, so nothing can match; a check that fired on every
+      dev-loop run would be switched off within a day, and a rule nobody can
+      keep enforces nothing.
 
     Raises ValueError (S10.3 → exit 2) on a genuine mismatch, unless
-    *ignore_mismatch* (``--ignore-mismatch``/``--force``) downgrades it to a
-    warning, or *no_preflight* skips it entirely — the same break-glass flags
-    the sibling preflights honor.
+    *ignore_mismatch* downgrades it to a warning — the escape hatch for
+    deliberately testing an older artifact.
     """
-    import yaml
-
-    from .config_constants import CIU_COMPOSE_OUTPUT
-
-    if no_preflight:
-        return
-
     expected = engine.get_git_hash()
     if expected == "dev":
         return  # not a git checkout — nothing to compare against
 
     if expected.endswith("-dirty"):
         warn(
-            "[S17] working tree is dirty — image provenance NOT verified. "
-            "Uncommitted changes are in no image, so no artifact can match this "
+            "[S17] working tree is dirty — provenance NOT verified. Uncommitted "
+            "changes are in no image, so no running container can match this "
             "tree; commit before treating a live result as evidence about this "
             "code."
         )
         return
 
-    mismatches: list[tuple[str, str]] = []
-    for entry in selection:
-        stack_dir = repo_root / entry["path"]
-        compose_path = stack_dir / CIU_COMPOSE_OUTPUT
-        if not compose_path.is_file():
-            continue
-        try:
-            doc = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError):
-            continue  # render problems are not this preflight's to report
-        for svc in (doc.get("services") or {}).values():
-            image = (svc or {}).get("image")
-            if not image:
-                continue
-            actual = _image_revision_label(str(image))
-            if actual and actual != expected:
-                mismatches.append((str(image), actual))
+    mismatches: list[tuple[str, str, str]] = []
+    for name, image in _running_containers(project_prefix):
+        actual = _image_revision_label(image)
+        if actual and actual != expected:
+            mismatches.append((name, image, actual))
 
     if not mismatches:
         return
 
     detail = "\n".join(
-        f"  {image}: built from {actual}, deploying {expected}"
-        for image, actual in sorted(set(mismatches))
+        f"  {name} ({image}): running {actual}, testing {expected}"
+        for name, image, actual in sorted(mismatches)
     )
     message = (
-        f"[S17] {len(set(mismatches))} image(s) were built from a different "
-        f"commit than the one being deployed:\n{detail}\n"
-        "Rebuild (`ciu bake`) so a live result describes the code under test, "
-        "or pass --ignore-mismatch to deploy anyway (the result then describes "
-        "the OLD artifact, whatever it says)."
+        f"[S17] {len(mismatches)} running container(s) were built from a "
+        f"different commit than the one under test:\n{detail}\n"
+        "Rebuild and redeploy (`ciu bake` + `ciu up`) so the result describes "
+        "the code under test, or pass --ignore-mismatch to run anyway (the "
+        "result then describes the OLD artifact, whatever it says)."
     )
     if ignore_mismatch:
         warn(message)
         return
     raise ValueError(message)
+
+
+def _running_containers(project_prefix: str) -> list[tuple[str, str]]:
+    """``(name, image)`` for running containers in this instance's projects.
+
+    Filtered by the compose PROJECT label, which carries the instance id — a
+    sibling worktree instance (S16) legitimately runs a different commit and
+    must never be reported as this instance being stale. Docker's label filter
+    is exact-match only, so the prefix test is applied here.
+    """
+    try:
+        res = procutil.docker(
+            ["ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Label \"com.docker.compose.project\"}}"],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return []
+    if res.returncode != 0:
+        return []
+    out: list[tuple[str, str]] = []
+    for line in (res.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        name, image, project = (p.strip() for p in parts)
+        if project.startswith(project_prefix):
+            out.append((name, image))
+    return out
 
 
 def _image_revision_label(image: str) -> str:
@@ -1897,9 +1914,9 @@ Examples:
                          help="Skip provisioning + governance-slice preflight checks (break-glass)")
     control.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                          action="store_true",
-                         help="S17: deploy even when an image was built from a "
-                              "different commit (the live result then describes "
-                              "the OLD artifact)")
+                         help="S17.2 (`ciu provenance`): run even when a "
+                              "container was built from a different commit — "
+                              "the result then describes the OLD artifact")
     control.add_argument("--live", action="store_true",
                          help="With --check: also probe live state (Vault/Postgres/MinIO/Consul/Docker)")
     control.add_argument("--format", dest="graph_format", default="mermaid",
@@ -2026,12 +2043,10 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             probe=False,  # static lint up-front; live probing runs per-phase in action_deploy
         )
         registry_preflight(profile.config)
-        image_revision_preflight(
-            repo_root, selection,
-            ignore_mismatch=(getattr(args, 'ignore_mismatch', False)
-                             or getattr(args, 'force', False)),
-            no_preflight=getattr(args, 'no_preflight', False),
-        )
+        # NOT an image-provenance check. S17.2 is deliberately a TEST-time gate
+        # (`ciu provenance`), not a deploy-time one: at deploy the question is
+        # "did I bake?", which surfaces immediately; the question that produces
+        # bad EVIDENCE is asked later, against an already-running stack.
         governance_slice_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
