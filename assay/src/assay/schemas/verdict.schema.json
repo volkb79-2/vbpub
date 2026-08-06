@@ -205,9 +205,10 @@
       "enum": ["R0", "R1", "R2", "R3"]
     },
     "timestamp": {
-      "description": "ISO-8601 with an EXPLICIT offset. A naive timestamp is rejected: an artifact whose times cannot be placed on a timeline is not evidence.",
+      "description": "ISO-8601 with an EXPLICIT offset. A naive timestamp is rejected: an artifact whose times cannot be placed on a timeline is not evidence. Ends with (?![\\s\\S]) rather than $ deliberately -- see $comment.",
+      "$comment": "The end anchor is a negative lookahead, not `$`, because `$` does not mean the same thing to every consumer of this schema. Python's `re` (what the `jsonschema` package uses) lets `$` match before a TRAILING NEWLINE, while ECMA-262 -- which JSON Schema specifies, and which a Go or JS validator implements -- does not. With `$`, `\"2026-08-06T09:00:00Z\\n\"` validates under a Python consumer and fails under a JS one: the published contract would mean two different things depending on who read it, in an artifact whose entire purpose is cross-tool consumption (A-029). `(?![\\s\\S])` is strict in both. Found by tests/test_verdict_timestamp_agreement.py on its first run, where the schema accepted a value assay's own model refused.",
       "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})(?![\\s\\S])"
     },
     "argv": {
       "type": "array",
