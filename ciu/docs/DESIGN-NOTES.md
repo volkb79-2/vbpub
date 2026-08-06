@@ -423,3 +423,84 @@ Deliberately excluded: coverage/mutation/canary implementations, any notion of
 a rigor score, and any awareness of an automation tool. If CIU ever needs to
 grow one of those to make `ciu test` useful, that is the signal the boundary
 above was drawn wrong — reopen this note rather than widening the tool.
+
+---
+
+## D8 — `governance.memory_profile`: KSM is one lever, and `ksm_optin` is the wrong shape (2026-08-06)
+
+S15.11 exposes exactly one memory knob — `governance.ksm_optin`, a single
+estate-wide path to an `LD_PRELOAD` shim. Two things make that shape too narrow,
+one of them now measured rather than suspected.
+
+### The measured part: the preload shim has a structural blind spot, and a wrapper closes it
+
+`LD_PRELOAD` requires a dynamic loader to run. A statically-linked binary never
+runs one, so injection is **inert** for it — consul, vault, otel and minio's main
+binary contribute zero KSM savings today, and nothing surfaces that.
+
+The alternative is a wrapper that calls `prctl(PR_SET_MEMORY_MERGE, 1)` itself
+and then `execve`s the real program. Whether that works hinged on an open kernel
+question: `execve` allocates a fresh `mm_struct`, so the flag survives only if it
+is in the kernel's mm-flag init mask.
+
+**Measured 2026-08-06 (kernel 7.1.3, `gcc:13-bookworm`, `LD_PRELOAD` empty):
+the flag SURVIVES `execve`.** Three arms — baseline `/bin/sleep` → `no`,
+`wrapper --no-exec` → `yes`, `wrapper /bin/sleep` → `yes` with `comm` confirming
+the exec. Repeated against a genuinely static target (`ldd: not a dynamic
+executable`): **`no` unwrapped, `yes` wrapped.** Reproducer and full numbers live
+with the consumer that ran it: dstdns `tools/ksm-optin/ksm-exec-probe.sh` and
+`docs/KSM-OPTIN-MEASUREMENTS.md`.
+
+So the wrapper is **strictly more general** than the shim: static and dynamic,
+glibc and musl, and with no `-nostdlib` / zero-`DT_NEEDED` constraint on the
+injected artifact — it only has to *run*, not to load inside another process's
+address space. It is a candidate to **replace** the preload path outright rather
+than sit beside it.
+
+**Its real cost is placement, not portability.** A wrapper must become the
+container's entrypoint, which collides with images that already declare one or
+run `tini` as PID 1. CIU can inject `entrypoint:`/`command:` — but doing so
+*overrides* the image's own, which is a far more invasive act than adding an env
+var and a read-only bind. That is the design question worth arguing, and it is
+per-service, not estate-wide: some images tolerate it trivially, others must not
+be touched. A single global key cannot express that.
+
+### The unmeasured part: KSM is not the biggest lever, and is sometimes the wrong one
+
+The largest single memory win this estate has recorded came from a JVM heap
+setting, not from page dedup: dstdns's SkyWalking pair went **2.48 → 0.75 GiB**
+by fixing an OAP `-Xms2G` default (≈1.7 GiB returned). KSM could not have
+recovered any of it. Go services want `GOMEMLIMIT` for the same reason. A
+governance table that can express only "KSM on/off" cannot say the thing that
+actually mattered.
+
+### Sketch (non-normative)
+
+```toml
+[governance.memory_profile.default]
+ksm = "preload"            # preload | wrapper | off
+
+[governance.memory_profile.services.consul]
+ksm = "wrapper"            # static binary — preload is inert here
+
+[governance.memory_profile.services.skywalking-oap]
+ksm = "off"
+jvm_heap = "512m"          # emits -Xms/-Xmx via the image's JAVA_OPTS convention
+
+[governance.memory_profile.services.some-go-svc]
+go_memlimit = "512MiB"
+```
+
+`ksm_optin` becomes the degenerate case of `memory_profile.default.ksm`, and
+`exempt_services` becomes `ksm = "off"` per service — so the migration is a
+rewrite of existing config into a strictly more expressive form, not a new
+parallel mechanism (§4.1-style: one path, not two).
+
+**Open, in rough priority order:** how a `wrapper` strategy composes with an
+image's existing entrypoint (probably: refuse rather than override, and say so
+loudly, per the CIU-14/CIU-15 fail-closed lesson); where the wrapper binary
+itself comes from (the same build-and-cache question as CIU-17's `ciu ksm build`
+— a host-level cache keyed by arch and source hash, so worktrees do not each
+rebuild it); and whether `jvm_heap`/`go_memlimit` belong in governance at all or
+are simply service env, which is a real boundary question and not obviously
+CIU's to own.
