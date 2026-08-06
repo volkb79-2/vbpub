@@ -108,6 +108,35 @@ defects in the specification, not in the implementation. The pre-flight and
 orientation phases are not gates on the implementer — they are the cheapest
 available review of the controller's own work.
 
+### Caveat that limits every row above — the readiness evidence is contaminated
+
+**All of it was produced at Opus.** In nyxloom's ladder that is `review-3`
+("review + carve authority"), not an implementation tier: implementation routes
+cheap-first through `implement-1` (haiku, deepseek-high, terra-med) and
+`implement-2` (sonnet5-high, luna-high). So the table above does NOT establish
+"a readiness pass finds spec defects". It establishes "a REVIEW-TIER model
+asked to assess a handoff finds spec defects", which is a much weaker and much
+less surprising claim.
+
+The specific findings make the gap concrete. Disproving DESIGN-GUIDE §6 required
+reading `nyxloom/src/nyxloom/types.py` and noticing that `_Serde.from_dict`
+rejects unknown keys. Finding the carving defect required reading `scope.touch`
+across **all ten** handoffs and intersecting it with what four later packages
+need. Neither is plausible band-1 work.
+
+Two consequences, both recorded in nyxloom's backlog:
+
+1. **Handoff review belongs to the reviewer, not the implementer.** It must not
+   depend on the implementer's capability at all.
+2. **The readiness pass is still worth keeping, for a different reason at each
+   tier.** At review-3 it is a spec review. At implement-1 it is *capability
+   triage* — a cheap model reporting "I do not understand O3" before an
+   implementation is bought is the BLOCKED escape hatch fired early, which is
+   most valuable precisely where the implementer is cheapest.
+
+Until a readiness pass is measured at band 1, the cost rows here transfer and
+the quality rows do not.
+
 ## Open questions this protocol should answer
 
 - Does a restored S0 measurably hit the cache? Not observable from the

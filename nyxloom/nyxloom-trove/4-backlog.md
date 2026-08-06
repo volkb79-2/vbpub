@@ -346,4 +346,35 @@ items that must be folded in somewhere, should not be forgotten
   readiness report is therefore best understood as the cheapest available review
   of the CARVER's work, not as a check on the implementer.
 
+  **But the readiness pass cannot carry this alone, and the assay evidence for
+  it is contaminated.** Both runs cited above were Opus — `review-3`, the review
+  and carve tier — while implementation routes cheap-first through
+  `implement-1`/`implement-2` by design. Disproving a sentence in the design
+  guide required reading `types.py` and noticing `_Serde.from_dict` rejects
+  unknown keys; finding the carving defect required intersecting `scope.touch`
+  across all ten handoffs with what four later packages needed. Neither is
+  plausible band-1 work. A cheap implementer's readiness report is a capability
+  self-assessment, not a review of the carver.
+
+  **So: an independent HANDOFF REVIEW by the reviewer standing agent, before
+  dispatch.** The argument is not theoretical — on assay the same agent carved
+  P01, reviewed its own carving, and shipped an oracle that could not fail. It
+  was caught by an independent pass, not by the carver.
+
+  Division of labour, keeping both:
+
+  | Check | Who | Why |
+  |---|---|---|
+  | Can each oracle FAIL? Name the change that turns it red; if none exists it is unfalsifiable | reviewer, pre-dispatch | independent of implementer tier |
+  | Could the oracle be satisfied green but HOLLOW? Name the cheapest passing non-implementation | reviewer, pre-dispatch | the failure a gate cannot see |
+  | Scope closure — **across the SERIES, not one handoff**: does any later package need a path its own `scope.touch` forbids? | reviewer, pre-dispatch | a per-handoff reviewer would have MISSED assay's carving defect; it needed the cross-handoff view |
+  | Do cited files still exist and say what is claimed? | reviewer, pre-dispatch | specs rot faster than code |
+  | Sizing against the carving limit | reviewer, pre-dispatch | cheap, mechanical |
+  | "Can I do this, with what is on disk, in this environment?" | implementer, post-dispatch | only the implementer knows its own capability; a band-1 NOT READY is BLOCKED fired early and cheap |
+
+  Two constraints that keep it honest: the reviewer **reports and never edits**
+  the handoff — an editing reviewer is a co-carver and the independence is gone;
+  and its brief must be adversarial (*attack this handoff*), because two agents
+  at the same tier sharing priors will otherwise converge on approval.
+
   Cost data for sizing this: `assay/nyxloom-trove/MEASUREMENTS.md`.
