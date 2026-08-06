@@ -314,7 +314,36 @@ items that must be folded in somewhere, should not be forgotten
      it is the closest thing to a running "what this project learned" record,
      and it is currently invisible.
 
-  Related and worth carving together: a **pre-flight dispatch** (orient, report
-  readiness, implement nothing). On assay's P01 it returned NOT READY with three
-  blockers and seven ambiguities — including an oracle that could not fail — for
-  the cost of one turn, against an implementation plus review plus rework.
+  Related and worth carving together: a **two-way readiness protocol**, which is
+  the part with no equivalent in nyxloom today.
+
+  Not merely a gate. The implementer is dispatched to orient, assess the
+  handoff, and STOP — reporting readiness, ambiguities that admit two readings
+  (stated as two readings), conflicts between handoff/spec/disk, and **for each
+  oracle, whether it could be satisfied in a way that is technically green but
+  hollow**. The controller then rules on each item IN THE GO-MESSAGE, and only
+  then does implementation start. Today a nyxloom handoff goes straight to
+  implementation and a defect in it surfaces as a failed or subtly wrong
+  package.
+
+  Measured on assay, two runs, and the pattern is consistent: **every phase that
+  ran before code was written found defects in the SPECIFICATION, not in the
+  implementation.**
+
+  - P01's readiness pass: 3 blockers + 7 ambiguities, including an oracle that
+    *could not fail* — its `grep -rn` prefixed every line with a path containing
+    the package name, and the inverted alternation contained that same name, so
+    it filtered everything and passed clean on a file with three third-party
+    imports.
+  - P01b's readiness pass: a **carving defect** (four later packages needed
+    fields in a file their `scope.touch` forbade), a **wrong sentence in the
+    project's own design guide** (a claimed superset artifact could never be
+    deserialised, because the consumer rejects unknown keys), and an **oracle
+    demanding something JSON Schema cannot express**.
+
+  None of those is findable by a gate, and all were found for the cost of one
+  orientation turn against an implementation plus review plus rework. The
+  readiness report is therefore best understood as the cheapest available review
+  of the CARVER's work, not as a check on the implementer.
+
+  Cost data for sizing this: `assay/nyxloom-trove/MEASUREMENTS.md`.

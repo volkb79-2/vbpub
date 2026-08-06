@@ -1,25 +1,8 @@
 # P01a — successor brief
 
-> **Controller annotation, added on merge — read this first.** The brief is
-> preserved as written; nothing below has been rewritten. But its
-> "Interpretations" section was a proposal, and the controller has now ruled on
-> every item. **All were ratified except one:**
->
-> - **OVERRULED — "surplus judge config for an undeclared level is allowed".**
->   It is now **refused** (A-062), and an *empty* judge table is the only one an
->   R0 lane may carry (A-063). Reasoning in `decisions.md`; the code and tests
->   were changed on merge. Do not follow the brief on this point.
-> - **Ratified:** per-level rather than cumulative judge requirements (A-061);
->   the loader's additional rejections (A-064); `schema_version` semantics
->   (A-065); the house style and the ACCEPT/REJECT test pattern (A-066); the
->   independent-parser round-trip and "a test that proves a property must itself
->   be checked by breaking the property" (A-067); the two-environment offline
->   install (A-070).
-> - **`judge.coverage.format`** is now P03's explicit debt, carried as that
->   package's O6 (A-068). **`fallback_version`** is a known unexercised gap
->   (A-069).
->
-> `decisions.md` is binding where it and this brief disagree.
+> Reconciled with the controller's rulings on merge (A-061…A-070). This states
+> what is true now; the original text and what changed are in git and in
+> `decisions.md`.
 
 ## Conventions to match
 
@@ -65,19 +48,23 @@ three.
   top-level key use `.replace("schema_version = 1", …)`.
 * The gate container **has** network. Do not use it.
 
-## Interpretations (candidates for decisions.md)
+## Loader rules you will hit (all now ratified, A-061…A-070)
 
 * Judge requirements are **per declared rigor level, not a cumulative ladder**
   (`JUDGE_FIELDS_BY_RIGOR` in `config.py`); R2 and R3 additionally require
   `language` + `source_roots`. `rigor` is a list of independent methods, so an
   R3-without-R2 lane is not forced to declare mutation config.
+* Judge config for a level the lane does **not** declare is **refused** — it is
+  inert, so nothing fails when it is wrong, while it reads to a human exactly
+  like the capability it is not providing. An **empty** judge table is the only
+  one an R0 lane may carry.
 * `judge.coverage.format` is **not** enumerated — any non-empty string loads.
-  **P03's registry owes the cross-check.**
-* Surplus judge config for an undeclared level is allowed.
-* Rejected without a citable decision: empty `rigor`, duplicate rigor level,
-  empty `argv`, empty `source_roots`, absolute `source_root`, file with no
-  lanes, and unknown keys in a lane or `judge` table — `where`, `mutation` and
-  `canary` stay opaque.
+  The vocabulary is the parser registry's, and **P03 owes that cross-check**
+  (its O6).
+* Also rejected: empty `rigor`, duplicate rigor level, empty `argv`, empty
+  `source_roots`, absolute `source_root`, file with no lanes, and unknown keys
+  in a lane or `judge` table — `where`, `mutation` and `canary` CONTENTS stay
+  opaque.
 * `schema_version` is required and must equal `LANE_SCHEMA_VERSION` (1); it is
   distinct from the verdict artifact's version.
 
