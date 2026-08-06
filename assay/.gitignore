@@ -9,6 +9,7 @@ src/*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.hypothesis/
 .coverage
 .coverage.*
 coverage.json

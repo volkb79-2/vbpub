@@ -132,6 +132,12 @@ def test_missing_file_is_rejected(project: Project):
         load_lane_file(project.root / "absent.toml")
 
 
+def test_lanes_that_is_not_a_table_is_rejected(project: Project):
+    path = project.write('schema_version = 1\nlanes = "package"\n')
+    with pytest.raises(LaneConfigError, match="must be a table of lanes"):
+        load_lane_file(path)
+
+
 def test_lane_that_is_not_a_table_is_rejected(project: Project):
     path = project.write('schema_version = 1\n\n[lanes]\npackage = "yes"\n')
     with pytest.raises(LaneConfigError, match="must be a table"):

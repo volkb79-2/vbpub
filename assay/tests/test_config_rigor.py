@@ -18,6 +18,8 @@ mutation and canary cannot act at all without knowing the adapter and the tree.
 
 from __future__ import annotations
 
+import tomllib
+
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 
@@ -200,6 +202,75 @@ def test_judge_table_on_an_r0_lane_is_allowed_but_not_required(project: Project)
 
     assert judge is not None
     assert judge.language == "python"
+
+
+def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
+    project: Project,
+):
+    # The opaque payloads are P10's and P08's, so the proof that this loader
+    # does not touch them is that they come back byte-for-byte.
+    text = _lane_with(
+        ["R0", "R1", "R2", "R3"], JUDGE_TABLE, MUTATION_TABLE, CANARY_TABLE
+    )
+    declared = load_lane_file(project.write(text)).lane("package").as_declared()
+
+    assert declared == tomllib.loads(text)["lanes"]["package"]
+    assert declared["judge"]["mutation"] == {
+        "jobs": 4,
+        "operators": ["compare-swap", "boolop-swap"],
+    }
+    assert declared["judge"]["canary"] == {"mode": "import-break"}
+
+
+def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
+    # Nothing in `judge` is filled in on absence: an unrequired field that the
+    # file did not declare stays None, and never appears in as_declared().
+    path = project.write(R0_LANE + "judge = { mutation = { jobs = 2 } }\n")
+    lane = load_lane_file(path).lane("package")
+
+    judge = lane.judge
+    assert judge is not None
+    assert judge.language is None
+    assert judge.source_roots is None
+    assert judge.source_root_paths is None
+    assert judge.fail_under is None
+    assert judge.allow_excluded is None
+    assert judge.coverage is None
+    assert judge.canary is None
+    assert lane.as_declared()["judge"] == {"mutation": {"jobs": 2}}
+
+
+def test_mutation_that_is_not_a_table_is_rejected(project: Project):
+    path = project.write(R0_LANE + "judge = { mutation = 4 }\n")
+    with pytest.raises(LaneConfigError, match="'judge.mutation' must be a table"):
+        load_lane_file(path)
+
+
+def test_empty_judge_language_is_rejected(project: Project):
+    path = project.write(set_key(R1_LANE, "language", '""'))
+    with pytest.raises(LaneConfigError, match="'judge.language' is empty"):
+        load_lane_file(path)
+
+
+def test_coverage_that_is_not_a_table_is_rejected(project: Project):
+    path = project.write(set_key(R1_LANE, "coverage", '"coverage-py-json"'))
+    with pytest.raises(LaneConfigError, match="'judge.coverage' must be a table"):
+        load_lane_file(path)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ('{ format = "", artifact = "cov.json" }', "judge.coverage.format' is empty"),
+        ('{ format = "lcov", artifact = "" }', "judge.coverage.artifact' is empty"),
+    ],
+)
+def test_empty_coverage_field_is_rejected(
+    value: str, expected: str, project: Project
+):
+    path = project.write(set_key(R1_LANE, "coverage", value))
+    with pytest.raises(LaneConfigError, match=expected):
+        load_lane_file(path)
 
 
 def test_judge_that_is_not_a_table_is_rejected(project: Project):
