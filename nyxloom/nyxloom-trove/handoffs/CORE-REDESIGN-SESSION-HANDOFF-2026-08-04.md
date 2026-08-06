@@ -251,6 +251,17 @@ Applied immediately: CR-07b was scoped to the `GuardFacts` derivation alone
    package that replaces it.
 
 Remaining after CR-07: CR-08, CR-09, CR-10, CR-11, CR-12, CR-13b, CR-14.
+
+**Queued BEHIND the redesign, specified but NOT dispatched:**
+[`nyxloom-P90-extract-testing-library.md`](nyxloom-P90-extract-testing-library.md)
+— extract `gate_runner`/`coverage_gate`/`gate_canary`/`mutation_gate` (~1,600
+lines) into a standalone library any project can consume WITHOUT adopting
+nyxloom. Written up now because the evidence is fresh (`coverage_gate.py` exists
+FOUR times across the estate — 299/455/804 lines plus a Go rewrite — and all of
+them have diverged), and deferred because a 1,600-line package is precisely the
+shape this programme's own carving principle rejects. Fold it into the CR order
+as its own numbered package, or land it after CR-14. Its own frontmatter has the
+same instruction in `escalate_if`.
 Section 7 of the plan is the authoritative order. Open ledger rows carrying
 named owners: carve authority is planner-scoped (not system-scoped); stale
 route ids crash the planner and renderer (owner CR-08); the four interactive

@@ -136,3 +136,20 @@ tree already has is worse than an empty one.
   predicate, and a field in COMPLETE to hold it. Wanted by the same thing
   that wants it for staged releases, so it is one piece of work for both
   paths, not a harvest rider.
+
+- **Revisit `tools/covergate` once the shared testing library exists.**
+  This project reimplemented changed-line coverage in Go because the existing
+  implementation could not be consumed standalone — it lived inside nyxloom.
+  That rewrite is the sharpest evidence for extracting it: `coverage_gate.py`
+  now exists FOUR times across the estate (nyxloom 455 lines, dstdns 804,
+  topos 299, plus this Go copy) and the Python copies have diverged.
+
+  The extraction is specified in
+  `nyxloom/nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md`,
+  queued behind nyxloom's core redesign.
+
+  **Keep the Go implementation.** srdm is a Go project and the library ships a
+  Python adapter first; this copy stays until a Go adapter exists, and it is the
+  forcing function for the library's LanguageAdapter protocol (P90 oracle O3) —
+  a design that cannot accommodate this project is not actually language-neutral.
+  When that adapter lands, the choice is adopt-or-keep on the merits, not now.

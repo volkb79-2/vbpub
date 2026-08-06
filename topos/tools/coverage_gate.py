@@ -14,6 +14,23 @@ Base resolution serves both phases:
   * post-merge (HEAD has ≥2 parents) → diff vs its FIRST parent
 """
 
+# ---------------------------------------------------------------------------
+# MIGRATION PENDING (2026-08-06) — this file is scheduled to be REPLACED by a
+# shared library, not maintained here indefinitely.
+#
+# `coverage_gate.py` exists FOUR times across the estate and every copy has
+# diverged: nyxloom 455 lines, dstdns 804, this one 299, plus srdm’s Go
+# `tools/covergate`. The extraction is specified in
+# `nyxloom/nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md` and is
+# queued BEHIND nyxloom’s core redesign.
+#
+# Until that library exists: keep using this copy. Do NOT start migrating. Note
+# this is the THINNEST of the four — the library will take the UNION of their
+# behaviour, so expect to GAIN checks (dstdns’ --allow-excluded and its
+# NO-MEASUREMENT guard) rather than lose any.
+# ---------------------------------------------------------------------------
+
+
 from __future__ import annotations
 
 import argparse

@@ -266,3 +266,16 @@ items that must be folded in somewhere, should not be forgotten
   explicit `verification = true` marker or a distinct phase for "run this at
   release, not at merge". Until then a project must choose between declaring
   its release lane and keeping a fast merge gate, which is a false choice.
+
+- **Testing-library extraction — SPECIFIED, queued behind the CORE REDESIGN.**
+  Now carried as a real handoff:
+  `nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md` (lint-clean).
+  Motivation is measured, not theoretical: `coverage_gate.py` exists FOUR times
+  across the estate — nyxloom 455, dstdns 804, topos 299, plus srdm's Go
+  `tools/covergate` — and the Python copies have diverged. srdm rewriting it in
+  Go rather than adopting a tool it could not consume standalone is the sharpest
+  signal that the capability needs to ship as a library, not as nyxloom
+  internals. Consumers (dstdns, topos, netcup-api-filter, srdm) each carry a
+  note saying migration happens once the library exists; none changes before it
+  does. This supersedes the earlier "generalize covergate for srdm" entry above
+  by giving it a concrete package.

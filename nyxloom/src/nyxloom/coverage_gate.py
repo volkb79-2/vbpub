@@ -52,6 +52,23 @@ failure mode); it does NOT fire on a genuinely empty delta with a clean,
 committed tree -- a docs-only commit still passes at 0/0, exactly as before.
 """
 
+# ---------------------------------------------------------------------------
+# MIGRATION PENDING (2026-08-06) -- this module is scheduled to MOVE OUT of
+# nyxloom into a standalone library any project can consume without adopting
+# nyxloom at all (the same way `ciu` is consumed today).
+#
+# It already exists FOUR times across the estate and every copy has diverged:
+# this one 455 lines, dstdns 804, topos 299, plus srdm's Go `tools/covergate`.
+# srdm rewriting it in another language rather than adopting a tool it could not
+# consume standalone is the sharpest signal that this belongs in a library.
+#
+# Specified in `nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md`,
+# queued BEHIND the core redesign (a ~1,600-line package is exactly the shape
+# that programme's carving principle rejects). Keep maintaining this copy until
+# then; the extraction takes the UNION of the four, not the intersection.
+# ---------------------------------------------------------------------------
+
+
 from __future__ import annotations
 
 import argparse
