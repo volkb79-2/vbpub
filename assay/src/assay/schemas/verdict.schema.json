@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:assay:schema:verdict:1",
+  "title": "assay verdict artifact",
+  "description": "One verdict, one lane, one commit (DESIGN-GUIDE.md 6 and 7). This file is SHIPPED AS DATA (A-029): a consumer -- ciu, a CI system, nyxloom -- validates an artifact against it without importing assay. It is HAND-WRITTEN, never generated from assay's Python model; a schema generated from the model could only ever prove the model agrees with itself. tests/test_verdict_reason_codes.py carries the drift guard that keeps its enumerations equal to src/assay/errors.py's.\n\nTHE PATTERN A LATER PACKAGE MUST FOLLOW. Claim payloads are added as ADDITIVE BRANCHES: one `if rigor == \"RN\" then {properties: {<payload>: ...}}` entry in $defs/claim/allOf, with the payload's own object closed by `additionalProperties: false`. The claim object itself is closed by `unevaluatedProperties: false`, so a payload is accepted ONLY inside the branch that named it -- a coverage block on an R0 claim is rejected without anyone writing a rule against it. P01b ships the R1 (coverage) branch; P04/P05 extend that payload, P08 adds R3 (canary) and P10 adds R2 (mutation), each as one more branch. Do not widen the claim to `additionalProperties: true` to make room; that deletes the guard.\n\nABSENT MEANS UNKNOWABLE, EMPTY MEANS KNOWN-AND-EMPTY. When no measurement happened there is no coverage block, not a zeroed one (A-025) -- a consumer that reads `pct` and ignores `outcome` must find nothing to read. When no lane ever resolved there is no `argv_declared`, not an empty one: `argv_declared: []` asserts \"the lane declared no argv\", which is false. The lane-resolved group below is all-present or all-absent.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "assay_version",
+    "lane",
+    "commit",
+    "outcome",
+    "exit_code",
+    "started",
+    "ended",
+    "claims"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "The VERDICT schema version. Distinct from assay.toml's own schema_version (A-065): two independently versioned contracts.",
+      "type": "integer",
+      "const": 1
+    },
+    "assay_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lane": {
+      "description": "The lane this verdict judges. Always known: a verdict is always ABOUT one named lane, even when that lane failed to load.",
+      "type": "string",
+      "minLength": 1
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "reason_code": {
+      "description": "Required on every non-PASS outcome (A-022); OMITTED, never null, on PASS (A-051). The per-outcome enumeration is closed (A-050) and is narrowed by the branches in allOf.",
+      "$ref": "#/$defs/reason_code"
+    },
+    "exit_code": {
+      "description": "The exit code is the verdict: a consumer checking only the exit code must never be wrong. Pinned to `outcome` by the branches in allOf, so the artifact can never disagree with the process status.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "started": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "ended": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "declared_rigor": {
+      "description": "The rigor levels the lane declared. Carried so that 'R2 was declared but rendered no judgement' stays distinguishable from 'R2 was never declared' (A-024) without the consumer holding the lane file. Part of the lane-resolved group.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/rigor"
+      }
+    },
+    "argv_declared": {
+      "$ref": "#/$defs/argv_nonempty"
+    },
+    "argv_appended": {
+      "description": "Flags appended BY THE CALLER (A-036). assay never derives a flag from the diff -- that is impact-based selection, which is the caller's domain.",
+      "$ref": "#/$defs/argv"
+    },
+    "argv_effective": {
+      "$ref": "#/$defs/argv_nonempty"
+    },
+    "argv_modified": {
+      "type": "boolean"
+    },
+    "env_declared": {
+      "$ref": "#/$defs/env"
+    },
+    "env_effective": {
+      "$ref": "#/$defs/env"
+    },
+    "claims": {
+      "description": "One entry per declared rigor level, not a flat verdict (A-024). Empty only when no lane resolved, i.e. when the lane-resolved group is absent.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/claim"
+      }
+    }
+  },
+  "dependentRequired": {
+    "declared_rigor": ["argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective"],
+    "argv_declared": ["declared_rigor", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective"],
+    "argv_appended": ["declared_rigor", "argv_declared", "argv_effective", "argv_modified", "env_declared", "env_effective"],
+    "argv_effective": ["declared_rigor", "argv_declared", "argv_appended", "argv_modified", "env_declared", "env_effective"],
+    "argv_modified": ["declared_rigor", "argv_declared", "argv_appended", "argv_effective", "env_declared", "env_effective"],
+    "env_declared": ["declared_rigor", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_effective"],
+    "env_effective": ["declared_rigor", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared"]
+  },
+  "allOf": [
+    {
+      "$comment": "PASS: exit 0, and no reason_code at all -- a pass has no cause to name (A-051).",
+      "if": {
+        "required": ["outcome"],
+        "properties": {"outcome": {"const": "PASS"}}
+      },
+      "then": {
+        "not": {"required": ["reason_code"]},
+        "properties": {"exit_code": {"const": 0}}
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {"outcome": {"const": "FAIL"}}
+      },
+      "then": {
+        "required": ["reason_code"],
+        "properties": {
+          "exit_code": {"const": 1},
+          "reason_code": {"$ref": "#/$defs/reason_codes/FAIL"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {"outcome": {"const": "ERROR"}}
+      },
+      "then": {
+        "required": ["reason_code"],
+        "properties": {
+          "exit_code": {"const": 2},
+          "reason_code": {"$ref": "#/$defs/reason_codes/ERROR"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {"outcome": {"const": "NO_MEASUREMENT"}}
+      },
+      "then": {
+        "required": ["reason_code"],
+        "properties": {
+          "exit_code": {"const": 3},
+          "reason_code": {"$ref": "#/$defs/reason_codes/NO_MEASUREMENT"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {"outcome": {"const": "BUDGET_EXCEEDED"}}
+      },
+      "then": {
+        "required": ["reason_code"],
+        "properties": {
+          "exit_code": {"const": 4},
+          "reason_code": {"$ref": "#/$defs/reason_codes/BUDGET_EXCEEDED"}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["outcome"],
+        "properties": {"outcome": {"const": "INCONCLUSIVE"}}
+      },
+      "then": {
+        "required": ["reason_code"],
+        "properties": {
+          "exit_code": {"const": 5},
+          "reason_code": {"$ref": "#/$defs/reason_codes/INCONCLUSIVE"}
+        }
+      }
+    },
+    {
+      "$comment": "A run with a non-empty argv_appended sets argv_modified: true (DESIGN-GUIDE 6). An appended flag that is invisible in the verdict lets a gate PASS describe a run that skipped most of the suite.",
+      "if": {
+        "required": ["argv_appended"],
+        "properties": {"argv_appended": {"minItems": 1}}
+      },
+      "then": {
+        "properties": {"argv_modified": {"const": true}}
+      }
+    },
+    {
+      "if": {
+        "required": ["argv_appended"],
+        "properties": {"argv_appended": {"maxItems": 0}}
+      },
+      "then": {
+        "properties": {"argv_modified": {"const": false}}
+      }
+    }
+  ],
+  "unevaluatedProperties": false,
+  "$defs": {
+    "outcome": {
+      "description": "A-021. Six outcomes; 2-5 are all not-a-pass and all block a merge.",
+      "enum": ["PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED", "INCONCLUSIVE"]
+    },
+    "rigor": {
+      "enum": ["R0", "R1", "R2", "R3"]
+    },
+    "timestamp": {
+      "description": "ISO-8601 with an EXPLICIT offset. A naive timestamp is rejected: an artifact whose times cannot be placed on a timeline is not evidence.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "argv": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "argv_nonempty": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string"}
+    },
+    "env": {
+      "description": "Declared-only (A-019). Values are strings: assay never invents the spelling a process will actually see.",
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "reason_code": {
+      "enum": [
+        "UNCOVERED_LINES",
+        "EXCLUDED_LINES",
+        "UNCLASSIFIED_LINES",
+        "MUTANTS_SURVIVED",
+        "CANARY_SURVIVED",
+        "GIT_FAILED",
+        "UNREADABLE_ARTIFACT",
+        "FORMAT_MISMATCH",
+        "BAD_LANE_CONFIG",
+        "EXEC_FAILED",
+        "DIRTY_TREE",
+        "BASE_IS_HEAD",
+        "EMPTY_COVERAGE",
+        "LANE_TIMEOUT",
+        "NO_MUTANTS",
+        "CANARY_INCONCLUSIVE"
+      ]
+    },
+    "reason_codes": {
+      "$comment": "The closed per-outcome enumeration of DESIGN-GUIDE 6, shared by the verdict's `outcome` branches and the claim's `status` branches. PASS has no entry because a pass has no cause to name.",
+      "FAIL": {
+        "enum": [
+          "UNCOVERED_LINES",
+          "EXCLUDED_LINES",
+          "UNCLASSIFIED_LINES",
+          "MUTANTS_SURVIVED",
+          "CANARY_SURVIVED"
+        ]
+      },
+      "ERROR": {
+        "enum": [
+          "GIT_FAILED",
+          "UNREADABLE_ARTIFACT",
+          "FORMAT_MISMATCH",
+          "BAD_LANE_CONFIG",
+          "EXEC_FAILED"
+        ]
+      },
+      "NO_MEASUREMENT": {
+        "enum": ["DIRTY_TREE", "BASE_IS_HEAD", "EMPTY_COVERAGE"]
+      },
+      "BUDGET_EXCEEDED": {
+        "enum": ["LANE_TIMEOUT"]
+      },
+      "INCONCLUSIVE": {
+        "enum": ["NO_MUTANTS", "CANARY_INCONCLUSIVE"]
+      }
+    },
+    "coverage": {
+      "$comment": "The R1 claim payload. P04 and P05 extend this object additively (files_missing_coverage, excluded, unclassified); keep it closed.",
+      "description": "`considered` is srdm's fix: an empty denominator must EXPLAIN itself rather than being textually identical to a broken measurement (A-026). '3 changed file(s) under the roots, none contributing executable non-test lines (0/0)' is a different sentence from '0/0 (100.0%)'.",
+      "type": "object",
+      "required": ["covered", "changed_executable", "pct", "considered"],
+      "properties": {
+        "covered": {"type": "integer", "minimum": 0},
+        "changed_executable": {"type": "integer", "minimum": 0},
+        "pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "considered": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "claim": {
+      "description": "The claim ENVELOPE (A-055), plus payload branches. `source` says which of the three evidence tiers produced it (A-032); `verified_by_assay` is FALSE for everything assay did not compute itself, and assay never upgrades an attestation (A-033).",
+      "type": "object",
+      "required": ["rigor", "source", "status", "verified_by_assay"],
+      "properties": {
+        "rigor": {"$ref": "#/$defs/rigor"},
+        "source": {"enum": ["computed", "adjudicated", "attested"]},
+        "status": {"$ref": "#/$defs/outcome"},
+        "verified_by_assay": {"type": "boolean"},
+        "reason_code": {"$ref": "#/$defs/reason_code"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "PASS"}}
+          },
+          "then": {"not": {"required": ["reason_code"]}}
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "FAIL"}}
+          },
+          "then": {
+            "required": ["reason_code"],
+            "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/FAIL"}}
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "ERROR"}}
+          },
+          "then": {
+            "required": ["reason_code"],
+            "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/ERROR"}}
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "NO_MEASUREMENT"}}
+          },
+          "then": {
+            "required": ["reason_code"],
+            "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/NO_MEASUREMENT"}}
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "BUDGET_EXCEEDED"}}
+          },
+          "then": {
+            "required": ["reason_code"],
+            "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/BUDGET_EXCEEDED"}}
+          }
+        },
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "INCONCLUSIVE"}}
+          },
+          "then": {
+            "required": ["reason_code"],
+            "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/INCONCLUSIVE"}}
+          }
+        },
+        {
+          "$comment": "A-033: assay cannot judge a review, so it never marks one verified. Laundering attested evidence as verified is worse than omitting it, because it is now on the record.",
+          "if": {
+            "required": ["source"],
+            "properties": {"source": {"const": "attested"}}
+          },
+          "then": {
+            "properties": {"verified_by_assay": {"const": false}}
+          }
+        },
+        {
+          "$comment": "PAYLOAD BRANCH -- R1 (coverage). This is the pattern P04/P05/P08/P10 extend. Because the claim is closed by unevaluatedProperties, `coverage` is accepted ONLY where this branch names it: a coverage block on an R0/R2/R3 claim is rejected with no rule written against it.",
+          "if": {
+            "required": ["rigor"],
+            "properties": {"rigor": {"const": "R1"}}
+          },
+          "then": {
+            "properties": {"coverage": {"$ref": "#/$defs/coverage"}}
+          }
+        },
+        {
+          "$comment": "A-025, at claim level. No percentage exists unless a measurement produced one; a zeroed block beside NO_MEASUREMENT rebuilds the exact ambiguity this project exists to remove, one layer up.",
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "NO_MEASUREMENT"}}
+          },
+          "then": {"not": {"required": ["coverage"]}}
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

@@ -1,0 +1,387 @@
+"""O4 — the claim envelope, and the two rules that make claims[] worth having.
+
+The negatives this defends: *"R2 was declared but rendered no judgement" becomes
+indistinguishable from "R2 was never declared" (A-024), or attested evidence can
+be marked verified, which is worse than omitting it because it is now on the
+record (A-033).*
+
+**The oracle is split, and deliberately so.** The rigor-coverage rule compares
+two locations inside one instance (`declared_rigor` against `claims[].rigor`),
+and JSON Schema draft 2020-12 has no way to express that — there is no `$data`
+and no cross-instance reference. The handoff's `escalate_if` names exactly this
+case, so it is reported rather than quietly weakened: the SCHEMA enforces the
+envelope shape and the attested implication; the MODEL enforces the coverage
+rule at construction. Both are asserted as rejections — `not is_valid` for the
+schema, `pytest.raises` for the model. Neither is ever asserted as "the model
+emits one claim per level", which is the acceptance test the escalate_if
+forbids.
+"""
+
+from __future__ import annotations
+
+import pytest
+from conftest import verdict_fixture, why_invalid
+from jsonschema import Draft202012Validator
+
+from assay.errors import Outcome, ReasonCode
+from assay.verdict import (
+    CLAIM_SOURCES,
+    ROLLUP_PRECEDENCE,
+    Claim,
+    Coverage,
+    Verdict,
+    rollup,
+)
+
+BASE = {
+    "lane": "package",
+    "commit": "a" * 40,
+    "started": "2026-08-06T09:00:00+00:00",
+    "ended": "2026-08-06T09:00:07+00:00",
+    "assay_version": "0.1.0",
+    "argv_declared": ("pytest", "-q"),
+    "argv_appended": (),
+    "argv_effective": ("pytest", "-q"),
+    "env_declared": {},
+    "env_effective": {},
+}
+
+
+def passing(rigor: str, source: str = "computed") -> Claim:
+    return Claim(
+        rigor=rigor,
+        source=source,
+        status=Outcome.PASS,
+        verified_by_assay=source == "computed",
+    )
+
+
+def claim_dict(**overrides) -> dict:
+    claim = {
+        "rigor": "R0",
+        "source": "computed",
+        "status": "PASS",
+        "verified_by_assay": True,
+    }
+    claim.update(overrides)
+    return claim
+
+
+def document_with(claims: list[dict]) -> dict:
+    document = verdict_fixture("PASS")
+    document["claims"] = claims
+    levels = sorted({claim["rigor"] for claim in claims if "rigor" in claim})
+    document["declared_rigor"] = levels or ["R0"]
+    return document
+
+
+# --- the envelope -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("source", CLAIM_SOURCES)
+def test_a_claim_envelope_validates_for_every_evidence_tier(
+    source: str, validator: Draft202012Validator
+):
+    """A-032's three tiers all have somewhere to live, from day one."""
+    claim = claim_dict(source=source, verified_by_assay=source != "attested")
+    assert why_invalid(validator, document_with([claim])) == []
+
+
+def test_the_three_tiers_are_exactly_the_declared_vocabulary():
+    assert CLAIM_SOURCES == ("computed", "adjudicated", "attested")
+
+
+@pytest.mark.parametrize(
+    "field", ["rigor", "source", "status", "verified_by_assay"]
+)
+def test_a_claim_missing_an_envelope_field_is_rejected(
+    field: str, validator: Draft202012Validator
+):
+    claim = claim_dict()
+    assert why_invalid(validator, document_with([claim])) == []
+
+    del claim[field]
+    messages = why_invalid(validator, document_with([claim]))
+    assert messages, f"a claim with no {field} was accepted"
+    assert any(field in message for message in messages), messages
+
+
+def test_an_unknown_claim_source_is_rejected(validator: Draft202012Validator):
+    assert why_invalid(validator, document_with([claim_dict()])) == []
+
+    assert not validator.is_valid(
+        document_with([claim_dict(source="llm-reviewed")])
+    )
+
+
+def test_an_unknown_claim_key_is_rejected(validator: Draft202012Validator):
+    """The additive-branch pattern: a payload is accepted only where a branch
+    names it. Nobody has to write a rule against `mutants_killed` for it to be
+    refused today — P10 adds the R2 branch that makes it legal."""
+    assert why_invalid(validator, document_with([claim_dict()])) == []
+
+    assert not validator.is_valid(
+        document_with([claim_dict(mutants_killed=7)])
+    )
+
+
+def test_an_unknown_rigor_level_is_rejected(validator: Draft202012Validator):
+    assert not validator.is_valid(document_with([claim_dict(rigor="R9")]))
+
+
+@pytest.mark.parametrize("rigor", ["R0", "R2", "R3"])
+def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
+    rigor: str, validator: Draft202012Validator
+):
+    """The pattern's teeth: `coverage` is legal in the R1 branch and nowhere
+    else, because the claim is closed by `unevaluatedProperties`."""
+    payload = {
+        "covered": 1,
+        "changed_executable": 1,
+        "pct": 100.0,
+        "considered": 1,
+    }
+    assert why_invalid(
+        validator, document_with([claim_dict(rigor="R1", coverage=payload)])
+    ) == [], "the identical payload on an R1 claim must be accepted"
+
+    assert not validator.is_valid(
+        document_with([claim_dict(rigor=rigor, coverage=payload)])
+    )
+
+
+# --- A-033: assay never marks an attestation verified -------------------------
+
+
+def test_an_attested_claim_marked_verified_is_rejected_by_the_schema(
+    validator: Draft202012Validator,
+):
+    honest = claim_dict(source="attested", verified_by_assay=False)
+    assert why_invalid(validator, document_with([honest])) == []
+
+    laundered = claim_dict(source="attested", verified_by_assay=True)
+    messages = why_invalid(validator, document_with([laundered]))
+    assert messages, "attested evidence was allowed onto the record as verified"
+
+
+def test_a_computed_claim_may_be_verified(validator: Draft202012Validator):
+    """Proves the rule above is about `attested`, not about `verified_by_assay`
+    being rejected everywhere — otherwise it would pass for the wrong reason."""
+    assert (
+        why_invalid(
+            validator,
+            document_with([claim_dict(source="computed", verified_by_assay=True)]),
+        )
+        == []
+    )
+
+
+def test_the_model_refuses_an_attested_claim_marked_verified():
+    Claim(
+        rigor="R3",
+        source="attested",
+        status=Outcome.PASS,
+        verified_by_assay=False,
+    )
+
+    with pytest.raises(ValueError, match="never upgrades an attestation"):
+        Claim(
+            rigor="R3",
+            source="attested",
+            status=Outcome.PASS,
+            verified_by_assay=True,
+        )
+
+
+def test_the_model_refuses_an_unknown_source():
+    with pytest.raises(ValueError, match="source must be one of"):
+        Claim(
+            rigor="R0",
+            source="reviewed-by-a-model",
+            status=Outcome.PASS,
+            verified_by_assay=False,
+        )
+
+
+def test_the_model_refuses_an_unknown_rigor_level():
+    with pytest.raises(ValueError, match="rigor must be one of"):
+        Claim(
+            rigor="R4", source="computed", status=Outcome.PASS, verified_by_assay=True
+        )
+
+
+@pytest.mark.parametrize("bogus", ["PASS", 1, None])
+def test_the_model_refuses_a_status_that_is_not_an_outcome(bogus):
+    with pytest.raises(ValueError, match="status must be an Outcome"):
+        Claim(
+            rigor="R0", source="computed", status=bogus, verified_by_assay=True
+        )
+
+
+def test_the_model_refuses_a_non_boolean_verified_flag():
+    with pytest.raises(ValueError, match="verified_by_assay must be a boolean"):
+        Claim(
+            rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay="yes"
+        )
+
+
+# --- A-024: the claims cover the declared rigor, exactly ----------------------
+#
+# The schema cannot express this. The model can, and does, at construction.
+
+
+def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
+    verdict = Verdict(
+        **BASE,
+        outcome=Outcome.PASS,
+        declared_rigor=("R0", "R1", "R2"),
+        claims=(passing("R0"), passing("R1"), passing("R2")),
+    )
+    assert [claim.rigor for claim in verdict.claims] == ["R0", "R1", "R2"]
+
+
+@pytest.mark.parametrize("missing", ["R0", "R1", "R2"])
+def test_the_model_refuses_a_verdict_that_renders_no_claim_for_a_declared_level(
+    missing: str,
+):
+    """'R2 was declared but rendered no judgement' must not be able to look like
+    'R2 was never declared'."""
+    declared = ("R0", "R1", "R2")
+    kept = tuple(passing(level) for level in declared if level != missing)
+
+    with pytest.raises(ValueError, match=f"no claim for {missing}"):
+        Verdict(**BASE, outcome=Outcome.PASS, declared_rigor=declared, claims=kept)
+
+
+def test_the_model_refuses_a_claim_for_a_level_the_lane_never_declared():
+    with pytest.raises(ValueError, match="never declared"):
+        Verdict(
+            **BASE,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0",),
+            claims=(passing("R0"), passing("R2")),
+        )
+
+
+def test_the_model_refuses_two_claims_for_one_level():
+    with pytest.raises(ValueError, match="more than one claim"):
+        Verdict(
+            **BASE,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0",),
+            claims=(passing("R0"), passing("R0")),
+        )
+
+
+def test_the_model_refuses_claims_when_no_lane_resolved():
+    """A claim without a declared rigor level is a claim about nothing."""
+    with pytest.raises(ValueError, match="no lane resolved"):
+        Verdict(
+            lane="package",
+            commit="a" * 40,
+            outcome=Outcome.PASS,
+            started="2026-08-06T09:00:00+00:00",
+            ended="2026-08-06T09:00:07+00:00",
+            assay_version="0.1.0",
+            claims=(passing("R0"),),
+        )
+
+
+def test_the_model_refuses_a_duplicated_declared_level():
+    with pytest.raises(ValueError, match="duplicate level"):
+        Verdict(
+            **BASE,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0", "R0"),
+            claims=(passing("R0"),),
+        )
+
+
+def test_the_model_refuses_an_unknown_declared_level():
+    with pytest.raises(ValueError, match="declared_rigor must contain only"):
+        Verdict(
+            **BASE,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0", "R7"),
+            claims=(passing("R0"),),
+        )
+
+
+def test_the_model_refuses_an_empty_declared_rigor():
+    with pytest.raises(ValueError, match="at least one rigor level"):
+        Verdict(**BASE, outcome=Outcome.PASS, declared_rigor=(), claims=())
+
+
+# --- A-023: rollup precedence -------------------------------------------------
+
+
+def test_the_precedence_is_the_declared_one():
+    assert [outcome.value for outcome in ROLLUP_PRECEDENCE] == [
+        "ERROR",
+        "NO_MEASUREMENT",
+        "BUDGET_EXCEEDED",
+        "FAIL",
+        "INCONCLUSIVE",
+    ]
+
+
+def test_pass_only_when_every_claim_passed():
+    assert rollup([Outcome.PASS, Outcome.PASS]) is Outcome.PASS
+    for outcome in ROLLUP_PRECEDENCE:
+        assert rollup([Outcome.PASS, outcome]) is outcome
+
+
+@pytest.mark.parametrize(
+    "statuses,expected",
+    [
+        ([Outcome.ERROR, Outcome.NO_MEASUREMENT], Outcome.ERROR),
+        ([Outcome.NO_MEASUREMENT, Outcome.BUDGET_EXCEEDED], Outcome.NO_MEASUREMENT),
+        ([Outcome.BUDGET_EXCEEDED, Outcome.FAIL], Outcome.BUDGET_EXCEEDED),
+        ([Outcome.FAIL, Outcome.INCONCLUSIVE], Outcome.FAIL),
+        ([Outcome.INCONCLUSIVE, Outcome.PASS], Outcome.INCONCLUSIVE),
+        ([Outcome.ERROR, Outcome.FAIL, Outcome.PASS], Outcome.ERROR),
+    ],
+)
+def test_every_adjacent_precedence_pair_resolves_the_declared_way(
+    statuses, expected
+):
+    assert rollup(statuses) is expected
+    assert rollup(list(reversed(statuses))) is expected, "order must not matter"
+
+
+def test_a_rollup_over_no_claims_is_not_a_pass():
+    """Returning PASS on an empty set would be a laundering default."""
+    with pytest.raises(ValueError, match="not a PASS"):
+        rollup([])
+
+
+def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
+    claims = (
+        passing("R0"),
+        Claim(
+            rigor="R1",
+            source="computed",
+            status=Outcome.FAIL,
+            verified_by_assay=True,
+            reason_code=ReasonCode.UNCOVERED_LINES,
+            coverage=Coverage(
+                covered=1, changed_executable=2, pct=50.0, considered=1
+            ),
+        ),
+    )
+    # The honest form builds.
+    Verdict(
+        **BASE,
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.UNCOVERED_LINES,
+        declared_rigor=("R0", "R1"),
+        claims=claims,
+    )
+
+    with pytest.raises(ValueError, match="disagrees with the rollup"):
+        Verdict(
+            **BASE,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0", "R1"),
+            claims=claims,
+        )

@@ -28,6 +28,15 @@ from .config import (
     parse_duration,
 )
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
+from .verdict import (
+    VERDICT_SCHEMA_VERSION,
+    Claim,
+    Coverage,
+    Verdict,
+    iso_utc,
+    load_schema,
+    rollup,
+)
 
 try:
     __version__ = version("assay")
@@ -36,6 +45,8 @@ except PackageNotFoundError:  # running from a source tree with no install
 
 __all__ = [
     "AssayError",
+    "Claim",
+    "Coverage",
     "CoverageConfig",
     "JudgeConfig",
     "Lane",
@@ -43,8 +54,13 @@ __all__ = [
     "LaneFile",
     "Outcome",
     "ReasonCode",
+    "VERDICT_SCHEMA_VERSION",
+    "Verdict",
     "__version__",
     "find_lane_file",
+    "iso_utc",
     "load_lane_file",
+    "load_schema",
     "parse_duration",
+    "rollup",
 ]

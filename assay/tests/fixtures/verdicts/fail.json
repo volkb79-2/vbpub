@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "2222222222222222222222222222222222222222",
+  "outcome": "FAIL",
+  "reason_code": "UNCOVERED_LINES",
+  "exit_code": 1,
+  "started": "2026-08-06T09:10:00+00:00",
+  "ended": "2026-08-06T09:10:31+00:00",
+  "declared_rigor": ["R0", "R1", "R3"],
+  "argv_declared": ["pytest", "tests", "-q"],
+  "argv_appended": ["-k", "not slow"],
+  "argv_effective": ["pytest", "tests", "-q", "-k", "not slow"],
+  "argv_modified": true,
+  "env_declared": {"TZ": "UTC"},
+  "env_effective": {"TZ": "UTC", "PATH": "/usr/bin"},
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "UNCOVERED_LINES",
+      "coverage": {
+        "covered": 2,
+        "changed_executable": 3,
+        "pct": 66.67,
+        "considered": 1
+      }
+    },
+    {
+      "rigor": "R3",
+      "source": "attested",
+      "status": "PASS",
+      "verified_by_assay": false
+    }
+  ]
+}
