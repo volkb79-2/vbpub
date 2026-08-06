@@ -24,16 +24,14 @@ make room; that deletes the guard.
 **Absent means unknowable; empty means known-and-empty.** `coverage` is omitted
 under `NO_MEASUREMENT` because a number that is not a measurement gets read as
 one (A-025). `argv_declared = []` where no lane loaded asserts *"the lane
-declared no argv"*, which is false — so the lane-resolved group
-(`declared_rigor`, three `argv_*`, `argv_modified`, two `env_*`) is all-present
-or all-absent. Ask the question before you emit a zero.
+declared no argv"*, which is false — so the lane-resolved group is all-present
+or all-absent. Ask which one you have before emitting a zero.
 
 **Two invariants are the MODEL's, because draft 2020-12 cannot compare two
-locations in one instance** (there is no `$data`): that `claims` covers
-`declared_rigor` exactly, and that `argv_effective` is
-`argv_declared + argv_appended`. Need a third? Put it in `__post_init__` and
-assert it with `pytest.raises`. Do not fake it in the schema, and do not soften
-it into "the model emits the right thing".
+locations in one instance** (no `$data`): `claims` covers `declared_rigor`
+exactly, and `argv_effective` is `argv_declared + argv_appended`. Need a third?
+Put it in `__post_init__` and assert it with `pytest.raises` — never faked in
+the schema, never softened into "the model emits the right thing".
 
 ## Traps
 
@@ -46,10 +44,10 @@ it into "the model emits the right thing".
 * **Hand-edited mutations have no `drop_key` safety net.** My `replace_all` hit
   one of two sites (different indentation) and I nearly logged **1 failed**
   where the truth was **5**. `grep -c` the mutant before trusting a count.
-* The `standalone` fixture (wheel build + offline install) is now in
-  `conftest.py`, session-scoped. Reuse it; do not copy it.
+* The `standalone` fixture (wheel build + offline install) is now session-scoped
+  in `conftest.py`. Reuse it; do not copy it.
 * `tests/fixtures/verdicts/` is the independent oracle (A-041). Add a field and
-  you update all six by hand. That is the cost, and it is the point.
+  you update all six by hand. That is the point, not the cost.
 
 ## Spec ambiguities I had to interpret
 
