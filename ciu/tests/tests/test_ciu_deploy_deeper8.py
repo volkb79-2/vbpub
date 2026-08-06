@@ -25,9 +25,10 @@ def test_build_defaults_to_all_and_reports_success_when_bake_succeeds(monkeypatc
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(deploy.procutil, "docker", successful_docker)
+    monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
 
     assert deploy.action_build(tmp_path, [], use_cache=True) == 0
-    assert commands == [["buildx", "bake", "all", "--load"]]
+    assert commands == [["buildx", "bake", "all", "--load", "--set", "*.labels.org.opencontainers.image.revision=abc12345"]]
     assert "build complete" in capsys.readouterr().out
 
 

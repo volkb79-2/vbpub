@@ -328,9 +328,13 @@ class TestLocalCliDispatch:
     def test_bake_constructs_default_and_no_cache_argv(self, monkeypatch):
         seen = []
         monkeypatch.setattr(cli.subprocess, "call", lambda argv: seen.append(argv) or 3)
+        # Pin the revision so the provenance label is deterministic here.
+        import ciu.engine as _engine
+        monkeypatch.setattr(_engine, "get_git_hash", lambda: "abc12345")
 
         assert self._run(monkeypatch, ["bake", "--no-cache"]) == 3
-        assert seen == [["docker", "buildx", "bake", "all", "--load", "--no-cache"]]
+        assert seen == [["docker", "buildx", "bake", "all", "--load",
+                         "--set", "*.labels.org.opencontainers.image.revision=abc12345", "--no-cache"]]
 
     @pytest.mark.parametrize(
         ("verb", "rest", "expected"),

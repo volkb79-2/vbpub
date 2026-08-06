@@ -1600,6 +1600,9 @@ def action_build(repo_root: Path, selection: list[dict], *, use_cache: bool) -> 
     info("=" * 60)
     targets = collect_bake_targets_from_selection(selection)
     cmd = ["buildx", "bake", *(targets or ["all"]), "--load"]
+    # Provenance: stamp the source revision so a running container can be traced
+    # back to the commit it was built from (engine.bake_revision_args).
+    cmd += engine.bake_revision_args()
     if not use_cache:
         cmd.append("--no-cache")
     info(f"Running: docker {' '.join(cmd)}")

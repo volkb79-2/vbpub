@@ -551,9 +551,13 @@ def main() -> None:
         raise SystemExit(diagnose_run(project=opts.project, log_lines=opts.logs, json_output=opts.json_output))
 
     elif verb == "bake":
+        from .engine import bake_revision_args
         no_cache = "--no-cache" in rest
         targets = [a for a in rest if a != "--no-cache"]
         cmd = ["docker", "buildx", "bake"] + (targets or ["all"]) + ["--load"]
+        # Provenance: stamp the source revision so a running container can be
+        # traced back to the commit it was built from (engine.bake_revision_args).
+        cmd += bake_revision_args()
         if no_cache:
             cmd.append("--no-cache")
         raise SystemExit(subprocess.call(cmd))

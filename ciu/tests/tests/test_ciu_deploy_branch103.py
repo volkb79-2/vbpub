@@ -59,6 +59,35 @@ def test_git_hash_reports_clean_and_dirty_repository_state(monkeypatch) -> None:
     assert engine.get_git_hash() == "abc12345-dirty"
 
 
+def test_bake_revision_args_stamp_the_label_and_carry_the_dirty_suffix(monkeypatch) -> None:
+    """Provenance: a baked image names the commit it came from.
+
+    The `-dirty` suffix must survive into the label. A dirty build that stamped
+    a clean commit would be a MORE convincing version of the "which artifact did
+    this result test?" problem, not a fix for it.
+    """
+    monkeypatch.setattr(engine, "get_git_hash", lambda: "abc12345")
+    assert engine.bake_revision_args() == [
+        "--set", "*.labels.org.opencontainers.image.revision=abc12345",
+    ]
+
+    monkeypatch.setattr(engine, "get_git_hash", lambda: "abc12345-dirty")
+    assert engine.bake_revision_args() == [
+        "--set", "*.labels.org.opencontainers.image.revision=abc12345-dirty",
+    ]
+
+
+def test_bake_revision_args_stamp_nothing_when_the_revision_is_unknown(monkeypatch) -> None:
+    """No git (get_git_hash() -> "dev") must stamp NOTHING, not `revision=dev`.
+
+    A label reading "dev" looks like an answer and would be trusted as one; an
+    absent label is honestly absent. Also keeps a non-git checkout baking with a
+    byte-identical command to before this feature existed.
+    """
+    monkeypatch.setattr(engine, "get_git_hash", lambda: "dev")
+    assert engine.bake_revision_args() == []
+
+
 def test_vault_preflight_keeps_earliest_secret_phase(monkeypatch, tmp_path: Path) -> None:
     profile = _profile(
         {"phase_2": {"services": []}},

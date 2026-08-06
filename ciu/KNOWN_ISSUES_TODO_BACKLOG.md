@@ -49,6 +49,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-15 | CIU-14's own fix stats the **physical** (Docker-daemon) path to prove the shim exists. That path is by definition not resolvable from inside a devcontainer, so `ciu up` fails `[S15.11] ... not an existing file` on **every** DooD render even with the shim present — an unconditional fail-closed in exactly the environment the check protects | High | FIXED |
 | CIU-16 | `ciu version` is not a verb (only `ciu --version`), inconsistent with the estate's other CLIs | Low | FIXED |
 | CIU-17 | No CLI-level `--ksm` / `--no-ksm` override for an ad-hoc run; toggling KSM requires editing `governance.ksm_optin` in the TOML layer. Raised alongside CIU-14 and explicitly ruled out of its scope as a convenience feature, then never filed on its own | Low | OPEN |
+| CIU-18 | Image provenance is STAMPED but not ENFORCED. `bake` now sets `org.opencontainers.image.revision` (with a `-dirty` suffix) on every baked image, so a container can be traced to its commit — but nothing yet REFUSES to run a live/integration lane against an image whose label does not match the commit under test. Until it does, a live result can still silently describe an unknown artifact, which the consuming project's own policy (dstdns AGENTS.md §4.1a) already calls a defect. Needs the `ciu test` surface sketched in `docs/DESIGN-NOTES.md` D7 | Medium | OPEN |
 
 ## Resolved / not-a-gap
 

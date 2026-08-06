@@ -198,6 +198,36 @@ def get_git_hash() -> str:
         return "dev"
 
 
+IMAGE_REVISION_LABEL = "org.opencontainers.image.revision"
+
+
+def bake_revision_args() -> list[str]:
+    """``docker buildx bake --set`` args stamping the source revision onto every
+    baked image.
+
+    WHY: without it, a running container cannot be traced back to the commit it
+    was built from, so any live/e2e/integration result is evidence about an
+    UNKNOWN artifact — the result reads as a fact about the code when it is
+    really a fact about whatever image happened to be deployed. Stamping is the
+    cheap half; a deploy- or test-time check comparing this label against the
+    commit under test is the half that makes it enforceable (see
+    docs/DESIGN-NOTES.md D7, "a provenance precondition").
+
+    ``get_git_hash()`` already appends ``-dirty`` for an unclean tree, and that
+    suffix is the load-bearing part: a dirty build must never claim a clean
+    commit, or the label becomes a more convincing version of the same lie.
+
+    Returns ``[]`` when the revision is unknown (``"dev"`` — no git, or git
+    unavailable), so a non-git checkout bakes exactly as before. Stamping
+    ``revision=dev`` would be worse than stamping nothing: it looks like an
+    answer.
+    """
+    rev = get_git_hash()
+    if rev == "dev":
+        return []
+    return ["--set", f"*.labels.{IMAGE_REVISION_LABEL}={rev}"]
+
+
 def get_timestamp() -> str:
     """Return the current timestamp in ISO 8601 format (UTC)."""
     from datetime import datetime, timezone

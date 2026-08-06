@@ -58,12 +58,14 @@ def test_bake_without_no_cache_omits_flag_and_propagates_exit(monkeypatch: pytes
     captured: list[list[str]] = []
     monkeypatch.setattr(cli.subprocess, "call", lambda argv: captured.append(argv) or 9)
     monkeypatch.setattr(sys, "argv", ["ciu", "bake", "api"])
+    import ciu.engine as _engine
+    monkeypatch.setattr(_engine, "get_git_hash", lambda: "abc12345")
 
     with pytest.raises(SystemExit) as raised:
         cli.main()
 
     assert raised.value.code == 9
-    assert captured == [["docker", "buildx", "bake", "api", "--load"]]
+    assert captured == [["docker", "buildx", "bake", "api", "--load", "--set", "*.labels.org.opencontainers.image.revision=abc12345"]]
 
 
 def test_registry_ignores_scalar_auth_entry_but_honors_credential_helper(tmp_path: Path) -> None:

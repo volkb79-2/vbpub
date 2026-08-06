@@ -160,6 +160,7 @@ def test_build_uses_selected_application_targets_and_propagates_docker_failure(m
         return subprocess.CompletedProcess(cmd, 1, "", "build failed")
 
     monkeypatch.setattr(deploy.procutil, "docker", failed_docker)
+    monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
     assert deploy.action_build(
         tmp_path,
         [
@@ -169,7 +170,8 @@ def test_build_uses_selected_application_targets_and_propagates_docker_failure(m
         ],
         use_cache=False,
     ) == 1
-    assert commands == [["buildx", "bake", "admin", "api", "--load", "--no-cache"]]
+    assert commands == [["buildx", "bake", "admin", "api", "--load",
+                         "--set", "*.labels.org.opencontainers.image.revision=abc12345", "--no-cache"]]
 
 
 def test_list_actions_report_enabled_services_and_profile_details(capsys):
