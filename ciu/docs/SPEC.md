@@ -1574,16 +1574,51 @@ express. An unknown strategy is a hard error, never a silent fallback to the
 default — `ksm = "wraper"` quietly yielding preload is exactly the
 silent-wrong-answer this layer exists to prevent.
 
-**`wrapper` is measured, functional, and deliberately NOT accepted yet.** An
-exec-wrapper (`prctl(PR_SET_MEMORY_MERGE)` then `execve`, which the flag
-survives) reaches statically-linked binaries that `LD_PRELOAD` cannot. Measured
-at ~20 min settle it earns **~3.8 MiB per otel container** — real, and two orders
-of magnitude below what a single JVM heap setting recovered on the same estate.
-Measurement also showed `LD_PRELOAD`'s reach is far wider than assumed: one
-dynamically-linked process anywhere in the startup chain opts in and every static
-binary it later `exec`s inherits the flag, so consul/vault/minio are already
-covered and otel is the only true gap. Accepting a value that silently did
-nothing would be worse than not offering it. Full data: dstdns
+### S15.20 — The exec-wrapper (`ksm = "wrapper"`)
+
+`LD_PRELOAD` needs a dynamic loader in the target, so it cannot reach a
+statically-linked binary. The exec-wrapper can: it calls
+`prctl(PR_SET_MEMORY_MERGE)` and then `execve`s the real program, and the flag
+**survives `execve`** (measured) — so the workload runs opted in whatever its
+linkage.
+
+CIU ships the wrapper SOURCE and builds it on demand into `.ciu/ksm/`, with the
+same arch+digest cache keying and verify-before-use rules as the shim (S15.17).
+One difference: the wrapper may link libc freely. The shim's zero-`DT_NEEDED`
+rule exists because it must load inside *another process* under either libc; the
+wrapper only has to RUN.
+
+**Wrapping means RE-STATING the original entrypoint.** Compose's `entrypoint:`
+REPLACES the image's ENTRYPOINT — there is no prepend directive. Measured:
+`[wrapper]` alone works only for an image that declares no ENTRYPOINT (its CMD
+then flows through as arguments); for an image that declares one it fails
+outright, `execvp` on the first CMD token, because CMD is arguments and not a
+program. `[wrapper, *original]` works in both cases and is what CIU emits.
+
+CIU discovers the original with `docker image inspect`. An image it cannot
+inspect is a **refusal**, never a guess: re-stating an entrypoint we could not
+read would either drop the original (the container never starts) or invent one.
+A memory optimisation must never risk that.
+
+**Drift.** Re-stating FREEZES the entrypoint into rendered compose, so an image
+later rebuilt with a different one leaves the deployed container invoking the
+OLD command — silently. CIU records an entrypoint fingerprint at render and
+`check_entrypoint_drift` compares it, reporting drift AND reporting an
+uninspectable image as unverified rather than unchanged (the CIU-15 lesson).
+Known limit, stated because it is otherwise invisible: the comparison is of the
+entrypoint ARRAY only, so `["/entrypoint.sh"]` whose *script contents* change is
+byte-identical here and is not detected.
+
+**`wrapper` is opt-in per service and is never a default.** `preload` is
+additive (an env var and a read-only bind) and inert when it does not apply, so
+its failure mode is "no benefit"; `wrapper` replaces the entrypoint, so its
+failure mode is "the container does not start". Choose it by MEASURING
+`ksm_merge_any` on the workload PID — not by guessing which images are static.
+Measurement on one estate found `LD_PRELOAD`'s reach far wider than assumed
+(one dynamically-linked process anywhere in the startup chain opts in and every
+static binary it later `exec`s inherits the flag), so few services need it
+there. That is an estate fact, not a CIU one: a consumer whose images are
+static-only has no other way to opt in. Full data: dstdns
 `docs/KSM-OPTIN-MEASUREMENTS.md`; design discussion: `docs/DESIGN-NOTES.md` D8.
 
 ### S15.12 — Named-slice existence preflight (D-G9 check 1)

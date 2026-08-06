@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import deploy, governance  # noqa: E402
+from ciu import deploy, governance, ksm  # noqa: E402
 
 REV_LABEL = "org.opencontainers.image.revision"
 
@@ -182,13 +182,85 @@ class TestMemoryProfile:
         with pytest.raises(ValueError, match=r"unknown ksm strategy"):
             governance.resolve_service_ksm(cfg, "x")
 
-    def test_wrapper_is_rejected_until_it_is_actually_implemented(self):
-        """`wrapper` is measured and functional (~3.8 MiB per otel container) but
-        NOT wired. Accepting a value that silently does nothing would be worse
-        than not offering it — the operator would believe KSM was on."""
+    def test_wrapper_is_an_accepted_strategy(self):
+        """S15.20. `wrapper` is a generic CIU capability, not a dstdns feature:
+        a consumer whose images are static-only has no other way to opt in."""
         cfg = {"memory_profile": {"services": {"otel": {"ksm": "wrapper"}}}}
-        with pytest.raises(ValueError, match=r"unknown ksm strategy"):
-            governance.resolve_service_ksm(cfg, "otel")
+        assert governance.resolve_service_ksm(cfg, "otel") == "wrapper"
+
+    def test_wrapper_is_never_the_implicit_default(self):
+        """It REPLACES the image's entrypoint — destructive if wrong, where
+        preload is additive and inert. It must always be asked for."""
+        assert governance.resolve_service_ksm({}, "anything") == "preload"
+        cfg = {"memory_profile": {"default": {}, "services": {"x": {}}}}
+        assert governance.resolve_service_ksm(cfg, "x") == "preload"
+
+
+class TestExecWrapperEntrypoint:
+    """S15.20 — wrapping means RE-STATING the original entrypoint, because
+    compose's `entrypoint:` replaces rather than prepends."""
+
+    def _inspect(self, payload, rc=0):
+        def fake(cmd, **_kw):
+            return subprocess.CompletedProcess(cmd, rc, payload, "")
+        return fake
+
+    def test_null_entrypoint_reads_as_empty_not_unknown(self, monkeypatch):
+        """An image with no ENTRYPOINT is the EASY wrapping case; it must not be
+        confused with 'could not inspect', which demands the opposite action."""
+        monkeypatch.setattr(ksm.subprocess, "run", self._inspect("null\n"))
+        assert ksm.image_entrypoint("img") == []
+        assert ksm.wrapper_entrypoint("img") == [ksm.WRAPPER_TARGET]
+
+    def test_real_entrypoint_is_restated_after_the_wrapper(self, monkeypatch):
+        """Measured: [wrapper] alone FAILS here (execvp on the first CMD token —
+        CMD is arguments, not a program); [wrapper, *original] works."""
+        monkeypatch.setattr(ksm.subprocess, "run",
+                            self._inspect('["docker-entrypoint.sh"]\n'))
+        assert ksm.wrapper_entrypoint("vault") == [
+            ksm.WRAPPER_TARGET, "docker-entrypoint.sh",
+        ]
+
+    def test_uninspectable_image_REFUSES_rather_than_guessing(self, monkeypatch):
+        """Guessing would either drop the original (container never starts) or
+        invent one. A memory optimisation must never risk either."""
+        monkeypatch.setattr(ksm.subprocess, "run", self._inspect("", rc=1))
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot read the ENTRYPOINT"):
+            ksm.wrapper_entrypoint("missing:tag")
+
+
+class TestEntrypointDrift:
+    """Wrapping FREEZES the entrypoint into rendered compose; drift makes the
+    deployed container run the OLD command, silently."""
+
+    def _inspect(self, payload, rc=0):
+        def fake(cmd, **_kw):
+            return subprocess.CompletedProcess(cmd, rc, payload, "")
+        return fake
+
+    def test_unchanged_entrypoint_passes(self, monkeypatch):
+        monkeypatch.setattr(ksm.subprocess, "run", self._inspect('["a","b"]\n'))
+        recorded = ksm.entrypoint_fingerprint("img")
+        ok, _ = ksm.check_entrypoint_drift("img", recorded)
+        assert ok
+
+    def test_changed_entrypoint_is_CAUGHT(self, monkeypatch):
+        monkeypatch.setattr(ksm.subprocess, "run", self._inspect('["a","b"]\n'))
+        recorded = ksm.entrypoint_fingerprint("img")
+        monkeypatch.setattr(ksm.subprocess, "run",
+                            self._inspect('["tini","--","a","b"]\n'))
+        ok, msg = ksm.check_entrypoint_drift("img", recorded)
+        assert not ok and "DRIFT" in msg
+
+    def test_uninspectable_is_NOT_reported_as_unchanged(self, monkeypatch):
+        """CIU-15's lesson: an unverifiable claim must never read as verified."""
+        monkeypatch.setattr(ksm.subprocess, "run", self._inspect("", rc=1))
+        ok, msg = ksm.check_entrypoint_drift("img", '["a"]')
+        assert not ok and "cannot inspect" in msg
+
+    def test_no_recorded_value_is_not_a_drift_verdict(self, monkeypatch):
+        ok, _ = ksm.check_entrypoint_drift("img", "")
+        assert ok
 
     def test_ksm_off_suppresses_injection_without_exempting_all_governance(self):
         """The finer-grained control `exempt_services` could never express:

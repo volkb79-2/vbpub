@@ -119,11 +119,9 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # service from ALL governance injection; `ksm = "off"` exempts it from KSM
     # alone, which is the finer-grained thing people actually wanted).
     #
-    # "wrapper" is deliberately NOT an accepted value yet — see S15.19's note
-    # and the measurements: it works, and it earns ~3.8 MiB per otel container,
-    # which is two orders of magnitude below what a single JVM heap setting
-    # recovered on this estate. Accepting a value that silently does nothing
-    # would be worse than not offering it.
+    # Strategies: preload (default, additive) | wrapper (S15.20, reaches static
+    # binaries by replacing the entrypoint — opt-in, never defaulted) | off
+    # (passthrough).
     "memory_profile": {},
     # S15.16 — declared memory FLOOR (cgroup-v2 `memory.min`-equivalent), a
     # Docker size string ("2g", "512m") or "" (not declared). There is no
@@ -159,12 +157,21 @@ BUILTIN_KSM = "builtin"
 # is ONE resolution point for both surfaces instead of two that can disagree.
 KSM_ENV_VAR = "CIU_KSM"
 
-# S15.19 — accepted `memory_profile.*.ksm` strategies. "wrapper" is measured and
-# works but is NOT accepted yet (see GOVERNANCE_DEFAULTS["memory_profile"]);
-# an unknown value is a hard error rather than a silent fallback to the default,
-# because "I typed `wraper` and got no KSM and no message" is precisely the
-# silent-wrong-answer this whole config layer exists to prevent.
-KSM_STRATEGIES = ("preload", "off")
+# S15.19 — accepted `memory_profile.*.ksm` strategies. An unknown value is a
+# hard error rather than a silent fallback to the default, because "I typed
+# `wraper` and got no KSM and no message" is precisely the silent-wrong-answer
+# this whole config layer exists to prevent.
+#
+#   preload — LD_PRELOAD the shim (S15.11). ADDITIVE: an env var and a
+#             read-only bind. If it does not apply it is inert, so its failure
+#             mode is "no benefit". The correct default.
+#   wrapper — run the image under the exec-wrapper (S15.20). Reaches
+#             statically-linked binaries preload cannot, at the cost of
+#             REPLACING the image's entrypoint: destructive if wrong, so it is
+#             opt-in per service and never a default.
+#   off     — passthrough; CIU injects nothing (it cannot un-opt-in a process
+#             the image opted in itself — see S15.18).
+KSM_STRATEGIES = ("preload", "wrapper", "off")
 
 
 def resolve_service_ksm(config: Mapping[str, Any], service_name: str) -> str:
@@ -200,9 +207,7 @@ def resolve_service_ksm(config: Mapping[str, Any], service_name: str) -> str:
     if value not in KSM_STRATEGIES:
         raise ValueError(
             f"[S15.19] unknown ksm strategy {value!r} for service "
-            f"{service_name!r}; accepted: {', '.join(KSM_STRATEGIES)}. "
-            "('wrapper' is measured and functional but not yet accepted — see "
-            "SPEC S15.19.)"
+            f"{service_name!r}; accepted: {', '.join(KSM_STRATEGIES)}"
         )
     return value
 
