@@ -854,6 +854,26 @@ def generate_overlay(
             for service_name in _configfile_mount_services(mount.service, compose_services):
                 seen_dirs.setdefault((service_name, target_dir), staging_dir)
         for (service_name, target_dir), staging_dir in seen_dirs.items():
+            # CIU-15 audit: the paragraph above argues this directory always
+            # exists (render_configfiles creates it unconditionally first). That
+            # is an invariant held by ARGUMENT; assert it, because the failure it
+            # guards is silent — Docker auto-creates a missing bind source rather
+            # than refusing, so a broken invariant would surface as a container
+            # with an empty config directory, not as an error here.
+            #
+            # Checked on the LOGICAL path, never on `phys`: `phys` addresses the
+            # Docker daemon's namespace and is not resolvable from inside a
+            # devcontainer, so stat-ing it would fail unconditionally in DooD —
+            # that is exactly the CIU-15 defect, and it is easy to reintroduce
+            # here by "improving" this check to use the physical path.
+            if not staging_dir.is_dir():
+                raise ValueError(
+                    f"[S3] configfile staging directory does not exist: "
+                    f"{staging_dir} (for service {service_name!r}, target "
+                    f"{target_dir}). render_configfiles should have created it; "
+                    "refusing to emit a bind mount Docker would silently "
+                    "materialise as an empty directory."
+                )
             phys = to_physical_path(
                 staging_dir, repo_root=repo_root, physical_root=physical_root
             )
