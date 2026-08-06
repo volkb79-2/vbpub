@@ -149,7 +149,14 @@ class TestOverlayAndEnvironmentBoundaries:
     def test_ksm_governance_resolves_relative_shim_to_physical_overlay_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """S15.11 keeps a repo-relative shim a physical Docker bind source."""
+        """S15.11 keeps a repo-relative shim a physical Docker bind source.
+
+        CIU-15: the shim is created ONLY at the logical path. It used to be
+        created at the physical path too, which manufactured a world where the
+        Docker daemon's view happens to be locally stat-able — true on a native
+        host, never true in a devcontainer. That population hid CIU-14's
+        existence check stat-ing the wrong one of the two.
+        """
         repo = tmp_path / "logical"
         physical = tmp_path / "physical"
         repo.mkdir()
@@ -159,9 +166,7 @@ class TestOverlayAndEnvironmentBoundaries:
         shim = repo / "hooks" / "ksm-optin.so"
         shim.parent.mkdir()
         shim.write_bytes(b"not-loaded-by-test")
-        physical_shim = physical / "hooks" / "ksm-optin.so"
-        physical_shim.parent.mkdir()
-        physical_shim.write_bytes(b"not-loaded-by-test")
+        assert not (physical / "hooks" / "ksm-optin.so").exists()
         monkeypatch.setattr(governance_mod, "detect_device", lambda: "")
         overlay = generate_overlay(
             stack, {}, [],
@@ -169,6 +174,46 @@ class TestOverlayAndEnvironmentBoundaries:
             governance={"enabled": True, "ksm_optin": "hooks/ksm-optin.so", "cgroup_parent": "dev-background.slice"},
             repo_root=repo, physical_root=physical,
         )
+        assert overlay is not None
+        rendered = overlay.read_text(encoding="utf-8")
+        assert str(physical / "hooks" / "ksm-optin.so") in rendered
+        assert "LD_PRELOAD=/opt/ksm/ksm-optin.so" in rendered
+
+    def test_ksm_governance_accepts_shim_unreachable_at_the_physical_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CIU-15 — the devcontainer shape: physical_root is NOT locally real.
+
+        In a devcontainer, PHYSICAL_REPO_ROOT names a host directory that does
+        not exist inside the container at all (not merely a sibling tmp dir).
+        CIU-14's existence check stat-ed the physical path, so `ciu up` raised
+        '[S15.11] ... not an existing file' on every devcontainer render even
+        with the shim present — an unconditional fail-closed in exactly the
+        environment the check protects. Existence must be read on the logical
+        path; the physical one is only ever a bind SOURCE.
+        """
+        repo = tmp_path / "logical"
+        repo.mkdir()
+        stack = repo / "stack"
+        stack.mkdir()
+        shim = repo / "hooks" / "ksm-optin.so"
+        shim.parent.mkdir()
+        shim.write_bytes(b"not-loaded-by-test")
+        physical = Path("/nonexistent-host-root/dstdns")
+        assert not physical.exists()
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "")
+
+        overlay = generate_overlay(
+            stack, {}, [],
+            compose_yaml_text="services:\n  api: {image: example}\n",
+            governance={
+                "enabled": True,
+                "ksm_optin": "hooks/ksm-optin.so",
+                "cgroup_parent": "dev-background.slice",
+            },
+            repo_root=repo, physical_root=physical,
+        )
+
         assert overlay is not None
         rendered = overlay.read_text(encoding="utf-8")
         assert str(physical / "hooks" / "ksm-optin.so") in rendered

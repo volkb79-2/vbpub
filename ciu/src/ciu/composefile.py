@@ -787,11 +787,22 @@ def generate_overlay(
                 physical_ksm_path = to_physical_path(
                     ksm_path, repo_root=repo_root, physical_root=physical_root
                 )
-                if not physical_ksm_path.is_file():
+                # CIU-15: existence is checked on the LOGICAL path, never the
+                # physical one. The physical path is the DOCKER DAEMON's view of
+                # the file (S1.3/S1.4); inside a devcontainer it is by definition
+                # not resolvable locally, so stat-ing it here fails 100% of the
+                # time in precisely the environment this check exists to protect
+                # — turning CIU-14's fail-open into an unconditional fail-closed.
+                # Both names refer to the same file, and the logical one is the
+                # one the operator can actually act on. An external absolute
+                # path passes through to_physical_path unchanged (S1.4), so
+                # logical == physical there and this remains correct.
+                if not ksm_path.is_file():
                     raise ValueError(
                         "[S15.11] governance.ksm_optin is configured as "
                         f"{ksm_rel!r}, but the resolved shim is not an existing "
-                        f"file: {physical_ksm_path}. Build or restore the shim, "
+                        f"file: {ksm_path} (bind source would be "
+                        f"{physical_ksm_path}). Build or restore the shim, "
                         "or set governance.ksm_optin = \"\" to disable KSM opt-in."
                     )
                 gov_cfg["_ksm_optin_source"] = str(physical_ksm_path)

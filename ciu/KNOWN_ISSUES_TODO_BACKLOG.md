@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-05 (CIU-14 filed).
+Last updated: 2026-08-06 (CIU-15 filed + fixed; CIU-16/CIU-17 filed).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -46,6 +46,9 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-11 | `standalone_root` (S1.2) guard did not fire on `ciu render`: `deploy.py` detected the standalone root from the already-resolved `repo_root` (the contaminated value) instead of the invocation dir, so `ciu render` from a sibling repo with a stale `$REPO_ROOT` rendered the *other* repo's stacks silently; `ciu up` (engine) checked `working_dir` and was correct. Fixed by a shared `enforce_standalone_root(invocation_dir)` helper both paths call. | High | FIXED |
 | CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | FIXED |
 | CIU-14 | `governance.ksm_optin` bind-mounts the configured shim path unconditionally, with no existence check — a missing source file silently phantom-mounts an empty directory instead of failing, so KSM opt-in contributes zero savings with no error surfaced anywhere but container-internal `ld.so` stderr | Medium | FIXED |
+| CIU-15 | CIU-14's own fix stats the **physical** (Docker-daemon) path to prove the shim exists. That path is by definition not resolvable from inside a devcontainer, so `ciu up` fails `[S15.11] ... not an existing file` on **every** DooD render even with the shim present — an unconditional fail-closed in exactly the environment the check protects | High | FIXED |
+| CIU-16 | `ciu version` is not a verb (only `ciu --version`), inconsistent with the estate's other CLIs | Low | OPEN |
+| CIU-17 | No CLI-level `--ksm` / `--no-ksm` override for an ad-hoc run; toggling KSM requires editing `governance.ksm_optin` in the TOML layer. Raised alongside CIU-14 and explicitly ruled out of its scope as a convenience feature, then never filed on its own | Low | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -517,3 +520,69 @@ Regression coverage verifies relative logical-to-physical paths, valid absolute
 paths, and rejection before an overlay is written. The normative contract is
 documented in `docs/SPEC.md` S15.11 and the user-facing configuration/feature
 docs.
+
+**Superseded in part by CIU-15 below**: that regression coverage was written
+over a population in which the physical path was always locally stat-able, so
+it could not see that the check stats the wrong one of the two paths.
+
+---
+
+### CIU-15 detail: CIU-14's existence check stats the physical path, which no devcontainer can see
+
+**Reported by:** dstdns, 2026-08-06, recreating its `test-runner` after fixing a
+consumer-side `PHYSICAL_REPO_ROOT` defect.
+**Severity:** High — CIU-14 converted a silent fail-open into an *unconditional*
+fail-closed for every DooD/devcontainer consumer. `ciu up` cannot render at all
+while `governance.ksm_optin` is set, however healthy the shim is.
+
+**Mechanism.** `composefile.generate_overlay` (CIU-14's fix):
+
+```python
+physical_ksm_path = to_physical_path(
+    ksm_path, repo_root=repo_root, physical_root=physical_root
+)
+if not physical_ksm_path.is_file():        # <-- stats the DAEMON's path, locally
+    raise ValueError("[S15.11] ... not an existing file: ...")
+```
+
+`to_physical_path` (S1.4) translates a logical in-container path to the path the
+**Docker daemon** sees. In a devcontainer those two are different by
+construction — `/workspaces/dstdns` vs `/home/vb/volkb79-2/dstdns` — and the
+physical one does not exist *inside* the container at all. `Path.is_file()` runs
+in the container. It therefore returns `False` **always**, and the render aborts
+with a message asserting the file is missing while the file is present and
+correct.
+
+**Live repro (dstdns, 2026-08-06).** `tools/ksm-optin/ksm-optin.so` present and
+tracked; visible in-container at `/workspaces/dstdns/tools/...` and on the host
+at `/home/vb/volkb79-2/dstdns/tools/...` (both verified, 13736 bytes). `ciu up
+--dir tools/test-runner` fails at `[STEP 15/17] Generating overlay...` with
+`[S15.11] ... not an existing file:
+/home/vb/volkb79-2/dstdns/tools/ksm-optin/ksm-optin.so`.
+
+**Why the tests passed.** `test_ksm_governance_resolves_relative_shim_to_physical_overlay_path`
+created the shim at the logical path **and again at the physical path**, and
+`test_ksm_governance_rejects_missing_shim_before_writing_overlay` passed
+`repo_root == physical_root`. Both encode a world where the daemon's view is
+locally stat-able — true on a native host, never true in a devcontainer. The
+oracle was sound; the population it ran over did not contain the only case that
+matters. Neither test could fail for this bug regardless of the assertion.
+
+**Resolution (2026-08-06).** Existence is read on the **logical** path
+(`ksm_path`); the physical path remains the bind SOURCE and is now named
+alongside it in the error message so an operator sees both. An external absolute
+path passes through `to_physical_path` unchanged (S1.4), so logical == physical
+there and the check is unaffected. The over-specified test now creates the shim
+only at the logical path and asserts the physical copy is absent; a new test
+(`test_ksm_governance_accepts_shim_unreachable_at_the_physical_path`) pins the
+devcontainer shape with a `physical_root` that does not exist at all. Both fail
+against the pre-fix source and pass after — verified by reverting only
+`composefile.py`. Full suite 1691 passed.
+
+**Generalisable lesson, worth applying beyond this entry:** a path-translation
+helper's output must never be validated with a *local* filesystem call. The
+whole point of `to_physical_path` is that its result addresses a different
+namespace. Any `is_file()`/`is_dir()`/`exists()` applied to its return value is
+asking the wrong kernel. See the CIU-14 note about auditing other
+`frag["volumes"]` sites — that audit should now also check for this inverse
+error, not just the missing-check one.
