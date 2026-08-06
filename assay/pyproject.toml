@@ -1,0 +1,51 @@
+# Build toolchain pinned exactly, matching ciu/cmru/nyxloom/topos, so wheel
+# builds are reproducible (same toolchain + SOURCE_DATE_EPOCH -> identical
+# sha256).
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "assay"
+dynamic = ["version"]
+description = "assay — how to judge a change: declared lanes, declared rigor, one machine-readable verdict"
+requires-python = ">=3.11"
+
+# ZERO RUNTIME DEPENDENCIES (decision A-005). stdlib only. This list staying
+# empty is what makes the standalone claim near-unfalsifiable and the
+# scratch-venv test in tests/test_dependency_purity.py trivially offline. assay
+# consumes coverage.py's *output*; it never imports coverage.py or pytest.
+dependencies = []
+
+[project.optional-dependencies]
+# tester-unified SoT: assay's test closure lives here. A-005 constrains RUNTIME
+# dependencies only, so a validator is legitimate here (A-056) — jsonschema is
+# what P01b's schema tests validate against, and hand-rolling one would prove
+# the hand-rolled checker rather than the schema.
+test = ["pytest>=8", "pytest-cov>=5", "jsonschema>=4"]
+
+[project.scripts]
+assay = "assay.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Version is derived from git tags by setuptools-scm (no clock, no manual bump),
+# matching the estate's other wheel projects. `root = ".."` because the git root
+# is one level up (the vbpub monorepo), same as ciu/nyxloom/topos.
+#
+# fallback_version is REQUIRED here, not decoration (A-057): there is no
+# `assay-v*` tag in the repo, so with `root = ".."` a build from a copied tree
+# fails with `LookupError: setuptools-scm was unable to detect version`.
+# Verified empirically in the gate image.
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^assay-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "assay-v*"]
+fallback_version = "0.1.0"
+
+# Developer convenience only. Per A-040 a bare-pytest green is explicitly NOT a
+# ship signal; the gate is `tester-unified` and nothing else.
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
