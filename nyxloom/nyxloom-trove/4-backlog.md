@@ -249,4 +249,20 @@ items that must be folded in somewhere, should not be forgotten
 
 - Legacy Data API endpoints retire November 4, 2026, /api/v2/data/llms/models => /api/v2/language/models/free, see https://artificialanalysis.ai/data-api/migrate-v2-data
 - "One optional refinement, only if you want it: the Opus reviewer could sanity-check a freshly-carved handoff's oracle satisfiability as a cheap add-on before I dispatch it (same "allowed small in-scope enhancements" spirit as its code review). I'd only add that if carving quality becomes a problem — no evidence of that yet, so I'd default to skipping it, same reasoning as escalate-only Opus: don't add a step until it's earning its keep."
-- consider: "the implementer runs its own per-package gate (to our standards, canary, mutation,...), foreground, waits for real output, and only commits/hands back on genuine pass with the actual output pasted into its LOG. (the standing rule "an implementer's self-report is not evidence" still holds, it's just evidence)"
+- consider: "the implementer runs its own per-package gate (to our standards, canary, mutation,...), foreground, waits for real output, and only commits/hands back on genuine pass with the actual output pasted into its LOG. (the standing rule "an implementer's self-report is not evidence" still holds, it's just evidence)"- `select_verification_gate` conflates TWO roles: "the project's post-merge gate"
+  and "the gate used to verify a merge". `gate_runner.select_verification_gate`
+  unconditionally prefers `phase == "post-merge"` over `implementation`, and its
+  docstring still says "no project registered today declares a dedicated
+  post-merge gate" — dstdns became the first on 2026-08-06 and the effect was
+  immediate and silent: merge verification switched from an ~85s unit lane to a
+  25–45min live/cross-component lane, and `nyxloom gate verify dstdns` began
+  reporting on the release gate instead of the implementation gate. Those are
+  different jobs. A release/qualification lane is deliberately slower, broader,
+  and allowed to be red while the implementation gate is green (see
+  `reference/TESTING-METHODOLOGY.md` §"Scope, rigor, and lanes" — S4 vs S1/S2);
+  making it the merge gate means a red release lane blocks every merge, and
+  means no project can declare a release lane at all without paying that price.
+  Likely shape: keep selection on the implementation gate, and either add an
+  explicit `verification = true` marker or a distinct phase for "run this at
+  release, not at merge". Until then a project must choose between declaring
+  its release lane and keeping a fast merge gate, which is a false choice.
