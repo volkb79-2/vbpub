@@ -279,3 +279,42 @@ items that must be folded in somewhere, should not be forgotten
   note saying migration happens once the library exists; none changes before it
   does. This supersedes the earlier "generalize covergate for srdm" entry above
   by giving it a concrete package.
+
+- **Successor briefs as a first-class trove artifact, with UI drilldown.**
+  Emerged from running the assay series (2026-08-06) and is not currently
+  expressible in nyxloom. Today a finished package leaves a LOG written *for
+  the controller*: what ran, what the gate said. Nothing carries package-to-
+  package knowledge to the **next implementer**, so every agent re-derives
+  house style, environment quirks and trap history from scratch — or, worse,
+  diverges from them silently.
+
+  Shape proven in assay: after self-review, the implementer writes
+  `reports/<id>-BRIEF.md` — under 500 words, addressed to a successor that has
+  the same docs but has NOT seen this work, explicitly *not* a diff summary.
+  Five sections: conventions established that the spec did not dictate; traps
+  that cost real time; **spec ambiguities it had to interpret**; environment
+  facts established empirically; what was left for a successor. Briefs are
+  CONCATENATED in order and handed to every later implementer.
+
+  Three things make it worth productising rather than leaving as a convention:
+
+  1. **The ambiguity section is a feedback channel the daemon lacks.** It is
+     where an implementer says "the spec was silent, I chose X" — exactly the
+     input `decisions_inbox` wants, currently arriving only as prose in a LOG
+     nobody re-reads. On assay's first package it surfaced five rulings, one of
+     which the controller overruled; without the channel that would have become
+     silent precedent for nine more packages.
+  2. **Append-only concatenation is prompt-cache-shaped.** `S0+B1+B2` is a
+     literal prefix of `S0+B1+B2+B3`, so each successor re-uses the whole prior
+     chain. This is why ratifications should be BATCHED into decisions.md at
+     deliberate rebuild points rather than applied per package — editing the
+     spec invalidates the shared prefix, appending a brief does not.
+  3. **UI drilldown** (the specific ask): a brief should be reachable from its
+     package in the UI, and the concatenated chain viewable as one document —
+     it is the closest thing to a running "what this project learned" record,
+     and it is currently invisible.
+
+  Related and worth carving together: a **pre-flight dispatch** (orient, report
+  readiness, implement nothing). On assay's P01 it returned NOT READY with three
+  blockers and seven ambiguities — including an oracle that could not fail — for
+  the cost of one turn, against an implementation plus review plus rework.

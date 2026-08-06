@@ -1,5 +1,26 @@
 # P01a — successor brief
 
+> **Controller annotation, added on merge — read this first.** The brief is
+> preserved as written; nothing below has been rewritten. But its
+> "Interpretations" section was a proposal, and the controller has now ruled on
+> every item. **All were ratified except one:**
+>
+> - **OVERRULED — "surplus judge config for an undeclared level is allowed".**
+>   It is now **refused** (A-062), and an *empty* judge table is the only one an
+>   R0 lane may carry (A-063). Reasoning in `decisions.md`; the code and tests
+>   were changed on merge. Do not follow the brief on this point.
+> - **Ratified:** per-level rather than cumulative judge requirements (A-061);
+>   the loader's additional rejections (A-064); `schema_version` semantics
+>   (A-065); the house style and the ACCEPT/REJECT test pattern (A-066); the
+>   independent-parser round-trip and "a test that proves a property must itself
+>   be checked by breaking the property" (A-067); the two-environment offline
+>   install (A-070).
+> - **`judge.coverage.format`** is now P03's explicit debt, carried as that
+>   package's O6 (A-068). **`fallback_version`** is a known unexercised gap
+>   (A-069).
+>
+> `decisions.md` is binding where it and this brief disagree.
+
 ## Conventions to match
 
 **Errors.** `src/assay/errors.py` owns `Outcome` and `ReasonCode` (both

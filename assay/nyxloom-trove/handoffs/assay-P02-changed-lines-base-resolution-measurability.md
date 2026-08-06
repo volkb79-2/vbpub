@@ -60,6 +60,16 @@ The claim to attack: **does it refuse to render a verdict it cannot justify?**
    normaliser because `git status --porcelain` always reports repo-top-level
    paths while `git diff --relative` does not. dstdns's copy omits that.
 
+## What P01a already built for you
+
+Read `nyxloom-trove/reports/assay-P01a-BRIEF.md` before starting — it is short
+and it is written for you specifically. The load-bearing parts here:
+`JudgeConfig.source_roots` is the DECLARED strings while `source_root_paths` is
+resolved, existence-checked directories — **you want the latter**. `errors.py`
+owns `Outcome`/`ReasonCode`/`EXIT_CODES`; import them, never redefine (A-066).
+`tests/conftest.py` exports fixtures and the ACCEPT/REJECT test pattern this
+series uses.
+
 ## Work
 
 1. `src/assay/git.py` — thin subprocess boundary; a non-zero git exit raises,

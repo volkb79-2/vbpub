@@ -32,6 +32,10 @@ oracles:
     observable: "a lane declaring `coverage-py-json` given a cobertura artifact yields exit 2 / ERROR / FORMAT_MISMATCH; sniffing recognises `mode:` (go-cover), a top-level `files` object (coverage.py JSON), `SF:` (lcov) and `<coverage` (cobertura)"
     negative: "a lane whose argv changed report format is silently mis-parsed or partially parsed instead of failing loudly"
     gate: tester-unified
+  - id: O6
+    observable: "A-068's debt is paid: a lane declaring a `judge.coverage.format` the registry does not know fails with BAD_LANE_CONFIG naming the formats it DOES know, and a lane declaring a known one loads"
+    negative: "P01a's loader accepts any non-empty format string (deliberately -- the vocabulary is the registry's, not the loader's), so until this cross-check exists a typo'd format survives config load and surfaces as a parse failure later, or not at all"
+    gate: tester-unified
   - id: O4
     observable: "a well-formed artifact containing zero files yields exit 3 / NO_MEASUREMENT / EMPTY_COVERAGE"
     negative: "every changed file reads as unmeasured, rendering 0% FAIL -- a wrong diagnosis that says 'add tests' when it means 'your --cov path is broken'"
