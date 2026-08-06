@@ -3,7 +3,7 @@ schema_version: 1
 id: assay-P08-canary-gate-integrity
 project: assay
 title: "Canary: prove a declared gate actually REJECTS broken code and enforces its coverage floor"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none

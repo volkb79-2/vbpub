@@ -3,7 +3,7 @@ schema_version: 1
 id: assay-P06-go-adapter-and-fixture-projects
 project: assay
 title: "The Go adapter, the go-cover parser, and the hello-world fixture projects with expected verdicts"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none

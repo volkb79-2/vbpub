@@ -3,7 +3,7 @@ schema_version: 1
 id: assay-P07-runner-cli-verdict-emission
 project: assay
 title: "The commit-isolated runner, declared-only environment, and verdict emission on every outcome"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none

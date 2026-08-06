@@ -211,12 +211,22 @@ None is invented — each already existed as a concept somewhere in the estate.
 **2–5 are all not-a-pass and all block a merge**; the split drives diagnosis and
 retry policy (a CI system may retry 4; it must never retry 3).
 
-A required `reason_code` names the cause without proliferating exit codes:
-`NO_MEASUREMENT` ∈ {`DIRTY_TREE`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`};
-`ERROR` ∈ {`GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`,
-`BAD_LANE_CONFIG`, `EXEC_FAILED`}; `INCONCLUSIVE` ∈ {`NO_MUTANTS`,
-`CANARY_INCONCLUSIVE`}; `FAIL` ∈ {`UNCOVERED_LINES`, `EXCLUDED_LINES`,
-`UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`}.
+A required `reason_code` names the cause without proliferating exit codes. The
+enumeration is **closed** — an implementer that needs a code not listed here
+must stop and ask, never invent one:
+
+| Outcome | `reason_code` |
+|---|---|
+| `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
+| `FAIL` | `UNCOVERED_LINES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED` |
+| `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `BASE_IS_HEAD`, `EMPTY_COVERAGE` |
+| `BUDGET_EXCEEDED` | `LANE_TIMEOUT` |
+| `INCONCLUSIVE` | `NO_MUTANTS`, `CANARY_INCONCLUSIVE` |
+
+A single-member enum (`BUDGET_EXCEEDED`) is deliberate rather than a smell: the
+field is required on every non-PASS outcome, so a consumer switching on
+`reason_code` never has to special-case an outcome that lacks one.
 
 ### Nailing NO MEASUREMENT — the guard is what is *absent*
 
@@ -278,10 +288,16 @@ the caller's domain (§7).
 ### Consumption without linking
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
-nyxloom validates against a file rather than importing a package. nyxloom's
-existing `GateResult` is a strict subset — `gate_id`, `phase`, `commit`,
-`exit_code`, `started`, `ended`, `environment` — so nyxloom can consume the
-artifact by reading six keys.
+nyxloom validates against a file rather than importing a package. The artifact
+carries `schema_version` (an integer, bumped on any breaking shape change) and
+`assay_version`.
+
+nyxloom's existing `GateResult` is a strict subset: six REQUIRED fields
+(`gate_id`, `phase`, `commit`, `exit_code`, `started`, `ended`) plus an
+optional `environment` — verified against `nyxloom/src/nyxloom/types.py`, which
+also carries optional `artifacts` and `output_tail`. So nyxloom consumes the
+artifact by reading six keys and may read a seventh; an implementer must not
+read "six keys" as licence to omit `environment`.
 
 **Emitted on every outcome, including `ERROR`.** Precedent: the remote-mutation-
 audit reference already requires `events.jsonl` and `summary.json` *"even when
@@ -471,13 +487,38 @@ mutation = { jobs = 4, operators = ["compare-swap","boolop-swap","bool-const-fli
 service = "test-runner"; instance = "worktree"
 ```
 
-**Declared rigor is enforced, not merely recorded.** `R1` makes
-`judge.{coverage,fail_under,allow_excluded,source_roots,language}` required to
-load; `R2` requires `judge.mutation`; `R3` requires `judge.canary`. A lane
-claiming R1 with no coverage config fails at parse time. **Scope stays an
-unverifiable declared claim** — assay cannot check S1-vs-S2 — but naming it is
-precisely what made dstdns's gap visible, so it is required and honest about
-being a claim.
+**Declared rigor is enforced, not merely recorded.** `R1` makes all five of
+`judge.{coverage, fail_under, allow_excluded, source_roots, language}` required
+to load; `R2` additionally requires `judge.mutation`; `R3` additionally requires
+`judge.canary`. A lane claiming R1 with no coverage config fails at parse time.
+**Scope stays an unverifiable declared claim** — assay cannot check S1-vs-S2 —
+but naming it is precisely what made dstdns's gap visible, so it is required and
+honest about being a claim.
+
+Note the consequence, because it is easy to get backwards: an **R0-only lane has
+no `[judge]` table at all**, and therefore declares no `source_roots`,
+`fail_under` or `allow_excluded`. Those five are conditionally required, not
+unconditionally required. A-018's "required per-lane field" means *per-lane
+rather than a global CLI flag* — it does not mean "at the lane's top level".
+
+**Closed vocabularies**, so a loader can reject rather than guess:
+
+| Field | Values |
+|---|---|
+| `scope` | `S0` `S1` `S2` `S3` `S4` (TESTING-METHODOLOGY §Axis 1) |
+| `rigor` | list of `R0` `R1` `R2` `R3` (§Axis 2) |
+| `enforcement` | `gate` `advisory` |
+| `judge.coverage.format` | a key the parser registry knows (§11) |
+| `budget` | a duration string, **parsed at load**, not merely present — a malformed budget discovered at run time is a failure the config layer could have caught |
+
+**`source_roots` are relative to the directory containing `assay.toml`** — the
+project root, not the repo root. The lane file must not need to know where it
+sits inside a monorepo, and a project that gets vendored one level deeper should
+not silently start measuring nothing. Reconciling that against git's own
+spellings (`git diff --relative` is cwd-relative; `git status --porcelain` is
+always repo-top-relative) is exactly what the core's prefix-boundary normaliser
+is for — see §11, and note that nyxloom's copy routes status paths through the
+normaliser for this reason while dstdns's does not.
 
 **A lane file declares what exists, not a target architecture.** dstdns's
 methodology table names five lanes; its own honest-state paragraph records that

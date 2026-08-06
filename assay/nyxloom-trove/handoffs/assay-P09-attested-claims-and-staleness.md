@@ -3,7 +3,7 @@ schema_version: 1
 id: assay-P09-attested-claims-and-staleness
 project: assay
 title: "Tier 3 attested claims: schema, commit binding, staleness detection -- and the Tier 2 slot"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none

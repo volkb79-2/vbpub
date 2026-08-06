@@ -3,11 +3,12 @@ schema_version: 1
 id: assay-P04-evaluate-core-adapter-protocol-python-adapter
 project: assay
 title: "The evaluation core (four-way union), the LanguageAdapter protocol, and the Python adapter"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on:
+  - assay-P01b-verdict-model-and-schema
   - assay-P02-changed-lines-base-resolution-measurability
   - assay-P03-coverage-parser-registry
 session: fresh

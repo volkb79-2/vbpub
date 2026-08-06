@@ -14,10 +14,11 @@ sentence, it is two packages.
 
 | # | Package | Claim to attack | Depends on |
 |---|---|---|---|
-| P01 | skeleton, lane config, verdict schema | does the config contract refuse to invent, and can the schema express every outcome? | — |
-| P02 | changed lines, base resolution, measurability | does it refuse to render a verdict it cannot justify? | P01 |
-| P03 | coverage parser registry | is coverage format independent of language? | P01 |
-| P04 | evaluation core, adapter protocol, Python adapter | did the four-way union land, and is the core language-free? | P02, P03 |
+| P01a | skeleton, lane config loader | does the config contract refuse to invent? | — |
+| P01b | verdict model, JSON Schema | does the schema REJECT a malformed verdict? | P01a |
+| P02 | changed lines, base resolution, measurability | does it refuse to render a verdict it cannot justify? | P01a |
+| P03 | coverage parser registry | is coverage format independent of language? | P01a |
+| P04 | evaluation core, adapter protocol, Python adapter | did the four-way union land, and is the core language-free? | P01b, P02, P03 |
 | P05 | statement-span attribution, `unclassified` | is genuine ambiguity ever passed silently? | P04 |
 | P06 | Go adapter, go-cover parser, fixture projects | is the adapter boundary real? | P05 |
 | P07 | runner, CLI, verdict emission | does the real exit propagate, and is every outcome recorded? | P06 |
@@ -48,9 +49,28 @@ separately once P11 lands. They **declare and verify; they do not remediate**
 (A-038) — a project's general test debt is a different job with a different
 owner.
 
-## Before dispatching P01
+## What the P01 pre-flight bought
 
-Two open items block it (see `../decisions.md`): **A-O01** — whether assay is
-registered as a nyxloom project before or as part of P01; **A-O02** — whether
-declaring the `tester-unified` gate needs the shared image rebuilt. A rebuild
-re-risks ciu, cmru, topos and nyxloom's gate, so it is not a detail.
+P01 was dispatched as a pre-flight (orient and report, implement nothing) and
+came back **NOT READY** with three blockers and seven ambiguities — all defects
+in the specification, none in the plan. The three worth remembering:
+
+- **P01's own deliverable was invalid under P01's own loader.** O1 required
+  `source_roots`/`allow_excluded` unconditionally, while Work item 6 required
+  assay's own R0 lane to omit them. Closed by A-048: the five `judge` fields are
+  *conditionally* required.
+- **`BUDGET_EXCEEDED` had no `reason_code`** anywhere in the spec, though A-022
+  requires one on every non-PASS outcome. Closed by A-050.
+- **O5's grep could not fail.** `grep -rn` prefixes every line with a path
+  containing `assay`, and the `-v` alternation contained `assay`, so every line
+  was filtered regardless of content — verified passing clean on a file
+  importing `requests`, `flask` and a function-level `boto3`. Closed by A-060:
+  AST walk against `sys.stdlib_module_names`, never grep.
+
+Also closed beforehand, as controller chores: **A-O01** (assay registered as a
+nyxloom project — a package cannot bootstrap the gate that judges it) and
+**A-O02** (no image rebuild needed; `tester-unified:local` already carries the
+whole closure, which follows from A-005's zero runtime dependencies).
+
+The lesson generalises: **an oracle that cannot fail is worse than no oracle**,
+and the cheapest place to find one is before the implementation, not after.

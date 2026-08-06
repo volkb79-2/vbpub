@@ -3,11 +3,11 @@ schema_version: 1
 id: assay-P03-coverage-parser-registry
 project: assay
 title: "Coverage parser registry keyed by FORMAT: coverage.py JSON, cobertura, sniff cross-check"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P01-skeleton-lane-config-verdict-schema]
+depends_on: [assay-P01a-skeleton-and-lane-config]
 session: fresh
 scope:
   touch:

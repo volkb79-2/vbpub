@@ -3,7 +3,7 @@ schema_version: 1
 id: assay-P10-mutation-changed-lines
 project: assay
 title: "Changed-line mutation behind the adapter protocol, with bounded jobs and no derived test command"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none

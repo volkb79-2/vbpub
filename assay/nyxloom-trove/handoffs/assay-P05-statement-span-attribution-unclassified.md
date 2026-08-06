@@ -3,7 +3,7 @@ schema_version: 1
 id: assay-P05-statement-span-attribution-unclassified
 project: assay
 title: "Multi-line-statement attribution and the unclassified third bucket -- ambiguity is never passed silently"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
