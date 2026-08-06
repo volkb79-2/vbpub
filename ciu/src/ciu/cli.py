@@ -17,7 +17,7 @@ CIU {ver} — Container Infrastructure Utility (compose · init · up)
 Uses: ciu.global.toml + ciu.env (run from a CIU-enabled repository)
 
 Usage: ciu <verb> [options]
-       ciu --version
+       ciu version
 
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
@@ -329,7 +329,10 @@ def main() -> None:
         print(_USAGE.format(ver=get_cli_version()))
         raise SystemExit(0)
 
-    if raw[0] == "--version":
+    # CIU-16: `version` is a VERB, matching every other CIU verb and the
+    # estate's other CLIs. There is deliberately no `--version` alias — a
+    # greenfield tool carries one spelling per thing, not two.
+    if raw[0] == "version":
         print(f"ciu {get_cli_version()}")
         raise SystemExit(0)
 

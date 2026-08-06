@@ -47,7 +47,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-13 | A stack's `[<root>.governance]` table does not merge with the global `[governance]` default (S15.10), so adding ONE key silently disables governance entirely and creates an **unconfined** container — a fail-open on a safety mechanism | High | FIXED |
 | CIU-14 | `governance.ksm_optin` bind-mounts the configured shim path unconditionally, with no existence check — a missing source file silently phantom-mounts an empty directory instead of failing, so KSM opt-in contributes zero savings with no error surfaced anywhere but container-internal `ld.so` stderr | Medium | FIXED |
 | CIU-15 | CIU-14's own fix stats the **physical** (Docker-daemon) path to prove the shim exists. That path is by definition not resolvable from inside a devcontainer, so `ciu up` fails `[S15.11] ... not an existing file` on **every** DooD render even with the shim present — an unconditional fail-closed in exactly the environment the check protects | High | FIXED |
-| CIU-16 | `ciu version` is not a verb (only `ciu --version`), inconsistent with the estate's other CLIs | Low | OPEN |
+| CIU-16 | `ciu version` is not a verb (only `ciu --version`), inconsistent with the estate's other CLIs | Low | FIXED |
 | CIU-17 | No CLI-level `--ksm` / `--no-ksm` override for an ad-hoc run; toggling KSM requires editing `governance.ksm_optin` in the TOML layer. Raised alongside CIU-14 and explicitly ruled out of its scope as a convenience feature, then never filed on its own | Low | OPEN |
 
 ## Resolved / not-a-gap

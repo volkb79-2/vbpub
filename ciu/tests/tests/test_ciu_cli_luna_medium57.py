@@ -14,7 +14,7 @@ from ciu.cli_utils import get_cli_version
 
 
 def test_main_version_prints_version_and_exits_zero(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["ciu", "--version"])
+    monkeypatch.setattr(sys, "argv", ["ciu", "version"])
 
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -33,7 +33,7 @@ def test_unknown_verb_help_falls_back_to_top_level_usage(capsys):
 
 
 def test_module_entry_version_matches_main(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["ciu", "--version"])
+    monkeypatch.setattr(sys, "argv", ["ciu", "version"])
 
     with warnings.catch_warnings():
         warnings.filterwarnings(

@@ -222,3 +222,30 @@ alternatives overlap with individual pillars:
 
 CIU's edge is the *combination*, tuned for the devcontainer/DooD workflow with
 secrets-as-files and dual shipping out of the box.
+
+## Manual install from wheel 
+
+```bash
+WHEEL_URL="https://github.com/volkb79-2/vbpub/releases/download/ciu-v4.11.1/ciu-4.11.1-py3-none-any.whl"
+
+# this install to e.g. /home/vscode/.local/bin/ 
+python3 -m pip install --user --upgrade "$WHEEL_URL"
+
+# in mdt devcontainer install was under /home/vscode/.venv/bin/ 
+python3 -m pip install --upgrade "$WHEEL_URL"
+
+hash -r
+
+command -v ciu
+ciu version
+python3 -m pip show ciu
+
+# For dstdns test execution:
+
+cd /workspaces/dstdns
+source ciu.env
+
+printf '%s\n' "$REPO_ROOT" "$PHYSICAL_REPO_ROOT"
+ciu version
+
+```
