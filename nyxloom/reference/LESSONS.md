@@ -749,3 +749,78 @@ months because nobody read the two together.
   that **licensed** the defect, since a 2s budget is still a budget. A weak rule
   in the place agents actually read is worse than no rule: it reads as
   permission.
+
+---
+
+## L21 — A default that substitutes for a fact is a silent wrong answer; the dangerous ones are invisible to testing
+
+**The rule.** A default is legitimate only when it is a **policy choice correct
+in the absence of information** (`timeout_seconds = 2700`, `LOG_LEVEL=INFO`). It
+is a hazard the moment it substitutes for a **fact that exists somewhere else**.
+The discriminating question is not "is this value sensible?" but *"if this
+default is wrong, does anything fail loudly?"* If nothing does, it is not a
+safety net — it is a silent wrong answer carrying a fallback's reputation.
+
+Preference order, always: **DERIVE** what has a derivation (a path from the
+script's own location, an id from the repo path) → **READ** what has a source
+(a generated env file, a config) → **FAIL**. Never invent.
+
+**Three shapes, in ascending order of how hard they are to catch.**
+
+1. **Shadowing default** — a literal standing in for a value with an
+   authoritative source. `PHYSICAL_REPO_ROOT:-/workspaces/dstdns` while the
+   project's generated env file held the true host path. Caught by reading.
+
+2. **Silent-invention default** — the *consumer* invents on absence rather than
+   refusing. Docker does not reject a bind source that is missing on the host;
+   it **creates an empty directory and mounts that**. So a wrong path yields a
+   *successful* container with nothing in it. Caught only by asserting existence
+   before handing the value to the consumer.
+
+3. **Masked default** — a wrong default rendered harmless by later code. This is
+   the one worth the entry. In dstdns, `~/.bashrc` set the wrong
+   `PHYSICAL_REPO_ROOT`, then sourced the authoritative env file eight lines
+   later and overwrote it. Correct in every interactive shell anyone ever
+   observed. Wrong the instant a **non-interactive** shell skipped `.bashrc`
+   entirely — which is what every agent, CI job, and `bash -c` does.
+
+**Why #3 is structurally invisible.** Every context in which you would *think*
+to check it is a context that runs the masking step. The defect is not
+"sometimes wrong"; it is "wrong exactly where nobody looks". That makes it a
+review question rather than a test question:
+
+> **Does this default have a later overwrite? If yes, it is dead code wearing a
+> safety net's clothes — delete it rather than correcting it.**
+
+**What it cost.** dstdns's exec shims guarded on the variable being pre-set and,
+on failure, printed `Fix: export PHYSICAL_REPO_ROOT=$REPO_ROOT` — the *container*
+path where the *host* path was required. Agents followed the script's own advice;
+the value reached a plan doc as a copy-paste incantation. The live `test-runner`
+was then recreated with it and spent ~16 hours mounting a Docker-invented empty
+directory over the repository: `pytest` reported "file or directory not found",
+which a `| tail` in the invocation converted to exit 0. A host survey found 184 KB
+of **pure phantom directories — zero regular files** — spanning two repos and
+dozens of worktrees, dating back three weeks.
+
+**Two corollaries that generalise past this incident.**
+
+- **An error message that prescribes a fix must prescribe a correct one.** A
+  guard failing with "Fix: export X=Y" has moved the guess from the script to the
+  operator without making it more right. Demanding an explicit value does not
+  make that value correct. If the value is discoverable, read it; then there is
+  no manual fix to print, so no *wrong* fix can be printed.
+- **Never validate a namespace-translated path with a local filesystem call.**
+  ciu's CIU-14 added an existence check so a missing shim would fail loudly —
+  and stat'd the *physical* path, the one its own translation helper had just
+  mapped into the Docker daemon's namespace. Inside a devcontainer that path is
+  unresolvable by construction, so the check returned False unconditionally and
+  converted a fail-open into an unconditional **fail-closed** (CIU-15). The whole
+  point of a translation helper is that its output addresses a different kernel.
+
+**The test-population angle (see also L18).** CIU-15 survived its own regression
+suite because one test created the shim at *both* the logical and physical paths
+and the other passed `repo_root == physical_root`. Both encode a native-host
+world where the daemon's view happens to be locally stat-able. The oracle was
+sound; the population contained none of the only case that mattered. When a
+fix concerns two namespaces, the test must make them genuinely different —
+`tmp_path/a` vs `tmp_path/b` is not different enough if both exist.

@@ -31,6 +31,36 @@ and a **mechanical BLOCKED escape hatch** (escalation is trigger-based, not
 BLOCKED. The guide's frontmatter section makes the handoff nyxloom-compatible
 (schema-validated by `nyxloom lint`).
 
+## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
+
+> **A default is legitimate only when it is a policy choice that is correct in
+> the absence of information. It is a hazard the moment it substitutes for a
+> fact that exists somewhere else.**
+
+The test: *if this default is wrong, does anything fail loudly?* If not, it is
+not a safety net — it is a silent wrong answer with a fallback's reputation.
+Prefer, in order: **DERIVE** what has a derivation, **READ** what has a source,
+**FAIL** otherwise. Never invent.
+
+| # | Anti-pattern | Shape |
+|---|---|---|
+| 1 | **Shadowing default** | a literal standing in for a value that has an authoritative source |
+| 2 | **Silent-invention default** | the *consumer* invents on absence instead of refusing (Docker creating a missing bind source as an empty dir) |
+| 3 | **Masked default** | a wrong default rendered harmless by later code — **invisible to testing**, because every context you would observe it in runs the masking step; it surfaces only where that step is skipped |
+
+Corollaries: a required host path gets Compose's `${VAR:?msg}`, never
+`${VAR:-fallback}`; an error message that prescribes a fix must prescribe a
+*correct* one (read the value rather than demanding the operator type it); and
+never validate a namespace-translated path with a local filesystem call — an
+`is_file()` on a container→host translation asks the wrong kernel.
+
+Incidents behind this: ciu CIU-14 (missing bind source phantom-mounted an empty
+dir), CIU-15 (its own fix stat'd the daemon's path, which no devcontainer can
+resolve, turning a fail-open into an unconditional fail-closed), and dstdns
+`b9257cea` (a guard whose printed remedy set the container path where the host
+path was required — the test-runner then mounted an empty directory over the
+repo for ~16h without erroring). Long-form: `nyxloom/reference/LESSONS.md`.
+
 ## The gate is never the devcontainer (cockpit doctrine)
 The devcontainer is a **cockpit** (inspect + drive). The gating suite runs in a
 dedicated container, never here. For the vbpub family that is
