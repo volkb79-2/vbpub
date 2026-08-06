@@ -50,6 +50,15 @@ CANARY_TABLE = """
 mode = "import-break"
 """
 
+# Exactly what R2 requires and nothing more (A-062): language + source_roots,
+# with the mutation sub-table appended separately. A lane declaring R2 alone
+# may not carry R1's fail_under/allow_excluded/coverage.
+R2_MINIMAL_JUDGE = """
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+"""
+
 
 def _lane_with(rigor: list[str], *tables: str) -> str:
     body = set_key(R0_LANE, "rigor", "[" + ", ".join(f'"{r}"' for r in rigor) + "]")
@@ -174,14 +183,28 @@ language = "python"
         load_lane_file(path)
 
 
-def test_surplus_judge_config_for_an_undeclared_level_is_allowed(
+def test_surplus_judge_config_for_an_undeclared_level_is_refused(
     project: Project,
 ):
-    # The rigor LIST is the claim. A mutation table on a lane that does not
-    # declare R2 makes no claim, and refusing it would break the ordinary
-    # workflow of writing the config before declaring the level.
-    path = project.write(_lane_with(["R0", "R1"], JUDGE_TABLE, MUTATION_TABLE))
-    judge = load_lane_file(path).lane("package").judge
+    # A-062. `mutation` on a lane that does not declare R2 is INERT: nothing
+    # reads it, so if it is wrong nothing fails -- while it reads to a human
+    # exactly like the capability it is not providing. Same shape as a lane
+    # table listing five lanes over two real ones, one level down.
+    surplus = _lane_with(["R0", "R1"], JUDGE_TABLE, MUTATION_TABLE)
+    path = project.write(surplus)
+
+    with pytest.raises(LaneConfigError) as exc:
+        load_lane_file(path)
+    # The message must name the inert key AND the two remedies, or the reader
+    # cannot act on it.
+    assert "mutation" in str(exc.value)
+    assert "declare the rigor level" in str(exc.value)
+    assert "delete it" in str(exc.value)
+
+    # The mirror, in the same body (the anti-hollow pattern this suite uses):
+    # declaring the level that consumes it makes the SAME table load.
+    declared = _lane_with(["R0", "R1", "R2"], JUDGE_TABLE, MUTATION_TABLE)
+    judge = load_lane_file(project.write(declared)).lane("package").judge
 
     assert judge is not None
     assert judge.mutation is not None
@@ -194,11 +217,19 @@ def test_judge_requirements_table_matches_the_decisions(project: Project):
     assert "canary" in JUDGE_FIELDS_BY_RIGOR["R3"]
 
 
-def test_judge_table_on_an_r0_lane_is_allowed_but_not_required(project: Project):
-    # The conditional requirement is one-directional: R0 does not *forbid* a
-    # judge table, it merely does not require one.
+def test_a_populated_judge_table_on_an_r0_lane_is_refused(project: Project):
+    # A-062, and the direct reading of DESIGN-GUIDE 12: "an R0-only lane has no
+    # [judge] table at all". R0 requires no judge field, so every key in such a
+    # table is inert -- `fail_under = 100` here would read to a human as a
+    # coverage floor while nothing whatsoever enforces it.
     path = project.write(_lane_with(["R0"], JUDGE_TABLE))
-    judge = load_lane_file(path).lane("package").judge
+    with pytest.raises(LaneConfigError) as exc:
+        load_lane_file(path)
+    assert "reads none of" in str(exc.value)
+
+    # The mirror: declaring the level that consumes it makes the SAME table load.
+    same_table_with_r1 = _lane_with(["R0", "R1"], JUDGE_TABLE)
+    judge = load_lane_file(project.write(same_table_with_r1)).lane("package").judge
 
     assert judge is not None
     assert judge.language == "python"
@@ -223,9 +254,38 @@ def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
 
 
 def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
-    # Nothing in `judge` is filled in on absence: an unrequired field that the
-    # file did not declare stays None, and never appears in as_declared().
-    path = project.write(R0_LANE + "judge = { mutation = { jobs = 2 } }\n")
+    # Nothing in `judge` is filled in on absence: a field this level does not
+    # require, and the file did not declare, stays None rather than being
+    # invented. An R2 lane needs language + source_roots + mutation and NOTHING
+    # else -- so R1's three fields must come back None, not defaulted.
+    path = project.write(_lane_with(["R2"], R2_MINIMAL_JUDGE, MUTATION_TABLE))
+    lane = load_lane_file(path).lane("package")
+
+    judge = lane.judge
+    assert judge is not None
+    assert judge.mutation is not None
+    assert judge.fail_under is None
+    assert judge.allow_excluded is None
+    assert judge.coverage is None
+    assert judge.canary is None
+    # as_declared() reconstructs exactly the file's own keys -- no absent field
+    # reappears with a filled-in value (P07 depends on this for argv_declared).
+    assert lane.as_declared()["judge"] == {
+        "language": "python",
+        "source_roots": ["src"],
+        "mutation": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]},
+    }
+
+
+def test_an_empty_judge_table_is_the_only_one_an_r0_lane_may_carry(
+    project: Project,
+):
+    # The exact boundary A-062 draws. R0 requires no judge field, so any
+    # POPULATED table is entirely surplus and refused -- but an empty table
+    # declares nothing and claims nothing, so there is nothing to refuse.
+    # Every judge field must then come back None rather than invented, and
+    # as_declared() must report an empty table rather than a filled-in one.
+    path = project.write(_lane_with(["R0"]) + "\n[lanes.package.judge]\n")
     lane = load_lane_file(path).lane("package")
 
     judge = lane.judge
@@ -236,12 +296,18 @@ def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
     assert judge.fail_under is None
     assert judge.allow_excluded is None
     assert judge.coverage is None
+    assert judge.mutation is None
     assert judge.canary is None
-    assert lane.as_declared()["judge"] == {"mutation": {"jobs": 2}}
+    assert lane.as_declared()["judge"] == {}
 
 
 def test_mutation_that_is_not_a_table_is_rejected(project: Project):
-    path = project.write(R0_LANE + "judge = { mutation = 4 }\n")
+    # Declared at R2, so `mutation` is REQUIRED here and the surplus guard
+    # (A-062) is not what rejects it -- the type check is. Using an R0 lane
+    # would pass this test for the wrong reason.
+    path = project.write(
+        _lane_with(["R2"], R2_MINIMAL_JUDGE).rstrip("\n") + "\nmutation = 4\n"
+    )
     with pytest.raises(LaneConfigError, match="'judge.mutation' must be a table"):
         load_lane_file(path)
 

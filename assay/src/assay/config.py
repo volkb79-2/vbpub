@@ -33,15 +33,16 @@ unknown keys                  a key assay does not understand, in a       §12
                               lane table or in ``[…judge]``
 ============================  ==========================================  =======
 
-Two things this loader deliberately does **not** reject, because rejecting them
+One thing this loader deliberately does **not** reject, because rejecting it
 would be inventing policy rather than refusing to invent values:
 
 * a ``[…where]`` table's contents. §7: WHERE is "data assay parses and never
   interprets", permanently. It is carried through verbatim.
-* a ``judge`` sub-table declared for a rigor level the lane does not claim
-  (e.g. ``mutation`` on a lane without ``R2``). The *rigor list* is the claim;
-  surplus configuration makes no claim, and refusing it would break the
-  ordinary workflow of writing the config before declaring the level.
+
+It *does* reject ``judge`` config for a rigor level the lane does not declare
+(A-062) — ``mutation`` on a lane without ``R2``, ``fail_under`` on an R0 lane.
+Inert configuration cannot fail loudly when it is wrong, and it reads to a
+human exactly like the capability it is not providing.
 
 `judge.coverage.format` is checked to be a non-empty string and no further: the
 closed vocabulary for it is *"a key the parser registry knows"* (§12), the
@@ -527,6 +528,29 @@ def _load_judge(
                 f"{where}: declares rigor {list(rigor)} but is missing required "
                 f"field 'judge.{field}'"
             )
+
+    # A-062 (controller ruling, overriding this package's first reading).
+    # Judge config for a rigor level the lane does NOT declare is refused.
+    #
+    # The argument for allowing it was that the rigor list is the claim, so
+    # surplus config claims nothing. That is true of the DATA and false of the
+    # READER: `fail_under = 100` on an R0 lane looks exactly like a coverage
+    # floor and is not one -- nothing reads it, so if it is wrong nothing fails
+    # (AGENTS.md 4.2a). This project's whole subject is a declaration implying
+    # capability that does not exist; dstdns's five-lane table over two real
+    # lanes is the named specimen, and this is the same shape one level down.
+    #
+    # The cost is the "write the config, enable the level later" workflow,
+    # which is a habit rather than a requirement: declaring the level is one
+    # line in the same edit. The remedy is always visible in the message.
+    surplus = sorted(set(table) - set(required))
+    if surplus:
+        raise LaneConfigError(
+            f"{where}: declares rigor {list(rigor)}, which reads none of "
+            f"judge.{{{', '.join(surplus)}}} -- so that configuration is inert "
+            f"and cannot fail loudly if it is wrong. Either declare the rigor "
+            f"level that consumes it, or delete it."
+        )
 
     language = None
     if "language" in table:

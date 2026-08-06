@@ -15,23 +15,45 @@ from __future__ import annotations
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, set_key
 
-from assay.config import ENFORCEMENTS, RIGOR_LEVELS, SCOPES, load_lane_file, parse_duration
+from assay.config import (
+    ENFORCEMENTS,
+    JUDGE_FIELDS_BY_RIGOR,
+    RIGOR_LEVELS,
+    SCOPES,
+    load_lane_file,
+    parse_duration,
+)
 from assay.errors import LaneConfigError
 
-JUDGE_TABLE = """
-[lanes.package.judge]
-language = "python"
-source_roots = ["src"]
-fail_under = 100.0
-allow_excluded = false
-coverage = { format = "coverage-py-json", artifact = "cov.json" }
+_JUDGE_SCALARS = {
+    "language": 'language = "python"',
+    "source_roots": 'source_roots = ["src"]',
+    "fail_under": "fail_under = 100.0",
+    "allow_excluded": "allow_excluded = false",
+    "coverage": 'coverage = { format = "coverage-py-json", artifact = "cov.json" }',
+}
+_JUDGE_SUBTABLES = {
+    "mutation": "\n[lanes.package.judge.mutation]\njobs = 2\n",
+    "canary": '\n[lanes.package.judge.canary]\nmode = "import-break"\n',
+}
 
-[lanes.package.judge.mutation]
-jobs = 2
 
-[lanes.package.judge.canary]
-mode = "import-break"
-"""
+def judge_table_for(level: str) -> str:
+    """A judge table carrying EXACTLY what ``level`` requires — no more.
+
+    A-062 refuses judge config for an undeclared rigor level, so a single
+    maximal table can no longer stand in for every level. Building the table
+    from ``JUDGE_FIELDS_BY_RIGOR`` also keeps this test honest in a way a
+    hand-written table would not: if the requirement map changes and this
+    helper is not updated, the derived table simply follows it.
+    """
+    required = JUDGE_FIELDS_BY_RIGOR[level]
+    if not required:
+        return ""
+    scalars = [_JUDGE_SCALARS[f] for f in required if f in _JUDGE_SCALARS]
+    subtables = [_JUDGE_SUBTABLES[f] for f in required if f in _JUDGE_SUBTABLES]
+    head = "\n[lanes.package.judge]\n" + "\n".join(scalars) + "\n" if scalars else ""
+    return head + "".join(subtables)
 
 
 def test_the_vocabularies_are_exactly_what_the_decisions_close():
@@ -57,9 +79,10 @@ def test_scope_outside_the_vocabulary_is_rejected(scope: str, project: Project):
 
 @pytest.mark.parametrize("level", RIGOR_LEVELS)
 def test_every_declared_rigor_level_loads(level: str, project: Project):
-    # Each level brings its own judge requirement, so the lane carries the full
-    # judge table; the point under test is that the LEVEL NAME is accepted.
-    text = set_key(R0_LANE, "rigor", f'["{level}"]') + JUDGE_TABLE
+    # Each level brings its own judge requirement, and A-062 refuses anything
+    # beyond it, so the lane carries EXACTLY that level's table; the point
+    # under test is that the LEVEL NAME is accepted.
+    text = set_key(R0_LANE, "rigor", f'["{level}"]') + judge_table_for(level)
     lane = load_lane_file(project.write(text)).lane("package")
     assert lane.rigor == (level,)
 
