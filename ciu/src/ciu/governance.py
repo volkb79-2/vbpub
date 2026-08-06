@@ -105,6 +105,26 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # injection is inert for them; a dependency-free .so loads under both
     # glibc and musl (a libc-linked one is FATAL under the other libc).
     "ksm_optin": "",
+    # S15.19 — per-service memory policy. `ksm_optin` above decides WHETHER a
+    # shim is injected estate-wide; this decides PER SERVICE which strategy
+    # applies, because the right choice is a property of the image, not of the
+    # estate. Shape:
+    #
+    #   [governance.memory_profile.default]
+    #   ksm = "preload"                     # preload | off
+    #   [governance.memory_profile.services.some-service]
+    #   ksm = "off"
+    #
+    # Subsumes `exempt_services` for KSM purposes (that key still exempts a
+    # service from ALL governance injection; `ksm = "off"` exempts it from KSM
+    # alone, which is the finer-grained thing people actually wanted).
+    #
+    # "wrapper" is deliberately NOT an accepted value yet — see S15.19's note
+    # and the measurements: it works, and it earns ~3.8 MiB per otel container,
+    # which is two orders of magnitude below what a single JVM heap setting
+    # recovered on this estate. Accepting a value that silently does nothing
+    # would be worse than not offering it.
+    "memory_profile": {},
     # S15.16 — declared memory FLOOR (cgroup-v2 `memory.min`-equivalent), a
     # Docker size string ("2g", "512m") or "" (not declared). There is no
     # Docker/compose field for a per-container memory.min, so this is never
@@ -138,6 +158,53 @@ BUILTIN_KSM = "builtin"
 # The flag sets the env var rather than threading a parameter through, so there
 # is ONE resolution point for both surfaces instead of two that can disagree.
 KSM_ENV_VAR = "CIU_KSM"
+
+# S15.19 — accepted `memory_profile.*.ksm` strategies. "wrapper" is measured and
+# works but is NOT accepted yet (see GOVERNANCE_DEFAULTS["memory_profile"]);
+# an unknown value is a hard error rather than a silent fallback to the default,
+# because "I typed `wraper` and got no KSM and no message" is precisely the
+# silent-wrong-answer this whole config layer exists to prevent.
+KSM_STRATEGIES = ("preload", "off")
+
+
+def resolve_service_ksm(config: Mapping[str, Any], service_name: str) -> str:
+    """The KSM strategy for one service: `preload` or `off` (S15.19).
+
+    Precedence: `memory_profile.services.<name>.ksm` → `memory_profile.default.ksm`
+    → "preload". The final fallback is a genuine POLICY default (§4.2a's
+    legitimate case): with governance enabled and a shim configured, injecting
+    it is the correct behaviour absent any per-service statement, and it is
+    additive/inert if it does not apply. It substitutes for no fact held
+    elsewhere.
+    """
+    profile = config.get("memory_profile") or {}
+    if not isinstance(profile, Mapping):
+        raise ValueError(
+            "[S15.19] governance.memory_profile must be a table, got "
+            f"{type(profile).__name__}"
+        )
+    services = profile.get("services") or {}
+    default = profile.get("default") or {}
+
+    value = None
+    if isinstance(services, Mapping):
+        entry = services.get(service_name)
+        if isinstance(entry, Mapping):
+            value = entry.get("ksm")
+    if value is None and isinstance(default, Mapping):
+        value = default.get("ksm")
+    if value is None:
+        return "preload"
+
+    value = str(value).strip().lower()
+    if value not in KSM_STRATEGIES:
+        raise ValueError(
+            f"[S15.19] unknown ksm strategy {value!r} for service "
+            f"{service_name!r}; accepted: {', '.join(KSM_STRATEGIES)}. "
+            "('wrapper' is measured and functional but not yet accepted — see "
+            "SPEC S15.19.)"
+        )
+    return value
 
 
 def resolve_ksm_optin(configured: str) -> str:
@@ -900,6 +967,7 @@ def build_injections(
     injections: dict[str, dict[str, Any]] = {}
     skipped_exempt = 0
     services_touched = 0
+    ksm_off_services = 0
 
     for svc_name, block in compose_services.items():
         if svc_name in exempt:
@@ -941,7 +1009,13 @@ def build_injections(
         # keys does not apply; an author-set LD_PRELOAD would win the per-key
         # env merge anyway.) `_ksm_optin_source` is the already-physical shim
         # path, resolved and validated by generate_overlay.
+        # S15.19: a service may opt out of KSM ALONE (`ksm = "off"`) without
+        # opting out of all governance the way `exempt_services` does — which is
+        # the finer-grained control the estate-wide flag could never express.
         ksm_src = str(config.get("_ksm_optin_source") or "")
+        if ksm_src and resolve_service_ksm(config, svc_name) == "off":
+            ksm_src = ""
+            ksm_off_services += 1
         if ksm_src:
             frag["environment"] = [f"LD_PRELOAD={KSM_PRELOAD_TARGET}"]
             frag["volumes"] = [{
@@ -967,7 +1041,8 @@ def build_injections(
         f"write_bps={write_bps or '(uncapped)'}",
         f"device={device or '(none — blkio_config skipped)'} ({device_note})",
         f"ksm_optin={config.get('ksm_optin') or 'off'}",
-        f"services_injected={services_touched} exempt={skipped_exempt}",
+        f"services_injected={services_touched} exempt={skipped_exempt}"
+        + (f" ksm_off={ksm_off_services}" if ksm_off_services else ""),
     ]
     return injections, notes
 

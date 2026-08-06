@@ -1549,6 +1549,43 @@ worse than its absence. **Unset returns the configured value unchanged** — the
 and never invents a policy the config did not state. The S15.7 notes line
 reports the EFFECTIVE value, so a run under an override says so.
 
+### S15.19 — Per-service memory policy (`governance.memory_profile`)
+
+`ksm_optin` (S15.11) decides WHETHER a shim is injected for the estate;
+`memory_profile` decides PER SERVICE which strategy applies, because the right
+choice is a property of the **image**, not of the estate.
+
+```toml
+[governance.memory_profile.default]
+ksm = "preload"                      # preload | off
+[governance.memory_profile.services.otel-collector-node]
+ksm = "off"
+```
+
+Precedence: `services.<name>.ksm` → `default.ksm` → `"preload"`. That final
+fallback is a genuine POLICY default (§4.2a's legitimate case): with governance
+enabled and a shim configured, injecting is correct absent any statement, and it
+substitutes for no fact held elsewhere.
+
+`ksm = "off"` suppresses ONLY the KSM injection; the service keeps
+`cgroup_parent`/`mem_limit`/`blkio_config`. This is the finer-grained control
+`exempt_services` (which removes a service from ALL governance) could never
+express. An unknown strategy is a hard error, never a silent fallback to the
+default — `ksm = "wraper"` quietly yielding preload is exactly the
+silent-wrong-answer this layer exists to prevent.
+
+**`wrapper` is measured, functional, and deliberately NOT accepted yet.** An
+exec-wrapper (`prctl(PR_SET_MEMORY_MERGE)` then `execve`, which the flag
+survives) reaches statically-linked binaries that `LD_PRELOAD` cannot. Measured
+at ~20 min settle it earns **~3.8 MiB per otel container** — real, and two orders
+of magnitude below what a single JVM heap setting recovered on the same estate.
+Measurement also showed `LD_PRELOAD`'s reach is far wider than assumed: one
+dynamically-linked process anywhere in the startup chain opts in and every static
+binary it later `exec`s inherits the flag, so consul/vault/minio are already
+covered and otel is the only true gap. Accepting a value that silently did
+nothing would be worse than not offering it. Full data: dstdns
+`docs/KSM-OPTIN-MEASUREMENTS.md`; design discussion: `docs/DESIGN-NOTES.md` D8.
+
 ### S15.12 — Named-slice existence preflight (D-G9 check 1)
 
 Closes the S15.8 gap: for every selected stack whose resolved governance

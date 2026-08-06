@@ -149,3 +149,59 @@ class TestRunningProvenance:
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", boom)
         deploy.verify_running_provenance(PREFIX)
+
+
+class TestMemoryProfile:
+    """S15.19 — per-service KSM strategy.
+
+    The point of this table is that the right choice is a property of the IMAGE,
+    not of the estate: `ksm_optin` could only say yes/no for everything.
+    """
+
+    def test_absent_profile_defaults_to_preload(self):
+        """A genuine POLICY default (§4.2a's legitimate case): with governance on
+        and a shim configured, injecting is correct absent any statement, and it
+        substitutes for no fact held elsewhere."""
+        assert governance.resolve_service_ksm({}, "anything") == "preload"
+
+    def test_service_entry_wins_over_default(self):
+        cfg = {"memory_profile": {"default": {"ksm": "preload"},
+                                  "services": {"otel": {"ksm": "off"}}}}
+        assert governance.resolve_service_ksm(cfg, "otel") == "off"
+        assert governance.resolve_service_ksm(cfg, "other") == "preload"
+
+    def test_default_applies_when_service_is_unlisted(self):
+        cfg = {"memory_profile": {"default": {"ksm": "off"}}}
+        assert governance.resolve_service_ksm(cfg, "anything") == "off"
+
+    def test_unknown_strategy_is_a_HARD_ERROR_not_a_silent_fallback(self):
+        """A typo must not read as 'default applies'. `ksm = "wraper"` silently
+        yielding preload — with no message — is the exact silent-wrong-answer
+        this config layer exists to prevent."""
+        cfg = {"memory_profile": {"services": {"x": {"ksm": "wraper"}}}}
+        with pytest.raises(ValueError, match=r"unknown ksm strategy"):
+            governance.resolve_service_ksm(cfg, "x")
+
+    def test_wrapper_is_rejected_until_it_is_actually_implemented(self):
+        """`wrapper` is measured and functional (~3.8 MiB per otel container) but
+        NOT wired. Accepting a value that silently does nothing would be worse
+        than not offering it — the operator would believe KSM was on."""
+        cfg = {"memory_profile": {"services": {"otel": {"ksm": "wrapper"}}}}
+        with pytest.raises(ValueError, match=r"unknown ksm strategy"):
+            governance.resolve_service_ksm(cfg, "otel")
+
+    def test_ksm_off_suppresses_injection_without_exempting_all_governance(self):
+        """The finer-grained control `exempt_services` could never express:
+        opt out of KSM while KEEPING cgroup_parent/mem_limit/blkio."""
+        cfg = dict(governance.GOVERNANCE_DEFAULTS)
+        cfg.update({
+            "enabled": True, "cgroup_parent": "dev-background.slice",
+            "_ksm_optin_source": "/host/ksm.so",
+            "memory_profile": {"services": {"quiet": {"ksm": "off"}}},
+        })
+        inj, _notes = governance.build_injections({"quiet": {}, "loud": {}}, cfg)
+
+        assert "LD_PRELOAD" not in str(inj["quiet"].get("environment", ""))
+        assert "volumes" not in inj["quiet"]
+        assert inj["quiet"]["cgroup_parent"] == "dev-background.slice"  # still governed
+        assert "LD_PRELOAD=/opt/ksm/ksm-optin.so" in inj["loud"]["environment"]
