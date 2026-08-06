@@ -322,3 +322,104 @@ being raised) and update the SPEC section's outcome bullet to name S10.6,
 exactly as done for S15.16 in this pass. The judgment call is entirely in
 "should this specific finding be softenable via one global flag," not in
 the mechanism itself.
+
+---
+
+## D7 — Where a project's test definitions belong: the where/what/how split (2026-08-06)
+
+Prompted by a consumer-side discussion (dstdns) about which tool should own a
+project's test declarations. The observed problem: dstdns's gate lived as a
+single opaque argv inside its *automation* tool's config, so a developer
+working the repo by hand — using CIU but deliberately not the automation tool
+— had no way to discover or invoke "the project's tests" without reading the
+automation tool's config. The proposed remedy was "move the test config into
+CIU". That is right for part of it and wrong for part of it, and the boundary
+is worth writing down before anything is built.
+
+### The standing constraint that decides it
+
+CIU, and the estate's other tools, are **stand-alone tools that must not
+depend on each other.** Synergy by design is fine; a hard dependency is not.
+The operational test for whether a capability belongs in CIU:
+
+> **Would a project using *only* CIU still get value from this?**
+
+Isolated instances pass (any CIU project wants them). A changed-line coverage
+floor also passes, but not *as CIU* — as a library any repo can install.
+Dispatch/review/merge orchestration fails: it is only meaningful once you have
+adopted the automation tool.
+
+### One gate argv is actually three questions
+
+A gate string like
+
+```
+testing-exec.sh 'cd <worktree> && MOCK_MODE=true pytest tests/unit -q'
+```
+
+fuses three separable concerns:
+
+| Question | Example | Whose domain |
+|---|---|---|
+| **WHERE** to run | which container, which network, which instance, which image | **CIU** — it already owns every one of these facts |
+| **WHAT** to run | marker expressions, per-stack suites, lanes | **the project** — which, for a CIU project, means CIU's config layer |
+| **HOW** to judge | coverage floor, mutation score, canary rigor | **neither** — a testing library, installable standalone |
+
+WHERE is unambiguously CIU's: instance identity, network naming, profile
+narrowing, and image resolution are already resolved facts inside CIU, and
+every other consumer of them reaches in and re-derives them badly. WHAT is
+project data that has to live *somewhere the project already configures*, and
+for a CIU project that is the existing per-stack config layer. HOW is the one
+that must stay out: CIU has no business knowing what a mutation score is.
+Methodology is not topology, and folding it in would make CIU's dependency
+closure grow with every testing technique a consumer adopts.
+
+The resulting arrows, none of which point from a general tool to a specific
+one: an automation tool may execute a project-declared argv (which may happen
+to invoke `ciu test`) and may import the testing library; CIU imports neither;
+the testing library imports neither. A project can adopt any one of the three
+alone.
+
+### Sketch, not a commitment
+
+A per-stack `[test]` table in the stack's existing `ciu.defaults.toml.j2`,
+plus a verb that resolves *where* and delegates *how*:
+
+```toml
+[test.lanes.quick]
+argv    = ["pytest", "tests/unit", "-q"]
+env     = { MOCK_MODE = "true" }
+budget  = "60s"
+
+[test.lanes.stack]
+argv     = ["pytest", "-m", "integration", "-q"]
+requires = ["postgres", "redis"]     # provisioned via the normal profile graph
+budget   = "10m"
+```
+
+```console
+ciu test                      # every stack in this repo, default lane
+ciu test --stack worker-io    # one stack
+ciu test --changed            # map changed paths -> owning stacks -> their lanes
+```
+
+What this would need that does not exist today, listed so the sketch is not
+mistaken for a small change:
+
+- **Lane resolution** — selecting a stack's lane and running it in that
+  stack's own instance rather than a repo-global runner.
+- **Changed-path → stack mapping** for `--changed`. Cheap only because stacks
+  are already directory-scoped; still a new inference CIU does not perform.
+- **A provenance precondition.** Any lane touching real containers must refuse
+  to run when the running image's revision does not match the commit under
+  test. This depends on stamping `org.opencontainers.image.revision` at bake
+  time, which CIU does not currently do. Without it the most expensive lane
+  produces the least trustworthy evidence — it silently describes an unknown
+  artifact — and no amount of added test rigor detects that.
+- **A judged-result contract**, so `ciu test` can surface a testing library's
+  verdict without linking against it or parsing its prose.
+
+Deliberately excluded: coverage/mutation/canary implementations, any notion of
+a rigor score, and any awareness of an automation tool. If CIU ever needs to
+grow one of those to make `ciu test` useful, that is the signal the boundary
+above was drawn wrong — reopen this note rather than widening the tool.
