@@ -14,8 +14,13 @@ toolchain at all**. Everything that compiles or tests runs in `srdm-gate`.
 ## Running the gate
 
 ```bash
-# One-time (or after gate/Dockerfile changes): the image builds itself on
-# first use, so usually you just run the gate.
+# One-time (or after gate/Dockerfile changes): the images build themselves on
+# first use, so usually you just run the gate. Since D-036 that is TWO images
+# — the shared `tester-unified-go` base and `srdm-gate` on top of it; both are
+# build-if-absent and NEVER rebuild-if-present (tools/go-base.sh), because a
+# silent toolchain change under a profile the gate is about to judge is worse
+# than a stale image. To move the pin: edit the base Dockerfile, then
+# `docker image rm tester-unified-go:local srdm-gate:unit srdm-gate:e2e`.
 tools/gate.sh                       # unit target, this checkout
 tools/gate.sh /path/to/worktree     # a nyxloom worktree
 tools/canary-run.sh                 # prove the oracles still reject bad code

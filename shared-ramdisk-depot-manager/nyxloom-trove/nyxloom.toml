@@ -58,7 +58,10 @@ example_profile = "examples/soulmask.profile.json"
 # Adding Go to tester-unified would rebuild and re-risk the gate of ciu,
 # cmru, topos and nyxloom to serve a project that still could not run its own
 # e2e oracles there. So srdm ships gate/Dockerfile with two targets. See
-# decision D-006.
+# decision D-006, and D-036 for the 2026-08-06 split: the Go-toolchain half
+# of that file is now the SHARED `vbpub/tester-unified-go` image (a sibling
+# of tester-unified, not an addition to it), and gate/Dockerfile carries only
+# the privileged systemd `e2e` stage plus a `unit` alias for the base.
 #
 # Cockpit doctrine is unchanged: the gate is srdm-gate, never the
 # devcontainer — which in srdm's case cannot even pretend, having no Go.

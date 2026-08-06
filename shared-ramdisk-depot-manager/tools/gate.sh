@@ -70,9 +70,17 @@ cgroup_parent="$("$here/cgroup-parent.sh" "${SRDM_CGROUP_PARENT:-}")"
 image_target="$target"
 [ "$target" = "coverage" ] && image_target="unit"
 image="srdm-gate:$image_target"
+
+# The Go toolchain half of gate/Dockerfile was promoted to the shared
+# vbpub/tester-unified-go image, so BOTH srdm targets now build FROM it and it
+# must exist first. tools/go-base.sh owns that rule (canary-run.sh needs it
+# too, and one copy of a build rule is the point of this whole promotion).
+base_image="$("$here/go-base.sh" "$cgroup_parent")"
+
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   printf 'gate: building %s\n' "$image" >&2
   docker build --cgroup-parent="$cgroup_parent" \
+    --build-arg "BASE_IMAGE=$base_image" \
     -f "$project_dir/gate/Dockerfile" --target "$image_target" -t "$image" "$project_dir/gate"
 fi
 

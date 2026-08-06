@@ -1,20 +1,27 @@
 # srdm's own gate container.
 #
-# WHY NOT tester-unified: vbpub's shared gate image is a Python 3.14 venv
-# closure built from four projects' pyprojects. It has no Go toolchain, it
-# runs unprivileged as uid 1003, and it has no systemd. srdm is a Go project
-# whose P02+ oracles (per-class hold services, transient units, mount
-# topology, cgroup charging) need a privileged systemd-in-Docker harness.
-# Adding a Go toolchain to tester-unified would rebuild and re-risk the gate
-# of ciu, cmru, topos and nyxloom to serve a project that still could not run
-# its own e2e oracles there. So srdm gets its own image, and the four Python
-# projects keep theirs untouched.
+# The Go toolchain half of this file was PROMOTED to `vbpub/tester-unified-go`
+# (assay decisions.md A-043) so a second Go project can use it without copying
+# it. What is left here is the part that is genuinely srdm's: the privileged
+# systemd-in-Docker harness. srdm's `unit` target is now an alias for the
+# shared base, so `tools/gate.sh` and `tools/canary-run.sh` keep working
+# unchanged and `srdm-gate:unit` still exists.
+#
+# WHY NOT tester-unified (the Python one): vbpub's shared PYTHON gate image is
+# a 3.14 venv closure built from four projects' pyprojects. It has no Go
+# toolchain, it runs unprivileged as uid 1003, and it has no systemd. Adding a
+# Go toolchain to it would rebuild and re-risk the gate of ciu, cmru, topos and
+# nyxloom to serve a project that still could not run its own e2e oracles
+# there. Hence a SIBLING image, `tester-unified-go`, and this file on top.
 #
 # Cockpit doctrine still holds: this image is the gate, the devcontainer is
 # not. "Green in the cockpit" is not a ship signal — and in srdm's case the
 # cockpit has no Go toolchain at all, so it cannot even pretend.
 #
-# Build both targets from THIS directory:
+# The base must exist before either target builds. `tools/gate.sh` builds it
+# on demand; by hand:
+#   docker build -f ../tester-unified-go/Dockerfile \
+#       -t tester-unified-go:local ../tester-unified-go
 #   docker build -f gate/Dockerfile --target unit -t srdm-gate:unit gate/
 #   docker build -f gate/Dockerfile --target e2e  -t srdm-gate:e2e  gate/
 #
@@ -23,44 +30,13 @@
 # real rather than trusting the name — a typo'd slice fails OPEN).
 
 # ---------------------------------------------------------------- unit ----
-FROM golang:1.25 AS unit
-
-# The gate runs as the uid that owns the host-side bind mount, so build
-# artifacts and coverage files it writes are readable outside the container.
-# A gate must give its run-uid a FULL identity: a passwd entry (os/user and
-# anything calling getpwuid needs one), a group, a writable HOME, and XDG
-# dirs. Without them suites fail with errors that look like breakage but are
-# pure environment.
-ARG RUN_UID=1003
-ARG RUN_GID=1003
-
-RUN groupadd -g "${RUN_GID}" srdm \
- && useradd -u "${RUN_UID}" -g "${RUN_GID}" -m -d /home/srdm -s /bin/bash srdm \
- && mkdir -p /home/srdm/.config /home/srdm/.cache /home/srdm/.local/state \
- && chown -R "${RUN_UID}:${RUN_GID}" /home/srdm
-
-# Go's build and module caches must be writable by the run-uid, and they must
-# NOT live on the bind-mounted worktree: a gate that writes cache into the
-# repo pollutes the tree it is meant to be judging.
-ENV HOME=/home/srdm \
-    XDG_CONFIG_HOME=/home/srdm/.config \
-    XDG_CACHE_HOME=/home/srdm/.cache \
-    XDG_STATE_HOME=/home/srdm/.local/state \
-    GOCACHE=/gocache \
-    GOMODCACHE=/gomodcache \
-    GOFLAGS=-mod=mod \
-    GOTOOLCHAIN=local
-
-# Prewarm the standard library into the shared cache so a gate run compiles
-# only srdm. Built as the run-uid so the cache is owned by whoever will use
-# it — a root-owned cache is silently unusable and every run pays full
-# rebuild cost while looking fine.
-RUN mkdir -p "${GOCACHE}" "${GOMODCACHE}" \
- && chown -R "${RUN_UID}:${RUN_GID}" "${GOCACHE}" "${GOMODCACHE}"
-USER ${RUN_UID}:${RUN_GID}
-RUN go build std
-
-WORKDIR /src
+# An alias for the shared Go gate image, kept as a named target so every
+# existing `--target unit` invocation and the `srdm-gate:unit` tag survive the
+# promotion. Everything that used to live here — the run-uid's full identity,
+# the caches held off the bind mount, the prewarmed std library, GOTOOLCHAIN
+# pinning — is now in the base and is documented there.
+ARG BASE_IMAGE=tester-unified-go:local
+FROM ${BASE_IMAGE} AS unit
 
 # ----------------------------------------------------------------- e2e ----
 # The privileged harness: systemd as PID 1, so the claims that are about the
@@ -69,7 +45,9 @@ WORKDIR /src
 # charged after ExecStart exits, that unmounting uncharges them, that it
 # does NOT while a reference is held.
 #
-# Mechanics follow the recipe already proven on this host
+# This is the part that is genuinely srdm's and the reason srdm keeps its own
+# image at all: it is why a Go toolchain in tester-unified would not have been
+# enough. Mechanics follow the recipe already proven on this host
 # (wings-cgroups/v1-legacy/test/e2e-systemd). Notably --cgroupns=PRIVATE,
 # not host: systemd wants its own cgroup namespace root, and a private one
 # also keeps the probe self-contained rather than measuring against a tree
@@ -93,7 +71,7 @@ RUN apt-get update \
     :
 
 # The suite mounts tmpfs and drives systemd, so it runs as root here. The Go
-# caches are inherited from the unit stage and are root-writable.
+# caches are inherited from the base image and are root-writable.
 ENV HOME=/root
 
 # SIGRTMIN+3 is systemd's shutdown signal; without it `docker stop` waits

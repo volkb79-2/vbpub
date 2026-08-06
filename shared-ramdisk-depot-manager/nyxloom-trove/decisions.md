@@ -1489,3 +1489,55 @@ generation and server means re-exposing the SAME pair after a crash finds
 its own upper again, resuming rather than restarting — the "interrupted
 update resumable" half of the handoff's question, answered by where the
 upper lives rather than by whether `Unexpose` deletes it.
+
+---
+
+## D-036 — the Go toolchain half of `gate/Dockerfile` becomes a shared image; only the privileged harness stays srdm's
+
+**Status:** **accepted**, implemented 2026-08-06. Refines D-006 rather than
+reversing it.
+
+D-006 asked "add Go to `tester-unified`, or build a gate container tailored to
+srdm?" and chose tailored, for two reasons that both still hold: adding Go to
+the shared **Python** image rebuilds and re-risks four unrelated gates, and
+srdm's P02+ oracles need privileged systemd-in-Docker, which `tester-unified`
+is structurally unable to be.
+
+What D-006 did not separate is that `gate/Dockerfile` was answering **two**
+questions in one file. Its `unit` stage — the run-uid's full identity, the Go
+caches held off the bind mount, the prewarmed std library, `GOTOOLCHAIN=local`
+— is generic Go-gate plumbing with nothing srdm-specific in it. Its `e2e`
+stage is the privileged harness, and that is the part that made a tailored
+image necessary in the first place.
+
+So the `unit` stage is promoted to **`vbpub/tester-unified-go`** — a *sibling*
+of `tester-unified`, never an addition to it, so D-006's central objection is
+untouched — and `gate/Dockerfile` keeps `unit` as a one-line alias for that
+base plus the `e2e` stage on top. Every existing invocation survives:
+`--target unit`, `--target e2e`, and the `srdm-gate:unit` / `srdm-gate:e2e`
+tags all still resolve.
+
+The forcing case was a second consumer: `assay` (vbpub's testing/rigor library,
+scoped the same day) needs a pinned Go toolchain to regenerate the cover-profile
+fixtures its Go adapter is tested against. Without the promotion it would have
+copied srdm's Dockerfile — which is precisely the four-copies divergence assay
+exists to end, reproduced in the infrastructure layer. See
+`assay/nyxloom-trove/decisions.md` A-043.
+
+Two properties are deliberate and worth not "fixing" later:
+
+- **Build-if-absent, never rebuild-if-present.** `tools/go-base.sh` owns that
+  rule for both `tools/gate.sh` and `tools/canary-run.sh`, so it exists once.
+  A rebuild would silently move the toolchain under a coverage profile or a
+  binary the gate is about to judge; moving the pin is an explicit act (edit
+  the base Dockerfile, then remove the images).
+- **Go still does not go in the devcontainer.** The cockpit having no Go
+  toolchain at all is a property worth keeping, not an inconvenience to
+  remove: it is why cockpit doctrine here "cannot even pretend". A `tools/go`
+  wrapper around this image is how a cockpit gets Go ergonomics without a
+  cockpit Go.
+
+Verified before landing: the base builds; `--target unit` resolves to the base
+image id; `--target e2e` builds on it; and `tools/gate.sh` with `srdm-gate:unit`
+deleted rebuilds through the new path and runs the full unit gate green
+(gofmt, build, vet, 20 packages, exit 0).

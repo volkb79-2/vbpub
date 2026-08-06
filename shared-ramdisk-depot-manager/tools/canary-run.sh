@@ -26,8 +26,13 @@ fi
 cgroup_parent="$("$here/cgroup-parent.sh" "${SRDM_CGROUP_PARENT:-}")"
 
 image="srdm-gate:unit"
+# gate/Dockerfile's `unit` target is now an alias for the shared Go base
+# (assay decisions.md A-043), so the base must exist first. tools/go-base.sh
+# owns that rule; tools/gate.sh calls the same helper.
+base_image="$("$here/go-base.sh" "$cgroup_parent")"
 docker image inspect "$image" >/dev/null 2>&1 || \
   docker build --cgroup-parent="$cgroup_parent" \
+    --build-arg "BASE_IMAGE=$base_image" \
     -f "$project_dir/gate/Dockerfile" --target unit -t "$image" "$project_dir/gate"
 
 rel_project="${project_dir#"$repo_root"/}"
