@@ -144,9 +144,22 @@ def resolve_ksm_optin(configured: str) -> str:
     """The effective ``ksm_optin``, after any ambient override (S15.18).
 
     ``CIU_KSM`` accepts:
-      - ``"builtin"`` / ``"1"`` / ``"on"``  -> force the CIU-shipped shim
-      - ``"0"`` / ``"off"`` / ``""``        -> force KSM opt-in OFF
+      - ``"builtin"`` / ``"1"`` / ``"on"``  -> inject the CIU-shipped shim
+      - ``"0"`` / ``"off"`` / ``""``        -> PASSTHROUGH: inject nothing
       - any other value                     -> treated as a path to a shim
+
+    **"off" means PASSTHROUGH, not "KSM disabled" — the distinction is real and
+    was mislabelled until 2026-08-06.** All CIU can do here is decide whether to
+    INJECT its own opt-in; it cannot un-opt-in a process. If the consumer's image
+    enables KSM by itself (its entrypoint calls ``prctl``, or the application
+    does), ``off`` changes nothing about that and the containers stay merged.
+    Naming it "disabled" promised an outcome CIU does not control.
+
+    There is no force-off value, deliberately. Implementing one
+    (``prctl(PR_SET_MEMORY_MERGE, 0)`` from a wrapper) would be BEST-EFFORT at
+    most: the image's own code runs after ours and can re-enable. A value that
+    reads as a guarantee CIU cannot keep is worse than its absence — if it is
+    ever added it must be named and documented as best-effort.
 
     Read fresh on every call (no cached state), so a long-lived process or a
     test that changes the environment sees it immediately.

@@ -20,7 +20,9 @@ Usage: ciu <verb> [options]
        ciu version
 
 Run-scoped overrides (never written back to the TOML layer):
-  --ksm / --no-ksm       force KSM opt-in on/off for THIS run (S15.18)
+  --ksm / --no-ksm       inject / do not inject CIU's KSM shim, THIS run only.
+                         --no-ksm is PASSTHROUGH: it stops CIU injecting, it
+                         does NOT disable KSM an image enables itself (S15.18)
 
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error

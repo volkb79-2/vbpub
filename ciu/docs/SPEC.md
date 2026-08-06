@@ -1534,9 +1534,18 @@ very next run uses it again.
 resolution point, not two that can disagree, and every other ambient `CIU_*`
 toggle already works this way. Passing both flags is an error (exit 2).
 
-`CIU_KSM` accepts `builtin`/`1`/`on`/`true`/`yes` (force the shipped shim),
-`0`/`off`/`false`/`no`/empty (force off), or any other value as an explicit shim
-path. **Unset returns the configured value unchanged** — the override is opt-in
+`CIU_KSM` accepts `builtin`/`1`/`on`/`true`/`yes` (inject the shipped shim),
+`0`/`off`/`false`/`no`/empty (**passthrough** — inject nothing), or any other
+value as an explicit shim path.
+
+**`off` is PASSTHROUGH, not "KSM disabled".** All CIU decides is whether to
+INJECT its own opt-in; it cannot un-opt-in a process. If the consumer's image
+enables KSM itself — its entrypoint calls `prctl`, or the application does —
+`off` changes nothing and the containers stay merged. There is deliberately no
+force-off value: implementing one (`prctl(PR_SET_MEMORY_MERGE, 0)` from a
+wrapper) would be BEST-EFFORT at most, since the image's own code runs after
+CIU's and can re-enable. A value that reads as a guarantee CIU cannot keep is
+worse than its absence. **Unset returns the configured value unchanged** — the override is opt-in
 and never invents a policy the config did not state. The S15.7 notes line
 reports the EFFECTIVE value, so a run under an override says so.
 
