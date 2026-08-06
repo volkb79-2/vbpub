@@ -1,0 +1,257 @@
+"""O3 — `reason_code` is drawn from the CLOSED enumeration (A-050, A-051).
+
+The negative this defends: *reason_code is a free string, so a typo'd or
+invented code passes validation and a consumer switching on it silently falls
+through.*
+
+**Why this module is not self-agreement.** The schema is a hand-written file; it
+does not import `errors.py` and nothing generates it from `errors.py`. So
+asserting that the file's enumerations EQUAL `errors.REASON_CODES` is a real
+drift guard between two independently maintained artifacts — the same
+relationship the config suite has with `tomllib`. If the schema were ever
+generated from Python, every test below would collapse into proving that assay
+agrees with itself, and this module would be worthless. It is the one thing a
+successor must not "simplify".
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from conftest import SCHEMA_PATH, verdict_fixture, why_invalid
+from jsonschema import Draft202012Validator
+
+from assay.errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
+from assay.verdict import Verdict
+
+NON_PASS = [outcome for outcome in Outcome if outcome is not Outcome.PASS]
+
+#: Every (outcome, code) pair the design guide declares legal.
+VALID_PAIRS = [
+    (outcome.value, code.value)
+    for outcome in NON_PASS
+    for code in sorted(REASON_CODES[outcome])
+]
+
+#: Every (outcome, code) pair it does NOT — a code that is real, but belongs to
+#: a different outcome. This is the shape a consumer's switch falls through on.
+CROSS_PAIRS = [
+    (outcome.value, code.value)
+    for outcome in NON_PASS
+    for code in sorted(ReasonCode)
+    if code not in REASON_CODES[outcome]
+]
+
+
+LANE_RESOLVED_KEYS = (
+    "declared_rigor",
+    "argv_declared",
+    "argv_appended",
+    "argv_effective",
+    "argv_modified",
+    "env_declared",
+    "env_effective",
+)
+
+
+def a_verdict_with(outcome: str, code: str | None) -> dict:
+    """The smallest valid artifact for *outcome*, carrying exactly *code*.
+
+    Built from the ERROR fixture — the one shape with no claims and no
+    lane-resolved group — so that `reason_code` is the ONLY thing this module
+    varies. A rejection here cannot be caused by anything else in the document.
+    """
+    document = verdict_fixture("ERROR")
+    document["outcome"] = outcome
+    document["exit_code"] = EXIT_CODES[Outcome(outcome)]
+    if code is None:
+        document.pop("reason_code", None)
+    else:
+        document["reason_code"] = code
+    return document
+
+
+def a_claim_with(status: str, code: str | None) -> dict:
+    """The same, one level down: one R0 claim carrying exactly *code*.
+
+    The verdict-level outcome is set to a shape the schema accepts and is held
+    constant, so a rejection is unambiguously the CLAIM's.
+    """
+    document = verdict_fixture("PASS")
+    for key in LANE_RESOLVED_KEYS:
+        document.pop(key, None)
+    document["outcome"] = "PASS"
+    document["exit_code"] = 0
+    document.pop("reason_code", None)
+
+    claim = {
+        "rigor": "R0",
+        "source": "computed",
+        "status": status,
+        "verified_by_assay": True,
+    }
+    if code is not None:
+        claim["reason_code"] = code
+    document["claims"] = [claim]
+    return document
+
+
+# --- the enumeration is really closed, and really the declared one -----------
+
+
+def test_the_shipped_schema_enumerates_exactly_the_codes_errors_py_declares():
+    """The drift guard between two independently written artifacts."""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    per_outcome = schema["$defs"]["reason_codes"]
+
+    declared = {
+        outcome.value: {code.value for code in codes}
+        for outcome, codes in REASON_CODES.items()
+        if codes
+    }
+    shipped = {
+        name: set(entry["enum"])
+        for name, entry in per_outcome.items()
+        if isinstance(entry, dict) and "enum" in entry
+    }
+    assert shipped == declared
+
+    assert set(schema["$defs"]["reason_code"]["enum"]) == {
+        code.value for code in ReasonCode
+    }
+    assert "PASS" not in per_outcome, "a pass has no cause to name"
+
+
+def test_the_shipped_schema_enumerates_exactly_the_six_outcomes():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert set(schema["$defs"]["outcome"]["enum"]) == {o.value for o in Outcome}
+
+
+# --- each declared pair validates ---------------------------------------------
+
+
+@pytest.mark.parametrize("outcome,code", VALID_PAIRS)
+def test_each_declared_pair_validates(
+    outcome: str, code: str, validator: Draft202012Validator
+):
+    assert why_invalid(validator, a_verdict_with(outcome, code)) == []
+
+
+def test_every_declared_code_is_exercised_by_the_accept_half():
+    """Guard the guard: an unexercised code proves nothing about itself."""
+    assert {code for _, code in VALID_PAIRS} == {code.value for code in ReasonCode}
+    assert len(VALID_PAIRS) == len(ReasonCode) == 16
+
+
+# --- a code valid for a DIFFERENT outcome is rejected -------------------------
+
+
+@pytest.mark.parametrize("outcome,code", CROSS_PAIRS)
+def test_a_code_belonging_to_another_outcome_is_rejected(
+    outcome: str, code: str, validator: Draft202012Validator
+):
+    valid = sorted(REASON_CODES[Outcome(outcome)])[0].value
+    assert why_invalid(validator, a_verdict_with(outcome, valid)) == [], (
+        "the same document with a CORRECT code must validate, or this rejection "
+        "is about something else"
+    )
+
+    assert not validator.is_valid(a_verdict_with(outcome, code))
+
+
+def test_the_cross_matrix_is_not_empty():
+    assert len(CROSS_PAIRS) == len(NON_PASS) * len(ReasonCode) - len(VALID_PAIRS)
+    assert len(CROSS_PAIRS) == 64
+
+
+@pytest.mark.parametrize("outcome", [o.value for o in NON_PASS])
+def test_an_invented_code_is_rejected(outcome: str, validator: Draft202012Validator):
+    """A-050: the enumeration is closed. An implementer who needs a code that is
+    not listed stops and asks; they do not add one."""
+    assert not validator.is_valid(a_verdict_with(outcome, "SEEMS_FINE"))
+    assert not validator.is_valid(a_verdict_with(outcome, "uncovered_lines"))
+    assert not validator.is_valid(a_verdict_with(outcome, ""))
+
+
+# --- PASS carries none at all -------------------------------------------------
+
+
+@pytest.mark.parametrize("code", [code.value for code in ReasonCode])
+def test_pass_carrying_any_reason_code_at_all_is_rejected(
+    code: str, validator: Draft202012Validator
+):
+    assert why_invalid(validator, a_verdict_with("PASS", None)) == []
+
+    assert not validator.is_valid(a_verdict_with("PASS", code))
+
+
+# --- the same rule, one level down, on a claim --------------------------------
+
+
+@pytest.mark.parametrize("status,code", VALID_PAIRS)
+def test_each_declared_pair_validates_on_a_claim(
+    status: str, code: str, validator: Draft202012Validator
+):
+    assert why_invalid(validator, a_claim_with(status, code)) == []
+
+
+@pytest.mark.parametrize("status,code", CROSS_PAIRS)
+def test_a_claim_code_belonging_to_another_status_is_rejected(
+    status: str, code: str, validator: Draft202012Validator
+):
+    valid = sorted(REASON_CODES[Outcome(status)])[0].value
+    assert why_invalid(validator, a_claim_with(status, valid)) == []
+
+    assert not validator.is_valid(a_claim_with(status, code))
+
+
+@pytest.mark.parametrize("code", [code.value for code in ReasonCode])
+def test_a_pass_claim_carrying_any_reason_code_is_rejected(
+    code: str, validator: Draft202012Validator
+):
+    assert why_invalid(validator, a_claim_with("PASS", None)) == []
+
+    assert not validator.is_valid(a_claim_with("PASS", code))
+
+
+# --- the exit code is the verdict ---------------------------------------------
+
+
+@pytest.mark.parametrize("outcome", [o.value for o in Outcome])
+def test_an_exit_code_that_disagrees_with_the_outcome_is_rejected(
+    outcome: str, validator: Draft202012Validator
+):
+    """The exit code IS the verdict: a consumer checking only it must never be
+    wrong, so the artifact is never allowed to say something else."""
+    document = verdict_fixture(outcome)
+    assert why_invalid(validator, document) == []
+    assert document["exit_code"] == EXIT_CODES[Outcome(outcome)]
+
+    for wrong in range(6):
+        if wrong == EXIT_CODES[Outcome(outcome)]:
+            continue
+        document["exit_code"] = wrong
+        assert not validator.is_valid(document), (
+            f"{outcome} was allowed to report exit {wrong}"
+        )
+
+
+# --- and the model refuses the same pairings ----------------------------------
+
+
+@pytest.mark.parametrize("outcome,code", CROSS_PAIRS)
+def test_the_model_refuses_a_code_from_another_outcome(outcome: str, code: str):
+    kwargs = {
+        "lane": "package",
+        "commit": "a" * 40,
+        "outcome": Outcome(outcome),
+        "started": "2026-08-06T09:00:00+00:00",
+        "ended": "2026-08-06T09:00:01+00:00",
+        "assay_version": "0.1.0",
+    }
+    valid = sorted(REASON_CODES[Outcome(outcome)])[0]
+    assert Verdict(**kwargs, reason_code=valid).reason_code is valid
+
+    with pytest.raises(ValueError, match="is not valid for"):
+        Verdict(**kwargs, reason_code=ReasonCode(code))

@@ -30,6 +30,16 @@ assay = "assay.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# A-029: consumers validate an artifact against a JSON Schema shipped AS DATA,
+# without importing assay. Without this stanza the schema exists in the source
+# tree and VANISHES on install — every in-tree test stays green while every
+# installed consumer gets nothing. Verified in the gate image: with it the wheel
+# carries `assay/schemas/verdict.schema.json`; without it the wheel carries only
+# `assay/__init__.py`. tests/test_verdict_schema_is_packaged.py proves both
+# sides.
+[tool.setuptools.package-data]
+assay = ["schemas/*.json"]
+
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump),
 # matching the estate's other wheel projects. `root = ".."` because the git root
 # is one level up (the vbpub monorepo), same as ciu/nyxloom/topos.

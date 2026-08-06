@@ -22,17 +22,13 @@ catch all three shapes.
 from __future__ import annotations
 
 import ast
-import os
 import shutil
-import subprocess
 import sys
 import tomllib
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, Standalone
 
 PACKAGE_DIR = PROJECT_ROOT / "src" / "assay"
 
@@ -147,6 +143,7 @@ def test_the_package_imports_nothing_outside_the_stdlib():
         "cli.py",
         "config.py",
         "errors.py",
+        "verdict.py",
     }
 
 
@@ -196,114 +193,11 @@ def test_gitignore_covers_the_build_residue_an_install_leaves():
 # --- a venv containing only assay ---------------------------------------------
 
 
-def _build_backend_home() -> Path:
-    """Locate an importable setuptools, by DERIVATION from this interpreter.
-
-    The scratch venv is built with ``--no-build-isolation --no-index`` so that
-    nothing is fetched from a network. That needs the build backend to be
-    importable from somewhere, and the honest way to find it is to ask the
-    interpreters we already have rather than to hardcode a container path.
-    """
-    probe = "import setuptools, pathlib; print(pathlib.Path(setuptools.__file__).parent.parent)"
-    candidates = [Path(sys.executable), Path(sys.base_prefix) / "bin" / "python3"]
-    for exe in candidates:
-        if not exe.exists():
-            continue
-        proc = subprocess.run(
-            [str(exe), "-c", probe], capture_output=True, text=True
-        )
-        if proc.returncode == 0:
-            return Path(proc.stdout.strip())
-    raise AssertionError(
-        f"no interpreter among {candidates} can import setuptools, so the "
-        f"offline scratch-venv install cannot be built"
-    )
-
-
-def _clean_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-
-
-@dataclass(frozen=True)
-class Standalone:
-    """assay, built and installed with nothing else present."""
-
-    venv: Path
-    wheel: Path
-
-    def run(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [str(self.venv / "bin" / argv[0]), *argv[1:]],
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        )
-
-
-@pytest.fixture(scope="module")
-def standalone(tmp_path_factory) -> Standalone:
-    """Build assay's wheel and install it into a venv that has nothing else.
-
-    Build and install are two subprocesses with two different environments, on
-    purpose. The build needs ``setuptools`` on ``PYTHONPATH``; if that
-    ``PYTHONPATH`` were also present for the *install*, pip would resolve
-    requirements against whatever else happens to live in that directory and
-    a declared runtime dependency could be silently considered satisfied — the
-    venv would no longer contain "only assay" in the sense the claim needs.
-    So the install runs with a clean environment and ``--no-index``: nothing to
-    fetch from, nothing to leak in.
-    """
-    tmp = tmp_path_factory.mktemp("standalone")
-    source = tmp / "assay-src"
-    source.mkdir()
-    shutil.copy(PROJECT_ROOT / "pyproject.toml", source / "pyproject.toml")
-    shutil.copytree(
-        PROJECT_ROOT / "src",
-        source / "src",
-        ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"),
-    )
-
-    venv = tmp / "venv"
-    base = Path(sys.base_prefix) / "bin" / "python3"
-    creator = str(base if base.exists() else sys.executable)
-    subprocess.run([creator, "-m", "venv", str(venv)], check=True, capture_output=True)
-    python = venv / "bin" / "python"
-    assert python.exists(), "the fresh venv has no interpreter"
-
-    wheels = tmp / "wheels"
-    build_env = _clean_env()
-    build_env["PYTHONPATH"] = str(_build_backend_home())
-    built = subprocess.run(
-        [
-            str(python),
-            "-m",
-            "pip",
-            "wheel",
-            "--no-build-isolation",
-            "--no-deps",
-            "--wheel-dir",
-            str(wheels),
-            str(source),
-        ],
-        capture_output=True,
-        text=True,
-        env=build_env,
-    )
-    assert built.returncode == 0, f"wheel build failed:\n{built.stdout}\n{built.stderr}"
-    candidates = sorted(wheels.glob("assay-*.whl"))
-    assert len(candidates) == 1, f"expected one assay wheel, got {candidates}"
-
-    installed = subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-index", str(candidates[0])],
-        capture_output=True,
-        text=True,
-        env=_clean_env(),
-    )
-    assert installed.returncode == 0, (
-        "offline install failed — with zero runtime dependencies there is "
-        f"nothing to resolve:\n{installed.stdout}\n{installed.stderr}"
-    )
-    return Standalone(venv=venv, wheel=candidates[0])
+# The `standalone` fixture (wheel build + offline install, A-070's two
+# environments) now lives in `conftest.py`, session-scoped: P01b's packaging
+# oracle needs the same venv, and a subtle procedure that nine more packages
+# would each copy is exactly the four-copies shape this project exists to
+# remove. The tests below are unchanged.
 
 
 def test_the_built_wheel_declares_no_runtime_requirement(standalone: Standalone):
@@ -329,7 +223,8 @@ def test_assay_imports_in_a_venv_that_contains_only_itself(standalone: Standalon
     proc = standalone.run(
         "python",
         "-c",
-        "import assay, assay.cli, assay.config, assay.errors; print(assay.__file__)",
+        "import assay, assay.cli, assay.config, assay.errors, assay.verdict;"
+        " print(assay.__file__)",
     )
 
     assert proc.returncode == 0, proc.stderr
