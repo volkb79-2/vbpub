@@ -1,0 +1,77 @@
+# nyxloom project config — assay.
+#
+# Created as a CONTROLLER CHORE, not by a package: P01's oracles must name a
+# gate that already exists, and a package cannot bootstrap the gate that judges
+# it (open item A-O01, closed here).
+#
+# NOTE ON WHAT THIS GATE CLAIMS. `asserts` below is ["tests-pass"] and nothing
+# more. assay's whole subject matter is changed-line coverage, canaries and
+# mutation -- and it has none of them yet. Declaring `changed-line-coverage` or
+# `canary-verified` here today would be the lane-table-implies-capability
+# failure the project exists to remove, committed in assay's own config on day
+# one. P11 upgrades this declaration when the capability is real, and not
+# before. See docs/DESIGN-GUIDE.md 12.
+
+[project]
+id = "assay"
+default_branch = "main"
+trove = "nyxloom-trove"
+
+# assay is a subdir of the vbpub monorepo; git ops resolve upward to vbpub.
+worktree_root = "../.worktrees"
+
+handoff_globs = ["nyxloom-trove/handoffs/*.md"]
+
+reports_dir          = "nyxloom-trove/reports"
+decisions_inbox      = "nyxloom-trove/decisions.md"
+archive_dir          = "nyxloom-trove/archive"
+archive_keep_visible = 10
+agent_logs           = "nyxloom-trove/agent-logs"
+
+# The `roadmap` / `backlog` keys are deliberately absent, matching srdm: they
+# opt a project into the numeric-prefixed direction spine that lint rules S1-S4
+# then enforce. assay's direction lives in docs/DESIGN-GUIDE.md and the carved
+# series; adopt the spine deliberately if it is ever wanted, not as a side
+# effect of a bootstrap.
+
+[refs]
+design_guide = "docs/DESIGN-GUIDE.md"
+decisions    = "nyxloom-trove/decisions.md"
+series       = "nyxloom-trove/handoffs/README.md"
+
+# --- gates -------------------------------------------------------------------
+#
+# assay uses vbpub's shared `tester-unified` container unchanged. Verified
+# 2026-08-06 that it already carries the whole closure (python 3.14.6, pytest
+# 9.1.1, pytest-cov, coverage 7.15.2, and the stdlib modules assay uses), which
+# it does because assay has ZERO runtime dependencies by design (decision
+# A-005). So no image rebuild is needed and the gate of ciu, cmru, topos and
+# nyxloom is not re-risked -- open item A-O02, closed.
+#
+# Code reaches the container through the BOUND worktree via PYTHONPATH, never a
+# baked copy, exactly as the other four Python projects do.
+#
+# --cgroup-parent=nyxloom-gates.slice: a gate is a CPU- and IO-heavy background
+# job that must never compete with production on this host. A MISSING slice
+# fails OPEN (systemd creates a transient limitless one), so the slice being
+# real is a host precondition, not something this file can assert.
+
+[gates.tester-unified]
+argv = ["bash", "-c", "set -euo pipefail && docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/assay && export PYTHONPATH=src && /opt/tester-venv/bin/python -m pytest tests -q'"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 1800
+environment = "tester-unified"
+
+[mutexes.merge-lane]
+scope = "project"
+capacity = 1
+
+[policy]
+max_active_tasks = 1
+ready_queue_target = 2
+carve_ahead_target = 0
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+reconcile_interval_seconds = 30

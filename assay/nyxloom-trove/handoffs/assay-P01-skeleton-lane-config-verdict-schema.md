@@ -19,8 +19,10 @@ scope:
     - "src/assay/cli.py"
     - "tests/**"
     - "assay.toml"
-    - "nyxloom-trove/nyxloom.toml"
   forbid:
+    - "nyxloom-trove/nyxloom.toml"
+    - "docs/DESIGN-GUIDE.md"
+    - "nyxloom-trove/decisions.md"
     - "../nyxloom/**"
     - "../ciu/**"
     - "../topos/**"
@@ -47,8 +49,8 @@ oracles:
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
-  - "declaring the gate requires rebuilding the shared tester-unified image (see A-O02) -- stop and report; a rebuild re-risks ciu/cmru/topos/nyxloom's gate"
-  - "the verdict schema cannot express all three evidence tiers without a field not agreed in decisions.md"
+  - "the verdict schema cannot express all three evidence tiers without a field not agreed in decisions.md -- propose the field and STOP, do not invent it"
+  - "a decision in decisions.md turns out to be unimplementable as written -- report which id, do not work around it"
 mutexes: []
 ---
 
@@ -78,8 +80,22 @@ verdict schema express every outcome?** No judging logic lands here.
    validate without importing assay.
 5. `src/assay/cli.py` — `assay lanes` only (list and validate declared lanes).
    Other verbs land in their own packages.
-6. `assay.toml` for assay itself, and `nyxloom-trove/nyxloom.toml` declaring the
-   `tester-unified` gate. See A-O01/A-O02 before declaring the gate.
+6. `assay.toml` for assay itself. Declare only what is TRUE today: `rigor =
+   ["R0"]`, no `judge` table. assay does not yet have a coverage gate, and a
+   lane claiming R1 before P03/P04 exist is exactly the failure O2 rejects.
+   P11 upgrades it.
+
+## Already done for you — do not create these
+
+`nyxloom-trove/nyxloom.toml` exists (open items A-O01/A-O02 were closed by the
+controller: the gate is declared, and `tester-unified:local` was verified to
+already carry the whole closure, so no image rebuild is involved). It is in
+`scope.forbid`. So are `docs/DESIGN-GUIDE.md` and `nyxloom-trove/decisions.md`
+— they are the specification you are implementing, not files to edit. If either
+is wrong, say so in the LOG and stop; do not silently correct it.
+
+Note the gate declares `asserts = ["tests-pass"]` only, deliberately. Read the
+comment at the top of `nyxloom.toml` for why.
 
 ## Out of scope
 
