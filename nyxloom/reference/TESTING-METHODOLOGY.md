@@ -49,6 +49,110 @@ reducing quality to one coverage percentage.
 | DAST/protocol and adversarial security testing | A running isolated target rejects tested attacks at its real boundary. | Wiring-dependent auth, injection, traversal, and protocol flaws. | Complete security; requires threat-led test selection. | Security lane and release qualification. |
 | Reproducible-build/provenance verification | Rebuilding declared inputs yields the expected artifact and traceable dependency/toolchain identity. | Unrecorded inputs, build drift, and some supply-chain substitution. | Source correctness or compromise inside trusted inputs. | Release artifacts and toolchain changes. |
 
+## Scope, rigor, and lanes
+
+The catalogue above answers *which method*. It does not answer *how much of the
+system each method runs against*, and the two are independent: a changed-line
+coverage floor applies equally to an in-process unit run and to a full
+multi-service deployment, at wildly different cost. Conflating them produces a
+common failure — one project-wide "the gate" string carrying an unstated scope,
+where raising rigor silently raises deployment cost, and where a narrowed scope
+becomes invisible because nothing names it.
+
+Treat them as two axes and compose them deliberately.
+
+### Axis 1 — scope: how much of the system is under test
+
+| | Scope | What is real | What is faked | Needs deployed topology |
+|---|---|---|---|---|
+| **S0** | static | source text only | everything | no |
+| **S1** | unit | one module | all I/O, all peers | no |
+| **S2** | component | one service's public surface | its dependencies (in-process client, fake cache/broker) | no |
+| **S3** | stack | one deployable stack, real containers | other stacks | yes — one isolated instance |
+| **S4** | landscape | multiple stacks, cross-service flows, UI | nothing | yes — a full landscape |
+
+Scope is where the **environment tool's** authority begins. S0–S2 need only a
+dependency closure; S3 and S4 need real deployed topology, so *which containers,
+which network, which image* are questions the project's environment tool answers
+(for the worked example below: `ciu`), not questions nyxloom answers. This does
+not widen nyxloom's contract — it stays one isolated, fail-closed command per
+declared gate. It only says that for S3/S4 that command is normally a thin call
+into the environment tool rather than a bare test-runner invocation.
+
+### Axis 2 — rigor: how hard the result is being judged
+
+| | Rigor | Claim earned | Catalogue rows above |
+|---|---|---|---|
+| **R0** | pass/fail | the declared command ran at the intended commit and passed | isolated fail-closed gate; deterministic unit/component tests |
+| **R1** | reach | the changed (or declared) lines were *executed* | changed-line coverage; global line **and branch** coverage |
+| **R2** | assertion strength | those lines are *asserted*, not merely executed | changed-line mutation; whole-project mutation; fail-before/pass-after |
+| **R3** | gate integrity | the gate demonstrably *rejects* known-bad code | `nyxloom gate verify` canaries; serial/parallel coverage parity |
+
+R3 is a claim about the *instrument*, not the product. It is the only axis whose
+failure invalidates every other result already recorded, which is why it belongs
+on a cadence rather than inside a per-package run.
+
+### A lane is a cell selection
+
+A **lane** is a named, budgeted composition: *a scope selection × a rigor
+selection × a place to run × a wall-clock budget*. Naming lanes instead of
+gates makes three things explicit that a single gate string hides: what was
+**not** run, what the result costs, and which lane a given red belongs to.
+
+Four design rules, each of which survives contact with a real project:
+
+1. **Full scope, narrow rigor.** Run *all* cheap tests, but demand R1/R2 only on
+   changed lines. This keeps the per-package signal affordable and, just as
+   importantly, stops a diff-coverage percentage from being misread as a
+   project-health metric — it is a property of one diff, not of the tree.
+2. **Impact-based lane selection.** Map changed paths → owning stacks → run only
+   those stacks' S3 lanes, plus the cheap lane unconditionally. This requires
+   stacks to declare their own tests, which is the structural precondition, not
+   an optimization detail.
+3. **Artifact provenance is a precondition, not a lane.** Any S3/S4 run must
+   refuse to start unless the running image's revision matches the commit under
+   test. Without it, a live result silently describes an unknown artifact — the
+   most expensive lane produces the least trustworthy evidence, and no amount of
+   added rigor detects it.
+4. **R3 runs on a schedule, not per package.** Canary and gate-integrity probes
+   are expensive and slow-changing. Per-package they are waste; after a gate,
+   image, or transport change they are mandatory.
+
+### Worked example — dstdns, a multi-stack `ciu` consumer
+
+dstdns deploys ~5 application stacks (`controller`, `worker-io`, `worker-db`,
+`webapp-server`, `webapp-ui-react`) plus infrastructure, and supports
+per-worktree isolated instances. Its gating runner is a `test-runner` container
+built `FROM` the app base image, so its dependency closure equals the app
+runtime; greens from the interactive cockpit are explicitly not a ship signal.
+
+| Lane | Scope | Rigor | Runs in | Budget |
+|---|---|---|---|---|
+| `quick` | S0+S1 | R0 | that instance's `test-runner` | < 60 s |
+| `package` | S0–S2 | R1 + R2, changed lines only | that instance's `test-runner` | 2–5 min |
+| `stack` | S3, touched stacks only | R0 + R1 | that stack's own instance | 5–10 min |
+| `release` | S4 | R0 (+ provenance precondition) | the main landscape | 25–45 min |
+| `audit` | meta | R3 | scratch worktree | scheduled / after gate change |
+
+Two properties make this fit a multi-stack project specifically. **S3 is exactly
+the instance boundary** — "test `worker-io`" resolves to "bring up `worker-io`'s
+stack in my own instance, run its declared lane", which is a composition of
+capabilities the environment tool already has, not a new concept. And because
+each worktree can boot its own `test-runner`, lanes stop contending for a shared
+runner, which removes the scheduling discipline that otherwise has to be
+enforced by convention.
+
+**Current honest state (2026-08-06), recorded because a lane table implies
+capability it does not yet have.** dstdns's declared gate is narrowed to
+`pytest tests/unit -q` (~800 passed, 34 s). Full collection is red with 255
+pre-existing failures attributed to collection pollution — verified
+byte-identical across an unrelated merge, so not a regression — with package
+`dstdns-P38` (pollution diagnosis) as the named exit criterion for widening.
+**S2 is therefore unreachable today**, the `package` lane runs at S1, and the
+`stack` and `audit` lanes are designed but undeclared. A lane table is a target
+architecture; the gap between it and the declared gates is the backlog, and
+stating that gap is what keeps the table from reading as evidence.
+
 ## Mutation testing
 
 ### Current nyxloom support
