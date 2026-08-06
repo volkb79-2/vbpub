@@ -126,6 +126,12 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
 # S15.11 — in-container path the shim is bound to / preloaded from.
 KSM_PRELOAD_TARGET = "/opt/ksm/ksm-optin.so"
 
+# S15.17 — the sentinel value of `governance.ksm_optin` that means "use the shim
+# CIU ships", built on demand into the consumer's `.ciu/ksm/`. Any other
+# non-empty value is still a path to a consumer-supplied shim (S15.11), so this
+# is additive: nothing that worked before changes meaning.
+BUILTIN_KSM = "builtin"
+
 # The compose service-level keys governance may inject. Precedence (S15.3):
 # any of these keys already present in the AUTHOR's rendered service block
 # is left untouched — governance only fills in what the author didn't set.

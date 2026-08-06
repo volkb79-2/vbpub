@@ -30,6 +30,13 @@ ssh = ["paramiko>=5.0"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# S15.17 — the KSM shim SOURCE ships with CIU (built on demand into the
+# consumer's .ciu/ksm/, never checked in as a binary). Without this the wheel
+# installs ciu.ksm but not the .c it compiles, and `ciu ksm build` fails at
+# runtime rather than at package time.
+[tool.setuptools.package-data]
+ciu = ["data/*.c"]
+
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump).
 # Release = annotated tag `ciu-vX.Y.Z`; untagged commit = `X.Y.(Z+1).devN+g<sha>`.
 # ciu MAJOR tracks the SPEC MAJOR (SPEC 2.0.0 → seeded ciu-v2.0.0).

@@ -1458,10 +1458,11 @@ actually differ — including, now, just one key of a many-key policy.
 ### S15.11 — KSM opt-in injection (`ksm_optin`)
 
 Governance key `ksm_optin` (default `""` = off; requires
-`enabled = true`): a repo-relative or absolute path to a **universal**
-(dependency-free, built `-nostdlib`, zero `DT_NEEDED`) LD_PRELOAD shim
-that calls `prctl(PR_SET_MEMORY_MERGE)` (kernel ≥ 6.4). When set, the
-overlay injects into every non-exempt service:
+`enabled = true`): either the literal `"builtin"` (S15.17 — CIU builds and
+caches the shim it ships; the recommended value) or a repo-relative or absolute
+path to a **universal** (dependency-free, built `-nostdlib`, zero `DT_NEEDED`)
+LD_PRELOAD shim that calls `prctl(PR_SET_MEMORY_MERGE)` (kernel ≥ 6.4). When
+set, the overlay injects into every non-exempt service:
 
 - `environment: ["LD_PRELOAD=/opt/ksm/ksm-optin.so"]`
 - a read-only bind of the shim's PHYSICAL path (S1.3/S1.4) to
@@ -1483,6 +1484,42 @@ is inert for them. `environment`/`volumes` are MERGE keys in the overlay
 S15.3 author-precedence rule for scalar keys does not apply.
 `exempt_services` opts individual services out. The one-line S15.7
 summary includes `ksm_optin=<path|off>`.
+
+### S15.17 — CIU-shipped shim, built on demand (`ksm_optin = "builtin"`)
+
+CIU ships the shim SOURCE as package data and builds it on demand, so a
+consumer no longer maintains its own copy of a build artifact whose
+correctness is subtle (S15.11's dependency-free rule) and whose absence is
+silent (CIU-14). `ksm_optin = "builtin"` is the sentinel; every other
+non-empty value keeps its S15.11 meaning as a consumer-supplied path, so this
+is strictly additive.
+
+Build (`ciu ksm build [--force]`, or implicitly during render when no cached
+artifact exists):
+
+- The artifact is cached at `<repo>/.ciu/ksm/ksm-optin-<machine>-<digest>.so`,
+  where `<machine>` is `uname -m` and `<digest>` is a SHA-256 prefix of the
+  shipped source. Arch keying prevents silently reusing an x86-64 object on
+  aarch64; the digest makes a CIU upgrade that changes the shim
+  self-invalidating.
+- It MUST live under the repo root. The path becomes a Docker bind SOURCE, so
+  it is translated by S1.3/S1.4; a location outside the repo (e.g.
+  `$XDG_CACHE_HOME`) would pass through untranslated and address a host path
+  that does not exist, which Docker then creates as an empty directory — CIU-14
+  again, from the other direction.
+- The compile runs in a container (`gcc:13-bookworm`), so the HOST needs no
+  toolchain — the requirement is Docker, not gcc. Its bind source is the
+  daemon-visible path of the cache dir; passing the container-local path would
+  write the output where the caller cannot see it and appear to succeed.
+- The build is **verified before the artifact is usable**: a non-empty 64-bit
+  ELF object with ZERO `DT_NEEDED` entries. A build that fails verification is
+  DELETED, never cached — a libc-linked shim is not a degraded shim, it is a
+  container that will not start under the other libc. An artifact that cannot
+  be parsed is refused too: "could not verify" MUST NOT be treated as "verified
+  good". A cache HIT is re-verified on every use for the same reason.
+- Every failure (no Docker, image unavailable offline, compile error, timeout,
+  failed verification) is a configuration/environment error naming the cause;
+  CIU never proceeds with an unverified shim.
 
 ### S15.12 — Named-slice existence preflight (D-G9 check 1)
 

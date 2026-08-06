@@ -49,6 +49,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
   DEV-LOOP BUILDS
     bake [targets ...] [--no-cache]      docker buildx bake --load
+    ksm build [--force]                  build the KSM shim into .ciu/ksm/ (S15.17)
     dev <stack> [--profile NAME]          run a stack's live dev loop (HMR)
 
   SECRETS
@@ -322,6 +323,40 @@ def _iops_baseline(rest: list[str]) -> int:
     return run_iops_baseline(opts.path, runtime_s=opts.runtime, force=opts.force)
 
 
+def _ksm(rest: list[str]) -> int:
+    """Handle `ciu ksm build [--force]` (S15.17, CIU-17).
+
+    The explicit verb. `ciu up`/`ciu render` also build the shim implicitly when
+    `governance.ksm_optin = "builtin"` and no cached artifact exists, so this is
+    a convenience (pre-warm a fresh worktree, force a rebuild, see the errors
+    directly) rather than a required step.
+    """
+    import argparse as _ap
+
+    from . import ksm as ksm_mod
+    from .dev import resolve_repo_root
+    # CIU-10's reconciliation lives here (a pre-set PHYSICAL_REPO_ROOT wins only
+    # when it agrees with mountinfo) — reuse it rather than re-deriving a second,
+    # weaker answer to the same question.
+    from .workspace_env import _detect_physical_repo_root
+
+    p = _ap.ArgumentParser(prog="ciu ksm", add_help=False)
+    p.add_argument("action", choices=["build"])
+    p.add_argument("--force", action="store_true", default=False)
+    p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
+    opts = p.parse_args(rest)
+
+    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    try:
+        physical_root = _detect_physical_repo_root(repo_root)
+        path = ksm_mod.build(repo_root, physical_root, force=opts.force)
+    except ksm_mod.KsmBuildError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(path)
+    return 0
+
+
 def main() -> None:
     raw = sys.argv[1:]
 
@@ -549,6 +584,9 @@ def main() -> None:
             print("ciu diagnose: --logs must be between 0 and 10000.", file=sys.stderr)
             raise SystemExit(2)
         raise SystemExit(diagnose_run(project=opts.project, log_lines=opts.logs, json_output=opts.json_output))
+
+    elif verb == "ksm":
+        raise SystemExit(_ksm(rest))
 
     elif verb == "bake":
         from .engine import bake_revision_args
