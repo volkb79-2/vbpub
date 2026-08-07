@@ -190,9 +190,13 @@ review it.
   still has the procedure.
 - **S0 must be package-neutral.** The one taken for P01 was not; it carried that
   package's own handoff and plan.
-- **`assay verify` / R3** is recorded as `assay verify --lane X` producing R3
-  *about* lane X — deliberately not something `assay run` performs recursively.
-  P14 owns it.
+- **`assay verify`, corrected (A-129, superseding this note's own earlier
+  text)**: it is an ARTIFACT VALIDATOR (`assay verify <path>`, schema
+  validity plus rollup/argv/coverage-identity checks JSON Schema alone
+  can't express), never a lane-canary runner producing R3 about a named
+  lane — that was this note's own earlier, stale reading, corrected once
+  P14's readiness pass found the handoff's own O2/O3 text said something
+  different and more specific.
 - **P00/P01's handoffs fail nyxloom's linter** (`L7`/`L11`/`L12`/`L13` findings —
   missing BLOCKED-marker/branch-name mentions, an oracle referencing a path
   outside `scope.touch`, unresolved cross-repo globs). Found running A-089's
