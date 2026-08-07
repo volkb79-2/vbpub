@@ -36,7 +36,8 @@ from conftest import fixed_clock, make_lane, runner_verdict_fixture, verdict_fix
 from jsonschema import Draft202012Validator
 
 from assay import runner
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verdict import Claim
 
 
 def _validate(document: dict, validator: Draft202012Validator) -> None:
@@ -223,3 +224,68 @@ def test_a_hard_coded_constant_pass_would_fail_the_fail_fixture_comparison(
     del forced_pass_document["claims"][0]["reason_code"]
 
     assert forced_pass_document != runner_verdict_fixture("r0_fail_command_failed")
+
+
+# --- assemble_verdict refuses a claims tuple that does not cover declared_rigor -
+
+
+def test_assemble_verdict_refuses_before_constructing_an_incomplete_verdict(
+    tmp_path: Path,
+):
+    # This build (through P04) only ever supplies an R0 claim; a lane
+    # declaring rigor beyond R0 must be refused HERE -- not reach
+    # Verdict's own internal invariant, which raises a bare ValueError no
+    # caller catches (controller repair: relocated from a cli.py-only gate
+    # that P05 had no scope.touch permission to update).
+    lane = make_lane(name="package", rigor=("R0", "R1"), argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(
+        datetime(2026, 8, 7, 11, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 7, 11, 0, 1, tzinfo=timezone.utc),
+    )
+    result = runner.execute_command(lane, cwd=tmp_path, clock=clock)
+    r0_claim = runner.build_r0_claim(result)
+
+    with pytest.raises(AssayError) as excinfo:
+        runner.assemble_verdict(
+            lane=lane,
+            commit="c" * 40,
+            result=result,
+            claims=(r0_claim,),
+            assay_version="0.1.0",
+        )
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "R1" in str(excinfo.value)
+
+
+def test_assemble_verdict_accepts_when_claims_cover_every_declared_level(
+    tmp_path: Path,
+):
+    # The mirror case: once claims cover R0 AND R1, the guard must NOT fire
+    # -- proves the guard checks coverage, not merely "more than one level
+    # declared". A future R1-claim-producing package satisfies this the same
+    # way this synthetic second claim does.
+    lane = make_lane(name="package", rigor=("R0", "R1"), argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(
+        datetime(2026, 8, 7, 11, 5, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 7, 11, 5, 1, tzinfo=timezone.utc),
+    )
+    result = runner.execute_command(lane, cwd=tmp_path, clock=clock)
+    r0_claim = runner.build_r0_claim(result)
+    r1_claim = Claim(
+        rigor="R1",
+        source="computed",
+        status=Outcome.PASS,
+        verified_by_assay=True,
+    )
+
+    verdict = runner.assemble_verdict(
+        lane=lane,
+        commit="d" * 40,
+        result=result,
+        claims=(r0_claim, r1_claim),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.declared_rigor == ("R0", "R1")

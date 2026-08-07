@@ -15,12 +15,14 @@ Two subcommands ship so far:
   starts (A-095, via :mod:`assay.runner`).
 
   This build evaluates **R0 only**: a lane declaring any rigor beyond
-  ``["R0"]`` is refused with ``ERROR``/``BAD_LANE_CONFIG`` before anything
-  runs, rather than crashing partway through verdict assembly when
-  :class:`~assay.verdict.Verdict` finds a declared rigor level with no
-  claim to cover it. R1+ evaluation is a later package's job
-  (:mod:`assay.runner`'s ``assemble_verdict`` already accepts additional
-  claims — this gate is a CLI-level choice, not a runner limitation).
+  ``["R0"]`` is refused with ``ERROR``/``BAD_LANE_CONFIG`` rather than
+  crashing partway through verdict assembly when
+  :class:`~assay.verdict.Verdict` finds a declared rigor level with no claim
+  to cover it. The refusal lives in :func:`assay.runner.assemble_verdict`,
+  not here — that module is in every later producer package's
+  ``scope.touch``, so the guard self-obsoletes as R1+ evaluation lands
+  instead of needing a CLI-level edit this package's successors have no
+  scope to make.
 
 Both subcommands let the typed error out of :mod:`assay.config`/
 :mod:`assay.runner`/:mod:`assay.git` and map it to an exit code — the exit
@@ -38,7 +40,7 @@ from typing import Sequence, TextIO
 from . import __version__
 from . import git, runner
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, Outcome
 from .verdict import Verdict
 
 __all__ = ["build_parser", "main"]
@@ -151,15 +153,6 @@ def _resolve_lane_file(path: Path | None) -> LaneFile:
 def _cmd_run(args: argparse.Namespace, appended: list[str], out: TextIO) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
-    if lane.rigor != ("R0",):
-        raise AssayError(
-            f"lane {lane.name!r} declares rigor {list(lane.rigor)}; this "
-            f"assay build evaluates R0 only, end to end -- R1+ evaluation "
-            f"lands in a later package. Refusing before anything runs rather "
-            f"than crashing partway through verdict assembly.",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
-        )
     commit = git.head_rev(lane_file.project_root)
     result = runner.execute_command(lane, argv_append=appended, cwd=lane_file.project_root)
     r0_claim = runner.build_r0_claim(result)

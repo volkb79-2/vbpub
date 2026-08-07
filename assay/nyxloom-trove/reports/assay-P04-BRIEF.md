@@ -33,17 +33,21 @@ status. You do not restructure `execute_command` or `assemble_verdict`; you
 insert code between the two calls and widen the `claims` tuple you pass to
 the second one.
 
-## What P04's own CLI does NOT yet do — the gap you're filling
+## What P04's own build does NOT yet do — the gap you're filling
 
-`cli.py`'s `_cmd_run` currently REFUSES any lane whose `rigor != ("R0",)`
-with `ERROR`/`BAD_LANE_CONFIG`, before calling `execute_command` at all
-(search `this assay build evaluates R0 only` in `cli.py`). This is a
-CLI-level gate, not a `runner.py` limitation — `assemble_verdict` already
-accepts extra claims. **Your job includes deleting or loosening this gate**
-once you can actually build an R1 claim for a lane declaring `rigor =
-["R0", "R1"]`. Nothing else in `_cmd_run`'s wiring needs to change; you are
-inserting your evaluation step between the two `runner.` calls it already
-makes, then relaxing the one `if lane.rigor != ("R0",):` check.
+**Controller repair, post-implementation review:** the original diff put this
+gate directly in `cli.py`'s `_cmd_run` — but `cli.py` is not in P05's
+`scope.touch`, so that would have forced you to BLOCK on your first day.
+Relocated into `assemble_verdict` itself instead: it now refuses
+(`ERROR`/`BAD_LANE_CONFIG`) BEFORE constructing a `Verdict` whenever the
+`claims` tuple you pass does not cover every level in `lane.rigor` — checking
+`{claim.rigor for claim in claims}` against `lane.rigor`. **You do not delete
+or edit anything to satisfy this.** Once you pass `claims=(r0_claim,
+r1_claim)` for a `rigor = ["R0", "R1"]` lane, the coverage check is satisfied
+and the guard simply stops firing for that lane — no gate to find or touch,
+in `cli.py` or anywhere else. `_cmd_run` itself needs zero changes from you;
+you only ever touch the space between the two `runner.` calls it already
+makes.
 
 ## Other shapes
 
@@ -62,8 +66,8 @@ def write_verdict(verdict, target: str, *, stdout, replace=os.replace) -> None:
 * **`execute_command` never raises for an ordinary R0 outcome** — append
   rejected, missing executable, budget expired, command failed, command
   passed are all a returned `CommandResult`, never an exception. Only
-  `git.head_rev` failure and the (soon-to-be-yours) rigor gate raise
-  `AssayError` in the current `_cmd_run`.
+  `git.head_rev` failure and `assemble_verdict`'s own rigor-coverage guard
+  (previous section) raise `AssayError` in `_cmd_run`'s call chain.
 * **`result.started`/`result.ended` are already ISO-8601 strings** (via
   `verdict.iso_utc`) — pass them straight into `assemble_verdict` (it does,
   internally); do not re-derive timestamps for your R1 claim from a second

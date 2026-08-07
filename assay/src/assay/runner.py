@@ -317,11 +317,34 @@ def assemble_verdict(
     and passes ``claims=(r0_claim, r1_claim)`` -- no restructuring of this
     function required (A-094's whole point).
 
-    The verdict's own ``outcome`` and ``reason_code`` are DERIVED from
-    ``claims`` via :func:`~assay.verdict.rollup` (A-023), never chosen
+    Refuses (``ERROR``/``BAD_LANE_CONFIG``) BEFORE constructing a
+    :class:`~assay.verdict.Verdict` if *claims* does not cover every level in
+    ``lane.rigor`` -- this build (through P04) only ever passes an R0 claim,
+    so a lane declaring ``rigor = ["R0", "R1"]`` is refused here rather than
+    reaching :class:`~assay.verdict.Verdict`'s own internal invariant, which
+    raises a bare ``ValueError`` no caller catches. Deliberately placed here
+    rather than in ``cli.py``: this module is in every later producer
+    package's ``scope.touch`` (P05, P08, P09...), so the guard self-obsoletes
+    -- once a package supplies the missing claim, ``missing`` is empty and
+    this never fires for that rigor level again, with no file only this
+    package could touch left to update.
+
+    The verdict's own ``outcome`` and ``reason_code`` are otherwise DERIVED
+    from ``claims`` via :func:`~assay.verdict.rollup` (A-023), never chosen
     independently -- :class:`~assay.verdict.Verdict` would refuse a mismatch
     anyway, but deriving it here means this function cannot construct one.
     """
+    covered = {claim.rigor for claim in claims}
+    missing = [level for level in lane.rigor if level not in covered]
+    if missing:
+        raise AssayError(
+            f"lane {lane.name!r} declares rigor {list(lane.rigor)} but this "
+            f"assay build only computed claims for {sorted(covered)} -- "
+            f"{missing} evaluation lands in a later package. Refusing before "
+            f"constructing an incomplete verdict.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
     statuses = [claim.status for claim in claims]
     outcome = rollup(statuses)
     reason_code = None

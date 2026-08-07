@@ -171,7 +171,7 @@ def test_run_permits_an_append_when_allowed(git_repo: GitRepo, tmp_path: Path):
     assert marker.exists()
 
 
-# --- this build evaluates R0 only (a CLI-level design decision, documented) --
+# --- this build evaluates R0 only (assay.runner.assemble_verdict's own guard) -
 
 
 def test_run_refuses_a_lane_declaring_rigor_beyond_r0(git_repo: GitRepo):
