@@ -1,6 +1,6 @@
 # assay — repaired v1 package series
 
-Reissued 2026-08-07 from repaired input revision `9bd7d206`. P01a and P01b are
+Reissued 2026-08-07 from repaired input revision `9bd7d206`. P00 and P01 are
 merged. P01c repaired their contract before any outstanding implementation was
 dispatched: verdict schema v2 separates computed rigor from external evidence,
 adds honest command failure, and freezes PATH/attestation/cgroup semantics.
@@ -22,11 +22,11 @@ is false, and each has an independent negative.
 
 | # | Package | Claim to attack | Depends on |
 |---|---|---|---|
-| P01a | skeleton and lane config | does configuration refuse to invent? | — |
-| P01b | verdict model and schema v1 | does the schema reject malformed artifacts? | P01a |
-| P01c | merged contract repair (revision `9bd7d206`) | are computed claims, external evidence, command failure, PATH and gate placement honest? | P01b |
-| P02 | changed lines and measurability | does assay refuse to judge a diff it cannot see? | P01b + repaired input |
-| P03 | coverage formats registry | is coverage format explicit and language-independent? | P01b + repaired input |
+| P00 | skeleton and lane config | does configuration refuse to invent? | — |
+| P01 | verdict model and schema v1 | does the schema reject malformed artifacts? | P00 |
+| P01c | merged contract repair (revision `9bd7d206`) | are computed claims, external evidence, command failure, PATH and gate placement honest? | P01 |
+| P02 | changed lines and measurability | does assay refuse to judge a diff it cannot see? | P01 + repaired input |
+| P03 | coverage formats registry | is coverage format explicit and language-independent? | P01 + repaired input |
 | P04 | runner, CLI, verdict emission | is the real command result recorded on every terminal path? | P02 |
 | P05 | language-free evaluation core | does the four-way union work through a fake language? | P02, P03, P04 |
 | P06 | Python adapter union fidelity | does Python add the union without changing core? | P05 |

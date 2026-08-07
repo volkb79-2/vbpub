@@ -7,7 +7,7 @@ tier: implement-2
 input_revision: "9bd7d206"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P01b-verdict-model-and-schema, assay-P02-changed-lines-measurability]
+depends_on: [assay-P01-verdict-model-and-schema, assay-P02-changed-lines-measurability]
 session: resume:assay-cli
 scope:
   touch: ["src/assay/cli.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/**"]

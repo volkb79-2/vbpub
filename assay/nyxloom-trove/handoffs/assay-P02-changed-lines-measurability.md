@@ -7,7 +7,7 @@ tier: implement-2
 input_revision: "9bd7d206"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P01b-verdict-model-and-schema]
+depends_on: [assay-P01-verdict-model-and-schema]
 session: fresh
 scope:
   touch: ["src/assay/diff.py", "src/assay/git.py", "src/assay/measurability.py", "tests/**"]

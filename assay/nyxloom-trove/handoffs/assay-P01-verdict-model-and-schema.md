@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P01b-verdict-model-and-schema
+id: assay-P01-verdict-model-and-schema
 project: assay
 title: "The verdict model and a JSON Schema that REJECTS a malformed verdict"
 tier: implement-2
 input_revision: "d87f028b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P01a-skeleton-and-lane-config]
+depends_on: [assay-P00-skeleton-and-lane-config]
 session: fresh
 scope:
   touch:
