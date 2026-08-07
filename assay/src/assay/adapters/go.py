@@ -8,7 +8,14 @@ own coverage format is structurally DIFFERENT from Python's coverage.py
 directly against ``coverage_parsers/go_cover.py``'s already-proven parser),
 which is what makes "additive" a real claim rather than a coincidence of two
 similar tools. (P09, A-105/A-107) adds this adapter's two canary injection
-methods, ``inject_import_break``/``inject_uncovered_line``.
+methods, ``inject_import_break``/``inject_uncovered_line``. (P11,
+A-042/A-114) adds :meth:`GoAdapter.generate_mutants`, unconditionally
+``"UNSUPPORTED"`` -- this devcontainer has no Go toolchain anywhere (A-042),
+so nothing here can prove a generated mutant is even valid Go syntax, and
+O2's own negative is explicit that a text-guessed mutant standing in for
+that proof is exactly the failure to avoid. ``UNSUPPORTED`` renders
+``INCONCLUSIVE_NO_MUTANTS`` (DESIGN-GUIDE §11), never a green mutation
+claim.
 
 **P09's canary mechanisms, and why they are BOTH pure appends (unlike
 Python's).** Go has no executable top-level statement -- a bare
@@ -147,7 +154,9 @@ has is precisely the hazard §5 exists to forbid.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
+from ..mutation import Mutant
 from .base import StatementSpan
 
 __all__ = ["GoAdapter"]
@@ -465,8 +474,9 @@ def _inject_uncovered_line(text: str) -> tuple[str, str]:
 class GoAdapter:
     """The Go :class:`~assay.adapters.base.LanguageAdapter` (P08), the
     second real adapter implemented against the frozen protocol (A-097,
-    extended by P07/A-101 and P09/A-105 -- this package modifies neither
-    extension, only adds the two methods P09 reserved for it).
+    extended by P07/A-101, P09/A-105 and P11/A-114 -- this package modifies
+    none of those extensions, only adds the methods each later package
+    reserved for it).
     """
 
     name: str = "go"
@@ -504,3 +514,14 @@ class GoAdapter:
 
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         return _inject_uncovered_line(text)
+
+    def generate_mutants(
+        self, text: str, lines: set[int]
+    ) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]:
+        """Unconditionally ``"UNSUPPORTED"`` (A-042/A-114) -- see this
+        module's own docstring. Neither *text* nor *lines* is consulted:
+        there is no partial, best-effort Go mutation engine to fall back
+        to, the same "no Go toolchain, ever" boundary that already makes
+        this adapter's ``external_tools`` empty rather than declaring one
+        it could never satisfy in this devcontainer."""
+        return "UNSUPPORTED"

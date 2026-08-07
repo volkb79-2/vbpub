@@ -13,12 +13,13 @@ type. P09 (this package, A-084/A-105) adds the second deliberate extension:
 :meth:`LanguageAdapter.inject_uncovered_line`, the pure ``(text) -> (text,
 description)`` transforms :mod:`assay.canary` drives to build its
 cause-sensitive canary (A-010 — nyxloom's own versions of these two write the
-file directly; these do not touch a filesystem). P11 adds
-``generate_mutants``, again only in the package that first proves the need.
-Do not add that one here now — it would be this package speculatively
-building capability nothing in ITS OWN oracles exercises, the same
-"capability with no scoped consumer" defect A-090/A-093/A-094 already found
-and fixed at earlier package seams.
+file directly; these do not touch a filesystem). P11 (this package,
+A-084/A-112/A-114) adds the THIRD and final deliberate extension DESIGN-GUIDE
+§11 sketches: :meth:`LanguageAdapter.generate_mutants` and the new
+:class:`~assay.mutation.Mutant` type it returns — construction only; P12
+consumes the returned mutants to actually run tests against them, which is
+out of THIS package's scope (A-114's own "construct, never execute"
+boundary).
 
 **Path contract**, binding on every method below and on
 :func:`assay.evaluate.evaluate_coverage`'s own use of ``source_globs``: every
@@ -35,7 +36,9 @@ lives in the core").
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
+
+from ..mutation import Mutant
 
 __all__ = ["LanguageAdapter", "StatementSpan"]
 
@@ -84,13 +87,14 @@ class StatementSpan:
 
 class LanguageAdapter(Protocol):
     """A language's contribution to changed-line coverage evaluation, plus
-    (P09) to the cause-sensitive canary.
+    (P09) to the cause-sensitive canary and (P11) to mutant construction.
 
-    Five attributes and six methods after P09 (A-097/A-101/A-105) —
-    deliberately not the full seven-capability list DESIGN-GUIDE §11
-    sketches for the whole series. Do not add ``generate_mutants`` here;
-    that remains P11's to add, only in the package that first proves the
-    need (A-084).
+    Five attributes and SEVEN methods after P11 (A-097/A-101/A-105/A-114) —
+    now DESIGN-GUIDE §11's full flat seven-capability list, reached only
+    because each of the three post-P05 extensions (:meth:`statement_spans`,
+    the ``inject_*`` pair, :meth:`generate_mutants`) was added by the
+    package that first proved the need for it (A-084), never spec'd in
+    ahead of that need.
     """
 
     #: A short, stable, unique identifier — the exact string a lane's
@@ -251,5 +255,54 @@ class LanguageAdapter(Protocol):
         all) merely by the module loading, but its BODY is never called by
         anything, so the body's own lines are changed, executable, and
         uncovered — exactly the axis this canary needs to isolate.
+        """
+        ...
+
+    def generate_mutants(
+        self, text: str, lines: set[int]
+    ) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]:
+        """Every valid, single-site mutation of a changed-line construct in
+        *text* whose own site sits on one of *lines* (P11, A-084/A-112/A-114)
+        — construction only; nothing here runs a test or judges a survivor,
+        that is P12's job against the returned :class:`~assay.mutation.Mutant`
+        tuple.
+
+        A WHOLE-ADAPTER-CALL return union, pinned by A-114, never a
+        per-construct one: ``UNSUPPORTED`` means "this adapter cannot mutate
+        *text* AT ALL" (renders ``INCONCLUSIVE_NO_MUTANTS``, never green,
+        DESIGN-GUIDE §11) — for :class:`~assay.adapters.go.GoAdapter` this is
+        unconditional (no Go toolchain exists anywhere to prove a generated
+        mutant is even valid Go syntax, A-042); for
+        :class:`~assay.adapters.python.PythonAdapter` this fires only when
+        *text* itself fails ``ast.parse`` (mirrors :meth:`statement_spans`'s
+        own ``SyntaxError``/``ValueError`` -> ``None`` precedent). An
+        individual construct this adapter's own catalogue does not cover
+        (e.g. Python's ``in``/``not in`` comparators, outside the
+        ``compare-swap`` catalogue) is never a reason to return
+        ``UNSUPPORTED`` — it simply contributes zero mutants for that one
+        site, inside an otherwise-normal, possibly-empty, returned tuple.
+
+        *lines* scopes candidate sites to the SAME "changed line" concept
+        :mod:`assay.diff`/:mod:`assay.measurability` already use (a set of
+        1-based new-side line numbers) — a construct whose own site does not
+        sit on one of *lines* is never mutated, this method's own half of
+        O3's "never outside-diff" claim (the coverage-artifact half —
+        excluded/unclassified lines — is P12's concern, this method never
+        sees a coverage artifact at all).
+
+        Every returned :class:`~assay.mutation.Mutant`'s
+        :attr:`~assay.mutation.Mutant.mutated_text` differs from *text* at
+        exactly the bytes of ONE construct's own site — every other byte,
+        including every newline, comment, and quote style, is preserved
+        (O1) — never :func:`ast.unparse` on a modified tree copy, which
+        reprints the WHOLE file and loses exactly that (A-112's own
+        citation-correction, verified empirically against nyxloom's
+        reference implementation while authoring this package). A boolean
+        chain's ``N - 1`` textual operator occurrences (``a and b and c`` is
+        ONE ``ast.BoolOp`` node but TWO ``and`` tokens) are ``N - 1``
+        independently-targetable sites, each its own ``Mutant`` flipping
+        exactly one token (A-115) — never the shared AST node's ``.op``
+        field reassigned wholesale, which would conceptually flip every
+        occurrence in the chain at once.
         """
         ...
