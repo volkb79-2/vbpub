@@ -389,6 +389,32 @@ def r1_verdict_fixture(name: str) -> dict:
     return json.loads(R1_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
 
 
+# --- P10's own evidence verdicts: the four A-075/O4 terminal shapes ----------
+#
+# Full, independently hand-written artifacts distinguishing evidence that was
+# never declared, declared but missing, current, and stale (O4). Built
+# directly from `EvidenceDeclaration`/`Evidence`/`Claim`/`Verdict` in the test
+# module that consumes them -- kept out of the other *_VERDICT_FIXTURES dicts
+# for the same reason CANARY_VERDICT_FIXTURES is: additional EXAMPLES of
+# outcomes already represented in VERDICT_FIXTURES, not new outcomes.
+
+EVIDENCE_VERDICT_FIXTURES: dict[str, Path] = {
+    name: VERDICT_FIXTURE_DIR / f"{name}.json"
+    for name in (
+        "evidence_never_declared",
+        "evidence_declared_missing",
+        "evidence_current",
+        "evidence_stale",
+    )
+}
+
+
+def evidence_verdict_fixture(name: str) -> dict:
+    """The hand-written expected artifact for one of P10's own evidence
+    branches."""
+    return json.loads(EVIDENCE_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
+
+
 # --- Lane objects built directly, bypassing assay.toml/tomllib (P04) ---------
 #
 # Runner-level unit tests need exact control over a Lane's fields (a specific

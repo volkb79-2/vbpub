@@ -69,7 +69,7 @@ from .adapters.base import LanguageAdapter
 from .config import Lane
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
-from .verdict import Claim, Coverage, Verdict, iso_utc, rollup
+from .verdict import Claim, Coverage, Evidence, EvidenceDeclaration, Verdict, iso_utc, rollup
 
 __all__ = [
     "CommandPlan",
@@ -417,6 +417,8 @@ def assemble_verdict(
     result: CommandResult,
     claims: tuple[Claim, ...],
     assay_version: str,
+    evidence: tuple[Evidence, ...] = (),
+    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -424,24 +426,37 @@ def assemble_verdict(
     plan from *result*. P05 inserts its own R1 evaluation between calling
     :func:`execute_command`/:func:`build_r0_claim` and calling this function,
     and passes ``claims=(r0_claim, r1_claim)`` -- no restructuring of this
-    function required (A-094's whole point).
+    function required (A-094's whole point). P10 (this addition) is the same
+    shape one level over: *evidence* and *declared_evidence* default to empty
+    tuples, so every existing caller (through P09) is unaffected, and a
+    caller that has resolved attested evidence (:func:`assay.attestation.
+    load_attested_evidence`) passes it straight through without this
+    function needing to know anything about HOW it was produced.
 
     Refuses (``ERROR``/``BAD_LANE_CONFIG``) BEFORE constructing a
     :class:`~assay.verdict.Verdict` if *claims* does not cover every level in
-    ``lane.rigor`` -- this build (through P04) only ever passes an R0 claim,
-    so a lane declaring ``rigor = ["R0", "R1"]`` is refused here rather than
+    ``lane.rigor``, or if *evidence* does not cover *declared_evidence*
+    exactly -- this build (through P04) only ever passes an R0 claim, so a
+    lane declaring ``rigor = ["R0", "R1"]`` is refused here rather than
     reaching :class:`~assay.verdict.Verdict`'s own internal invariant, which
-    raises a bare ``ValueError`` no caller catches. Deliberately placed here
-    rather than in ``cli.py``: this module is in every later producer
-    package's ``scope.touch`` (P05, P08, P09...), so the guard self-obsoletes
-    -- once a package supplies the missing claim, ``missing`` is empty and
-    this never fires for that rigor level again, with no file only this
-    package could touch left to update.
+    raises a bare ``ValueError`` no caller catches; the identical reasoning
+    applies to a caller that declares evidence it never resolved (or resolves
+    evidence it never declared). Deliberately placed here rather than in
+    ``cli.py``: this module is in every later producer package's
+    ``scope.touch`` (P05, P08, P09, P10...), so the guard self-obsoletes --
+    once a package supplies the missing claim or evidence, ``missing`` is
+    empty and this never fires for that identity again, with no file only
+    this package could touch left to update.
 
     The verdict's own ``outcome`` and ``reason_code`` are otherwise DERIVED
-    from ``claims`` via :func:`~assay.verdict.rollup` (A-023), never chosen
-    independently -- :class:`~assay.verdict.Verdict` would refuse a mismatch
-    anyway, but deriving it here means this function cannot construct one.
+    from ``claims`` AND ``evidence`` together via :func:`~assay.verdict.rollup`
+    (A-023), never chosen independently -- :class:`~assay.verdict.Verdict`
+    would refuse a mismatch anyway, but deriving it here means this function
+    cannot construct one. An ``ERROR``/``UNREADABLE_ARTIFACT`` evidence entry
+    (a broken attestation, A-110) outranks every claim's own status the same
+    way it would if it were a claim -- ``rollup`` does not distinguish which
+    array a status came from, matching :class:`~assay.verdict.Verdict`'s own
+    ``_check_outcome_agrees_with_rollup``.
     """
     covered = {claim.rigor for claim in claims}
     missing = [level for level in lane.rigor if level not in covered]
@@ -454,12 +469,30 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
+    declared_identities = [item.identity for item in declared_evidence]
+    resolved_identities = [item.identity for item in evidence]
+    missing_evidence = [
+        identity for identity in declared_identities if identity not in resolved_identities
+    ]
+    surplus_evidence = [
+        identity for identity in resolved_identities if identity not in declared_identities
+    ]
+    if missing_evidence or surplus_evidence:
+        raise AssayError(
+            f"declared_evidence {declared_identities} and evidence "
+            f"{resolved_identities} do not cover each other exactly -- "
+            f"missing: {missing_evidence}, surplus: {surplus_evidence}. "
+            f"Refusing before constructing an incomplete verdict.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
     statuses = [claim.status for claim in claims]
+    statuses.extend(item.status for item in evidence)
     outcome = rollup(statuses)
     reason_code = None
     if outcome is not Outcome.PASS:
         reason_code = next(
-            claim.reason_code for claim in claims if claim.status is outcome
+            item.reason_code for item in (*claims, *evidence) if item.status is outcome
         )
     plan = result.plan
     return Verdict(
@@ -471,13 +504,14 @@ def assemble_verdict(
         ended=result.ended,
         assay_version=assay_version,
         declared_rigor=lane.rigor,
-        declared_evidence=(),
+        declared_evidence=declared_evidence,
         argv_declared=plan.argv_declared,
         argv_appended=plan.argv_appended,
         argv_effective=plan.argv_effective,
         env_declared=plan.env_declared,
         env_effective=plan.env_effective,
         claims=claims,
+        evidence=evidence,
     )
 
 
