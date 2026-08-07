@@ -41,30 +41,43 @@ re-running it and produces work no oracle was written against.
 
 ## The economics — a stable prefix, not a forked snapshot
 
+> **CORRECTED 2026-08-07 by measurement.** The first version of this section
+> claimed a frozen preamble was the lever. It is not — it buys ~1.5k tokens
+> against a measured ~142k orientation, a rounding error. What follows is what
+> the numbers actually support. See `MEASUREMENTS.md`.
+
 The original description was: let an agent orient itself, stop it there, and
-fork that warm state once per package. **That mechanism does not exist for
-sub-agents.** A fork inherits the *controller's* context (which is the opposite
-of what is wanted — it would carry the whole review history into an implementer),
-and there is no way to snapshot a sub-agent and branch it N ways. `SendMessage`
-continues *one* agent serially, which is context reuse, not duplication.
+fork that warm state once per package. **The `Agent` tool cannot do this** — a
+fork inherits the *controller's* context, which is the opposite of what is
+wanted, and there is no branch operation.
 
-The good news is that the mechanism was never necessary, because prompt caching
-keys on the **prefix of the request**, not on any explicit snapshot. Two agents
-whose opening bytes are identical share a cache hit up to the point where they
-diverge. So the requirement is not "fork a snapshot"; it is:
+**But the filesystem can, and this was verified empirically**, not argued:
+back up the agent's transcript at
+`~/.claude/projects/<cwd>/<session>/subagents/agent-<id>.jsonl` (the `.output`
+path the tool hands back is a *symlink* to it), resume the agent, then restore
+the backup. On re-resume the agent reported the intervening turn simply gone.
+`cp` out, `cp` back. See `MEASUREMENTS.md` for the procedure and its caveats.
 
-> **Invariant bytes first, volatile bytes last.**
+Why it matters, and why a frozen preamble does not:
 
-Concretely, every implementer prompt is assembled as:
+| | measured |
+|---|---|
+| raw documents an implementer must read | ~17k tokens |
+| **actual orientation spend** | **~142k tokens** (turn accumulation: ~85 turns each re-sending a growing context) |
+| implementation spend, same package | ~130k |
+| frozen preamble | ~1.5k |
 
-| | | changes between packages? |
-|---|---|---|
-| 1 | the frozen preamble — role, invariants, where the spec lives, how to run the gate, how to report | **no** |
-| 2 | the reading order — the same files, in the same order, every time | **no** |
-| 3 | the package tail — which handoff, what landed last, what to read of the previous commit | **yes** |
+**Orientation cost more than the implementation it precedes.** A restored
+snapshot at cache-read rates costs ~14k against ~142k — roughly **128k saved per
+package**, which is the whole argument. Prompt-prefix hygiene is still worth
+having (append-only, invariant bytes first, volatile last), because
+`S0+B1+B2` is a literal prefix of `S0+B1+B2+B3` — but it is a garnish on the
+snapshot, not a substitute for it.
 
-The first implementer pays full price. Every one after it starts warm, provided
-the frozen part is *byte*-identical and the model is the same.
+**S0 must be package-neutral.** The first one taken contained the package's own
+handoff, its reading of a specific module, and its implementation plan — all
+dead weight in every later restore. A reusable base stops *before any handoff*:
+series README → DESIGN-GUIDE → decisions → brief chain → existing tree → stop.
 
 **Therefore the refresh trigger is not a count.** "After five packages" is a
 proxy for the real condition, which is:
@@ -149,7 +162,19 @@ Chosen per package by where a mistake propagates, not by size.
 
 | Model | Packages | Why |
 |---|---|---|
-| **Opus** | P01, P04, P06, P09, P10 | P01's schema shapes all ten others; P04 and P06 carry the two structural oracles that define the adapter boundary; P09 has no reference implementation to work from; P10 is intricate AST work whose containment oracle is the whole point |
-| **Sonnet** | P02, P03, P05, P07, P08, P11 | tightly specified, with a reference implementation to work from, and an escalation hatch when the spec runs out |
+> **SUPERSEDED 2026-08-07.** The table below assigned models to a package list
+> that no longer exists (the series was withdrawn and reissued as P02–P14), and
+> its reasoning did not survive contact with evidence: the packages it called
+> "tightly specified with a reference implementation" were tightly specified by
+> a carver whose carving an external review then found 23 defects in. Model
+> choice mattered far less than **who carved and who reviewed**.
+>
+> Current position: run the series on one model for cache coherence, and spend
+> the model budget on **independent review** rather than on implementation tier.
+> The single highest-yield act in this project so far was an adversarial review
+> by a *different frontier model* with a series-level remit.
+
+| **Opus** *(historic)* | P01, P04, P06, P09, P10 | P01's schema shapes all ten others; P04 and P06 carry the two structural oracles that define the adapter boundary; P09 has no reference implementation to work from; P10 is intricate AST work whose containment oracle is the whole point |
+| **Sonnet** *(historic)* | P02, P03, P05, P07, P08, P11 | tightly specified, with a reference implementation to work from, and an escalation hatch when the spec runs out |
 
 Revisable as evidence arrives — which is what step 5 is for.

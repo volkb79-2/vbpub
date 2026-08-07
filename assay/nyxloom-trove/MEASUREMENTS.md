@@ -38,6 +38,23 @@ both directions, at different times. Hence this file.
 | claude-code-guide | snapshot feasibility | 54,920 | 24 | 2:20 | — |
 | snapshot probe ×2 | trivial resume, 0 tools | 57,823 / 57,888 | 0 | — | — |
 
+**External reviewer (gpt-5.6-sol, high effort) — a SEPARATE accounting.** These
+are the model's own footer figures. They are a different model and tokenizer and
+a different budget; they are **not** comparable to the rows above and must never
+be summed with them.
+
+| Run | Purpose | Tokens |
+|---|---|---|
+| 1 | adversarial review of ten outstanding handoffs | ~? (footer not captured — record it next time) |
+| 2 | remediation guidance, pushbacks, design verdict | 391,430 |
+| 3 | contract repair + reissue the whole series | 965,358 |
+
+Round 3 produced 4 commits, 53 files, +2843/−1316, and a 13-package reissued
+series that validates against nyxloom's schema. Round 1 found 23 confirmed
+defects. For comparison the two in-house readiness passes found 3 between them.
+**The most expensive single check in the run was also by far the most
+productive**, which is the opposite of what the cost table alone would suggest.
+
 ### The number that changed the design
 
 **Orientation alone costs ~142k tokens.** The raw documents an implementer must
@@ -136,6 +153,26 @@ Two consequences, both recorded in nyxloom's backlog:
 
 Until a readiness pass is measured at band 1, the cost rows here transfer and
 the quality rows do not.
+
+## Tooling caveats that distort a measurement if you do not know them
+
+- **A backgrounded CLI's completion signal reports the WRAPPER, not the work —
+  and the cause is fixable.** Running `codex exec` under `nohup … &` *inside* a
+  `run_in_background` Bash call produced a "completed, exit code 0" notification
+  within seconds while the model ran another ~25 minutes; the output file held
+  only the echoed prompt. **The `&` detached the CLI from the tracked shell, so
+  the harness watched the wrapper exit.** Drop the `nohup`/`&` and let
+  `run_in_background` do the detaching — then the CLI itself is the tracked
+  process and the notification is genuine. Verified both ways: spurious twice
+  with `nohup … &`, correct once without.
+- **The 10-minute foreground tool cap kills a long CLI run mid-flight.** The
+  first attempt at the adversarial review died at exactly 10:00 with exit 143.
+  Long external-model runs must be backgrounded, which then imports the caveat
+  above.
+- **An external reviewer's cost is not in the token fields above.** `codex exec`
+  reports its own usage in an output footer; it does not appear in any
+  `subagent_tokens`. A protocol that sums only the notification fields will
+  silently omit the most expensive review in the run.
 
 ## Open questions this protocol should answer
 
