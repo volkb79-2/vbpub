@@ -14,12 +14,12 @@ scope:
   forbid: ["src/assay/verdict.py", "src/assay/schemas"]
 oracles:
   - id: O1
-    observable: "Committed Python snippets independently enumerate executable and excluded lines for decorators, multiline statements, async/compound statements, docstrings, comments, and pragma tokens; the adapter returns the exact expected sets"
+    observable: "Committed Python snippets independently enumerate executable and excluded lines for decorators, async/compound statements, docstrings, comments, and pragma tokens, each classification resolved from a single reported line; the adapter returns the exact expected sets"
     negative: "Replacing AST/token classification with nonblank-line counting or omitting one construct changes a literal expected set"
     gate: tester-unified
   - id: O2
-    observable: "Source-root matching respects directory boundaries, normalizes repo-relative paths, and distinguishes an in-root path from a sibling whose directory name merely shares the root prefix"
-    negative: "String-prefix matching classifies the similarly prefixed sibling as inside the root and fails the paired fixture"
+    observable: "normalize_coverage_key reconciles a coverage artifact's own path spelling to the diff's spelling using a boundary-safe strip (never a naive removeprefix/startswith that would mis-strip a similarly-prefixed sibling), proven with a fixture where the two spellings genuinely differ"
+    negative: "A naive string-prefix strip mis-normalizes the sibling-prefixed fixture to the wrong repo-relative path"
     gate: tester-unified
   - id: O3
     observable: "The package diff changes no evaluation, base protocol, verdict, or schema file, and the full P05 fake-adapter suite remains green"
@@ -28,7 +28,7 @@ oracles:
 gates: ["tester-unified"]
 escalate_if:
   - "faithful Python classification requires changing the settled adapter protocol"
-  - "the four Python references disagree in a way not resolved by decisions.md"
+  - "the three Python references disagree in a way not resolved by decisions.md"
 mutexes: []
 ---
 
@@ -43,16 +43,16 @@ on branch `feat/assay-P06-python-adapter-union-fidelity`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§4–5 and decisions A-014–A-018, A-097, A-C01–A-C03.
-2. `src/assay/adapters/base.py`, `evaluate.py`, and the P05 fake-adapter tests. `nyxloom-trove/reports/assay-P05-BRIEF.md` in full — it fixes the exact protocol shape (do not add a ninth member), the path-spelling contract every method receives, and states plainly that `evaluate.py`'s `_is_considered` already does source-root boundary matching (`Path.is_relative_to` on resolved paths, not string prefix) in the CORE — verify at your own readiness pass whether O2's "sibling whose directory name merely shares the root prefix" case is retesting that already-proven core property through the adapter, or is actually about `normalize_coverage_key`'s own prefix-strip logic (DESIGN-GUIDE §11's adapter-hook half of path normalisation) having an independent sibling-prefix hazard; the handoff was carved before either file existed and may need this pinned down before implementation.
-3. Python classification and exclusion logic in all three Python reference gates: dstdns, topos, and nyxloom.
+1. `docs/DESIGN-GUIDE.md` §§4–5 and decisions A-014–A-018, A-084, A-097, A-098, A-099, A-C01–A-C03.
+2. `src/assay/adapters/base.py`, `evaluate.py`, and the P05 fake-adapter tests. `nyxloom-trove/reports/assay-P05-BRIEF.md` in full — it fixes the exact protocol shape (do not add a ninth member), the path-spelling contract every method receives, and notes `evaluate_r1`'s `has_executable_code`-driven `ast.parse` guidance (catch `SyntaxError`, treat as `True` — fail closed, never a silent excuse).
+3. Python classification and exclusion logic in all three Python reference gates: dstdns, topos, and nyxloom. dstdns is the sole holder of both `_is_test_path` (adopt as the union — topos/nyxloom have no equivalent) and the AST-based `statement_spans`/decorator/match-case recovery mechanism (A-098: reserved for P07, not yours to replicate).
 
 ## Work
 
 1. Implement the Python adapter against the settled protocol and register it explicitly.
-2. Take the union of reference behaviors, including topos boundary validation and the resolved exclusion policy.
-3. Use committed literal snippets and independent expected line sets.
-4. Break each classification family and boundary normalizer; record failure counts (A-067).
+2. Take the union of reference behaviors for single-line-reported classification (A-098), including the resolved exclusion policy. Multi-line statement interior-line attribution is explicitly out of scope — P07's job.
+3. Use committed literal snippets and independent expected line sets. For O2, construct a fixture where the coverage artifact's own path spelling and the diff's spelling genuinely differ (e.g. a project layout where `coverage run`'s own cwd differs from the repo top), not a same-spelling no-op case.
+4. Break each classification family and `normalize_coverage_key`'s own prefix-strip (A-099 — the mutation must live inside `python.py`, never inside `evaluate.py`, which you cannot touch); record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 
