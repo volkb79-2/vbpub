@@ -31,6 +31,8 @@ from assay.verdict import (
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    Judgment,
+    JudgmentR1,
     Verdict,
     rollup,
 )
@@ -47,6 +49,8 @@ BASE = {
     "argv_effective": ("pytest", "-q"),
     "env_declared": {},
     "env_effective": {},
+    "scope": "S2",
+    "enforcement": "gate",
 }
 
 
@@ -147,6 +151,8 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
         "files_missing_coverage": [],
         "unclassified_lines": {},
         "files_with_unclassified_lines": [],
+        "excluded_lines": {},
+        "files_with_excluded_lines": [],
     }
     assert why_invalid(
         validator, document_with([claim_dict(rigor="R1", coverage=payload)])
@@ -657,6 +663,17 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
             ),
         ),
     )
+    judgment = Judgment(
+        r1=JudgmentR1(
+            language="python",
+            source_roots=("src",),
+            coverage_format="coverage-py-json",
+            coverage_artifact="cov.json",
+            fail_under=100.0,
+            allow_excluded=False,
+            base="b" * 40,
+        )
+    )
     # The honest form builds.
     Verdict(
         **BASE,
@@ -664,6 +681,7 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
         reason_code=ReasonCode.UNCOVERED_LINES,
         declared_rigor=("R0", "R1"),
         claims=claims,
+        judgment=judgment,
     )
 
     with pytest.raises(ValueError, match="disagrees with the rollup"):
@@ -672,4 +690,5 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
             outcome=Outcome.PASS,
             declared_rigor=("R0", "R1"),
             claims=claims,
+            judgment=judgment,
         )

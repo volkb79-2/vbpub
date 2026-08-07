@@ -642,3 +642,169 @@ def test_cmd_verify_matches_the_cli_wiring_directly(tmp_path: Path):
 
     assert code == 0
     assert err.getvalue() == ""
+
+
+# ============================================================================
+# O2 (P16, stage 3) -- independent re-derivation of R1/R2/R3 status from
+# payload plus recorded policy, and the judgment.r1 <-> R1-coverage raw
+# cross-check. Every REJECT below is sol finding 2's own reproduction,
+# reproduced A-135's binding way: a VALID Coverage/Mutation/CanaryResult
+# payload (nothing internally inconsistent) carrying a WRONG claim status
+# -- never a self-contradictory payload, which P15's own construction-time
+# invariants make impossible to build in the first place.
+# ============================================================================
+
+
+def test_verify_rejects_judgment_r1_present_without_an_r1_coverage_claim():
+    document = _load("r0_pass.json")
+    document["judgment"] = {
+        "r1": {
+            "language": "python",
+            "source_roots": ["src"],
+            "coverage_format": "coverage-py-json",
+            "coverage_artifact": "cov.json",
+            "fail_under": 100.0,
+            "allow_excluded": False,
+            "base": "a" * 40,
+        }
+    }
+    failures = verify_document(document)
+    assert any(
+        "judgment.r1 is declared without a corresponding R1 coverage claim" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_an_r1_coverage_claim_without_judgment():
+    document = _load("r1_fail_uncovered_lines.json")
+    del document["judgment"]
+
+    failures = verify_document(document)
+    assert any(
+        "an R1 coverage claim is declared without a corresponding judgment.r1" in f
+        for f in failures
+    )
+
+
+def test_verify_accepts_reconstructed_judgment_r2_and_r3():
+    # judgment.r2/r3 are RESERVED, closed shapes (P16) -- no real producer
+    # populates them yet, but reconstruction must accept them when present,
+    # since a future package populates them additively without another
+    # schema bump.
+    document = _load("r2_pass.json")
+    document["judgment"] = {"r2": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]}}
+    assert verify_document(document) == []
+
+    document2 = _load("r3_pass.json")
+    document2["judgment"] = {"r3": {"mechanism": "uncovered-line", "target": "pkg/mod.py"}}
+    assert verify_document(document2) == []
+
+
+def test_verify_rejects_an_r1_pass_reporting_zero_percent_coverage():
+    """Sol finding 2, first reproduction, verbatim: 'An R1 claim's
+    coverage.pct set to 0.0 while status stayed PASS -- accepted.'"""
+    document = _load("r1_fail_uncovered_lines_span_attributed.json")
+    assert document["claims"][1]["coverage"]["pct"] == 0.0  # the fixture really is 0%
+    document["claims"][1]["status"] = "PASS"
+    del document["claims"][1]["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from coverage plus policy" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_an_r1_pass_hiding_disallowed_excluded_lines():
+    """The 'hidden excluded lines' negative work item 6 names, verbatim."""
+    document = _load("r1_fail_excluded_lines.json")
+    assert document["claims"][1]["coverage"]["excluded_lines"]  # really non-empty
+    document["claims"][1]["status"] = "PASS"
+    del document["claims"][1]["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from coverage plus policy" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_an_r2_pass_with_a_genuine_surviving_mutant():
+    """Sol finding 2, second reproduction, verbatim: 'An R2 claim with a
+    genuine surviving mutant added while status stayed PASS -- accepted.'"""
+    document = _load("r2_fail_mutants_survived.json")
+    assert document["claims"][1]["mutation"]["survived"]  # really non-empty
+    document["claims"][1]["status"] = "PASS"
+    del document["claims"][1]["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from mutation buckets" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_an_r3_pass_whose_transform_never_actually_failed():
+    """Sol finding 2, third reproduction, verbatim: 'An R3 claim with the
+    transformed canary outcome set to PASS (i.e. the canary never actually
+    failed) while status stayed PASS -- accepted.'"""
+    document = _load("r3_fail_canary_survived_unexpected_pass.json")
+    assert document["claims"][1]["canary"]["transformed_outcome"] == "PASS"
+    document["claims"][1]["status"] = "PASS"
+    del document["claims"][1]["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from the canary result" in f
+        for f in failures
+    )
+
+
+def test_verify_skips_r2_rederivation_when_no_r0_claim_is_present():
+    """An R2-only lane (no R0 declared) still validates; re-derivation has
+    no baseline to compare a mutation-absent claim's status against and
+    skips silently rather than guessing one."""
+    document = {
+        "schema_version": 3,
+        "assay_version": "0.1.0",
+        "lane": "package",
+        "commit": "a" * 40,
+        "outcome": "ERROR",
+        "reason_code": "EXEC_FAILED",
+        "exit_code": 2,
+        "started": "2026-08-07T09:00:00+00:00",
+        "ended": "2026-08-07T09:00:01+00:00",
+        "declared_rigor": ["R2"],
+        "declared_evidence": [],
+        "argv_declared": ["pytest", "-q"],
+        "argv_appended": [],
+        "argv_effective": ["pytest", "-q"],
+        "argv_modified": False,
+        "env_declared": {},
+        "env_effective": {},
+        "scope": "S1",
+        "enforcement": "gate",
+        "claims": [
+            {
+                "rigor": "R2",
+                "source": "computed",
+                "status": "ERROR",
+                "verified_by_assay": True,
+                "reason_code": "EXEC_FAILED",
+            }
+        ],
+        "evidence": [],
+    }
+    assert verify_document(document) == []

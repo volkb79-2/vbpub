@@ -1,25 +1,45 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
   "outcome": "NO_MEASUREMENT",
-  "reason_code": "MISSING_ATTESTATION",
   "exit_code": 3,
   "started": "2026-08-07T14:05:00+00:00",
   "ended": "2026-08-07T14:05:05+00:00",
-  "declared_rigor": ["R0"],
-  "declared_evidence": [
-    {"source": "attested", "key": "adversarial-review"}
+  "reason_code": "MISSING_ATTESTATION",
+  "declared_rigor": [
+    "R0"
   ],
-  "argv_declared": ["pytest", "tests", "-q"],
+  "declared_evidence": [
+    {
+      "source": "attested",
+      "key": "adversarial-review"
+    }
+  ],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
   "argv_appended": [],
-  "argv_effective": ["pytest", "tests", "-q"],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
   "argv_modified": false,
   "env_declared": {},
   "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
-    {"rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": true}
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
   ],
   "evidence": [
     {

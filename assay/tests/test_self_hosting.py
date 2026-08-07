@@ -67,6 +67,8 @@ import pytest
 from conftest import PROJECT_ROOT, Standalone, _build_backend_home, _clean_env, why_invalid
 from jsonschema import Draft202012Validator
 
+from assay.verdict import VERDICT_SCHEMA_VERSION
+
 ENV_VAR = "ASSAY_SELF_HOSTING_VERDICT"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 
@@ -149,7 +151,7 @@ def test_the_self_hosted_lanes_own_verdict_is_independently_valid(
 
     # 2. Facts this test establishes ON ITS OWN, never read back from the
     # artifact or from assay verify's own opinion of it.
-    assert document["schema_version"] == 2
+    assert document["schema_version"] == VERDICT_SCHEMA_VERSION
     assert document["lane"] == "tester-unified"
     assert document["commit"] == _real_head()
     assert isinstance(document["assay_version"], str) and document["assay_version"]

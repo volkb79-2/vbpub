@@ -1,21 +1,34 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "outcome": "NO_MEASUREMENT",
-  "reason_code": "BASE_IS_HEAD",
   "exit_code": 3,
   "started": "2026-08-07T12:20:00+00:00",
   "ended": "2026-08-07T12:20:01+00:00",
-  "declared_rigor": ["R0", "R1"],
+  "reason_code": "BASE_IS_HEAD",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["/bin/sh", "-c", "exit 0"],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
   "argv_appended": [],
-  "argv_effective": ["/bin/sh", "-c", "exit 0"],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
   "argv_modified": false,
   "env_declared": {},
   "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
     {
       "rigor": "R0",

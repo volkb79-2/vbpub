@@ -34,7 +34,15 @@ def test_the_untouched_form_builds():
 def test_empty_missing_lines_and_files_missing_coverage_are_legal():
     """The A-096 pair is ALWAYS present, possibly empty -- never itself the
     defect."""
-    coverage = Coverage(**{**BASE, "missing_lines": {}, "files_missing_coverage": ()})
+    coverage = Coverage(
+        **{
+            **BASE,
+            "covered": 2,
+            "pct": 100.0,
+            "missing_lines": {},
+            "files_missing_coverage": (),
+        }
+    )
     assert coverage.missing_lines == {}
     assert coverage.files_missing_coverage == ()
 

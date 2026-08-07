@@ -1,21 +1,34 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "333333333333333333333333333333333333333c",
   "outcome": "INCONCLUSIVE",
-  "reason_code": "NO_MUTANTS",
   "exit_code": 5,
   "started": "2026-08-07T14:10:00+00:00",
   "ended": "2026-08-07T14:10:05+00:00",
-  "declared_rigor": ["R0", "R2"],
+  "reason_code": "NO_MUTANTS",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["pytest", "tests", "-q"],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
   "argv_appended": [],
-  "argv_effective": ["pytest", "tests", "-q"],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
   "argv_modified": false,
   "env_declared": {},
   "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
     {
       "rigor": "R0",

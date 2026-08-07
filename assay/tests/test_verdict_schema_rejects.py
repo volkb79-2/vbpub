@@ -36,6 +36,8 @@ ZEROED_COVERAGE = {
     "files_missing_coverage": [],
     "unclassified_lines": {},
     "files_with_unclassified_lines": [],
+    "excluded_lines": {},
+    "files_with_excluded_lines": [],
 }
 
 NON_PASS = [outcome.value for outcome in Outcome if outcome is not Outcome.PASS]

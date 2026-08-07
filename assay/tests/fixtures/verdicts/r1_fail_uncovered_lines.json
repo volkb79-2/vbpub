@@ -1,21 +1,47 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "7777777777777777777777777777777777777777",
   "outcome": "FAIL",
-  "reason_code": "UNCOVERED_LINES",
   "exit_code": 1,
   "started": "2026-08-07T12:05:00+00:00",
   "ended": "2026-08-07T12:05:01+00:00",
-  "declared_rigor": ["R0", "R1"],
+  "reason_code": "UNCOVERED_LINES",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["/bin/sh", "-c", "exit 0"],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
   "argv_appended": [],
-  "argv_effective": ["/bin/sh", "-c", "exit 0"],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
   "argv_modified": false,
   "env_declared": {},
   "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r1": {
+      "language": "zzz",
+      "source_roots": [
+        "pkg"
+      ],
+      "coverage_format": "coverage-py-json",
+      "coverage_artifact": "cov.json",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "base": "0000000000000000000000000000000000000a"
+    }
+  },
   "claims": [
     {
       "rigor": "R0",
@@ -34,10 +60,17 @@
         "changed_executable": 4,
         "pct": 50.0,
         "considered": 1,
-        "missing_lines": {"pkg/mod.zzz": [4, 5]},
+        "missing_lines": {
+          "pkg/mod.zzz": [
+            4,
+            5
+          ]
+        },
         "files_missing_coverage": [],
         "unclassified_lines": {},
-        "files_with_unclassified_lines": []
+        "files_with_unclassified_lines": [],
+        "excluded_lines": {},
+        "files_with_excluded_lines": []
       }
     }
   ],

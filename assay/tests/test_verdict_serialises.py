@@ -36,10 +36,25 @@ from assay.verdict import (
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    Judgment,
+    JudgmentR1,
+    Mutation,
     Verdict,
     iso_utc,
     load_schema,
     schema_text,
+)
+
+R1_JUDGMENT = Judgment(
+    r1=JudgmentR1(
+        language="python",
+        source_roots=("src",),
+        coverage_format="coverage-py-json",
+        coverage_artifact="cov.json",
+        fail_under=100.0,
+        allow_excluded=False,
+        base="0000000000000000000000000000000000000a",
+    )
 )
 
 VERSION = "0.1.0"
@@ -68,6 +83,9 @@ def build(outcome: str) -> Verdict:
             argv_effective=("pytest", "tests", "-q", "--cov-report=json:cov.json"),
             env_declared={"MOCK_MODE": "true"},
             env_effective={"MOCK_MODE": "true"},
+            scope="S1",
+            enforcement="gate",
+            judgment=R1_JUDGMENT,
             claims=(
                 Claim(
                     rigor="R0",
@@ -111,6 +129,9 @@ def build(outcome: str) -> Verdict:
             argv_effective=("pytest", "tests", "-q", "-k", "not slow"),
             env_declared={"TZ": "UTC"},
             env_effective={"TZ": "UTC", "PATH": "/usr/bin"},
+            scope="S1",
+            enforcement="gate",
+            judgment=R1_JUDGMENT,
             claims=(
                 Claim(
                     rigor="R0",
@@ -127,7 +148,7 @@ def build(outcome: str) -> Verdict:
                     coverage=Coverage(
                         covered=2,
                         changed_executable=3,
-                        pct=66.67,
+                        pct=100.0 * 2 / 3,
                         considered=1,
                         missing_lines={"src/assay/verdict.py": frozenset({42})},
                         files_missing_coverage=(),
@@ -182,6 +203,8 @@ def build_no_measurement() -> Verdict:
         argv_effective=("pytest", "tests", "-q"),
         env_declared={},
         env_effective={},
+        scope="S1",
+        enforcement="gate",
         claims=(
             Claim(
                 rigor="R0",
@@ -217,6 +240,8 @@ def build_budget_exceeded() -> Verdict:
         argv_effective=("pytest", "tests/integration", "-q"),
         env_declared={"MOCK_MODE": "false"},
         env_effective={"MOCK_MODE": "false"},
+        scope="S1",
+        enforcement="gate",
         claims=(
             Claim(
                 rigor="R0",
@@ -245,6 +270,8 @@ def build_inconclusive() -> Verdict:
         argv_effective=("pytest", "tests", "-q"),
         env_declared={},
         env_effective={},
+        scope="S1",
+        enforcement="gate",
         claims=(
             Claim(
                 rigor="R0",
@@ -258,6 +285,7 @@ def build_inconclusive() -> Verdict:
                 status=Outcome.INCONCLUSIVE,
                 verified_by_assay=True,
                 reason_code=ReasonCode.NO_MUTANTS,
+                mutation=Mutation(total=0, killed=0),
             ),
         ),
     )
@@ -437,7 +465,7 @@ def test_the_model_refuses_a_foreign_schema_version():
             started="2026-08-06T09:00:00+00:00",
             ended="2026-08-06T09:00:01+00:00",
             assay_version=VERSION,
-            schema_version=3,
+            schema_version=2,
         )
 
 

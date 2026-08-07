@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -7,14 +7,30 @@
   "exit_code": 0,
   "started": "2026-08-07T10:00:00+00:00",
   "ended": "2026-08-07T10:00:01+00:00",
-  "declared_rigor": ["R0"],
+  "declared_rigor": [
+    "R0"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["/bin/sh", "-c", "exit 0"],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
   "argv_appended": [],
-  "argv_effective": ["/bin/sh", "-c", "exit 0"],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
   "argv_modified": false,
-  "env_declared": {"MOCK_MODE": "true"},
-  "env_effective": {"MOCK_MODE": "true"},
+  "env_declared": {
+    "MOCK_MODE": "true"
+  },
+  "env_effective": {
+    "MOCK_MODE": "true"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
     {
       "rigor": "R0",

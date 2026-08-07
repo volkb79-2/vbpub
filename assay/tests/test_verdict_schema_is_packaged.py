@@ -156,4 +156,4 @@ def test_load_schema_works_from_the_installed_package(standalone: Standalone):
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:2"
+    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:3"
