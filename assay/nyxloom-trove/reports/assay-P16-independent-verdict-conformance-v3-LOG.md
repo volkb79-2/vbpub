@@ -364,3 +364,130 @@ package's real deviations from the handoff's literal scope (the
 `evaluate.py` touch, the message-wording lesson, the two pre-existing
 fixture defects) are recorded here instead, since there is no separate
 controller session to ratify them into decisions.md in this dispatch.
+
+---
+
+## Controller review (2026-08-07) — five defects, all in code that was never written
+
+> Appended by the controller before merge. The `evaluate.py` scope call
+> (finding 1 above) is **ratified**: context item 4 named the gap, the
+> frontmatter merely failed to resolve it, and the fixture-versus-real-
+> pipeline argument for touching it is correct. A-136 through A-138 below
+> record the rulings; the repairs are commit
+> `fix(assay): P16 controller repairs`.
+
+The last reviewer's standing hint was *"break the defaults; re-run the
+carving review's findings on real inputs, not on the implementer's
+fixtures."* Both halves paid. Every one of this package's ten mutation
+counts reproduced exactly, and its four sol-finding-2 reproductions all
+pass — and five real defects survived anyway, because a mutation test only
+interrogates lines that exist and an in-test fixture mutation only
+interrogates the evasion its author thought of. All five were found by
+writing full v3 JSON documents to disk and feeding them through
+`verify_text`, the way a consumer would.
+
+**1. CRITICAL — a `PASS` claim with its payload simply DELETED was accepted
+at every rigor level.** Sol finding 2's three artifacts contradict their
+evidence; nobody tried removing it. `_check_r1/r2/r3_rederivation` each
+return early when the payload is absent, the top-level rollup still agrees,
+and the artifact validates clean: `r1_pass.json` minus `coverage` (and
+`judgment`), `r2_pass.json` minus `mutation`, `r3_pass.json` minus
+`canary` — three accepted forgeries, each *cheaper to produce* than the
+three the package does catch. None is producible: `evaluate_coverage`
+returns PASS/FAIL only with a `Coverage`; `judge_mutation` reaches PASS
+only on its `mutation is not None` branch; `build_canary_claim` attaches
+the result it judged to all three of `judge_canary`'s outcomes. Repaired in
+the MODEL (`Claim._check_a_judged_status_carries_its_own_payload`), not in
+`verify.py`, so the state is unconstructible rather than merely unaccepted
+— A-135's own discipline, applied to the converse of the three existing
+`NO_MEASUREMENT` rules (A-136).
+
+**2. HIGH — R2 re-derivation was skippable by not declaring R0.**
+`_check_r2_rederivation` returned early whenever the artifact carried no
+R0 claim, *including when a real `mutation` payload was present* — and
+`rigor = ["R2"]` is a legal lane declaration (`assay.config` requires only
+a non-empty subset of R0-R3). Sol finding 2's second artifact, a `PASS`
+with a genuine surviving mutant, passes unexamined with the R0 claim
+removed. The R0 stand-in is needed only for the payload-less branch:
+`judge_mutation`'s own early return proves `baseline` is never read once a
+mutation is present — the package's own docstring says so, and then
+guarded on it anyway. `tests/..._conformance.py::test_verify_skips_r2_
+rederivation_when_no_r0_claim_is_present` had asserted the hole as the
+contract, on the one input shape where skipping IS right (A-137).
+
+**3. HIGH — work item 7 was not implemented.** "Demonstrate v2 rejection
+with a specific schema-version diagnostic and document the intentional
+consumer migration": no test fed a v2 artifact to `assay verify` at all,
+and no diagnostic named the version. A real v2 artifact reported
+`schema: 'excluded_lines'` — a bare `KeyError` on a field its producer had
+never heard of — alongside two cross-field complaints that are consequences
+of the version rather than defects. `verify_document` now checks the
+version first and returns that one sentence; DESIGN-GUIDE §6 records that a
+bump is a consumer migration, never a producer upgrade (A-138).
+
+**4. MEDIUM — work item 3's summary-field identity was never enforced.**
+"missing/excluded/unclassified identities agree with their summary fields":
+`files_with_excluded_lines` (this package's own new field) could be emptied
+outright, or name a file `excluded_lines` never mentions, and both
+validated clean. Same for P07's `files_with_unclassified_lines` and P05's
+`files_missing_coverage`. Two relations, not one: the two `files_with_*`
+fields are documented as *"paths appearing in [the mapping], sorted"* — an
+equality — while `files_missing_coverage` names only the files with no
+artifact entry at all, whose changed lines are then all recorded missing —
+a containment.
+
+**5. MEDIUM — four of work item 6's named contradictory negatives had no
+test.** It asks for "survivor/**crash/budget precedence**, **broken
+mutation prerequisite propagation**, canary survival, **wrong canary
+cause**, and **broken control**". Built: survivor, and canary survival.
+The three precedence orderings (crashed > budget_exceeded > survived), a
+payload-less R2 claim that does NOT reuse its baseline's own pair verbatim,
+a canary that failed for the wrong cause, and a canary whose control never
+passed were all unexercised — and `_check_r2_rederivation` /
+`_check_r3_rederivation` deleted wholesale failed exactly ONE test each
+before this pass, which is what an oracle for one case out of five looks
+like.
+
+### Mutation pass over the repairs (A-067, controller)
+
+Run against a `shutil.copytree`'d copy of the tree, never the real files.
+Each count is the *relevant* test files only, not the whole suite.
+
+| # | check disabled | failures |
+|---|---|---|
+| R1 | `files_with_*` equality | 3 |
+| R2 | `files_missing_coverage` containment | 1 |
+| R3 | R1 PASS/FAIL must carry coverage | 2 |
+| R4 | R2 PASS must carry mutation | 2 |
+| R5 | mutation-only reason codes must carry mutation | 2 |
+| R6 | judged R3 status must carry canary | 4 |
+| R7 | R2 re-derivation's pre-review early return, restored | 1 |
+| R8 | foreign-schema-version diagnostic | 1 |
+| R9 | `_check_r2_rederivation` entirely | **6** (was 1 before this pass) |
+| R10 | `_check_r3_rederivation` entirely | **3** (was 1 before this pass) |
+
+R9 and R10 are the ones that matter: they measure whether the *package's
+own* headline claim has an oracle proportionate to it.
+
+### Gate, re-verified by the controller
+
+Argv parsed out of `nyxloom-trove/nyxloom.toml` and run verbatim in the
+real `tester-unified:local` container: `tester-unified: PASS (exit 0)`,
+second independent step `7 passed`. In-container coverage, measured
+separately via `PYTHONPATH=src /opt/tester-venv/bin/python` and INCLUDING
+`tests/test_self_hosting.py`: **1657 passed, 1 skipped, 2752 stmts /
+1094 branches, 100% statement AND branch** (the implementer's own numbers
+were 1638 / 2723 / 1070). Ambient devcontainer adds only the documented
+`test_standalone.py` environment-specific failure.
+
+### Left open, deliberately
+
+**A-O16 — a coverage format that cannot report exclusions is
+indistinguishable from one that reported none.** `FileCoverage.excluded is
+None` (unknown) and `frozenset()` (known-empty) stay distinct upstream, as
+A-135 requires, but `evaluate_coverage` intersects with `frozenset()` in
+both cases, so `Coverage.excluded_lines` cannot express "unknown". R1
+re-derivation is unaffected — `has_disallowed_excluded` is false in both
+cases too, so status and payload agree — the loss is diagnostic only.
+Closing it needs a new artifact field and touches the format registry and
+adapters, all outside this package's scope.

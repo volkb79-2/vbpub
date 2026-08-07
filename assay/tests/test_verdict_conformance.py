@@ -772,10 +772,14 @@ def test_verify_rejects_an_r3_pass_whose_transform_never_actually_failed():
     )
 
 
-def test_verify_skips_r2_rederivation_when_no_r0_claim_is_present():
-    """An R2-only lane (no R0 declared) still validates; re-derivation has
-    no baseline to compare a mutation-absent claim's status against and
-    skips silently rather than guessing one."""
+def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_sibling():
+    """An R2-only lane (no R0 declared) still validates: a claim carrying NO
+    mutation payload reused a baseline the artifact does not record, so
+    there is no honest comparison to make. This is the ONLY case that
+    skips — a claim carrying a real payload is re-judged with or without an
+    R0 sibling (see the test below), and the one status that would be a
+    contradiction regardless is unconstructible
+    (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
         "schema_version": 3,
         "assay_version": "0.1.0",
@@ -808,3 +812,228 @@ def test_verify_skips_r2_rederivation_when_no_r0_claim_is_present():
         "evidence": [],
     }
     assert verify_document(document) == []
+
+
+def test_verify_rejects_an_r2_pass_with_a_survivor_even_with_no_r0_claim(
+    validator: Draft202012Validator,
+):
+    """The same forgery as
+    ``test_verify_rejects_an_r2_pass_with_a_genuine_surviving_mutant``,
+    evading re-derivation by not declaring R0 — ``rigor = ["R2"]`` is a
+    legal lane declaration (``assay.config`` requires only a non-empty
+    subset of R0-R3), and ``judge_mutation`` never reads its ``baseline``
+    argument once a real mutation payload is present, so there is nothing
+    an absent R0 claim could excuse skipping."""
+    document = _load("r2_fail_mutants_survived.json")
+    assert document["claims"][1]["mutation"]["survived"]  # really non-empty
+    document["claims"] = [c for c in document["claims"] if c["rigor"] != "R0"]
+    document["declared_rigor"] = ["R2"]
+    document["claims"][0]["status"] = "PASS"
+    del document["claims"][0]["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    # Independently schema-valid: nothing but the re-derivation can see it.
+    assert why_invalid(validator, document) == []
+
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from mutation buckets" in f
+        for f in failures
+    )
+
+
+# ============================================================================
+# O2 (P16 review) -- a status with NO payload behind it, and a foreign
+# schema version. Both are evasions by OMISSION rather than contradiction:
+# the first leaves the re-derivation nothing to judge, the second hands the
+# verifier a shape it was never written against.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "fixture,payload,match",
+    [
+        ("r1_pass.json", "coverage", "without a coverage payload"),
+        ("r2_pass.json", "mutation", "PASS without a mutation payload"),
+        ("r3_pass.json", "canary", "without a canary payload"),
+    ],
+)
+def test_verify_rejects_a_pass_claim_whose_payload_was_simply_deleted(
+    fixture: str, payload: str, match: str
+):
+    """Deleting the evidence is cheaper than contradicting it, and leaves
+    the top-level rollup in perfect agreement. Every one of these was
+    ACCEPTED before this rule existed."""
+    document = _load(fixture)
+    claim = next(c for c in document["claims"] if payload in c)
+    del claim[payload]
+    if payload == "coverage":
+        del document["judgment"]
+
+    failures = verify_document(document)
+    assert any(match in f for f in failures), failures
+
+
+def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
+    """P16 work item 7. A REAL v2 artifact — this repository's own r1_pass
+    fixture as it stood at the P15 merge, transcribed by hand rather than
+    down-converted by any code in this package — is rejected with ONE
+    diagnostic naming the version, not with a pile of KeyErrors on fields
+    its producer had never heard of."""
+    document = _load("r1_pass.json")
+    document["schema_version"] = 2
+    del document["judgment"]
+    del document["scope"]
+    del document["enforcement"]
+    for claim in document["claims"]:
+        claim.pop("coverage", {}).pop("excluded_lines", None)
+
+    failures = verify_document(document)
+    assert failures == [
+        "schema_version 2 is not this verifier's version 3: a verdict "
+        "artifact is rejected, never upgraded in place -- re-produce it "
+        "with an assay whose VERDICT_SCHEMA_VERSION is 3"
+    ]
+
+
+# ============================================================================
+# O2 (P16 review) -- the rest of work item 6's named contradictory negatives:
+# survivor/crash/budget PRECEDENCE (not merely the survivor mapping), broken
+# mutation prerequisite propagation, and the two canary contradictions
+# besides survival. Every one is a VALID payload carrying a WRONG status
+# (A-135), and every one is independently schema-valid -- only the stage-3
+# re-derivation can see it.
+# ============================================================================
+
+
+def _a_survivor() -> dict:
+    return {
+        "path": "pkg/a.py",
+        "lineno": 3,
+        "operator": "compare-swap",
+        "description": "a < b -> a >= b",
+    }
+
+
+@pytest.mark.parametrize(
+    "fixture,bucket,status,reason_code,exit_code,expected",
+    [
+        # crashed outranks survived: a crash means the mutant never got a
+        # verdict at all, which is not the same news as "it lived".
+        (
+            "r2_error_exec_failed_mutant_crashed.json", "survived",
+            "FAIL", "MUTANTS_SURVIVED", 1, "(ERROR, EXEC_FAILED)",
+        ),
+        # budget_exceeded outranks survived, for the same reason.
+        (
+            "r2_budget_exceeded_lane_timeout.json", "survived",
+            "FAIL", "MUTANTS_SURVIVED", 1, "(BUDGET_EXCEEDED, LANE_TIMEOUT)",
+        ),
+        # and crashed outranks budget_exceeded -- ROLLUP_PRECEDENCE applied
+        # one level down (A-117).
+        (
+            "r2_error_exec_failed_mutant_crashed.json", "budget_exceeded",
+            "BUDGET_EXCEEDED", "LANE_TIMEOUT", 4, "(ERROR, EXEC_FAILED)",
+        ),
+    ],
+)
+def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
+    validator: Draft202012Validator,
+    fixture: str, bucket: str, status: str, reason_code: str,
+    exit_code: int, expected: str,
+):
+    document = _load(fixture)
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    claim["mutation"][bucket] = [_a_survivor()]
+    claim["mutation"]["total"] += 1
+    claim["status"] = status
+    claim["reason_code"] = reason_code
+    # The R0 sibling passes in both fixtures, so the rollup is the R2 status
+    # itself -- computed here by hand rather than read off the artifact.
+    assert [c["status"] for c in document["claims"] if c["rigor"] == "R0"] == ["PASS"]
+    document["outcome"] = status
+    document["reason_code"] = reason_code
+    document["exit_code"] = exit_code
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        f"disagrees with the re-derived judgment from mutation buckets {expected}" in f
+        for f in failures
+    ), failures
+
+
+def test_verify_rejects_an_r2_claim_that_misreports_its_own_failed_prerequisite(
+    validator: Draft202012Validator,
+):
+    """Work item 6's "broken mutation prerequisite propagation": with no
+    mutation payload the R2 claim must reuse the baseline's own
+    ``(outcome, reason_code)`` VERBATIM (A-116), not merely land on some
+    other adverse status."""
+    document = _load("r2_error_exec_failed_baseline_crashed.json")
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    assert "mutation" not in claim  # the prerequisite never passed
+    claim["status"] = "FAIL"
+    claim["reason_code"] = "COMMAND_FAILED"
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from mutation buckets "
+        "(ERROR, EXEC_FAILED)" in f
+        for f in failures
+    ), failures
+
+
+def test_verify_rejects_an_r3_pass_whose_canary_failed_for_the_wrong_cause(
+    validator: Draft202012Validator,
+):
+    """A canary that fails for some OTHER reason proves nothing about the
+    defect it was built to catch -- FAIL/CANARY_SURVIVED, never PASS."""
+    document = _load("r3_fail_canary_survived_wrong_reason.json")
+    canary = document["claims"][1]["canary"]
+    assert canary["observed_reason_code"] != canary["expected_reason_code"]
+    document["claims"][1]["status"] = "PASS"
+    del document["claims"][1]["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from the canary result "
+        "(FAIL, CANARY_SURVIVED)" in f
+        for f in failures
+    ), failures
+
+
+def test_verify_rejects_an_r3_pass_built_on_a_broken_control(
+    validator: Draft202012Validator,
+):
+    """A control that does not itself pass makes the transformed run
+    meaningless -- INCONCLUSIVE/CANARY_INCONCLUSIVE, never PASS. Nothing
+    else in the artifact changes: the control outcome is the only edit."""
+    document = _load("r3_pass.json")
+    document["claims"][1]["canary"]["control_outcome"] = "FAIL"
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from the canary result "
+        "(INCONCLUSIVE, CANARY_INCONCLUSIVE)" in f
+        for f in failures
+    ), failures
+
+
+def test_verify_still_reports_a_missing_schema_version_as_a_missing_field():
+    """The version diagnostic answers "which version is this"; it must not
+    swallow the different question "is the field there at all"."""
+    document = _load("r0_pass.json")
+    del document["schema_version"]
+
+    failures = verify_document(document)
+    assert any("missing required field(s)" in f for f in failures)
+    assert not any("is not this verifier's version" in f for f in failures)

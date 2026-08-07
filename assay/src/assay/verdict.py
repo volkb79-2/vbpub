@@ -115,6 +115,18 @@ SCHEMA_RESOURCE = "schemas/verdict.schema.json"
 CLAIM_SOURCES: tuple[str, ...] = ("computed",)
 EVIDENCE_SOURCES: tuple[str, ...] = ("adjudicated", "attested")
 
+#: (P16 review) the two reason codes an R2 claim can only ever read off a
+#: :class:`Mutation`'s own buckets — :func:`assay.mutation.judge_mutation`
+#: reaches both solely on its ``mutation is not None`` branch, and
+#: ``execute_command``'s baseline vocabulary contains neither. A claim
+#: carrying one of them without the payload it was read from is therefore
+#: unproducible, and is refused at construction rather than left for a
+#: consumer to trust. See
+#: :meth:`Claim._check_a_judged_status_carries_its_own_payload`.
+_MUTATION_ONLY_REASON_CODES: frozenset[ReasonCode] = frozenset(
+    {ReasonCode.MUTANTS_SURVIVED, ReasonCode.NO_MUTANTS}
+)
+
 #: A-023, in order. `PASS` is not a member: it is what remains when no adverse
 #: status is present, which is the same statement as "PASS only when every
 #: declared claim passed".
@@ -404,6 +416,64 @@ class Coverage:
                 f"detail must sum to the summary"
             )
         self._check_buckets_pairwise_disjoint()
+        self._check_summaries_name_their_own_detail()
+
+    def _check_summaries_name_their_own_detail(self) -> None:
+        """Each ``files_*`` summary agrees with the line-level mapping it
+        summarises (P16's own work item 3: "missing/excluded/unclassified
+        identities agree with their summary fields").
+
+        Two different relations, because the two kinds of summary mean two
+        different things:
+
+        * :attr:`files_with_unclassified_lines` and
+          :attr:`files_with_excluded_lines` are documented as *"paths
+          appearing in* [the mapping]*, sorted"* — an EQUALITY, and
+          :mod:`assay.evaluate` builds both by literally sorting the
+          mapping it just filled.
+        * :attr:`files_missing_coverage` is NOT the keys of
+          :attr:`missing_lines`: it names only the considered files with no
+          entry at all in the coverage artifact, whose changed lines are
+          then all recorded as missing. Every such file therefore appears in
+          :attr:`missing_lines` — a CONTAINMENT — while a file that does
+          have an artifact entry can contribute missing lines without
+          belonging here.
+
+        Without this, a summary could name a file the detail never mentions,
+        or stay empty while the detail names several: a consumer reading
+        "which files have a problem" (the whole reason A-096 added these
+        pairs) would be answered by a field nothing bound to the evidence.
+        """
+        for mapping, mapping_name, summary, summary_name in (
+            (
+                self.unclassified_lines,
+                "unclassified_lines",
+                self.files_with_unclassified_lines,
+                "files_with_unclassified_lines",
+            ),
+            (
+                self.excluded_lines,
+                "excluded_lines",
+                self.files_with_excluded_lines,
+                "files_with_excluded_lines",
+            ),
+        ):
+            expected = tuple(sorted(mapping))
+            if summary != expected:
+                raise ValueError(
+                    f"coverage.{summary_name} {list(summary)} does not name "
+                    f"exactly the paths in coverage.{mapping_name} "
+                    f"{list(expected)}; the summary is derived from the "
+                    f"detail, never supplied independently of it"
+                )
+        stray = sorted(set(self.files_missing_coverage) - set(self.missing_lines))
+        if stray:
+            raise ValueError(
+                f"coverage.files_missing_coverage names {stray}, which "
+                f"contribute no line to coverage.missing_lines; a file with "
+                f"no coverage-artifact entry has every changed line recorded "
+                f"as missing"
+            )
 
     def _check_buckets_pairwise_disjoint(self) -> None:
         """A changed line has exactly one classification (P15's own
@@ -966,6 +1036,69 @@ class Claim:
                     f"claim[{self.rigor}]: NO_MEASUREMENT carries no mutation "
                     f"payload at all — omitted, not zeroed, the same discipline "
                     f"A-025 applies to coverage"
+                )
+
+        self._check_a_judged_status_carries_its_own_payload()
+
+    def _check_a_judged_status_carries_its_own_payload(self) -> None:
+        """The converse of the three ``NO_MEASUREMENT`` rules above (P16
+        review): those forbid a payload where none was measured; this
+        forbids a *judged status* where no payload was measured.
+
+        Without it, ``assay verify``'s R1/R2/R3 re-derivation is trivially
+        evaded — not by a contradictory payload (sol finding 2's three
+        artifacts) but by DELETING the payload. Each re-derivation function
+        has nothing to judge and returns; the top-level rollup still agrees;
+        the artifact is accepted. A ``PASS`` claim backed by no evidence at
+        all is the strongest form of exactly the lie P16 exists to catch.
+
+        Each rule states only what its own producer can prove:
+
+        * R1 — :func:`assay.evaluate.evaluate_coverage` returns ``PASS`` or
+          ``FAIL`` and *always* with a :class:`Coverage`; the three
+          ``NO_MEASUREMENT`` causes are guarded before it is ever called
+          (A-090) and carry no payload by the rule above.
+        * R2 — :func:`assay.mutation.judge_mutation` reaches ``PASS`` only
+          on the ``mutation is not None`` branch; ``None`` means the
+          baseline never resolved to ``PASS`` (A-116) and the claim reuses
+          that non-``PASS`` baseline's own outcome verbatim. Every other
+          status stays representable without a payload, because a failed
+          baseline is exactly how they arise.
+        * R3 — :func:`assay.canary.judge_canary` returns ``PASS``/``FAIL``/
+          ``INCONCLUSIVE``, and :func:`assay.canary.build_canary_claim`
+          attaches the :class:`CanaryResult` it judged on every one of
+          them. ``ERROR``/``BUDGET_EXCEEDED`` stay representable without
+          one: those describe the canary machinery failing to produce a
+          result at all, not a judgement of one.
+        """
+        if self.rigor == "R1" and self.coverage is None:
+            if self.status in {Outcome.PASS, Outcome.FAIL}:
+                raise ValueError(
+                    f"claim[R1]: {self.status.value} without a coverage "
+                    f"payload -- a changed-line judgement that names no "
+                    f"coverage cannot be re-derived by anyone but its own "
+                    f"producer"
+                )
+        if self.rigor == "R2" and self.mutation is None:
+            if self.status is Outcome.PASS:
+                raise ValueError(
+                    "claim[R2]: PASS without a mutation payload -- an "
+                    "absent payload means mutation testing never began "
+                    "(the baseline never passed), which cannot itself pass"
+                )
+            if self.reason_code in _MUTATION_ONLY_REASON_CODES:
+                raise ValueError(
+                    f"claim[R2]: {self.reason_code.value} without a mutation "
+                    f"payload -- that reason code can only be read off the "
+                    f"mutation buckets, so a baseline that never got as far "
+                    f"as running mutants cannot produce it"
+                )
+        if self.rigor == "R3" and self.canary is None:
+            if self.status in {Outcome.PASS, Outcome.FAIL, Outcome.INCONCLUSIVE}:
+                raise ValueError(
+                    f"claim[R3]: {self.status.value} without a canary "
+                    f"payload -- that status is a judgement OF a canary "
+                    f"result, so the result it judged must be recorded"
                 )
 
     def to_dict(self) -> dict[str, Any]:

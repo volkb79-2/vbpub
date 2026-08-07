@@ -23,7 +23,25 @@ from conftest import verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import REASON_CODES, Outcome, ReasonCode
-from assay.verdict import Claim, Coverage
+from assay.verdict import CanaryResult, Claim, Coverage, Mutation
+
+#: The payload each level's own producer attaches to a PASS (P16 review),
+#: so a "the honest form builds" control is honest at every rigor level
+#: rather than only at R0.
+_PASSING_PAYLOAD = {
+    "R0": {},
+    "R2": {"mutation": Mutation(total=1, killed=1)},
+    "R3": {
+        "canary": CanaryResult(
+            mechanism="uncovered-line",
+            description="appended a never-called function",
+            control_outcome=Outcome.PASS,
+            transformed_outcome=Outcome.FAIL,
+            expected_reason_code=ReasonCode.UNCOVERED_LINES,
+            observed_reason_code=ReasonCode.UNCOVERED_LINES,
+        )
+    },
+}
 
 #: A plausible, well-formed coverage payload. Its presence is the ONLY thing
 #: wrong with the documents it is planted into below.
@@ -231,7 +249,10 @@ def test_the_model_refuses_a_no_measurement_claim_with_coverage():
 
 @pytest.mark.parametrize("rigor", ["R0", "R2", "R3"])
 def test_the_model_refuses_a_coverage_payload_on_a_non_r1_claim(rigor: str):
-    Claim(rigor=rigor, source="computed", status=Outcome.PASS, verified_by_assay=True)
+    Claim(
+        rigor=rigor, source="computed", status=Outcome.PASS,
+        verified_by_assay=True, **_PASSING_PAYLOAD[rigor],
+    )
 
     with pytest.raises(ValueError, match="belongs to the R1 claim"):
         Claim(

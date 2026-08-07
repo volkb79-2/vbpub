@@ -33,6 +33,7 @@ from assay.verdict import (
     EvidenceDeclaration,
     Judgment,
     JudgmentR1,
+    Mutation,
     Verdict,
     rollup,
 )
@@ -54,12 +55,48 @@ BASE = {
 }
 
 
+#: The resolved R1 policy every verdict below that renders a PASSING R1
+#: claim must carry (P16): a coverage payload without the policy that judged
+#: it is refused, so the two travel together here exactly as they do in a
+#: real artifact.
+R1_JUDGMENT = Judgment(
+    r1=JudgmentR1(
+        language="python",
+        source_roots=("src",),
+        coverage_format="coverage-py-json",
+        coverage_artifact="cov.json",
+        fail_under=100.0,
+        allow_excluded=False,
+        base="b" * 40,
+    )
+)
+
+
 def passing(rigor: str, source: str = "computed") -> Claim:
+    """A PASSING claim for *rigor*, carrying the payload that level's own
+    producer always attaches to a pass (P16 review): R1's ``Coverage``,
+    R2's ``Mutation``. A judged status with no payload behind it is refused
+    at construction, because it is precisely the artifact ``assay verify``
+    cannot re-derive and would therefore have to take on trust.
+    """
+    payload: dict[str, object] = {}
+    if rigor == "R1":
+        payload["coverage"] = Coverage(
+            covered=1,
+            changed_executable=1,
+            pct=100.0,
+            considered=1,
+            missing_lines={},
+            files_missing_coverage=(),
+        )
+    elif rigor == "R2":
+        payload["mutation"] = Mutation(total=1, killed=1)
     return Claim(
         rigor=rigor,
         source=source,
         status=Outcome.PASS,
         verified_by_assay=source == "computed",
+        **payload,
     )
 
 
@@ -265,6 +302,7 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
         outcome=Outcome.PASS,
         declared_rigor=("R0", "R1", "R2"),
         claims=(passing("R0"), passing("R1"), passing("R2")),
+        judgment=R1_JUDGMENT,
     )
     assert [claim.rigor for claim in verdict.claims] == ["R0", "R1", "R2"]
 
@@ -277,9 +315,18 @@ def test_the_model_refuses_a_verdict_that_renders_no_claim_for_a_declared_level(
     'R2 was never declared'."""
     declared = ("R0", "R1", "R2")
     kept = tuple(passing(level) for level in declared if level != missing)
+    # The R1 policy travels with the R1 coverage claim, so it is present
+    # exactly when that claim is -- including in the case that drops it.
+    judgment = None if missing == "R1" else R1_JUDGMENT
 
     with pytest.raises(ValueError, match=f"no claim for {missing}"):
-        Verdict(**BASE, outcome=Outcome.PASS, declared_rigor=declared, claims=kept)
+        Verdict(
+            **BASE,
+            outcome=Outcome.PASS,
+            declared_rigor=declared,
+            claims=kept,
+            judgment=judgment,
+        )
 
 
 def test_the_model_refuses_a_claim_for_a_level_the_lane_never_declared():

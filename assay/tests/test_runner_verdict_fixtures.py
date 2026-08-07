@@ -273,11 +273,16 @@ def test_assemble_verdict_accepts_when_claims_cover_every_declared_level(
     )
     result = runner.execute_command(lane, cwd=tmp_path, clock=clock)
     r0_claim = runner.build_r0_claim(result)
+    # A payload-free R1 claim is representable only as NO_MEASUREMENT (P16
+    # review: a PASS/FAIL that names no coverage cannot be re-derived), and
+    # that is the shape this test wants -- it is about the claims-cover-
+    # declared-rigor guard, not about coverage or the judgment policy.
     r1_claim = Claim(
         rigor="R1",
         source="computed",
-        status=Outcome.PASS,
+        status=Outcome.NO_MEASUREMENT,
         verified_by_assay=True,
+        reason_code=ReasonCode.DIRTY_TREE,
     )
 
     verdict = runner.assemble_verdict(

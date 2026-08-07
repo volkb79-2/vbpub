@@ -90,6 +90,7 @@ from .mutation import judge_mutation
 from .verdict import (
     EXIT_CODES,
     REASON_CODES,
+    VERDICT_SCHEMA_VERSION,
     CanaryResult,
     Claim,
     Coverage,
@@ -516,6 +517,14 @@ def _reconstruct_verdict(document: dict) -> Verdict:
     return verdict
 
 
+#: Handed to :func:`assay.mutation.judge_mutation` on the branch where its
+#: own early return proves it never reads the argument. Deliberately NOT a
+#: plausible-looking baseline: if that proof ever stops holding, an
+#: ``AttributeError`` here is a loud, immediate failure rather than a
+#: silently wrong re-derivation against a fabricated outcome.
+_BASELINE_NEVER_READ = object()
+
+
 def _fmt(outcome: Outcome, reason_code: ReasonCode | None) -> str:
     return f"({outcome.value}, {reason_code.value if reason_code is not None else None})"
 
@@ -578,17 +587,35 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
     behaviourally exact and avoids pulling ``runner.py``'s own
     subprocess-executing import chain into an artifact validator that never
     re-runs a lane.
+
+    That stand-in is needed ONLY for the payload-less branch. A REAL
+    ``mutation`` payload is re-judged whether or not the artifact carries an
+    R0 claim at all — ``rigor = ["R2"]`` is a legal lane declaration
+    (:mod:`assay.config` requires only a non-empty subset of R0-R3), so
+    returning early on a missing R0 sibling would have let sol finding 2's
+    second contradictory artifact — a ``PASS`` with a genuine surviving
+    mutant — pass unexamined simply by not declaring R0 (P16 review).
     """
     claim = next((item for item in verdict.claims if item.rigor == "R2"), None)
     if claim is None:
         return
-    r0_claim = next((item for item in verdict.claims if item.rigor == "R0"), None)
-    if r0_claim is None:
-        return
-    baseline_stand_in = SimpleNamespace(
-        outcome=r0_claim.status, reason_code=r0_claim.reason_code
-    )
-    expected = judge_mutation(baseline_stand_in, claim.mutation)
+    if claim.mutation is None:
+        r0_claim = next((item for item in verdict.claims if item.rigor == "R0"), None)
+        if r0_claim is None:
+            # Nothing in the artifact records the baseline this claim reused,
+            # so there is no honest comparison to make. The one status that
+            # would be a contradiction regardless -- PASS -- is already
+            # impossible to construct
+            # (:meth:`assay.verdict.Claim._check_a_judged_status_carries_its_own_payload`).
+            return
+        baseline: Any = SimpleNamespace(
+            outcome=r0_claim.status, reason_code=r0_claim.reason_code
+        )
+    else:
+        # Never read on this branch; named so, rather than fabricated from a
+        # claim that has nothing to do with it.
+        baseline = _BASELINE_NEVER_READ
+    expected = judge_mutation(baseline, claim.mutation)
     if (claim.status, claim.reason_code) != expected:
         failures.append(
             f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
@@ -640,6 +667,23 @@ def verify_document(document: Any) -> list[str]:
     missing_required = [key for key in required if key not in document]
     if missing_required:
         failures.append(f"missing required field(s): {missing_required}")
+
+    version = document.get("schema_version")
+    if "schema_version" in document and version != VERDICT_SCHEMA_VERSION:
+        # P16 work item 7: a foreign version is reported AS a version
+        # problem and nothing else. Every later check reads a shape this
+        # verifier was never written against, so continuing would bury the
+        # one actionable sentence under a pile of consequences of it -- a
+        # real v2 artifact otherwise reports `schema: 'excluded_lines'`,
+        # a bare KeyError naming a field its producer had never heard of.
+        # The artifact is REJECTED, never coerced or upgraded in place:
+        # re-produce it with a matching assay (docs/DESIGN-GUIDE.md §6).
+        return failures + [
+            f"schema_version {version!r} is not this verifier's version "
+            f"{VERDICT_SCHEMA_VERSION}: a verdict artifact is rejected, "
+            f"never upgraded in place -- re-produce it with an assay whose "
+            f"VERDICT_SCHEMA_VERSION is {VERDICT_SCHEMA_VERSION}"
+        ]
 
     outcome = _check_outcome_and_reason_code(document, failures)
     _check_exit_code(document, outcome, failures)

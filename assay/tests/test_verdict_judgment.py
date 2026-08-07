@@ -122,6 +122,155 @@ def test_coverage_refuses_overlapping_excluded_and_unclassified_lines():
         )
 
 
+# --- Coverage: each files_* summary names its own detail (P16 review) --------
+#
+# The arithmetic above binds the TOTALS to the detail. These bind the
+# per-file SUMMARIES to it: without them a summary could name a file the
+# detail never mentions, or stay empty while the detail names several, and
+# a consumer reading "which files have a problem" -- the entire reason
+# A-096 added these pairs -- would be answered by a field bound to nothing.
+
+
+def test_coverage_refuses_files_with_excluded_lines_that_omits_a_named_file():
+    with pytest.raises(ValueError, match="files_with_excluded_lines"):
+        Coverage(
+            covered=0, changed_executable=0, pct=100.0, considered=1,
+            missing_lines={}, files_missing_coverage=(),
+            excluded_lines={"a.py": frozenset({1})}, files_with_excluded_lines=(),
+        )
+
+
+def test_coverage_refuses_files_with_excluded_lines_naming_an_unlisted_file():
+    with pytest.raises(ValueError, match="files_with_excluded_lines"):
+        Coverage(
+            covered=0, changed_executable=0, pct=100.0, considered=1,
+            missing_lines={}, files_missing_coverage=(),
+            excluded_lines={"a.py": frozenset({1})},
+            files_with_excluded_lines=("a.py", "b.py"),
+        )
+
+
+def test_coverage_refuses_files_with_unclassified_lines_that_omits_a_named_file():
+    with pytest.raises(ValueError, match="files_with_unclassified_lines"):
+        Coverage(
+            covered=0, changed_executable=0, pct=100.0, considered=1,
+            missing_lines={}, files_missing_coverage=(),
+            unclassified_lines={"a.py": frozenset({1})},
+            files_with_unclassified_lines=(),
+        )
+
+
+def test_coverage_refuses_files_missing_coverage_that_contributes_no_missing_line():
+    """A CONTAINMENT, not an equality: a file with no coverage-artifact entry
+    has every changed line recorded as missing, so it must appear in
+    ``missing_lines`` -- while a file that DOES have an entry may contribute
+    missing lines without belonging in this summary."""
+    # The honest containment builds: "b.py" contributes missing lines from a
+    # real artifact entry and is correctly absent from the summary.
+    Coverage(
+        covered=0, changed_executable=2, pct=0.0, considered=2,
+        missing_lines={"a.py": frozenset({1}), "b.py": frozenset({2})},
+        files_missing_coverage=("a.py",),
+    )
+
+    with pytest.raises(ValueError, match="contribute no line"):
+        Coverage(
+            covered=0, changed_executable=1, pct=0.0, considered=2,
+            missing_lines={"a.py": frozenset({1})},
+            files_missing_coverage=("a.py", "b.py"),
+        )
+
+
+# --- Claim: a judged status carries the payload it judged (P16 review) -------
+#
+# The converse of the three NO_MEASUREMENT rules: those forbid a payload
+# where nothing was measured, these forbid a judged status where nothing
+# was. Deleting the payload is the cheapest possible evasion of `assay
+# verify`'s R1/R2/R3 re-derivation -- there is then nothing to re-derive,
+# the rollup still agrees, and a PASS backed by no evidence at all is
+# accepted.
+
+
+def test_claim_refuses_an_r1_pass_or_fail_carrying_no_coverage():
+    for status, reason_code in (
+        (Outcome.PASS, None),
+        (Outcome.FAIL, ReasonCode.UNCOVERED_LINES),
+    ):
+        with pytest.raises(ValueError, match="without a coverage payload"):
+            Claim(
+                rigor="R1", source="computed", status=status,
+                verified_by_assay=True, reason_code=reason_code,
+            )
+    # NO_MEASUREMENT stays the one payload-free R1 claim (A-025/A-090).
+    Claim(
+        rigor="R1", source="computed", status=Outcome.NO_MEASUREMENT,
+        verified_by_assay=True, reason_code=ReasonCode.DIRTY_TREE,
+    )
+
+
+def test_claim_refuses_an_r2_pass_carrying_no_mutation():
+    with pytest.raises(ValueError, match="PASS without a mutation payload"):
+        Claim(rigor="R2", source="computed", status=Outcome.PASS, verified_by_assay=True)
+
+
+@pytest.mark.parametrize(
+    "status,reason_code",
+    [
+        (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED),
+        (Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS),
+    ],
+)
+def test_claim_refuses_a_mutation_only_reason_code_carrying_no_mutation(
+    status: Outcome, reason_code: ReasonCode
+):
+    """Neither code is in ``execute_command``'s baseline vocabulary, so a
+    claim reusing a failed baseline's outcome can never carry one."""
+    with pytest.raises(ValueError, match="without a mutation payload"):
+        Claim(
+            rigor="R2", source="computed", status=status,
+            verified_by_assay=True, reason_code=reason_code,
+        )
+
+
+def test_an_r2_claim_reusing_a_failed_baseline_still_needs_no_mutation():
+    """The legitimate payload-free R2 claim (A-116): the baseline never
+    passed, so mutation never began and the claim reuses the baseline's own
+    outcome verbatim."""
+    Claim(
+        rigor="R2", source="computed", status=Outcome.FAIL,
+        verified_by_assay=True, reason_code=ReasonCode.COMMAND_FAILED,
+    )
+
+
+@pytest.mark.parametrize(
+    "status,reason_code",
+    [
+        (Outcome.PASS, None),
+        (Outcome.FAIL, ReasonCode.CANARY_SURVIVED),
+        (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+    ],
+)
+def test_claim_refuses_a_judged_r3_status_carrying_no_canary(
+    status: Outcome, reason_code: ReasonCode | None
+):
+    """``judge_canary`` returns exactly these three, and
+    ``build_canary_claim`` attaches the result it judged to every one."""
+    with pytest.raises(ValueError, match="without a canary payload"):
+        Claim(
+            rigor="R3", source="computed", status=status,
+            verified_by_assay=True, reason_code=reason_code,
+        )
+
+
+def test_an_r3_claim_whose_machinery_failed_needs_no_canary():
+    """ERROR/BUDGET_EXCEEDED describe the canary machinery never producing a
+    result, not a judgement of one -- so they stay representable."""
+    Claim(
+        rigor="R3", source="computed", status=Outcome.ERROR,
+        verified_by_assay=True, reason_code=ReasonCode.EXEC_FAILED,
+    )
+
+
 # --- JudgmentR1 --------------------------------------------------------------
 
 
