@@ -47,7 +47,7 @@ on branch `feat/assay-P05-language-free-evaluation-core`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§4–5, §6's NO_MEASUREMENT table, and decisions A-012–A-018, A-024, A-025, A-035, A-071, A-090.
+1. `docs/DESIGN-GUIDE.md` §§4–5, §6's NO_MEASUREMENT table, and decisions A-012–A-018, A-024, A-025, A-035, A-071, A-090, A-094.
 2. `src/assay/diff.py`, `src/assay/measurability.py`, `coverage.py`, `runner.py`, `verdict.py`, and packaged schema.
 3. The evaluation functions in all four source implementations named by the design guide, especially topos directory-boundary matching and nyxloom/dstdns exclusion policy.
 

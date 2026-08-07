@@ -22,7 +22,7 @@ oracles:
     negative: "Merging os.environ leaks the sentinel; omitting append bookkeeping changes the expected artifact; ignoring the permission runs the sentinel command"
     gate: tester-unified
   - id: O3
-    observable: "--verdict writes atomically on PASS, FAIL, ERROR, NO_MEASUREMENT, and BUDGET_EXCEEDED; without --verdict no artifact is created; an injected replacement failure preserves the old artifact"
+    observable: "--verdict-json PATH writes atomically on PASS, FAIL, ERROR, NO_MEASUREMENT, and BUDGET_EXCEEDED; without --verdict-json no artifact is created; an injected replacement failure preserves the old artifact"
     negative: "Writing only success paths or truncating in place makes the corresponding filesystem fixture absent or corrupt"
     gate: tester-unified
   - id: O4
@@ -47,15 +47,29 @@ on branch `feat/assay-P04-runner-cli-verdict-emission`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§6–7 and decisions A-019–A-028, A-036, A-041, A-073, A-076.
+1. `docs/DESIGN-GUIDE.md` §§6–7 and decisions A-019–A-028, A-036, A-041, A-073, A-076, A-092, A-094, A-095.
 2. `src/assay/cli.py`, `config.py`, `errors.py`, `verdict.py`, and the six existing expected-verdict fixtures.
 3. `tests/test_verdict_serialises.py` and `tests/test_cli_lanes.py` for independent artifact and CLI patterns.
+4. `src/assay/measurability.py`'s `ResolvedBase` (P02) — the local precedent for A-092's "any new intermediate
+   typed representation is a frozen `kw_only` dataclass, `AssayError` raised directly" applied to a fresh
+   module, not to something ported from a bare-dict sibling implementation.
 
 ## Work
 
-1. Add an injectable process boundary and deterministic budget-expiry boundary; do not use wall-clock duration as a test oracle.
-2. Execute R0 with the declared environment contract and propagate the real command result.
-3. Emit verdicts atomically only when requested, on every terminal run outcome.
+1. Add an injectable process boundary and deterministic budget-expiry boundary; do not use wall-clock duration
+   as a test oracle. "Injectable" means: the real subprocess/clock is the default, and a test-supplied
+   replacement can be substituted — the exact seam (callable parameter, small Protocol, whatever) is your
+   design call, but it must exist and be exercised by O1's `EXEC_FAILED`/`BUDGET_EXCEEDED` cases without a
+   real missing binary or a real wall-clock wait.
+2. Execute R0 with the declared environment contract and propagate the real command result. Structure this as
+   a discrete, separately-callable step from final verdict assembly (A-094) — P05 inserts an R1 evaluation
+   step (P02's/P03's guards, then the four-way union) between command execution and verdict construction, and
+   must not have to restructure a monolithic run-and-build-verdict function to do it. An append attempted
+   without the lane's `allow_argv_append` is rejected before execution as `ERROR`/`EXEC_FAILED` (A-095).
+3. Emit verdicts atomically only when requested (`--verdict-json PATH`, A-028), on every terminal run outcome.
+   `NO_MEASUREMENT` is NOT a runner-producible outcome in this package (that path is P05's, ahead of R1
+   evaluation, A-090) — its artifact-writer test constructs the `Verdict` directly, the same way
+   `test_verdict_serialises.py`'s `build_no_measurement()` already does, not by driving it through the runner.
 4. Add hand-written complete expected artifacts for every newly produced path. This is A-041 enforcement from the first producer onward, not deferred to P14.
 5. Break each result mapping, environment isolation, and atomicity property and record failure counts (A-067).
 
