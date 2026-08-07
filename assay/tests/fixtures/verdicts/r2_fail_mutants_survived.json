@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "222222222222222222222222222222222222222b",
+  "outcome": "FAIL",
+  "reason_code": "MUTANTS_SURVIVED",
+  "exit_code": 1,
+  "started": "2026-08-07T14:05:00+00:00",
+  "ended": "2026-08-07T14:05:05+00:00",
+  "declared_rigor": ["R0", "R2"],
+  "declared_evidence": [],
+  "argv_declared": ["pytest", "tests", "-q"],
+  "argv_appended": [],
+  "argv_effective": ["pytest", "tests", "-q"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "MUTANTS_SURVIVED",
+      "mutation": {
+        "total": 2,
+        "killed": 1,
+        "survived": [
+          {
+            "path": "pkg/checks.py",
+            "lineno": 30,
+            "operator": "compare-swap",
+            "description": "Eq->NotEq"
+          }
+        ],
+        "crashed": [],
+        "budget_exceeded": []
+      }
+    }
+  ],
+  "evidence": []
+}

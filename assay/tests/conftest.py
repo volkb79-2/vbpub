@@ -55,7 +55,13 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 #: assay's own gate run. A nested `conftest.py` doing this instead would
 #: collide in `sys.modules['conftest']` with THIS file (pytest imports every
 #: rootless `conftest.py` under the same bare name), so the ignore lives here.
-collect_ignore_glob = ["fixtures/canary/python/**"]
+#:
+#: `fixtures/mutation_exec/python/` is P12's own committed real pytest
+#: project (`pkg/checks.py` + `tests/test_checks.py`), the same shape and
+#: the same reason for the same exclusion: its own `tests/test_checks.py`
+#: would otherwise ALSO be collected directly from its committed location,
+#: where `from pkg.checks import ...` cannot resolve.
+collect_ignore_glob = ["fixtures/canary/python/**", "fixtures/mutation_exec/python/**"]
 
 #: A complete, minimal R0 lane: the eight required top-level fields and nothing
 #: else. An R0-only lane has NO [judge] table (A-048).
@@ -413,6 +419,37 @@ def evidence_verdict_fixture(name: str) -> dict:
     """The hand-written expected artifact for one of P10's own evidence
     branches."""
     return json.loads(EVIDENCE_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
+
+
+# --- P12's own R2 verdicts: mutation execution's terminal shapes -------------
+#
+# Full, independently hand-written artifacts for A-116/A-117's terminal
+# mutation-execution cases: a killed-only PASS, FAIL/MUTANTS_SURVIVED,
+# INCONCLUSIVE/NO_MUTANTS, BUDGET_EXCEEDED/LANE_TIMEOUT, and the two
+# genuinely different ERROR/EXEC_FAILED shapes A-116 itself calls out (a
+# crashed BASELINE, `mutation=None`, versus a crashed MUTANT, `mutation`
+# present with a non-empty `crashed` bucket). Built directly from
+# `Claim`/`Mutation`/`MutantOutcome`/`Verdict` in the test module that
+# consumes them, kept out of the other *_VERDICT_FIXTURES dicts for the
+# same reason CANARY_VERDICT_FIXTURES is: additional EXAMPLES of outcomes
+# already represented in VERDICT_FIXTURES, not new outcomes.
+
+MUTATION_VERDICT_FIXTURES: dict[str, Path] = {
+    name: VERDICT_FIXTURE_DIR / f"{name}.json"
+    for name in (
+        "r2_pass",
+        "r2_fail_mutants_survived",
+        "r2_inconclusive_no_mutants",
+        "r2_budget_exceeded_lane_timeout",
+        "r2_error_exec_failed_mutant_crashed",
+        "r2_error_exec_failed_baseline_crashed",
+    )
+}
+
+
+def mutation_verdict_fixture(name: str) -> dict:
+    """The hand-written expected artifact for one of P12's own R2 branches."""
+    return json.loads(MUTATION_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
 
 
 # --- Lane objects built directly, bypassing assay.toml/tomllib (P04) ---------

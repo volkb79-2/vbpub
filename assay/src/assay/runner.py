@@ -30,6 +30,12 @@ steps rather than one run-and-build-verdict function (A-094):
   A-036's transparency fields, A-024's one-claim-per-declared-rigor). Takes
   the *whole* ``claims`` tuple, not just R0's, so a caller appends the R1
   claim to the tuple it passes rather than needing a different function.
+  P10 threads *evidence*/*declared_evidence* through the same way (both
+  default to empty, so every earlier caller is unaffected); P12 adds one
+  more optional parameter, *mutation_claim* (A-119), for the R2 claim
+  :func:`assay.mutation.build_mutation_claim` produces — appended to
+  *claims* here rather than requiring every caller to remember to fold it
+  in by hand.
 
 **The injectable process/budget boundary** (work item 1): the real
 ``subprocess`` is :func:`default_process_runner`, the seam's default: a
@@ -419,6 +425,7 @@ def assemble_verdict(
     assay_version: str,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
+    mutation_claim: Claim | None = None,
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -448,6 +455,21 @@ def assemble_verdict(
     empty and this never fires for that identity again, with no file only
     this package could touch left to update.
 
+    *mutation_claim* (P12, A-119) is the R2 wiring, the same shape one more
+    level over: an optional :class:`~assay.verdict.Claim` -- built by
+    :func:`assay.mutation.build_mutation_claim`, this function never
+    constructs one itself, matching how *evidence*/*declared_evidence* are
+    threaded through without this function owning their internals -- that,
+    when given, is appended to *claims* before every check below runs, so a
+    caller building ``claims=(r0_claim, r1_claim)`` does not also have to
+    remember to fold the R2 claim into that tuple by hand. Passing a
+    *mutation_claim* whose own ``rigor`` already appears in *claims* is
+    refused the same way a duplicate rigor level is refused anywhere else in
+    this project (:class:`~assay.verdict.Verdict`'s own
+    ``_check_claims_cover_declared_rigor``) -- constructing the combined
+    tuple and letting that existing check catch it, rather than a bespoke
+    second one here.
+
     The verdict's own ``outcome`` and ``reason_code`` are otherwise DERIVED
     from ``claims`` AND ``evidence`` together via :func:`~assay.verdict.rollup`
     (A-023), never chosen independently -- :class:`~assay.verdict.Verdict`
@@ -458,6 +480,7 @@ def assemble_verdict(
     array a status came from, matching :class:`~assay.verdict.Verdict`'s own
     ``_check_outcome_agrees_with_rollup``.
     """
+    claims = claims if mutation_claim is None else (*claims, mutation_claim)
     covered = {claim.rigor for claim in claims}
     missing = [level for level in lane.rigor if level not in covered]
     if missing:

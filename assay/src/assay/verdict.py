@@ -80,6 +80,8 @@ __all__ = [
     "Coverage",
     "Evidence",
     "EvidenceDeclaration",
+    "Mutation",
+    "MutantOutcome",
     "Outcome",
     "ReasonCode",
     "Verdict",
@@ -481,6 +483,147 @@ class CanaryResult:
 
 
 @dataclass(frozen=True, kw_only=True)
+class MutantOutcome:
+    """One mutant's identity, projected for the R2 artifact (A-116): the
+    lightweight subset of :class:`~assay.mutation.Mutant`'s own identity a
+    reader needs to find and fix a surviving/crashed/budget-stopped site,
+    plus the external *path* context :class:`~assay.mutation.Mutant` itself
+    has no field for (one ``generate_mutants`` call is scoped to a single
+    file; a verdict spans possibly many).
+
+    Deliberately WITHOUT ``mutated_text`` — a verdict carrying many
+    survivors would otherwise embed a full replacement file per entry,
+    which bloats the artifact for no diagnostic gain :attr:`operator` +
+    :attr:`description` + :attr:`lineno` do not already provide.
+
+    :attr:`operator` is a plain non-empty ``str`` here, NOT validated
+    against :data:`~assay.mutation.MUTATION_OPERATORS` — the identical
+    choice :class:`CanaryResult`'s own ``mechanism`` field already makes
+    (A-108), and for the same two reasons: this module must stay importable
+    without importing :mod:`assay.mutation`'s own execution orchestration
+    (which imports :class:`Mutation`/:class:`MutantOutcome` FROM here — a
+    closed-set import the other direction would be circular), and in
+    practice this field is always built from an already-validated
+    :attr:`assay.mutation.Mutant.operator`, so re-closing the vocabulary
+    here would only be able to catch a bug that :class:`~assay.mutation.
+    Mutant`'s own construction already prevents.
+    """
+
+    path: str
+    lineno: int
+    operator: str
+    description: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError(
+                f"MutantOutcome.path must be a non-empty string, got {self.path!r}"
+            )
+        if isinstance(self.lineno, bool) or not isinstance(self.lineno, int):
+            raise ValueError(
+                f"MutantOutcome.lineno must be an integer, got {self.lineno!r}"
+            )
+        if self.lineno < 1:
+            raise ValueError(f"MutantOutcome.lineno must be >= 1, got {self.lineno}")
+        if not isinstance(self.operator, str) or not self.operator:
+            raise ValueError(
+                f"MutantOutcome.operator must be a non-empty string, got "
+                f"{self.operator!r}"
+            )
+        if not isinstance(self.description, str) or not self.description:
+            raise ValueError(
+                f"MutantOutcome.description must be a non-empty string, got "
+                f"{self.description!r}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "lineno": self.lineno,
+            "operator": self.operator,
+            "description": self.description,
+        }
+
+
+def _mutant_outcome_sort_key(item: MutantOutcome) -> tuple[str, int, str, str]:
+    return (item.path, item.lineno, item.operator, item.description)
+
+
+def _check_mutant_outcome_tuple(value: Any, what: str) -> None:
+    """Every one of :class:`Mutation`'s three non-killed buckets shares this
+    shape: a tuple of :class:`MutantOutcome`, sorted by stable identity
+    (``path``, ``lineno``, ``operator``, ``description``) — never by
+    whichever mutant's subprocess happened to finish first (O3). Ties are
+    legal (a 3+-operand boolean chain, A-115, can project two distinct
+    mutants onto the identical ``MutantOutcome``), so this checks sortedness
+    under that key, not uniqueness.
+    """
+    if not isinstance(value, tuple):
+        raise ValueError(f"{what} must be a tuple, got {value!r}")
+    for item in value:
+        if not isinstance(item, MutantOutcome):
+            raise ValueError(f"{what} entries must be MutantOutcome, got {item!r}")
+    if list(value) != sorted(value, key=_mutant_outcome_sort_key):
+        raise ValueError(
+            f"{what} must be sorted by (path, lineno, operator, description); "
+            f"got {[_mutant_outcome_sort_key(item) for item in value]}"
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class Mutation:
+    """The R2 claim payload (P12, A-116): baseline-gated mutation execution
+    against changed-line mutants, isolated per mutant, bounded by a
+    caller-declared ``jobs`` executor (A-082).
+
+    FOUR buckets, not three, matching O3/O4's own explicit four-way
+    enumeration (killed / survived / crashed / budget-exceeded) — nyxloom's
+    own ``MutationResult`` collapses crashed and budget-exceeded into
+    "killed" (confirmed reading ``mutation_gate.py`` directly, A-122), which
+    is exactly the ambiguity this project's own oracles exist to catch, so
+    it is not ported. ``killed`` is a bare count (a killed mutant needs no
+    further diagnosis — the suite already caught it); the other three carry
+    the actual :class:`MutantOutcome` identities, because THOSE are what a
+    reader needs to act on.
+    """
+
+    total: int
+    killed: int
+    survived: tuple[MutantOutcome, ...] = ()
+    crashed: tuple[MutantOutcome, ...] = ()
+    budget_exceeded: tuple[MutantOutcome, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("total", "killed"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"mutation.{name} must be an integer, got {value!r}")
+            if value < 0:
+                raise ValueError(f"mutation.{name} must not be negative, got {value}")
+        _check_mutant_outcome_tuple(self.survived, "mutation.survived")
+        _check_mutant_outcome_tuple(self.crashed, "mutation.crashed")
+        _check_mutant_outcome_tuple(self.budget_exceeded, "mutation.budget_exceeded")
+        expected_total = (
+            self.killed + len(self.survived) + len(self.crashed) + len(self.budget_exceeded)
+        )
+        if self.total != expected_total:
+            raise ValueError(
+                f"mutation.total ({self.total}) must equal killed + "
+                f"len(survived) + len(crashed) + len(budget_exceeded) "
+                f"({expected_total})"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "killed": self.killed,
+            "survived": [item.to_dict() for item in self.survived],
+            "crashed": [item.to_dict() for item in self.crashed],
+            "budget_exceeded": [item.to_dict() for item in self.budget_exceeded],
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class Claim:
     """One COMPUTED declared rigor level's evidence (A-024)."""
 
@@ -491,6 +634,7 @@ class Claim:
     reason_code: ReasonCode | None = None
     coverage: Coverage | None = None
     canary: CanaryResult | None = None
+    mutation: Mutation | None = None
 
     def __post_init__(self) -> None:
         if self.rigor not in RIGOR_LEVELS:
@@ -555,6 +699,24 @@ class Claim:
                     f"A-025 applies to coverage"
                 )
 
+        if self.mutation is not None:
+            # A-116: the exact R1/coverage template above, restated for R2.
+            # mutation's PRESENCE is baseline-conditional -- None means
+            # mutation testing never started (the baseline itself never
+            # resolved to PASS); present means it did, even if every
+            # attempted mutant crashed.
+            if self.rigor != "R2":
+                raise ValueError(
+                    f"claim[{self.rigor}]: a mutation payload belongs to the R2 "
+                    f"claim; R2 is the level that declares mutation testing"
+                )
+            if self.status is Outcome.NO_MEASUREMENT:
+                raise ValueError(
+                    f"claim[{self.rigor}]: NO_MEASUREMENT carries no mutation "
+                    f"payload at all — omitted, not zeroed, the same discipline "
+                    f"A-025 applies to coverage"
+                )
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "rigor": self.rigor,
@@ -569,6 +731,8 @@ class Claim:
             payload["coverage"] = self.coverage.to_dict()
         if self.canary is not None:
             payload["canary"] = self.canary.to_dict()
+        if self.mutation is not None:
+            payload["mutation"] = self.mutation.to_dict()
         return payload
 
 
