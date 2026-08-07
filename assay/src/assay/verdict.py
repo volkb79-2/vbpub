@@ -60,6 +60,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.resources import files
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from .config import RIGOR_LEVELS
@@ -212,6 +213,52 @@ def _check_reason_code(
         )
 
 
+def _check_line_location_mapping(value: Any, what: str) -> None:
+    """The shape ``missing_lines`` and (P07) ``unclassified_lines`` both
+    share: ``Mapping[str, frozenset[int]]``, non-empty-string keys, always a
+    non-empty ``frozenset`` of positive line numbers — "a file contributing
+    none is omitted from the mapping entirely", never present with an empty
+    set. Factored out so P07's new field is held to the identical
+    construction-time discipline as P05's, rather than a hand-copied
+    near-duplicate that could quietly drift from it (A-096's "exact same...
+    discipline").
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{what} must be a mapping, got {value!r}")
+    for path, lines in value.items():
+        if not isinstance(path, str) or not path:
+            raise ValueError(f"{what} key must be a non-empty string, got {path!r}")
+        if not isinstance(lines, frozenset) or not lines:
+            raise ValueError(
+                f"{what}[{path!r}] must be a non-empty frozenset of line "
+                f"numbers, got {lines!r} — a file contributing none is "
+                f"omitted from the mapping entirely"
+            )
+        for line in lines:
+            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+                raise ValueError(
+                    f"{what}[{path!r}] must contain only positive line "
+                    f"numbers, got {line!r}"
+                )
+
+
+def _check_file_tuple(value: Any, what: str) -> None:
+    """The shape ``files_missing_coverage`` and (P07)
+    ``files_with_unclassified_lines`` both share: a sorted tuple of unique,
+    non-empty path strings. Factored out for the same reason
+    :func:`_check_line_location_mapping` is.
+    """
+    if not isinstance(value, tuple):
+        raise ValueError(f"{what} must be a tuple, got {value!r}")
+    for path in value:
+        if not isinstance(path, str) or not path:
+            raise ValueError(f"{what} entries must be non-empty strings, got {path!r}")
+    if len(set(value)) != len(value):
+        raise ValueError(f"{what} contains a duplicate: {list(value)}")
+    if list(value) != sorted(value):
+        raise ValueError(f"{what} must be sorted, got {list(value)}")
+
+
 @dataclass(frozen=True, kw_only=True)
 class Coverage:
     """The R1 claim payload: changed-line coverage, and why its denominator is
@@ -229,6 +276,18 @@ class Coverage:
     never conditionally omitted — the same "absent means unknowable, empty
     means known-and-empty" discipline A-025 already applies to the coverage
     block as a whole, one level down inside it.
+
+    ``unclassified_lines`` and ``files_with_unclassified_lines`` are P07's
+    own additive THIRD pair (A-096), following the identical discipline: a
+    changed line whose enclosing multi-line statement could not be
+    confidently attributed — overlapping/malformed spans, or a genuinely
+    untracked enclosing statement — renders ``FAIL``/``UNCLASSIFIED_LINES``
+    (A-100) and names exactly where. Both default to empty so a producer
+    that has not been updated to pass them through (P07 does not touch
+    :mod:`assay.runner`, which is outside its ``scope.touch``) continues to
+    build a valid, schema-conformant ``Coverage`` — always present in the
+    OUTPUT (:meth:`to_dict` always emits both keys), never conditionally
+    omitted, exactly like ``missing_lines``/``files_missing_coverage``.
     """
 
     covered: int
@@ -243,6 +302,15 @@ class Coverage:
     #: changed files under the source roots contributing executable lines
     #: with no entry at all in the coverage artifact, sorted.
     files_missing_coverage: tuple[str, ...]
+    #: (P07) changed lines whose multi-line-statement attribution could not
+    #: confidently resolve them — same shape as :attr:`missing_lines`: a
+    #: file contributing none is ABSENT, never present with an empty
+    #: frozenset. Non-empty renders the claim ``FAIL``/``UNCLASSIFIED_LINES``
+    #: (A-100).
+    unclassified_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    #: (P07) paths appearing in :attr:`unclassified_lines`, sorted — the
+    #: same shape :attr:`files_missing_coverage` already established.
+    files_with_unclassified_lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("covered", "changed_executable", "considered"):
@@ -262,55 +330,15 @@ class Coverage:
                 f"coverage.covered ({self.covered}) exceeds changed_executable "
                 f"({self.changed_executable})"
             )
-        self._check_missing_lines()
-        self._check_files_missing_coverage()
-
-    def _check_missing_lines(self) -> None:
-        if not isinstance(self.missing_lines, Mapping):
-            raise ValueError(
-                f"coverage.missing_lines must be a mapping, got {self.missing_lines!r}"
-            )
-        for path, lines in self.missing_lines.items():
-            if not isinstance(path, str) or not path:
-                raise ValueError(
-                    f"coverage.missing_lines key must be a non-empty string, "
-                    f"got {path!r}"
-                )
-            if not isinstance(lines, frozenset) or not lines:
-                raise ValueError(
-                    f"coverage.missing_lines[{path!r}] must be a non-empty "
-                    f"frozenset of line numbers, got {lines!r} — a file "
-                    f"contributing none is omitted from the mapping entirely"
-                )
-            for line in lines:
-                if isinstance(line, bool) or not isinstance(line, int) or line < 1:
-                    raise ValueError(
-                        f"coverage.missing_lines[{path!r}] must contain only "
-                        f"positive line numbers, got {line!r}"
-                    )
-
-    def _check_files_missing_coverage(self) -> None:
-        if not isinstance(self.files_missing_coverage, tuple):
-            raise ValueError(
-                f"coverage.files_missing_coverage must be a tuple, got "
-                f"{self.files_missing_coverage!r}"
-            )
-        for path in self.files_missing_coverage:
-            if not isinstance(path, str) or not path:
-                raise ValueError(
-                    f"coverage.files_missing_coverage entries must be "
-                    f"non-empty strings, got {path!r}"
-                )
-        if len(set(self.files_missing_coverage)) != len(self.files_missing_coverage):
-            raise ValueError(
-                f"coverage.files_missing_coverage contains a duplicate: "
-                f"{list(self.files_missing_coverage)}"
-            )
-        if list(self.files_missing_coverage) != sorted(self.files_missing_coverage):
-            raise ValueError(
-                f"coverage.files_missing_coverage must be sorted, got "
-                f"{list(self.files_missing_coverage)}"
-            )
+        _check_line_location_mapping(self.missing_lines, "coverage.missing_lines")
+        _check_file_tuple(self.files_missing_coverage, "coverage.files_missing_coverage")
+        _check_line_location_mapping(
+            self.unclassified_lines, "coverage.unclassified_lines"
+        )
+        _check_file_tuple(
+            self.files_with_unclassified_lines,
+            "coverage.files_with_unclassified_lines",
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -323,6 +351,11 @@ class Coverage:
                 for path, lines in sorted(self.missing_lines.items())
             },
             "files_missing_coverage": list(self.files_missing_coverage),
+            "unclassified_lines": {
+                path: sorted(lines)
+                for path, lines in sorted(self.unclassified_lines.items())
+            },
+            "files_with_unclassified_lines": list(self.files_with_unclassified_lines),
         }
 
 

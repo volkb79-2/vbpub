@@ -33,7 +33,9 @@
         "pct": 100.0,
         "considered": 1,
         "missing_lines": {},
-        "files_missing_coverage": []
+        "files_missing_coverage": [],
+        "unclassified_lines": {},
+        "files_with_unclassified_lines": []
       }
     }
   ],

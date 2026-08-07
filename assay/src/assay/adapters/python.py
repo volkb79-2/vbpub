@@ -1,22 +1,25 @@
 """The Python :class:`~assay.adapters.base.LanguageAdapter` — the first REAL
 adapter, proving the language-free core (P05) is faithful to real Python
-semantics (DESIGN-GUIDE §11, A-097/A-098/A-099).
+semantics (DESIGN-GUIDE §11, A-097/A-098/A-099), and (P07) recovering real
+``coverage.py``'s multi-line-statement gap via :meth:`PythonAdapter.statement_spans`
+(A-084/A-100/A-101).
 
-**Scope, precisely (A-098).** Real ``coverage.py`` has a well-documented gap:
-a trace hit is attributed to a STATEMENT's own first physical line only, so a
-multi-line statement's interior lines (a multi-line dict literal, a call
-spanning several lines, ...) never appear in ``executed_lines`` NOR
-``missing_lines`` at all. Recovering those interior lines needs an AST
-statement-span walk correlated back against the coverage artifact — that is
-P07's ``statement_spans`` addition (A-084), reserved because this package has
-no scope to touch ``adapters/base.py`` (A-097) and the protocol this package
-implements against has no such method. What IS this package's job — and what
-every construct below resolves from a SINGLE reported line, never a span —
-is: decorators, async/compound-statement headers, docstrings, comments, and
-pragma tokens. ``requires_span_attribution = True`` below is this adapter's
-own honest declaration that real Python needs P07's future extension; P05's
-own evaluation never reads that flag, it exists purely for P07 to discover
-which adapters to extend without inspecting behaviour.
+**Scope, precisely (A-098, and P07's own extension of it).** Real
+``coverage.py`` has a well-documented gap: a trace hit is attributed to a
+STATEMENT's own first physical line only, so a multi-line statement's
+interior lines (a multi-line dict literal, a call spanning several lines,
+...) never appear in ``executed_lines`` NOR ``missing_lines`` at all.
+:meth:`has_executable_code` — and every construct family it inspects
+(decorators, async/compound-statement headers, docstrings, comments, pragma
+tokens) — resolves from a SINGLE reported line, never a span; that was P06's
+whole, deliberately narrower, job. Recovering the INTERIOR lines needs an AST
+statement-span walk correlated back against the coverage artifact:
+:meth:`statement_spans` (P07's one deliberate addition to the frozen
+protocol, A-084/A-097) is that walk. ``requires_span_attribution = True``
+below is this adapter's own honest declaration that real Python has this
+gap; :mod:`assay.evaluate` consults the flag before ever calling
+:meth:`statement_spans`, so a hypothetical adapter declaring ``False`` incurs
+no cost from implementing it.
 
 **The union, and where each reference actually diverges (Work item 2).**
 Three sibling gates were read in full for this package: dstdns
@@ -35,8 +38,11 @@ Three sibling gates were read in full for this package: dstdns
   parser's own ``excluded`` field (already proven in P03) — nothing for this
   adapter to compute; the pragma TOKEN itself never needs adapter-side
   recognition.
-* ``statement_spans``/decorator+match-case recovery — only dstdns has this,
-  and A-098 reserves it for P07.
+* ``statement_spans``/decorator+match-case recovery — only dstdns has this;
+  A-098 reserved it for P07, which is this file's own current addition
+  (below), adopted from dstdns's ``statement_spans``/``attribute_line``
+  mechanism with one shape change (A-101): spans are ``StatementSpan``
+  instances, never dstdns's bare ``(lineno, end_lineno)`` tuples.
 * Directory-name exclusion — NONE of the three references excludes any
   directory by bare name (confirmed by grep across all three for
   ``__pycache__``/``.venv``/``vendor``/``node_modules``/etc. — zero hits).
@@ -113,6 +119,8 @@ import ast
 import re
 from dataclasses import dataclass
 
+from .base import StatementSpan
+
 __all__ = ["PythonAdapter"]
 
 #: Adopted verbatim from dstdns/scripts/coverage_gate.py's own
@@ -138,6 +146,16 @@ def _is_bare_string_statement(node: ast.stmt) -> bool:
     exclusion a docstring-only module would incorrectly register as "has
     executable code" merely because it contains a real, line-numbered AST
     node.
+
+    SHARED between :meth:`PythonAdapter.has_executable_code` (P06, "does
+    this module have ANY code") and :meth:`PythonAdapter.statement_spans`
+    (P07, "which lines does this span cover") — deliberately, rather than
+    re-derived (per ``assay-P06-BRIEF.md``'s own open question). Both
+    questions rest on the exact same AST predicate — a bare docstring
+    ``Expr`` is never coverage-tracked and never a span anchor — and P07
+    found no reason for the two answers to diverge; a second, independently
+    maintained copy would only risk drifting from this one with no
+    behavioural benefit.
     """
     if not isinstance(node, ast.Expr):
         return False
@@ -145,12 +163,134 @@ def _is_bare_string_statement(node: ast.stmt) -> bool:
     return isinstance(value, ast.Constant) and isinstance(value.value, str)
 
 
+#: Node types that can hold a NESTED block of further statements — their own
+#: claimed span must stop at the first body statement, never swallow it.
+#: Adopted from dstdns's own ``_COMPOUND_STATEMENT_TYPES`` (the sole holder
+#: of this recovery among the three cited reference gates), with one change:
+#: dstdns looks ``TryStar``/``Match`` up dynamically via ``getattr(ast, ...,
+#: None)`` because it supports older Python than this project does.
+#: ``pyproject.toml`` sets ``requires-python = ">=3.11"``, and both
+#: ``ast.Match`` (3.10+) and ``ast.TryStar`` (3.11+) are unconditionally
+#: present on every Python version this project can even install under —
+#: the dynamic lookup would be a defensive branch this project's own gate
+#: could never exercise either arm of as dead (AUTHORING.md §3b.D: "if a
+#: line is genuinely unreachable, restructure so it does not exist").
+_COMPOUND_STATEMENT_TYPES: tuple[type, ...] = (
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.Try,
+    ast.TryStar,
+    ast.With,
+    ast.AsyncWith,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.ExceptHandler,
+    ast.Match,
+)
+
+
+def _first_nested_line(node: ast.AST) -> int:
+    """First physical line of the first NESTED statement inside a compound
+    node — i.e. where that node's own header stops.
+
+    ``body`` covers almost everything, but ``ast.Match`` has no ``body`` at
+    all: its children live in ``cases``, and ``ast.match_case`` carries no
+    ``lineno`` of its own, so the line must come from each case's
+    ``pattern`` — always present; a ``case`` clause with no pattern is not
+    syntax Python's grammar can produce. Adopted from dstdns's own helper of
+    the same name; every member of :data:`_COMPOUND_STATEMENT_TYPES` REQUIRES
+    a non-empty body (or, for ``Match``, a non-empty ``cases``) by Python's
+    own grammar — an empty one is a ``SyntaxError`` that never reaches this
+    function at all — so *candidates* is never empty here and this never
+    guesses at a missing line the way returning ``None`` would invite a
+    caller to.
+    """
+    candidates: list[int] = []
+    body = getattr(node, "body", None)
+    if body:
+        candidates.extend(statement.lineno for statement in body)
+    for case in getattr(node, "cases", None) or []:
+        candidates.append(case.pattern.lineno)
+        candidates.extend(statement.lineno for statement in case.body)
+    return min(candidates)
+
+
+def _statement_spans(text: str) -> tuple[StatementSpan, ...] | None:
+    """Every statement's own physical line span in *text* (P07,
+    A-084/A-101), adopted from dstdns's own ``statement_spans`` with one
+    shape change: entries are :class:`~assay.adapters.base.StatementSpan`
+    instances, never dstdns's bare ``(lineno, end_lineno)`` tuples.
+
+    Returns ``None`` when *text* cannot be parsed at all (a real
+    ``SyntaxError``, or a ``ValueError`` for e.g. an embedded NUL byte — the
+    same pair :meth:`PythonAdapter.has_executable_code` catches) — callers
+    must treat that as "cannot attribute anything in this file", never
+    guess. A full :func:`ast.walk` (not just ``tree.body``, unlike
+    :meth:`PythonAdapter.has_executable_code`'s own top-level-only walk)
+    because an unattributed line can be the interior of a statement nested
+    arbitrarily deep, not only a module-top-level one.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    spans: list[StatementSpan] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.stmt, ast.ExceptHandler)):
+            continue
+        if _is_bare_string_statement(node):
+            continue  # docstring — never coverage-tracked, see the helper above
+        # `lineno`/`end_lineno` are guaranteed present on every `ast.stmt`/
+        # `ast.ExceptHandler` a successful `ast.parse()` can produce.
+        lineno = node.lineno
+        end_lineno = node.end_lineno
+        if isinstance(node, _COMPOUND_STATEMENT_TYPES):
+            first_child_line = _first_nested_line(node)
+            # A one-line compound statement (`if x: return 1`) has its only
+            # body statement on the SAME line as the header — clamp back up
+            # to a single-line span rather than let this produce a
+            # nonsensical end-before-start range.
+            end_lineno = min(end_lineno, first_child_line - 1)
+            if end_lineno < lineno:
+                end_lineno = lineno
+        spans.append(StatementSpan(start_line=lineno, end_line=end_lineno))
+
+        # DECORATORS: a decorator is an EXPRESSION, not an `ast.stmt`, so it
+        # never enters `spans` on its own above. `coverage.py` tracks only a
+        # decorator's FIRST line exactly as it does a multi-line literal, so
+        # a multi-line decorator's continuation lines are untracked AND
+        # (without this) unattributed.
+        for decorator in getattr(node, "decorator_list", None) or []:
+            spans.append(
+                StatementSpan(
+                    start_line=decorator.lineno, end_line=decorator.end_lineno
+                )
+            )
+
+        # MATCH-CASE PATTERNS: a `case` line is coverage-tracked, but a
+        # pattern spanning several physical lines leaves its continuation
+        # lines untracked. Giving the pattern its own span lets those
+        # inherit their OWN case's status rather than the enclosing
+        # `match`'s (essentially always executed), which would otherwise
+        # mark a line in a never-taken branch as covered.
+        for case in getattr(node, "cases", None) or []:
+            spans.append(
+                StatementSpan(
+                    start_line=case.pattern.lineno, end_line=case.pattern.end_lineno
+                )
+            )
+    return tuple(spans)
+
+
 @dataclass(frozen=True, kw_only=True)
 class PythonAdapter:
     """The Python union of dstdns/topos/nyxloom's changed-line coverage
-    gates, implemented against P05's frozen :class:`~assay.adapters.base.
-    LanguageAdapter` protocol (A-097) — exactly its five attributes and
-    three methods, plus one adapter-private constructor field
+    gates, implemented against the frozen :class:`~assay.adapters.base.
+    LanguageAdapter` protocol (A-097, extended once by P07/A-101) — its five
+    attributes and four methods, plus one adapter-private constructor field
     (:attr:`coverage_key_prefix`) that the protocol does not name and does
     not need to: a concrete adapter is free to carry extra state beyond the
     protocol's structural surface, the same way P05's own ``FakeAdapter``
@@ -194,3 +334,6 @@ class PythonAdapter:
         if not prefix or not key.startswith(prefix + "/"):
             return key
         return key[len(prefix) + 1 :]
+
+    def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
+        return _statement_spans(text)

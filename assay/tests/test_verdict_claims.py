@@ -145,6 +145,8 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
         "considered": 1,
         "missing_lines": {},
         "files_missing_coverage": [],
+        "unclassified_lines": {},
+        "files_with_unclassified_lines": [],
     }
     assert why_invalid(
         validator, document_with([claim_dict(rigor="R1", coverage=payload)])
