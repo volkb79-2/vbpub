@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "dddddddddddddddddddddddddddddddddddddddd",
+  "outcome": "FAIL",
+  "reason_code": "CANARY_SURVIVED",
+  "exit_code": 1,
+  "started": "2026-08-07T13:05:00+00:00",
+  "ended": "2026-08-07T13:05:05+00:00",
+  "declared_rigor": ["R0", "R3"],
+  "declared_evidence": [],
+  "argv_declared": ["pytest", "tests", "-q", "--cov=pkg", "--cov-report=json:cov.json"],
+  "argv_appended": [],
+  "argv_effective": ["pytest", "tests", "-q", "--cov=pkg", "--cov-report=json:cov.json"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R3",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "CANARY_SURVIVED",
+      "canary": {
+        "mechanism": "uncovered-line",
+        "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
+        "control_outcome": "PASS",
+        "transformed_outcome": "PASS",
+        "expected_reason_code": "UNCOVERED_LINES"
+      }
+    }
+  ],
+  "evidence": []
+}

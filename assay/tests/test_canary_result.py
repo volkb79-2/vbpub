@@ -1,0 +1,276 @@
+"""O2/O3/A-109 -- :class:`~assay.verdict.CanaryResult`'s own construction-time
+discipline (the exact template :class:`~assay.verdict.Coverage` already
+established, restated for canary's own four named fields), and
+:func:`assay.canary.judge_canary`'s pure judgement logic, tested directly at
+the function level -- every one of A-109's terminal cases, independent of
+which orchestration (Python or Go) produced the evidence.
+
+The negative this defends (O1/O3, verbatim): *a universal-PASS evaluator
+makes the bad half pass; accepting any non-zero (or any reason_code) as
+success lets an unrelated syntax/config error, or a failure for the wrong
+cause, satisfy the oracle; treating transform failure or no-op as a
+successful rejection makes its negative-control artifact PASS.* Each is
+proven here as an EXPLICIT branch :func:`judge_canary` must resolve the
+right way -- not merely implied by an end-to-end pipeline run.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from assay.canary import build_canary_claim, judge_canary
+from assay.errors import Outcome, ReasonCode
+from assay.verdict import CanaryResult, Claim
+
+
+def make(
+    *,
+    mechanism: str = "uncovered-line",
+    description: str = "appended a never-called function",
+    control_outcome: Outcome = Outcome.PASS,
+    transformed_outcome: Outcome | None = Outcome.FAIL,
+    expected_reason_code: ReasonCode | None = ReasonCode.UNCOVERED_LINES,
+    observed_reason_code: ReasonCode | None = ReasonCode.UNCOVERED_LINES,
+) -> CanaryResult:
+    return CanaryResult(
+        mechanism=mechanism,
+        description=description,
+        control_outcome=control_outcome,
+        transformed_outcome=transformed_outcome,
+        expected_reason_code=expected_reason_code,
+        observed_reason_code=observed_reason_code,
+    )
+
+
+# --- CanaryResult's own construction-time discipline --------------------------
+
+
+def test_the_honest_form_builds():
+    result = make()
+    assert result.control_outcome is Outcome.PASS
+    assert result.transformed_outcome is Outcome.FAIL
+
+
+def test_an_empty_mechanism_is_refused():
+    with pytest.raises(ValueError, match="mechanism must be a non-empty string"):
+        CanaryResult(
+            mechanism="", description="x", control_outcome=Outcome.PASS
+        )
+
+
+def test_an_empty_description_is_refused():
+    with pytest.raises(ValueError, match="description must be a non-empty string"):
+        CanaryResult(
+            mechanism="uncovered-line", description="", control_outcome=Outcome.PASS
+        )
+
+
+def test_a_non_outcome_control_outcome_is_refused():
+    with pytest.raises(ValueError, match="control_outcome must be an Outcome"):
+        CanaryResult(mechanism="uncovered-line", description="x", control_outcome="PASS")
+
+
+def test_a_non_outcome_transformed_outcome_is_refused():
+    with pytest.raises(ValueError, match="transformed_outcome must be an Outcome or None"):
+        CanaryResult(
+            mechanism="uncovered-line",
+            description="x",
+            control_outcome=Outcome.PASS,
+            transformed_outcome="FAIL",
+        )
+
+
+def test_expected_reason_code_must_be_a_fail_reason():
+    """A canary always expects a SPECIFIC failure -- NO_MUTANTS or
+    DIRTY_TREE (real reason codes, but not FAIL-shaped ones) can never be
+    what a canary is configured to expect."""
+    with pytest.raises(ValueError, match="must be a FAIL reason code"):
+        CanaryResult(
+            mechanism="uncovered-line",
+            description="x",
+            control_outcome=Outcome.PASS,
+            expected_reason_code=ReasonCode.DIRTY_TREE,
+        )
+
+
+def test_observed_reason_code_without_a_transformed_outcome_is_refused():
+    with pytest.raises(ValueError, match="observed_reason_code requires a transformed_outcome"):
+        CanaryResult(
+            mechanism="uncovered-line",
+            description="x",
+            control_outcome=Outcome.PASS,
+            transformed_outcome=None,
+            observed_reason_code=ReasonCode.UNCOVERED_LINES,
+        )
+
+
+def test_a_pass_transformed_outcome_cannot_carry_a_reason_code():
+    with pytest.raises(ValueError, match="omitted when transformed_outcome is PASS"):
+        CanaryResult(
+            mechanism="uncovered-line",
+            description="x",
+            control_outcome=Outcome.PASS,
+            transformed_outcome=Outcome.PASS,
+            observed_reason_code=ReasonCode.UNCOVERED_LINES,
+        )
+
+
+def test_a_non_pass_transformed_outcome_requires_a_reason_code():
+    with pytest.raises(ValueError, match="observed_reason_code is required"):
+        CanaryResult(
+            mechanism="uncovered-line",
+            description="x",
+            control_outcome=Outcome.PASS,
+            transformed_outcome=Outcome.FAIL,
+            observed_reason_code=None,
+        )
+
+
+def test_observed_reason_code_must_pair_with_its_own_transformed_outcome():
+    """A CANARY_INCONCLUSIVE code (an INCONCLUSIVE-shaped reason) paired
+    with a FAIL transformed_outcome is an internally inconsistent record --
+    refused the same way Claim/Evidence refuse a mismatched (status,
+    reason_code) pair."""
+    with pytest.raises(ValueError, match="is not valid for transformed_outcome"):
+        CanaryResult(
+            mechanism="uncovered-line",
+            description="x",
+            control_outcome=Outcome.PASS,
+            transformed_outcome=Outcome.FAIL,
+            observed_reason_code=ReasonCode.CANARY_INCONCLUSIVE,
+        )
+
+
+def test_to_dict_omits_absent_fields_never_nulls_them():
+    result = make(transformed_outcome=None, observed_reason_code=None)
+
+    payload = result.to_dict()
+
+    assert "transformed_outcome" not in payload
+    assert "observed_reason_code" not in payload
+    assert payload["expected_reason_code"] == "UNCOVERED_LINES"
+
+
+def test_to_dict_carries_every_present_field():
+    payload = make().to_dict()
+
+    assert payload == {
+        "mechanism": "uncovered-line",
+        "description": "appended a never-called function",
+        "control_outcome": "PASS",
+        "transformed_outcome": "FAIL",
+        "expected_reason_code": "UNCOVERED_LINES",
+        "observed_reason_code": "UNCOVERED_LINES",
+    }
+
+
+# --- judge_canary: A-109's terminal cases, one branch each --------------------
+
+
+def test_a_correctly_caught_defect_is_pass():
+    result = make(
+        control_outcome=Outcome.PASS,
+        transformed_outcome=Outcome.FAIL,
+        expected_reason_code=ReasonCode.UNCOVERED_LINES,
+        observed_reason_code=ReasonCode.UNCOVERED_LINES,
+    )
+
+    assert judge_canary(result) == (Outcome.PASS, None)
+
+
+def test_a_broken_control_is_inconclusive():
+    """O1's negative: 'a broken baseline makes the good half fail' -- this
+    is what proves the broken baseline is NOT silently ignored."""
+    result = make(control_outcome=Outcome.FAIL, transformed_outcome=Outcome.FAIL)
+
+    assert judge_canary(result) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+
+
+@pytest.mark.parametrize(
+    "control_outcome",
+    [Outcome.FAIL, Outcome.ERROR, Outcome.NO_MEASUREMENT, Outcome.BUDGET_EXCEEDED, Outcome.INCONCLUSIVE],
+)
+def test_every_non_pass_control_outcome_is_inconclusive(control_outcome):
+    result = make(control_outcome=control_outcome)
+
+    assert judge_canary(result) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+
+
+def test_a_transform_that_never_ran_is_inconclusive():
+    """O3: a malformed transform or one that changed nothing to judge."""
+    result = make(
+        transformed_outcome=None,
+        observed_reason_code=None,
+    )
+
+    assert judge_canary(result) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+
+
+def test_an_unexpectedly_passing_bad_case_survives():
+    """O3/O1: 'a universal-PASS evaluator makes the bad half pass' -- this
+    is the branch that catches it: transformed_outcome PASS is FAIL/SURVIVED,
+    never PASS."""
+    result = make(transformed_outcome=Outcome.PASS, observed_reason_code=None)
+
+    assert judge_canary(result) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
+
+
+def test_a_failure_for_the_wrong_cause_survives():
+    """O1's own negative, made explicit: accepting ANY non-zero as success
+    would wrongly pass this. observed differs from expected -- both are
+    real, valid FAIL reasons, so 'any failure' is not enough."""
+    result = make(
+        expected_reason_code=ReasonCode.COMMAND_FAILED,
+        observed_reason_code=ReasonCode.UNCOVERED_LINES,
+    )
+
+    assert judge_canary(result) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
+
+
+def test_an_unrelated_error_reason_also_survives_not_merely_a_different_fail_reason():
+    """The observed reason need not even be FAIL-shaped -- an ERROR/EXEC_FAILED
+    for an unrelated cause is exactly as much a 'survived' canary as a wrong
+    FAIL reason (O1's negative names 'an unrelated syntax/config error')."""
+    result = make(
+        transformed_outcome=Outcome.ERROR,
+        expected_reason_code=ReasonCode.COMMAND_FAILED,
+        observed_reason_code=ReasonCode.EXEC_FAILED,
+    )
+
+    assert judge_canary(result) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
+
+
+# --- build_canary_claim: the R3 Claim wiring -----------------------------------
+
+
+def test_build_canary_claim_wires_status_reason_and_the_canary_payload():
+    result = make()
+
+    claim = build_canary_claim(result)
+
+    assert isinstance(claim, Claim)
+    assert claim.rigor == "R3"
+    assert claim.source == "computed"
+    assert claim.verified_by_assay is True
+    assert claim.status is Outcome.PASS
+    assert claim.reason_code is None
+    assert claim.canary is result
+
+
+def test_build_canary_claim_on_a_survived_canary():
+    result = make(transformed_outcome=Outcome.PASS, observed_reason_code=None)
+
+    claim = build_canary_claim(result)
+
+    assert claim.status is Outcome.FAIL
+    assert claim.reason_code is ReasonCode.CANARY_SURVIVED
+    assert claim.canary.transformed_outcome is Outcome.PASS
+
+
+def test_build_canary_claim_on_an_inconclusive_canary():
+    result = make(control_outcome=Outcome.FAIL)
+
+    claim = build_canary_claim(result)
+
+    assert claim.status is Outcome.INCONCLUSIVE
+    assert claim.reason_code is ReasonCode.CANARY_INCONCLUSIVE

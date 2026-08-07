@@ -1,8 +1,22 @@
 """The Python :class:`~assay.adapters.base.LanguageAdapter` — the first REAL
 adapter, proving the language-free core (P05) is faithful to real Python
-semantics (DESIGN-GUIDE §11, A-097/A-098/A-099), and (P07) recovering real
+semantics (DESIGN-GUIDE §11, A-097/A-098/A-099), (P07) recovering real
 ``coverage.py``'s multi-line-statement gap via :meth:`PythonAdapter.statement_spans`
-(A-084/A-100/A-101).
+(A-084/A-100/A-101), and (P09) supplying the two canary injection mechanisms
+:mod:`assay.canary` drives — :meth:`PythonAdapter.inject_import_break` and
+:meth:`PythonAdapter.inject_uncovered_line` (A-010/A-084/A-105).
+
+**P09's own addition.** ``inject_import_break``/``inject_uncovered_line``
+port the MECHANISM (never the file-write) of
+``/workspaces/vbpub/nyxloom/src/nyxloom/gate_canary.py``'s own
+``inject_import_break``/``inject_uncovered_line`` (A-105): nyxloom's versions
+call ``path.write_text`` directly, which A-010 forbids here — these are pure
+``(text) -> (text, description)`` functions, and the caller
+(:mod:`assay.canary`'s own orchestration) does the real file I/O against a
+disposable ``tmp_path``. The insertion-point logic (skip past a leading
+module docstring and/or ``from __future__ import ...`` line before inserting
+the canary statement) and the appended-function snippet shape are adopted
+verbatim from nyxloom's own, already-proven implementation.
 
 **Scope, precisely (A-098, and P07's own extension of it).** Real
 ``coverage.py`` has a well-documented gap: a trace hit is attributed to a
@@ -285,17 +299,104 @@ def _statement_spans(text: str) -> tuple[StatementSpan, ...] | None:
     return tuple(spans)
 
 
+#: P09's canary statement (A-105/A-010) — adopted verbatim from nyxloom's own
+#: ``_ASSERT_STMT``, renamed only to name this project rather than nyxloom's.
+#: Inserted as the first real statement of the module body (past any leading
+#: docstring/``__future__`` import, see :func:`_insertion_index_after_future`)
+#: so any test that imports the module fails on import.
+_IMPORT_BREAK_STATEMENT = 'raise AssertionError("assay-canary-import-break")\n'
+
+#: P09's uncovered-canary function name/snippet (A-105/A-010) — adopted
+#: verbatim from nyxloom's own ``_UNCOVERED_CANARY_FUNC``/
+#: ``_UNCOVERED_CANARY_SNIPPET``, renamed only to name this project. A
+#: never-called, typed, side-effect-free module-level function: its own
+#: ``def`` line is reached (and so counted executed) merely by the module
+#: loading, but the two body statements are executed by NO test.
+_UNCOVERED_CANARY_FUNC = "_assay_canary_unreached"
+_UNCOVERED_CANARY_SNIPPET = (
+    f"\n\ndef {_UNCOVERED_CANARY_FUNC}(value: int) -> int:\n"
+    "    doubled = value * 2  # assay-canary: executed by no test\n"
+    "    return doubled\n"
+)
+
+
+def _insertion_index_after_future(source: str) -> int:
+    """1-based line count to skip before inserting the canary statement —
+    past any leading module docstring and/or ``from __future__ import ...``
+    line(s), so the injected line never trips ``SyntaxError: from __future__
+    imports must occur at the beginning of the file``.
+
+    Adopted verbatim (mechanism only, A-105/A-010) from nyxloom's
+    ``gate_canary._insertion_index_after_future``. Falls back to 0 (prepend)
+    on anything that is not a clean docstring/future-import prefix, and on
+    an unparseable source (the insertion still happens; a syntax-broken
+    source is not this function's problem — it is exactly the kind of input
+    :meth:`PythonAdapter.inject_import_break` is allowed to receive and
+    still return something for, pure and total).
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return 0
+    idx = 0
+    for i, node in enumerate(tree.body):
+        if (
+            i == 0
+            and isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            idx = node.end_lineno
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            idx = node.end_lineno
+            continue
+        break
+    return idx
+
+
+def _inject_import_break(text: str) -> tuple[str, str]:
+    """Insert :data:`_IMPORT_BREAK_STATEMENT` as the first real statement of
+    *text*'s module body (MINIMAL one-line insertion — never a whole-file
+    reformat). Pure: returns the transformed text and a description; never
+    touches a filesystem (A-010 — nyxloom's own version calls
+    ``path.write_text`` directly)."""
+    lines = text.splitlines(keepends=True)
+    idx = _insertion_index_after_future(text)
+    lines.insert(idx, _IMPORT_BREAK_STATEMENT)
+    description = f"inserted `{_IMPORT_BREAK_STATEMENT.strip()}` at line {idx + 1}"
+    return "".join(lines), description
+
+
+def _inject_uncovered_line(text: str) -> tuple[str, str]:
+    """Append :data:`_UNCOVERED_CANARY_SNIPPET` to *text* — MINIMAL,
+    additive, never a reformat. Pure, same contract as
+    :func:`_inject_import_break`. A leading blank-line gap (and a
+    guaranteed trailing newline on the original) keeps the appended block a
+    clean addition to the file's existing content, mirroring nyxloom's own
+    ``inject_uncovered_line``."""
+    body = text
+    if body and not body.endswith("\n"):
+        body += "\n"
+    description = (
+        f"appended never-called `def {_UNCOVERED_CANARY_FUNC}` "
+        "(2 uncovered lines) at end of file"
+    )
+    return body + _UNCOVERED_CANARY_SNIPPET, description
+
+
 @dataclass(frozen=True, kw_only=True)
 class PythonAdapter:
     """The Python union of dstdns/topos/nyxloom's changed-line coverage
     gates, implemented against the frozen :class:`~assay.adapters.base.
-    LanguageAdapter` protocol (A-097, extended once by P07/A-101) — its five
-    attributes and four methods, plus one adapter-private constructor field
-    (:attr:`coverage_key_prefix`) that the protocol does not name and does
-    not need to: a concrete adapter is free to carry extra state beyond the
-    protocol's structural surface, the same way P05's own ``FakeAdapter``
-    (``tests/conftest.py``) carries ``key_prefix``/``test_marker``/
-    ``no_code_marker`` alongside the five required attributes.
+    LanguageAdapter` protocol (A-097, extended by P07/A-101 and P09/A-105)
+    — its five attributes and six methods, plus one adapter-private
+    constructor field (:attr:`coverage_key_prefix`) that the protocol does
+    not name and does not need to: a concrete adapter is free to carry
+    extra state beyond the protocol's structural surface, the same way
+    P05's own ``FakeAdapter`` (``tests/conftest.py``) carries
+    ``key_prefix``/``test_marker``/``no_code_marker`` alongside the five
+    required attributes.
     """
 
     name: str = "python"
@@ -337,3 +438,9 @@ class PythonAdapter:
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return _statement_spans(text)
+
+    def inject_import_break(self, text: str) -> tuple[str, str]:
+        return _inject_import_break(text)
+
+    def inject_uncovered_line(self, text: str) -> tuple[str, str]:
+        return _inject_uncovered_line(text)

@@ -75,6 +75,7 @@ __all__ = [
     "ROLLUP_PRECEDENCE",
     "SCHEMA_RESOURCE",
     "VERDICT_SCHEMA_VERSION",
+    "CanaryResult",
     "Claim",
     "Coverage",
     "Evidence",
@@ -360,6 +361,126 @@ class Coverage:
 
 
 @dataclass(frozen=True, kw_only=True)
+class CanaryResult:
+    """The R3 claim payload (P09, A-092/A-108): the evidence a cause-
+    sensitive canary produces, carried separately from the JUDGEMENT
+    :mod:`assay.canary` derives from it — the identical split
+    :class:`Coverage` already keeps from :class:`Claim` (this is its exact
+    construction-time-validation template, restated for canary's own four
+    named fields, O2).
+
+    A known-good CONTROL is run through the real pipeline and MUST have
+    produced :attr:`control_outcome`; a deliberately minimal, known-bad
+    TRANSFORM of the same input is then run the same way, producing
+    :attr:`transformed_outcome` — unless the transform itself was malformed
+    or a no-op (O3), in which case :attr:`transformed_outcome` (and
+    :attr:`observed_reason_code`) are ``None``: the transformed half was
+    never genuinely run, so there is nothing to report an outcome FOR.
+    :attr:`expected_reason_code` is the SPECIFIC reason the mechanism is
+    supposed to produce (never merely "any failure", O1's own negative);
+    :attr:`observed_reason_code` is what the real pipeline actually
+    rendered. :mod:`assay.canary`'s ``judge_canary`` compares the two.
+    """
+
+    #: A short, stable identity for the transform attempted (e.g.
+    #: ``"import-break"``/``"uncovered-line"``) — NOT restricted to a closed
+    #: set here, because a malformed/unrecognised mechanism name must still
+    #: be representable (O3's own "malformed transform" case names the
+    #: mechanism it could not resolve).
+    mechanism: str
+    #: Human-readable account of the concrete transform attempted, or of WHY
+    #: nothing could be built (a malformed mechanism, or a no-op) — from the
+    #: adapter's own ``inject_*``'s ``(text, description)`` return, never
+    #: parsed back apart by any caller.
+    description: str
+    control_outcome: Outcome
+    #: ``None`` exactly when the transformed half was never genuinely run
+    #: (O3's two INCONCLUSIVE causes: a malformed/unrecognised mechanism, or
+    #: a transform that changed nothing to judge).
+    transformed_outcome: Outcome | None = None
+    #: The FAIL-shaped reason the mechanism is supposed to produce, or
+    #: ``None`` when no expectation could be derived (an unrecognised
+    #: mechanism).
+    expected_reason_code: ReasonCode | None = None
+    #: What the real pipeline actually rendered for the transformed half, or
+    #: ``None`` when it was never run, or when it PASSED (a PASS has no
+    #: cause to name, mirroring :class:`Claim`'s own A-051 pairing rule).
+    observed_reason_code: ReasonCode | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mechanism, str) or not self.mechanism:
+            raise ValueError(
+                f"canary.mechanism must be a non-empty string, got "
+                f"{self.mechanism!r}"
+            )
+        if not isinstance(self.description, str) or not self.description:
+            raise ValueError(
+                f"canary.description must be a non-empty string, got "
+                f"{self.description!r}"
+            )
+        if not isinstance(self.control_outcome, Outcome):
+            raise ValueError(
+                f"canary.control_outcome must be an Outcome, got "
+                f"{self.control_outcome!r}"
+            )
+        if self.transformed_outcome is not None and not isinstance(
+            self.transformed_outcome, Outcome
+        ):
+            raise ValueError(
+                f"canary.transformed_outcome must be an Outcome or None, got "
+                f"{self.transformed_outcome!r}"
+            )
+        if self.expected_reason_code is not None:
+            if self.expected_reason_code not in REASON_CODES[Outcome.FAIL]:
+                raise ValueError(
+                    f"canary.expected_reason_code must be a FAIL reason code "
+                    f"or None (a canary always expects a SPECIFIC failure), "
+                    f"got {self.expected_reason_code!r}"
+                )
+        if self.transformed_outcome is None:
+            if self.observed_reason_code is not None:
+                raise ValueError(
+                    "canary.observed_reason_code requires a transformed_outcome "
+                    "— the transformed half was never run"
+                )
+        elif self.transformed_outcome is Outcome.PASS:
+            if self.observed_reason_code is not None:
+                raise ValueError(
+                    "canary.observed_reason_code must be omitted when "
+                    "transformed_outcome is PASS — a pass has no cause to name"
+                )
+        else:
+            if self.observed_reason_code is None:
+                raise ValueError(
+                    f"canary.observed_reason_code is required when "
+                    f"transformed_outcome is {self.transformed_outcome} — "
+                    f"every non-PASS outcome names its cause"
+                )
+            if self.observed_reason_code not in REASON_CODES[self.transformed_outcome]:
+                raise ValueError(
+                    f"canary.observed_reason_code {self.observed_reason_code} "
+                    f"is not valid for transformed_outcome "
+                    f"{self.transformed_outcome}; valid: "
+                    f"{sorted(REASON_CODES[self.transformed_outcome])}"
+                )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "mechanism": self.mechanism,
+            "description": self.description,
+            "control_outcome": self.control_outcome.value,
+        }
+        # Absent means never run/unknowable; never null (mirrors A-025/A-051).
+        if self.transformed_outcome is not None:
+            payload["transformed_outcome"] = self.transformed_outcome.value
+        if self.expected_reason_code is not None:
+            payload["expected_reason_code"] = self.expected_reason_code.value
+        if self.observed_reason_code is not None:
+            payload["observed_reason_code"] = self.observed_reason_code.value
+        return payload
+
+
+@dataclass(frozen=True, kw_only=True)
 class Claim:
     """One COMPUTED declared rigor level's evidence (A-024)."""
 
@@ -369,6 +490,7 @@ class Claim:
     verified_by_assay: bool
     reason_code: ReasonCode | None = None
     coverage: Coverage | None = None
+    canary: CanaryResult | None = None
 
     def __post_init__(self) -> None:
         if self.rigor not in RIGOR_LEVELS:
@@ -419,6 +541,20 @@ class Claim:
                     f"pct and ignores status must find nothing to read"
                 )
 
+        if self.canary is not None:
+            # A-108: the exact R1/coverage template above, restated for R3.
+            if self.rigor != "R3":
+                raise ValueError(
+                    f"claim[{self.rigor}]: a canary payload belongs to the R3 "
+                    f"claim; R3 is the level that declares a canary"
+                )
+            if self.status is Outcome.NO_MEASUREMENT:
+                raise ValueError(
+                    f"claim[{self.rigor}]: NO_MEASUREMENT carries no canary "
+                    f"payload at all — omitted, not zeroed, the same discipline "
+                    f"A-025 applies to coverage"
+                )
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "rigor": self.rigor,
@@ -431,6 +567,8 @@ class Claim:
             payload["reason_code"] = self.reason_code.value
         if self.coverage is not None:
             payload["coverage"] = self.coverage.to_dict()
+        if self.canary is not None:
+            payload["canary"] = self.canary.to_dict()
         return payload
 
 
