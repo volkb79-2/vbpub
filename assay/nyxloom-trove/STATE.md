@@ -11,18 +11,20 @@
 (coverage format registry — coverage.py JSON, lcov, Cobertura XML, Go
 coverprofile — + `EMPTY_COVERAGE` guard), **P04** (runner, `assay run` CLI,
 R0 verdict emission), **P05** (adapter protocol, four-way union, registry, R1
-verdict emission — the first real coverage-judged verdict). Gate green at
-**946 passed, exit 0, 100% statement AND branch** (1327 stmts / 504 branches),
-independently reverified by the controller in the foreground gate container on
-every package (not just read from the implementer's report), plus a post-merge
-local run on `main` each time.
+verdict emission — the first real coverage-judged verdict), **P06** (the
+Python `LanguageAdapter` — first real adapter, union of dstdns/topos/nyxloom).
+Gate green at **986 passed, exit 0, 100% statement AND branch** (1363 stmts /
+512 branches), independently reverified by the controller in the foreground
+gate container on every package (not just read from the implementer's
+report), plus a post-merge local run on `main` each time.
 
-**Outstanding:** P06–P14, nine packages, all validating against nyxloom's real
-`handoff-frontmatter.schema.json` with a closed dependency graph. **P06 is
-next** — *"does the first real adapter supply the Python union without
-changing the language-free core?"*
+**Outstanding:** P07–P14, eight packages, all validating against nyxloom's real
+`handoff-frontmatter.schema.json` with a closed dependency graph. **P07 is
+next** — *"is a changed line never passed merely because its executable
+statement spans multiple lines?"*
 
-Key commits: `291d6e30` (P05 merge), `0958efdf` (P05 readiness rulings,
+Key commits: `8e65b1c7` (P06 merge), `05ab843e` (P06 readiness rulings,
+A-098/A-099), `291d6e30` (P05 merge), `0958efdf` (P05 readiness rulings,
 A-096/A-097), `c46b0bcb` (P04 merge), `fd7ae88e` (P04 controller repair,
 pre-merge), `bfc467b8` (P04 readiness rulings, A-094/A-095), `e7c92988` (P03
 merge), `e97d6e6f` (P03 readiness rulings, A-092/A-093), `89a489a0` (P02
@@ -73,11 +75,15 @@ not fixed.
   `assay.toml`). Worth double-checking again at P14's own readiness pass that
   `runner.py`'s accumulated surface by then is actually sufficient for one
   generic CLI entry point.
-- P06's O2 ("source-root matching... sibling whose directory name merely
-  shares the root prefix") may be re-testing a property `evaluate.py`'s
-  `_is_considered` already proves in the CORE, not something the Python
-  adapter itself needs to guard. Flagged in P06's own handoff for its
-  readiness pass to resolve with the real code in hand.
+- **P07's own handoff already has a vocabulary gap, found while propagating
+  P06**: O2 requires rendering `INCONCLUSIVE`/`UNCLASSIFIED`, but `errors.py`'s
+  closed vocabulary has no such pairing — `UNCLASSIFIED_LINES` exists but is
+  paired only with `FAIL`, and `INCONCLUSIVE` pairs only with `NO_MUTANTS`/
+  `CANARY_INCONCLUSIVE`. Neither the code's exact name nor the outcome pairing
+  P07's oracle names currently exists. This needs a real ruling (likely a new
+  `ReasonCode` member, matching A-050/A-073/A-086's precedent for evolving the
+  closed vocabulary) at P07's own readiness pass — flagged here so it isn't
+  missed, not resolved in advance since it deserves full context.
 - lcov/Cobertura parsers (P03) have zero prior art anywhere in the estate;
   Cobertura's multi-`<class>`-per-file merge is untested against any
   real-world sample. Low risk.
