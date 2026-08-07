@@ -5,12 +5,20 @@
 # it (open item A-O01, closed here).
 #
 # NOTE ON WHAT THIS GATE CLAIMS. `asserts` below is ["tests-pass"] and nothing
-# more. assay's whole subject matter is changed-line coverage, canaries and
-# mutation -- and it has none of them yet. Declaring `changed-line-coverage` or
-# `canary-verified` here today would be the lane-table-implies-capability
-# failure the project exists to remove, committed in assay's own config on day
-# one. P11 upgrades this declaration when the capability is real, and not
-# before. See docs/DESIGN-GUIDE.md 12.
+# more, PERMANENTLY (A-133) -- not pending a future upgrade. assay's whole
+# subject matter is changed-line coverage, canaries and mutation applied to
+# OTHER projects' diffs; declaring `changed-line-coverage`/`canary-verified`/
+# `mutation` here would claim assay mechanically applies THAT rigor to its OWN
+# diff, which it does not and structurally cannot without a judge configured
+# against assay's own source -- exactly the lane-table-implies-capability
+# failure the project exists to remove, committed in assay's own config. P14's
+# self-hosting proof (below) changes HOW this gate runs (the built WHEEL now
+# genuinely executes assay's own tests, not a source-tree shortcut) without
+# changing WHAT it claims: still R0 only (A-046's own "a lane file declares
+# WHAT EXISTS" principle, unchanged by this package). An earlier version of
+# this note said "P11 upgrades this declaration when the capability is real" --
+# P11 was valid-mutant construction and never touched this file; that note was
+# simply stale, not a promise P11 kept. See docs/DESIGN-GUIDE.md 12.
 
 [project]
 id = "assay"
@@ -20,7 +28,12 @@ trove = "nyxloom-trove"
 # assay is a subdir of the vbpub monorepo; git ops resolve upward to vbpub.
 worktree_root = "../.worktrees"
 
-handoff_globs = ["nyxloom-trove/handoffs/*.md"]
+# Narrowed from "nyxloom-trove/handoffs/*.md" (A-133): that broader glob also
+# matched nyxloom-trove/handoffs/README.md -- a prose file with no frontmatter
+# -- and tripped a real `L1 error: missing leading '---'` lint failure. This
+# glob names only assay's own handoffs, which all carry the required
+# frontmatter.
+handoff_globs = ["nyxloom-trove/handoffs/assay-*.md"]
 
 reports_dir          = "nyxloom-trove/reports"
 decisions_inbox      = "nyxloom-trove/decisions.md"
@@ -48,16 +61,74 @@ series       = "nyxloom-trove/handoffs/README.md"
 # A-005). So no image rebuild is needed and the gate of ciu, cmru, topos and
 # nyxloom is not re-risked -- open item A-O02, closed.
 #
-# Code reaches the container through the BOUND worktree via PYTHONPATH, never a
-# baked copy, exactly as the other four Python projects do.
+# P14 (A-130): SELF-HOSTING. Code no longer reaches the running process
+# through a bind-mounted-source-plus-PYTHONPATH shortcut -- the script below
+# builds and installs a REAL assay wheel from {worktree}/assay's own checkout
+# FIRST (the same two-environment offline recipe A-070/A-123 already proved:
+# `pip wheel --no-build-isolation --no-deps` with PYTHONPATH pointed at an
+# importable setuptools, then `pip install --no-index` into a scratch venv),
+# then prepends that venv's bin/ to PATH and runs `assay run tester-unified`
+# through THAT wheel-installed `assay` -- never an ambient/source-tree copy.
+# `setuptools` itself is NOT importable from `/opt/tester-venv/bin/python`
+# directly (confirmed empirically) -- the SAME fallback `conftest.py`'s own
+# `_build_backend_home()` already uses (try the ambient interpreter, fall
+# back to its `sys.base_prefix`'s own `python3`) is replicated here in bash.
+# The wheel BUILD itself also runs via a FRESH, blank scratch venv's own pip
+# (never `/opt/tester-venv`'s pip directly) -- confirmed empirically that
+# invoking `/opt/tester-venv`'s own pip to build directly raises
+# `BackendUnavailable: Cannot import 'setuptools.build_meta'`, exactly
+# mirroring why `conftest.py`'s own `standalone` fixture never builds via the
+# ambient interpreter's pip either. The scratch venv cannot simply be created
+# `--system-site-packages` from `/opt/tester-venv/bin/python`: confirmed
+# empirically that a venv created FROM a venv resolves "system site packages"
+# to the ORIGINAL venv's own `sys.base_prefix` (here, `/usr/local`), not the
+# immediate parent (`/opt/tester-venv`) -- so pytest/coverage/pytest-cov,
+# which live only in `/opt/tester-venv`'s own site-packages, would stay
+# invisible. Nor can the wheel be installed directly INTO
+# `/opt/tester-venv` -- confirmed empirically that its site-packages is not
+# writable by the container's own run-uid (`PermissionError`). The fix: a
+# `.pth` file (`tester_unified_site.pth`) written into the scratch venv's OWN
+# site-packages, naming `/opt/tester-venv`'s site-packages directory --
+# `site.py` appends any path named this way to `sys.path` at interpreter
+# startup, which is exactly what `--system-site-packages` was meant to do
+# here and does not, in this image, achieve on its own.
+# `--override-ini=pythonpath=` on assay.toml's own declared argv (not
+# repeated here) cancels pyproject.toml's `[tool.pytest.ini_options]
+# pythonpath = ["src"]` for this run only -- confirmed empirically that this
+# ini option inserts "src" at sys.path[0] regardless of PATH/PYTHONPATH,
+# which would otherwise silently re-shadow the installed wheel with the
+# source tree and defeat self-hosting's entire point even after
+# `assay.toml`'s own `env` table drops `PYTHONPATH`.
+#
+# A SEPARATE, second pytest invocation then runs `tests/test_self_hosting.py`
+# via tester-unified's OWN ambient `/opt/tester-venv/bin/python` (never the
+# scratch venv) -- this is O3's real, independent oracle, not `assay verify`.
+# `tests/conftest.py` itself does `from assay.config import ...` at module
+# level, so THIS interpreter also needs `assay` importable for collection to
+# succeed at all; `PYTHONPATH` is pointed at the scratch venv's own
+# site-packages (the WHEEL's installed location, confirmed empirically to
+# import the wheel rather than re-shadowing with source) for this one
+# invocation only, and the SAME `--override-ini=pythonpath=` is needed again
+# here for the identical reason. `ASSAY_SELF_HOSTING_VERDICT` tells
+# `tests/test_self_hosting.py` where the first step's own real verdict
+# landed; unset, that one check skips (documented in the test itself) rather
+# than failing a bare developer `pytest` run that has no such artifact.
+# `tests/test_self_hosting.py` is excluded from the FIRST (self-hosted)
+# collection by assay.toml's own `--ignore` flag, so this run is never
+# recursive.
+#
+# Code otherwise still reaches the container through the BOUND worktree, never
+# a baked copy, exactly as the other four Python projects do.
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_BACKGROUND and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
 # variable or a missing/unconfigured slice refuses the launch; there is no
-# hardcoded fallback to Docker's unconfined default.
+# hardcoded fallback to Docker's unconfined default. Preserved EXACTLY as
+# before -- the single easiest thing to break while restructuring the rest of
+# this script (O4).
 
 [gates.tester-unified]
-argv = ["bash", "-c", "set -euo pipefail && cgroup_parent=\"$({worktree}/assay/tools/cgroup-parent.sh)\" && docker run --rm --cgroup-parent=\"$cgroup_parent\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/assay && export PYTHONPATH=src && /opt/tester-venv/bin/python -m pytest tests -q'"]
+argv = ["bash", "-c", "set -euo pipefail && cgroup_parent=\"$({worktree}/assay/tools/cgroup-parent.sh)\" && docker run --rm --cgroup-parent=\"$cgroup_parent\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/assay && scratch=$(mktemp -d) && base_prefix=$(/opt/tester-venv/bin/python -c \"import sys; print(sys.base_prefix)\") && $base_prefix/bin/python3 -m venv $scratch/venv && tester_site=$(/opt/tester-venv/bin/python -c \"import sysconfig; print(sysconfig.get_paths()[\\\"purelib\\\"])\") && venv_site=$($scratch/venv/bin/python -c \"import sysconfig; print(sysconfig.get_paths()[\\\"purelib\\\"])\") && echo \"$tester_site\" > \"$venv_site/tester_unified_site.pth\" && setuptools_home=$(/opt/tester-venv/bin/python -c \"import setuptools, pathlib; print(pathlib.Path(setuptools.__file__).parent.parent)\" 2>/dev/null) || setuptools_home=$($base_prefix/bin/python3 -c \"import setuptools, pathlib; print(pathlib.Path(setuptools.__file__).parent.parent)\") && PYTHONPATH=$setuptools_home $scratch/venv/bin/python -m pip wheel --no-build-isolation --no-deps --wheel-dir $scratch/wheels . && wheel=$(ls $scratch/wheels/assay-*.whl) && $scratch/venv/bin/python -m pip install --no-index $wheel && export PATH=$scratch/venv/bin:$PATH && assay run tester-unified --verdict-json $scratch/verdict.json && PYTHONPATH=$venv_site ASSAY_SELF_HOSTING_VERDICT=$scratch/verdict.json /opt/tester-venv/bin/python -m pytest tests/test_self_hosting.py -q --override-ini=pythonpath='"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 1800

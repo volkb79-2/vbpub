@@ -7,9 +7,16 @@
 # in assay's own config on day one. So: R0 only, and therefore NO [judge] table
 # at all, which is exactly what A-048 says an R0-only lane looks like.
 #
-# P11 upgrades this file when the capability is real, and not before. The lane
-# is named `tester-unified` because P11 O3 requires that name and because it is
-# the gate id in nyxloom-trove/nyxloom.toml.
+# This file stays R0-only PERMANENTLY, not pending a future upgrade (A-133):
+# self-hosting (P14) proves the BUILT WHEEL runs assay's own tests inside
+# tester-unified, but assay's own gate never mechanically applies R1+ rigor to
+# its own diff -- doing that would need a coverage/canary/mutation judge
+# configured against assay's OWN source, which is out of scope for a project
+# whose subject matter is judging OTHER projects' changes, not its own. (An
+# earlier note here pointed at "P11 upgrades this file when the capability is
+# real" -- P11 was valid-mutant construction and never touched this file; that
+# note was simply stale, not a promise P11 kept.) The lane is named
+# `tester-unified` because it is the gate id in nyxloom-trove/nyxloom.toml.
 
 schema_version = 1
 
@@ -21,12 +28,35 @@ enforcement = "gate"
 # The command the gate runs. The INTERPRETER path used in the container
 # (/opt/tester-venv/bin/python) is a fact of WHERE and lives in
 # nyxloom-trove/nyxloom.toml, not here (A-015).
-argv = ["python", "-m", "pytest", "tests", "-q"]
+#
+# A-130: `argv[0]="python"` resolves, via env_passthrough's PATH below, to
+# whichever interpreter nyxloom-trove/nyxloom.toml's gate script put first on
+# PATH -- the scratch venv the gate builds+installs assay's OWN wheel into,
+# never a source-tree PYTHONPATH shadow (see the `env` table's own comment).
+# `--override-ini=pythonpath=` cancels pyproject.toml's OWN
+# `[tool.pytest.ini_options] pythonpath = ["src"]` (a developer convenience,
+# DESIGN-GUIDE §9's last paragraph) for exactly this run -- confirmed
+# empirically that ini option inserts "src" at sys.path[0] regardless of
+# PATH/PYTHONPATH, which would silently re-shadow the installed wheel with
+# the source tree and defeat self-hosting's whole point even after `env`
+# below drops PYTHONPATH. `--ignore=tests/test_self_hosting.py` excludes
+# assay's OWN self-hosting conformance proof from this collection: that
+# module both reads the artifact THIS run is about to emit (a file that does
+# not exist yet while this run is still in progress) and independently
+# invokes `assay run tester-unified` again for A-131's own producer-mutation
+# proof -- without this exclusion, either would make a self-hosted run
+# collect and (in the mutation case) recursively re-run part of itself one
+# further level deep.
+argv = ["python", "-m", "pytest", "tests", "-q", "--ignore=tests/test_self_hosting.py", "--override-ini=pythonpath="]
 
-# A-019: declared-only, never "augment the ambient environment". Code reaches
-# the gate container through the bound worktree via PYTHONPATH, never a baked
-# copy, which is why this one variable is declared rather than passed through.
-env = { PYTHONPATH = "src" }
+# A-019: declared-only, never "augment the ambient environment". `PYTHONPATH`
+# is GONE (A-130): keeping it would put the source tree back on sys.path
+# ahead of the scratch venv's site-packages, re-shadowing the just-built
+# wheel and making every "self-hosted" run secretly import from source again
+# -- defeating the entire point of this package. Code now reaches the running
+# process through the WHEEL nyxloom-trove/nyxloom.toml's gate script builds
+# and installs, never a bind-mounted source copy.
+env = {}
 env_passthrough = ["PATH"]
 
 # Read from the gate's own timeout_seconds = 1800 in nyxloom-trove/nyxloom.toml
