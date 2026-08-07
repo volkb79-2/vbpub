@@ -10,8 +10,8 @@ stack: none
 depends_on: [assay-P02-changed-lines-measurability, assay-P04-runner-cli-verdict-emission]
 session: resume:assay-git
 scope:
-  touch: ["src/assay/attestation.py", "src/assay/config.py", "src/assay/runner.py", "tests/fixtures/attestations/**", "tests/**"]
-  forbid: ["src/assay/verdict.py", "src/assay/schemas"]
+  touch: ["src/assay/attestation.py", "src/assay/runner.py", "tests/fixtures/attestations/**", "tests/**"]
+  forbid: ["src/assay/verdict.py", "src/assay/schemas", "src/assay/config.py"]
 oracles:
   - id: O1
     observable: "An attestation at HEAD and one at an ancestor with byte-identical declared reviewed paths both produce attested evidence with verified_by_assay=false and preserve producer, commit, and paths"
@@ -22,8 +22,8 @@ oracles:
     negative: "Using commit inequality alone stales the outside-path fixture; ignoring path changes passes the changed-path fixture"
     gate: tester-unified
   - id: O3
-    observable: "A descendant, unrelated, or malformed attested commit and a missing reviewed path render ERROR/UNREADABLE_ARTIFACT; duplicate declared (source,key) renders ERROR/BAD_LANE_CONFIG; no attestation path can create a computed claim"
-    negative: "A plain lexicographic/hash comparison, duplicate collapse, or claims[] insertion makes one reject fixture load or produces the wrong complete artifact"
+    observable: "A descendant, unrelated, or malformed attested commit and a missing reviewed path render ERROR/UNREADABLE_ARTIFACT (A-110 -- any git.run/GIT_FAILED the ancestry check itself raises for the unrelated/malformed cases is caught and remapped, never left to propagate); duplicate (source,key) in the caller-supplied declaration list renders ERROR/BAD_LANE_CONFIG (A-111); no attestation path can create a computed claim"
+    negative: "A plain lexicographic/hash comparison, duplicate collapse, letting GIT_FAILED propagate uncaught, or claims[] insertion makes one reject fixture load or produces the wrong complete artifact"
     gate: tester-unified
   - id: O4
     observable: "Hand-written full artifacts distinguish never declared, declared-but-missing, current, and stale evidence and validate independently against schema v2"
@@ -47,17 +47,17 @@ on branch `feat/assay-P10-attested-evidence-staleness`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §6 attestation semantics and decisions A-032–A-034, A-074, A-075, A-078.
-2. `src/assay/verdict.py` schema-v2 evidence invariants, `git.py`, runner, and independent fixtures.
+1. `docs/DESIGN-GUIDE.md` §6 attestation semantics and decisions A-032–A-034, A-074, A-075, A-078, A-090, A-106, A-110, A-111.
+2. `src/assay/verdict.py` schema-v2 evidence invariants (`Evidence`/`EvidenceDeclaration` are already complete, frozen `kw_only` dataclasses — you construct instances, you never extend the type), `git.py`, runner, and independent fixtures.
 3. Do not read or invent an adjudicator integration; Tier 2 is a reserved sibling shape only.
 
 ## Work
 
 1. Load the attestation format into the already-reserved `Evidence` shape.
-2. Prove equal-or-ancestor with git, then compare only declared reviewed paths across the interval. Do not compare commit hashes as ordering values. **Trap:** `git.run` (P02) raises `AssayError`/`GIT_FAILED` on ANY non-zero exit. Several git ancestry commands use exit code as a boolean or ternary signal, not as a failure indicator — `merge-base --is-ancestor` exits 1 for a genuine "no"; bare `merge-base` exits 1 when there is no common ancestor at all, which is closer to this package's own "unrelated commit" case (O3) than to `GIT_FAILED`. Do not route an ancestry check through `git.run` and assume a raised error always means a git-level failure; decide deliberately which exit codes are data versus which are `ERROR`, and prefer a comparison that stays inside `run`'s existing all-nonzero-is-an-error contract (e.g. compare `merge-base(a, b)` against `a` for "is-ancestor-or-equal", reserving true git-level failure for a malformed/unresolvable ref) over calling `--is-ancestor` through the shared wrapper unmodified.
-3. Integrate the external result without changing verdict.py or the schema.
+2. Prove equal-or-ancestor with git, then compare only declared reviewed paths across the interval. Do not compare commit hashes as ordering values. **Trap, corrected (A-110):** `git.run` (P02) raises `AssayError`/`GIT_FAILED` on ANY non-zero exit — verified directly: `merge-base` on unrelated histories exits 1, on a malformed/unresolvable ref exits 128. For the ancestry check on the ATTESTED commit specifically, catch and remap ANY such exception to `ERROR`/`UNREADABLE_ARTIFACT` — do not let `GIT_FAILED` propagate here, and do not reserve "true git-level failure" for the malformed case as an earlier draft of this note suggested; O3 requires descendant, unrelated, AND malformed to all render the SAME code. A descendant (merge-base succeeds but doesn't equal the attested commit) reaches the same `UNREADABLE_ARTIFACT` via ordinary comparison, no exception involved.
+3. Integrate the external result without changing verdict.py, the schema, or config.py (A-111) — accept the declared `(source, key)` list to check as a direct parameter of your own loading function (the established "caller supplies it directly" pattern, matching `evaluate_r1`'s own `base` parameter and P09's `judge.canary` finding), validating duplicates within that supplied list itself. A real `assay.toml` declaration mechanism is a later, separate wiring decision.
 4. Add full independent artifacts for undeclared, missing, current, and stale states.
-5. Break ancestry, path scoping, non-laundering, and exact evidence identity; record failure counts (A-067).
+5. Break ancestry (including the unrelated/malformed/descendant trio, A-110), path scoping, non-laundering, and exact evidence identity; record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 
