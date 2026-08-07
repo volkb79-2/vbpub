@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "3333333333333333333333333333333333333333",
@@ -8,5 +8,6 @@
   "exit_code": 2,
   "started": "2026-08-06T09:20:00+00:00",
   "ended": "2026-08-06T09:20:00+00:00",
-  "claims": []
+  "claims": [],
+  "evidence": []
 }

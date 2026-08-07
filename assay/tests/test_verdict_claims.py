@@ -1,9 +1,8 @@
-"""O4 — the claim envelope, and the two rules that make claims[] worth having.
+"""Computed rigor claims and externally sourced evidence stay separate.
 
 The negatives this defends: *"R2 was declared but rendered no judgement" becomes
-indistinguishable from "R2 was never declared" (A-024), or attested evidence can
-be marked verified, which is worse than omitting it because it is now on the
-record (A-033).*
+indistinguishable from "R2 was never declared" (A-024), or an external review
+can be forced into an R3 slot and laundered as assay-verified (A-033).*
 
 **The oracle is split, and deliberately so.** The rigor-coverage rule compares
 two locations inside one instance (`declared_rigor` against `claims[].rigor`),
@@ -26,9 +25,12 @@ from jsonschema import Draft202012Validator
 from assay.errors import Outcome, ReasonCode
 from assay.verdict import (
     CLAIM_SOURCES,
+    EVIDENCE_SOURCES,
     ROLLUP_PRECEDENCE,
     Claim,
     Coverage,
+    Evidence,
+    EvidenceDeclaration,
     Verdict,
     rollup,
 )
@@ -39,6 +41,7 @@ BASE = {
     "started": "2026-08-06T09:00:00+00:00",
     "ended": "2026-08-06T09:00:07+00:00",
     "assay_version": "0.1.0",
+    "declared_evidence": (),
     "argv_declared": ("pytest", "-q"),
     "argv_appended": (),
     "argv_effective": ("pytest", "-q"),
@@ -75,20 +78,20 @@ def document_with(claims: list[dict]) -> dict:
     return document
 
 
-# --- the envelope -------------------------------------------------------------
+# --- provenance is not rigor -------------------------------------------------
 
 
-@pytest.mark.parametrize("source", CLAIM_SOURCES)
-def test_a_claim_envelope_validates_for_every_evidence_tier(
-    source: str, validator: Draft202012Validator
-):
-    """A-032's three tiers all have somewhere to live, from day one."""
-    claim = claim_dict(source=source, verified_by_assay=source != "attested")
-    assert why_invalid(validator, document_with([claim])) == []
+def test_a_claim_is_computed_only(validator: Draft202012Validator):
+    assert why_invalid(validator, document_with([claim_dict()])) == []
+    for external in EVIDENCE_SOURCES:
+        assert not validator.is_valid(
+            document_with([claim_dict(source=external, verified_by_assay=False)])
+        )
 
 
 def test_the_three_tiers_are_exactly_the_declared_vocabulary():
-    assert CLAIM_SOURCES == ("computed", "adjudicated", "attested")
+    assert CLAIM_SOURCES == ("computed",)
+    assert EVIDENCE_SOURCES == ("adjudicated", "attested")
 
 
 @pytest.mark.parametrize(
@@ -153,14 +156,13 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
 # --- A-033: assay never marks an attestation verified -------------------------
 
 
-def test_an_attested_claim_marked_verified_is_rejected_by_the_schema(
+def test_an_attested_evidence_entry_marked_verified_is_rejected_by_the_schema(
     validator: Draft202012Validator,
 ):
-    honest = claim_dict(source="attested", verified_by_assay=False)
-    assert why_invalid(validator, document_with([honest])) == []
-
-    laundered = claim_dict(source="attested", verified_by_assay=True)
-    messages = why_invalid(validator, document_with([laundered]))
+    document = verdict_fixture("FAIL")
+    assert why_invalid(validator, document) == []
+    document["evidence"][0]["verified_by_assay"] = True
+    messages = why_invalid(validator, document)
     assert messages, "attested evidence was allowed onto the record as verified"
 
 
@@ -176,20 +178,37 @@ def test_a_computed_claim_may_be_verified(validator: Draft202012Validator):
     )
 
 
-def test_the_model_refuses_an_attested_claim_marked_verified():
-    Claim(
-        rigor="R3",
-        source="attested",
-        status=Outcome.PASS,
-        verified_by_assay=False,
-    )
-
-    with pytest.raises(ValueError, match="never upgrades an attestation"):
+def test_a_computed_claim_cannot_be_marked_unverified():
+    with pytest.raises(ValueError, match="computed claim must carry"):
         Claim(
-            rigor="R3",
+            rigor="R0",
+            source="computed",
+            status=Outcome.PASS,
+            verified_by_assay=False,
+        )
+
+
+def test_attestation_reasons_cannot_be_put_on_a_computed_claim():
+    with pytest.raises(ValueError, match="external attested evidence"):
+        Claim(
+            rigor="R0",
+            source="computed",
+            status=Outcome.NO_MEASUREMENT,
+            verified_by_assay=True,
+            reason_code=ReasonCode.MISSING_ATTESTATION,
+        )
+
+
+def test_the_model_refuses_attested_evidence_marked_verified():
+    with pytest.raises(ValueError, match="never upgrades a review"):
+        Evidence(
             source="attested",
+            key="adversarial-review",
             status=Outcome.PASS,
             verified_by_assay=True,
+            producer="reviewer@example",
+            attested_commit="a" * 40,
+            reviewed_paths=("src/assay/verdict.py",),
         )
 
 
@@ -310,6 +329,266 @@ def test_the_model_refuses_an_unknown_declared_level():
 def test_the_model_refuses_an_empty_declared_rigor():
     with pytest.raises(ValueError, match="at least one rigor level"):
         Verdict(**BASE, outcome=Outcome.PASS, declared_rigor=(), claims=())
+
+
+# --- external declarations cover evidence identities exactly ----------------
+
+
+def attestation(status: Outcome = Outcome.PASS, **overrides) -> Evidence:
+    values = {
+        "source": "attested",
+        "key": "adversarial-review",
+        "status": status,
+        "verified_by_assay": False,
+        "producer": "reviewer@example",
+        "attested_commit": "a" * 40,
+        "reviewed_paths": ("src/assay/verdict.py",),
+    }
+    values.update(overrides)
+    return Evidence(**values)
+
+
+def test_external_evidence_is_not_a_rigor_claim():
+    verdict = Verdict(
+        **{
+            **BASE,
+            "declared_evidence": (
+                EvidenceDeclaration(source="attested", key="adversarial-review"),
+            ),
+        },
+        outcome=Outcome.PASS,
+        declared_rigor=("R0",),
+        claims=(passing("R0"),),
+        evidence=(attestation(),),
+    )
+
+    assert [claim.rigor for claim in verdict.claims] == ["R0"]
+    assert verdict.evidence[0].identity == ("attested", "adversarial-review")
+
+
+def test_external_identity_fields_and_types_are_closed():
+    with pytest.raises(ValueError, match="declaration source"):
+        EvidenceDeclaration(source="computed", key="review")
+    with pytest.raises(ValueError, match="non-empty string"):
+        EvidenceDeclaration(source="attested", key="")
+    with pytest.raises(ValueError, match="evidence source"):
+        Evidence(
+            source="computed",
+            key="review",
+            status=Outcome.PASS,
+            verified_by_assay=True,
+        )
+    with pytest.raises(ValueError, match="evidence key"):
+        Evidence(
+            source="adjudicated",
+            key="",
+            status=Outcome.PASS,
+            verified_by_assay=True,
+        )
+    with pytest.raises(ValueError, match="status must be an Outcome"):
+        Evidence(
+            source="adjudicated",
+            key="sast",
+            status="PASS",
+            verified_by_assay=True,
+        )
+    with pytest.raises(ValueError, match="must be a boolean"):
+        Evidence(
+            source="adjudicated",
+            key="sast",
+            status=Outcome.PASS,
+            verified_by_assay="yes",
+        )
+
+
+def test_attestation_reason_requires_attested_source():
+    with pytest.raises(ValueError, match="requires attested source"):
+        Evidence(
+            source="adjudicated",
+            key="sast",
+            status=Outcome.NO_MEASUREMENT,
+            verified_by_assay=False,
+            reason_code=ReasonCode.STALE_ATTESTATION,
+        )
+
+
+def test_declared_external_evidence_must_render_a_judgement():
+    with pytest.raises(ValueError, match="rendered no judgement"):
+        Verdict(
+                **{
+                    **BASE,
+                    "declared_evidence": (
+                        EvidenceDeclaration(
+                            source="attested", key="adversarial-review"
+                        ),
+                    ),
+                },
+                outcome=Outcome.PASS,
+                declared_rigor=("R0",),
+            claims=(passing("R0"),),
+        )
+
+
+def test_undeclared_external_evidence_is_refused():
+    with pytest.raises(ValueError, match="never declared"):
+        Verdict(
+                **{**BASE, "declared_evidence": ()},
+                outcome=Outcome.PASS,
+                declared_rigor=("R0",),
+            claims=(passing("R0"),),
+            evidence=(attestation(),),
+        )
+
+
+def test_duplicate_external_declarations_and_results_are_refused():
+    declaration = EvidenceDeclaration(
+        source="attested", key="adversarial-review"
+    )
+    with pytest.raises(ValueError, match="duplicate identities"):
+        Verdict(
+                **{**BASE, "declared_evidence": (declaration, declaration)},
+                outcome=Outcome.PASS,
+                declared_rigor=("R0",),
+            claims=(passing("R0"),),
+            evidence=(attestation(),),
+        )
+    with pytest.raises(ValueError, match="more than one evidence"):
+        Verdict(
+                **{**BASE, "declared_evidence": (declaration,)},
+                outcome=Outcome.PASS,
+                declared_rigor=("R0",),
+            claims=(passing("R0"),),
+            evidence=(attestation(), attestation()),
+        )
+
+
+def test_missing_attestation_is_an_explicit_no_measurement_entry():
+    missing = Evidence(
+        source="attested",
+        key="adversarial-review",
+        status=Outcome.NO_MEASUREMENT,
+        verified_by_assay=False,
+        reason_code=ReasonCode.MISSING_ATTESTATION,
+    )
+
+    assert missing.to_dict() == {
+        "source": "attested",
+        "key": "adversarial-review",
+        "status": "NO_MEASUREMENT",
+        "verified_by_assay": False,
+        "reason_code": "MISSING_ATTESTATION",
+    }
+
+
+def test_stale_attestation_records_the_commit_and_reviewed_paths():
+    stale = attestation(
+        Outcome.NO_MEASUREMENT,
+        reason_code=ReasonCode.STALE_ATTESTATION,
+    )
+
+    assert stale.to_dict()["attested_commit"] == "a" * 40
+    assert stale.to_dict()["reviewed_paths"] == ["src/assay/verdict.py"]
+
+
+def test_stale_attestation_without_obtained_payload_is_rejected():
+    with pytest.raises(ValueError, match="requires producer"):
+        Evidence(
+            source="attested",
+            key="adversarial-review",
+            status=Outcome.NO_MEASUREMENT,
+            verified_by_assay=False,
+            reason_code=ReasonCode.STALE_ATTESTATION,
+        )
+
+
+def test_schema_rejects_stale_attestation_without_obtained_payload(
+    validator: Draft202012Validator,
+):
+    document = verdict_fixture("FAIL")
+    entry = document["evidence"][0]
+    entry["status"] = "NO_MEASUREMENT"
+    entry["reason_code"] = "STALE_ATTESTATION"
+    for field in ("producer", "attested_commit", "reviewed_paths"):
+        del entry[field]
+    document["outcome"] = "NO_MEASUREMENT"
+    document["reason_code"] = "STALE_ATTESTATION"
+    document["exit_code"] = 3
+
+    assert not validator.is_valid(document)
+
+
+def test_present_attestation_requires_a_complete_nonempty_payload():
+    with pytest.raises(ValueError, match="requires producer"):
+        Evidence(
+            source="attested",
+            key="adversarial-review",
+            status=Outcome.PASS,
+            verified_by_assay=False,
+        )
+    with pytest.raises(ValueError, match="all present or all absent"):
+        Evidence(
+            source="attested",
+            key="adversarial-review",
+            status=Outcome.ERROR,
+            verified_by_assay=False,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            producer="reviewer@example",
+        )
+    with pytest.raises(ValueError, match="must not be empty"):
+        attestation(reviewed_paths=())
+    with pytest.raises(ValueError, match="duplicate"):
+        attestation(reviewed_paths=("src/a.py", "src/a.py"))
+
+
+def test_missing_attestation_cannot_claim_a_payload_was_obtained():
+    with pytest.raises(ValueError, match="missing attestation cannot carry"):
+        attestation(
+            Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.MISSING_ATTESTATION,
+        )
+
+
+def test_adjudicated_slot_is_reserved_without_attestation_fields():
+    adjudicated = Evidence(
+        source="adjudicated",
+        key="sast",
+        status=Outcome.PASS,
+        verified_by_assay=True,
+    )
+    assert adjudicated.to_dict()["source"] == "adjudicated"
+
+    with pytest.raises(ValueError, match="only to attested"):
+        Evidence(
+            source="adjudicated",
+            key="sast",
+            status=Outcome.PASS,
+            verified_by_assay=True,
+            producer="scanner",
+        )
+
+
+def test_external_evidence_participates_in_rollup():
+    missing = Evidence(
+        source="attested",
+        key="adversarial-review",
+        status=Outcome.NO_MEASUREMENT,
+        verified_by_assay=False,
+        reason_code=ReasonCode.MISSING_ATTESTATION,
+    )
+    verdict = Verdict(
+        **{
+            **BASE,
+            "declared_evidence": (
+                EvidenceDeclaration(source="attested", key="adversarial-review"),
+            ),
+        },
+        outcome=Outcome.NO_MEASUREMENT,
+        reason_code=ReasonCode.MISSING_ATTESTATION,
+        declared_rigor=("R0",),
+        claims=(passing("R0"),),
+        evidence=(missing,),
+    )
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
 
 
 # --- A-023: rollup precedence -------------------------------------------------

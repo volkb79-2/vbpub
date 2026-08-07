@@ -265,7 +265,7 @@ def test_the_installed_console_script_runs_against_a_fixture_project(
                 'enforcement = "gate"',
                 'argv = ["pytest", "-q"]',
                 "env = {}",
-                "env_passthrough = []",
+                'env_passthrough = ["PATH"]',
                 'budget = "5m"',
                 "allow_argv_append = false",
                 "",

@@ -34,6 +34,8 @@ from assay.verdict import (
     VERDICT_SCHEMA_VERSION,
     Claim,
     Coverage,
+    Evidence,
+    EvidenceDeclaration,
     Verdict,
     iso_utc,
     load_schema,
@@ -60,6 +62,7 @@ def build(outcome: str) -> Verdict:
             ended="2026-08-06T09:00:07+00:00",
             assay_version=VERSION,
             declared_rigor=("R0", "R1"),
+            declared_evidence=(),
             argv_declared=("pytest", "tests", "-q", "--cov-report=json:cov.json"),
             argv_appended=(),
             argv_effective=("pytest", "tests", "-q", "--cov-report=json:cov.json"),
@@ -92,7 +95,12 @@ def build(outcome: str) -> Verdict:
             started="2026-08-06T09:10:00+00:00",
             ended="2026-08-06T09:10:31+00:00",
             assay_version=VERSION,
-            declared_rigor=("R0", "R1", "R3"),
+            declared_rigor=("R0", "R1"),
+            declared_evidence=(
+                EvidenceDeclaration(
+                    source="attested", key="adversarial-review"
+                ),
+            ),
             argv_declared=("pytest", "tests", "-q"),
             argv_appended=("-k", "not slow"),
             argv_effective=("pytest", "tests", "-q", "-k", "not slow"),
@@ -115,11 +123,16 @@ def build(outcome: str) -> Verdict:
                         covered=2, changed_executable=3, pct=66.67, considered=1
                     ),
                 ),
-                Claim(
-                    rigor="R3",
+            ),
+            evidence=(
+                Evidence(
                     source="attested",
+                    key="adversarial-review",
                     status=Outcome.PASS,
                     verified_by_assay=False,
+                    producer="reviewer@example",
+                    attested_commit="2" * 40,
+                    reviewed_paths=("src/assay/verdict.py",),
                 ),
             ),
         )
@@ -153,6 +166,7 @@ def build_no_measurement() -> Verdict:
         ended="2026-08-06T09:30:12+00:00",
         assay_version=VERSION,
         declared_rigor=("R0", "R1"),
+        declared_evidence=(),
         argv_declared=("pytest", "tests", "-q"),
         argv_appended=(),
         argv_effective=("pytest", "tests", "-q"),
@@ -187,6 +201,7 @@ def build_budget_exceeded() -> Verdict:
         ended="2026-08-06T09:45:00+00:00",
         assay_version=VERSION,
         declared_rigor=("R0",),
+        declared_evidence=(),
         argv_declared=("pytest", "tests/integration", "-q"),
         argv_appended=(),
         argv_effective=("pytest", "tests/integration", "-q"),
@@ -214,6 +229,7 @@ def build_inconclusive() -> Verdict:
         ended="2026-08-06T09:52:18+00:00",
         assay_version=VERSION,
         declared_rigor=("R0", "R2"),
+        declared_evidence=(),
         argv_declared=("pytest", "tests", "-q"),
         argv_appended=(),
         argv_effective=("pytest", "tests", "-q"),
@@ -411,7 +427,7 @@ def test_the_model_refuses_a_foreign_schema_version():
             started="2026-08-06T09:00:00+00:00",
             ended="2026-08-06T09:00:01+00:00",
             assay_version=VERSION,
-            schema_version=2,
+            schema_version=3,
         )
 
 

@@ -35,7 +35,7 @@ def test_complete_r0_lane_loads_with_every_value_intact(project: Project):
     assert lane.enforcement == "gate"
     assert lane.argv == ("pytest", "tests/unit", "-q")
     assert dict(lane.env) == {"MOCK_MODE": "true"}
-    assert lane.env_passthrough == ("HOME", "TMPDIR")
+    assert lane.env_passthrough == ("HOME", "TMPDIR", "PATH")
     assert lane.budget == "5m"
     assert lane.budget_seconds == 300.0
     assert lane.allow_argv_append is False
@@ -54,7 +54,7 @@ def test_complete_r1_lane_loads_with_judge_and_where_intact(project: Project):
     assert lane.enforcement == "advisory"
     assert lane.argv == ("pytest", "tests", "-q", "--cov-report=json:cov.json")
     assert dict(lane.env) == {"MOCK_MODE": "true", "TZ": "UTC"}
-    assert lane.env_passthrough == ()
+    assert lane.env_passthrough == ("PATH",)
     assert lane.budget == "1h30m"
     assert lane.budget_seconds == 5400.0
     assert lane.allow_argv_append is True
@@ -137,7 +137,7 @@ rigor = ["R0"]
 enforcement = "advisory"
 argv = ["pytest", "tests/acceptance"]
 env = {}
-env_passthrough = ["DOCKER_HOST"]
+env_passthrough = ["DOCKER_HOST", "PATH"]
 budget = "45m"
 allow_argv_append = true
 """
@@ -164,7 +164,7 @@ schema_version = 1
 scope = "S0"
 rigor = ["R0"]
 enforcement = "gate"
-argv = ["true"]
+argv = ["/bin/true"]
 env = {}
 env_passthrough = []
 budget = "1s"

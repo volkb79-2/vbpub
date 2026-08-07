@@ -175,6 +175,42 @@ def test_where_that_is_not_a_table_is_rejected(project: Project):
         load_lane_file(path)
 
 
+def test_bare_executable_without_declared_path_is_rejected(project: Project):
+    text = R0_LANE.replace(
+        'env_passthrough = ["HOME", "TMPDIR", "PATH"]',
+        'env_passthrough = ["HOME", "TMPDIR"]',
+    )
+    assert 'argv = ["pytest"' in text
+
+    with pytest.raises(LaneConfigError, match="bare executable.*PATH"):
+        load_lane_file(project.write(text))
+
+
+def test_bare_executable_accepts_path_declared_in_env(project: Project):
+    text = R0_LANE.replace(
+        'env = { MOCK_MODE = "true" }',
+        'env = { MOCK_MODE = "true", PATH = "/opt/test/bin" }',
+    ).replace(
+        'env_passthrough = ["HOME", "TMPDIR", "PATH"]',
+        'env_passthrough = ["HOME", "TMPDIR"]',
+    )
+
+    lane = load_lane_file(project.write(text)).lane("package")
+
+    assert dict(lane.env)["PATH"] == "/opt/test/bin"
+
+
+def test_executable_path_needs_no_path_environment(project: Project):
+    text = R0_LANE.replace('argv = ["pytest"', 'argv = ["./tools/pytest"').replace(
+        'env_passthrough = ["HOME", "TMPDIR", "PATH"]',
+        'env_passthrough = ["HOME", "TMPDIR"]',
+    )
+
+    lane = load_lane_file(project.write(text)).lane("package")
+
+    assert lane.argv[0] == "./tools/pytest"
+
+
 def test_every_rejection_is_error_bad_lane_config(project: Project):
     # One reason code, one exit code, whatever the defect: a consumer switching
     # on reason_code never has to special-case the config layer.

@@ -75,6 +75,7 @@ class ReasonCode(StrEnum):
     UNCLASSIFIED_LINES = "UNCLASSIFIED_LINES"
     MUTANTS_SURVIVED = "MUTANTS_SURVIVED"
     CANARY_SURVIVED = "CANARY_SURVIVED"
+    COMMAND_FAILED = "COMMAND_FAILED"
     # ERROR
     GIT_FAILED = "GIT_FAILED"
     UNREADABLE_ARTIFACT = "UNREADABLE_ARTIFACT"
@@ -85,6 +86,8 @@ class ReasonCode(StrEnum):
     DIRTY_TREE = "DIRTY_TREE"
     BASE_IS_HEAD = "BASE_IS_HEAD"
     EMPTY_COVERAGE = "EMPTY_COVERAGE"
+    MISSING_ATTESTATION = "MISSING_ATTESTATION"
+    STALE_ATTESTATION = "STALE_ATTESTATION"
     # BUDGET_EXCEEDED
     LANE_TIMEOUT = "LANE_TIMEOUT"
     # INCONCLUSIVE
@@ -104,6 +107,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.UNCLASSIFIED_LINES,
                 ReasonCode.MUTANTS_SURVIVED,
                 ReasonCode.CANARY_SURVIVED,
+                ReasonCode.COMMAND_FAILED,
             }
         ),
         Outcome.ERROR: frozenset(
@@ -120,6 +124,8 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.DIRTY_TREE,
                 ReasonCode.BASE_IS_HEAD,
                 ReasonCode.EMPTY_COVERAGE,
+                ReasonCode.MISSING_ATTESTATION,
+                ReasonCode.STALE_ATTESTATION,
             }
         ),
         Outcome.BUDGET_EXCEEDED: frozenset({ReasonCode.LANE_TIMEOUT}),
