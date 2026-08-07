@@ -35,7 +35,9 @@
         "covered": 2,
         "changed_executable": 3,
         "pct": 66.67,
-        "considered": 1
+        "considered": 1,
+        "missing_lines": {"src/assay/verdict.py": [42]},
+        "files_missing_coverage": []
       }
     }
   ],

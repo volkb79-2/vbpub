@@ -32,6 +32,8 @@ ZEROED_COVERAGE = {
     "changed_executable": 0,
     "pct": 100.0,
     "considered": 0,
+    "missing_lines": {},
+    "files_missing_coverage": [],
 }
 
 NON_PASS = [outcome.value for outcome in Outcome if outcome is not Outcome.PASS]
@@ -213,7 +215,12 @@ def test_the_model_refuses_a_no_measurement_claim_with_coverage():
             verified_by_assay=True,
             reason_code=ReasonCode.DIRTY_TREE,
             coverage=Coverage(
-                covered=0, changed_executable=0, pct=100.0, considered=0
+                covered=0,
+                changed_executable=0,
+                pct=100.0,
+                considered=0,
+                missing_lines={},
+                files_missing_coverage=(),
             ),
         )
 
@@ -229,7 +236,12 @@ def test_the_model_refuses_a_coverage_payload_on_a_non_r1_claim(rigor: str):
             status=Outcome.PASS,
             verified_by_assay=True,
             coverage=Coverage(
-                covered=1, changed_executable=1, pct=100.0, considered=1
+                covered=1,
+                changed_executable=1,
+                pct=100.0,
+                considered=1,
+                missing_lines={},
+                files_missing_coverage=(),
             ),
         )
 
@@ -269,7 +281,14 @@ def test_the_model_refuses_a_pass_claim_carrying_a_reason_code():
     ],
 )
 def test_the_coverage_payload_refuses_an_impossible_measurement(kwargs, match):
-    base = {"covered": 3, "changed_executable": 3, "pct": 100.0, "considered": 1}
+    base = {
+        "covered": 3,
+        "changed_executable": 3,
+        "pct": 100.0,
+        "considered": 1,
+        "missing_lines": {},
+        "files_missing_coverage": (),
+    }
     assert Coverage(**base).pct == 100.0  # the untouched form builds
 
     with pytest.raises(ValueError, match=match):

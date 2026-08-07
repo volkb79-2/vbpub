@@ -81,7 +81,12 @@ def build(outcome: str) -> Verdict:
                     status=Outcome.PASS,
                     verified_by_assay=True,
                     coverage=Coverage(
-                        covered=12, changed_executable=12, pct=100.0, considered=4
+                        covered=12,
+                        changed_executable=12,
+                        pct=100.0,
+                        considered=4,
+                        missing_lines={},
+                        files_missing_coverage=(),
                     ),
                 ),
             ),
@@ -120,7 +125,12 @@ def build(outcome: str) -> Verdict:
                     verified_by_assay=True,
                     reason_code=ReasonCode.UNCOVERED_LINES,
                     coverage=Coverage(
-                        covered=2, changed_executable=3, pct=66.67, considered=1
+                        covered=2,
+                        changed_executable=3,
+                        pct=66.67,
+                        considered=1,
+                        missing_lines={"src/assay/verdict.py": frozenset({42})},
+                        files_missing_coverage=(),
                     ),
                 ),
             ),

@@ -33,7 +33,7 @@ from typing import Mapping
 import pytest
 from jsonschema import Draft202012Validator
 
-from assay.config import Lane
+from assay.config import CoverageConfig, JudgeConfig, Lane
 
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
@@ -296,6 +296,33 @@ def runner_verdict_fixture(name: str) -> dict:
     return json.loads(RUNNER_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
 
 
+# --- the runner's R0+R1 verdicts (P05) ----------------------------------------
+#
+# Full, independently hand-written artifacts for the branches
+# assay.runner.evaluate_r1 is the FIRST producer of: R1 PASS, R1 FAIL under
+# each of its two reason codes, and the three NO_MEASUREMENT guard branches
+# (A-090/O4). Kept out of both VERDICT_FIXTURES and RUNNER_VERDICT_FIXTURES
+# for the same reason those two stay separate from each other: additional
+# EXAMPLES of outcomes already represented there, not new outcomes.
+
+R1_VERDICT_FIXTURES: dict[str, Path] = {
+    name: VERDICT_FIXTURE_DIR / f"{name}.json"
+    for name in (
+        "r1_pass",
+        "r1_fail_uncovered_lines",
+        "r1_fail_excluded_lines",
+        "r1_no_measurement_dirty_tree",
+        "r1_no_measurement_base_is_head",
+        "r1_no_measurement_empty_coverage",
+    )
+}
+
+
+def r1_verdict_fixture(name: str) -> dict:
+    """The hand-written expected artifact for one of P05's own R1 branches."""
+    return json.loads(R1_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
+
+
 # --- Lane objects built directly, bypassing assay.toml/tomllib (P04) ---------
 #
 # Runner-level unit tests need exact control over a Lane's fields (a specific
@@ -318,6 +345,7 @@ def make_lane(
     budget: str = "5m",
     budget_seconds: float = 300.0,
     allow_argv_append: bool = False,
+    judge: "JudgeConfig | None" = None,
 ) -> Lane:
     return Lane(
         name=name,
@@ -330,9 +358,100 @@ def make_lane(
         budget=budget,
         budget_seconds=budget_seconds,
         allow_argv_append=allow_argv_append,
-        judge=None,
+        judge=judge,
         where=None,
     )
+
+
+# --- R1 evaluation harness (P05) ----------------------------------------------
+#
+# make_r1_judge/FakeAdapter give runner- and evaluate-level tests exact control
+# over a JudgeConfig and a synthetic, non-Python language, the same way
+# make_lane bypasses assay.toml/tomllib for Lane — this proves assay.evaluate
+# and the relevant slice of assay.runner, not assay.config's own loader, which
+# already has its own suite.
+
+
+def make_r1_judge(
+    *,
+    language: str = "zzz",
+    source_root_paths: tuple[Path, ...],
+    fail_under: float = 100.0,
+    allow_excluded: bool = False,
+    coverage_format: str = "coverage-py-json",
+    coverage_artifact: str = "cov.json",
+) -> JudgeConfig:
+    """A fully-resolved R1 ``JudgeConfig`` — every field
+    ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names — built directly rather than
+    through ``assay.toml``, mirroring :func:`make_lane`."""
+    return JudgeConfig(
+        language=language,
+        source_roots=tuple(str(p) for p in source_root_paths),
+        source_root_paths=source_root_paths,
+        fail_under=fail_under,
+        allow_excluded=allow_excluded,
+        coverage=CoverageConfig(format=coverage_format, artifact=coverage_artifact),
+        mutation=None,
+        canary=None,
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class FakeAdapter:
+    """A synthetic, deliberately non-Python :class:`~assay.adapters.base.
+    LanguageAdapter` (A-097): P05's O2 exists to prove the evaluation core
+    reaches the identical result for a language that is not Python, using
+    an extension (``.zzz``) and a classification rule (a literal
+    ``NO-CODE``/test-path marker in the text) that could not possibly be
+    satisfied by ``ast`` or a hardcoded ``.py`` filter.
+
+    ``key_prefix`` stands in for a real adapter's module-path strip (Go's
+    own case, DESIGN-GUIDE §11): :meth:`normalize_coverage_key` removes it,
+    proving the core consults the adapter's own hook rather than assuming
+    the coverage artifact's keys already match ``git diff`` paths.
+    """
+
+    name: str = "zzz"
+    source_globs: tuple[str, ...] = ("*.zzz",)
+    excluded_dir_names: frozenset[str] = frozenset({"vendor"})
+    requires_span_attribution: bool = False
+    external_tools: tuple[str, ...] = ()
+    key_prefix: str = ""
+    test_marker: str = "_test.zzz"
+    no_code_marker: str = "NO-CODE"
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return self.test_marker in rel_path
+
+    def has_executable_code(self, rel_path: str, text: str) -> bool:
+        return self.no_code_marker not in text
+
+    def normalize_coverage_key(self, key: str) -> str:
+        return key.removeprefix(self.key_prefix) if self.key_prefix else key
+
+
+def write_coverage_json(path: Path, files: Mapping[str, Mapping[str, list]]) -> None:
+    """Write a minimal coverage.py-JSON-shaped artifact at *path*.
+
+    *files* maps a coverage-artifact key to a record with any of
+    ``executed_lines``/``missing_lines``/``excluded_lines`` (omitted means
+    empty) — deliberately the SAME format
+    :mod:`assay.coverage_parsers.coverage_py_json` parses, reused here for a
+    fake, non-Python LANGUAGE to demonstrate format and language are
+    independent axes (DESIGN-GUIDE §11): a synthetic ``.zzz`` file can be
+    "measured" by a real, already-proven coverage FORMAT parser.
+    """
+    document = {
+        "files": {
+            key: {
+                "executed_lines": list(record.get("executed_lines", [])),
+                "missing_lines": list(record.get("missing_lines", [])),
+                "excluded_lines": list(record.get("excluded_lines", [])),
+            }
+            for key, record in files.items()
+        }
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 def fixed_clock(*moments):
