@@ -15,17 +15,36 @@ format registry), **P04** (runner, `assay run` CLI, R0 verdict emission),
 canary — real end-to-end proof that the gate rejects known-bad input for the
 intended reason; Python's canary runs the FULL real R0+R1 pipeline twice
 against real git commits, Go's proves R1 only via committed coverprofiles,
-deliberately, since no Go toolchain exists here). Gate green at **1184
-passed, exit 0, 100% statement AND branch** (1810 stmts / 710 branches),
-independently reverified by the controller in the foreground gate container
-on every package, plus a post-merge local run on `main` each time.
+deliberately, since no Go toolchain exists here), **P10** (attested evidence
+staleness — new `attestation.py`: loads a Tier-3 external review into the
+already-reserved `Evidence` shape and proves only whether its declared
+reviewed paths are current, never verifying review content; equal-or-ancestor
+proven via `merge-base`, with every git-level failure on the externally
+supplied attested commit — unrelated history, malformed ref, descendant —
+caught and remapped to `ERROR`/`UNREADABLE_ARTIFACT` per A-110, never left to
+propagate as `GIT_FAILED`; the declared `(source, key)` list is a direct
+caller parameter per A-111, `config.py`/`assay.toml` untouched;
+`runner.assemble_verdict` gained optional `evidence`/`declared_evidence`
+parameters, defaulting to `()` so every prior caller is unaffected). Gate
+green at **1241 passed, exit 0, 100% statement AND branch** (1917 stmts / 746
+branches), independently reverified by the controller in the foreground gate
+container on every package, plus a post-merge local run on `main` each time.
+P10's own claimed mutation count for its highest-risk case (outer
+`try`/`except` removed in `evaluate_attestation`, A-110's core promise) was
+independently reproduced by the controller with a local spot-check mutation
+— 7 failing, exact match.
 
-**Outstanding:** P10–P14, five packages. **P10 is next** — *"is a review
-recorded as external and rejected only when its paths are stale?"* (attested
-evidence — depends on P02/P04 only, not P09; P09's own successor brief
-confirms zero file overlap).
+**Outstanding:** P11–P14, four packages. **P11 is next** — *"is each mutant
+a valid single changed-line experiment, not arbitrary broken text?"*
+(depends on P08 only; zero file overlap with P10 — P11 touches
+`adapters/base.py`/`python.py`/`go.py`/`mutation.py`, none of which P10
+touched). P12's handoff has been propagated with a citation to P10's own
+successor brief (`assemble_verdict`'s new signature) since P12 also edits
+`runner.py` and does not list P10 in its own `depends_on`; P13 already listed
+P10 in `depends_on` before this session.
 
-Key commits: `732d0dd4` (P09 merge), `23122f9b` (P09 rulings, A-105–A-109),
+Key commits: `638b4a54` (P10 merge), `aa5b28c7` (P10 rulings, A-110/A-111),
+`732d0dd4` (P09 merge), `23122f9b` (P09 rulings, A-105–A-109),
 `fde78867` (P08 merge), `c6bb7aa6` (P08 rulings, A-102–A-104), `9ae93057`
 (P07 merge), `9b9d38e8` (P07 controller repair), `90f9de44` (P07 rulings,
 A-100/A-101), `8e65b1c7` (P06 merge), `05ab843e` (P06 rulings, A-098/A-099),
@@ -60,13 +79,15 @@ closed `ReasonCode` for "cannot write my own output artifact." Low severity.
 - **P11's own "Context to read first" cites the same srdm `covergate/`
   directory for "mutation logic" that P09's did for "canary behavior" — and
   the same check (grep for the word across the whole directory) finds ZERO
-  "mutat*" occurrences there either.** Not resolved now (P11 is several
-  packages away, after P10/P12) — flagged so whoever dispatches P11's
-  readiness pass checks this deliberately rather than trusting the citation,
-  the same class of defect P09's own readiness pass found and fixed (A-105).
-- P10/P12 touch `runner.py` and predate its current (much larger) shape.
-  Each package's own readiness pass is the right moment to catch a mismatch,
-  as it has repeatedly for this exact seam.
+  "mutat*" occurrences there either.** Not resolved now — P11 is next;
+  flagged so its own readiness pass checks this deliberately rather than
+  trusting the citation, the same class of defect P09's own readiness pass
+  found and fixed (A-105).
+- P12 touches `runner.py` and now postdates P10's own extension of
+  `assemble_verdict` (the `evidence`/`declared_evidence` parameters and
+  identity-coverage guard) — propagated as a citation in P12's own handoff
+  this session; its own readiness pass is still the right moment to catch
+  anything this note missed.
 - `cli.py` is only touched again by P14 among all remaining packages — full
   `assay run` CLI wiring across rigor levels is entirely P14's job by
   design, not a defect (confirmed intentional: assay's own `assay.toml` is

@@ -54,6 +54,7 @@ on branch `feat/assay-P12-bounded-mutation-execution`.
 1. `docs/DESIGN-GUIDE.md` mutation execution/budget section and decisions A-003, A-004, A-020–A-024, A-041.
 2. P11 mutation manifest, runner/process boundary, verdict model and independent artifact tests.
 3. Mutation execution in the srdm Go reference; take behavior, not Go-specific structure.
+4. `nyxloom-trove/reports/assay-P10-BRIEF.md` — P10 (merged before this package, though not in `depends_on`) already extended `runner.assemble_verdict` with two new KEYWORD-ONLY parameters, `evidence: tuple[Evidence, ...] = ()` and `declared_evidence: tuple[EvidenceDeclaration, ...] = ()`, both defaulting to empty so this package's own `claims=`-only call sites are unaffected -- and an identity-coverage guard (`ERROR`/`BAD_LANE_CONFIG` before constructing an incomplete `Verdict`) that this package's own R2/mutation guard should sit alongside, not duplicate or replace. Read `assemble_verdict`'s current signature directly before editing `runner.py`; do not assume the pre-P10 five-parameter shape.
 
 ## Work
 
