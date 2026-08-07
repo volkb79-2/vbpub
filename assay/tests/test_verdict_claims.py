@@ -143,6 +143,8 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
         "changed_executable": 1,
         "pct": 100.0,
         "considered": 1,
+        "missing_lines": {},
+        "files_missing_coverage": [],
     }
     assert why_invalid(
         validator, document_with([claim_dict(rigor="R1", coverage=payload)])
@@ -644,7 +646,12 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
             verified_by_assay=True,
             reason_code=ReasonCode.UNCOVERED_LINES,
             coverage=Coverage(
-                covered=1, changed_executable=2, pct=50.0, considered=1
+                covered=1,
+                changed_executable=2,
+                pct=50.0,
+                considered=1,
+                missing_lines={"src/assay/verdict.py": frozenset({7})},
+                files_missing_coverage=(),
             ),
         ),
     )

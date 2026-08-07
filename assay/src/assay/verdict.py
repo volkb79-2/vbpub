@@ -222,6 +222,13 @@ class Coverage:
     under the roots, none contributing executable non-test lines (0/0)"* is a
     different sentence from *"0/0 covered (100.0%)"*. Identical strings for the
     two cases is what started this whole project.
+
+    ``missing_lines`` and ``files_missing_coverage`` are P05's own additive
+    pair (A-096): the R1 claim's totals say WHETHER the change passed;
+    these say WHERE it did not. Both are ALWAYS present — possibly empty,
+    never conditionally omitted — the same "absent means unknowable, empty
+    means known-and-empty" discipline A-025 already applies to the coverage
+    block as a whole, one level down inside it.
     """
 
     covered: int
@@ -229,6 +236,13 @@ class Coverage:
     pct: float
     #: changed files under the source roots that were considered at all
     considered: int
+    #: changed, executable, non-excluded lines that were not executed, keyed
+    #: by path — same shape as :attr:`assay.diff.AddedLines.by_file`: a file
+    #: contributing none is ABSENT, never present with an empty frozenset.
+    missing_lines: Mapping[str, frozenset[int]]
+    #: changed files under the source roots contributing executable lines
+    #: with no entry at all in the coverage artifact, sorted.
+    files_missing_coverage: tuple[str, ...]
 
     def __post_init__(self) -> None:
         for name in ("covered", "changed_executable", "considered"):
@@ -248,6 +262,55 @@ class Coverage:
                 f"coverage.covered ({self.covered}) exceeds changed_executable "
                 f"({self.changed_executable})"
             )
+        self._check_missing_lines()
+        self._check_files_missing_coverage()
+
+    def _check_missing_lines(self) -> None:
+        if not isinstance(self.missing_lines, Mapping):
+            raise ValueError(
+                f"coverage.missing_lines must be a mapping, got {self.missing_lines!r}"
+            )
+        for path, lines in self.missing_lines.items():
+            if not isinstance(path, str) or not path:
+                raise ValueError(
+                    f"coverage.missing_lines key must be a non-empty string, "
+                    f"got {path!r}"
+                )
+            if not isinstance(lines, frozenset) or not lines:
+                raise ValueError(
+                    f"coverage.missing_lines[{path!r}] must be a non-empty "
+                    f"frozenset of line numbers, got {lines!r} — a file "
+                    f"contributing none is omitted from the mapping entirely"
+                )
+            for line in lines:
+                if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+                    raise ValueError(
+                        f"coverage.missing_lines[{path!r}] must contain only "
+                        f"positive line numbers, got {line!r}"
+                    )
+
+    def _check_files_missing_coverage(self) -> None:
+        if not isinstance(self.files_missing_coverage, tuple):
+            raise ValueError(
+                f"coverage.files_missing_coverage must be a tuple, got "
+                f"{self.files_missing_coverage!r}"
+            )
+        for path in self.files_missing_coverage:
+            if not isinstance(path, str) or not path:
+                raise ValueError(
+                    f"coverage.files_missing_coverage entries must be "
+                    f"non-empty strings, got {path!r}"
+                )
+        if len(set(self.files_missing_coverage)) != len(self.files_missing_coverage):
+            raise ValueError(
+                f"coverage.files_missing_coverage contains a duplicate: "
+                f"{list(self.files_missing_coverage)}"
+            )
+        if list(self.files_missing_coverage) != sorted(self.files_missing_coverage):
+            raise ValueError(
+                f"coverage.files_missing_coverage must be sorted, got "
+                f"{list(self.files_missing_coverage)}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -255,6 +318,11 @@ class Coverage:
             "changed_executable": self.changed_executable,
             "pct": float(self.pct),
             "considered": self.considered,
+            "missing_lines": {
+                path: sorted(lines)
+                for path, lines in sorted(self.missing_lines.items())
+            },
+            "files_missing_coverage": list(self.files_missing_coverage),
         }
 
 

@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "7777777777777777777777777777777777777777",
+  "outcome": "FAIL",
+  "reason_code": "UNCOVERED_LINES",
+  "exit_code": 1,
+  "started": "2026-08-07T12:05:00+00:00",
+  "ended": "2026-08-07T12:05:01+00:00",
+  "declared_rigor": ["R0", "R1"],
+  "declared_evidence": [],
+  "argv_declared": ["/bin/sh", "-c", "exit 0"],
+  "argv_appended": [],
+  "argv_effective": ["/bin/sh", "-c", "exit 0"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "UNCOVERED_LINES",
+      "coverage": {
+        "covered": 2,
+        "changed_executable": 4,
+        "pct": 50.0,
+        "considered": 1,
+        "missing_lines": {"pkg/mod.zzz": [4, 5]},
+        "files_missing_coverage": []
+      }
+    }
+  ],
+  "evidence": []
+}

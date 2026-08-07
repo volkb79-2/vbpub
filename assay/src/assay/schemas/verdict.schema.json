@@ -145,12 +145,28 @@
     },
     "coverage": {
       "type": "object",
-      "required": ["covered", "changed_executable", "pct", "considered"],
+      "required": ["covered", "changed_executable", "pct", "considered", "missing_lines", "files_missing_coverage"],
       "properties": {
         "covered": {"type": "integer", "minimum": 0},
         "changed_executable": {"type": "integer", "minimum": 0},
         "pct": {"type": "number", "minimum": 0, "maximum": 100},
-        "considered": {"type": "integer", "minimum": 0}
+        "considered": {"type": "integer", "minimum": 0},
+        "missing_lines": {
+          "description": "Changed, executable, non-excluded lines that were not executed, keyed by path (A-096). A file contributing none is absent, never present with an empty array.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "integer", "minimum": 1}
+          }
+        },
+        "files_missing_coverage": {
+          "description": "Changed files under the source roots contributing executable lines with no entry at all in the coverage artifact, sorted (A-096).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
       },
       "additionalProperties": false
     },

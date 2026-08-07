@@ -7,20 +7,28 @@ orders, or retries anything. Flags may be *appended by the caller*, never
 *derived* by assay (A-036), and an append the lane did not permit is refused
 before the process starts (A-095).
 
-Three functions are the module's real surface, deliberately kept as three
-separate steps rather than one run-and-build-verdict function (A-094):
+Four functions are the module's real surface, deliberately kept as separate
+steps rather than one run-and-build-verdict function (A-094):
 
 * :func:`execute_command` — the R0 step. Resolves what will run (a
   :class:`CommandPlan`), then actually runs it (or refuses to, or fails to),
   and returns a :class:`CommandResult` on every terminal path. This is the
-  exact seam P05 calls and then inserts its own R1 evaluation step after,
-  before handing an expanded ``claims`` tuple to :func:`assemble_verdict`.
+  exact seam P05's :func:`evaluate_r1` is called after, before handing an
+  expanded ``claims`` tuple to :func:`assemble_verdict`.
 * :func:`build_r0_claim` — the R0 :class:`~assay.verdict.Claim` from a
-  :class:`CommandResult`. A one-line pure mapping, kept separate so P05 does
-  not have to reach into :func:`execute_command`'s internals to get it.
+  :class:`CommandResult`. A one-line pure mapping, kept separate so nothing
+  has to reach into :func:`execute_command`'s internals to get it.
+* :func:`evaluate_r1` (P05) — the R1 step: P02's two measurability guards,
+  then P03's ``EMPTY_COVERAGE`` guard, short-circuiting on any of the three
+  with a ``NO_MEASUREMENT`` claim (A-090); otherwise runs
+  :func:`assay.evaluate.evaluate_coverage`'s four-way union and builds the
+  R1 :class:`~assay.verdict.Claim`. Like :func:`execute_command`, this never
+  raises for a judged outcome — a guard tripping is a returned ``Claim``,
+  not an exception; only a genuinely structural failure (an unreadable
+  artifact, a git failure) propagates.
 * :func:`assemble_verdict` — final verdict construction (A-023's rollup,
   A-036's transparency fields, A-024's one-claim-per-declared-rigor). Takes
-  the *whole* ``claims`` tuple, not just R0's, so P05 appends its own R1
+  the *whole* ``claims`` tuple, not just R0's, so a caller appends the R1
   claim to the tuple it passes rather than needing a different function.
 
 **The injectable process/budget boundary** (work item 1): the real
@@ -35,10 +43,11 @@ proof (O2): ``subprocess.run`` never merges a non-``None`` ``env`` with the
 parent's, so passing exactly :attr:`CommandPlan.env_effective` is what makes
 "no ambient leak" true by construction, not by convention.
 
-What this module never does, on purpose: it does not read ``judge`` config,
-does not parse coverage, does not compute R1-R3. ``NO_MEASUREMENT`` is not a
-status :func:`execute_command` can ever return — that outcome belongs to P05,
-ahead of R1 evaluation (A-090), and this module has no path that produces it.
+What :func:`execute_command` never does, on purpose: it does not read
+``judge`` config, does not parse coverage, does not compute R1-R3.
+``NO_MEASUREMENT`` is not a status it can ever return — that outcome is
+:func:`evaluate_r1`'s alone to produce, and :func:`execute_command` has no
+path that reaches it.
 
 Every rejection here raises :class:`~assay.errors.AssayError` directly; there
 is no locally-defined exception type (A-092 — ``errors.py`` is outside this
@@ -55,9 +64,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, Sequence, TextIO
 
+from . import coverage, diff, git, measurability
+from .adapters.base import LanguageAdapter
 from .config import Lane
 from .errors import AssayError, Outcome, ReasonCode
-from .verdict import Claim, Verdict, iso_utc, rollup
+from .evaluate import evaluate_coverage
+from .verdict import Claim, Coverage, Verdict, iso_utc, rollup
 
 __all__ = [
     "CommandPlan",
@@ -66,6 +78,7 @@ __all__ = [
     "assemble_verdict",
     "build_r0_claim",
     "default_process_runner",
+    "evaluate_r1",
     "execute_command",
     "resolve_command_plan",
     "write_verdict",
@@ -298,6 +311,100 @@ def build_r0_claim(result: CommandResult) -> Claim:
         status=result.outcome,
         verified_by_assay=True,
         reason_code=result.reason_code,
+    )
+
+
+def _resolve_artifact_path(artifact: str, project_root: Path) -> Path:
+    """*artifact* resolves against *project_root* -- the same directory the
+    lane's own argv ran in (:func:`execute_command` is always called with
+    ``cwd=project_root``), so a relative ``--cov-report=json:cov.json``
+    names the same file here that the lane's own command just wrote."""
+    candidate = Path(artifact)
+    return candidate if candidate.is_absolute() else project_root / candidate
+
+
+def evaluate_r1(
+    lane: Lane,
+    *,
+    repo: Path,
+    project_root: Path,
+    base: str,
+    adapter: LanguageAdapter,
+) -> Claim:
+    """The R1 step (A-090, A-094): P02's two measurability guards, then
+    P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
+    -- then the four-way union (:func:`assay.evaluate.evaluate_coverage`).
+
+    Mirrors :func:`execute_command`'s own contract: never raises for a
+    JUDGED outcome. A guard tripping with ``NO_MEASUREMENT`` is caught and
+    returned as an R1 :class:`~assay.verdict.Claim` carrying that status and
+    reason_code and NO ``coverage`` payload -- omitted, not zeroed (A-025),
+    exactly what :class:`~assay.verdict.Claim` itself would refuse to
+    construct otherwise. Any OTHER :class:`~assay.errors.AssayError` (a
+    genuinely broken coverage artifact -- ``FORMAT_MISMATCH``,
+    ``UNREADABLE_ARTIFACT`` -- or a git failure) is a structural failure,
+    not a judged outcome, and propagates uncaught, the same way
+    ``git.head_rev`` failing propagates out of ``cli.py``'s call chain today.
+
+    *lane.judge* must be fully resolved for R1 (every field
+    ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names) -- guaranteed by
+    :mod:`assay.config`'s loader for any lane that actually declares R1
+    rigor, which is the only way a caller should reach this function.
+    *base* is the declared comparison ref (no lane-config field or CLI flag
+    names it yet -- a caller supplies it directly, the same way P02's own
+    tests do).
+    """
+    judge = lane.judge
+    try:
+        measurability.check_dirty_tree(repo, judge.source_root_paths)
+        resolved = measurability.check_base_is_head(repo, base)
+        artifact_path = _resolve_artifact_path(judge.coverage.artifact, project_root)
+        profile = coverage.read_coverage_artifact(
+            artifact_path, declared_format=judge.coverage.format
+        )
+        coverage.check_empty_coverage(profile)
+    except AssayError as exc:
+        if exc.outcome is Outcome.NO_MEASUREMENT:
+            return Claim(
+                rigor="R1",
+                source="computed",
+                status=exc.outcome,
+                verified_by_assay=True,
+                reason_code=exc.reason_code,
+            )
+        raise
+
+    repo_top = git.repo_top(repo)
+    diff_text = git.run(repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev)
+    added = diff.parse_added_lines(diff_text)
+
+    def read_source_text(path: str) -> str:
+        return (repo_top / path).read_text(encoding="utf-8")
+
+    result = evaluate_coverage(
+        added=added,
+        profile=profile,
+        adapter=adapter,
+        repo_top=repo_top,
+        source_root_paths=judge.source_root_paths,
+        fail_under=judge.fail_under,
+        allow_excluded=judge.allow_excluded,
+        read_source_text=read_source_text,
+    )
+    return Claim(
+        rigor="R1",
+        source="computed",
+        status=result.outcome,
+        verified_by_assay=True,
+        reason_code=result.reason_code,
+        coverage=Coverage(
+            covered=result.covered,
+            changed_executable=result.changed_executable,
+            pct=result.pct,
+            considered=result.considered,
+            missing_lines=result.missing_lines,
+            files_missing_coverage=result.files_missing_coverage,
+        ),
     )
 
 
