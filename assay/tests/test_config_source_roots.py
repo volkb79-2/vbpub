@@ -175,3 +175,44 @@ def test_project_root_is_the_directory_containing_assay_toml(layout: Layout):
 
     assert lane_file.project_root == layout.project_root.resolve()
     assert lane_file.project_root != layout.repo_root.resolve()
+
+
+# --- O3 (P15): containment holds even for a RESOLVED-directory escape ---------
+#
+# A source root that IS a real, existing directory (clearing the old checks
+# unmodified) but resolves outside the project root -- via '..' or a symlink
+# -- must still be rejected. Finding 9's own words: "a lane can measure a
+# sibling project despite the diagnostic claiming containment."
+
+
+def test_dotdot_source_root_that_resolves_to_a_real_sibling_directory_is_rejected(
+    layout: Layout,
+):
+    # repo_root/pkgs is a REAL directory (the fixture layout guarantees it),
+    # and project_root/".." resolves EXACTLY to repo_root -- so a naive
+    # "is it an existing directory" check alone would accept this.
+    with pytest.raises(LaneConfigError, match="not contained beneath"):
+        load_lane_file(layout.write("../pkgs"))
+
+
+def test_symlink_source_root_escaping_the_project_root_is_rejected(layout: Layout):
+    outside = layout.repo_root / "outside_target"
+    outside.mkdir()
+    link = layout.project_root / "escape_link"
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(LaneConfigError, match="not contained beneath"):
+        load_lane_file(layout.write("escape_link"))
+
+
+def test_symlink_source_root_pointing_within_the_project_root_is_accepted(
+    layout: Layout,
+):
+    real = layout.project_root / "src"
+    link = layout.project_root / "src_link"
+    link.symlink_to(real, target_is_directory=True)
+
+    judge = load_lane_file(layout.write("src_link")).lane("package").judge
+
+    assert judge is not None
+    assert judge.source_root_paths == (real.resolve(),)
