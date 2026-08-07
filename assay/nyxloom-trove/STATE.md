@@ -1,6 +1,6 @@
 # assay — state of play
 
-> Written 2026-08-07, updated the same day after P02 landed. Update this file
+> Written 2026-08-07, updated the same day after P03 landed. Update this file
 > at the end of every session; it is the first thing the next controller
 > should read after `handoffs/README.md`.
 
@@ -8,17 +8,21 @@
 
 **Merged on `main`:** P00 (skeleton + lane config loader), P01 (verdict model +
 JSON Schema), P01c (contract repair + the reissued series), **P02** (changed-line
-extraction + the `DIRTY_TREE`/`BASE_IS_HEAD` measurability guards). Gate green at
-**762 passed, exit 0, 100% statement AND branch** (777 stmts / 326 branches),
-independently reverified by the controller in the foreground gate container
+extraction + the `DIRTY_TREE`/`BASE_IS_HEAD` measurability guards), **P03**
+(coverage format registry — coverage.py JSON, lcov, Cobertura XML, Go
+coverprofile — + the `EMPTY_COVERAGE` guard). Gate green at **848 passed, exit
+0, 100% statement AND branch** (1047 stmts / 426 branches), independently
+reverified by the controller in the foreground gate container on every package
 (not just read from the implementer's report), plus a post-merge local run on
-`main` itself.
+`main` itself each time.
 
-**Outstanding:** P03–P14, twelve packages, all validating against nyxloom's
+**Outstanding:** P04–P14, eleven packages, all validating against nyxloom's
 real `handoff-frontmatter.schema.json` with a closed dependency graph.
-**P03 is next** — *"is coverage format explicit and language-independent?"*
+**P04 is next** — *"is the real command result recorded on every terminal
+path?"*
 
-Key commits: `89a489a0` (P02 merge), `04e72c9a` (P02 readiness rulings,
+Key commits: `e7c92988` (P03 merge), `e97d6e6f` (P03 readiness rulings,
+A-092/A-093), `89a489a0` (P02 merge), `04e72c9a` (P02 readiness rulings,
 A-090/A-091), `27fb88d7` (P01c + reissue), `c1bb518d` (P00/P01 rename),
 `caf4fc78` (P01), `b2684da9` (P00), `a0c9e515` (original scoping).
 
@@ -31,6 +35,26 @@ ANY non-zero exit, but ancestor-checking git commands use exit codes as data
 (`merge-base --is-ancestor` exit 1 means "no", not "broken") — flagged directly
 in P10's handoff rather than left to be rediscovered at P10's own readiness
 pass.
+
+**P03's readiness pass found the SAME shape of gap again**, one level down:
+A-091 (P02's dataclass/direct-`AssayError` convention) was worded around two
+named functions rather than as a rule, and P03's own cited sibling
+implementations all used the forbidden bare-dict/map shape — generalized by
+A-092 into a project-wide rule so it doesn't need rediscovering at every
+remaining package. A-093 required P03's `EMPTY_COVERAGE` guard
+(`check_empty_coverage`) to be named and independently callable, matching
+A-090's fix for P02 — confirmed on review to be exactly what P05's O4 needs,
+with the exact call sequence given in `assay-P03-BRIEF.md`. **Pattern for
+whoever reviews P04+:** check whether A-092's dataclass rule and the
+"named-independently-callable-guard" shape need restating for each new
+package, or whether two applications is now enough precedent that a reviewer
+can just point to A-090/A-092/A-093 without minting a new decision each time.
+lcov and Cobertura XML parsers were built with **zero prior art anywhere in
+the estate** — reviewed directly against the public specs, not just trusted;
+Cobertura's multi-`<class>`-per-file merge (executed wins on conflict) is the
+implementer's own extrapolation from the DTD, untested against any real-world
+sample. Low risk, worth remembering if a real Cobertura consumer ever
+surfaces a case this parser gets wrong.
 
 ## How the work is run
 
