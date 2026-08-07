@@ -42,6 +42,8 @@ RESOLVED = {
     "argv_effective": ("pytest", "-q"),
     "env_declared": {"TZ": "UTC"},
     "env_effective": {"TZ": "UTC"},
+    "scope": "S2",
+    "enforcement": "gate",
 }
 
 

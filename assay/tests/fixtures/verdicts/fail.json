@@ -1,23 +1,62 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
   "outcome": "FAIL",
-  "reason_code": "UNCOVERED_LINES",
   "exit_code": 1,
   "started": "2026-08-06T09:10:00+00:00",
   "ended": "2026-08-06T09:10:31+00:00",
-  "declared_rigor": ["R0", "R1"],
-  "declared_evidence": [
-    {"source": "attested", "key": "adversarial-review"}
+  "reason_code": "UNCOVERED_LINES",
+  "declared_rigor": [
+    "R0",
+    "R1"
   ],
-  "argv_declared": ["pytest", "tests", "-q"],
-  "argv_appended": ["-k", "not slow"],
-  "argv_effective": ["pytest", "tests", "-q", "-k", "not slow"],
+  "declared_evidence": [
+    {
+      "source": "attested",
+      "key": "adversarial-review"
+    }
+  ],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_appended": [
+    "-k",
+    "not slow"
+  ],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q",
+    "-k",
+    "not slow"
+  ],
   "argv_modified": true,
-  "env_declared": {"TZ": "UTC"},
-  "env_effective": {"TZ": "UTC", "PATH": "/usr/bin"},
+  "env_declared": {
+    "TZ": "UTC"
+  },
+  "env_effective": {
+    "TZ": "UTC",
+    "PATH": "/usr/bin"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r1": {
+      "language": "python",
+      "source_roots": [
+        "src"
+      ],
+      "coverage_format": "coverage-py-json",
+      "coverage_artifact": "cov.json",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "base": "0000000000000000000000000000000000000a"
+    }
+  },
   "claims": [
     {
       "rigor": "R0",
@@ -34,12 +73,18 @@
       "coverage": {
         "covered": 2,
         "changed_executable": 3,
-        "pct": 66.67,
+        "pct": 66.66666666666667,
         "considered": 1,
-        "missing_lines": {"src/assay/verdict.py": [42]},
+        "missing_lines": {
+          "src/assay/verdict.py": [
+            42
+          ]
+        },
         "files_missing_coverage": [],
         "unclassified_lines": {},
-        "files_with_unclassified_lines": []
+        "files_with_unclassified_lines": [],
+        "excluded_lines": {},
+        "files_with_excluded_lines": []
       }
     }
   ],
@@ -51,7 +96,9 @@
       "verified_by_assay": false,
       "producer": "reviewer@example",
       "attested_commit": "2222222222222222222222222222222222222222",
-      "reviewed_paths": ["src/assay/verdict.py"]
+      "reviewed_paths": [
+        "src/assay/verdict.py"
+      ]
     }
   ]
 }

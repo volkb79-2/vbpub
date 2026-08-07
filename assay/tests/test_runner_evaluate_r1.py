@@ -38,8 +38,51 @@ from jsonschema import Draft202012Validator
 from assay import runner
 from assay.adapters.base import StatementSpan
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verdict import Judgment, JudgmentR1
 
 ADAPTER = FakeAdapter()
+
+
+#: The placeholder every hand-written fixture spells `judgment.r1.base` as.
+#: A real `base_rev` is a genuine git commit SHA and therefore NOT
+#: deterministic across test runs (``GitRepo.commit_all`` does not pin
+#: ``GIT_AUTHOR_DATE``) -- each test asserts the REAL value independently,
+#: then normalizes the field to this placeholder before the full-document
+#: comparison against the fixture, the same "hand-computed fact checked
+#: separately, never smuggled into the literal comparison" discipline
+#: `test_verdict_conformance.py` already applies to `argv_effective`.
+FIXTURE_BASE_PLACEHOLDER = "0000000000000000000000000000000000000a"
+
+
+def _r1_judgment(judge, base_rev: str) -> Judgment:
+    """The effective R1 policy an independent consumer needs (P16) --
+    derived from the same `judge`/`base_rev` each test already resolved,
+    never a second hardcoded copy of the lane's own declaration.
+    `source_roots` is deliberately the REPO-RELATIVE spelling a real
+    ``assay.toml`` would declare (``pkg``), not `judge.source_root_paths`'s
+    resolved absolute form -- `make_r1_judge`'s own `.source_roots` field
+    is a test-helper shortcut that stores the same absolute, tmp_path-
+    derived string as `.source_root_paths`, which would make this field
+    non-deterministic across runs too."""
+    return Judgment(
+        r1=JudgmentR1(
+            language=judge.language,
+            source_roots=("pkg",),
+            coverage_format=judge.coverage.format,
+            coverage_artifact=judge.coverage.artifact,
+            fail_under=judge.fail_under,
+            allow_excluded=judge.allow_excluded,
+            base=base_rev,
+        )
+    )
+
+
+def _normalize_judgment_base(document: dict, base_rev: str) -> None:
+    """Assert the REAL resolved base commit was recorded, then normalize it
+    to the fixture's own fixed placeholder so the surrounding full-document
+    comparison stays possible against a hand-written, stable JSON file."""
+    assert document["judgment"]["r1"]["base"] == base_rev
+    document["judgment"]["r1"]["base"] = FIXTURE_BASE_PLACEHOLDER
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -119,9 +162,11 @@ def test_r1_pass_matches_the_hand_written_fixture(
         result=result,
         claims=(r0_claim, r1_claim),
         assay_version="0.1.0",
+        judgment=_r1_judgment(judge, base_rev),
     )
 
     document = json.loads(verdict.to_json())
+    _normalize_judgment_base(document, base_rev)
     assert document == r1_verdict_fixture("r1_pass")
     _validate(document, validator)
 
@@ -156,9 +201,11 @@ def test_r1_fail_uncovered_lines_matches_the_hand_written_fixture(
         result=result,
         claims=(r0_claim, r1_claim),
         assay_version="0.1.0",
+        judgment=_r1_judgment(judge, base_rev),
     )
 
     document = json.loads(verdict.to_json())
+    _normalize_judgment_base(document, base_rev)
     assert document == r1_verdict_fixture("r1_fail_uncovered_lines")
     _validate(document, validator)
 
@@ -195,9 +242,11 @@ def test_r1_fail_excluded_lines_matches_the_hand_written_fixture(
         result=result,
         claims=(r0_claim, r1_claim),
         assay_version="0.1.0",
+        judgment=_r1_judgment(judge, base_rev),
     )
 
     document = json.loads(verdict.to_json())
+    _normalize_judgment_base(document, base_rev)
     assert document == r1_verdict_fixture("r1_fail_excluded_lines")
     _validate(document, validator)
 
@@ -352,8 +401,10 @@ def test_a_hard_coded_constant_pass_would_fail_the_fail_fixture_comparison(
         result=result,
         claims=(r0_claim, r1_claim),
         assay_version="0.1.0",
+        judgment=_r1_judgment(judge, base_rev),
     )
     document = json.loads(verdict.to_json())
+    _normalize_judgment_base(document, base_rev)
 
     # Simulate "the producer emits a constant PASS": force outcome/reason to
     # PASS regardless of the real (50%, fail_under=100) result.

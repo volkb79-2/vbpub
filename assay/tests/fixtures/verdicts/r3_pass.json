@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "cccccccccccccccccccccccccccccccccccccccc",
@@ -7,14 +7,31 @@
   "exit_code": 0,
   "started": "2026-08-07T13:00:00+00:00",
   "ended": "2026-08-07T13:00:05+00:00",
-  "declared_rigor": ["R0", "R3"],
+  "declared_rigor": [
+    "R0",
+    "R3"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["pytest", "tests", "-q", "--cov=pkg", "--cov-report=json:cov.json"],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q",
+    "--cov=pkg",
+    "--cov-report=json:cov.json"
+  ],
   "argv_appended": [],
-  "argv_effective": ["pytest", "tests", "-q", "--cov=pkg", "--cov-report=json:cov.json"],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q",
+    "--cov=pkg",
+    "--cov-report=json:cov.json"
+  ],
   "argv_modified": false,
   "env_declared": {},
   "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
     {
       "rigor": "R0",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:2",
+  "$id": "urn:assay:schema:verdict:3",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model.",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version.",
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "assay_version": {"type": "string", "minLength": 1},
     "lane": {"type": "string", "minLength": 1},
@@ -49,6 +49,9 @@
     "argv_modified": {"type": "boolean"},
     "env_declared": {"$ref": "#/$defs/env"},
     "env_effective": {"$ref": "#/$defs/env"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "enforcement": {"$ref": "#/$defs/enforcement"},
+    "judgment": {"$ref": "#/$defs/judgment"},
     "claims": {
       "description": "Exactly one computed claim per declared rigor level; model construction enforces the cross-array equality.",
       "type": "array",
@@ -61,14 +64,16 @@
     }
   },
   "dependentRequired": {
-    "declared_rigor": ["declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective"],
-    "declared_evidence": ["declared_rigor", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective"],
-    "argv_declared": ["declared_rigor", "declared_evidence", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective"],
-    "argv_appended": ["declared_rigor", "declared_evidence", "argv_declared", "argv_effective", "argv_modified", "env_declared", "env_effective"],
-    "argv_effective": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_modified", "env_declared", "env_effective"],
-    "argv_modified": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "env_declared", "env_effective"],
-    "env_declared": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_effective"],
-    "env_effective": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared"]
+    "declared_rigor": ["declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
+    "declared_evidence": ["declared_rigor", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
+    "argv_declared": ["declared_rigor", "declared_evidence", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
+    "argv_appended": ["declared_rigor", "declared_evidence", "argv_declared", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
+    "argv_effective": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
+    "argv_modified": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "env_declared", "env_effective", "scope", "enforcement"],
+    "env_declared": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_effective", "scope", "enforcement"],
+    "env_effective": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "scope", "enforcement"],
+    "scope": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "enforcement"],
+    "enforcement": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope"]
   },
   "allOf": [
     {
@@ -109,6 +114,8 @@
     "outcome": {"enum": ["PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED", "INCONCLUSIVE"]},
     "rigor": {"enum": ["R0", "R1", "R2", "R3"]},
     "evidence_source": {"enum": ["adjudicated", "attested"]},
+    "scope": {"enum": ["S0", "S1", "S2", "S3", "S4"]},
+    "enforcement": {"enum": ["gate", "advisory"]},
     "timestamp": {
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})(?![\\s\\S])"
@@ -145,7 +152,7 @@
     },
     "coverage": {
       "type": "object",
-      "required": ["covered", "changed_executable", "pct", "considered", "missing_lines", "files_missing_coverage", "unclassified_lines", "files_with_unclassified_lines"],
+      "required": ["covered", "changed_executable", "pct", "considered", "missing_lines", "files_missing_coverage", "unclassified_lines", "files_with_unclassified_lines", "excluded_lines", "files_with_excluded_lines"],
       "properties": {
         "covered": {"type": "integer", "minimum": 0},
         "changed_executable": {"type": "integer", "minimum": 0},
@@ -179,6 +186,22 @@
         },
         "files_with_unclassified_lines": {
           "description": "Paths appearing in unclassified_lines, sorted (A-096's pattern, P07's third pair).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "excluded_lines": {
+          "description": "Changed, considered lines the coverage artifact classifies EXCLUDED, keyed by path (P16). A file contributing none is absent, never present with an empty array. Present so an independent consumer can re-derive a FAIL/EXCLUDED_LINES claim from the payload plus judgment.r1.allow_excluded alone.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "integer", "minimum": 1}
+          }
+        },
+        "files_with_excluded_lines": {
+          "description": "Paths appearing in excluded_lines, sorted (P16, the same pattern files_with_unclassified_lines already established).",
           "type": "array",
           "uniqueItems": true,
           "items": {"type": "string", "minLength": 1}
@@ -243,6 +266,52 @@
         "survived": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
         "crashed": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
         "budget_exceeded": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}}
+      },
+      "additionalProperties": false
+    },
+    "judgment_r1": {
+      "description": "The effective R1 policy (P16, sol finding 2): what decided the R1 claim's PASS/FAIL, so an independent consumer can re-derive it from coverage alone.",
+      "type": "object",
+      "required": ["language", "source_roots", "coverage_format", "coverage_artifact", "fail_under", "allow_excluded", "base"],
+      "properties": {
+        "language": {"type": "string", "minLength": 1},
+        "source_roots": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "coverage_format": {"type": "string", "minLength": 1},
+        "coverage_artifact": {"type": "string", "minLength": 1},
+        "fail_under": {"type": "number", "minimum": 0, "maximum": 100},
+        "allow_excluded": {"type": "boolean"},
+        "base": {"description": "The full resolved comparison commit, never a symbolic ref.", "type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "judgment_r2": {
+      "description": "RESERVED (P16); populated by a future R2 CLI wiring package.",
+      "type": "object",
+      "required": ["jobs", "operators"],
+      "properties": {
+        "jobs": {"type": "integer", "minimum": 1},
+        "operators": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
+    "judgment_r3": {
+      "description": "RESERVED (P16); populated by a future isolated R3 CLI wiring package.",
+      "type": "object",
+      "required": ["mechanism", "target"],
+      "properties": {
+        "mechanism": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "judgment": {
+      "description": "The resolved judge policy for whichever declared rigor levels rendered a real computed judgment (P16). Independently optional -- a lane may resolve and render only R0.",
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "r1": {"$ref": "#/$defs/judgment_r1"},
+        "r2": {"$ref": "#/$defs/judgment_r2"},
+        "r3": {"$ref": "#/$defs/judgment_r3"}
       },
       "additionalProperties": false
     },

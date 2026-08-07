@@ -33,11 +33,27 @@ from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
 from assay.errors import Outcome, ReasonCode
 from assay.evaluate import CoverageEvaluation, evaluate_coverage
-from assay.verdict import Claim, Coverage, Verdict, rollup
+from assay.verdict import Claim, Coverage, Judgment, JudgmentR1, Verdict, rollup
 
 REPO_TOP = Path("/repo")
 PATH = "pkg/mod.py"
 VERSION = "0.1.0"
+
+#: The effective R1 policy behind every real Coverage claim this module
+#: builds (P16) -- identical across all three fixtures, since `_evaluate`
+#: always calls `evaluate_coverage` with the same `fail_under`/
+#: `allow_excluded`/adapter/source root.
+R1_JUDGMENT = Judgment(
+    r1=JudgmentR1(
+        language="python",
+        source_roots=("pkg",),
+        coverage_format="coverage-py-json",
+        coverage_artifact="cov.json",
+        fail_under=100.0,
+        allow_excluded=False,
+        base="0000000000000000000000000000000000000a",
+    )
+)
 
 SOURCE = (
     "def build_config():\n"  # 1
@@ -105,6 +121,8 @@ def _r1_claim(result: CoverageEvaluation) -> Claim:
             files_missing_coverage=result.files_missing_coverage,
             unclassified_lines=result.unclassified_lines,
             files_with_unclassified_lines=result.files_with_unclassified_lines,
+            excluded_lines=result.excluded_lines,
+            files_with_excluded_lines=result.files_with_excluded_lines,
         ),
     )
 
@@ -131,6 +149,9 @@ def _verdict(commit: str, started: str, ended: str, r1_claim: Claim) -> Verdict:
         argv_effective=("/bin/sh", "-c", "exit 0"),
         env_declared={},
         env_effective={},
+        scope="S1",
+        enforcement="gate",
+        judgment=R1_JUDGMENT,
         claims=claims,
     )
 
@@ -262,6 +283,9 @@ def test_rolling_up_unclassified_as_pass_differs_from_the_expected_artifact():
         argv_effective=("/bin/sh", "-c", "exit 0"),
         env_declared={},
         env_effective={},
+        scope="S1",
+        enforcement="gate",
+        judgment=R1_JUDGMENT,
         claims=(r0_claim, buggy_r1_claim),
     )
 

@@ -293,12 +293,52 @@ never derives flags** — they come from the lane or the caller, never from assa
 inspecting the diff. Deriving them would be impact-based selection, which is
 the caller's domain (§7).
 
+### Binding the effective judge policy (v3)
+
+A percentage alone does not let an independent consumer re-derive a status:
+schema v2 recorded `Coverage.pct` but not the `fail_under`/`allow_excluded`
+policy that turned it into `PASS`/`FAIL`, nor the full resolved comparison
+commit the diff was measured against — a post-series adversarial review
+found `assay verify` accepting a `PASS` claim reporting 0% coverage as a
+direct consequence. Schema v3 adds top-level `scope`/`enforcement` (already
+static `Lane` attributes, present whenever a lane resolved, exactly like
+`argv_declared`) and a `judgment` object recording the resolved policy
+behind whichever claims rendered a real computed judgment. `judgment.r1`
+is present if and only if the R1 claim carries a `coverage` payload — an
+independent consumer with a coverage percentage and no policy learns
+nothing more from it than schema v2 already gave them. `judgment.r2`/`r3`
+are reserved, closed shapes a later CLI-wiring package populates
+additively; R2 and R3 status are already re-derivable from `Mutation`'s and
+`CanaryResult`'s own fields alone, with no external policy input needed.
+
+**A judged status carries the payload it judged.** Re-derivation only bites
+where there is something to re-derive, so the cheapest evasion of it is not
+a contradictory payload but no payload: a `PASS` claim with its `coverage` /
+`mutation` / `canary` block simply deleted leaves the rollup in perfect
+agreement and nothing to check. So the model refuses to construct one at
+every level where a producer proves it impossible — R1 `PASS`/`FAIL`,
+R2 `PASS` and the two mutation-only reason codes, and any R3 status that is
+a *judgement of* a canary rather than a report that the canary machinery
+never ran. This is the same discipline as A-025's "absent means unknowable,
+empty means known-and-empty", read in the other direction: a status that
+claims knowledge must say what it knows it from.
+
 ### Consumption without linking
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version: 2` (an integer, bumped on any breaking shape change) and
+carries `schema_version: 3` (an integer, bumped on any breaking shape change) and
 `assay_version`.
+
+**A version bump is a migration for the consumer, never an upgrade by the
+producer.** `assay verify` refuses any `schema_version` but its own, with a
+single diagnostic naming the version and nothing else — it does not read the
+rest of a foreign artifact, because every later complaint would be a
+consequence of the version rather than an independent defect (a v2 artifact
+otherwise reports a bare `KeyError` on a v3 field its producer had never
+heard of). It never coerces, defaults, or in-place upgrades a stale
+artifact: an artifact records what one run of one assay judged, so the only
+honest way to obtain a v3 verdict is to produce one.
 
 nyxloom's existing `GateResult` is a strict subset: six REQUIRED fields
 (`gate_id`, `phase`, `commit`, `exit_code`, `started`, `ended`) plus an

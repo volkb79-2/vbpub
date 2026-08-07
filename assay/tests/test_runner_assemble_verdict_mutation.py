@@ -20,7 +20,25 @@ from conftest import fixed_clock, make_lane
 
 from assay import runner
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Claim
+from assay.verdict import Claim, MutantOutcome, Mutation
+
+#: A PASSING R2 claim carries the buckets it passed on, and a
+#: MUTANTS_SURVIVED one carries the survivor it names (P16 review) -- an R2
+#: status read off buckets that are not in the artifact is exactly what
+#: ``assay verify`` cannot re-derive.
+_KILLED_EVERYTHING = Mutation(total=2, killed=2)
+_ONE_SURVIVOR = Mutation(
+    total=2,
+    killed=1,
+    survived=(
+        MutantOutcome(
+            path="pkg/a.py",
+            lineno=3,
+            operator="invert-comparison",
+            description="a < b -> a >= b",
+        ),
+    ),
+)
 
 
 def _r0_pass_result(tmp_path: Path):
@@ -36,7 +54,10 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
     tmp_path: Path,
 ):
     lane, result = _r0_pass_result(tmp_path)
-    mutation_claim = Claim(rigor="R2", source="computed", status=Outcome.PASS, verified_by_assay=True)
+    mutation_claim = Claim(
+        rigor="R2", source="computed", status=Outcome.PASS,
+        verified_by_assay=True, mutation=_KILLED_EVERYTHING,
+    )
 
     verdict = runner.assemble_verdict(
         lane=lane,
@@ -60,6 +81,7 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
     mutation_claim = Claim(
         rigor="R2", source="computed", status=Outcome.FAIL,
         verified_by_assay=True, reason_code=ReasonCode.MUTANTS_SURVIVED,
+        mutation=_ONE_SURVIVOR,
     )
 
     verdict = runner.assemble_verdict(
@@ -81,8 +103,14 @@ def test_a_duplicate_rigor_between_claims_and_mutation_claim_is_refused(tmp_path
     silently; the existing ``Verdict``-level duplicate-rigor check (used
     elsewhere in this project for the identical shape) catches it."""
     lane, result = _r0_pass_result(tmp_path)
-    r2_in_claims = Claim(rigor="R2", source="computed", status=Outcome.PASS, verified_by_assay=True)
-    r2_duplicate = Claim(rigor="R2", source="computed", status=Outcome.PASS, verified_by_assay=True)
+    r2_in_claims = Claim(
+        rigor="R2", source="computed", status=Outcome.PASS,
+        verified_by_assay=True, mutation=_KILLED_EVERYTHING,
+    )
+    r2_duplicate = Claim(
+        rigor="R2", source="computed", status=Outcome.PASS,
+        verified_by_assay=True, mutation=_KILLED_EVERYTHING,
+    )
 
     with pytest.raises(ValueError, match="more than one claim for rigor level"):
         runner.assemble_verdict(

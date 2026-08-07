@@ -63,7 +63,7 @@ from importlib.resources import files
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from .config import RIGOR_LEVELS
+from .config import ENFORCEMENTS, RIGOR_LEVELS, SCOPES
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
 
 __all__ = [
@@ -80,6 +80,10 @@ __all__ = [
     "Coverage",
     "Evidence",
     "EvidenceDeclaration",
+    "Judgment",
+    "JudgmentR1",
+    "JudgmentR2",
+    "JudgmentR3",
     "Mutation",
     "MutantOutcome",
     "Outcome",
@@ -94,8 +98,12 @@ __all__ = [
 #: The VERDICT artifact's schema version. **Distinct** from the lane file's own
 #: `schema_version` (A-065): two independently versioned contracts, and
 #: conflating them would couple a lane-file format change to every emitted
-#: artifact.
-VERDICT_SCHEMA_VERSION = 2
+#: artifact. Bumped 2 -> 3 (P16): a breaking shape change (new mandatory
+#: `judgment.r1` whenever an R1 claim carries `coverage`), never a silent
+#: coercion of a v2 artifact -- `Verdict.schema_version` still refuses
+#: anything but the current value, so an old artifact is rejected with a
+#: named diagnostic rather than silently upgraded.
+VERDICT_SCHEMA_VERSION = 3
 
 #: Where the shipped schema lives inside the installed package. Declared as
 #: package data in `pyproject.toml`; without that it exists in the source tree
@@ -106,6 +114,18 @@ SCHEMA_RESOURCE = "schemas/verdict.schema.json"
 #: Computed rigor claims and external evidence are deliberately separate axes.
 CLAIM_SOURCES: tuple[str, ...] = ("computed",)
 EVIDENCE_SOURCES: tuple[str, ...] = ("adjudicated", "attested")
+
+#: (P16 review) the two reason codes an R2 claim can only ever read off a
+#: :class:`Mutation`'s own buckets — :func:`assay.mutation.judge_mutation`
+#: reaches both solely on its ``mutation is not None`` branch, and
+#: ``execute_command``'s baseline vocabulary contains neither. A claim
+#: carrying one of them without the payload it was read from is therefore
+#: unproducible, and is refused at construction rather than left for a
+#: consumer to trust. See
+#: :meth:`Claim._check_a_judged_status_carries_its_own_payload`.
+_MUTATION_ONLY_REASON_CODES: frozenset[ReasonCode] = frozenset(
+    {ReasonCode.MUTANTS_SURVIVED, ReasonCode.NO_MUTANTS}
+)
 
 #: A-023, in order. `PASS` is not a member: it is what remains when no adverse
 #: status is present, which is the same statement as "PASS only when every
@@ -119,7 +139,11 @@ ROLLUP_PRECEDENCE: tuple[Outcome, ...] = (
 )
 
 #: The fields that exist if and only if a lane actually resolved. All present or
-#: all absent — see the module docstring on absent-vs-empty.
+#: all absent — see the module docstring on absent-vs-empty. `scope` and
+#: `enforcement` joined this group in P16: both are static `Lane` attributes,
+#: known the moment a lane loads, exactly like `argv_declared`/`env_declared` —
+#: there is no honest intermediate state where a lane resolved but its own
+#: declared scope/enforcement are unknown.
 LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "declared_rigor",
     "declared_evidence",
@@ -129,6 +153,8 @@ LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "argv_modified",
     "env_declared",
     "env_effective",
+    "scope",
+    "enforcement",
 )
 
 # Kept deliberately identical in intent to `$defs/timestamp` in the schema. The
@@ -314,6 +340,23 @@ class Coverage:
     #: (P07) paths appearing in :attr:`unclassified_lines`, sorted — the
     #: same shape :attr:`files_missing_coverage` already established.
     files_with_unclassified_lines: tuple[str, ...] = ()
+    #: (P16) changed, considered lines the coverage artifact classifies
+    #: EXCLUDED (``pragma: no cover`` and its format-specific equivalents),
+    #: keyed exactly like :attr:`missing_lines` — a file contributing none
+    #: is ABSENT, never present with an empty frozenset. Always present
+    #: (possibly empty), the same "empty means known-and-empty" discipline
+    #: A-025 already applies one level up: an artifact that hides which
+    #: lines were excluded is exactly sol finding 2's "an independent
+    #: consumer cannot re-derive whether an R1 status was correct" gap —
+    #: without this an ``allow_excluded=False`` lane's ``FAIL``/
+    #: ``EXCLUDED_LINES`` claim could not be independently re-checked at
+    #: all, only trusted.
+    excluded_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    #: (P16) paths appearing in :attr:`excluded_lines`, sorted — the same
+    #: "always present, possibly empty, sorted" shape
+    #: :attr:`files_missing_coverage`/:attr:`files_with_unclassified_lines`
+    #: already established.
+    files_with_excluded_lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("covered", "changed_executable", "considered"):
@@ -342,6 +385,121 @@ class Coverage:
             self.files_with_unclassified_lines,
             "coverage.files_with_unclassified_lines",
         )
+        _check_line_location_mapping(self.excluded_lines, "coverage.excluded_lines")
+        _check_file_tuple(
+            self.files_with_excluded_lines, "coverage.files_with_excluded_lines"
+        )
+
+        # P16 (sol finding 2): the arithmetic no earlier package enforced —
+        # a `Coverage` reporting `PASS` at 0% simply disagreed with its own
+        # `covered`/`changed_executable`, and construction accepted it.
+        # `pct` is DERIVED, never independently supplied.
+        expected_pct = (
+            100.0
+            if self.changed_executable == 0
+            else 100.0 * self.covered / self.changed_executable
+        )
+        if abs(float(self.pct) - expected_pct) > 1e-9:
+            raise ValueError(
+                f"coverage.pct {self.pct} does not agree with "
+                f"covered/changed_executable "
+                f"({self.covered}/{self.changed_executable} = {expected_pct}); "
+                f"pct is derived from those two fields, never independently "
+                f"supplied"
+            )
+        total_missing = sum(len(lines) for lines in self.missing_lines.values())
+        if total_missing != self.changed_executable - self.covered:
+            raise ValueError(
+                f"coverage.missing_lines names {total_missing} line(s) total, "
+                f"but changed_executable - covered = "
+                f"{self.changed_executable - self.covered}; the per-file "
+                f"detail must sum to the summary"
+            )
+        self._check_buckets_pairwise_disjoint()
+        self._check_summaries_name_their_own_detail()
+
+    def _check_summaries_name_their_own_detail(self) -> None:
+        """Each ``files_*`` summary agrees with the line-level mapping it
+        summarises (P16's own work item 3: "missing/excluded/unclassified
+        identities agree with their summary fields").
+
+        Two different relations, because the two kinds of summary mean two
+        different things:
+
+        * :attr:`files_with_unclassified_lines` and
+          :attr:`files_with_excluded_lines` are documented as *"paths
+          appearing in* [the mapping]*, sorted"* — an EQUALITY, and
+          :mod:`assay.evaluate` builds both by literally sorting the
+          mapping it just filled.
+        * :attr:`files_missing_coverage` is NOT the keys of
+          :attr:`missing_lines`: it names only the considered files with no
+          entry at all in the coverage artifact, whose changed lines are
+          then all recorded as missing. Every such file therefore appears in
+          :attr:`missing_lines` — a CONTAINMENT — while a file that does
+          have an artifact entry can contribute missing lines without
+          belonging here.
+
+        Without this, a summary could name a file the detail never mentions,
+        or stay empty while the detail names several: a consumer reading
+        "which files have a problem" (the whole reason A-096 added these
+        pairs) would be answered by a field nothing bound to the evidence.
+        """
+        for mapping, mapping_name, summary, summary_name in (
+            (
+                self.unclassified_lines,
+                "unclassified_lines",
+                self.files_with_unclassified_lines,
+                "files_with_unclassified_lines",
+            ),
+            (
+                self.excluded_lines,
+                "excluded_lines",
+                self.files_with_excluded_lines,
+                "files_with_excluded_lines",
+            ),
+        ):
+            expected = tuple(sorted(mapping))
+            if summary != expected:
+                raise ValueError(
+                    f"coverage.{summary_name} {list(summary)} does not name "
+                    f"exactly the paths in coverage.{mapping_name} "
+                    f"{list(expected)}; the summary is derived from the "
+                    f"detail, never supplied independently of it"
+                )
+        stray = sorted(set(self.files_missing_coverage) - set(self.missing_lines))
+        if stray:
+            raise ValueError(
+                f"coverage.files_missing_coverage names {stray}, which "
+                f"contribute no line to coverage.missing_lines; a file with "
+                f"no coverage-artifact entry has every changed line recorded "
+                f"as missing"
+            )
+
+    def _check_buckets_pairwise_disjoint(self) -> None:
+        """A changed line has exactly one classification (P15's own
+        ``FileCoverage`` invariant, restated one level up at the artifact):
+        it cannot be simultaneously ``missing``, ``excluded`` and
+        ``unclassified`` for the same file. Real producer output already
+        satisfies this by construction (:mod:`assay.evaluate` derives all
+        three from one already-disjoint partition); this is the defensive,
+        construction-time check that makes a HAND-BUILT contradictory
+        artifact impossible to instantiate, matching A-135's binding
+        instruction for this package's own contradictory fixtures.
+        """
+        pairs = (
+            ("missing_lines", self.missing_lines, "excluded_lines", self.excluded_lines),
+            ("missing_lines", self.missing_lines, "unclassified_lines", self.unclassified_lines),
+            ("excluded_lines", self.excluded_lines, "unclassified_lines", self.unclassified_lines),
+        )
+        for left_name, left, right_name, right in pairs:
+            for path in set(left) & set(right):
+                overlap = left[path] & right[path]
+                if overlap:
+                    raise ValueError(
+                        f"coverage[{path!r}]: {left_name} and {right_name} "
+                        f"both name line(s) {sorted(overlap)} — a changed "
+                        f"line has exactly one classification"
+                    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -359,6 +517,11 @@ class Coverage:
                 for path, lines in sorted(self.unclassified_lines.items())
             },
             "files_with_unclassified_lines": list(self.files_with_unclassified_lines),
+            "excluded_lines": {
+                path: sorted(lines)
+                for path, lines in sorted(self.excluded_lines.items())
+            },
+            "files_with_excluded_lines": list(self.files_with_excluded_lines),
         }
 
 
@@ -624,6 +787,164 @@ class Mutation:
 
 
 @dataclass(frozen=True, kw_only=True)
+class JudgmentR1:
+    """The effective R1 policy (P16, sol finding 2): the resolved
+    ``language``/``source_roots``/coverage format+artifact spelling the run
+    used, the ``fail_under`` floor and ``allow_excluded`` choice that
+    decided the R1 claim's ``PASS``/``FAIL``, and the FULL resolved
+    comparison commit the diff was measured against — never the lane's own
+    possibly-symbolic ``base`` ref. Without this, an independent consumer
+    has a percentage but not the policy that judged it: "schema v2 does not
+    record fail_under/allow_excluded, so an independent consumer cannot even
+    in principle re-derive whether an R1 status was correct from the payload
+    alone."
+    """
+
+    language: str
+    source_roots: tuple[str, ...]
+    coverage_format: str
+    coverage_artifact: str
+    fail_under: float
+    allow_excluded: bool
+    #: the full resolved comparison commit, never a symbolic ref
+    base: str
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.language, "judgment.r1.language")
+        if not isinstance(self.source_roots, tuple) or not self.source_roots:
+            raise ValueError(
+                f"judgment.r1.source_roots must be a non-empty tuple, got "
+                f"{self.source_roots!r}"
+            )
+        for root in self.source_roots:
+            _check_nonempty(root, "judgment.r1.source_roots entry")
+        _check_nonempty(self.coverage_format, "judgment.r1.coverage_format")
+        _check_nonempty(self.coverage_artifact, "judgment.r1.coverage_artifact")
+        if isinstance(self.fail_under, bool) or not isinstance(
+            self.fail_under, (int, float)
+        ):
+            raise ValueError(
+                f"judgment.r1.fail_under must be a number, got {self.fail_under!r}"
+            )
+        if not 0.0 <= float(self.fail_under) <= 100.0:
+            raise ValueError(
+                f"judgment.r1.fail_under must be a percentage between 0 and "
+                f"100, got {self.fail_under}"
+            )
+        if not isinstance(self.allow_excluded, bool):
+            raise ValueError(
+                f"judgment.r1.allow_excluded must be a boolean, got "
+                f"{self.allow_excluded!r}"
+            )
+        _check_nonempty(self.base, "judgment.r1.base")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "language": self.language,
+            "source_roots": list(self.source_roots),
+            "coverage_format": self.coverage_format,
+            "coverage_artifact": self.coverage_artifact,
+            "fail_under": float(self.fail_under),
+            "allow_excluded": self.allow_excluded,
+            "base": self.base,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class JudgmentR2:
+    """RESERVED (P16); populated by a future R2 CLI wiring package. The
+    mutation policy that decided which changed-line sites were candidates
+    and how many ran concurrently: ``jobs`` and the ORDERED, closed
+    ``operators`` list the lane declared — never a machine-derived job
+    count (A-082/A-122). Carries no correspondence check against
+    :class:`Mutation` yet: unlike R1, an independent consumer can already
+    re-derive the R2 claim's status from :class:`Mutation`'s own bucket
+    fields alone (:func:`assay.mutation.judge_mutation`'s mapping needs no
+    external policy input), so this shape is reserved capacity, not a gap
+    this package's own oracles need closed today.
+    """
+
+    jobs: int
+    operators: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.jobs, bool) or not isinstance(self.jobs, int):
+            raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
+        if self.jobs < 1:
+            raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
+        if not isinstance(self.operators, tuple) or not self.operators:
+            raise ValueError(
+                f"judgment.r2.operators must be a non-empty tuple, got "
+                f"{self.operators!r}"
+            )
+        for operator in self.operators:
+            _check_nonempty(operator, "judgment.r2.operators entry")
+        if len(set(self.operators)) != len(self.operators):
+            raise ValueError(
+                f"judgment.r2.operators contains a duplicate: "
+                f"{list(self.operators)}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"jobs": self.jobs, "operators": list(self.operators)}
+
+
+@dataclass(frozen=True, kw_only=True)
+class JudgmentR3:
+    """RESERVED (P16); populated by a future isolated R3 CLI wiring
+    package. The canary declaration that produced the rendered
+    :class:`CanaryResult`: the ``mechanism`` name and the project-relative
+    ``target`` path, so a consumer can tell WHICH declared canary a rendered
+    R3 claim answers for. Carries no correspondence check against
+    :class:`CanaryResult` yet, for the identical reason :class:`JudgmentR2`
+    does not: :func:`assay.canary.judge_canary` already re-derives R3
+    status from :class:`CanaryResult`'s own fields alone.
+    """
+
+    mechanism: str
+    target: str
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.mechanism, "judgment.r3.mechanism")
+        _check_nonempty(self.target, "judgment.r3.target")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mechanism": self.mechanism, "target": self.target}
+
+
+@dataclass(frozen=True, kw_only=True)
+class Judgment:
+    """The resolved judge policy for whichever declared rigor levels
+    actually rendered a real computed judgment (P16). ``r2``/``r3`` are
+    RESERVED, closed shapes a future package populates additively — see
+    their own docstrings for why only ``r1`` carries a construction-time
+    correspondence check against :class:`Claim` today
+    (:meth:`Verdict._check_judgment_matches_claims`).
+    """
+
+    r1: JudgmentR1 | None = None
+    r2: JudgmentR2 | None = None
+    r3: JudgmentR3 | None = None
+
+    def __post_init__(self) -> None:
+        if self.r1 is None and self.r2 is None and self.r3 is None:
+            raise ValueError(
+                "judgment declares none of r1/r2/r3 -- an empty judgment "
+                "records no policy and should be omitted (None) instead"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.r1 is not None:
+            payload["r1"] = self.r1.to_dict()
+        if self.r2 is not None:
+            payload["r2"] = self.r2.to_dict()
+        if self.r3 is not None:
+            payload["r3"] = self.r3.to_dict()
+        return payload
+
+
+@dataclass(frozen=True, kw_only=True)
 class Claim:
     """One COMPUTED declared rigor level's evidence (A-024)."""
 
@@ -715,6 +1036,69 @@ class Claim:
                     f"claim[{self.rigor}]: NO_MEASUREMENT carries no mutation "
                     f"payload at all — omitted, not zeroed, the same discipline "
                     f"A-025 applies to coverage"
+                )
+
+        self._check_a_judged_status_carries_its_own_payload()
+
+    def _check_a_judged_status_carries_its_own_payload(self) -> None:
+        """The converse of the three ``NO_MEASUREMENT`` rules above (P16
+        review): those forbid a payload where none was measured; this
+        forbids a *judged status* where no payload was measured.
+
+        Without it, ``assay verify``'s R1/R2/R3 re-derivation is trivially
+        evaded — not by a contradictory payload (sol finding 2's three
+        artifacts) but by DELETING the payload. Each re-derivation function
+        has nothing to judge and returns; the top-level rollup still agrees;
+        the artifact is accepted. A ``PASS`` claim backed by no evidence at
+        all is the strongest form of exactly the lie P16 exists to catch.
+
+        Each rule states only what its own producer can prove:
+
+        * R1 — :func:`assay.evaluate.evaluate_coverage` returns ``PASS`` or
+          ``FAIL`` and *always* with a :class:`Coverage`; the three
+          ``NO_MEASUREMENT`` causes are guarded before it is ever called
+          (A-090) and carry no payload by the rule above.
+        * R2 — :func:`assay.mutation.judge_mutation` reaches ``PASS`` only
+          on the ``mutation is not None`` branch; ``None`` means the
+          baseline never resolved to ``PASS`` (A-116) and the claim reuses
+          that non-``PASS`` baseline's own outcome verbatim. Every other
+          status stays representable without a payload, because a failed
+          baseline is exactly how they arise.
+        * R3 — :func:`assay.canary.judge_canary` returns ``PASS``/``FAIL``/
+          ``INCONCLUSIVE``, and :func:`assay.canary.build_canary_claim`
+          attaches the :class:`CanaryResult` it judged on every one of
+          them. ``ERROR``/``BUDGET_EXCEEDED`` stay representable without
+          one: those describe the canary machinery failing to produce a
+          result at all, not a judgement of one.
+        """
+        if self.rigor == "R1" and self.coverage is None:
+            if self.status in {Outcome.PASS, Outcome.FAIL}:
+                raise ValueError(
+                    f"claim[R1]: {self.status.value} without a coverage "
+                    f"payload -- a changed-line judgement that names no "
+                    f"coverage cannot be re-derived by anyone but its own "
+                    f"producer"
+                )
+        if self.rigor == "R2" and self.mutation is None:
+            if self.status is Outcome.PASS:
+                raise ValueError(
+                    "claim[R2]: PASS without a mutation payload -- an "
+                    "absent payload means mutation testing never began "
+                    "(the baseline never passed), which cannot itself pass"
+                )
+            if self.reason_code in _MUTATION_ONLY_REASON_CODES:
+                raise ValueError(
+                    f"claim[R2]: {self.reason_code.value} without a mutation "
+                    f"payload -- that reason code can only be read off the "
+                    f"mutation buckets, so a baseline that never got as far "
+                    f"as running mutants cannot produce it"
+                )
+        if self.rigor == "R3" and self.canary is None:
+            if self.status in {Outcome.PASS, Outcome.FAIL, Outcome.INCONCLUSIVE}:
+                raise ValueError(
+                    f"claim[R3]: {self.status.value} without a canary "
+                    f"payload -- that status is a judgement OF a canary "
+                    f"result, so the result it judged must be recorded"
                 )
 
     def to_dict(self) -> dict[str, Any]:
@@ -890,6 +1274,17 @@ class Verdict:
     argv_effective: tuple[str, ...] | None = None
     env_declared: Mapping[str, str] | None = None
     env_effective: Mapping[str, str] | None = None
+    #: (P16) the lane's own declared scope/enforcement — join the
+    #: lane-resolved group (:data:`LANE_RESOLVED_FIELDS`), always known the
+    #: moment a lane loads.
+    scope: str | None = None
+    enforcement: str | None = None
+    #: (P16) the resolved judge policy behind whichever claims rendered a
+    #: real computed judgment — see :class:`Judgment` and
+    #: :meth:`_check_judgment_matches_claims`. Independently optional (not
+    #: part of the strict lane-resolved group): a lane may resolve and
+    #: render only R0, which judges nothing R1+ policy could describe.
+    judgment: Judgment | None = None
     schema_version: int = VERDICT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -911,12 +1306,20 @@ class Verdict:
                 f"schema_version must be {VERDICT_SCHEMA_VERSION}, got "
                 f"{self.schema_version!r}"
             )
+        if self.scope is not None and self.scope not in SCOPES:
+            raise ValueError(f"scope must be one of {sorted(SCOPES)}, got {self.scope!r}")
+        if self.enforcement is not None and self.enforcement not in ENFORCEMENTS:
+            raise ValueError(
+                f"enforcement must be one of {sorted(ENFORCEMENTS)}, got "
+                f"{self.enforcement!r}"
+            )
 
         _check_reason_code(self.outcome, self.reason_code, "verdict")
         self._check_lane_resolved_group()
         self._check_claims_cover_declared_rigor()
         self._check_evidence_covers_declarations()
         self._check_outcome_agrees_with_rollup()
+        self._check_judgment_matches_claims()
 
     # --- the rules the schema cannot express ---------------------------------
 
@@ -1042,6 +1445,39 @@ class Verdict:
                 f"when every declared claim passed"
             )
 
+    def _check_judgment_matches_claims(self) -> None:
+        """P16: ``judgment.r1`` exists if and only if the rendered R1 claim
+        (when there is one) carries a ``coverage`` payload — "the effective
+        judge policy... whenever changed-line judgment occurred" (sol
+        finding 2), never independently of it, and never omitted when it
+        did. Run AFTER :meth:`_check_claims_cover_declared_rigor`, which
+        already guarantees at most one claim per rigor level, so "the R1
+        claim" is unambiguous here.
+
+        ``judgment.r2``/``judgment.r3`` carry no such check yet — see
+        :class:`JudgmentR2`/:class:`JudgmentR3`'s own docstrings for why.
+        """
+        if self.judgment is not None and self.declared_rigor is None:
+            raise ValueError(
+                "judgment is present but no lane resolved; a policy for a "
+                "lane that never resolved describes nothing"
+            )
+        r1_claim = next((claim for claim in self.claims if claim.rigor == "R1"), None)
+        r1_judged = r1_claim is not None and r1_claim.coverage is not None
+        judgment_r1 = None if self.judgment is None else self.judgment.r1
+        if judgment_r1 is not None and not r1_judged:
+            raise ValueError(
+                "judgment.r1 is present but no R1 claim rendered a coverage "
+                "payload -- a policy is recorded for a judgment that never "
+                "happened"
+            )
+        if judgment_r1 is None and r1_judged:
+            raise ValueError(
+                "the R1 claim rendered a coverage payload but judgment.r1 "
+                "is absent -- an independent consumer cannot re-derive R1's "
+                "status without the policy that decided it"
+            )
+
     # --- serialisation --------------------------------------------------------
 
     @property
@@ -1085,6 +1521,10 @@ class Verdict:
             payload["argv_modified"] = bool(self.argv_modified)
             payload["env_declared"] = dict(self.env_declared or {})
             payload["env_effective"] = dict(self.env_effective or {})
+            payload["scope"] = self.scope
+            payload["enforcement"] = self.enforcement
+        if self.judgment is not None:
+            payload["judgment"] = self.judgment.to_dict()
         payload["claims"] = [claim.to_dict() for claim in self.claims]
         payload["evidence"] = [item.to_dict() for item in self.evidence]
         return payload

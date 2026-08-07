@@ -21,20 +21,31 @@ BASE = {
     "pct": 50.0,
     "considered": 1,
     "missing_lines": {"src/mod.py": frozenset({3})},
-    "files_missing_coverage": ("src/other.py",),
+    # A file with NO coverage-artifact entry has every changed line recorded
+    # as missing, so this summary is a subset of `missing_lines`' own keys
+    # (P16 review) -- naming a path the detail never mentions is refused.
+    "files_missing_coverage": ("src/mod.py",),
 }
 
 
 def test_the_untouched_form_builds():
     coverage = Coverage(**BASE)
     assert coverage.missing_lines == {"src/mod.py": frozenset({3})}
-    assert coverage.files_missing_coverage == ("src/other.py",)
+    assert coverage.files_missing_coverage == ("src/mod.py",)
 
 
 def test_empty_missing_lines_and_files_missing_coverage_are_legal():
     """The A-096 pair is ALWAYS present, possibly empty -- never itself the
     defect."""
-    coverage = Coverage(**{**BASE, "missing_lines": {}, "files_missing_coverage": ()})
+    coverage = Coverage(
+        **{
+            **BASE,
+            "covered": 2,
+            "pct": 100.0,
+            "missing_lines": {},
+            "files_missing_coverage": (),
+        }
+    )
     assert coverage.missing_lines == {}
     assert coverage.files_missing_coverage == ()
 

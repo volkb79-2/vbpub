@@ -28,17 +28,17 @@ Two things this module refuses to be, on purpose:
   written," field by field, the same rules every producer test in this
   project is already held to.
 
-Two stages, matching the handoff's own two sentences exactly:
+Three stages:
 
-1. Checks the packaged schema v2 (`load_schema()` is not called here — schema
+1. Checks the packaged schema v3 (`load_schema()` is not called here — schema
    *conformance* is the RECONSTRUCTION below; loading the raw schema document
    would only be useful to a real JSON-Schema evaluator, which this module
    deliberately is not) cannot skip: reconstructing ``claims``/``evidence``
-   and every nested payload (``coverage``/``canary``/``mutation``) into their
-   real dataclasses, and rejecting any top-level or nested key the
-   reconstructed object's own ``to_dict()`` does not also carry — the
-   "unknown-key" rejection O2 names, achieved without ever calling
-   ``Verdict(**document)`` blindly (an unexpected top-level key like
+   and every nested payload (``coverage``/``canary``/``mutation``/
+   ``judgment``) into their real dataclasses, and rejecting any top-level or
+   nested key the reconstructed object's own ``to_dict()`` does not also
+   carry — the "unknown-key" rejection O2 names, achieved without ever
+   calling ``Verdict(**document)`` blindly (an unexpected top-level key like
    ``exit_code``/``argv_modified`` is a LEGAL schema field but not a
    constructor parameter — both are *derived* properties — so a blind
    ``**document`` unpack would reject those two universally, which is wrong).
@@ -46,14 +46,35 @@ Two stages, matching the handoff's own two sentences exactly:
    compare two locations in the SAME instance: outcome-agrees-with-rollup
    (:func:`assay.verdict.rollup`, imported — never reimplemented),
    ``argv_effective == argv_declared + argv_appended``, claims-cover-
-   declared-rigor exactly, evidence-covers-declared-evidence exactly. These
-   run against the RAW parsed document, ahead of reconstruction, so their own
-   rejection branches are independently reachable by a test — reconstruction
-   ALONE would also catch every one of them (they live inside
-   :meth:`~assay.verdict.Verdict.__post_init__` too), which would make a
-   test written the other way around exercise unreachable code.
+   declared-rigor exactly, evidence-covers-declared-evidence exactly, and
+   (P16) ``judgment.r1`` exists exactly when the R1 claim carries
+   ``coverage``. These run against the RAW parsed document, ahead of
+   reconstruction, so their own rejection branches are independently
+   reachable by a test — reconstruction ALONE would also catch every one of
+   them (they live inside :meth:`~assay.verdict.Verdict.__post_init__` too),
+   which would make a test written the other way around exercise
+   unreachable code.
+3. (P16, sol finding 2) INDEPENDENT re-derivation of R1/R2/R3 *status* from
+   their own payload plus recorded policy — never merely trusting that the
+   producer-selected ``status`` agrees with its own ``coverage``/
+   ``mutation``/``canary`` evidence, which schema shape and rollup agreement
+   alone cannot catch (a ``PASS`` reporting 0% coverage, a ``PASS`` with a
+   surviving mutant, or a ``PASS`` canary whose transform never actually
+   failed are all schema-valid AND rollup-consistent). R3 reuses
+   :func:`assay.canary.judge_canary` directly — it is already pure over an
+   already-reconstructed :class:`~assay.verdict.CanaryResult`, needing no
+   lane/process/filesystem state. R2 reuses
+   :func:`assay.mutation.judge_mutation`'s bucket precedence rather than
+   copying its mapping, via a minimal stand-in for the ``runner.
+   CommandResult`` baseline it expects (see :func:`_check_r2_rederivation`
+   for why that is safe). R1 has no existing pure judgment function to
+   import — :mod:`assay.evaluate`'s own precedence (unclassified > excluded
+   > uncovered-floor > pass) is restated directly against ``Coverage`` plus
+   ``judgment.r1`` instead of importing that module, which would pull
+   assay's whole diff/git/adapter pipeline into an artifact validator that
+   never re-runs a lane.
 
-Exit 0 only when both stages find nothing to report; otherwise every
+Exit 0 only when all three stages find nothing to report; otherwise every
 distinct failure is printed to stderr, one per line, and the process exits 1.
 """
 
@@ -61,17 +82,24 @@ from __future__ import annotations
 
 import argparse
 import json
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, TextIO
 
+from .canary import judge_canary
+from .mutation import judge_mutation
 from .verdict import (
     EXIT_CODES,
     REASON_CODES,
+    VERDICT_SCHEMA_VERSION,
     CanaryResult,
     Claim,
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    Judgment,
+    JudgmentR1,
+    JudgmentR2,
+    JudgmentR3,
     MutantOutcome,
     Mutation,
     Outcome,
@@ -82,7 +110,7 @@ from .verdict import (
 
 __all__ = ["build_verify_parser", "cmd_verify", "verify_document", "verify_text"]
 
-#: The eight-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
+#: The ten-field lane-resolved group, exactly `verdict.LANE_RESOLVED_FIELDS`
 #: minus the derived `argv_modified` — transcribed by hand rather than
 #: imported, the same independence `tests/test_errors.py` already applies to
 #: the outcome/reason_code tables (A-092's house style).
@@ -94,6 +122,8 @@ _LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "argv_effective",
     "env_declared",
     "env_effective",
+    "scope",
+    "enforcement",
 )
 
 
@@ -250,6 +280,39 @@ def _check_outcome_agrees_with_rollup(
         )
 
 
+def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
+    """P16's ``judgment.r1``-vs-``Claim.coverage`` correspondence
+    (:meth:`assay.verdict.Verdict._check_judgment_matches_claims`), reached
+    on the RAW document the same way the other cross-field checks above are
+    — reconstruction alone would also catch this (the identical rule lives
+    in ``Verdict.__post_init__`` too), so a test exercising this branch
+    specifically can stay schema-valid rather than depend on reconstruction.
+    Worded DELIBERATELY differently from the model's own two messages (never
+    the identical string): a mutation test proved that an identical wording
+    makes the raw check's own failure indistinguishable from reconstruction
+    independently catching the same defect, which would make "is this raw
+    check even reached" untestable by message content alone.
+    """
+    claims = document.get("claims")
+    if not isinstance(claims, list):
+        return
+    r1_claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R1"),
+        None,
+    )
+    r1_judged = r1_claim is not None and "coverage" in r1_claim
+    judgment = document.get("judgment")
+    judgment_r1_present = isinstance(judgment, dict) and "r1" in judgment
+    if judgment_r1_present and not r1_judged:
+        failures.append(
+            "judgment.r1 is declared without a corresponding R1 coverage claim"
+        )
+    if r1_judged and not judgment_r1_present:
+        failures.append(
+            "an R1 coverage claim is declared without a corresponding judgment.r1"
+        )
+
+
 def _reject_unknown_keys(raw: dict, built: dict, what: str) -> None:
     unknown = sorted(set(raw.keys()) - set(built.keys()))
     if unknown:
@@ -268,9 +331,49 @@ def _reconstruct_coverage(raw: dict) -> Coverage:
             key: frozenset(value) for key, value in raw["unclassified_lines"].items()
         },
         files_with_unclassified_lines=tuple(raw["files_with_unclassified_lines"]),
+        excluded_lines={
+            key: frozenset(value) for key, value in raw["excluded_lines"].items()
+        },
+        files_with_excluded_lines=tuple(raw["files_with_excluded_lines"]),
     )
     _reject_unknown_keys(raw, coverage.to_dict(), "coverage")
     return coverage
+
+
+def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
+    r1 = JudgmentR1(
+        language=raw["language"],
+        source_roots=tuple(raw["source_roots"]),
+        coverage_format=raw["coverage_format"],
+        coverage_artifact=raw["coverage_artifact"],
+        fail_under=raw["fail_under"],
+        allow_excluded=raw["allow_excluded"],
+        base=raw["base"],
+    )
+    _reject_unknown_keys(raw, r1.to_dict(), "judgment.r1")
+    return r1
+
+
+def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
+    r2 = JudgmentR2(jobs=raw["jobs"], operators=tuple(raw["operators"]))
+    _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
+    return r2
+
+
+def _reconstruct_judgment_r3(raw: dict) -> JudgmentR3:
+    r3 = JudgmentR3(mechanism=raw["mechanism"], target=raw["target"])
+    _reject_unknown_keys(raw, r3.to_dict(), "judgment.r3")
+    return r3
+
+
+def _reconstruct_judgment(raw: dict) -> Judgment:
+    judgment = Judgment(
+        r1=_reconstruct_judgment_r1(raw["r1"]) if "r1" in raw else None,
+        r2=_reconstruct_judgment_r2(raw["r2"]) if "r2" in raw else None,
+        r3=_reconstruct_judgment_r3(raw["r3"]) if "r3" in raw else None,
+    )
+    _reject_unknown_keys(raw, judgment.to_dict(), "judgment")
+    return judgment
 
 
 def _reconstruct_canary(raw: dict) -> CanaryResult:
@@ -370,7 +473,13 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             argv_effective=tuple(document["argv_effective"]),
             env_declared=MappingProxyType(dict(document["env_declared"])),
             env_effective=MappingProxyType(dict(document["env_effective"])),
+            scope=document["scope"],
+            enforcement=document["enforcement"],
         )
+
+    judgment_kwargs: dict[str, Any] = {}
+    if "judgment" in document:
+        judgment_kwargs["judgment"] = _reconstruct_judgment(document["judgment"])
 
     reason_code = document.get("reason_code")
     verdict = Verdict(
@@ -385,6 +494,7 @@ def _reconstruct_verdict(document: dict) -> Verdict:
         evidence=evidence,
         schema_version=document["schema_version"],
         **lane_kwargs,
+        **judgment_kwargs,
     )
 
     expected_exit = verdict.exit_code
@@ -405,6 +515,131 @@ def _reconstruct_verdict(document: dict) -> Verdict:
 
     _reject_unknown_keys(document, verdict.to_dict(), "top-level")
     return verdict
+
+
+#: Handed to :func:`assay.mutation.judge_mutation` on the branch where its
+#: own early return proves it never reads the argument. Deliberately NOT a
+#: plausible-looking baseline: if that proof ever stops holding, an
+#: ``AttributeError`` here is a loud, immediate failure rather than a
+#: silently wrong re-derivation against a fabricated outcome.
+_BASELINE_NEVER_READ = object()
+
+
+def _fmt(outcome: Outcome, reason_code: ReasonCode | None) -> str:
+    return f"({outcome.value}, {reason_code.value if reason_code is not None else None})"
+
+
+def _check_r1_rederivation(verdict: Verdict, failures: list[str]) -> None:
+    """P16 (sol finding 2, O2's first reproduction): re-derive the R1
+    claim's status from its ``coverage`` payload plus ``judgment.r1``'s
+    policy — never merely trust that the producer-selected status agrees
+    with its own evidence. Mirrors :mod:`assay.evaluate`'s own precedence
+    (unclassified > disallowed-excluded > uncovered-floor > pass) restated
+    directly, rather than importing that module — see the module docstring
+    for why.
+
+    A missing ``coverage`` payload means nothing to re-derive: a legitimate
+    non-R1-judged claim (NO_MEASUREMENT, or no R1 declared at all). When
+    ``coverage`` IS present, ``verdict.judgment.r1`` is guaranteed present
+    too -- :meth:`~assay.verdict.Verdict._check_judgment_matches_claims`
+    already refuses to construct a ``Verdict`` (real OR reconstructed;
+    both go through the same ``__init__``) where an R1 claim carries
+    ``coverage`` but ``judgment.r1`` is absent, so a second None-check here
+    would only guard an unreachable branch.
+    """
+    claim = next((item for item in verdict.claims if item.rigor == "R1"), None)
+    if claim is None or claim.coverage is None:
+        return
+    policy = verdict.judgment.r1
+    coverage = claim.coverage
+    if coverage.unclassified_lines:
+        expected: tuple[Outcome, ReasonCode | None] = (
+            Outcome.FAIL,
+            ReasonCode.UNCLASSIFIED_LINES,
+        )
+    elif coverage.excluded_lines and not policy.allow_excluded:
+        expected = (Outcome.FAIL, ReasonCode.EXCLUDED_LINES)
+    elif coverage.pct < policy.fail_under:
+        expected = (Outcome.FAIL, ReasonCode.UNCOVERED_LINES)
+    else:
+        expected = (Outcome.PASS, None)
+    if (claim.status, claim.reason_code) != expected:
+        failures.append(
+            f"R1 claim status {_fmt(claim.status, claim.reason_code)} "
+            f"disagrees with the re-derived judgment from coverage plus "
+            f"policy {_fmt(*expected)}"
+        )
+
+
+def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
+    """Re-derive the R2 claim's status from its ``mutation`` payload,
+    reusing :func:`assay.mutation.judge_mutation`'s own bucket precedence
+    directly rather than copying its mapping.
+
+    ``judge_mutation``'s ``baseline`` parameter is typed as a
+    ``runner.CommandResult``, but its body reads ``.outcome``/
+    ``.reason_code`` ONLY on the ``mutation is None`` branch (confirmed by
+    reading its source: the very first statement is
+    ``if mutation is None: return baseline.outcome, baseline.reason_code``,
+    an early return — when ``mutation`` is not ``None``, ``baseline`` is
+    never touched). A minimal stand-in exposing exactly those two
+    attributes, built from the artifact's own R0 claim, is therefore
+    behaviourally exact and avoids pulling ``runner.py``'s own
+    subprocess-executing import chain into an artifact validator that never
+    re-runs a lane.
+
+    That stand-in is needed ONLY for the payload-less branch. A REAL
+    ``mutation`` payload is re-judged whether or not the artifact carries an
+    R0 claim at all — ``rigor = ["R2"]`` is a legal lane declaration
+    (:mod:`assay.config` requires only a non-empty subset of R0-R3), so
+    returning early on a missing R0 sibling would have let sol finding 2's
+    second contradictory artifact — a ``PASS`` with a genuine surviving
+    mutant — pass unexamined simply by not declaring R0 (P16 review).
+    """
+    claim = next((item for item in verdict.claims if item.rigor == "R2"), None)
+    if claim is None:
+        return
+    if claim.mutation is None:
+        r0_claim = next((item for item in verdict.claims if item.rigor == "R0"), None)
+        if r0_claim is None:
+            # Nothing in the artifact records the baseline this claim reused,
+            # so there is no honest comparison to make. The one status that
+            # would be a contradiction regardless -- PASS -- is already
+            # impossible to construct
+            # (:meth:`assay.verdict.Claim._check_a_judged_status_carries_its_own_payload`).
+            return
+        baseline: Any = SimpleNamespace(
+            outcome=r0_claim.status, reason_code=r0_claim.reason_code
+        )
+    else:
+        # Never read on this branch; named so, rather than fabricated from a
+        # claim that has nothing to do with it.
+        baseline = _BASELINE_NEVER_READ
+    expected = judge_mutation(baseline, claim.mutation)
+    if (claim.status, claim.reason_code) != expected:
+        failures.append(
+            f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
+            f"disagrees with the re-derived judgment from mutation buckets "
+            f"{_fmt(*expected)}"
+        )
+
+
+def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
+    """Re-derive the R3 claim's status from its ``canary`` payload, reusing
+    :func:`assay.canary.judge_canary` directly — it is already pure over an
+    already-reconstructed :class:`~assay.verdict.CanaryResult`, needing no
+    lane/process/filesystem state.
+    """
+    claim = next((item for item in verdict.claims if item.rigor == "R3"), None)
+    if claim is None or claim.canary is None:
+        return
+    expected = judge_canary(claim.canary)
+    if (claim.status, claim.reason_code) != expected:
+        failures.append(
+            f"R3 claim status {_fmt(claim.status, claim.reason_code)} "
+            f"disagrees with the re-derived judgment from the canary "
+            f"result {_fmt(*expected)}"
+        )
 
 
 def verify_document(document: Any) -> list[str]:
@@ -433,17 +668,42 @@ def verify_document(document: Any) -> list[str]:
     if missing_required:
         failures.append(f"missing required field(s): {missing_required}")
 
+    version = document.get("schema_version")
+    if "schema_version" in document and version != VERDICT_SCHEMA_VERSION:
+        # P16 work item 7: a foreign version is reported AS a version
+        # problem and nothing else. Every later check reads a shape this
+        # verifier was never written against, so continuing would bury the
+        # one actionable sentence under a pile of consequences of it -- a
+        # real v2 artifact otherwise reports `schema: 'excluded_lines'`,
+        # a bare KeyError naming a field its producer had never heard of.
+        # The artifact is REJECTED, never coerced or upgraded in place:
+        # re-produce it with a matching assay (docs/DESIGN-GUIDE.md §6).
+        return failures + [
+            f"schema_version {version!r} is not this verifier's version "
+            f"{VERDICT_SCHEMA_VERSION}: a verdict artifact is rejected, "
+            f"never upgraded in place -- re-produce it with an assay whose "
+            f"VERDICT_SCHEMA_VERSION is {VERDICT_SCHEMA_VERSION}"
+        ]
+
     outcome = _check_outcome_and_reason_code(document, failures)
     _check_exit_code(document, outcome, failures)
     _check_lane_resolved_group(document, failures)
     _check_claims_cover_declared_rigor(document, failures)
     _check_evidence_covers_declared_evidence(document, failures)
     _check_outcome_agrees_with_rollup(document, outcome, failures)
+    _check_judgment_matches_claims(document, failures)
 
     try:
-        _reconstruct_verdict(document)
+        verdict = _reconstruct_verdict(document)
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         failures.append(f"schema: {exc}")
+    else:
+        # Stage 3 (P16): only meaningful once reconstruction produced a
+        # real Verdict — re-deriving status from garbage/partial data would
+        # only add a confusing second failure alongside the schema one.
+        _check_r1_rederivation(verdict, failures)
+        _check_r2_rederivation(verdict, failures)
+        _check_r3_rederivation(verdict, failures)
 
     return failures
 

@@ -181,6 +181,19 @@ class CoverageEvaluation:
     #: consumer that wants "which files have a problem" without iterating
     #: the line-level mapping.
     files_with_unclassified_lines: tuple[str, ...]
+    #: (P16) changed, considered lines the coverage artifact classifies
+    #: EXCLUDED, keyed exactly like :attr:`missing_lines` — a file
+    #: contributing none is absent, never present with an empty set. Recorded
+    #: regardless of ``allow_excluded``: this is WHICH lines were excluded,
+    #: not whether that was permitted (:attr:`outcome`/:attr:`reason_code`
+    #: already carry the permitted-or-not judgement). Without this, an
+    #: independent consumer has a FAIL/EXCLUDED_LINES verdict but no way to
+    #: re-derive it from the payload alone (sol finding 2).
+    excluded_lines: Mapping[str, frozenset[int]]
+    #: (P16) paths appearing in :attr:`excluded_lines`, sorted — the same
+    #: "always present, possibly empty, sorted" discipline
+    #: :attr:`files_with_unclassified_lines` already established.
+    files_with_excluded_lines: tuple[str, ...]
     #: PASS or FAIL — never any other :class:`~assay.errors.Outcome`. The
     #: three NO_MEASUREMENT causes are guarded before this function is ever
     #: called (A-090) and are not this module's concern.
@@ -278,6 +291,7 @@ def evaluate_coverage(
     missing_lines: dict[str, frozenset[int]] = {}
     files_missing: list[str] = []
     unclassified_lines: dict[str, frozenset[int]] = {}
+    excluded_lines: dict[str, frozenset[int]] = {}
     considered = 0
     has_disallowed_excluded = False
 
@@ -304,8 +318,15 @@ def evaluate_coverage(
             continue
 
         excluded = file_cov.excluded if file_cov.excluded is not None else frozenset()
-        if lines & excluded and not allow_excluded:
-            has_disallowed_excluded = True
+        changed_excluded = lines & excluded
+        if changed_excluded:
+            # Recorded regardless of allow_excluded (P16): this is WHICH
+            # lines were excluded, not whether that was permitted --
+            # outcome/reason_code already carry the permitted-or-not
+            # judgement (rule 3, module docstring).
+            excluded_lines[path] = frozenset(changed_excluded)
+            if not allow_excluded:
+                has_disallowed_excluded = True
 
         executable = file_cov.executed | file_cov.missing
         changed_exec = lines & executable
@@ -391,6 +412,8 @@ def evaluate_coverage(
         files_missing_coverage=tuple(sorted(files_missing)),
         unclassified_lines=MappingProxyType(dict(unclassified_lines)),
         files_with_unclassified_lines=tuple(sorted(unclassified_lines)),
+        excluded_lines=MappingProxyType(dict(excluded_lines)),
+        files_with_excluded_lines=tuple(sorted(excluded_lines)),
         outcome=outcome,
         reason_code=reason_code,
     )

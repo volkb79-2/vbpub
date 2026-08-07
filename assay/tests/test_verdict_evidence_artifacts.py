@@ -35,6 +35,8 @@ BASE = {
     "argv_effective": ("pytest", "tests", "-q"),
     "env_declared": {},
     "env_effective": {},
+    "scope": "S1",
+    "enforcement": "gate",
 }
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)

@@ -43,6 +43,8 @@ BASE = {
     "argv_effective": ("pytest", "tests", "-q"),
     "env_declared": {},
     "env_effective": {},
+    "scope": "S1",
+    "enforcement": "gate",
 }
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)
@@ -191,6 +193,8 @@ def test_a_crashed_baseline_matches_the_hand_written_fixture(validator: Draft202
         argv_effective=("/opt/does-not-exist/tool",),
         env_declared={},
         env_effective={},
+        scope="S1",
+        enforcement="gate",
         commit="6" * 39 + "f",
         outcome=Outcome.ERROR,
         reason_code=ReasonCode.EXEC_FAILED,

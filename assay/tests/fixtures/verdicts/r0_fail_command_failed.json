@@ -1,21 +1,33 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "outcome": "FAIL",
-  "reason_code": "COMMAND_FAILED",
   "exit_code": 1,
   "started": "2026-08-07T10:05:00+00:00",
   "ended": "2026-08-07T10:05:01+00:00",
-  "declared_rigor": ["R0"],
+  "reason_code": "COMMAND_FAILED",
+  "declared_rigor": [
+    "R0"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["/bin/sh", "-c", "exit 7"],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 7"
+  ],
   "argv_appended": [],
-  "argv_effective": ["/bin/sh", "-c", "exit 7"],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 7"
+  ],
   "argv_modified": false,
   "env_declared": {},
   "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
     {
       "rigor": "R0",

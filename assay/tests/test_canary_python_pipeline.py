@@ -136,6 +136,8 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
         argv_effective=("pytest", "-q"),
         env_declared={},
         env_effective={},
+        scope="S1",
+        enforcement="gate",
         claims=(r0_claim, claim),
     )
     document = __import__("json").loads(verdict.to_json())

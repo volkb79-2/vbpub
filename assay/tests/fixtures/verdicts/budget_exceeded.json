@@ -1,21 +1,37 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "assay_version": "0.1.0",
   "lane": "integration",
   "commit": "5555555555555555555555555555555555555555",
   "outcome": "BUDGET_EXCEEDED",
-  "reason_code": "LANE_TIMEOUT",
   "exit_code": 4,
   "started": "2026-08-06T09:40:00+00:00",
   "ended": "2026-08-06T09:45:00+00:00",
-  "declared_rigor": ["R0"],
+  "reason_code": "LANE_TIMEOUT",
+  "declared_rigor": [
+    "R0"
+  ],
   "declared_evidence": [],
-  "argv_declared": ["pytest", "tests/integration", "-q"],
+  "argv_declared": [
+    "pytest",
+    "tests/integration",
+    "-q"
+  ],
   "argv_appended": [],
-  "argv_effective": ["pytest", "tests/integration", "-q"],
+  "argv_effective": [
+    "pytest",
+    "tests/integration",
+    "-q"
+  ],
   "argv_modified": false,
-  "env_declared": {"MOCK_MODE": "false"},
-  "env_effective": {"MOCK_MODE": "false"},
+  "env_declared": {
+    "MOCK_MODE": "false"
+  },
+  "env_effective": {
+    "MOCK_MODE": "false"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
   "claims": [
     {
       "rigor": "R0",

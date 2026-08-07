@@ -18,9 +18,9 @@ import pytest
 from assay.verdict import Coverage
 
 BASE = {
-    "covered": 1,
+    "covered": 2,
     "changed_executable": 2,
-    "pct": 50.0,
+    "pct": 100.0,
     "considered": 1,
     "missing_lines": {},
     "files_missing_coverage": (),

@@ -75,7 +75,16 @@ from .adapters.base import LanguageAdapter
 from .config import Lane
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
-from .verdict import Claim, Coverage, Evidence, EvidenceDeclaration, Verdict, iso_utc, rollup
+from .verdict import (
+    Claim,
+    Coverage,
+    Evidence,
+    EvidenceDeclaration,
+    Judgment,
+    Verdict,
+    iso_utc,
+    rollup,
+)
 
 __all__ = [
     "CommandPlan",
@@ -412,6 +421,8 @@ def evaluate_r1(
             files_missing_coverage=result.files_missing_coverage,
             unclassified_lines=result.unclassified_lines,
             files_with_unclassified_lines=result.files_with_unclassified_lines,
+            excluded_lines=result.excluded_lines,
+            files_with_excluded_lines=result.files_with_excluded_lines,
         ),
     )
 
@@ -426,6 +437,7 @@ def assemble_verdict(
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     mutation_claim: Claim | None = None,
+    judgment: Judgment | None = None,
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -470,6 +482,21 @@ def assemble_verdict(
     tuple and letting that existing check catch it, rather than a bespoke
     second one here.
 
+    *judgment* (P16) is the resolved judge policy behind whichever claims
+    rendered a real computed judgment -- built entirely by the CALLER (this
+    function does not resolve source roots, coverage format, or a
+    comparison commit itself) and passed straight through. ``scope`` and
+    ``enforcement`` need no such parameter: both are already static *lane*
+    attributes, so this function derives them from *lane* on every call,
+    the same way ``argv_declared``/``env_declared`` already come from
+    *result.plan*. When *claims* (after folding in *mutation_claim*)
+    contains an R1 claim carrying a ``coverage`` payload but *judgment*
+    supplies no ``r1`` policy, this function refuses
+    (``ERROR``/``BAD_LANE_CONFIG``) before construction -- the identical
+    reasoning as the missing-claims/missing-evidence guards above: a bare
+    ``ValueError`` from :class:`~assay.verdict.Verdict` itself is not an
+    ``AssayError`` and no caller catches it.
+
     The verdict's own ``outcome`` and ``reason_code`` are otherwise DERIVED
     from ``claims`` AND ``evidence`` together via :func:`~assay.verdict.rollup`
     (A-023), never chosen independently -- :class:`~assay.verdict.Verdict`
@@ -509,6 +536,19 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
+    r1_claim = next((claim for claim in claims if claim.rigor == "R1"), None)
+    r1_judged = r1_claim is not None and r1_claim.coverage is not None
+    judgment_r1 = None if judgment is None else judgment.r1
+    if r1_judged and judgment_r1 is None:
+        raise AssayError(
+            f"lane {lane.name!r} rendered an R1 claim carrying a coverage "
+            f"payload, but no judgment.r1 policy was supplied -- an "
+            f"independent consumer cannot re-derive R1's status from "
+            f"coverage alone. Refusing before constructing an incomplete "
+            f"verdict.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
     statuses = [claim.status for claim in claims]
     statuses.extend(item.status for item in evidence)
     outcome = rollup(statuses)
@@ -533,6 +573,9 @@ def assemble_verdict(
         argv_effective=plan.argv_effective,
         env_declared=plan.env_declared,
         env_effective=plan.env_effective,
+        scope=lane.scope,
+        enforcement=lane.enforcement,
+        judgment=judgment,
         claims=claims,
         evidence=evidence,
     )
