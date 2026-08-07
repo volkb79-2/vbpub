@@ -14,21 +14,20 @@ scope:
   forbid: ["src/assay/config.py"]
 oracles:
   - id: O1
-    observable: "A changed continuation line in an executed multiline Python statement is attributed to that statement and passes; the same span unexecuted fails with the statement start named"
+    observable: "A changed continuation line in an executed multiline Python statement is attributed to that statement and passes, provably (covered/changed_executable/missing_lines counts reflect the attribution, not merely the final PASS outcome); the same span unexecuted fails with the statement start named"
     negative: "Line-number-only evaluation fails the executed continuation or reports the continuation itself as an executable start"
     gate: tester-unified
   - id: O2
-    observable: "Overlapping, malformed, or genuinely unattributable spans render INCONCLUSIVE/UNCLASSIFIED with exact locations; no ambiguity becomes PASS"
+    observable: "Overlapping (a defensive guard against an adapter's own internally-inconsistent analysis, fed directly to the pure attribution function as hand-built spans — not derived from real Python, which never produces genuine overlap under correct nesting), malformed, or genuinely unattributable spans (a changed interior line whose enclosing span is itself untracked) render FAIL/UNCLASSIFIED_LINES with exact locations (A-100); no ambiguity becomes PASS"
     negative: "Choosing the first overlap or dropping unattributed lines turns at least one ambiguity fixture green"
     gate: tester-unified
   - id: O3
-    observable: "Runner output for attributed PASS, attributed FAIL, and UNCLASSIFIED matches independently written complete schema-valid artifacts"
+    observable: "Runner output for attributed PASS, attributed FAIL/UNCOVERED_LINES, and FAIL/UNCLASSIFIED_LINES matches independently written complete schema-valid artifacts"
     negative: "A producer that omits unclassified locations or rolls them up as PASS differs from its expected artifact"
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "the span protocol cannot represent a reference implementation behavior"
-  - "UNCLASSIFIED cannot be added as a closed schema payload without weakening closure"
 mutexes: []
 ---
 
@@ -43,15 +42,15 @@ on branch `feat/assay-P07-statement-span-attribution`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §5 statement attribution and decisions A-016, A-017, A-024, A-071.
-2. P05 evaluator and schema tests; P06 Python adapter and exact-set fixtures.
-3. Statement-span logic in `/workspaces/vbpub/nyxloom/src/nyxloom/coverage_gate.py` and the `dstdns` sibling checkout's `scripts/coverage_gate.py`.
+1. `docs/DESIGN-GUIDE.md` §5 statement attribution, §11's `LanguageAdapter` protocol, and decisions A-016, A-017, A-024, A-071, A-092, A-096, A-097, A-098, A-099, A-100, A-101.
+2. P05 evaluator and schema tests; P06 Python adapter (especially `_is_bare_string_statement`, private — decide whether to share it or re-derive your own, per `assay-P06-BRIEF.md`) and exact-set fixtures.
+3. Statement-span logic in the `dstdns` sibling checkout's `scripts/coverage_gate.py` (the real union — its `unclassified` bucket, its `_record_unclassified` mechanism, and its own unconditional-FAIL treatment, A-100). `nyxloom/src/nyxloom/coverage_gate.py` has no independent statement-span logic (grep confirms zero hits for `statement_span`/`unclassified`/`multiline`) — it contributes nothing to this union (consistent with DESIGN-GUIDE's own "now a strict subset of dstdns" characterization); do not search it for a mechanism that isn't there.
 
 ## Work
 
-1. Add span attribution to the adapter protocol and Python adapter.
-2. Keep attribution pure; return explicit unclassified locations rather than guessing.
-3. Extend the R1 payload and schema additively and add independent expected artifacts for every new terminal path.
+1. Add `statement_spans` to the adapter protocol (`adapters/base.py`) and the Python adapter. Exact shape (A-101): `statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None`, where `StatementSpan` is a new frozen `kw_only` dataclass (`start_line: int, end_line: int`) — never dstdns's bare `list[tuple[int, int]]`. `evaluate.py` calls this only for an adapter whose `requires_span_attribution` is `True` (`FakeAdapter`'s is `False` — no call, no implementation needed there).
+2. Keep attribution pure; return explicit unclassified locations rather than guessing. Overlapping/malformed spans and genuinely unattributable lines all render FAIL/UNCLASSIFIED_LINES (A-100) — not a new outcome/reason-code pairing.
+3. Extend the R1 payload and schema additively (matching A-096's `missing_lines`/`files_missing_coverage` pattern) and add independent expected artifacts for every new terminal path.
 4. Break attribution, overlap refusal, and rollup; record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b

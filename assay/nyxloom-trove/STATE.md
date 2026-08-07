@@ -58,6 +58,26 @@ this time, unlike P04.
 closed `ReasonCode` for "cannot write my own output artifact." Low severity,
 not fixed.
 
+**P07's readiness pass resolved a real vocabulary gap**, the one flagged
+during P06's propagation: A-100 rules unattributable/overlapping/malformed
+statement spans render `FAIL`/`UNCLASSIFIED_LINES` (already exists, unused),
+never a new `INCONCLUSIVE` pairing — matching dstdns's own cited reference
+behavior (its `unclassified` bucket is an unconditional FAIL, zero
+"INCONCLUSIVE" occurrences anywhere in that file) and DESIGN-GUIDE §6's own
+outcome semantics. A-101 pins `statement_spans`'s return shape (a new frozen
+`StatementSpan` dataclass, not dstdns's bare tuple-list) — the protocol's one
+deliberate post-P05 extension had no pinned shape anywhere before this.
+**Correction to a readiness-pass claim**, caught by the controller rather
+than trusted: the pass reported "no srdm checkout exists in this workspace"
+because it searched for a directory literally named `srdm`; the real
+checkout is `/workspaces/vbpub/shared-ramdisk-depot-manager` (already used
+successfully for P03's own Go coverprofile parser). Checked directly:
+`covergate/profile.go`'s `FileCoverage` is BLOCK-based (`[startLine,
+endLine]` expanded to every line in range), so Go's coverprofile format
+genuinely does NOT have Python's "interior line of a multi-line statement
+vanishes" gap — confirms the pass's own inferred conclusion about P08 was
+right, just under-evidenced.
+
 **Watched but not acted on:**
 - P09, P10, P12 touch `runner.py` and predate its current shape (now
   significantly larger after P05). Each package's own readiness pass is the
