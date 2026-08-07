@@ -9,8 +9,8 @@
 > in code every package's own review had already passed. **Read that review
 > file before trusting anything else in this document as current** — the
 > P15–P25 repair series is carved directly against its findings and is now
-> being implemented, **P15 merged, P16 next** (see "Where things stand"
-> below for live status). If you are picking this project up: read the
+> being implemented, **P15 and P16 merged, P17 next** (see "Where things
+> stand" below for live status). If you are picking this project up: read the
 > review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
 > (the P14-era final-state brief — still accurate for what P00–P14 built,
 > just not for whether it's ready to depend on), then this file, then
@@ -18,10 +18,10 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P15** — the complete P00–P14 series, plus
-the first package of the P15–P25 repair series. Gate green at **1585
-passed, 1 skipped, exit 0, 100% statement AND branch coverage** (2531
-stmts / 988 branches), run through the REAL self-hosting mechanism P14
+**Merged on `main`, P00 through P16** — the complete P00–P14 series, plus
+the first two packages of the P15–P25 repair series. Gate green at **1657
+passed, 1 skipped, exit 0, 100% statement AND branch coverage** (2752
+stmts / 1094 branches), run through the REAL self-hosting mechanism P14
 itself built (see below) — independently reproduced by the controller
 twice per package: once in the package's own worktree before merge, once
 again directly against `main` after merge, by literally parsing
@@ -113,13 +113,46 @@ far, and it has never once come back clean.
   `UnicodeDecodeError`, and rewrote a lone `\r` inside a source line into
   a phantom second line. All seven forbidden files confirmed untouched by
   empty diff (the merge commit message miscounts them as eight).
+- **P16** (independent verdict conformance — schema v3): the verdict
+  artifact now records the policy that judged it, and `assay verify`
+  re-derives R1/R2/R3 status from payload plus that policy instead of
+  trusting the producer's own choice — closing sol finding 2, and the
+  schema half of finding 6 (`judgment.r1.base` records the full resolved
+  comparison commit). Top-level `scope`/`enforcement` join the
+  lane-resolved group; a closed `judgment` object carries the effective R1
+  policy and reserved R2/R3 shapes P18/P19 populate additively without
+  another bump; `Coverage` gains `excluded_lines`/
+  `files_with_excluded_lines` plus real arithmetic invariants. All 34
+  hand-written fixtures converted to v3 by hand; two pre-existing fixture
+  defects (`fail.json`'s rounded `pct`, `inconclusive.json`'s
+  mutation-less R2 claim) fell out of the new invariants.
+  **Controller review found five more defects (A-136–A-138)**, none of
+  which the package's own ten mutation counts or four finding-2
+  reproductions could see, because a mutation test only interrogates lines
+  that exist: a `PASS` claim with its payload simply DELETED was accepted
+  at every rigor level (`r1_pass` minus `coverage`, `r2_pass` minus
+  `mutation`, `r3_pass` minus `canary` — each cheaper to forge than the
+  contradictions it does catch, each leaving the rollup in perfect
+  agreement); R2 re-derivation was skippable entirely by declaring
+  `rigor = ["R2"]` and omitting R0, though `judge_mutation` provably never
+  reads its baseline once a mutation payload is present; work item 7's v2
+  diagnostic was never built (a real v2 artifact reported `schema:
+  'excluded_lines'`, a bare `KeyError`); work item 3's summary-field
+  identity was never enforced; and four of work item 6's named negatives
+  (crash/budget precedence, broken prerequisite propagation, wrong canary
+  cause, broken control) had no test at all. All five were found by
+  feeding real v3 documents through `verify_text` the way a consumer
+  would. Deleting `_check_r2_rederivation` or `_check_r3_rederivation`
+  wholesale failed exactly ONE test each before that pass; six and three
+  after. All five forbidden files confirmed untouched by empty diff.
 
-Key commits: `326507f1` (P15 merge), `a8357405` (P15 rulings, A-134–A-135),
+Key commits: `340d9633` (P16 merge), `50110247` (P16 controller repairs),
+`326507f1` (P15 merge), `a8357405` (P15 rulings, A-134–A-135),
 `2ab50f75` (P14 merge, the P00–P14 series-closing commit), `56c821c2`
 (P14 rulings, A-128–A-133), `bca3c345` (P13 merge), `a42fe02a` (P13
 rulings, A-123–A-127), `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
 A-116–A-122). Full history for every package in `decisions.md` (A-090
-through A-135) and each merge commit message — not repeated here.
+through A-138) and each merge commit message — not repeated here.
 
 **Post-series review and v1.1 (live status, updated same day as P14
 merged):** `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` is a
@@ -147,12 +180,22 @@ full, this summary is not a substitute.
 committed, and controller-verified. P26 (TypeScript adapter) and P27
 (the `dstdns`-side adoption package) are NOT yet carved.**
 
-**Implementation status of that series: P15 is MERGED. P16 is next**, and
-its handoff already carries the two rulings P15 produced (A-134/A-135) in
-a "Carried in from P15" section — read it, the second one changes how P16's
-own contradictory-artifact fixtures must be built. P17–P25 are untouched.
-Nothing in P15's outcome invalidated any later handoff: the only
-cross-package consequence found was A-135, and it is landed.
+**Implementation status of that series: P15 and P16 are MERGED. P17 is
+next.** P16's outcome propagated into FIVE later handoffs, each now
+carrying a "Carried in from P16, merged" section (all six edited handoffs
+re-linted `clean`): **P17** (the `judgment.r1`-iff-`coverage` trap — a
+lane that resolves its R1 policy and then renders `NO_MEASUREMENT` must
+NOT record it; plus where `base` and `source_roots` come from), **P18**
+(its work item 4 turns `assay verify`'s R2 baseline proxy into an
+identity — do not reintroduce a second baseline run), **P19** (an
+inconclusive canary still renders a real `CanaryResult`; `ERROR`/
+`BUDGET_EXCEEDED` stay payload-free), **P22** (its independently
+calculated R1 expectation must now calculate `judgment.r1` too, not copy
+the Python fixture's), and **P25** (A-O16 must be decided there —
+Istanbul has no exclusion channel at all, so it is the first format whose
+exclusion support genuinely differs from coverage.py's). P20/P21/P23/P24
+are unaffected. Nothing was re-carved; every consequence fitted inside an
+additive section.
 
 Sol was given write access (scoped by prompt, not sandbox, to new files
 under `nyxloom-trove/handoffs/` only) to materialize the twelve-package plan
@@ -211,6 +254,27 @@ BLOCKED rule exists to prevent. Pre-existing since P10, unchanged by P15,
 unreachable without an adversarially-named file. P20 (attestation
 hardening) is the natural home but its handoff does not name it; decide
 before dispatching P20.
+
+**A-O16, new (open questions table): a coverage format that cannot report
+exclusions is indistinguishable, in the artifact, from one that reported
+none.** `FileCoverage.excluded is None` (unknown) and `frozenset()`
+(known-empty) stay distinct upstream exactly as A-135 requires, but
+`evaluate_coverage` intersects with `frozenset()` in both cases, so schema
+v3's `Coverage.excluded_lines` has no spelling for unknown. NOT a
+correctness defect — `has_disallowed_excluded` is false in both cases too,
+so status and payload agree and R1 re-derivation is unaffected; the loss is
+diagnostic. Raised by P16's own work item 3 ("format inability... must not
+be rewritten to empty") and deliberately not repaired there: closing it
+needs a new artifact field and reaches the format registry and every
+adapter. **Decide before P25**, whose `istanbul-json` is the first
+registered format with no exclusion channel at all — its handoff now says
+so.
+
+**A-128's "three structurally unreachable pairs" is no longer permanent
+debt.** P17's work item 6 is explicitly scoped to make `GIT_FAILED`,
+`FORMAT_MISMATCH` and `UNREADABLE_ARTIFACT` reachable as complete R1
+claims. That is the "real design decision first" A-128 asked for; the
+debt entry below is superseded by P17's carve, not by anything merged yet.
 
 **Accepted, permanent debt — recorded here rather than silently dropped,
 since there is no more series left to fold any of it into:**

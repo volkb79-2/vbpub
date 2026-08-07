@@ -66,6 +66,33 @@ on branch `feat/assay-P18-r2-cli-pipeline`.
 7. Add a real installed-wheel Python fixture whose independently enumerated changed-line mutants include killed and survived cases plus controlled crash/budget paths. Compare complete artifacts and shared-tree hashes.
 8. Break target scoping, operator filtering, jobs validation/boundary, baseline reuse, isolation, ordering, and result accounting separately; run the real gate and record exact A-067 counts.
 
+## Carried in from P16, merged (read before writing work items 4 and 6)
+
+**A-136 — a judged status carries the payload it judged.** `Claim` now
+refuses to construct an R2 claim that is `PASS`, or that carries
+`MUTANTS_SURVIVED` or `NO_MUTANTS`, with no `mutation` payload: all three
+are reachable only through the buckets themselves. Work item 4's
+non-PASS-baseline propagation is unaffected and stays payload-free —
+`FAIL`/`COMMAND_FAILED`, `ERROR`/`EXEC_FAILED`, `BUDGET_EXCEEDED`/
+`LANE_TIMEOUT` are all still representable without a `Mutation`, because a
+failed baseline is exactly how they arise.
+
+**A-137 — work item 4 makes `assay verify`'s R2 baseline proxy exact, and
+that is worth preserving deliberately.** When `mutation` is absent, the
+verifier re-derives R2 from the artifact's own R0 claim. That is a PROXY
+today, because `run_mutation` runs its own internal baseline (sol finding
+11). Work item 4 mandates reusing P17's already-obtained `CommandResult`
+as the baseline — the same result R0 was built from — which turns the
+proxy into an identity. Do not reintroduce a second baseline run for R2.
+
+**`judgment.r2` is a reserved shape you are the first to populate**
+(`jobs`, and the ordered `operators` list). P16 deliberately added no
+construction-time correspondence between `judgment.r2` and `Claim.mutation`
+because R2 status was already re-derivable without it. Once you populate
+it, ask whether that still holds — a `jobs`/`operators` record that no
+rule ties to the claim it describes is a field a consumer must take on
+trust, which is the exact gap this whole series exists to close.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)

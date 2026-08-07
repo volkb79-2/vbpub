@@ -67,6 +67,39 @@ on branch `feat/assay-P17-r1-cli-pipeline`.
 8. Prove the full path through the installed console script in a disposable two-commit Python project using a hand-written lane file, real pytest coverage output, and a complete independent expected artifact. Source-tree `PYTHONPATH` execution is not this oracle.
 9. Break R1 dispatch, built-in registration, base resolution, whole-tree cleanliness, stale-artifact removal, single invocation, exception-to-claim conversion, and final timing separately; run the real gate and record exact A-067 failure counts.
 
+## Carried in from P16, merged (read before writing work items 1, 6 and 7)
+
+**A-136 — a judged status carries the payload it judged, and `Claim` now
+refuses to construct one that does not.** An R1 claim whose status is
+`PASS` or `FAIL` MUST carry `coverage`; `NO_MEASUREMENT` must not, exactly
+as before. `ERROR` stays payload-free, so work item 6's three
+newly-reachable producer pairs (`GIT_FAILED`, `FORMAT_MISMATCH`,
+`UNREADABLE_ARTIFACT`) are unaffected — but they are `ERROR`, and rendering
+one of them as `FAIL` will now be refused at construction rather than
+emitted.
+
+**The `judgment.r1`-iff-`coverage` correspondence is a trap in the obvious
+direction.** `Verdict` refuses BOTH halves: `judgment.r1` present without
+an R1 coverage claim, and an R1 coverage claim without `judgment.r1`. So a
+lane that resolves its R1 policy perfectly and then renders
+`NO_MEASUREMENT` (dirty tree, base-is-head, empty coverage) must NOT record
+that policy — "I resolved it, so I'll record it" builds a `Verdict` that
+will not construct. `runner.assemble_verdict` raises a typed
+`AssayError` (`ERROR`/`BAD_LANE_CONFIG`) on the missing half before
+construction, so that direction at least fails as an assay error rather
+than a bare `ValueError`; the present-without-a-claim direction does not,
+and reaches `Verdict.__post_init__`.
+
+Build `JudgmentR1.base` from `check_base_is_head`'s resolved `base_rev`
+(work item 1's "record the resolved full commit"), and `source_roots` from
+`judge.source_roots` — the DECLARED strings, never
+`JudgeConfig.source_root_paths`, which are resolved absolute paths and
+would bind the artifact to one machine's filesystem.
+
+**A-138 — a foreign `schema_version` is a consumer migration.**
+`assay verify` reports it as a version problem and reads nothing else. Do
+not add a compatibility path, a default, or an upgrade.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)

@@ -62,6 +62,32 @@ on branch `feat/assay-P19-isolated-r3-cli-pipeline`.
 7. Fingerprint consumer HEAD, index, tracked/untracked paths, and file bytes before and after every terminal case. The fingerprint is the restoration oracle; a call ledger alone is insufficient.
 8. Break config closure, target containment, scratch isolation, shared-pipeline use, expected-reason comparison, control gating, and final timing separately; run the real gate and record exact A-067 counts.
 
+## Carried in from P16, merged (read before writing work items 4 and 6)
+
+**A-136 — a judged status carries the payload it judged.** `Claim` now
+refuses to construct an R3 claim whose status is `PASS`, `FAIL` or
+`INCONCLUSIVE` with no `canary` payload: those are exactly
+`judge_canary`'s three outcomes, and it judges a `CanaryResult`. This
+binds work item 4's inconclusive cases specifically — a broken control, an
+unknown mechanism and a no-op transform must each still render a real
+`CanaryResult` recording what was attempted, never a bare
+`INCONCLUSIVE`/`CANARY_INCONCLUSIVE` claim with nothing behind it. The
+existing fixture `tests/fixtures/verdicts/r3_inconclusive_canary_
+inconclusive.json` is the shape: mechanism `not-a-real-mechanism`,
+`control_outcome` recorded, `transformed_outcome` absent, and a
+description saying why there was nothing to judge.
+
+`ERROR` and `BUDGET_EXCEEDED` stay payload-free — they describe the canary
+machinery never producing a result, which is a different statement from a
+judgement of one. Work item 6's "malformed configuration" artifact is a
+lane-config failure and renders no R3 claim at all; do not route it into an
+`INCONCLUSIVE` claim to make it look uniform.
+
+**`judgment.r3` is a reserved shape you are the first to populate**
+(`mechanism`, `target`). As with P18: P16 added no correspondence check
+between it and `Claim.canary`; decide whether that still holds once a real
+producer writes it.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)

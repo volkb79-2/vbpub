@@ -65,6 +65,32 @@ Build an assay-owned `assay-node-gate:local` image from `gate/node/Dockerfile`. 
 7. Extend the real gate command to execute the offline Node conformance after the ordinary installed-wheel proof, preserving cgroup and independent witness mechanics.
 8. Break real report generation, each parser validation, mixed-statement aggregation, duplicate-SF handling, registry binding, and semantic manifest comparison separately; record exact A-067 failure counts.
 
+## Carried in from P16, merged (read before writing work items 2 and 6)
+
+**A-O16 is open and this package is where it first bites — decide it
+before implementing work item 6's "ignored/uninstrumented lines."**
+`FileCoverage.excluded is None` means "this format cannot tell me what was
+excluded"; `frozenset()` means "it told me, and the answer is none". The
+distinction is real upstream, but `evaluate_coverage` intersects the
+changed lines with `frozenset()` in both cases, so schema v3's
+`Coverage.excluded_lines` has no spelling for unknown — an R1 claim from a
+blind format is indistinguishable from one from a clean lane.
+
+That is not a correctness defect (`has_disallowed_excluded` is false in
+both cases too, so status and payload agree), and P16 deliberately did not
+repair it: closing it needs a new artifact field and reaches the format
+registry and every adapter. It matters HERE because Istanbul's
+`coverage-final.json` simply omits an `/* istanbul ignore */` statement
+from `statementMap` — there is no exclusion channel at all — so
+`istanbul-json` is the first registered format whose exclusion support
+genuinely differs from coverage.py's. Report which of the two states you
+can honestly produce; do not quietly emit `frozenset()` for "the format
+has no such concept" because it is the more convenient value.
+
+**A-136 — a judged status carries the payload it judged.** If any parser
+path here can render an R1 claim, note that `PASS`/`FAIL` now require a
+`coverage` payload at construction and `ERROR` does not.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)

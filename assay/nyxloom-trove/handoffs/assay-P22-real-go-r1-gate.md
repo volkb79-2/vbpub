@@ -65,6 +65,25 @@ From fresh main, build the existing base images by their documented commands, th
 7. Change the fixture module name and repository nesting to prove module-prefix derivation and boundary-safe normalization. Missing `go`, wrong Go version, or unavailable helper prerequisites render honest non-PASS outcomes.
 8. Break real tool execution, wheel installation, module derivation, prefix boundary, line/column attribution, doc/test exclusion, and independent artifact comparison separately; run the full real gate and record exact A-067 counts.
 
+## Carried in from P16, merged (read before writing work item 5)
+
+**Work item 5's "assay's exact R1 artifact" is a schema-v3 artifact, and
+v3 binds the policy that judged it.** `judgment.r1` is present if and only
+if the R1 claim carries a `coverage` payload, and its `language`/
+`source_roots`/`coverage_format`/`coverage_artifact`/`fail_under`/
+`allow_excluded`/`base` must be the values THIS Go lane actually resolved
+— an independently calculated expectation has to calculate those too, not
+copy them from the Python fixture. `Coverage` also now carries
+`excluded_lines`/`files_with_excluded_lines`, whose summary must name
+exactly the paths the mapping does. See P17's own carried-in section for
+the `judgment.r1`-iff-`coverage` trap; it applies identically here.
+
+**A-136 — an R1 claim that is `PASS` or `FAIL` must carry `coverage`;
+`ERROR` and `NO_MEASUREMENT` must not.** Work item 7's "missing `go`,
+wrong Go version, or unavailable helper prerequisites render honest
+non-PASS outcomes" must therefore pick between `NO_MEASUREMENT` and
+`ERROR` deliberately — neither may be dressed as a `FAIL`.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)
