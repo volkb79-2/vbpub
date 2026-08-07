@@ -111,18 +111,35 @@ the review. Full findings, direct answers to the controller's own
 questions, and an estate-adoption order are all in that file — read it in
 full, this summary is not a substitute.
 
-Sol carved twelve new assay packages (P15 correctness repairs → P16 schema
-v3 → P17/P18/P19 Python R1/R2/R3 CLI wiring → P20 attestation hardening →
-P21 versioned wheel → P22/P23/P24 real Go R1/R2/R3 → P25/P26 real
-lcov/Istanbul + TypeScript adapter) plus one `dstdns`-side adoption
-package, and is now (as of this STATE.md update) carving them as real
-handoff files directly under `nyxloom-trove/handoffs/`, with write access
-and commit authority, one handoff at a time, committing each
-immediately so nothing is lost if the session runs out of budget
-mid-series. **Check `nyxloom-trove/handoffs/` directly for which of
-P15–P27 actually exist before assuming any of them are ready to dispatch**
-— this file will not be kept in sync turn-by-turn while that carving runs
-unattended.
+**Carving status (live, as of this update): P15 through P25 are carved,
+committed, and controller-verified. P26 (TypeScript adapter) and P27
+(the `dstdns`-side adoption package) are NOT yet carved.**
+
+Sol was given write access (scoped by prompt, not sandbox, to new files
+under `nyxloom-trove/handoffs/` only) to materialize the twelve-package plan
+from its own review (P15 correctness repairs → P16 schema v3 → P17/P18/P19
+Python R1/R2/R3 CLI wiring → P20 attestation hardening → P21 versioned
+wheel → P22/P23/P24 real Go R1/R2/R3 → P25/P26 real lcov/Istanbul +
+TypeScript adapter), one file at a time. Its own `git commit` was blocked
+at the SANDBOX level (`.git/index.lock: Read-only file system` under
+`workspace-write` mode) — not a choice, a hard restriction — so it wrote
+files only and reported exactly why; the controller committed each one
+individually after independent verification (nyxloom lint, `input_revision`
+matched real HEAD at carve time, a sample of cited estate paths/decisions
+confirmed to exist — e.g. `tester-unified-go/Dockerfile`, cited as proof a
+real Go toolchain already exists in the estate, and `ciu`/`cmru`/`topos`'s
+own `pyproject.toml`s, cited as release-wheel prior art, both confirmed
+real). Resumed a second time with the fixed instruction (write-only, no
+commit attempts), it produced P16 through P25 — then hit a hard EXTERNAL
+usage cap ("You've hit your usage limit... try again at Aug 12th, 2026 9:39
+PM") mid-way through P26. Because every completed file had already been
+written to disk (not held only in the session's own memory), nothing was
+lost — this is the exact "commit/persist immediately" discipline paying
+off even though the actual git-commit half of it turned out to be
+sandboxed away. **P26 and P27 cannot be attempted again before Aug 12,
+2026** using this same account/session. Key commits for this phase:
+`48771e48` through `bcf9afb9` (P15 through P25, one commit each, `git log`
+has the full list).
 
 **The pattern across the whole series**: every single readiness pass found
 at least one real gap, never zero — wrong/stale citations (P09's "canary"
@@ -222,20 +239,24 @@ review it.
 
 **Codex sessions (resumable, keep for continuity):**
 - `019fd977-f091-7dd1-8af5-38c41db89507` — the review → guidance → repair
-  thread. Used three times so far: the original pre-P02 carving review (23
-  confirmed defects), the post-P14 shipped-code review (this session's own
-  `assay-v1-post-series-review-sol.md`, ~1.58M tokens for that pass alone —
-  expect a large fixed per-turn cost even on resume), and (as of this
-  STATE.md update, still possibly in progress) a write-access pass carving
-  P15 onward directly into `nyxloom-trove/handoffs/`.
+  thread. Used four times so far: the original pre-P02 carving review (23
+  confirmed defects); the post-P14 shipped-code review
+  (`assay-v1-post-series-review-sol.md`, ~1.58M tokens for that pass alone
+  — expect a large fixed per-turn cost even on resume); a write-access
+  attempt that produced one correct handoff (P15) but discovered `git
+  commit` is blocked at the SANDBOX level under `workspace-write`
+  (`.git/index.lock: Read-only file system` — not a policy choice,
+  confirmed by the session's own honest report); and a second write-access
+  pass (commit attempts removed from the instructions) that produced P16
+  through P25 before hitting a hard EXTERNAL usage cap — **this account
+  cannot be resumed again before Aug 12th, 2026, 9:39 PM** (its own literal
+  error text). Total token spend across all four turns so far: ~5.87M.
 - Read-only invocation (review/analysis only, cannot write):
   `codex exec --sandbox read-only -m gpt-5.6-sol -c model_reasoning_effort=high --cd <dir> resume <id> "<prompt>"`.
-- Write-access invocation (used for the P15+ carving pass — same session,
-  `--sandbox workspace-write`, `--cd /workspaces/vbpub` so `git commit`
-  can reach `.git` at the monorepo root; the PROMPT, not the sandbox, is
-  what scopes it to only writing new files under `assay/nyxloom-trove/
-  handoffs/` and committing each one scoped and immediately, per this
-  repo's own shared-committer discipline below):
+- Write-access invocation (`workspace-write` lets it WRITE files under
+  `--cd`'s tree, confirmed working for P15–P25; it does NOT let it commit —
+  budget the controller's own time to verify-and-commit each file
+  afterward, do not ask it to commit again):
   `codex exec --sandbox workspace-write -m gpt-5.6-sol -c model_reasoning_effort=high --cd /workspaces/vbpub resume <id> "<prompt>"`.
 - Either way, **run it via `run_in_background` with NO `nohup`/`&`** or the
   completion notification is spurious.
