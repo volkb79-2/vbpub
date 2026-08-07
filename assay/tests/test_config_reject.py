@@ -65,6 +65,53 @@ def test_a_key_the_template_lacks_cannot_be_silently_dropped():
         drop_key(R0_LANE, "not_a_field")
 
 
+# --- O3 (P15): a name in both 'env' and 'env_passthrough' is refused ---------
+#
+# assay.runner.resolve_command_plan builds env_effective from lane.env FIRST,
+# then overwrites any name env_passthrough also finds present in the ambient
+# environment -- so a name declared in BOTH tables is not actually fixed, it
+# silently tracks whoever's environment ran the lane. Refusing the collision
+# here removes that lane shape before runner.py ever sees it.
+
+
+def test_a_name_declared_in_both_env_and_env_passthrough_is_rejected(
+    project: Project,
+):
+    # R0_LANE declares env = { MOCK_MODE = "true" } and
+    # env_passthrough = ["HOME", "TMPDIR", "PATH"] -- no overlap. Add
+    # MOCK_MODE to env_passthrough too.
+    mutated = set_key(
+        R0_LANE, "env_passthrough", '["MOCK_MODE", "HOME", "TMPDIR", "PATH"]'
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(mutated))
+
+    message = str(excinfo.value)
+    assert "MOCK_MODE" in message
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+def test_several_names_declared_in_both_tables_are_all_named(project: Project):
+    mutated = set_key(R0_LANE, "env", '{ MOCK_MODE = "true", HOME = "/tmp" }')
+    mutated = set_key(
+        mutated, "env_passthrough", '["MOCK_MODE", "HOME", "TMPDIR", "PATH"]'
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(mutated))
+
+    message = str(excinfo.value)
+    assert "HOME" in message
+    assert "MOCK_MODE" in message
+
+
+def test_disjoint_env_and_env_passthrough_still_load(project: Project):
+    # The ACCEPT half: R0_LANE's own env/env_passthrough are disjoint, and
+    # this check must not reject them.
+    lane = load_lane_file(project.write(R0_LANE)).lane("package")
+    assert set(lane.env) & set(lane.env_passthrough) == set()
+
+
 def test_missing_schema_version_is_rejected(project: Project):
     path = project.write(drop_key(R0_LANE, "schema_version"))
     with pytest.raises(LaneConfigError, match="schema_version"):

@@ -21,12 +21,16 @@ from assay.diff import AddedLines, parse_added_lines
 
 
 def test_single_hunk_with_omitted_counts_reports_the_one_added_line():
+    # Omitted counts on BOTH sides default to 1 -- balanced against a real
+    # one-line substitution (one "-" line, one "+" line), the only body shape
+    # a hunk header with both counts implied can legally carry.
     diff_text = (
         "diff --git a/foo.py b/foo.py\n"
         "index 1111111..2222222 100644\n"
         "--- a/foo.py\n"
         "+++ b/foo.py\n"
         "@@ -10 +11 @@\n"
+        "-old_line = 0\n"
         "+new_line = 1\n"
     )
     result = parse_added_lines(diff_text)
@@ -52,7 +56,7 @@ def test_path_without_a_b_prefix_no_prefix_diff():
         "diff --git foo.py foo.py\n"
         "--- foo.py\n"
         "+++ foo.py\n"
-        "@@ -1 +1 @@\n"
+        "@@ -1,0 +1 @@\n"
         "+x = 1\n"
     )
     result = parse_added_lines(diff_text)
@@ -64,7 +68,7 @@ def test_path_with_a_b_prefix_strips_only_the_b_side():
         "diff --git a/pkg/foo.py b/pkg/foo.py\n"
         "--- a/pkg/foo.py\n"
         "+++ b/pkg/foo.py\n"
-        "@@ -1 +1 @@\n"
+        "@@ -1,0 +1 @@\n"
         "+x = 1\n"
     )
     result = parse_added_lines(diff_text)
@@ -107,14 +111,31 @@ def test_dev_null_new_side_skips_every_body_line_even_a_plus_line():
     assert result.by_file == {}
 
 
+def test_dev_null_new_side_skips_a_plus_line_even_mid_hunk():
+    # Contrived, like the fixture above -- but unlike it, this hunk's own
+    # counts keep it OPEN across the "+" line (old_count=2 needs a second
+    # "-" line after it), so this specifically exercises the in-hunk
+    # "current is None" branch rather than the hunk having already closed.
+    diff_text = (
+        "--- a/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,1 @@\n"
+        "-old_one\n"
+        "+not_real\n"
+        "-old_two\n"
+    )
+    result = parse_added_lines(diff_text)
+    assert result.by_file == {}
+
+
 def test_multiple_hunks_in_one_file_do_not_leak_line_numbers_across_hunks():
     diff_text = (
         "diff --git a/foo.py b/foo.py\n"
         "--- a/foo.py\n"
         "+++ b/foo.py\n"
-        "@@ -1 +1 @@\n"
+        "@@ -1,0 +1 @@\n"
         "+first\n"
-        "@@ -50 +50,2 @@\n"
+        "@@ -50,0 +50,2 @@\n"
         "+second\n"
         "+third\n"
     )
@@ -127,12 +148,12 @@ def test_multiple_files_are_kept_separate():
         "diff --git a/a.py b/a.py\n"
         "--- a/a.py\n"
         "+++ b/a.py\n"
-        "@@ -1 +1 @@\n"
+        "@@ -1,0 +1 @@\n"
         "+in_a\n"
         "diff --git a/b.py b/b.py\n"
         "--- a/b.py\n"
         "+++ b/b.py\n"
-        "@@ -5 +5 @@\n"
+        "@@ -5,0 +5 @@\n"
         "+in_b\n"
     )
     result = parse_added_lines(diff_text)
@@ -162,8 +183,28 @@ def test_empty_diff_text_reports_no_files():
     assert result.by_file == {}
 
 
+def test_diff_text_whose_last_line_is_not_newline_terminated_loses_nothing():
+    # Real git always terminates its final line, so the trailing empty field
+    # the "\n" split leaves behind is dropped. Text from anywhere else may
+    # simply end -- and then the final line is REAL content that must still be
+    # recorded, not mistaken for that artefact. Same fixture as
+    # test_explicit_hunk_counts_and_multiple_added_lines, minus the last "\n".
+    terminated = (
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -5,0 +6,2 @@\n"
+        "+first_added = 1\n"
+        "+second_added = 2\n"
+    )
+    assert parse_added_lines(terminated).by_file == {"foo.py": frozenset({6, 7})}
+    assert (
+        parse_added_lines(terminated.removesuffix("\n")).by_file
+        == parse_added_lines(terminated).by_file
+    )
+
+
 def test_returns_a_frozen_kw_only_added_lines_with_immutable_contents():
-    result = parse_added_lines("--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n+y\n")
+    result = parse_added_lines("--- a/x.py\n+++ b/x.py\n@@ -1,0 +1 @@\n+y\n")
 
     assert isinstance(result, AddedLines)
     assert result.by_file == {"x.py": frozenset({1})}

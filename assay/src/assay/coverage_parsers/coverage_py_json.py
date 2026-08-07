@@ -92,9 +92,18 @@ def _parse_record(path: str, record: object) -> FileCoverage:
         excluded: frozenset[int] = frozenset()
     else:
         excluded = frozenset(_int_list(record, path, "excluded_lines"))
-    return FileCoverage(
-        executed=frozenset(executed), missing=frozenset(missing), excluded=excluded
-    )
+    try:
+        return FileCoverage(
+            executed=frozenset(executed), missing=frozenset(missing), excluded=excluded
+        )
+    except ValueError as exc:
+        # P15 (finding 4): the common model enforces positive line numbers
+        # and pairwise-disjoint buckets in ONE place (model.py) rather than
+        # per format; this is the one parser whose input (three independent
+        # JSON arrays) can actually violate either -- a line claimed both
+        # executed and missing simultaneously, or a non-positive line
+        # number, both real artifact defects.
+        raise _malformed(f"record for {path!r}: {exc}") from exc
 
 
 def _int_list(record: dict, path: str, key: str) -> list[int]:

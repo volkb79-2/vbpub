@@ -97,6 +97,27 @@ def test_missing_excluded_lines_key_defaults_to_the_empty_frozenset():
             json.dumps({"files": {"a.py": "not-an-object"}}),
             id="file-record-is-not-an-object",
         ),
+        pytest.param(
+            # P15 (finding 4): a line claimed BOTH executed and missing --
+            # sol's exact reproduction of a false PASS 100.0 that still
+            # reports the same line missing.
+            json.dumps({"files": {"a.py": {"executed_lines": [1], "missing_lines": [1]}}}),
+            id="a-line-is-both-executed-and-missing",
+        ),
+        pytest.param(
+            json.dumps(
+                {"files": {"a.py": {"executed_lines": [1], "missing_lines": [], "excluded_lines": [1]}}}
+            ),
+            id="a-line-is-both-executed-and-excluded",
+        ),
+        pytest.param(
+            json.dumps({"files": {"a.py": {"executed_lines": [0], "missing_lines": []}}}),
+            id="a-line-number-is-zero",
+        ),
+        pytest.param(
+            json.dumps({"files": {"a.py": {"executed_lines": [-1], "missing_lines": []}}}),
+            id="a-line-number-is-negative",
+        ),
     ],
 )
 def test_malformed_record_raises_unreadable_artifact(artifact: str):

@@ -454,6 +454,23 @@ def _load_lane(
     env_passthrough = _as_str_list(
         table["env_passthrough"], where, "env_passthrough"
     )
+    # P15 (A-067 finding 9): a name declared in BOTH tables let the ambient
+    # process environment silently override a value the lane declared as
+    # FIXED (assay.runner.resolve_command_plan builds env_declared then
+    # overwrites it with whatever env_passthrough finds present) -- a "fixed"
+    # value that changes with whoever runs the lane is not fixed. Refusing
+    # the collision here, at load time, makes that overwrite structurally
+    # unreachable without touching runner.py at all: it can never see a lane
+    # whose two tables disagree about a name's ownership.
+    collisions = sorted(set(env) & set(env_passthrough))
+    if collisions:
+        raise LaneConfigError(
+            f"{where}: {', '.join(collisions)} declared in both 'env' (a "
+            f"fixed value) and 'env_passthrough' (an ambient name) -- pick "
+            f"exactly one. A name in both means the ambient process "
+            f"environment silently overrides the fixed value, which makes "
+            f"'fixed' a lie."
+        )
     if "/" not in argv[0] and "PATH" not in env and "PATH" not in env_passthrough:
         raise LaneConfigError(
             f"{where}: argv[0] {argv[0]!r} is a bare executable name but PATH "
@@ -657,6 +674,18 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
     Not the repo root and not the process cwd: the lane file must not need to
     know where it sits inside a monorepo, and a project vendored one level
     deeper must not silently start measuring nothing.
+
+    *project_root* is already fully resolved (:func:`load_lane_file` resolves
+    ``assay.toml``'s own path before taking its parent), so the CONTAINMENT
+    check below (P15, A-067 finding 9: "a lane can measure a sibling
+    project despite the diagnostic claiming containment") compares two
+    already-resolved paths: rejecting a raw string that merely
+    LOOKS relative (no leading ``/``, no ``..`` visible in *raw* itself) is
+    not enough, because ``../sibling`` is exactly such a string, and a
+    symlink inside the project root can point anywhere on disk regardless of
+    what *raw* spells. ``Path.resolve()`` collapses BOTH ``..`` components
+    and symlinks to their real final target, so comparing the two resolved
+    paths catches either escape route the same way.
     """
     if not raw:
         raise LaneConfigError(f"{where}: 'judge.source_roots' contains an empty path")
@@ -674,6 +703,13 @@ def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
         raise LaneConfigError(
             f"{where}: source root {raw!r} does not exist under the project root "
             f"{project_root} (looked for {resolved})"
+        )
+    if not resolved.is_relative_to(project_root):
+        raise LaneConfigError(
+            f"{where}: source root {raw!r} resolves to {resolved}, which is "
+            f"not contained beneath the project root {project_root} (via "
+            f"'..' or a symlink) -- a lane must not be able to measure a "
+            f"tree outside the project it declares"
         )
     return resolved
 

@@ -184,12 +184,14 @@ def test_a_transformed_run_that_fails_for_the_wrong_reason_survives(
 
     # A profile that marks the appended lines EXCLUDED (not missing) with
     # allow_excluded left False -- a real, valid FAIL cause, just not the
-    # one this mechanism is supposed to produce.
+    # one this mechanism is supposed to produce. executed and excluded must
+    # stay disjoint (P15's common-model invariant): only the control's own
+    # already-covered line is executed, never the excluded lines too.
     wrong_reason_profile = CoverageProfile(
         files=MappingProxyType(
             {
                 TARGET_PATH: FileCoverage(
-                    executed=frozenset({19}) | added,
+                    executed=frozenset({19}),
                     missing=frozenset(),
                     excluded=added,
                 )

@@ -42,8 +42,8 @@ rule above by construction: this module only ever iterates
 it — changed-line coverage, not whole-file coverage (DESIGN-GUIDE §7:
 "never instruments, traces or computes global coverage").
 
-Nothing here raises: this is pure set arithmetic (plus, for rule 3b, a pure
-containment resolution over already-validated
+Almost nothing here raises: this is pure set arithmetic (plus, for rule 3b, a
+pure containment resolution over already-validated
 :class:`~assay.adapters.base.StatementSpan` values) over already-validated
 inputs (a :class:`~assay.diff.AddedLines`, a
 :class:`~assay.coverage_parsers.model.CoverageProfile` that already cleared
@@ -51,6 +51,21 @@ inputs (a :class:`~assay.diff.AddedLines`, a
 adverse-outcome decision (``DIRTY_TREE``, ``BASE_IS_HEAD``,
 ``EMPTY_COVERAGE``, an unknown ``language``) happens strictly BEFORE this
 module is ever called — see :mod:`assay.runner`'s ``evaluate_r1``.
+
+**One deliberate exception (P15, A-067 finding 4).** Two distinct raw
+coverage-artifact keys can normalize (via
+:meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`) to the
+SAME repository path — e.g. a Go module path stripped two different ways, or
+an artifact that simply repeats a file under two spellings. Silently keeping
+"whichever key came last in the artifact's own JSON object" (a bare dict
+comprehension's natural behaviour) makes a verdict depend on byte order in a
+file nothing about the *lane* declares — reversing the two keys in the
+artifact can flip PASS to FAIL on otherwise-identical data. This is refused,
+never resolved by a precedence rule, as :class:`~assay.errors.AssayError`
+(``ERROR``/``UNREADABLE_ARTIFACT`` — the artifact's own claims about itself
+are not self-consistent) — a structural failure exactly like a malformed
+record, propagating uncaught through :mod:`assay.runner`'s ``evaluate_r1``
+the same way ``FORMAT_MISMATCH``/``UNREADABLE_ARTIFACT`` already do.
 """
 
 from __future__ import annotations
@@ -65,7 +80,7 @@ from typing import Callable, Mapping, Sequence
 from .adapters.base import LanguageAdapter, StatementSpan
 from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .diff import AddedLines
-from .errors import Outcome, ReasonCode
+from .errors import AssayError, Outcome, ReasonCode
 
 __all__ = ["CoverageEvaluation", "evaluate_coverage"]
 
@@ -234,11 +249,29 @@ def evaluate_coverage(
     called for a file with no unattributed lines, or on an adapter that
     declares ``requires_span_attribution=False``. A test supplies a dict
     lookup; :mod:`assay.runner` supplies a real file read.
+
+    Raises :class:`~assay.errors.AssayError`
+    (``ERROR``/``UNREADABLE_ARTIFACT``) if two distinct raw keys in
+    *profile.files* normalize to the same repository path (module
+    docstring, P15) — the only way this function raises at all.
     """
-    cov_by_repo_path: dict[str, FileCoverage] = {
-        adapter.normalize_coverage_key(raw_key): file_cov
-        for raw_key, file_cov in profile.files.items()
-    }
+    cov_by_repo_path: dict[str, FileCoverage] = {}
+    raw_key_by_repo_path: dict[str, str] = {}
+    for raw_key, file_cov in profile.files.items():
+        repo_path = adapter.normalize_coverage_key(raw_key)
+        colliding_raw_key = raw_key_by_repo_path.get(repo_path)
+        if colliding_raw_key is not None:
+            raise AssayError(
+                f"coverage artifact keys {colliding_raw_key!r} and "
+                f"{raw_key!r} both normalize to repository path "
+                f"{repo_path!r} -- ambiguous which one's data applies, so "
+                f"the artifact cannot be judged without inventing a "
+                f"precedence rule the lane never declared.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        raw_key_by_repo_path[repo_path] = raw_key
+        cov_by_repo_path[repo_path] = file_cov
 
     total_changed_exec = 0
     total_covered = 0
