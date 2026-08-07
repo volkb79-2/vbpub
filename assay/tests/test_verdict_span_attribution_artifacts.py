@@ -2,14 +2,14 @@
 shapes: attributed PASS, attributed FAIL/UNCOVERED_LINES, and the wholly
 new FAIL/UNCLASSIFIED_LINES (A-100).
 
-``assay.runner`` is outside this package's ``scope.touch`` (the handoff is
-explicit: only ``adapters/base.py``, ``adapters/python.py``, ``evaluate.py``,
-``verdict.py``, ``schemas/**`` and ``tests/**``), so these verdicts are
-assembled here exactly the way ``runner.evaluate_r1`` assembles an R1
-:class:`~assay.verdict.Claim` from a :class:`~assay.evaluate.CoverageEvaluation`
-today, PLUS the two new fields ``runner.py``'s own (unmodified) call site does
-not yet pass through -- see this module's own final test, which documents
-that gap directly rather than leaving it silently unproven.
+``assay.runner`` was outside this package's original ``scope.touch`` (only
+``adapters/base.py``, ``adapters/python.py``, ``evaluate.py``, ``verdict.py``,
+``schemas/**`` and ``tests/**``), so these verdicts are assembled here exactly
+the way ``runner.evaluate_r1`` assembles an R1 :class:`~assay.verdict.Claim`
+from a :class:`~assay.evaluate.CoverageEvaluation`. A controller repair (see
+the merge commit) wired the two new fields through ``runner.evaluate_r1``'s
+own ``Coverage(...)`` call site after review found it silently dropped them;
+``tests/test_runner_evaluate_r1.py`` proves that end to end.
 
 The negative this defends (O3's own text): *a producer that omits
 unclassified locations or rolls them up as PASS differs from its expected
@@ -266,30 +266,3 @@ def test_rolling_up_unclassified_as_pass_differs_from_the_expected_artifact():
     )
 
     assert buggy_verdict.to_dict() != span_verdict_fixture("r1_fail_unclassified_lines")
-
-
-# --- the known gap: runner.py itself does not wire these fields through -----
-
-
-def test_runner_py_does_not_pass_the_new_fields_through_a_documented_gap():
-    """``assay.runner.evaluate_r1`` is NOT in this package's ``scope.touch``
-    and was NOT modified. Its own ``Coverage(...)`` call site still names
-    only the original six keyword arguments, so a REAL run through
-    ``runner.evaluate_r1`` today would build a ``Coverage`` whose new fields
-    silently default to empty even when ``evaluate_coverage`` genuinely
-    found unclassified lines -- the claim's own ``status``/``reason_code``
-    are still correct (they flow through unmodified), but its nested
-    ``coverage.unclassified_lines`` would NOT reflect them. Documented here
-    as a known, verified gap for the next package that touches
-    ``runner.py`` to close (see the LOG and successor brief) -- not silently
-    left for a reader to rediscover."""
-    import inspect
-
-    from assay import runner
-
-    source = inspect.getsource(runner.evaluate_r1)
-    assert "unclassified_lines" not in source, (
-        "if this assertion ever fails, runner.py has been updated to wire "
-        "the new fields through and this test (and the LOG's documented "
-        "gap) are stale and should be removed together"
-    )

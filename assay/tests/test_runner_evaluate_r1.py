@@ -19,6 +19,7 @@ fixture's own omission of the ``coverage`` key entirely.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,9 +36,40 @@ from conftest import (
 from jsonschema import Draft202012Validator
 
 from assay import runner
+from assay.adapters.base import StatementSpan
 from assay.errors import AssayError, Outcome, ReasonCode
 
 ADAPTER = FakeAdapter()
+
+
+@dataclass(frozen=True, kw_only=True)
+class _UnparsableSpanAdapter:
+    """A synthetic adapter whose ``statement_spans`` always reports the file
+    as unparseable (``None``) — the shortest real path to a genuinely
+    unclassified line, used ONLY to prove
+    :func:`assay.runner.evaluate_r1`'s ``Coverage(...)`` call site actually
+    wires ``unclassified_lines``/``files_with_unclassified_lines`` through
+    end to end (controller repair after P07: the original call site
+    silently dropped both new fields even though
+    :func:`assay.evaluate.evaluate_coverage` computed them correctly)."""
+
+    name: str = "unparsable"
+    source_globs: tuple[str, ...] = ("*.zzz",)
+    excluded_dir_names: frozenset[str] = frozenset()
+    requires_span_attribution: bool = True
+    external_tools: tuple[str, ...] = ()
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return False
+
+    def has_executable_code(self, rel_path: str, text: str) -> bool:
+        return True
+
+    def normalize_coverage_key(self, key: str) -> str:
+        return key
+
+    def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
+        return None
 
 
 def _seed_two_commits(repo: GitRepo) -> tuple[str, str]:
@@ -410,3 +442,36 @@ def test_evaluate_r1_propagates_a_genuinely_structural_failure(git_repo: GitRepo
         )
     assert excinfo.value.outcome is Outcome.ERROR
     assert excinfo.value.reason_code is ReasonCode.FORMAT_MISMATCH
+
+
+def test_evaluate_r1_wires_unclassified_lines_through_to_the_real_coverage_payload(
+    git_repo: GitRepo,
+):
+    """Controller repair (post-P07 review): ``evaluate_r1``'s ``Coverage(...)``
+    call site originally named only the original six keyword arguments, so a
+    real run silently dropped ``unclassified_lines``/
+    ``files_with_unclassified_lines`` even when ``evaluate_coverage`` found
+    them — the claim's own ``status``/``reason_code`` were still correct,
+    but the diagnostic "WHERE" payload was not. Line 3 is neither executed
+    nor missing in the coverage artifact below, and the adapter reports the
+    file as unparseable, so line 3 is genuinely unattributable."""
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    write_coverage_json(
+        git_repo.path / "cov.json",
+        {"pkg/mod.zzz": {"executed_lines": [2], "missing_lines": [4, 5]}},
+    )
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+
+    r1_claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=base_rev,
+        adapter=_UnparsableSpanAdapter(),
+    )
+
+    assert r1_claim.status is Outcome.FAIL
+    assert r1_claim.reason_code is ReasonCode.UNCLASSIFIED_LINES
+    assert r1_claim.coverage.unclassified_lines == {"pkg/mod.zzz": frozenset({3})}
+    assert r1_claim.coverage.files_with_unclassified_lines == ("pkg/mod.zzz",)

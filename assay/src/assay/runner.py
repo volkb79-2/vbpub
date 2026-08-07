@@ -404,6 +404,8 @@ def evaluate_r1(
             considered=result.considered,
             missing_lines=result.missing_lines,
             files_missing_coverage=result.files_missing_coverage,
+            unclassified_lines=result.unclassified_lines,
+            files_with_unclassified_lines=result.files_with_unclassified_lines,
         ),
     )
 
