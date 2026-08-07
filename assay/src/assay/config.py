@@ -31,6 +31,8 @@ source roots                  absolute, or not an existing directory      A-016,
                               under the project root                      A-049
 unknown keys                  a key assay does not understand, in a       §12
                               lane table or in ``[…judge]``
+coverage format                ``judge.coverage.format`` not a key the    A-068
+                              parser registry knows
 ============================  ==========================================  =======
 
 One thing this loader deliberately does **not** reject, because rejecting it
@@ -44,10 +46,11 @@ It *does* reject ``judge`` config for a rigor level the lane does not declare
 Inert configuration cannot fail loudly when it is wrong, and it reads to a
 human exactly like the capability it is not providing.
 
-`judge.coverage.format` is checked to be a non-empty string and no further: the
-closed vocabulary for it is *"a key the parser registry knows"* (§12), the
-registry is P03's, and duplicating its key list here would recreate the
-four-copies divergence one layer down.
+`judge.coverage.format` is checked against :data:`assay.coverage.FORMAT_REGISTRY`
+(A-068): the closed vocabulary for it is *"a key the parser registry knows"*
+(§12), and that registry is imported here rather than duplicated — the same
+defence against a second, driftable copy of the key list that this loader
+already applies to `scope`/`rigor`/`enforcement` via their own `frozenset`s.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
+from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
 
 __all__ = [
@@ -635,6 +639,15 @@ def _load_coverage(value: Any, where: str) -> CoverageConfig:
         raise LaneConfigError(f"{where}: 'judge.coverage.format' is empty")
     if not artifact:
         raise LaneConfigError(f"{where}: 'judge.coverage.artifact' is empty")
+    if fmt not in FORMAT_REGISTRY:
+        # A-068: cross-checked against the parser registry's own keys, not a
+        # second hardcoded list, so the vocabulary can never drift out of
+        # sync with what P03's registry actually parses.
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.format' {fmt!r} is not a format the "
+            f"parser registry knows; declared formats: "
+            f"{sorted(FORMAT_REGISTRY)}"
+        )
     return CoverageConfig(format=fmt, artifact=artifact)
 
 

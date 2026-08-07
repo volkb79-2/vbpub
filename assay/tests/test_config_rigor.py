@@ -371,11 +371,14 @@ def test_coverage_with_an_unknown_key_is_rejected(project: Project):
         load_lane_file(path)
 
 
-def test_coverage_format_is_not_enumerated_here(project: Project):
+def test_coverage_format_is_cross_checked_against_the_parser_registry(
+    project: Project,
+):
     # §12 says the vocabulary is "a key the parser registry knows" — and the
-    # registry is P03's. Duplicating its key list in the loader would recreate
-    # the four-copies divergence one layer down, so any non-empty string loads
-    # and P03/P04 does the cross-check.
+    # registry is P03's `assay.coverage.FORMAT_REGISTRY`, imported here rather
+    # than duplicated (A-068). "lcov" is a real registry key, so it loads;
+    # tests/test_config_coverage_format.py covers the reject direction (an
+    # unregistered key) and the full accept sweep over every registered key.
     path = project.write(
         set_key(R1_LANE, "coverage", '{ format = "lcov", artifact = "cov.info" }')
     )
