@@ -1,33 +1,36 @@
 # assay — state of play
 
-> **P00–P14 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> **P00–P15 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
 > Written 2026-08-07, updated the same day after a post-series adversarial
 > review (`nyxloom-trove/reports/assay-v1-post-series-review-sol.md`) found
 > that "gate green" proved the library components, not the executable
 > product: no rigor above R0 is reachable through `assay run` at all, and
 > several confirmed defects (some live in the R0 path shipped today) exist
 > in code every package's own review had already passed. **Read that review
-> file before trusting anything else in this document as current** — a
-> P15-onward series is now being carved directly against its findings (see
-> "Where things stand" below for live status). If you are picking this
-> project up: read the review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
+> file before trusting anything else in this document as current** — the
+> P15–P25 repair series is carved directly against its findings and is now
+> being implemented, **P15 merged, P16 next** (see "Where things stand"
+> below for live status). If you are picking this project up: read the
+> review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
 > (the P14-era final-state brief — still accurate for what P00–P14 built,
 > just not for whether it's ready to depend on), then this file, then
 > `decisions.md`.
 
 ## Where things stand
 
-**Merged on `main`, P00 through P14 — the complete series.** Gate green at
-**1529 passed, exit 0, 100% statement AND branch coverage** (2433 stmts /
-944 branches), run through the REAL self-hosting mechanism P14 itself
-built (see below) — independently reproduced by the controller twice: once
-in P14's own worktree before merge, once again directly against `main`
-after merge, by literally parsing `nyxloom-trove/nyxloom.toml`'s own gate
-`argv` and running it verbatim rather than trusting any transcript. Every
-one of the fifteen packages was independently reverified by the controller
-in the foreground gate container (and post-merge on `main`) rather than
-trusted from the implementer's own report — this discipline held for the
-entire series, including its very last package.
+**Merged on `main`, P00 through P15** — the complete P00–P14 series, plus
+the first package of the P15–P25 repair series. Gate green at **1585
+passed, 1 skipped, exit 0, 100% statement AND branch coverage** (2531
+stmts / 988 branches), run through the REAL self-hosting mechanism P14
+itself built (see below) — independently reproduced by the controller
+twice per package: once in the package's own worktree before merge, once
+again directly against `main` after merge, by literally parsing
+`nyxloom-trove/nyxloom.toml`'s own gate `argv` and running it verbatim
+rather than trusting any transcript. Every one of the sixteen packages was
+independently reverified by the controller in the foreground gate
+container (and post-merge on `main`) rather than trusted from the
+implementer's own report — this discipline has held for every package so
+far, and it has never once come back clean.
 
 - P00/P01: skeleton, lane config, verdict model + schema.
 - P02: changed-line extraction + measurability guards.
@@ -82,12 +85,41 @@ entire series, including its very last package.
   missing and closed, A-128) and resolved a direct conflict between this
   file's own prior text and the handoff's oracles over what `assay verify`
   even was (A-129).
+- **P15** (measurement input integrity — first of the v1.1 repair series):
+  `parse_added_lines` rewritten from unconditional content-sniffing to a
+  real two-state machine driven by each hunk's own declared counts (an
+  added line whose content begins `++` can no longer be read as a file
+  header; git's no-newline marker advances neither side); `dirty_paths`
+  reads `git status --porcelain=v1 -z` as raw bytes, so a rename is two
+  NUL-terminated fields rather than a split on displayed `" -> "` text a
+  real path can legally contain; `FileCoverage` enforces positive line
+  numbers and pairwise-disjoint executed/missing/known-excluded at
+  construction, in the one place every format passes through; two raw
+  coverage keys normalizing to one repository path are refused rather than
+  silently last-key-wins; a source root resolving outside the project root
+  and a name in both `env` and `env_passthrough` are refused at load.
+  **Controller review found three further defects in P15's own new input
+  layer (A-134)**, each reproduced against a real git binary first: git
+  appends its space-disambiguation tab to the printed LINE, so on an
+  already-quoted path it lands after the closing quote and the whole
+  quoted spelling went unrecognised (a real file `a "b c.py` recorded
+  under the key `'"b/a \"b c.py"'` and thus dropped from measurement);
+  `str.splitlines()` also breaks on `\r`, form feed, vertical tab,
+  `\x1c`-`\x1e`, `\x85`, U+2028 and U+2029 — ordinary source content —
+  and against the new counts-driven machine a torn line closes the hunk
+  early and silently DROPS its remaining additions (a form feed in a real
+  Python file gave `[2, 4]` for `[2, 3, 4]`); and `git.run`'s
+  `text=True` decoded with the ambient locale, raised an untyped
+  `UnicodeDecodeError`, and rewrote a lone `\r` inside a source line into
+  a phantom second line. All seven forbidden files confirmed untouched by
+  empty diff (the merge commit message miscounts them as eight).
 
-Key commits: `2ab50f75` (P14 merge, the series-closing commit), `56c821c2`
+Key commits: `326507f1` (P15 merge), `a8357405` (P15 rulings, A-134–A-135),
+`2ab50f75` (P14 merge, the P00–P14 series-closing commit), `56c821c2`
 (P14 rulings, A-128–A-133), `bca3c345` (P13 merge), `a42fe02a` (P13
 rulings, A-123–A-127), `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
 A-116–A-122). Full history for every package in `decisions.md` (A-090
-through A-133) and each merge commit message — not repeated here.
+through A-135) and each merge commit message — not repeated here.
 
 **Post-series review and v1.1 (live status, updated same day as P14
 merged):** `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` is a
@@ -114,6 +146,13 @@ full, this summary is not a substitute.
 **Carving status (live, as of this update): P15 through P25 are carved,
 committed, and controller-verified. P26 (TypeScript adapter) and P27
 (the `dstdns`-side adoption package) are NOT yet carved.**
+
+**Implementation status of that series: P15 is MERGED. P16 is next**, and
+its handoff already carries the two rulings P15 produced (A-134/A-135) in
+a "Carried in from P15" section — read it, the second one changes how P16's
+own contradictory-artifact fixtures must be built. P17–P25 are untouched.
+Nothing in P15's outcome invalidated any later handoff: the only
+cross-package consequence found was A-135, and it is landed.
 
 Sol was given write access (scoped by prompt, not sandbox, to new files
 under `nyxloom-trove/handoffs/` only) to materialize the twelve-package plan
@@ -159,6 +198,20 @@ they did.
 **Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
 closed `ReasonCode` for "cannot write my own output artifact." Low severity.
 
+**A-O15, new (open questions table): `attestation._changed_paths` has the
+exact pair of defects A-134 just closed everywhere else.** It reads `git
+diff --name-only` and splits with `str.splitlines()`, undoing neither of
+git's two path spellings. Reproduced against a real repository during
+P15's review, not inferred: `weird\nname.py` comes back as the literal
+quoted spelling `'"weird\nname.py"'`, and `sep<U+2028>name.py` comes back
+as two phantom entries `'sep'` and `'name.py'` with the real identity
+gone. Deliberately NOT fixed in P15 — `attestation.py` is in that
+package's `scope.forbid`, and improvising past a forbid is what the
+BLOCKED rule exists to prevent. Pre-existing since P10, unchanged by P15,
+unreachable without an adversarially-named file. P20 (attestation
+hardening) is the natural home but its handoff does not name it; decide
+before dispatching P20.
+
 **Accepted, permanent debt — recorded here rather than silently dropped,
 since there is no more series left to fold any of it into:**
 - Three `(outcome, reason_code)` pairs in the closed 19-pair vocabulary are
@@ -196,6 +249,13 @@ since there is no more series left to fold any of it into:**
   fails when run from this devcontainer's own ambient Python (which has a
   working `setuptools_scm`, unlike the real `tester-unified:local` gate
   image) — environment-specific and expected, passes in the real gate.
+- **When measuring coverage by hand, do NOT pass
+  `--ignore=tests/test_self_hosting.py`.** That file holds the test which
+  covers `src/assay/__init__.py`'s `except PackageNotFoundError` fallback
+  (lines 43-44); ignoring it reports 99% and two missed statements that
+  look like a real regression and are not. Only the one case needing
+  `ASSAY_SELF_HOSTING_VERDICT` skips without it. The gate's own `argv` does
+  ignore that file, correctly — it runs it as a separate second step.
 
 ## How the work was run
 
