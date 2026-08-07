@@ -3,7 +3,8 @@
 **Status:** DONE. Gate green.
 **Branch:** `feat/assay-P05-language-free-evaluation-core`
 **Base:** `main` at `0958efdf` ("rule(assay): P05 readiness findings -- A-096/A-097, land before dispatch").
-**Commit:** filled in after this LOG is committed (see the commit that follows this one on the branch).
+**Commit:** `ff83f9ce` (the implementation commit this LOG describes; this LOG
+itself lands in a small follow-up commit that only fills in this hash).
 
 ## Gate
 
