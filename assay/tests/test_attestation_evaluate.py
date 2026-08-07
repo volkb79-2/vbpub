@@ -31,7 +31,12 @@ from __future__ import annotations
 
 import pytest
 
-from assay.attestation import AttestationRecord, evaluate_attestation
+from assay.attestation import (
+    AttestationRecord,
+    _check_ancestor_or_equal,
+    _check_reviewed_paths_exist,
+    evaluate_attestation,
+)
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import CLAIM_SOURCES, Claim
 
@@ -262,6 +267,56 @@ def test_one_missing_reviewed_path_among_several_still_renders_unreadable_artifa
 
     assert evidence.status is Outcome.ERROR
     assert evidence.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+# --- A-110's own remap, pinned INDEPENDENTLY of evaluate_attestation's outer
+# --- catch: the ancestry/path-existence checks themselves never let a raw
+# --- GIT_FAILED escape, even called directly.
+
+
+def test_check_ancestor_or_equal_itself_remaps_a_malformed_ref_not_git_failed(git_repo):
+    head = git_repo.head()
+
+    with pytest.raises(AssayError) as excinfo:
+        _check_ancestor_or_equal(git_repo.path, "not-a-real-ref-anywhere-zzz", head)
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_check_ancestor_or_equal_itself_remaps_an_unrelated_history_not_git_failed(git_repo):
+    head = git_repo.head()
+    git_repo.git("checkout", "-q", "--orphan", "unrelated-history-2")
+    git_repo.write("island2.py", "w = 1\n")
+    unrelated = git_repo.commit_all("no shared history")
+    git_repo.git("checkout", "-q", "main")
+
+    with pytest.raises(AssayError) as excinfo:
+        _check_ancestor_or_equal(git_repo.path, unrelated, head)
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_check_ancestor_or_equal_itself_rejects_a_descendant_with_no_exception(git_repo):
+    head = git_repo.head()
+    git_repo.write("later.py", "z = 1\n")
+    descendant = git_repo.commit_all("after head")
+
+    with pytest.raises(AssayError) as excinfo:
+        _check_ancestor_or_equal(git_repo.path, descendant, head)
+
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_check_reviewed_paths_exist_itself_remaps_a_missing_path_not_git_failed(git_repo):
+    head = git_repo.head()
+
+    with pytest.raises(AssayError) as excinfo:
+        _check_reviewed_paths_exist(git_repo.path, head, ("ghost.py",))
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
 # --- O3: no attestation path can create a computed claim -------------------
