@@ -1,15 +1,26 @@
 # assay — state of play
 
-> Written 2026-08-07, updated the same day after P09 landed. Update this file
-> at the end of every session; it is the first thing the next controller
-> should read after `handoffs/README.md`.
+> **THE SERIES IS COMPLETE.** P00 through P14, all fifteen packages, merged
+> to `main`, gate green. Written 2026-08-07. This file is now a historical
+> record and an orientation document for whoever next touches `assay` — there
+> is no P15, no outstanding package, no active controller loop. If you are
+> picking this project up: read `nyxloom-trove/reports/assay-P14-BRIEF.md`
+> first (the final-state brief, written for exactly this situation), then
+> this file, then `decisions.md` for the full reasoning trail.
 
 ## Where things stand
 
-**Merged on `main`, P00 through P13** — thirteen packages, gate green
-throughout, each independently reverified by the controller in the
-foreground gate container (and post-merge on `main`) rather than trusted
-from the implementer's own report. **Only P14 remains.**
+**Merged on `main`, P00 through P14 — the complete series.** Gate green at
+**1529 passed, exit 0, 100% statement AND branch coverage** (2433 stmts /
+944 branches), run through the REAL self-hosting mechanism P14 itself
+built (see below) — independently reproduced by the controller twice: once
+in P14's own worktree before merge, once again directly against `main`
+after merge, by literally parsing `nyxloom-trove/nyxloom.toml`'s own gate
+`argv` and running it verbatim rather than trusting any transcript. Every
+one of the fifteen packages was independently reverified by the controller
+in the foreground gate container (and post-merge on `main`) rather than
+trusted from the implementer's own report — this discipline held for the
+entire series, including its very last package.
 
 - P00/P01: skeleton, lane config, verdict model + schema.
 - P02: changed-line extraction + measurability guards.
@@ -26,112 +37,114 @@ from the implementer's own report. **Only P14 remains.**
 - P11: valid mutant construction — `generate_mutants`, the adapter
   protocol's 7th and final method; a byte-exact single-site splice, never
   `ast.unparse`'s whole-file reprint (A-112/A-114/A-115).
-- **P12** (bounded mutation execution — the R2 producer): baseline-gated
+- P12 (bounded mutation execution — the R2 producer): baseline-gated
   (a red baseline stops before any mutant), `jobs`-bounded via an injected
   executor factory (never `os.cpu_count()`, A-122), per-mutant
   `shutil.copytree` isolation (never in-place, never a git worktree,
-  A-120) so the shared source is unchanged BY CONSTRUCTION, four
-  outcome buckets (killed/survived/crashed/budget_exceeded, A-116/A-117).
-  New `Mutation`/`MutantOutcome` payload types in `verdict.py`,
-  `Claim.mutation` gated to R2, a third schema `allOf` branch.
-  `assemble_verdict` gained `mutation_claim`. A real circular import
-  (`mutation -> runner -> adapters.base -> mutation`) was found and fixed
-  with a deferred import — independently verified safe under every entry
-  order by the controller. The controller also independently drove
-  `run_mutation` directly (not just the test suite) against a fresh copy
-  of the real fixture: confirmed a red baseline creates zero scratch
-  dirs, `jobs=1`/`jobs=3` render byte-identical results under real
-  concurrency, and the shared tree survives a real six-mutant run
-  byte-unchanged.
-- **P13** (standalone wheel proof): one new test module,
-  `tests/test_standalone.py`, reusing `conftest.py`'s already-existing
-  `standalone` fixture (A-123) — no new build/install mechanism, no
-  `src/assay` change at all (confirmed by empty diff). Proved a real
-  `assay run` through the INSTALLED console script emits a genuine R0
-  verdict; a real Python fixture passes through the full pipeline; the
-  Go adapter ships and works, adapter-level only (A-126, no Go toolchain
-  ever). The readiness pass found and the controller independently
-  reproduced (two real wheel builds inside the gate image, with and
-  without `fallback_version`) that O1's original fallback-version
-  negative was UNFALSIFIABLE in this gate image — `setuptools_scm` is
-  absent from every interpreter there, so removing the declaration
-  changes nothing observable. O1 was corrected (A-124) rather than
-  shipping a silently-vacuous test.
+  A-120) so the shared source is unchanged BY CONSTRUCTION, four outcome
+  buckets (killed/survived/crashed/budget_exceeded, A-116/A-117). New
+  `Mutation`/`MutantOutcome` payload types in `verdict.py`, `Claim.mutation`
+  gated to R2, a third schema `allOf` branch. `assemble_verdict` gained
+  `mutation_claim`. A real circular import (`mutation -> runner ->
+  adapters.base -> mutation`) was found and fixed with a deferred import.
+- P13 (standalone wheel proof): proved a real `assay run` through the
+  INSTALLED console script emits a genuine R0 verdict; a real Python
+  fixture passes through the full pipeline; the Go adapter ships and
+  works, adapter-level only (A-126). Found and corrected an UNFALSIFIABLE
+  oracle negative — `setuptools_scm` is absent from every interpreter in
+  the real gate image, so "removing `fallback_version` breaks the build"
+  changes nothing observable there (A-124, independently reproduced by the
+  controller with two real wheel builds).
+- **P14** (self-hosted conformance — the FINAL package): `assay verify`
+  (new `verify.py`) is an artifact validator, never a lane-canary runner
+  (A-129, correcting a stale note this very file used to carry) — it
+  reconstructs the real `verdict.py` dataclass graph rather than shipping
+  a runtime `jsonschema` dependency, plus four checks JSON Schema alone
+  can't express (outcome-agrees-with-rollup, argv arithmetic, claims/
+  evidence coverage). The gate itself was restructured (A-130): it now
+  builds and installs a REAL `assay` wheel inside `tester-unified` and
+  runs `assay run tester-unified` through THAT wheel — never a
+  `PYTHONPATH=src` source-tree shortcut — with a SEPARATE, independently-
+  invoked second pytest step as the real oracle, never `assay verify`
+  alone. A real, self-consistent "universal PASS" producer-mutation proof
+  (A-131, against a disposable `shutil.copytree`'d copy of `runner.py`,
+  never the real file) demonstrates `assay verify` wrongly accepting the
+  lie while the independent step correctly rejects it. The readiness pass
+  found a real 3/19 gap in the outcome/reason-code fixture matrix (two
+  pairs structurally unreachable by pre-existing design, one genuinely
+  missing and closed, A-128) and resolved a direct conflict between this
+  file's own prior text and the handoff's oracles over what `assay verify`
+  even was (A-129).
 
-Gate green at **1414 passed, exit 0, 100% statement AND branch** (2234
-stmts / 874 branches — unchanged from P12's own totals, since P13 touches
-no `src/assay` code).
+Key commits: `2ab50f75` (P14 merge, the series-closing commit), `56c821c2`
+(P14 rulings, A-128–A-133), `bca3c345` (P13 merge), `a42fe02a` (P13
+rulings, A-123–A-127), `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
+A-116–A-122). Full history for every package in `decisions.md` (A-090
+through A-133) and each merge commit message — not repeated here; this
+file's job was always "where things stand," never a full changelog, and
+now that the series is closed its job is orientation for a future reader,
+not a live resume point.
 
-**Outstanding: P14 only — the final package.** *"assay can gate itself
-without becoming the only witness to its own correctness"* (depends on
-P13, merged). P14's handoff carries a propagated citation to P13's own
-successor brief this session: the `assay_version == "0.0.0"` gate-image
-gotcha (exclude/normalize it in any artifact comparison), the exact `assay
-run` CLI shape, and confirmation that A-125's `collect_ignore_glob` trap
-applies to P14 too (`tests/conftest.py` is not in P14's `scope.touch`
-either) — though P14 most likely never needs a new committed fixture
-project at all, since O3 is about running assay's OWN existing test suite
-through its own already-declared lane, not a synthetic one.
-
-Key commits: `bca3c345` (P13 merge), `a42fe02a` (P13 rulings,
-A-123–A-127), `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
-A-116–A-122). Full history for P02–P11 in `decisions.md` (A-090–A-115)
-and their own merge commit messages; not repeated here now that thirteen
-packages are in — this file's own job is "where things stand," not a full
-changelog.
-
-**The pattern across all nine packages so far**: every readiness pass has
-found at least one real gap, never zero — most either a capability built
-with no package yet scoped to consume it, a wrong/stale citation (P09's
-"canary" pointer had zero occurrences of the word; the REAL prior art was
-found elsewhere), or a decision needing generalizing as later packages
-rediscover it. Three packages (P04, P07, and effectively P09 via its own
-citation fix) needed the controller to correct something the implementer
-either couldn't reach (scope) or wasn't told correctly. P08 (flagged lowest-
-confidence) and P09 (largest, most architecturally involved) both needed
-neither repair nor further rulings once dispatched with a corrected handoff
-— reviewed with extra care each time and held up. One self-correction this
-session: an earlier claim in this file ("adapter protocol frozen for good")
-was itself wrong and had to be fixed before it misled P09's own dispatch —
-recorded as a reminder to verify past controller claims here too, not only
-implementer/readiness-pass claims. Full detail on each package's specific
-findings lives in `decisions.md` (A-090 through A-109) and each merge commit
-message; not repeated here.
+**The pattern across the whole series**: every single readiness pass found
+at least one real gap, never zero — wrong/stale citations (P09's "canary"
+pointer, P11's "mutation" pointer, both pointing at the wrong estate
+project entirely), capability built with no package yet scoped to consume
+it, decisions needing generalizing as later packages rediscovered them,
+and — in the last two packages — a genuinely unfalsifiable oracle negative
+(P13) and a direct conflict between two authoritative-looking sources
+about what a whole subcommand should even be (P14). The discipline that
+caught all of it, every time: verify agent claims yourself, independently,
+before ruling — grep counts, live structural checks, direct interactive
+exercise of the real code, real gate re-runs in the foreground, never
+trusting a report at face value. Every package held up under that
+discipline; several needed controller repairs or corrected rulings before
+they did.
 
 **Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
 closed `ReasonCode` for "cannot write my own output artifact." Low severity.
 
-**Watched but not acted on — all of it is now P14's own concern, being the
-last package:**
-- **Two deliberate wiring gaps P12 left**: nothing builds real
-  `MutationTarget`s from a real diff (P12 owns execution only); nothing
-  reads `assay.toml`'s `judge.mutation` table (`jobs`/`operators` stay
-  opaque, A-121). P14's `scope.touch` has no `mutation.py`/`config.py`
-  either — matching how attested evidence's own `assay.toml` wiring was
-  also left deliberately unbuilt by this whole v1 series. If P14's own
-  readiness pass concludes either gap must close to satisfy its oracles,
-  that is a real, reportable escalation (`escalate_if`'s own "a producer
-  outcome cannot be represented..." is adjacent but not identical) — not
-  something to quietly route around.
-- `cli.py` is only touched again by P14 among all remaining packages — full
-  `assay run` CLI wiring across rigor levels is entirely P14's job by
-  design, not a defect (confirmed intentional: assay's own `assay.toml` is
-  deliberately R0-only). This is now the moment to confirm the
-  accumulated `runner.py`/`assemble_verdict` surface (five optional
-  parameters after P09/P10/P12: `evidence`, `declared_evidence`,
-  `mutation_claim`, plus the base `claims`) is sufficient for P14's own
-  self-hosting lane.
+**Accepted, permanent debt — recorded here rather than silently dropped,
+since there is no more series left to fold any of it into:**
+- Three `(outcome, reason_code)` pairs in the closed 19-pair vocabulary are
+  structurally unreachable as complete `Verdict` artifacts and are not
+  fixtured: `ERROR`/`GIT_FAILED`, and claim-level `ERROR`/`FORMAT_MISMATCH`
+  and `ERROR`/`UNREADABLE_ARTIFACT` (the evidence-level `UNREADABLE_ARTIFACT`
+  pair IS reachable and IS fixtured, P14). All three propagate uncaught out
+  of `evaluate_r1`/`cli.py`'s own top-level handler before any `Verdict` is
+  ever constructed — documented, deliberate, pre-existing behavior (A-128),
+  not a gap any future package is expected to close without a real design
+  decision first.
+- Two deliberate wiring gaps from P12, never closed by P13 or P14 (neither
+  was scoped to): nothing builds real `MutationTarget`s from a real diff;
+  nothing reads `assay.toml`'s `judge.mutation` table (`jobs`/`operators`
+  stay opaque, A-121). If either is ever needed, it is new, deliberately
+  scoped work — not an oversight.
+- `assay.toml`/`nyxloom-trove/nyxloom.toml` both declare R0-only,
+  permanently, by design (A-133) — assay judges OTHER projects' diffs;
+  applying R1+ rigor to its own diff was never in scope for this series
+  and isn't an oversight either.
+- **P00/P01's own handoffs still fail nyxloom's linter** (`L7`/`L11`/`L12`/
+  `L13` — missing BLOCKED-marker/branch-name mentions, an oracle
+  referencing a path outside `scope.touch`, unresolved cross-repo globs).
+  Flagged at every package's own review since P02, explicitly named as a
+  candidate for P14's own audit, and explicitly NOT fixed by P14 either
+  (its own `scope.touch` only matches `assay/README.md`, not the trove's
+  handoff files) — this is now permanent, accepted debt on two historical,
+  already-merged, gate-green planning documents. P02 through P14's own
+  handoffs are all clean.
 - lcov/Cobertura parsers (P03) have zero prior art anywhere in the estate;
   Cobertura's multi-`<class>`-per-file merge is untested against any
-  real-world sample. Low risk, unlikely to matter for self-hosting (assay
-  gates itself, a Python project, not a Go/lcov consumer).
-- **P00/P01's handoffs still fail nyxloom's linter** (see "Longer-lived
-  notes," below) — STATE.md has flagged folding this into P14's own audit
-  since P02. This is the last chance to do that before the series ends;
-  otherwise it should be named explicitly as accepted, permanent debt
-  rather than silently dropped.
+  real-world sample. Low risk, never exercised by assay's own self-hosting
+  (a Python project).
+- One test (`test_standalone.py::test_a_real_pass_matches_the_documented_r0_pass_shape`)
+  fails when run from this devcontainer's own ambient Python (which has a
+  working `setuptools_scm`, unlike the real `tester-unified:local` gate
+  image) — environment-specific and expected, passes in the real gate.
 
-## How the work is run
+## How the work was run
+
+The loop is over — this section is now a record of the process for
+whoever runs a similarly-shaped effort next, not a live instruction set.
 
 `WORKFLOW.md` is the loop. `MEASUREMENTS.md` is what it costs and what it
 catches — read both; several of their claims are corrections of earlier claims
@@ -140,7 +153,9 @@ that were wrong, and the corrections are the useful part.
 Per package: **readiness dispatch** (orient, report, implement nothing) →
 controller rules on every raised item **in the go-message** → implement →
 self-review → successor brief → controller reviews, repairs, merges → controller
-asks what the result changes about *remaining* handoffs.
+asks what the result changes about *remaining* handoffs. Ran this way,
+serially, one package at a time, for all fifteen packages, P00 through
+P14.
 
 Three rules with scar tissue behind them:
 
@@ -190,30 +205,28 @@ review it.
   still has the procedure.
 - **S0 must be package-neutral.** The one taken for P01 was not; it carried that
   package's own handoff and plan.
-- **`assay verify`, corrected (A-129, superseding this note's own earlier
-  text)**: it is an ARTIFACT VALIDATOR (`assay verify <path>`, schema
-  validity plus rollup/argv/coverage-identity checks JSON Schema alone
-  can't express), never a lane-canary runner producing R3 about a named
-  lane — that was this note's own earlier, stale reading, corrected once
-  P14's readiness pass found the handoff's own O2/O3 text said something
-  different and more specific.
-- **P00/P01's handoffs fail nyxloom's linter** (`L7`/`L11`/`L12`/`L13` findings —
-  missing BLOCKED-marker/branch-name mentions, an oracle referencing a path
-  outside `scope.touch`, unresolved cross-repo globs). Found running A-089's
-  check for P02; harmless since both packages are already merged and
-  gate-green, but real debt on historical planning docs. P02–P14 are all
-  clean. Not fixed — out of scope for any current package; sweep separately
-  or fold into P14's own audit.
 
 ## Things that will bite a newcomer
 
 - `/workspaces/vbpub` is shared with a concurrent committer. Commit scoped:
   `git add -- <paths> && git commit --only -F msg.txt -- <paths>`. Never
   `reset`/`rebase`/`--amend`.
+- **The gate no longer runs from a source-tree `PYTHONPATH=src` shortcut
+  (P14/A-130).** It builds and installs a real `assay` wheel inside
+  `tester-unified` first, then runs `assay run tester-unified` through
+  THAT wheel — read `nyxloom-trove/nyxloom.toml`'s own `[gates.
+  tester-unified]` comment block in full before touching this script
+  again; three non-obvious, empirically-found corrections
+  (`--override-ini=pythonpath=`, a `.pth`-file site-injection instead of
+  `--system-site-packages`, building via a fresh blank scratch venv's own
+  pip) are documented there and are easy to silently break while editing
+  the surrounding bash.
 - The gate runs in Docker and its bind mount uses the **host** path
   (`/home/vb/volkb79-2/vbpub`), not the container path.
 - `/opt/tester-venv` exists only inside the container; there is no
-  `setuptools_scm` in it, so built wheels version as `0.0.0` (A-069).
+  `setuptools_scm` in it, so built wheels version as `0.0.0` (A-069) —
+  this is now load-bearing, not incidental: `assay verify`/the self-hosting
+  proof both compare against this real, documented value.
 - There is **no Go toolchain** and none is needed — Go fixtures ship
   pre-generated (A-042).
 - A hook blocks some scripted file edits. Use the editor, not `sed -i` or
