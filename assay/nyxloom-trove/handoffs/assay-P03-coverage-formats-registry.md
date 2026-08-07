@@ -47,18 +47,43 @@ on branch `feat/assay-P03-coverage-formats-registry`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§5–6 and decisions A-013, A-035, A-042, A-068.
+1. `docs/DESIGN-GUIDE.md` §§5–6, §11 and decisions A-013, A-035, A-042, A-068, A-092, A-093.
 2. `src/assay/config.py` coverage-format debt and `src/assay/errors.py`.
 3. The `dstdns` sibling checkout, `scripts/coverage_gate.py`: `load_coverage` and record validation.
 4. `/workspaces/vbpub/topos/tools/coverage_gate.py`: `_validate_cov_record`.
-5. `/workspaces/vbpub/shared-ramdisk-depot-manager/tools/covergate/`: coverprofile parsing and drive-letter handling.
+5. `/workspaces/vbpub/shared-ramdisk-depot-manager/tools/covergate/`: coverprofile parsing. The
+   "drive-letter handling" is `parseBlock`'s `strings.LastIndex(fields[0], ":")` — it resolves the
+   position spec by the LAST colon so a Windows path's own colon is never mistaken for the field
+   delimiter; grepping the tree for the literal word "drive" will find nothing.
+6. **lcov and Cobertura XML have no prior art anywhere in this estate** — no cited or uncited
+   implementation in `dstdns`, `topos`, `nyxloom`, or `shared-ramdisk-depot-manager` parses either
+   format (verified: zero hits for `lcov`/`cobertura`/`SF:` across all four). Work from the public
+   formats directly (lcov's `SF:`/`DA:`/`BRDA:` line spec; the Cobertura DTD referenced by
+   `coverage.py`'s own `coverage xml` output). A real Cobertura fixture already exists in this
+   checkout, produced by `coverage.py` itself, not hand-invented: `/workspaces/netcup-api-filter/coverage.xml`
+   (referenced by DESIGN-GUIDE §13 as netcup's format; not previously cited here). Independent
+   fixtures for both formats are still your own to write (A-080) — this is reference material, not a
+   ground-truth generator.
 
 ## Work
 
-1. Define a normalized coverage profile and an explicit parser registry.
+1. Define a normalized coverage profile and an explicit parser registry. Per A-092: frozen `kw_only`
+   dataclasses throughout (`FileCoverage` per DESIGN-GUIDE §11, and whatever wraps per-file coverage
+   into a whole-artifact profile) — never a bare `dict`/map shape copied from the cited sibling
+   implementations, all of which use one. Raise `errors.AssayError` directly; `errors.py` is outside
+   this package's `scope.touch`, so no locally-defined exception type.
 2. Implement strict coverage.py JSON, lcov, Cobertura XML, and Go coverprofile parsers from committed literal fixtures; use no Go toolchain.
-3. Cross-check `judge.coverage.format` against registry keys at config load (A-068).
-4. Distinguish an empty artifact from a measured artifact with empty executed sets.
+3. Cross-check `judge.coverage.format` against registry keys at config load (A-068). An unknown
+   format key is `ERROR`/`BAD_LANE_CONFIG` (the lane declared something the registry doesn't know —
+   the same class of failure `LaneConfigError` already exists for in `config.py`).
+4. Distinguish an empty artifact from a measured artifact with empty executed sets. Per A-093, this
+   is a NAMED, independently callable guard (e.g. `check_empty_coverage(profile) -> None`, raising
+   `AssayError(NO_MEASUREMENT, EMPTY_COVERAGE)` on the adverse case) — not an internal branch of
+   whatever function parses-and-evaluates in one call. P05's O4 calls it directly, the same way it
+   calls P02's `measurability` guards; it must be reachable without going through a full evaluation.
+   A malformed record is `ERROR`/`UNREADABLE_ARTIFACT`; a declared-format/sniffed-signature mismatch
+   is `ERROR`/`FORMAT_MISMATCH` (A-007) — distinct from the unknown-format-key case in item 3, which
+   is a config-load-time failure, not a parse-time one.
 5. Break each oracle property and record the actual failure count (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
