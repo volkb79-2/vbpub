@@ -10,19 +10,19 @@ stack: none
 depends_on: [assay-P08-go-adapter-boundary-proof, assay-P04-runner-cli-verdict-emission]
 session: fresh
 scope:
-  touch: ["src/assay/canary.py", "src/assay/config.py", "src/assay/adapters/base.py", "src/assay/adapters/python.py", "src/assay/adapters/go.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/fixtures/canary/**", "tests/**"]
-  forbid: ["src/assay/errors.py"]
+  touch: ["src/assay/canary.py", "src/assay/adapters/base.py", "src/assay/adapters/python.py", "src/assay/adapters/go.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/fixtures/canary/**", "tests/**"]
+  forbid: ["src/assay/errors.py", "src/assay/config.py"]
 oracles:
   - id: O1
-    observable: "For committed Python and Go cases, an unmodified known-good control passes and one configured valid known-bad transform fails for the expected changed-line reason"
-    negative: "A universal-PASS evaluator makes the bad half pass; a broken baseline makes the good half fail; accepting any non-zero as success lets an unrelated syntax/config error satisfy the oracle"
+    observable: "For a committed Python case, an unmodified known-good control runs the real R0+R1 pipeline and passes, and one configured valid known-bad transform runs the same real pipeline and fails for the expected reason (A-109); for a committed Go case, the same control/bad comparison is proven at R1 only, via two committed pre-generated coverprofiles through the real evaluate_coverage/evaluate_r1 (A-107) -- no real R0 Go run is attempted or scripted"
+    negative: "A universal-PASS evaluator makes the bad half pass; a broken baseline makes the good half fail; accepting any non-zero (or any reason_code) as success lets an unrelated syntax/config error, or a failure for the wrong cause, satisfy the oracle"
     gate: tester-unified
   - id: O2
-    observable: "The canary result records control outcome, transformed outcome, transform identity, and expected versus observed reason in an independently written schema-valid artifact"
+    observable: "The canary result attaches as Claim.canary (rigor=R3, A-108) and records control outcome, transformed outcome, transform identity, and expected versus observed reason in an independently written schema-valid artifact"
     negative: "Recording only 'rejected=true' lets the wrong failure cause pass and differs from the expected artifact"
     gate: tester-unified
   - id: O3
-    observable: "A malformed transform, a transform that changes no target, and a bad case that unexpectedly passes each render an explicit non-PASS canary result"
+    observable: "A malformed transform or a transform that changes no target render INCONCLUSIVE/CANARY_INCONCLUSIVE; a bad case that unexpectedly passes, or fails for a reason other than expected, renders FAIL/CANARY_SURVIVED (A-109)"
     negative: "Treating transform failure or no-op as a successful rejection makes its negative-control artifact PASS"
     gate: tester-unified
 gates: ["tester-unified"]
@@ -43,16 +43,17 @@ on branch `feat/assay-P09-cause-sensitive-canary`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §8 and decisions A-029–A-031, A-039, A-041, A-042.
-2. The runner, evaluator, Python/Go adapters, verdict model, and existing independent artifact fixtures.
-3. Canary behavior in `/workspaces/vbpub/shared-ramdisk-depot-manager/tools/covergate/`.
+1. `docs/DESIGN-GUIDE.md` §8, §12's R3 requirements, and decisions A-010, A-024, A-029–A-031, A-039, A-041, A-042, A-071, A-084, A-092, A-105–A-109.
+2. The runner (`execute_command`, `evaluate_r1`, `assemble_verdict`), evaluator, Python/Go adapters, verdict model (`Claim.coverage`'s R1-gating in `verdict.py` is the exact template for `Claim.canary`'s R3-gating, A-108), and existing independent artifact fixtures.
+3. `/workspaces/vbpub/nyxloom/src/nyxloom/gate_canary.py` (A-105) — `inject_import_break`/`inject_uncovered_line`'s real mechanics. Its versions are IMPURE (write the file directly); port the mechanism, not the file-I/O — A-010 requires `(text) -> (text, description)`.
+4. `tests/test_config_rigor.py`'s `CANARY_TABLE` fixture and `tests/conftest.py`'s `make_lane`/`make_r1_judge` pattern (constructing `Lane`/`JudgeConfig` directly, bypassing `assay.toml`) — the established house pattern for a fixture-driven package like this one; `config.py` is forbidden and needs no changes (A-106).
 
 ## Work
 
-1. Add canary injection to the language adapters that own syntax, then implement configured pure-text transforms with a mandatory known-good control.
-2. Require rejection for the configured expected reason, not any failure.
-3. Add an additive canary payload and complete hand-written expected artifacts for every terminal path.
-4. Break universal-pass rejection, control validity, no-op detection, and cause matching; record failure counts (A-067).
+1. Add canary injection (`inject_import_break`, `inject_uncovered_line`) to the Python and Go adapters (A-084 names P09 as the package that proves this need). Go's `inject_import_break` needs only a structurally-valid implementation — it is not exercised by this package's own R1-only Go canary (A-107).
+2. Implement `canary.py`'s orchestration: a mandatory known-good control plus one configured transform, run through the real pipeline per A-107's Python-full/Go-R1-only split, comparing the OBSERVED reason_code against the configured EXPECTED one (A-109) — not merely "any failure".
+3. Add `Claim.canary: CanaryResult | None` (A-108, R3-gated, frozen `kw_only` dataclass per A-092) and complete hand-written expected artifacts for every terminal path (A-109's four cases: attributed PASS, CANARY_SURVIVED via unexpected-pass, CANARY_SURVIVED via wrong-reason, CANARY_INCONCLUSIVE).
+4. Break universal-pass rejection, control validity, no-op detection, malformed-transform detection, and cause matching (both the unexpected-pass and wrong-reason CANARY_SURVIVED paths); record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 

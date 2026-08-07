@@ -202,8 +202,8 @@ class JudgeConfig:
     fail_under: float | None
     allow_excluded: bool | None
     coverage: CoverageConfig | None
-    #: opaque payloads owned by P10 (mutation) and P08 (canary); this loader
-    #: verifies only that they are tables.
+    #: opaque payloads owned by P11/P12 (mutation) and P09 (canary); this
+    #: loader verifies only that they are tables.
     mutation: Mapping[str, Any] | None
     canary: Mapping[str, Any] | None
 
