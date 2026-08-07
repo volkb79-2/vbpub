@@ -59,6 +59,8 @@ on branch `feat/assay-P02-changed-lines-measurability`.
 2. Add DIRTY_TREE and BASE_IS_HEAD guards before diff evaluation. Keep EMPTY_COVERAGE in P03.
 3. Materialise every git-state fixture in `tmp_path`; do not commit a nested repository.
 4. For each oracle, break its defended property and record the real failing test count in the brief (A-067).
+5. Return frozen `kw_only` dataclasses from `diff.py`/`measurability.py` (e.g. an added-lines-by-file mapping, a guard result), never bare `dict[str, set[int]]` or another primitive shape copied literally from the cited implementations — house style (A-066), and P05 (A-090) consumes these as typed values (A-091).
+6. Raise `errors.AssayError` directly with the appropriate `Outcome`/`ReasonCode` pair; do not define a new exception subclass in `git.py`/`measurability.py` — `errors.py` is outside this package's `scope.touch` (A-091).
 
 ## Test constraints copied from AUTHORING.md §3b
 

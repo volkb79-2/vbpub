@@ -60,10 +60,22 @@ review it.
 
 ## Not done, and worth doing before or during P02
 
-- **The snapshot lineage is designed and verified but NOT built.** Orientation
-  measures ~142k tokens per package — more than the implementation it precedes —
-  and a restored snapshot costs ~14k. That is ~128k per package across thirteen
-  packages, unclaimed. `MEASUREMENTS.md` has the verified procedure.
+- **The snapshot lineage was considered for P02 and deliberately NOT built.**
+  Orientation measures ~142k tokens per package — more than the implementation
+  it precedes — and a restored snapshot costs ~14k, so the paper savings are
+  real (~128k/package × 13). But the only *verified* case is a trivial 0-tool,
+  two-line resume; the actual workload is ~85 turns of reads then ~90+ tool
+  calls with file writes and a gate run, and that path is untested. The
+  mechanism works by copying an internal, explicitly "unstable across
+  versions" transcript file to fake memory erasure — the same shape of risk as
+  the carving-review collapse that cost this project 23 defects (see Roles,
+  below): trusting an unverified process instead of checking it. Building the
+  reusable package-neutral S0 and validating restore through a real
+  implementation-scale turn is itself not free, which eats into the very first
+  package's savings. P02 was ready to dispatch now; that won by not blocking on
+  unproven infrastructure. Revisit if wall-clock/token pressure in the
+  remaining packages makes it worth the validation cost — `MEASUREMENTS.md`
+  still has the procedure.
 - **S0 must be package-neutral.** The one taken for P01 was not; it carried that
   package's own handoff and plan.
 - **`assay verify` / R3** is recorded as `assay verify --lane X` producing R3

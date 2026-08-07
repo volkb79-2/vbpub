@@ -25,6 +25,10 @@ oracles:
     observable: "Runner integration emits a schema-valid computed R1 claim with exact totals, percentage, missing locations, and reason; a hand-written expected artifact covers PASS and FAIL"
     negative: "A universal PASS evaluator, rounded threshold comparison, or producer/schema drift fails an independent full-artifact comparison"
     gate: tester-unified
+  - id: O4
+    observable: "Before the four-way union runs, a dirty tree under a source root renders NO_MEASUREMENT/DIRTY_TREE, base==HEAD renders NO_MEASUREMENT/BASE_IS_HEAD, and a zero-file coverage artifact renders NO_MEASUREMENT/EMPTY_COVERAGE, each matching a hand-written expected artifact with the coverage block omitted, not zeroed (A-025)"
+    negative: "Evaluating anyway and only overwriting the outcome afterward produces a different reason_code or a present-but-zeroed coverage block, which fails the expected-artifact comparison"
+    gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "the adapter protocol needs a language-specific field"
@@ -43,17 +47,17 @@ on branch `feat/assay-P05-language-free-evaluation-core`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§4–5 and decisions A-012–A-018, A-024, A-071.
-2. `src/assay/diff.py`, `coverage.py`, `runner.py`, `verdict.py`, and packaged schema.
+1. `docs/DESIGN-GUIDE.md` §§4–5, §6's NO_MEASUREMENT table, and decisions A-012–A-018, A-024, A-025, A-035, A-071, A-090.
+2. `src/assay/diff.py`, `src/assay/measurability.py`, `coverage.py`, `runner.py`, `verdict.py`, and packaged schema.
 3. The evaluation functions in all four source implementations named by the design guide, especially topos directory-boundary matching and nyxloom/dstdns exclusion policy.
 
 ## Work
 
 1. Define the smallest adapter protocol needed for executable and excluded line classification and an explicit language registry.
 2. Implement the pure four-way set evaluation and threshold result.
-3. Integrate an additive R1 computed claim and closed schema branch into the runner.
-4. Test with a fake non-Python adapter before any real adapter exists. Add independently written full verdict fixtures for new producer paths.
-5. Break each set term, the language boundary, and producer/schema agreement; record failure counts (A-067).
+3. Integrate an additive R1 computed claim and closed schema branch into the runner, calling P02's measurability guards and P03's empty-coverage guard first and short-circuiting evaluation on any of the three (O4, A-090).
+4. Test with a fake non-Python adapter before any real adapter exists. Add independently written full verdict fixtures for new producer paths, including the three NO_MEASUREMENT branches.
+5. Break each set term, the language boundary, the three guards, and producer/schema agreement; record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 
