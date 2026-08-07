@@ -318,6 +318,32 @@ R1_VERDICT_FIXTURES: dict[str, Path] = {
 }
 
 
+# --- P07's own R1 verdicts: attribution's three terminal shapes --------------
+#
+# Full, independently hand-written artifacts for the three NEW terminal paths
+# P07 adds to the R1 union: an attributed PASS, an attributed FAIL/
+# UNCOVERED_LINES, and the wholly new FAIL/UNCLASSIFIED_LINES (A-100). Built
+# directly from `Claim`/`Coverage`/`Verdict` in the test module that consumes
+# them, NOT through `assay.runner.evaluate_r1` -- `runner.py` is outside this
+# package's `scope.touch`, so these prove the claim payload P07 owns rather
+# than the (unmodified, and for this package unreachable) runner wiring.
+
+SPAN_VERDICT_FIXTURES: dict[str, Path] = {
+    name: VERDICT_FIXTURE_DIR / f"{name}.json"
+    for name in (
+        "r1_pass_span_attributed",
+        "r1_fail_uncovered_lines_span_attributed",
+        "r1_fail_unclassified_lines",
+    )
+}
+
+
+def span_verdict_fixture(name: str) -> dict:
+    """The hand-written expected artifact for one of P07's own attribution
+    branches."""
+    return json.loads(SPAN_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
+
+
 def r1_verdict_fixture(name: str) -> dict:
     """The hand-written expected artifact for one of P05's own R1 branches."""
     return json.loads(R1_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))

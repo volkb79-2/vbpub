@@ -111,7 +111,21 @@ _ALL_LINES = frozenset(range(1, 25))
 
 def _evaluate(added, profile, adapter, *, allow_excluded, fail_under=100.0):
     def read_source_text(path: str) -> str:
-        raise AssertionError("every fixture file below has a coverage entry")
+        # P07: every fixture file below has a coverage entry, so this is
+        # never reached for `has_executable_code`'s own call site (a file
+        # with NO coverage entry at all) -- but the 24-line construct-family
+        # fixture's own docstrings/comments/blank lines ARE genuinely
+        # unattributed changed lines on a `requires_span_attribution=True`
+        # adapter, so `evaluate_coverage`'s new rule 3b DOES read `pkg/mod.py`
+        # to attempt span attribution on them. Serving the real `SOURCE` text
+        # here (rather than raising, as this helper did before P07) proves
+        # those exact constructs resolve to `_Attribution.NOT_CODE` through
+        # the REAL adapter and REAL parsed spans, not merely by assumption --
+        # any OTHER path staying an assertion failure keeps this fixture's
+        # original guarantee that no unexpected file is ever read.
+        if path == "pkg/mod.py":
+            return SOURCE
+        raise AssertionError(f"unexpected read_source_text call for {path!r}")
 
     return evaluate_coverage(
         added=added,
@@ -159,6 +173,13 @@ def test_every_construct_family_is_classified_correctly_via_the_real_adapter():
     assert result.covered == 9
     assert result.missing_lines == {"pkg/mod.py": frozenset({9})}
     assert result.files_missing_coverage == ()
+    # P07: every docstring/comment/blank line in this fixture is a real,
+    # changed, unattributed line on a `requires_span_attribution=True`
+    # adapter -- proving the real span walk resolves every one of them to
+    # `_Attribution.NOT_CODE` (no span contains a blank/comment line; a
+    # docstring's own line is excluded from spans entirely), never to a
+    # false UNCLASSIFIED_LINES ambiguity.
+    assert result.unclassified_lines == {}
 
 
 def test_the_same_fixture_with_allow_excluded_falls_through_to_rule_2():
@@ -185,6 +206,7 @@ def test_the_same_fixture_with_allow_excluded_falls_through_to_rule_2():
     assert result.reason_code is ReasonCode.UNCOVERED_LINES
     assert result.pct == 90.0
     assert result.missing_lines == {"pkg/mod.py": frozenset({9})}
+    assert result.unclassified_lines == {}
 
 
 def test_a_fully_covered_variant_of_the_same_fixture_passes():

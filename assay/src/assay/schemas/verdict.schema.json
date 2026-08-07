@@ -145,7 +145,7 @@
     },
     "coverage": {
       "type": "object",
-      "required": ["covered", "changed_executable", "pct", "considered", "missing_lines", "files_missing_coverage"],
+      "required": ["covered", "changed_executable", "pct", "considered", "missing_lines", "files_missing_coverage", "unclassified_lines", "files_with_unclassified_lines"],
       "properties": {
         "covered": {"type": "integer", "minimum": 0},
         "changed_executable": {"type": "integer", "minimum": 0},
@@ -163,6 +163,22 @@
         },
         "files_missing_coverage": {
           "description": "Changed files under the source roots contributing executable lines with no entry at all in the coverage artifact, sorted (A-096).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "unclassified_lines": {
+          "description": "Changed lines whose enclosing multi-line statement could not be confidently attributed -- overlapping/malformed spans, or a genuinely untracked enclosing statement (A-100/A-101), keyed by path. A file contributing none is absent, never present with an empty array.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "integer", "minimum": 1}
+          }
+        },
+        "files_with_unclassified_lines": {
+          "description": "Paths appearing in unclassified_lines, sorted (A-096's pattern, P07's third pair).",
           "type": "array",
           "uniqueItems": true,
           "items": {"type": "string", "minLength": 1}
