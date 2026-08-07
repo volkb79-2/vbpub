@@ -1,23 +1,36 @@
 # assay — state of play
 
-> Written 2026-08-07 at the end of the scoping-and-repair session, so a fresh
-> controller can resume without re-deriving any of it. Update this file at the
-> end of every session; it is the first thing the next controller should read
-> after `handoffs/README.md`.
+> Written 2026-08-07, updated the same day after P02 landed. Update this file
+> at the end of every session; it is the first thing the next controller
+> should read after `handoffs/README.md`.
 
 ## Where things stand
 
 **Merged on `main`:** P00 (skeleton + lane config loader), P01 (verdict model +
-JSON Schema), P01c (contract repair + the reissued series). Gate green at
-**733 passed, exit 0, 100% statement AND branch** (690 stmts / 298 branches),
-verified in the foreground on a slice checked by `assay/tools/cgroup-parent.sh`.
+JSON Schema), P01c (contract repair + the reissued series), **P02** (changed-line
+extraction + the `DIRTY_TREE`/`BASE_IS_HEAD` measurability guards). Gate green at
+**762 passed, exit 0, 100% statement AND branch** (777 stmts / 326 branches),
+independently reverified by the controller in the foreground gate container
+(not just read from the implementer's report), plus a post-merge local run on
+`main` itself.
 
-**Outstanding:** P02–P14, thirteen packages, all validating against nyxloom's
+**Outstanding:** P03–P14, twelve packages, all validating against nyxloom's
 real `handoff-frontmatter.schema.json` with a closed dependency graph.
-**P02 is next** — *"does assay refuse to judge a diff it cannot see?"*
+**P03 is next** — *"is coverage format explicit and language-independent?"*
 
-Key commits: `27fb88d7` (P01c + reissue), `c1bb518d` (P00/P01 rename),
+Key commits: `89a489a0` (P02 merge), `04e72c9a` (P02 readiness rulings,
+A-090/A-091), `27fb88d7` (P01c + reissue), `c1bb518d` (P00/P01 rename),
 `caf4fc78` (P01), `b2684da9` (P00), `a0c9e515` (original scoping).
+
+**P02's readiness pass found a real carving gap** (git.py/measurability.py had
+no downstream consumer scoped to call them) and fixed it *before* implementation:
+A-090 assigns wiring P02's guards + P03's `EMPTY_COVERAGE` ahead of the R1
+evaluation to P05, which gained an O4 for it. Reviewing the actual merged code
+(not just the report) surfaced a second, P10-scoped trap: `git.run` raises on
+ANY non-zero exit, but ancestor-checking git commands use exit codes as data
+(`merge-base --is-ancestor` exit 1 means "no", not "broken") — flagged directly
+in P10's handoff rather than left to be rediscovered at P10's own readiness
+pass.
 
 ## How the work is run
 
@@ -85,7 +98,16 @@ review it.
   fail-closed and falsifiable, but a thin fixture corpus would make it "correct
   only on toy Go". Weight the P08 review accordingly.
 - Sol also flagged that **P10's ancestor/path staleness is contractual only**
-  until that package lands — P01c froze the shape, not the git behaviour.
+  until that package lands — P01c froze the shape, not the git behaviour. Now
+  concrete: P10's handoff carries the `git.run`/exit-code trap found while
+  reviewing P02's merged code (see above).
+- **P00/P01's handoffs fail nyxloom's linter** (`L7`/`L11`/`L12`/`L13` findings —
+  missing BLOCKED-marker/branch-name mentions, an oracle referencing a path
+  outside `scope.touch`, unresolved cross-repo globs). Found running A-089's
+  check for P02; harmless since both packages are already merged and
+  gate-green, but real debt on historical planning docs. P02–P14 are all
+  clean. Not fixed — out of scope for any current package; sweep separately
+  or fold into P14's own audit.
 
 ## Things that will bite a newcomer
 

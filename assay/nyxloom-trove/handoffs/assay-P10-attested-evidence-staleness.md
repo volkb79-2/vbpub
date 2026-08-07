@@ -54,7 +54,7 @@ on branch `feat/assay-P10-attested-evidence-staleness`.
 ## Work
 
 1. Load the attestation format into the already-reserved `Evidence` shape.
-2. Prove equal-or-ancestor with git, then compare only declared reviewed paths across the interval. Do not compare commit hashes as ordering values.
+2. Prove equal-or-ancestor with git, then compare only declared reviewed paths across the interval. Do not compare commit hashes as ordering values. **Trap:** `git.run` (P02) raises `AssayError`/`GIT_FAILED` on ANY non-zero exit. Several git ancestry commands use exit code as a boolean or ternary signal, not as a failure indicator — `merge-base --is-ancestor` exits 1 for a genuine "no"; bare `merge-base` exits 1 when there is no common ancestor at all, which is closer to this package's own "unrelated commit" case (O3) than to `GIT_FAILED`. Do not route an ancestry check through `git.run` and assume a raised error always means a git-level failure; decide deliberately which exit codes are data versus which are `ERROR`, and prefer a comparison that stays inside `run`'s existing all-nonzero-is-an-error contract (e.g. compare `merge-base(a, b)` against `a` for "is-ancestor-or-equal", reserving true git-level failure for a malformed/unresolvable ref) over calling `--is-ancestor` through the shared wrapper unmodified.
 3. Integrate the external result without changing verdict.py or the schema.
 4. Add full independent artifacts for undeclared, missing, current, and stale states.
 5. Break ancestry, path scoping, non-laundering, and exact evidence identity; record failure counts (A-067).
