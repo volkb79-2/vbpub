@@ -1,12 +1,19 @@
 # assay — state of play
 
-> **THE SERIES IS COMPLETE.** P00 through P14, all fifteen packages, merged
-> to `main`, gate green. Written 2026-08-07. This file is now a historical
-> record and an orientation document for whoever next touches `assay` — there
-> is no P15, no outstanding package, no active controller loop. If you are
-> picking this project up: read `nyxloom-trove/reports/assay-P14-BRIEF.md`
-> first (the final-state brief, written for exactly this situation), then
-> this file, then `decisions.md` for the full reasoning trail.
+> **P00–P14 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> Written 2026-08-07, updated the same day after a post-series adversarial
+> review (`nyxloom-trove/reports/assay-v1-post-series-review-sol.md`) found
+> that "gate green" proved the library components, not the executable
+> product: no rigor above R0 is reachable through `assay run` at all, and
+> several confirmed defects (some live in the R0 path shipped today) exist
+> in code every package's own review had already passed. **Read that review
+> file before trusting anything else in this document as current** — a
+> P15-onward series is now being carved directly against its findings (see
+> "Where things stand" below for live status). If you are picking this
+> project up: read the review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
+> (the P14-era final-state brief — still accurate for what P00–P14 built,
+> just not for whether it's ready to depend on), then this file, then
+> `decisions.md`.
 
 ## Where things stand
 
@@ -80,10 +87,42 @@ Key commits: `2ab50f75` (P14 merge, the series-closing commit), `56c821c2`
 (P14 rulings, A-128–A-133), `bca3c345` (P13 merge), `a42fe02a` (P13
 rulings, A-123–A-127), `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
 A-116–A-122). Full history for every package in `decisions.md` (A-090
-through A-133) and each merge commit message — not repeated here; this
-file's job was always "where things stand," never a full changelog, and
-now that the series is closed its job is orientation for a future reader,
-not a live resume point.
+through A-133) and each merge commit message — not repeated here.
+
+**Post-series review and v1.1 (live status, updated same day as P14
+merged):** `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` is a
+second adversarial review, resumed on the same codex session that shaped
+the original P02 carving, this time reviewing the actual shipped code
+rather than the carving process. Verdict: the design is mostly sound, but
+the product is not — three CRITICAL confirmed defects (the CLI never
+wires R1/R2/R3 in at all; `assay verify` doesn't re-derive R1/R2/R3
+*correctness*, only schema shape; a real patch-parsing bug can silently
+drop or misattribute changed lines), several HIGH findings (an
+order-dependent coverage-key-collision bug that can flip PASS↔FAIL on
+identical data; non-NUL-safe Git path parsing; no dirty-worktree check
+before `assay run` executes — live in the shipped R0 path today; an
+attestation directory-staleness bug; unbounded/traversal-exposed
+attestation-file loading; a placeholder `0.0.0` version unsafe for real
+consumers), plus a real, live `env_passthrough`-overrides-declared-`env`
+gap in the current R0 path. The controller independently reproduced the
+two most surprising claims (the patch-parser bug, the coverage-key
+collision) directly against the merged code before trusting the rest of
+the review. Full findings, direct answers to the controller's own
+questions, and an estate-adoption order are all in that file — read it in
+full, this summary is not a substitute.
+
+Sol carved twelve new assay packages (P15 correctness repairs → P16 schema
+v3 → P17/P18/P19 Python R1/R2/R3 CLI wiring → P20 attestation hardening →
+P21 versioned wheel → P22/P23/P24 real Go R1/R2/R3 → P25/P26 real
+lcov/Istanbul + TypeScript adapter) plus one `dstdns`-side adoption
+package, and is now (as of this STATE.md update) carving them as real
+handoff files directly under `nyxloom-trove/handoffs/`, with write access
+and commit authority, one handoff at a time, committing each
+immediately so nothing is lost if the session runs out of budget
+mid-series. **Check `nyxloom-trove/handoffs/` directly for which of
+P15–P27 actually exist before assuming any of them are ready to dispatch**
+— this file will not be kept in sync turn-by-turn while that carving runs
+unattended.
 
 **The pattern across the whole series**: every single readiness pass found
 at least one real gap, never zero — wrong/stale citations (P09's "canary"
@@ -182,8 +221,24 @@ asset; the seating is not. If the controller carves again, something else must
 review it.
 
 **Codex sessions (resumable, keep for continuity):**
-- `019fd977-f091-7dd1-8af5-38c41db89507` — the review → guidance → repair thread.
-- Invoke: `codex exec --sandbox read-only -m gpt-5.6-sol -c model_reasoning_effort=high --cd <dir> resume <id> "<prompt>"`, and **run it via `run_in_background` with NO `nohup`/`&`** or the completion notification is spurious.
+- `019fd977-f091-7dd1-8af5-38c41db89507` — the review → guidance → repair
+  thread. Used three times so far: the original pre-P02 carving review (23
+  confirmed defects), the post-P14 shipped-code review (this session's own
+  `assay-v1-post-series-review-sol.md`, ~1.58M tokens for that pass alone —
+  expect a large fixed per-turn cost even on resume), and (as of this
+  STATE.md update, still possibly in progress) a write-access pass carving
+  P15 onward directly into `nyxloom-trove/handoffs/`.
+- Read-only invocation (review/analysis only, cannot write):
+  `codex exec --sandbox read-only -m gpt-5.6-sol -c model_reasoning_effort=high --cd <dir> resume <id> "<prompt>"`.
+- Write-access invocation (used for the P15+ carving pass — same session,
+  `--sandbox workspace-write`, `--cd /workspaces/vbpub` so `git commit`
+  can reach `.git` at the monorepo root; the PROMPT, not the sandbox, is
+  what scopes it to only writing new files under `assay/nyxloom-trove/
+  handoffs/` and committing each one scoped and immediately, per this
+  repo's own shared-committer discipline below):
+  `codex exec --sandbox workspace-write -m gpt-5.6-sol -c model_reasoning_effort=high --cd /workspaces/vbpub resume <id> "<prompt>"`.
+- Either way, **run it via `run_in_background` with NO `nohup`/`&`** or the
+  completion notification is spurious.
 
 ## Longer-lived notes (not repeated in "Watched" above)
 
