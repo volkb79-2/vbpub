@@ -11,10 +11,18 @@
 format registry: coverage.py JSON, lcov, Cobertura XML, Go coverprofile),
 **P04** (runner, `assay run` CLI, R0 verdict emission), **P05** (adapter
 protocol, four-way union, registry, R1 verdict emission), **P06** (Python
-`LanguageAdapter`), **P07** (statement-span attribution — the one deliberate
-post-P05 protocol extension), **P08** (Go `LanguageAdapter` — the second and
-last new-adapter package; both adapters now exist, `adapters/base.py` is
-frozen for good). Gate green at **1110 passed, exit 0, 100% statement AND
+`LanguageAdapter`), **P07** (statement-span attribution — P07's own
+extension of the protocol), **P08** (Go `LanguageAdapter` — the second and
+last new-LANGUAGE package; both adapters now exist). **Correction to a
+phrase in this file's own prior revision**: "`adapters/base.py` is frozen
+for good" was an overreach, trusting P07's/P08's own successor-brief wording
+("frozen," "final shape") too literally rather than checking it against
+A-084's actual text, which explicitly names THREE anticipated protocol
+extensions — statement-span (P07), canary (P09), mutation (P11) — each
+"only in the package that first proves the need." P09's own `scope.touch`
+correctly includes `adapters/base.py`; what's actually frozen after P08 is
+only the set of packages allowed to add a NEW LANGUAGE, not the protocol
+surface itself. Gate green at **1110 passed, exit 0, 100% statement AND
 branch** (1626 stmts / 640 branches), independently reverified by the
 controller in the foreground gate container on every package, plus a
 post-merge local run on `main` each time.
