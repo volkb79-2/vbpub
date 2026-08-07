@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "outcome": "PASS",
+  "exit_code": 0,
+  "started": "2026-08-07T10:00:00+00:00",
+  "ended": "2026-08-07T10:00:01+00:00",
+  "declared_rigor": ["R0"],
+  "declared_evidence": [],
+  "argv_declared": ["/bin/sh", "-c", "exit 0"],
+  "argv_appended": [],
+  "argv_effective": ["/bin/sh", "-c", "exit 0"],
+  "argv_modified": false,
+  "env_declared": {"MOCK_MODE": "true"},
+  "env_effective": {"MOCK_MODE": "true"},
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "evidence": []
+}

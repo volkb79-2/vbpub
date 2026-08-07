@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "cccccccccccccccccccccccccccccccccccccccc",
+  "outcome": "ERROR",
+  "reason_code": "EXEC_FAILED",
+  "exit_code": 2,
+  "started": "2026-08-07T10:10:00+00:00",
+  "ended": "2026-08-07T10:10:00+00:00",
+  "declared_rigor": ["R0"],
+  "declared_evidence": [],
+  "argv_declared": ["/opt/does-not-exist/tool", "--flag"],
+  "argv_appended": [],
+  "argv_effective": ["/opt/does-not-exist/tool", "--flag"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true,
+      "reason_code": "EXEC_FAILED"
+    }
+  ],
+  "evidence": []
+}
