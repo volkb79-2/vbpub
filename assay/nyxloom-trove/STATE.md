@@ -6,10 +6,10 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P12** — twelve packages, gate green
+**Merged on `main`, P00 through P13** — thirteen packages, gate green
 throughout, each independently reverified by the controller in the
 foreground gate container (and post-merge on `main`) rather than trusted
-from the implementer's own report:
+from the implementer's own report. **Only P14 remains.**
 
 - P00/P01: skeleton, lane config, verdict model + schema.
 - P02: changed-line extraction + measurability guards.
@@ -43,28 +43,42 @@ from the implementer's own report:
   dirs, `jobs=1`/`jobs=3` render byte-identical results under real
   concurrency, and the shared tree survives a real six-mutant run
   byte-unchanged.
+- **P13** (standalone wheel proof): one new test module,
+  `tests/test_standalone.py`, reusing `conftest.py`'s already-existing
+  `standalone` fixture (A-123) — no new build/install mechanism, no
+  `src/assay` change at all (confirmed by empty diff). Proved a real
+  `assay run` through the INSTALLED console script emits a genuine R0
+  verdict; a real Python fixture passes through the full pipeline; the
+  Go adapter ships and works, adapter-level only (A-126, no Go toolchain
+  ever). The readiness pass found and the controller independently
+  reproduced (two real wheel builds inside the gate image, with and
+  without `fallback_version`) that O1's original fallback-version
+  negative was UNFALSIFIABLE in this gate image — `setuptools_scm` is
+  absent from every interpreter there, so removing the declaration
+  changes nothing observable. O1 was corrected (A-124) rather than
+  shipping a silently-vacuous test.
 
-Gate green at **1407 passed, exit 0, 100% statement AND branch** (2234
-stmts / 874 branches).
+Gate green at **1414 passed, exit 0, 100% statement AND branch** (2234
+stmts / 874 branches — unchanged from P12's own totals, since P13 touches
+no `src/assay` code).
 
-**Outstanding:** P13–P14, two packages. **P13 is next** — *"the shipped
-wheel, not the source checkout, is a zero-runtime-dependency executable"*
-(depends on P09/P10/P12, all merged; already correctly listed before this
-session). P12 added zero new runtime dependencies (stdlib only:
-`concurrent.futures`, `shutil`, `datetime`) and P13's scope forbids
-`src/assay` entirely (packaging-only) — no handoff changes needed. P14's
-own "P04–P12" range in O1 already numerically covers P12 without
-special-casing. P12's own successor brief names two DELIBERATE wiring gaps
-neither P13 nor P14 is scoped to close (see "Watched," below) — do not
-invent scope creep to close them; that would be carving without
-independent review.
+**Outstanding: P14 only — the final package.** *"assay can gate itself
+without becoming the only witness to its own correctness"* (depends on
+P13, merged). P14's handoff carries a propagated citation to P13's own
+successor brief this session: the `assay_version == "0.0.0"` gate-image
+gotcha (exclude/normalize it in any artifact comparison), the exact `assay
+run` CLI shape, and confirmation that A-125's `collect_ignore_glob` trap
+applies to P14 too (`tests/conftest.py` is not in P14's `scope.touch`
+either) — though P14 most likely never needs a new committed fixture
+project at all, since O3 is about running assay's OWN existing test suite
+through its own already-declared lane, not a synthetic one.
 
-Key commits: `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
-A-116–A-122), `f3f13580` (P11 merge), `887bae41` (P11 rulings,
-A-112–A-115), `638b4a54` (P10 merge), `aa5b28c7` (P10 rulings, A-110/A-111).
-Full history for P02–P09 in `decisions.md` (A-090–A-109) and their own
-merge commit messages; not repeated here now that twelve packages are
-in — this file's own job is "where things stand," not a full changelog.
+Key commits: `bca3c345` (P13 merge), `a42fe02a` (P13 rulings,
+A-123–A-127), `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
+A-116–A-122). Full history for P02–P11 in `decisions.md` (A-090–A-115)
+and their own merge commit messages; not repeated here now that thirteen
+packages are in — this file's own job is "where things stand," not a full
+changelog.
 
 **The pattern across all nine packages so far**: every readiness pass has
 found at least one real gap, never zero — most either a capability built
@@ -87,28 +101,35 @@ message; not repeated here.
 **Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
 closed `ReasonCode` for "cannot write my own output artifact." Low severity.
 
-**Watched but not acted on:**
-- **Two deliberate wiring gaps P12 left, named explicitly in its own
-  successor brief**: (1) nothing builds real `MutationTarget`s from a real
-  diff — P12 owns execution only, per its own scope; (2) nothing reads
-  `assay.toml`'s `judge.mutation` table (`jobs`/`operators` stay opaque,
-  A-121). Neither P13 (packaging-only, forbids `src/assay`) nor P14
-  (scope.touch has no `mutation.py`/`config.py`) is positioned to close
-  these — matching how attested evidence's own `assay.toml` wiring was
-  also left deliberately unbuilt by this whole v1 series. If either gap
-  ever needs closing, it is a new, separately-carved package, not scope
-  creep folded into P13/P14.
-- Also from P12: `cli.py` still does not call `run_mutation` or pass a
-  `mutation_claim` through anywhere — consistent with the above, not a
-  regression.
+**Watched but not acted on — all of it is now P14's own concern, being the
+last package:**
+- **Two deliberate wiring gaps P12 left**: nothing builds real
+  `MutationTarget`s from a real diff (P12 owns execution only); nothing
+  reads `assay.toml`'s `judge.mutation` table (`jobs`/`operators` stay
+  opaque, A-121). P14's `scope.touch` has no `mutation.py`/`config.py`
+  either — matching how attested evidence's own `assay.toml` wiring was
+  also left deliberately unbuilt by this whole v1 series. If P14's own
+  readiness pass concludes either gap must close to satisfy its oracles,
+  that is a real, reportable escalation (`escalate_if`'s own "a producer
+  outcome cannot be represented..." is adjacent but not identical) — not
+  something to quietly route around.
 - `cli.py` is only touched again by P14 among all remaining packages — full
   `assay run` CLI wiring across rigor levels is entirely P14's job by
   design, not a defect (confirmed intentional: assay's own `assay.toml` is
-  deliberately R0-only). Worth double-checking at P14's own readiness pass
-  that the accumulated `runner.py` surface is sufficient by then.
+  deliberately R0-only). This is now the moment to confirm the
+  accumulated `runner.py`/`assemble_verdict` surface (five optional
+  parameters after P09/P10/P12: `evidence`, `declared_evidence`,
+  `mutation_claim`, plus the base `claims`) is sufficient for P14's own
+  self-hosting lane.
 - lcov/Cobertura parsers (P03) have zero prior art anywhere in the estate;
   Cobertura's multi-`<class>`-per-file merge is untested against any
-  real-world sample. Low risk.
+  real-world sample. Low risk, unlikely to matter for self-hosting (assay
+  gates itself, a Python project, not a Go/lcov consumer).
+- **P00/P01's handoffs still fail nyxloom's linter** (see "Longer-lived
+  notes," below) — STATE.md has flagged folding this into P14's own audit
+  since P02. This is the last chance to do that before the series ends;
+  otherwise it should be named explicitly as accepted, permanent debt
+  rather than silently dropped.
 
 ## How the work is run
 
@@ -172,11 +193,6 @@ review it.
 - **`assay verify` / R3** is recorded as `assay verify --lane X` producing R3
   *about* lane X — deliberately not something `assay run` performs recursively.
   P14 owns it.
-- **P10's handoff already carries a `git.run`/exit-code trap** found while
-  reviewing P02's merged code: `run` raises on ANY non-zero exit, but
-  ancestor-checking git commands (`merge-base --is-ancestor`) use exit code
-  as data. Landed directly in P10's handoff already — nothing further to do
-  until P10 is dispatched.
 - **P00/P01's handoffs fail nyxloom's linter** (`L7`/`L11`/`L12`/`L13` findings —
   missing BLOCKED-marker/branch-name mentions, an oracle referencing a path
   outside `scope.touch`, unresolved cross-repo globs). Found running A-089's

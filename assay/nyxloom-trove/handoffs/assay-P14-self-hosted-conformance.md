@@ -48,9 +48,10 @@ on branch `feat/assay-P14-self-hosted-conformance`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§6, 10, 12 and decisions A-040, A-041, A-066, A-067, A-074–A-077.
+1. `docs/DESIGN-GUIDE.md` §§6, 10, 12 and decisions A-040, A-041, A-066, A-067, A-074–A-077, A-123–A-127.
 2. All hand-written expected artifacts added incrementally by P04–P12, packaged schema tests, P13 wheel proof, `assay.toml`, and `nyxloom-trove/nyxloom.toml`.
 3. `nyxloom/reference/DOCTRINE.md` gate/cockpit and independent-evidence rules.
+4. `nyxloom-trove/reports/assay-P13-BRIEF.md` — P13 (merged, in `depends_on`) is directly relevant: (a) `assay_version` reads `"0.0.0"` in the real `tester-unified:local` gate image, not a real semver — `setuptools_scm` is absent from every interpreter there (A-069/A-124, now independently confirmed three separate times), so if your self-hosting proof compares a real emitted artifact against any hand-written fixture, exclude/normalize `assay_version` the same way P13 had to; (b) `assay run <lane> --file <path> --verdict-json -` writes ONLY the verdict JSON to stdout, exit code is `Outcome.exit_code` directly — P13's own brief has a working minimal R0-only lane TOML if you need a worked example; (c) **A-125 still applies to you, not just P13**: `tests/conftest.py` is NOT in YOUR `scope.touch` either (only `tests/fixtures/verdicts/**`, `tests/test_verdict_conformance.py`, `tests/test_self_hosting.py` are) — you cannot extend `collect_ignore_glob`, so if your self-hosting proof needs a real pytest-project-shaped fixture, either reuse an already-`collect_ignore_glob`-excluded one or materialize file content at test time; the likelier shape (per O3's own text) is that you run `assay`'s OWN already-existing test suite via its own already-declared lane, which needs no new committed fixture project at all.
 
 ## Work
 
