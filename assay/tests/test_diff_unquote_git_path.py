@@ -38,6 +38,18 @@ def test_a_quoted_path_with_named_escapes_decodes_to_the_real_bytes():
     assert _unquote_git_path('"b/back\\\\slash.py"') == "b/back\\slash.py"
 
 
+def test_a_quoted_path_that_also_contains_a_space_loses_only_the_marker_tab():
+    # Controller repair (A-134): git appends its space-disambiguation tab to
+    # the printed LINE, so on a path that some other byte already forced into
+    # quoted form the tab lands AFTER the closing quote. Testing the marker
+    # against `spelled[-1] != '"'` therefore has to happen the other way
+    # round -- strip, then ask whether what remains is quoted.
+    assert _unquote_git_path('"b/say \\"hi\\" here.py"\t') == 'b/say "hi" here.py'
+    assert _unquote_git_path('"b/weird\\nname with space.py"\t') == (
+        "b/weird\nname with space.py"
+    )
+
+
 def test_a_quoted_path_with_an_octal_escape_decodes_the_named_byte():
     # 0x01 (SOH) has no one-letter C escape name, so git spells it \001.
     assert _unquote_git_path('"b/ctrl\\001byte.py"') == "b/ctrl\x01byte.py"

@@ -125,23 +125,34 @@ def _unquote_git_path(spelled: str) -> str:
     backslash/quote, a control byte with a one-letter C name, or a control
     byte named only by its ``\\NNN`` octal value.
 
-    A path containing a SPACE is never wrapped in quotes at all (a space is
-    not itself escape-worthy) — but git still appends exactly one literal
-    trailing tab to the unquoted header line in that case, the one
-    disambiguation a bare (unquoted) ``---``/``+++`` line can carry, since
-    nothing else about the line marks where the path ends. Verified
-    empirically against a real git binary while writing this module: a
-    tab can never be part of the REAL path here, because a genuine trailing
-    tab is itself a control byte and would force full quoting instead — so
-    stripping one trailing, unquoted tab is always this marker, never real
-    content.
+    A SPACE is not itself escape-worthy, so it never *causes* quoting — but
+    whenever the header line git prints contains one, git appends exactly one
+    literal trailing tab to that line (``strchr(line, ' ') ? "\\t" : ""`` in
+    its own ``diff.c``), the one disambiguation a ``---``/``+++`` line can
+    carry, since nothing else about the line marks where the path ends.
+
+    That marker is appended to the printed line, **not** to the path, so it
+    lands AFTER the closing double quote when some *other* byte in the same
+    path forced quoting as well — a path containing both a space and a quote,
+    a backslash, a tab, or an embedded newline prints as
+    ``+++ "b/a \\"b c.py"<TAB>``. It is therefore removed here BEFORE asking
+    whether what remains is a quoted spelling; asking first (P15's original
+    shape) left the whole quoted form unrecognised, and the raw spelling
+    ``"b/a \\"b c.py"`` — quotes, escapes, un-stripped ``b/`` prefix and all —
+    became the file's recorded identity (controller repair, A-134,
+    reproduced against a real git binary). A trailing tab can never be part
+    of the real path in either branch: a genuine trailing tab is a control
+    byte, which forces quoting, and so would appear as the escape ``\\t``
+    INSIDE the closing quote rather than after it.
 
     Raises :class:`ValueError` on a truncated or unrecognised escape rather
     than guessing: a path identity this function cannot decode with
     confidence must not silently become a different path.
     """
+    if spelled.endswith("\t"):
+        spelled = spelled[:-1]
     if len(spelled) < 2 or spelled[0] != '"' or spelled[-1] != '"':
-        return spelled[:-1] if spelled.endswith("\t") else spelled
+        return spelled
     inner = spelled[1:-1]
     out = bytearray()
     index = 0
@@ -204,6 +215,11 @@ def parse_added_lines(diff_text: str) -> AddedLines:
     happens to start ``++``/``--`` safe: while inside a hunk, this parser is
     not looking for header-shaped text at all, only for a line's single
     leading marker byte.
+
+    A unified diff is delimited by ``\\n`` and by nothing else, so that is the
+    only separator this function splits on — see the comment below for why
+    ``str.splitlines()`` is the wrong tool here even though it reads like the
+    obvious one.
     """
     by_file: dict[str, set[int]] = {}
     current: str | None = None
@@ -212,7 +228,31 @@ def parse_added_lines(diff_text: str) -> AddedLines:
     remaining_old = 0
     remaining_new = 0
 
-    for line in diff_text.splitlines():
+    # Split on ``\n`` and NOTHING else. ``str.splitlines()`` also breaks on a
+    # bare ``\r``, a form feed, a vertical tab, ``\x1c``-``\x1e``, ``\x85``,
+    # U+2028 and U+2029 — every one of which occurs in ordinary source
+    # content (a form feed is the conventional page separator in Python and
+    # Lisp sources; a bare ``\r`` sits inside string literals; U+2028 turns up
+    # in JavaScript and JSON). Each splits ONE diff body line into two, and
+    # against a counts-driven state machine that does not merely shift the
+    # following line numbers: the phantom second half consumes a slot, the
+    # hunk closes early, and every remaining added line in it is silently
+    # DROPPED — under-measurement, the direction that turns into a false PASS
+    # (controller repair, A-134; reproduced through a real ``git diff`` of a
+    # real Python file). :func:`assay.git.run` deliberately does not enable
+    # universal-newline translation either, so a ``\r`` in content is still a
+    # ``\r`` by the time it arrives here rather than a second ``\n``.
+    #
+    # Git's own diff output is ``\n``-terminated, so the only artefact of a
+    # plain split is one trailing empty field after the final newline. No real
+    # unified-diff line is ever empty — every body line carries a marker byte
+    # and every header line is non-empty — so dropping it is unambiguous, and
+    # ``str.split`` always returns at least one element, so indexing is safe.
+    lines = diff_text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+
+    for line in lines:
         if state is _State.IN_HUNK and (remaining_old > 0 or remaining_new > 0):
             if line.startswith("\\"):
                 # The no-newline marker (or any future backslash-prefixed

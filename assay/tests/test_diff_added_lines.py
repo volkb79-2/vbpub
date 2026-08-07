@@ -183,6 +183,26 @@ def test_empty_diff_text_reports_no_files():
     assert result.by_file == {}
 
 
+def test_diff_text_whose_last_line_is_not_newline_terminated_loses_nothing():
+    # Real git always terminates its final line, so the trailing empty field
+    # the "\n" split leaves behind is dropped. Text from anywhere else may
+    # simply end -- and then the final line is REAL content that must still be
+    # recorded, not mistaken for that artefact. Same fixture as
+    # test_explicit_hunk_counts_and_multiple_added_lines, minus the last "\n".
+    terminated = (
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -5,0 +6,2 @@\n"
+        "+first_added = 1\n"
+        "+second_added = 2\n"
+    )
+    assert parse_added_lines(terminated).by_file == {"foo.py": frozenset({6, 7})}
+    assert (
+        parse_added_lines(terminated.removesuffix("\n")).by_file
+        == parse_added_lines(terminated).by_file
+    )
+
+
 def test_returns_a_frozen_kw_only_added_lines_with_immutable_contents():
     result = parse_added_lines("--- a/x.py\n+++ b/x.py\n@@ -1,0 +1 @@\n+y\n")
 

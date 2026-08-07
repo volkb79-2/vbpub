@@ -1,9 +1,9 @@
 """The thin git subprocess boundary.
 
 Every other module in this package that needs git talks to it through here —
-two functions that shell out (:func:`run` for text output, :func:`_run_bytes`
-for a raw-bytes boundary one caller needs), and a handful of thin wrappers
-over specific invocations. Nothing above this module ever builds a
+one function that shells out (:func:`_run_bytes`, a raw-bytes boundary),
+:func:`run` which decodes its output, and a handful of thin wrappers over
+specific invocations. Nothing above this module ever builds a
 ``["git", ...]`` argv itself.
 
 The non-obvious behaviours this module exists to get right, taken from the
@@ -41,6 +41,19 @@ C-style unquoter for the one command this module cannot give a NUL-delimited
 form to (``git diff``'s full patch text has no ``-z`` mode) — see that
 module's own docstring.
 
+**Controller repair (A-134).** Turning ``core.quotePath`` off is exactly what
+lets a raw non-ASCII byte reach this process, so the *decoding* side of the
+boundary had to move with it: every command now goes through
+:func:`_run_bytes` and one :func:`_decode_or_reject` policy, not just
+:func:`dirty_paths`. Decoding via ``subprocess``' ``text=True`` would have
+picked git's output apart with **the ambient locale's** codec — under a
+non-UTF-8 ``LC_CTYPE`` a path assay can represent perfectly well became a
+bare ``UnicodeDecodeError`` — and would additionally have applied
+universal-newline translation, silently turning a bare ``\\r`` **inside a
+source line** into a second ``\\n`` and shifting every changed-line number
+after it. Both are refused: UTF-8 explicitly, no newline translation, and a
+typed ``ERROR``/``GIT_FAILED`` for output assay genuinely cannot represent.
+
 This module raises nothing but :class:`~assay.errors.AssayError`; there is no
 locally-defined exception type here (A-091 — ``errors.py`` is outside this
 package's ``scope.touch``).
@@ -66,37 +79,30 @@ _QUOTE_PATH_OFF = ("-c", "core.quotePath=false")
 
 def run(repo: Path, *args: str) -> str:
     """Run ``git -c core.quotePath=false -C <repo> <args>`` and return its
-    stdout, decoded as text.
+    stdout decoded as UTF-8.
 
     *repo* may be any directory inside the working tree — git itself resolves
     the repository from there, same as every wrapper in this module. Raises
     :class:`AssayError` (``ERROR`` / ``GIT_FAILED``) on a non-zero exit; the
     message carries the argv and the first 200 characters of stderr, matching
-    the cited implementations.
+    the cited implementations. Output that is not valid UTF-8 raises the same
+    typed error rather than a bare ``UnicodeDecodeError`` — see
+    :func:`_decode_or_reject`, and the module docstring for why the decode is
+    explicit rather than ``subprocess``' locale-driven ``text=True``.
     """
-    proc = subprocess.run(
-        ["git", *_QUOTE_PATH_OFF, "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
+    return _decode_or_reject(
+        _run_bytes(repo, *args), f"the output of git {' '.join(args)}"
     )
-    if proc.returncode != 0:
-        raise AssayError(
-            f"git {' '.join(args)} failed ({proc.returncode}): "
-            f"{proc.stderr.strip()[:200]}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.GIT_FAILED,
-        )
-    return proc.stdout
 
 
 def _run_bytes(repo: Path, *args: str) -> bytes:
-    """Like :func:`run`, but returns raw stdout bytes.
+    """Run a git command and return its raw stdout bytes, undecoded.
 
-    :func:`dirty_paths` needs this rather than ``run``'s implicit text-mode
-    decoding: a byte sequence that is not valid UTF-8 must become a
-    deliberate, typed :class:`AssayError` (a *decode-or-reject* policy), not
-    a bare ``UnicodeDecodeError`` no caller catches, or a silently mangled
-    path some other error-handling policy would produce.
+    Every caller in this module reaches git through here. Raw bytes are the
+    honest boundary: what git writes is a byte stream, and both the *what
+    encoding* question (:func:`_decode_or_reject`) and the *where do records
+    end* question (``-z`` in :func:`dirty_paths`) are then answered
+    deliberately, in one place, instead of by ``subprocess``' defaults.
     """
     proc = subprocess.run(
         ["git", *_QUOTE_PATH_OFF, "-C", str(repo), *args],
@@ -110,6 +116,30 @@ def _run_bytes(repo: Path, *args: str) -> bytes:
             reason_code=ReasonCode.GIT_FAILED,
         )
     return proc.stdout
+
+
+def _decode_or_reject(raw: bytes, what: str) -> str:
+    """Decode git output — a whole stream, or one ``-z`` field — or refuse it.
+
+    assay's own path contract (:mod:`assay.adapters.base`'s docstring) is
+    UTF-8 throughout, so bytes this function cannot decode name something
+    assay cannot represent anywhere else either. It is refused, loudly and
+    typed, rather than silently replaced, mangled, or decoded with whatever
+    codec the ambient locale happens to name.
+
+    ``git status -z`` never quotes a path — this is exactly why P15 moved
+    :func:`dirty_paths` to it — so for a path field the only way to arrive
+    here is a real on-disk name that is not valid UTF-8.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AssayError(
+            f"{what} is not valid UTF-8 ({raw[:200]!r}): {exc}. assay only "
+            f"supports UTF-8-encoded repository paths.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.GIT_FAILED,
+        ) from exc
 
 
 def repo_top(repo: Path) -> Path:
@@ -138,28 +168,6 @@ def resolve_base(repo: Path, base: str) -> str:
     if len(tokens) >= 3:  # HEAD sha + >=2 parent shas
         return tokens[1]
     return run(repo, "merge-base", base, "HEAD").strip()
-
-
-def _decode_git_path(raw: bytes) -> str:
-    """Decode one ``-z``-delimited path field, or reject it.
-
-    ``git status -z`` never quotes a path — this is exactly why P15 moved
-    :func:`dirty_paths` to it — so the only way this can fail is a path whose
-    real on-disk bytes are not valid UTF-8. assay's own path contract
-    (:mod:`assay.adapters.base`'s docstring) is UTF-8 throughout; a path this
-    function cannot decode cannot be represented anywhere else in assay
-    either, so it is refused here rather than silently replaced or mangled.
-    """
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise AssayError(
-            f"git status -z reported a path that is not valid UTF-8 "
-            f"({raw!r}): {exc}. assay only supports UTF-8-encoded "
-            f"repository paths.",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.GIT_FAILED,
-        ) from exc
 
 
 def dirty_paths(repo: Path) -> tuple[str, ...]:
@@ -207,7 +215,7 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
         record = tokens[index]
         index += 1
         status, path = record[:2], record[3:]
-        paths.add(_decode_git_path(path))
+        paths.add(_decode_or_reject(path, "a path reported by git status -z"))
         if b"R" in status or b"C" in status:
             # A rename/copy record's OLD path is the next NUL-terminated
             # field — it no longer exists in the tree, so it is consumed

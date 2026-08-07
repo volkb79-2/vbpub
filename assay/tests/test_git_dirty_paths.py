@@ -91,9 +91,11 @@ def test_multiple_dirty_categories_and_an_unusual_rename_are_all_reported_togeth
 
 def test_a_failing_git_status_invocation_raises_git_failed(tmp_path):
     # tmp_path is a real directory but NOT a git repository -- a genuine
-    # non-zero exit from the underlying `git status`, exercising
-    # `_run_bytes`'s own failure path (distinct from `run`'s, which
-    # `test_git_resolve_base.py` already covers).
+    # non-zero exit from the underlying `git status`, proving `dirty_paths`
+    # reports a failing invocation as GIT_FAILED rather than as an empty
+    # (clean) tree. (Since A-134 every command shares one `_run_bytes`
+    # failure path, so this no longer exercises a branch distinct from
+    # `test_git_resolve_base.py`'s -- it still pins THIS function's contract.)
     with pytest.raises(AssayError) as excinfo:
         dirty_paths(tmp_path)
 

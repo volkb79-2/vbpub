@@ -302,3 +302,174 @@ Nothing. Every named work item, oracle, and constraint was implementable as
 specified; no `escalate_if` condition was triggered (no public schema
 change was needed for lossless path transport; no legal coverage format was
 found unable to express the disjointness the common model now requires).
+
+---
+
+# Controller review (A-134)
+
+Reviewed against O1/O2/O3 and against the review findings the package was
+carved from. **O2 and O3 held under adversarial checking with no repair
+needed** — the `FileCoverage` invariants, the normalized-key collision
+refusal in both orderings, the resolved-path containment check, and the
+`env`/`env_passthrough` collision check are each real, load-bearing, and
+correctly placed. **O1 did not.** Three defects were found in the new input
+layer itself, all three reproduced against a real `git` binary before any
+code was changed, and all three in the direction that matters: an identity
+silently becoming a different identity, or vanishing.
+
+The shared root cause is worth naming, because it is the same mistake three
+times: **each defect is a Python convenience default quietly deciding a
+boundary this package exists to decide deliberately.**
+
+### C1 — a quoted path that ALSO contains a space lost its identity entirely
+
+`_unquote_git_path` asked whether the spelling was quoted (`spelled[-1] !=
+'"'`) BEFORE removing git's trailing space-disambiguation tab. Those two
+mechanisms are independent: the quote/backslash/control byte forces C-style
+quoting, and git separately appends the tab whenever the *printed line*
+contains a space (`strchr(line, ' ') ? "\t" : ""`, its own `diff.c`) — which
+a space inside an already-quoted path still does. Real git, real repository:
+
+```
++++ "b/a \"b c.py"^I
++++ "b/tab\tand space.py"^I
+```
+
+Against P15 as committed, `parse_added_lines` returned those files' added
+lines under the keys `'"b/a \\"b c.py"'` and `'"b/tab\\tand space.py"'` —
+raw quoted spelling, escapes intact, `b/` prefix not even stripped. Nothing
+downstream matches a path that does not exist, so the file's real changed
+lines are dropped from measurement: under-measurement, the false-PASS
+direction. P15 tested a space, a tab, a quote and an embedded newline each
+ALONE, and each alone passes; the combination was never fixtured.
+
+**Repair:** strip the one trailing marker tab first, then ask whether what
+remains is a quoted spelling. A trailing tab can never be real path content
+in either branch — a genuine trailing tab is a control byte, so it forces
+quoting and appears as `\t` INSIDE the closing quote, not after it.
+
+### C2 — `str.splitlines()` tore real source lines in half, dropping additions
+
+`parse_added_lines` split its input with `str.splitlines()`, which also
+breaks on a bare `\r`, a form feed, a vertical tab, `\x1c`–`\x1e`, `\x85`,
+U+2028 and U+2029. Every one of those occurs in ordinary source content — a
+form feed is the conventional page separator in Python and Lisp sources, a
+bare `\r` sits inside string literals, U+2028 turns up in JavaScript and
+JSON (which P25/P26 bring into scope). Each tears ONE diff body line into
+two.
+
+This is worse under the new counts-driven state machine than it was under
+the old scanner, so it is a genuine regression rather than inherited debt:
+the phantom second half consumes a body slot, the hunk closes one line
+early, and every remaining addition in it is **silently dropped**. The old
+content-sniffing parser mis-shifted the same input but never lost a line.
+Reproduced through a real `git diff` of a real Python file:
+
+```
++\x0c            content: header / <form feed> / def after_the_break(): / pass
+P15 as committed: {'page.py': [2, 4]}        <- line 3 renumbered, line 4 GONE
+correct         : {'page.py': [2, 3, 4]}
+```
+
+**Repair:** split on `"\n"` and nothing else, dropping the single trailing
+empty field the final newline leaves behind (no real unified-diff line is
+ever empty, so that drop is unambiguous).
+
+### C3 — `text=True` decoded git's bytes with the ambient locale, and rewrote them
+
+`git.run` returned `subprocess.run(..., text=True).stdout`. Turning
+`core.quotePath` off is precisely what lets a raw non-ASCII byte reach this
+process — before P15 git octal-escaped every one of them into pure ASCII —
+so P15 moved the decoding question from "never arises" to "load-bearing",
+and left it answered by a default:
+
+- **Locale-dependent.** Under a non-UTF-8 `LC_CTYPE` (verified with
+  `PYTHONCOERCECLOCALE=0 LC_ALL=C`, where `getpreferredencoding` is
+  `ANSI_X3.4-1968`), `run(repo, "diff", ...)` on a repository containing
+  `café.py` raises `UnicodeDecodeError` — the same repository readable or
+  not depending on who runs it. Modern CPython coerces C/POSIX to UTF-8, and
+  the gate image is `en_US.UTF-8`, so this is latent rather than live; it is
+  still the ambient environment deciding what assay can measure.
+- **Untyped.** A genuinely non-UTF-8 path (real, legal on POSIX — the
+  package's own `test_git_dirty_paths.py` already creates one) escapes as a
+  bare `UnicodeDecodeError` from inside `subprocess`, not the typed
+  `ERROR`/`GIT_FAILED` the decode-or-reject policy P15 wrote for
+  `dirty_paths` exists to produce. The policy was applied to `git status`
+  and to no other pathname-bearing command.
+- **Mutating.** `text=True` also enables universal-newline translation,
+  which turns a lone `\r` **inside a source line** into a second `\n` — a
+  phantom diff line git never wrote. This one is fully live, needs no
+  unusual locale, and needs no unusual file: `x = "a\rb"` in a Python source
+  file was enough to make P15 as committed report `{'crlf.py': [2, 4]}`
+  where git's own diff says `[2, 3, 4]`. C2 and C3 are two independent
+  halves of the same failure here, and both had to be repaired for it.
+
+**Repair:** every command now goes through `_run_bytes`, and one
+`_decode_or_reject` policy decodes UTF-8 explicitly, with no newline
+translation and a typed `ERROR`/`GIT_FAILED` for output assay genuinely
+cannot represent. `run`'s duplicated subprocess/error block and the
+single-caller `_decode_git_path` both collapse into that one path, so the
+module is three statements shorter than P15 left it (43 → 40).
+
+### Controller mutation evidence (A-067, controlled break and revert)
+
+Each repair broken alone, the affected modules rerun, then reverted; `git
+diff` confirmed no residue after each.
+
+| # | Break | Result |
+|---|---|---|
+| C1 | restore "test for quoted, then strip tab" ordering | **3 failed** — both real-git combined-path fixtures and the white-box marker test |
+| C2 | restore `diff_text.splitlines()` | **2 failed** — the form-feed and carriage-return real-git content fixtures |
+| C3 | restore `run`'s own `text=True` subprocess block | **3 failed** — the non-UTF-8 rejection, the CR-survives-decoding test, and (independently) the CR content fixture |
+
+### Tests added by the controller
+
+`test_diff_real_git_fixtures.py` +4 (space+quote and space+embedded-newline
+paths, each asserting the combined shape really is what git printed; form
+feed and carriage return in real source content),
+`test_diff_unquote_git_path.py` +1 (the marker tab after a closing quote),
+`test_diff_added_lines.py` +1 (text whose last line is not newline-
+terminated loses nothing — the `\n`-split's other branch),
+`test_git_output_decoding.py` (new, 2 — typed rejection of non-UTF-8 output
+through a real committed filename, and a CR surviving decoding intact). One
+stale comment corrected in `test_git_dirty_paths.py`: since A-134 that
+test no longer exercises a `_run_bytes` failure branch distinct from
+`run`'s; it still pins `dirty_paths`' own contract, and now says so.
+
+### Gate after the repairs
+
+Real `tester-unified` Docker gate, argv read verbatim out of
+`nyxloom-trove/nyxloom.toml` and substituted only for `{worktree}`:
+**PASS (exit 0)**, `7 passed` for the independent second step. Independent
+in-container coverage (`/opt/tester-venv`'s own python, same source tree —
+`assay run` itself asserts R0 only, A-133, so coverage is never its own
+witness):
+
+```
+1585 passed, 1 skipped in 62.93s
+TOTAL   2531 stmts (0 miss)   988 branches (0 partial)   100%
+```
+
+(up from the implementer's 1576/2529/986 — +9 tests, and `git.py` three
+statements SMALLER, 43 → 40, from collapsing the duplicated subprocess
+block and single-caller `_decode_git_path` into one path.)
+
+Ambient devcontainer, documented environment-specific `test_standalone.py`
+case deselected: 1578 passed. Note for whoever repeats this: running the
+in-container coverage with `--ignore=tests/test_self_hosting.py` leaves
+`src/assay/__init__.py`'s `PackageNotFoundError` fallback (lines 43-44)
+uncovered and reports 99% — that file holds the test which covers it, and
+skips only the one case needing `ASSAY_SELF_HOSTING_VERDICT`. Do not ignore
+it when measuring coverage.
+
+### Judgement
+
+O1's own text names "spaces, tabs, Unicode, and an embedded newline" and
+"the exact new-side line" — C1 and C2 were both squarely inside what the
+oracle already claimed, and passed review only because every fixture varied
+one dimension at a time. The lesson is not "test more shapes" but the one
+the package's own diff.py docstring already argues for and then did not
+finish applying: **a boundary you did not decide is a boundary something
+else decided for you.** P15's rewrite correctly refused to let a diff body
+line's CONTENT decide hunk structure, and then let `str.splitlines`,
+`subprocess`'s locale default, and an ordering accident decide three others.
