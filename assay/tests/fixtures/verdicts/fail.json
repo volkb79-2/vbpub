@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
@@ -8,7 +8,10 @@
   "exit_code": 1,
   "started": "2026-08-06T09:10:00+00:00",
   "ended": "2026-08-06T09:10:31+00:00",
-  "declared_rigor": ["R0", "R1", "R3"],
+  "declared_rigor": ["R0", "R1"],
+  "declared_evidence": [
+    {"source": "attested", "key": "adversarial-review"}
+  ],
   "argv_declared": ["pytest", "tests", "-q"],
   "argv_appended": ["-k", "not slow"],
   "argv_effective": ["pytest", "tests", "-q", "-k", "not slow"],
@@ -34,12 +37,17 @@
         "pct": 66.67,
         "considered": 1
       }
-    },
+    }
+  ],
+  "evidence": [
     {
-      "rigor": "R3",
       "source": "attested",
+      "key": "adversarial-review",
       "status": "PASS",
-      "verified_by_assay": false
+      "verified_by_assay": false,
+      "producer": "reviewer@example",
+      "attested_commit": "2222222222222222222222222222222222222222",
+      "reviewed_paths": ["src/assay/verdict.py"]
     }
   ]
 }

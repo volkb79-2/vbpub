@@ -92,22 +92,20 @@ bug at the level of the evidence table**, and it deserves the same guard.
 
 What makes an attestation more than a rubber stamp — all of it mechanical:
 
-- it names the commit it reviewed, and assay refuses one that is not the commit
-  under test;
+- it names the commit it reviewed, which must be the commit under test or an
+  ancestor of it; an unrelated or descendant commit cannot satisfy the record;
 - it records its producer (model id or human identity), so a consumer can weigh
   it;
-- assay diffs the paths the attestation claims to have reviewed between the
-  attested commit and HEAD, and marks it `STALE` if they moved. **assay cannot
-  judge a review, but it can prove a review is stale.**
-- the claim always carries `verified_by_assay: false`. assay never upgrades an
+- assay diffs the paths the attestation claims to have reviewed between an
+  ancestor attested commit and the commit under test. Byte-identical reviewed
+  paths remain current; a changed reviewed path renders
+  `NO_MEASUREMENT/STALE_ATTESTATION`. **assay cannot judge a review, but it can
+  prove a review is stale.**
+- the evidence entry always carries `verified_by_assay: false`. assay never upgrades an
   attestation.
 
-Asynchronous evidence (a fuzzing campaign, a retroactive mutation audit) is
-Tier 3 with a `PENDING` **claim status** — not a new exit code. This implies
-**claim-level enforcement**: a lane may gate on R1 while an async fuzz claim is
-advisory. TESTING-METHODOLOGY already supplies the rule: *"a job nyxloom can
-wait for and verify may block a merge; a fire-and-forget job is an audit, not a
-gate."*
+Asynchronous `PENDING` evidence is deferred until claim-level enforcement is
+designed. It is not a seventh outcome hidden inside an evidence entry.
 
 ## 4. The boundary with ciu, and why they are not one tool
 
@@ -184,10 +182,11 @@ first proposal was "augment the ambient environment", which is quietly
 incoherent: at S3 the lane runs in a container, where the host shell's
 environment is *already* not inherited — Docker supplies the image's `ENV` plus
 explicit `-e`. "Augment" would make the same lane file mean different things at
-S1 and S3. The base comes from the execution context (a fact of WHERE, declared
-in `[…where]`), never a value assay invents. With no `PATH`, `argv[0]`
-resolution fails → exit 127 → `ERROR/EXEC_FAILED`, loudly, with the fix in the
-message.
+S1 and S3. The base comes from the execution context (a fact of WHERE), never a
+value assay invents. A bare `argv[0]` is accepted only when `PATH` appears
+explicitly in `env` or `env_passthrough`; otherwise the lane fails to load with
+`BAD_LANE_CONFIG`. This prevents Python/libc's implementation-default executable
+search from becoming an undeclared input. An argv containing `/` needs no PATH.
 
 ## 6. The verdict contract
 
@@ -218,9 +217,9 @@ must stop and ask, never invent one:
 | Outcome | `reason_code` |
 |---|---|
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
-| `FAIL` | `UNCOVERED_LINES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED` |
+| `FAIL` | `UNCOVERED_LINES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `BASE_IS_HEAD`, `EMPTY_COVERAGE` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `MISSING_ATTESTATION`, `STALE_ATTESTATION` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `CANARY_INCONCLUSIVE` |
 
@@ -266,14 +265,23 @@ only when every declared claim passed. `ERROR` and `NO_MEASUREMENT` outrank
 `BUDGET_EXCEEDED` outranks `FAIL` because the run was truncated, so the finding
 may be partial.
 
-### One entry per declared rigor level, not one flat verdict
+### Computed rigor and external evidence are separate axes
 
 TESTING-METHODOLOGY's thesis is *"record the evidence actually obtained rather
 than reducing quality to one coverage percentage."* A lane declaring
 `["R0","R1","R2"]` can pass R0, pass R1 and be `INCONCLUSIVE` on R2; a scalar
-verdict flattens that into a lie. `claims[]` also gives Tier 2 and Tier 3
-evidence somewhere to live — without it, *"R2 was declared but rendered no
-judgement"* is indistinguishable from *"R2 was never declared"*.
+verdict flattens that into a lie. `claims[]` therefore carries exactly one
+**computed** entry per `declared_rigor` level.
+
+Adjudicated and attested evidence are not rigor levels. The sibling
+`declared_evidence[]` and `evidence[]` arrays are keyed by the explicit pair
+`(source, key)` and must cover each other exactly. Thus *"adversarial-review was
+declared but rendered no judgement"* cannot look like *"adversarial-review was
+never declared"*, and no external review is forced into a fictitious R3 slot.
+The attested branch records `producer`, `attested_commit`, and `reviewed_paths`
+when an attestation was obtained, while always recording
+`verified_by_assay: false`. The adjudicated sibling shape is reserved in v2;
+the first real integration adds its payload and registry behavior.
 
 ### Transparency of what actually ran
 
@@ -289,7 +297,7 @@ the caller's domain (§7).
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version` (an integer, bumped on any breaking shape change) and
+carries `schema_version: 2` (an integer, bumped on any breaking shape change) and
 `assay_version`.
 
 nyxloom's existing `GateResult` is a strict subset: six REQUIRED fields

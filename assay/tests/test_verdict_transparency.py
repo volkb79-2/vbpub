@@ -36,6 +36,7 @@ RESOLVED = {
     "assay_version": "0.1.0",
     "outcome": Outcome.PASS,
     "declared_rigor": ("R0",),
+    "declared_evidence": (),
     "argv_declared": ("pytest", "-q"),
     "argv_appended": (),
     "argv_effective": ("pytest", "-q"),

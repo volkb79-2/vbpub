@@ -1,6 +1,6 @@
 ---
 schema_version: 1
-id: assay-P01a-skeleton-and-lane-config
+id: assay-P00-skeleton-and-lane-config
 project: assay
 title: "Project skeleton and the assay.toml loader that refuses to invent"
 tier: implement-2

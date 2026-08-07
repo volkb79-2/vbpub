@@ -51,13 +51,13 @@ series       = "nyxloom-trove/handoffs/README.md"
 # Code reaches the container through the BOUND worktree via PYTHONPATH, never a
 # baked copy, exactly as the other four Python projects do.
 #
-# --cgroup-parent=nyxloom-gates.slice: a gate is a CPU- and IO-heavy background
-# job that must never compete with production on this host. A MISSING slice
-# fails OPEN (systemd creates a transient limitless one), so the slice being
-# real is a host precondition, not something this file can assert.
+# `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_BACKGROUND and verifies the
+# named unit against the host cgroup tree before Docker sees it. An unset
+# variable or a missing/unconfigured slice refuses the launch; there is no
+# hardcoded fallback to Docker's unconfined default.
 
 [gates.tester-unified]
-argv = ["bash", "-c", "set -euo pipefail && docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/assay && export PYTHONPATH=src && /opt/tester-venv/bin/python -m pytest tests -q'"]
+argv = ["bash", "-c", "set -euo pipefail && cgroup_parent=\"$({worktree}/assay/tools/cgroup-parent.sh)\" && docker run --rm --cgroup-parent=\"$cgroup_parent\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/assay && export PYTHONPATH=src && /opt/tester-venv/bin/python -m pytest tests -q'"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 1800

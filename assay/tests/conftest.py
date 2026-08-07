@@ -51,7 +51,7 @@ rigor = ["R0"]
 enforcement = "gate"
 argv = ["pytest", "tests/unit", "-q"]
 env = { MOCK_MODE = "true" }
-env_passthrough = ["HOME", "TMPDIR"]
+env_passthrough = ["HOME", "TMPDIR", "PATH"]
 budget = "5m"
 allow_argv_append = false
 """
@@ -68,7 +68,7 @@ rigor = ["R0", "R1"]
 enforcement = "advisory"
 argv = ["pytest", "tests", "-q", "--cov-report=json:cov.json"]
 env = { MOCK_MODE = "true", TZ = "UTC" }
-env_passthrough = []
+env_passthrough = ["PATH"]
 budget = "1h30m"
 allow_argv_append = true
 

@@ -27,7 +27,7 @@ argv = ["python", "-m", "pytest", "tests", "-q"]
 # the gate container through the bound worktree via PYTHONPATH, never a baked
 # copy, which is why this one variable is declared rather than passed through.
 env = { PYTHONPATH = "src" }
-env_passthrough = []
+env_passthrough = ["PATH"]
 
 # Read from the gate's own timeout_seconds = 1800 in nyxloom-trove/nyxloom.toml
 # rather than invented.

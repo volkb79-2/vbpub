@@ -1,76 +1,86 @@
-# assay — the carved v1 package series
+# assay — repaired v1 package series
 
-Carved 2026-08-06 from the scoping session recorded in
-`../decisions.md`; reasoning in `../../docs/DESIGN-GUIDE.md`.
+Reissued 2026-08-07 from repaired input revision `9bd7d206`. P00 and P01 are
+merged. P01c repaired their contract before any outstanding implementation was
+dispatched: verdict schema v2 separates computed rigor from external evidence,
+adds honest command failure, and freezes PATH/attestation/cgroup semantics.
 
-Carving principle (nyxloom CORE REDESIGN, learned when CR-07a landed at 823
-changed lines and its own reviewer said it should have been split):
+The carving rule remains:
 
-> **Put the thing whose CLAIM needs attacking in its own package, and let the
-> volume of mechanical consequence follow separately.**
+> Put the thing whose **claim** needs attacking in its own package. Do not split
+> mechanical consequences that exist only to make that one claim observable.
 
-Every package below names one claim. If a package cannot state its claim in one
-sentence, it is two packages.
+That rule yields thirteen outstanding packages, not twenty. Runner + emission
+remain one package because both answer which command result was recorded.
+Canary construction + execution remain one because neither half can prove a
+known-good/known-bad pair alone. Go parsing + its adapter remain one additive
+second-language proof. Only mutation construction/execution and standalone/
+self-hosting are split: in each pair, either half can be green while the other
+is false, and each has an independent negative.
+
+## Series
 
 | # | Package | Claim to attack | Depends on |
 |---|---|---|---|
-| P01a | skeleton, lane config loader | does the config contract refuse to invent? | — |
-| P01b | verdict model, JSON Schema | does the schema REJECT a malformed verdict? | P01a |
-| P02 | changed lines, base resolution, measurability | does it refuse to render a verdict it cannot justify? | P01a |
-| P03 | coverage parser registry | is coverage format independent of language? | P01a |
-| P04 | evaluation core, adapter protocol, Python adapter | did the four-way union land, and is the core language-free? | P01b, P02, P03 |
-| P05 | statement-span attribution, `unclassified` | is genuine ambiguity ever passed silently? | P04 |
-| P06 | Go adapter, go-cover parser, fixture projects | is the adapter boundary real? | P05 |
-| P07 | runner, CLI, verdict emission | does the real exit propagate, and is every outcome recorded? | P06 |
-| P08 | canary | does the gate demonstrably reject? | P07 |
-| P09 | attested claims and staleness | can assay require evidence it cannot produce, without pretending to have verified it? | P07 |
-| P10 | changed-line mutation | do changed lines have non-hollow tests — and does mutation FIT the protocol? | P08 |
-| P11 | self-hosting and standalone proof | is the standalone claim real, and is self-gating non-circular? | P10 |
+| P00 | skeleton and lane config | does configuration refuse to invent? | — |
+| P01 | verdict model and schema v1 | does the schema reject malformed artifacts? | P00 |
+| P01c | merged contract repair (revision `9bd7d206`) | are computed claims, external evidence, command failure, PATH and gate placement honest? | P01 |
+| P02 | changed lines and measurability | does assay refuse to judge a diff it cannot see? | P01 + repaired input |
+| P03 | coverage formats registry | is coverage format explicit and language-independent? | P01 + repaired input |
+| P04 | runner, CLI, verdict emission | is the real command result recorded on every terminal path? | P02 |
+| P05 | language-free evaluation core | does the four-way union work through a fake language? | P02, P03, P04 |
+| P06 | Python adapter union fidelity | does Python add the union without changing core? | P05 |
+| P07 | statement-span attribution | is genuine line-to-statement ambiguity ever passed? | P06 |
+| P08 | Go adapter boundary proof | is the second language additive with no Go toolchain? | P03, P07 |
+| P09 | cause-sensitive canary | does the whole gate reject valid known-bad input for the intended cause? | P04, P08 |
+| P10 | attested evidence staleness | is a review recorded as external and rejected only when its paths are stale? | P02, P04 |
+| P11 | valid mutant construction | is every mutant a valid single changed-line experiment? | P08 |
+| P12 | bounded mutation execution | do tests kill those mutants under an observed job bound and clean baseline? | P04, P11 |
+| P13 | standalone wheel proof | does the built wheel run offline without source/dependency leakage? | P09, P10, P12 |
+| P14 | self-hosted conformance | can assay gate itself while an independent oracle remains authoritative? | P13 |
 
-## Three oracles that are structural, not behavioural
+## Why the four challenged bundles changed this way
 
-These are the ones that keep the design honest, and they are worth knowing
-before dispatching anything:
+- Old P04 split at its actual seam. P05 owns the language-free four-way union;
+  P06 owns Python fidelity. A fake adapter can prove P05 while a broken Python
+  classifier can fail P06, so these are independent claims.
+- Old P06 stays one package as P08. Coverprofile interpretation has value here
+  only as the evidence fed through the Go adapter; splitting parser from adapter
+  would restate the same second-language-boundary oracle and double orientation.
+- Old P08 stays one package as P09. The control and transformed executions are
+  the two halves of one cause-sensitive canary claim, not separate products.
+- Old P10 splits into P11/P12. Syntactically valid, one-at-a-time mutants can be
+  proven without executing tests; a perfect generator can still be followed by
+  a runner that skips the baseline, exceeds `jobs`, contaminates source, or
+  launders crashes. Those negatives do not overlap.
+- Old P11 splits into P13/P14. A clean installed wheel can be proved without
+  self-gating, and a source-tree self-gate can be circular despite a good wheel.
+  Conflating them allowed either half to stand in for the other.
 
-- **P04 O1** — the core must contain no `ast` import and no `.py` glob, proven by
-  driving evaluation through a fake adapter. Its negative is how four copies
-  happened.
-- **P06 O1** — adding the *second* adapter must touch **no core file**, proven by
-  `git diff --name-only`. This is P90's O3, made mechanical.
-- **P10 O1** — mutation must touch no protocol file either. This is the
-  containment for the decision to include mutation in v1 (A-003/A-004): the
-  protocol is settled by three consumers before the most idiosyncratic one
-  arrives.
+## Independent conformance is incremental, not postponed
+
+A-041 applies as soon as P04 introduces the first real producer. P04 and every
+later package that adds a producer path must add a hand-written, complete
+expected-verdict artifact and compare ordinary parsed JSON field-for-field;
+assay may never generate its own expected artifacts. P14 audits vocabulary
+completeness and adds `assay verify` only as a secondary layer. Thus P14 is not
+the first independent oracle—it is the final completeness proof.
+
+Before P04, P02 and P03 return typed domain results and use independently
+written input/output fixtures; they do not emit verdicts and cannot pretend to
+have artifact conformance.
+
+## Tier 2 reservation
+
+Schema v2 already carries the `declared_evidence[]` / `evidence[]` sibling
+shape with `(source, key)` identity for `adjudicated` and `attested` evidence.
+P10 implements only attested loading. No adjudicator registry is created until
+a real integration exists, so that future addition is additive rather than a
+consumer-wide schema bump (A-078).
 
 ## Not in this series
 
-Adoption packages (topos → ciu → dstdns, A-037) are per-consumer and carved
-separately once P11 lands. They **declare and verify; they do not remediate**
-(A-038) — a project's general test debt is a different job with a different
-owner.
-
-## What the P01 pre-flight bought
-
-P01 was dispatched as a pre-flight (orient and report, implement nothing) and
-came back **NOT READY** with three blockers and seven ambiguities — all defects
-in the specification, none in the plan. The three worth remembering:
-
-- **P01's own deliverable was invalid under P01's own loader.** O1 required
-  `source_roots`/`allow_excluded` unconditionally, while Work item 6 required
-  assay's own R0 lane to omit them. Closed by A-048: the five `judge` fields are
-  *conditionally* required.
-- **`BUDGET_EXCEEDED` had no `reason_code`** anywhere in the spec, though A-022
-  requires one on every non-PASS outcome. Closed by A-050.
-- **O5's grep could not fail.** `grep -rn` prefixes every line with a path
-  containing `assay`, and the `-v` alternation contained `assay`, so every line
-  was filtered regardless of content — verified passing clean on a file
-  importing `requests`, `flask` and a function-level `boto3`. Closed by A-060:
-  AST walk against `sys.stdlib_module_names`, never grep.
-
-Also closed beforehand, as controller chores: **A-O01** (assay registered as a
-nyxloom project — a package cannot bootstrap the gate that judges it) and
-**A-O02** (no image rebuild needed; `tester-unified:local` already carries the
-whole closure, which follows from A-005's zero runtime dependencies).
-
-The lesson generalises: **an oracle that cannot fail is worse than no oracle**,
-and the cheapest place to find one is before the implementation, not after.
+Consumer adoption, any Tier-2 integration, policy/enforcement machinery,
+whole-project mutation, TypeScript, and toolchain/container promotion remain
+separate work. Adoption declares and verifies; it does not remediate unrelated
+test debt.

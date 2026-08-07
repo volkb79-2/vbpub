@@ -23,8 +23,9 @@ happened there is no coverage payload, not a zeroed one (A-025) — a consumer
 reading ``pct`` and ignoring ``outcome`` must find nothing to read. When no lane
 ever resolved there is no ``argv_declared``, not an empty one: ``[]`` asserts
 *"the lane declared no argv"*, which is false. So the lane-resolved group
-(``declared_rigor``, the three ``argv_*``, ``argv_modified`` and the two
-``env_*``) is all-present or all-absent, and :class:`Verdict` refuses a mixture.
+(``declared_rigor``, ``declared_evidence``, the three ``argv_*``,
+``argv_modified`` and the two ``env_*``) is all-present or all-absent, and
+:class:`Verdict` refuses a mixture.
 
 **One entry per declared rigor level, not a flat verdict** (A-024). A lane
 declaring ``["R0","R1","R2"]`` can pass R0, pass R1 and be ``INCONCLUSIVE`` on
@@ -33,9 +34,12 @@ but rendered no judgement"* stays distinguishable from *"R2 was never
 declared"*, which is why :class:`Verdict` refuses claims that do not cover
 ``declared_rigor`` exactly.
 
-**assay never marks attested evidence verified** (A-033). It cannot judge a
-review, and laundering one as verified is worse than omitting it, because it is
-now on the record.
+**Evidence provenance is not rigor.** ``claims`` contains only evidence assay
+computed for R0-R3. Adjudicated and attested requirements use the sibling
+``declared_evidence`` / ``evidence`` arrays, keyed by ``(source, key)``. The two
+arrays must cover the same identities exactly, preserving the distinction
+between *declared but rendered no judgement* and *never declared* without
+pretending an external review is an R3 computation.
 
 What is NOT here, on purpose: ``gate_id``, ``phase`` and ``environment``.
 DESIGN-GUIDE §6 describes the artifact as a superset of nyxloom's
@@ -63,6 +67,7 @@ from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
 
 __all__ = [
     "CLAIM_SOURCES",
+    "EVIDENCE_SOURCES",
     "EXIT_CODES",
     "LANE_RESOLVED_FIELDS",
     "REASON_CODES",
@@ -71,6 +76,8 @@ __all__ = [
     "VERDICT_SCHEMA_VERSION",
     "Claim",
     "Coverage",
+    "Evidence",
+    "EvidenceDeclaration",
     "Outcome",
     "ReasonCode",
     "Verdict",
@@ -84,7 +91,7 @@ __all__ = [
 #: `schema_version` (A-065): two independently versioned contracts, and
 #: conflating them would couple a lane-file format change to every emitted
 #: artifact.
-VERDICT_SCHEMA_VERSION = 1
+VERDICT_SCHEMA_VERSION = 2
 
 #: Where the shipped schema lives inside the installed package. Declared as
 #: package data in `pyproject.toml`; without that it exists in the source tree
@@ -92,8 +99,9 @@ VERDICT_SCHEMA_VERSION = 1
 #: every in-tree test stays green.
 SCHEMA_RESOURCE = "schemas/verdict.schema.json"
 
-#: A-032's three tiers, as the claim envelope spells them.
-CLAIM_SOURCES: tuple[str, ...] = ("computed", "adjudicated", "attested")
+#: Computed rigor claims and external evidence are deliberately separate axes.
+CLAIM_SOURCES: tuple[str, ...] = ("computed",)
+EVIDENCE_SOURCES: tuple[str, ...] = ("adjudicated", "attested")
 
 #: A-023, in order. `PASS` is not a member: it is what remains when no adverse
 #: status is present, which is the same statement as "PASS only when every
@@ -110,6 +118,7 @@ ROLLUP_PRECEDENCE: tuple[Outcome, ...] = (
 #: all absent — see the module docstring on absent-vs-empty.
 LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "declared_rigor",
+    "declared_evidence",
     "argv_declared",
     "argv_appended",
     "argv_effective",
@@ -251,14 +260,7 @@ class Coverage:
 
 @dataclass(frozen=True, kw_only=True)
 class Claim:
-    """One declared rigor level's evidence (A-024, A-055).
-
-    The envelope — ``rigor``, ``source``, ``status``, ``verified_by_assay`` and
-    the same closed ``reason_code`` the verdict carries — is what all three
-    evidence tiers share. Kind-specific payloads hang off the rigor level;
-    ``coverage`` (R1) is the one P01b ships, and P04/P05/P08/P10 add theirs the
-    same way.
-    """
+    """One COMPUTED declared rigor level's evidence (A-024)."""
 
     rigor: str
     source: str
@@ -287,15 +289,19 @@ class Claim:
                 f"{self.verified_by_assay!r}"
             )
         _check_reason_code(self.status, self.reason_code, f"claim[{self.rigor}]")
-
-        # A-033. There is no code path by which an attestation becomes a
-        # computed claim, and this is it being absent.
-        if self.source == "attested" and self.verified_by_assay:
+        if self.reason_code in {
+            ReasonCode.MISSING_ATTESTATION,
+            ReasonCode.STALE_ATTESTATION,
+        }:
             raise ValueError(
-                f"claim[{self.rigor}]: an attested claim always carries "
-                f"verified_by_assay=False; assay never upgrades an attestation, "
-                f"and marking one verified is worse than omitting it because it "
-                f"is now on the record"
+                f"claim[{self.rigor}]: {self.reason_code} belongs to external "
+                f"attested evidence, not a computed rigor claim"
+            )
+
+        if not self.verified_by_assay:
+            raise ValueError(
+                f"claim[{self.rigor}]: a computed claim must carry "
+                f"verified_by_assay=True; external evidence belongs in evidence[]"
             )
 
         if self.coverage is not None:
@@ -327,6 +333,131 @@ class Claim:
         return payload
 
 
+def _check_nonempty(value: str, what: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{what} must be a non-empty string, got {value!r}")
+
+
+@dataclass(frozen=True, kw_only=True)
+class EvidenceDeclaration:
+    """One externally sourced requirement, identified independently of rigor."""
+
+    source: str
+    key: str
+
+    def __post_init__(self) -> None:
+        if self.source not in EVIDENCE_SOURCES:
+            raise ValueError(
+                f"evidence declaration source must be one of "
+                f"{list(EVIDENCE_SOURCES)}, got {self.source!r}"
+            )
+        _check_nonempty(self.key, "evidence declaration key")
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        return self.source, self.key
+
+    def to_dict(self) -> dict[str, str]:
+        return {"source": self.source, "key": self.key}
+
+
+@dataclass(frozen=True, kw_only=True)
+class Evidence:
+    """One adjudicated or attested result, keyed by ``(source, key)``.
+
+    Attestation loading and git comparison are intentionally not implemented
+    here. The contract records the inputs and the honest result: an equal
+    commit, or an ancestor whose reviewed paths are unchanged, may satisfy the
+    declaration; changed reviewed paths render NO_MEASUREMENT / STALE_ATTESTATION.
+    """
+
+    source: str
+    key: str
+    status: Outcome
+    verified_by_assay: bool
+    reason_code: ReasonCode | None = None
+    producer: str | None = None
+    attested_commit: str | None = None
+    reviewed_paths: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.source not in EVIDENCE_SOURCES:
+            raise ValueError(
+                f"evidence source must be one of {list(EVIDENCE_SOURCES)}, got "
+                f"{self.source!r}"
+            )
+        _check_nonempty(self.key, "evidence key")
+        if not isinstance(self.status, Outcome):
+            raise ValueError(
+                f"evidence[{self.source}:{self.key}] status must be an Outcome, "
+                f"got {self.status!r}"
+            )
+        if not isinstance(self.verified_by_assay, bool):
+            raise ValueError(
+                f"evidence[{self.source}:{self.key}] verified_by_assay must be "
+                f"a boolean, got {self.verified_by_assay!r}"
+            )
+        label = f"evidence[{self.source}:{self.key}]"
+        _check_reason_code(self.status, self.reason_code, label)
+        if self.reason_code in {
+            ReasonCode.MISSING_ATTESTATION,
+            ReasonCode.STALE_ATTESTATION,
+        } and self.source != "attested":
+            raise ValueError(f"{label}: {self.reason_code} requires attested source")
+
+        payload = (self.producer, self.attested_commit, self.reviewed_paths)
+        if self.source == "adjudicated" and any(value is not None for value in payload):
+            raise ValueError(f"{label}: attestation payload belongs only to attested evidence")
+        if self.source == "attested":
+            if self.verified_by_assay:
+                raise ValueError(
+                    f"{label}: attested evidence always carries "
+                    f"verified_by_assay=False; assay never upgrades a review"
+                )
+            has_payload = any(value is not None for value in payload)
+            if has_payload and not all(value is not None for value in payload):
+                raise ValueError(
+                    f"{label}: producer, attested_commit and reviewed_paths are "
+                    f"all present or all absent"
+                )
+            if self.status is Outcome.PASS or self.reason_code is ReasonCode.STALE_ATTESTATION:
+                if not all(value is not None for value in payload):
+                    raise ValueError(
+                        f"{label}: a present attestation requires producer, "
+                        f"attested_commit and reviewed_paths"
+                    )
+            if self.reason_code is ReasonCode.MISSING_ATTESTATION and has_payload:
+                raise ValueError(f"{label}: missing attestation cannot carry its payload")
+            if self.producer is not None:
+                _check_nonempty(self.producer, f"{label} producer")
+                _check_nonempty(self.attested_commit, f"{label} attested_commit")
+                if not self.reviewed_paths:
+                    raise ValueError(f"{label} reviewed_paths must not be empty")
+                for path in self.reviewed_paths:
+                    _check_nonempty(path, f"{label} reviewed path")
+                if len(set(self.reviewed_paths)) != len(self.reviewed_paths):
+                    raise ValueError(f"{label} reviewed_paths contains a duplicate")
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        return self.source, self.key
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source": self.source,
+            "key": self.key,
+            "status": self.status.value,
+            "verified_by_assay": self.verified_by_assay,
+        }
+        if self.reason_code is not None:
+            payload["reason_code"] = self.reason_code.value
+        if self.producer is not None:
+            payload["producer"] = self.producer
+            payload["attested_commit"] = self.attested_commit
+            payload["reviewed_paths"] = list(self.reviewed_paths or ())
+        return payload
+
+
 @dataclass(frozen=True, kw_only=True)
 class Verdict:
     """One verdict: one lane, one commit (§7).
@@ -347,8 +478,10 @@ class Verdict:
     ended: str
     assay_version: str
     claims: tuple[Claim, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
     reason_code: ReasonCode | None = None
     declared_rigor: tuple[str, ...] | None = None
+    declared_evidence: tuple[EvidenceDeclaration, ...] | None = None
     argv_declared: tuple[str, ...] | None = None
     argv_appended: tuple[str, ...] | None = None
     argv_effective: tuple[str, ...] | None = None
@@ -379,6 +512,7 @@ class Verdict:
         _check_reason_code(self.outcome, self.reason_code, "verdict")
         self._check_lane_resolved_group()
         self._check_claims_cover_declared_rigor()
+        self._check_evidence_covers_declarations()
         self._check_outcome_agrees_with_rollup()
 
     # --- the rules the schema cannot express ---------------------------------
@@ -400,10 +534,10 @@ class Verdict:
                 f"would assert that the lane declared no argv, which is false"
             )
         if not present:
-            if self.claims:
+            if self.claims or self.evidence:
                 raise ValueError(
-                    "claims were rendered but no lane resolved; a claim without a "
-                    "declared rigor level is a claim about nothing"
+                    "claims or evidence were rendered but no lane resolved; "
+                    "evidence without a declaration is evidence about nothing"
                 )
             return
 
@@ -458,14 +592,48 @@ class Verdict:
                 f"declared {list(self.declared_rigor)}"
             )
 
+    def _check_evidence_covers_declarations(self) -> None:
+        """External evidence covers declared ``(source, key)`` identities exactly."""
+        if self.declared_evidence is None:
+            return
+        declared = [item.identity for item in self.declared_evidence]
+        rendered = [item.identity for item in self.evidence]
+        duplicate_declarations = sorted(
+            {identity for identity in declared if declared.count(identity) > 1}
+        )
+        if duplicate_declarations:
+            raise ValueError(
+                f"declared_evidence contains duplicate identities: "
+                f"{duplicate_declarations}"
+            )
+        duplicate_evidence = sorted(
+            {identity for identity in rendered if rendered.count(identity) > 1}
+        )
+        if duplicate_evidence:
+            raise ValueError(
+                f"more than one evidence entry for identities: {duplicate_evidence}"
+            )
+        missing = [identity for identity in declared if identity not in rendered]
+        if missing:
+            raise ValueError(
+                f"declared evidence {missing} rendered no judgement; without an "
+                f"entry it is indistinguishable from never declared"
+            )
+        surplus = [identity for identity in rendered if identity not in declared]
+        if surplus:
+            raise ValueError(f"evidence {surplus} was never declared")
+
     def _check_outcome_agrees_with_rollup(self) -> None:
         """A-023: the outcome is DERIVED from the claims, never chosen beside them."""
-        if not self.claims:
+        statuses = [claim.status for claim in self.claims]
+        statuses.extend(item.status for item in self.evidence)
+        if not statuses:
             return
-        implied = rollup([claim.status for claim in self.claims])
+        implied = rollup(statuses)
         if self.outcome is not implied:
             raise ValueError(
                 f"outcome {self.outcome} disagrees with the rollup of its claims "
+                f"and evidence "
                 f"({implied}); precedence is "
                 f"{' > '.join(o.value for o in ROLLUP_PRECEDENCE)}, and PASS only "
                 f"when every declared claim passed"
@@ -505,6 +673,9 @@ class Verdict:
             payload["reason_code"] = self.reason_code.value
         if self.declared_rigor is not None:
             payload["declared_rigor"] = list(self.declared_rigor)
+            payload["declared_evidence"] = [
+                item.to_dict() for item in self.declared_evidence or ()
+            ]
             payload["argv_declared"] = list(self.argv_declared or ())
             payload["argv_appended"] = list(self.argv_appended or ())
             payload["argv_effective"] = list(self.argv_effective or ())
@@ -512,6 +683,7 @@ class Verdict:
             payload["env_declared"] = dict(self.env_declared or {})
             payload["env_effective"] = dict(self.env_effective or {})
         payload["claims"] = [claim.to_dict() for claim in self.claims]
+        payload["evidence"] = [item.to_dict() for item in self.evidence]
         return payload
 
     def to_json(self) -> str:

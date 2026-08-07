@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "4444444444444444444444444444444444444444",
@@ -9,6 +9,7 @@
   "started": "2026-08-06T09:30:00+00:00",
   "ended": "2026-08-06T09:30:12+00:00",
   "declared_rigor": ["R0", "R1"],
+  "declared_evidence": [],
   "argv_declared": ["pytest", "tests", "-q"],
   "argv_appended": [],
   "argv_effective": ["pytest", "tests", "-q"],
@@ -29,5 +30,6 @@
       "verified_by_assay": true,
       "reason_code": "DIRTY_TREE"
     }
-  ]
+  ],
+  "evidence": []
 }

@@ -450,6 +450,13 @@ def _load_lane(
     env_passthrough = _as_str_list(
         table["env_passthrough"], where, "env_passthrough"
     )
+    if "/" not in argv[0] and "PATH" not in env and "PATH" not in env_passthrough:
+        raise LaneConfigError(
+            f"{where}: argv[0] {argv[0]!r} is a bare executable name but PATH "
+            f"is declared by neither 'env' nor 'env_passthrough'. Without an "
+            f"explicit PATH, process launch may search an implementation default "
+            f"that the lane never declared. Declare PATH or use an executable path."
+        )
 
     budget = _as_str(table["budget"], where, "budget")
     try:

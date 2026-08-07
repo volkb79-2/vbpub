@@ -43,9 +43,26 @@ CROSS_PAIRS = [
     if code not in REASON_CODES[outcome]
 ]
 
+ATTESTATION_ONLY = {
+    ReasonCode.MISSING_ATTESTATION,
+    ReasonCode.STALE_ATTESTATION,
+}
+CLAIM_VALID_PAIRS = [
+    (outcome, code)
+    for outcome, code in VALID_PAIRS
+    if ReasonCode(code) not in ATTESTATION_ONLY
+]
+CLAIM_INVALID_PAIRS = [
+    (outcome.value, code.value)
+    for outcome in NON_PASS
+    for code in ReasonCode
+    if (outcome.value, code.value) not in CLAIM_VALID_PAIRS
+]
+
 
 LANE_RESOLVED_KEYS = (
     "declared_rigor",
+    "declared_evidence",
     "argv_declared",
     "argv_appended",
     "argv_effective",
@@ -141,7 +158,7 @@ def test_each_declared_pair_validates(
 def test_every_declared_code_is_exercised_by_the_accept_half():
     """Guard the guard: an unexercised code proves nothing about itself."""
     assert {code for _, code in VALID_PAIRS} == {code.value for code in ReasonCode}
-    assert len(VALID_PAIRS) == len(ReasonCode) == 16
+    assert len(VALID_PAIRS) == len(ReasonCode) == 19
 
 
 # --- a code valid for a DIFFERENT outcome is rejected -------------------------
@@ -162,7 +179,7 @@ def test_a_code_belonging_to_another_outcome_is_rejected(
 
 def test_the_cross_matrix_is_not_empty():
     assert len(CROSS_PAIRS) == len(NON_PASS) * len(ReasonCode) - len(VALID_PAIRS)
-    assert len(CROSS_PAIRS) == 64
+    assert len(CROSS_PAIRS) == 76
 
 
 @pytest.mark.parametrize("outcome", [o.value for o in NON_PASS])
@@ -189,18 +206,22 @@ def test_pass_carrying_any_reason_code_at_all_is_rejected(
 # --- the same rule, one level down, on a claim --------------------------------
 
 
-@pytest.mark.parametrize("status,code", VALID_PAIRS)
+@pytest.mark.parametrize("status,code", CLAIM_VALID_PAIRS)
 def test_each_declared_pair_validates_on_a_claim(
     status: str, code: str, validator: Draft202012Validator
 ):
     assert why_invalid(validator, a_claim_with(status, code)) == []
 
 
-@pytest.mark.parametrize("status,code", CROSS_PAIRS)
+@pytest.mark.parametrize("status,code", CLAIM_INVALID_PAIRS)
 def test_a_claim_code_belonging_to_another_status_is_rejected(
     status: str, code: str, validator: Draft202012Validator
 ):
-    valid = sorted(REASON_CODES[Outcome(status)])[0].value
+    valid = next(
+        code_value
+        for outcome_value, code_value in CLAIM_VALID_PAIRS
+        if outcome_value == status
+    )
     assert why_invalid(validator, a_claim_with(status, valid)) == []
 
     assert not validator.is_valid(a_claim_with(status, code))

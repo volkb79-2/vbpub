@@ -72,7 +72,7 @@ rigor = ["R0"]
 enforcement = "advisory"
 argv = ["pytest", "tests/acceptance"]
 env = {}
-env_passthrough = []
+env_passthrough = ["PATH"]
 budget = "45m"
 allow_argv_append = false
 """

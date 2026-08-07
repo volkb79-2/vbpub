@@ -35,7 +35,7 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "-q"]
 env = {}
-env_passthrough = []
+env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
 

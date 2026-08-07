@@ -45,6 +45,8 @@ def test_assays_own_lane_is_r0_only_with_no_judge_table():
     assert lane.rigor == ("R0",)
     assert lane.enforcement == "gate"
     assert lane.judge is None
+    assert lane.argv[0] == "python"
+    assert "PATH" in lane.env_passthrough
 
 
 def test_assays_own_lane_declares_all_eight_required_fields():
