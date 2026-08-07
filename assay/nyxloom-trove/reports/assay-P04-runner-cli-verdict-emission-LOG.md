@@ -2,7 +2,8 @@
 
 **Status:** DONE. Gate green.
 **Branch:** `feat/assay-P04-runner-cli-verdict-emission`
-**Commit:** (recorded after this LOG is committed — see the controller report)
+**Commit:** `352cab50` (the implementation commit this LOG describes; this LOG
+itself lands in a small follow-up commit that only fills in this hash).
 **Base:** `main` at `bfc467b8` ("rule(assay): P04 readiness findings -- A-094/A-095, land before dispatch").
 
 ## Gate
