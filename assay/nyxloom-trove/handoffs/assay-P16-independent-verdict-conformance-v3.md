@@ -62,6 +62,30 @@ on branch `feat/assay-P16-independent-verdict-conformance-v3`.
 7. Demonstrate v2 rejection with a specific schema-version diagnostic and document the intentional consumer migration. Do not silently coerce or upgrade an input artifact.
 8. Break each new policy field, excluded-line payload, arithmetic derivation, R1/R2/R3 re-judgment, and evidence-sibling invariant separately; run the real gate and record exact failure counts under A-067.
 
+## Carried in from P15, merged (read before writing work item 6)
+
+**A-135 — a contradictory artifact is no longer built out of contradictory
+coverage.** P15 gave `FileCoverage` construction-time invariants: every line
+number positive, and `executed`, `missing` and known `excluded` pairwise
+disjoint. A `FileCoverage` that claims a line is simultaneously executed and
+missing can therefore no longer be instantiated at all. Work item 6 and
+context item 3 both depend on producing exactly such contradictions, so build
+them as a **valid** `FileCoverage` (or a hand-written payload) carrying
+**wrong summary numbers, status, or policy** — a `PASS` reporting 0 percent,
+a `PASS` with a surviving mutant, a `PASS` with a transformed canary — never
+as a self-contradictory coverage object. `excluded=None` stays meaningfully
+distinct from an empty known set and is not a workaround for this.
+
+**A-134 — do not reopen raw-input parsing to route around it.** P15's
+controller review additionally repaired three input-boundary defects in
+`assay.diff`/`assay.git` (git's space-disambiguation tab on an already-quoted
+path, `str.splitlines()` tearing real source lines, and `subprocess`'
+`text=True` decoding git's bytes with the ambient locale and rewriting a lone
+`\r`). Those modules are settled; P16's own `scope.forbid` does not list them
+only because P16 was never expected to want them. If a v3 payload appears to
+need a different path or line identity than `assay.diff` produces, that is a
+BLOCKED result, not a parser change.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)
