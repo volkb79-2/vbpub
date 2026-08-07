@@ -220,6 +220,32 @@
       ],
       "additionalProperties": false
     },
+    "mutation_operator": {"enum": ["compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap"]},
+    "mutant_outcome": {
+      "description": "One attempted mutant's identity, projected for the artifact (A-116): deliberately WITHOUT the full mutated text.",
+      "type": "object",
+      "required": ["path", "lineno", "operator", "description"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "lineno": {"type": "integer", "minimum": 1},
+        "operator": {"$ref": "#/$defs/mutation_operator"},
+        "description": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "mutation": {
+      "description": "The R2 claim payload (P12, A-116): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a caller-declared jobs count. Four buckets: killed is a bare count; survived/crashed/budget_exceeded carry the actual mutant identities.",
+      "type": "object",
+      "required": ["total", "killed", "survived", "crashed", "budget_exceeded"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "killed": {"type": "integer", "minimum": 0},
+        "survived": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
+        "crashed": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
+        "budget_exceeded": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}}
+      },
+      "additionalProperties": false
+    },
     "claim": {
       "type": "object",
       "required": ["rigor", "source", "status", "verified_by_assay"],
@@ -230,14 +256,16 @@
         "verified_by_assay": {"const": true},
         "reason_code": {"$ref": "#/$defs/reason_code"},
         "coverage": {"$ref": "#/$defs/coverage"},
-        "canary": {"$ref": "#/$defs/canary"}
+        "canary": {"$ref": "#/$defs/canary"},
+        "mutation": {"$ref": "#/$defs/mutation"}
       },
       "allOf": [
         {"$ref": "#/$defs/status_contract"},
         {"not": {"required": ["reason_code"], "properties": {"reason_code": {"enum": ["MISSING_ATTESTATION", "STALE_ATTESTATION"]}}}},
         {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R1"}}}}, "then": {"not": {"required": ["coverage"]}}},
         {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R3"}}}}, "then": {"not": {"required": ["canary"]}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"anyOf": [{"required": ["coverage"]}, {"required": ["canary"]}]}}}
+        {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R2"}}}}, "then": {"not": {"required": ["mutation"]}}},
+        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"anyOf": [{"required": ["coverage"]}, {"required": ["canary"]}, {"required": ["mutation"]}]}}}
       ],
       "additionalProperties": false
     },

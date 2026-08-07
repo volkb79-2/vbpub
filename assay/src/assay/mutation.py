@@ -30,13 +30,72 @@ protocol, the language-specific WALK stays in the language's own adapter
 file. ``Mutant`` is the identical split, one module over, forced sideways
 into its own module only because ``verdict.py`` (where ``StatementSpan``'s
 sibling types live) is off-limits here.
+
+**P12 adds execution** (A-119): baseline-gated, isolated, ``jobs``-bounded
+mutation running lives HERE too, beside :class:`Mutant`, mirroring
+``canary.py``'s own precedent of holding one claim-tier's entire
+orchestration in a single dedicated module. The new surface is
+:func:`run_mutation` (the entry point: mandatory baseline, then a bounded
+executor fan-out over :func:`collect_mutants`'s job list, then deterministic
+aggregation into a :class:`~assay.verdict.Mutation`), :func:`judge_mutation`
+/ :func:`build_mutation_claim` (the pure outcome mapping and R2
+:class:`~assay.verdict.Claim` wiring, A-117), and :func:`collect_mutants`
+(the cross-file aggregation this package's own implementation choice, see
+the LOG).
+
+**A circular-import note, since it shapes this module's own imports below**:
+``assay.runner`` imports ``assay.adapters.base``, which imports THIS module
+for :class:`Mutant`. A module-level ``from .runner import execute_command``
+here would therefore be a genuine cycle (``mutation -> runner -> adapters.
+base -> mutation``), not merely a style preference — verified empirically
+while authoring this package: it breaks for whichever entry point happens
+to import ``assay.adapters.base`` (or ``assay.runner``) BEFORE
+``assay.mutation`` finishes loading, which is common (most adapter tests
+trigger it). :func:`run_mutation` resolves ``execute_command`` /
+``default_process_runner`` with a DEFERRED (function-body-local) import
+instead — safe because by the time the function is actually CALLED, module
+loading for the whole program has long finished, regardless of which module
+was imported first. The ``ProcessRunner``/``CommandResult``/
+``LanguageAdapter`` type hints below reference their real homes (
+``assay.runner``, ``assay.adapters.base``) by bare name, never imported —
+safe under this module's own ``from __future__ import annotations``, which
+defers every annotation to a string never evaluated at runtime (verified
+empirically), and avoids re-opening the same cycle purely for a type hint.
 """
 
 from __future__ import annotations
 
+import shutil
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Iterable
 
-__all__ = ["MUTATION_OPERATORS", "Mutant", "byte_offset", "line_for_offset"]
+from .config import Lane
+from .errors import Outcome, ReasonCode
+from .verdict import Claim, Mutation, MutantOutcome
+
+__all__ = [
+    "MUTATION_OPERATORS",
+    "Clock",
+    "ExecutorFactory",
+    "Mutant",
+    "MutantJob",
+    "MutationTarget",
+    "build_mutation_claim",
+    "byte_offset",
+    "collect_mutants",
+    "judge_mutation",
+    "line_for_offset",
+    "run_mutation",
+]
+
+#: The injectable clock, identical in shape to ``assay.runner.Clock`` --
+#: duplicated rather than imported (this module's own circular-import note,
+#: above): a plain function type alias costs nothing to restate and needs
+#: no deferral, unlike the runtime-called ``execute_command``.
+Clock = Callable[[], datetime]
 
 #: The closed, four-value mutation catalogue (A-112/A-114), adopted verbatim
 #: from ``/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`` and
@@ -144,3 +203,346 @@ def line_for_offset(text_bytes: bytes, offset: int) -> int:
     inheriting the enclosing node's ``lineno``.
     """
     return text_bytes.count(b"\n", 0, offset) + 1
+
+
+# --------------------------------------------------------------------------
+# P12: bounded mutation execution
+# --------------------------------------------------------------------------
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MutationTarget:
+    """One changed file to mutate: its repo-relative *path* (the same
+    forward-slash, repo-top-relative spelling ``adapters/base.py``'s own
+    path contract requires), its CURRENT text, and the changed line numbers
+    scoping candidate sites — the exact per-file input
+    ``LanguageAdapter.generate_mutants(text, lines)`` needs (P11), paired
+    with the *path* identity :class:`Mutant` itself carries no field for.
+
+    Building this from a real diff/adapter/filesystem is deliberately
+    OUTSIDE this package's scope — P12 owns EXECUTION, not diff-to-target
+    resolution (the handoff's own "Scope / forbid" section: "Mutant
+    construction and adapter capability are frozen P11 inputs. This package
+    owns execution and the R2 producer only.") — a future caller (P14's CLI
+    wiring) constructs these from :class:`~assay.diff.AddedLines` plus the
+    real source tree, the same way
+    :func:`~assay.canary.run_python_canary` receives its ``target_path``
+    already resolved rather than deriving it itself.
+    """
+
+    path: str
+    text: str
+    lines: frozenset[int]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError(
+                f"MutationTarget.path must be a non-empty string, got {self.path!r}"
+            )
+        if not isinstance(self.text, str):
+            raise ValueError(
+                f"MutationTarget.text must be a string, got {self.text!r}"
+            )
+        if not isinstance(self.lines, frozenset) or not self.lines:
+            raise ValueError(
+                f"MutationTarget.lines must be a non-empty frozenset of line "
+                f"numbers, got {self.lines!r} — a file contributing no "
+                f"changed lines has nothing to mutate and should simply be "
+                f"omitted from the target list"
+            )
+        for line in self.lines:
+            if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+                raise ValueError(
+                    f"MutationTarget.lines must contain only positive line "
+                    f"numbers, got {line!r}"
+                )
+
+
+@dataclass(frozen=True, kw_only=True)
+class MutantJob:
+    """One ``(file, mutant)`` pair — the unit of work :func:`run_mutation`
+    fans out over the executor. A dataclass rather than a bare tuple
+    (A-092): the two fields are semantically distinct (a file identity and
+    a construction result), not an ad hoc pair.
+    """
+
+    path: str
+    mutant: Mutant
+
+
+def collect_mutants(
+    targets: Iterable[MutationTarget],
+    *,
+    adapter: LanguageAdapter,
+) -> tuple[MutantJob, ...]:
+    """Aggregate every candidate mutant across POSSIBLY MANY changed files
+    into ONE deterministic job list — this package's own answer to
+    aggregating a lane-wide claim from per-file ``generate_mutants`` calls
+    (a design choice the handoff leaves to the implementer; see the LOG for
+    the full reasoning).
+
+    Calls ``adapter.generate_mutants(target.text, set(target.lines))`` once
+    per *target*, in *target.path* order — deterministic regardless of the
+    iteration order of *targets* itself, so a caller passing an unordered
+    collection still gets a stable job list. ``"UNSUPPORTED"`` for one file
+    contributes ZERO mutants from that file and is never an abort of the
+    whole call (P11's own per-file union, A-114); the ALL-UNSUPPORTED-or-
+    empty case collapses naturally into ``len(result) == 0``, which
+    :func:`run_mutation` reads as ``total == 0`` -> ``NO_MUTANTS`` (A-117)
+    without this function needing to special-case it.
+
+    Within one file, P11's own ``generate_mutants`` order (``lineno``,
+    ``operator``, ``description``, byte offset) is preserved verbatim —
+    this function only adds the cross-file ``path`` ordering on top.
+    """
+    jobs: list[MutantJob] = []
+    for target in sorted(targets, key=lambda item: item.path):
+        result = adapter.generate_mutants(target.text, set(target.lines))
+        if result == "UNSUPPORTED":
+            continue
+        for mutant in result:
+            jobs.append(MutantJob(path=target.path, mutant=mutant))
+    return tuple(jobs)
+
+
+#: The injectable executor boundary (A-082/A-119/A-122): the entry point
+#: :func:`run_mutation` calls with EXACTLY the caller-declared ``jobs`` —
+#: never ``os.cpu_count()`` or a mutant-count-derived value (A-122's own
+#: confirmed trap in ``mutation_gate.evaluate``, not ported). The default
+#: constructs the real ``ThreadPoolExecutor``; a test injects a factory that
+#: RECORDS what it was called with, proving the bound at the construction
+#: boundary itself (O2), never by elapsed time.
+ExecutorFactory = Callable[[int], Executor]
+
+
+def _default_executor_factory(jobs: int) -> Executor:
+    return ThreadPoolExecutor(max_workers=jobs)
+
+
+def _mutant_outcome_sort_key(outcome: MutantOutcome) -> tuple[str, int, str, str]:
+    """The stable identity :func:`run_mutation` sorts the three non-killed
+    buckets by before constructing :class:`~assay.verdict.Mutation` — kept
+    as this module's OWN copy rather than importing ``verdict``'s private
+    validation helper of the same shape: two independently written copies
+    that must agree is a real check (a drift between them would surface as
+    ``Mutation`` refusing to construct, A-067's own "two independently
+    verified layers" discipline one level down), not merely duplication.
+    """
+    return (outcome.path, outcome.lineno, outcome.operator, outcome.description)
+
+
+def _classify_mutant_result(result: CommandResult) -> str:
+    """Map one mutant's :class:`~assay.runner.CommandResult` onto one of
+    the FOUR terminal buckets A-116/A-117 name — reusing
+    :func:`~assay.runner.execute_command`'s own already-correct
+    PASS/FAIL/ERROR/BUDGET_EXCEEDED split, never nyxloom's collapsed
+    any-non-zero-exit-is-"killed" rule (A-122, confirmed present in
+    ``mutation_gate._run_is_killed*``, deliberately not ported).
+
+    An ordinary non-zero exit (FAIL/COMMAND_FAILED) means the suite caught
+    the mutant — KILLED. An exit-0 PASS means the changed behaviour was
+    never asserted — SURVIVED. ERROR/EXEC_FAILED (the process itself could
+    not even start) is CRASHED, never conflated with a genuine test
+    failure. BUDGET_EXCEEDED is its own bucket, never silently folded into
+    either kill or survival.
+    """
+    if result.outcome is Outcome.PASS:
+        return "survived"
+    if result.outcome is Outcome.FAIL:
+        return "killed"
+    if result.outcome is Outcome.BUDGET_EXCEEDED:
+        return "budget_exceeded"
+    return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
+
+
+def _run_one_mutant(
+    lane: Lane,
+    *,
+    job: MutantJob,
+    project_root: Path,
+    scratch_parent: Path,
+    index: int,
+    execute: Callable[..., CommandResult],
+    process_runner: ProcessRunner,
+    clock: Clock,
+) -> CommandResult:
+    """Isolate *job* into a FRESH ``shutil.copytree`` scratch directory
+    (A-120 — never in-place, never a ``git worktree``), write
+    ``job.mutant.mutated_text`` over ``job.path`` INSIDE the copy, and run
+    the SAME ``execute_command`` (*execute*) the baseline used, varying
+    only ``cwd``. The scratch copy is discarded afterward; *project_root*
+    itself is never opened for writing here — that is what makes "the
+    shared source tree is provably unchanged" true BY CONSTRUCTION, not by
+    a write-then-restore round-trip (O3).
+
+    *index* names the scratch directory (``mutant-{index:06d}``) — unique
+    per submitted job with no shared counter or uuid needed, because the
+    job list's own length is already known up front before any job is
+    submitted (A-113's "deterministic submission order").
+    """
+    scratch_dir = scratch_parent / f"mutant-{index:06d}"
+    shutil.copytree(project_root, scratch_dir)
+    try:
+        (scratch_dir / job.path).write_text(job.mutant.mutated_text, encoding="utf-8")
+        return execute(lane, cwd=scratch_dir, process_runner=process_runner, clock=clock)
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def run_mutation(
+    lane: Lane,
+    *,
+    project_root: Path,
+    scratch_root: Path,
+    targets: Iterable[MutationTarget],
+    adapter: LanguageAdapter,
+    jobs: int,
+    process_runner: ProcessRunner | None = None,
+    clock: Clock | None = None,
+    executor_factory: ExecutorFactory = _default_executor_factory,
+) -> tuple[CommandResult, Mutation | None]:
+    """The R2 execution entry point (A-119/A-120): a MANDATORY baseline
+    first (O1), via the identical ``execute_command`` the lane's own R0
+    step uses, against *project_root* UNMODIFIED. A baseline that does not
+    PASS stops HERE — before :func:`collect_mutants` is even called, let
+    alone anything submitted to an executor (O1's own negative: "submits
+    mutant work... when the original suite is already red") — and the
+    second element of the return is ``None`` (A-116's baseline-conditional
+    presence rule: mutation testing never started).
+
+    Only when the baseline PASSES: collects every candidate site across
+    *targets*, fans the resulting job list out over
+    ``executor_factory(jobs)`` — called with EXACTLY *jobs*, never a
+    derived or machine-sourced value (A-082/A-122) — isolating each mutant
+    into its own fresh scratch copy under *scratch_root* (A-120). Results
+    are collected POSITION-ALIGNED with the submitted job list (each
+    ``Future`` is awaited by its own index via the returned futures list,
+    never via ``as_completed`` or a dict keyed by arrival order), and the
+    three non-killed buckets are sorted by stable identity before
+    :class:`~assay.verdict.Mutation` is built — so ``jobs=1`` and
+    ``jobs=3`` render IDENTICAL records regardless of which thread's
+    subprocess happens to finish first (O2/O3).
+
+    *process_runner*/*clock* default to the real boundary
+    (``assay.runner.default_process_runner`` / a real UTC clock), resolved
+    with a DEFERRED import inside this function body rather than at module
+    level — this module's own docstring explains why (a genuine circular
+    import, not a style choice).
+    """
+    from .runner import default_process_runner, execute_command
+
+    resolved_process_runner = (
+        default_process_runner if process_runner is None else process_runner
+    )
+    resolved_clock = _utc_now if clock is None else clock
+
+    baseline = execute_command(
+        lane,
+        cwd=project_root,
+        process_runner=resolved_process_runner,
+        clock=resolved_clock,
+    )
+    if baseline.outcome is not Outcome.PASS:
+        return baseline, None
+
+    job_list = collect_mutants(targets, adapter=adapter)
+    total = len(job_list)
+    if total == 0:
+        return baseline, Mutation(total=0, killed=0)
+
+    def _run(job: MutantJob, index: int) -> CommandResult:
+        return _run_one_mutant(
+            lane,
+            job=job,
+            project_root=project_root,
+            scratch_parent=scratch_root,
+            index=index,
+            execute=execute_command,
+            process_runner=resolved_process_runner,
+            clock=resolved_clock,
+        )
+
+    with executor_factory(jobs) as pool:
+        futures = [pool.submit(_run, job, index) for index, job in enumerate(job_list)]
+        results = [future.result() for future in futures]
+
+    killed = 0
+    survived: list[MutantOutcome] = []
+    crashed: list[MutantOutcome] = []
+    budget_exceeded: list[MutantOutcome] = []
+    for job, result in zip(job_list, results):
+        bucket = _classify_mutant_result(result)
+        if bucket == "killed":
+            killed += 1
+            continue
+        outcome_entry = MutantOutcome(
+            path=job.path,
+            lineno=job.mutant.lineno,
+            operator=job.mutant.operator,
+            description=job.mutant.description,
+        )
+        if bucket == "survived":
+            survived.append(outcome_entry)
+        elif bucket == "crashed":
+            crashed.append(outcome_entry)
+        else:
+            budget_exceeded.append(outcome_entry)
+
+    survived.sort(key=_mutant_outcome_sort_key)
+    crashed.sort(key=_mutant_outcome_sort_key)
+    budget_exceeded.sort(key=_mutant_outcome_sort_key)
+
+    mutation = Mutation(
+        total=total,
+        killed=killed,
+        survived=tuple(survived),
+        crashed=tuple(crashed),
+        budget_exceeded=tuple(budget_exceeded),
+    )
+    return baseline, mutation
+
+
+def judge_mutation(
+    baseline: CommandResult, mutation: Mutation | None
+) -> tuple[Outcome, ReasonCode | None]:
+    """A-117's outcome/reason-code mapping, using only already-existing
+    ``ReasonCode``s (``errors.py`` stays forbidden, A-121): baseline
+    non-PASS reuses ``execute_command``'s own ``(outcome, reason_code)``
+    verbatim (*mutation* is ``None`` in that case, A-116); else
+    ``mutation.total == 0`` -> ``INCONCLUSIVE``/``NO_MUTANTS``; else
+    non-empty ``crashed`` -> ``ERROR``/``EXEC_FAILED``; else non-empty
+    ``budget_exceeded`` -> ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``; else
+    non-empty ``survived`` -> ``FAIL``/``MUTANTS_SURVIVED``; else ``PASS``.
+    This precedence (crashed > budget_exceeded > survived) matches the
+    existing cross-claim ``ROLLUP_PRECEDENCE`` applied one level down.
+    """
+    if mutation is None:
+        return baseline.outcome, baseline.reason_code
+    if mutation.total == 0:
+        return Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS
+    if mutation.crashed:
+        return Outcome.ERROR, ReasonCode.EXEC_FAILED
+    if mutation.budget_exceeded:
+        return Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT
+    if mutation.survived:
+        return Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED
+    return Outcome.PASS, None
+
+
+def build_mutation_claim(baseline: CommandResult, mutation: Mutation | None) -> Claim:
+    """The R2 :class:`~assay.verdict.Claim` from :func:`run_mutation`'s own
+    return — the exact mapping ``assay.runner.build_r0_claim`` /
+    ``assay.canary.build_canary_claim`` perform, one level over."""
+    status, reason_code = judge_mutation(baseline, mutation)
+    return Claim(
+        rigor="R2",
+        source="computed",
+        status=status,
+        verified_by_assay=True,
+        reason_code=reason_code,
+        mutation=mutation,
+    )
