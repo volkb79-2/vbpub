@@ -4,7 +4,7 @@
 **Branch:** `feat/assay-P08-go-adapter-boundary-proof`
 **Worktree:** `/workspaces/vbpub/.worktrees/assay-P08-go-adapter-boundary-proof/assay`
 **Base:** `main` at `c6bb7aa6` ("rule(assay): P08 readiness findings -- A-102/A-103/A-104, land before dispatch").
-**Commit:** (recorded after `git commit`, see bottom of this file)
+**Commit:** `5c08706e` ("feat(assay): P08 -- Go adapter boundary proof")
 
 ## Gate
 
