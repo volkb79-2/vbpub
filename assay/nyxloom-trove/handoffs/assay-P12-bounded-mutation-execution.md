@@ -10,8 +10,8 @@ stack: none
 depends_on: [assay-P11-valid-mutant-construction, assay-P04-runner-cli-verdict-emission]
 session: resume:assay-runner
 scope:
-  touch: ["src/assay/config.py", "src/assay/mutation.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/**"]
-  forbid: ["src/assay/errors.py"]
+  touch: ["src/assay/mutation.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/**"]
+  forbid: ["src/assay/errors.py", "src/assay/config.py"]
 oracles:
   - id: O1
     observable: "A passing unmodified baseline is mandatory; baseline failure, crash, or timeout stops before any mutant and renders the corresponding non-PASS reason in a complete expected artifact"
@@ -51,11 +51,12 @@ on branch `feat/assay-P12-bounded-mutation-execution`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` mutation execution/budget section and decisions A-003, A-004, A-020–A-024, A-041, A-113.
+1. `docs/DESIGN-GUIDE.md` — **corrected (A-118): there is no titled "mutation execution/budget section"** — the actual content spans §6 (`BUDGET_EXCEEDED`), §11 (the adapter surface plus the `judge.mutation` TOML fragment), §12 (R2 requiring `judge.mutation`). Decisions A-003, A-004, A-020–A-024, A-041, A-082, A-113, A-116–A-122.
 2. P11 mutation manifest, runner/process boundary, verdict model and independent artifact tests.
-3. **Corrected (A-113):** the real mutation-execution prior art is `/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`'s `evaluate()`/`MutationResult` orchestration (`ThreadPoolExecutor` fan-out, deterministic result ordering independent of completion order) — NOT `shared-ramdisk-depot-manager`'s Go reference, which has zero mutation-related content (same defect class as A-105/A-112, verified). Take behavior (the executor-bound and ordering discipline), not structure.
+3. **Corrected (A-113):** the real mutation-execution prior art is `/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`'s `evaluate()`/`MutationResult` orchestration (`ThreadPoolExecutor` fan-out, deterministic result ordering independent of completion order) — NOT `shared-ramdisk-depot-manager`'s Go reference, which has zero mutation-related content (same defect class as A-105/A-112, verified). Take behavior (the executor-bound and ordering discipline), not structure. **Two specific traps in that reference, do NOT port (A-122):** its executor cap is `max(1, (os.cpu_count() or 2) - 2)` — machine-derived, not caller-declared, the opposite of what O2 and A-082 require; and its `_run_is_killed*` functions never set a subprocess timeout and treat ANY non-zero exit as "killed," collapsing kill/crash/hang into one bucket, the opposite of O3/O4's explicit four-way split.
 4. `nyxloom-trove/reports/assay-P10-BRIEF.md` — P10 (merged before this package, though not in `depends_on`) already extended `runner.assemble_verdict` with two new KEYWORD-ONLY parameters, `evidence: tuple[Evidence, ...] = ()` and `declared_evidence: tuple[EvidenceDeclaration, ...] = ()`, both defaulting to empty so this package's own `claims=`-only call sites are unaffected -- and an identity-coverage guard (`ERROR`/`BAD_LANE_CONFIG` before constructing an incomplete `Verdict`) that this package's own R2/mutation guard should sit alongside, not duplicate or replace. Read `assemble_verdict`'s current signature directly before editing `runner.py`; do not assume the pre-P10 five-parameter shape.
 5. `nyxloom-trove/reports/assay-P11-BRIEF.md` — P11 (merged, in `depends_on`) is construction-only and shipped the exact interface this package consumes: `adapter.generate_mutants(text, lines) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]` (the 7th/final `LanguageAdapter` method), and `Mutant` (`src/assay/mutation.py`, already present — this package ADDS execution logic to the same file, it does not recreate it): frozen `kw_only`, fields `lineno`/`operator`/`description`/`mutated_text` plus a derived `identity` property. `mutated_text` is the FULL replacement file content, not a diff/patch — write it wholesale over the scratch path. Every mutant from one `generate_mutants` call is an INDEPENDENT single-site experiment against the same original text — never cumulative, zero ordering dependency between them, exactly what a `jobs`-bounded executor needs. `result == ()` (nothing to mutate on the declared lines) and `result == "UNSUPPORTED"` (this adapter cannot mutate this text at all, renders `INCONCLUSIVE_NO_MUTANTS`, never green) are both real, distinguishable, legal outcomes this package must handle separately — collapsing them is a real defect, not a simplification.
+6. `config.py` is now FORBIDDEN (A-121, moved out of `scope.touch`) — `jobs` is a direct parameter to whatever new function you add, never sourced from `assay.toml`/`JudgeConfig.mutation`. Do not add an operator-filter parameter either — no oracle exercises it (A-121).
 
 ## Work
 
@@ -64,6 +65,57 @@ on branch `feat/assay-P12-bounded-mutation-execution`.
 3. Restore bytes on every terminal path and serialize results deterministically.
 4. Add the closed R2 payload/schema branch and complete hand-written artifacts for all terminal result classes.
 5. Break baseline gating, declared-argv fidelity, executor bound, restoration, ordering, and result accounting; record failure counts (A-067).
+
+**R2 payload, pinned (A-116) — read before writing any code.** Two new
+frozen `kw_only` dataclasses in `verdict.py`: `MutantOutcome` (`path: str`,
+`lineno: int`, `operator: str`, `description: str` — no `mutated_text`,
+that would bloat the artifact) and `Mutation` (`total: int`, `killed: int`,
+`survived: tuple[MutantOutcome, ...]`, `crashed: tuple[MutantOutcome,
+...]`, `budget_exceeded: tuple[MutantOutcome, ...]` — FOUR buckets, not
+three, per O3/O4's own explicit four-way enumeration; `__post_init__`
+enforces `total == killed + len(survived) + len(crashed) +
+len(budget_exceeded)`). `Claim.mutation: Mutation | None = None`, gated to
+`rigor == "R2"`. Add the matching third schema `allOf` branch
+(`$defs/mutation`, mirroring R1/R3's own branches) — `Claim`'s own
+`__post_init__` validation alone does not suffice (A-071's "two
+independently-verified layers" discipline). `Claim.mutation`'s PRESENCE is
+baseline-conditional: `None` means mutation testing never started
+(baseline never resolved to `PASS`); present means it did, even if every
+attempted mutant crashed. Two claims can both render `(ERROR,
+EXEC_FAILED)` this way (baseline crashed vs. some mutants crashed) — that
+is correct, not a bug; the reason code names the outcome class, the
+payload (when present) carries the mechanism.
+
+**Outcome mapping, pinned (A-117), no new `ReasonCode` needed:** baseline
+non-`PASS` → reuse its `(outcome, reason_code)` verbatim, `mutation`
+omitted. Else: `total == 0` → `INCONCLUSIVE`/`NO_MUTANTS`; else `crashed`
+non-empty → `ERROR`/`EXEC_FAILED`; else `budget_exceeded` non-empty →
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT`; else `survived` non-empty →
+`FAIL`/`MUTANTS_SURVIVED`; else `PASS`. This order (crashed >
+budget_exceeded > survived) matches the existing cross-claim
+`ROLLUP_PRECEDENCE` exactly, applied one level down.
+
+**Execution, pinned (A-119/A-120):** both the baseline and every per-mutant
+run call `runner.execute_command` UNMODIFIED — it already takes an
+injectable `cwd`, `process_runner`, and `clock`; never write a second
+subprocess-invocation path. Isolation is copy-per-mutant: `shutil.copytree`
+the project tree into a fresh scratch directory per mutant (the same "fresh
+`tmp_path` per test" house pattern, one level down), write
+`mutant.mutated_text` over the target file INSIDE the copy, run
+`execute_command(..., cwd=<copy>)`, discard the copy — never in-place with
+a lock, never a `git worktree` per mutant. This makes "byte-exact
+restoration" (O3) true by construction: prove the SHARED source is
+provably unchanged after every terminal case, not a write-then-restore
+round-trip. New orchestration logic (executor-factory injection, the
+copy/run/collect loop) lives in `mutation.py` beside `Mutant`, mirroring
+`canary.py`'s own single-module precedent; `runner.py` gains only the R2
+wiring into `assemble_verdict` (a fourth optional parameter alongside
+`evidence`/`declared_evidence`).
+
+**Do not port from `mutation_gate.py` (A-122):** its `os.cpu_count()`-based
+executor cap, and its no-timeout/any-non-zero-exit-is-"killed" per-mutant
+run. Both are confirmed present in the reference file and both are wrong
+for this package's own oracles.
 
 ## Test constraints copied from AUTHORING.md §3b
 
