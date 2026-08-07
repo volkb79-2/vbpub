@@ -2,9 +2,35 @@
 adapter, proving the language-free core (P05) is faithful to real Python
 semantics (DESIGN-GUIDE §11, A-097/A-098/A-099), (P07) recovering real
 ``coverage.py``'s multi-line-statement gap via :meth:`PythonAdapter.statement_spans`
-(A-084/A-100/A-101), and (P09) supplying the two canary injection mechanisms
+(A-084/A-100/A-101), (P09) supplying the two canary injection mechanisms
 :mod:`assay.canary` drives — :meth:`PythonAdapter.inject_import_break` and
-:meth:`PythonAdapter.inject_uncovered_line` (A-010/A-084/A-105).
+:meth:`PythonAdapter.inject_uncovered_line` (A-010/A-084/A-105) — and (P11)
+supplying the mutation engine, :meth:`PythonAdapter.generate_mutants`
+(A-084/A-112/A-114/A-115).
+
+**P11's own addition.** The mutation catalogue (``compare-swap``/
+``boolop-swap``/``bool-const-flip``/``falsy-swap``) and its deterministic
+``(lineno, operator, description)`` site-discovery/ordering logic are
+adopted from ``/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py``
+(A-112). Its substitution MECHANISM is deliberately NOT ported: nyxloom
+builds ``Mutant.mutated_source`` via ``ast.NodeTransformer`` +
+``ast.unparse(tree_copy)``, a whole-file reprint that drops the original's
+whitespace, comments, blank lines, and string-quote style — exactly what
+O1's byte-preservation oracle exists to catch. This module instead computes
+each mutation site's own absolute BYTE span in the original text
+(:func:`assay.mutation.byte_offset`, operating in ``bytes`` rather than
+``str`` because ``ast``'s own ``col_offset``/``end_col_offset`` are UTF-8
+byte offsets, verified empirically) and splices ONLY that span, leaving
+every other byte of *text* untouched. Two wrinkles A-115 flags explicitly:
+a boolean chain (``a and b and c``) is ONE ``ast.BoolOp`` node but ``N - 1``
+independently-targetable operator TOKENS, so :func:`_boolop_swap_sites`
+emits one site per adjacent operand pair rather than reassigning the node's
+shared ``.op`` field once; and ``ast.cmpop`` nodes (``Lt``, ``Eq``, ...)
+carry no ``lineno``/``col_offset`` of their own, so
+:func:`_compare_swap_sites` derives each operator's byte span from the gap
+between its left operand's ``end_col_offset`` and its right operand's
+``col_offset``, then locates the operator substring inside that gap
+(:func:`_find_token_span`).
 
 **P09's own addition.** ``inject_import_break``/``inject_uncovered_line``
 port the MECHANISM (never the file-write) of
@@ -132,7 +158,9 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+from typing import Literal, NamedTuple
 
+from ..mutation import Mutant, byte_offset, line_for_offset
 from .base import StatementSpan
 
 __all__ = ["PythonAdapter"]
@@ -385,16 +413,316 @@ def _inject_uncovered_line(text: str) -> tuple[str, str]:
     return body + _UNCOVERED_CANARY_SNIPPET, description
 
 
+# --------------------------------------------------------------------------- #
+# P11's mutation engine (A-084/A-112/A-114/A-115)
+# --------------------------------------------------------------------------- #
+
+#: Comparison operator textual spellings, keyed by the ``ast.cmpop`` subclass
+#: ``ast.parse`` actually produced for that token. Never re-derived from
+#: source text: ``ast.cmpop`` nodes carry no ``lineno``/``col_offset`` of
+#: their own (A-115), which is exactly why a lookup table keyed on the AST's
+#: own classification -- rather than a text scan -- is what locates each
+#: site's byte span below.
+_COMPARE_TOKEN: dict[type, str] = {
+    ast.Lt: "<",
+    ast.LtE: "<=",
+    ast.Gt: ">",
+    ast.GtE: ">=",
+    ast.Eq: "==",
+    ast.NotEq: "!=",
+    ast.Is: "is",
+    ast.IsNot: "is not",
+}
+
+#: ``compare-swap``'s catalogue (A-112/A-114): each operator maps to its
+#: boundary neighbour or negation, adopted verbatim from nyxloom's own
+#: ``_COMPARE_SWAP``. ``ast.In``/``ast.NotIn`` are deliberately absent --
+#: nyxloom's own reference catalogue never covered them either, and this
+#: package reuses ONLY the catalogue, never extends it (A-112): a
+#: chained-``in`` comparator simply contributes zero ``compare-swap`` sites,
+#: the same "individual unsupported construct, not an abort" rule A-114
+#: states for the adapter call as a whole, one level down at the per-site
+#: granularity.
+_COMPARE_SWAP: dict[type, type] = {
+    ast.Lt: ast.LtE,
+    ast.LtE: ast.Lt,
+    ast.Gt: ast.GtE,
+    ast.GtE: ast.Gt,
+    ast.Eq: ast.NotEq,
+    ast.NotEq: ast.Eq,
+    ast.Is: ast.IsNot,
+    ast.IsNot: ast.Is,
+}
+
+#: ``boolop-swap``'s catalogue (A-112/A-114): the only two ``ast.boolop``
+#: subclasses Python's grammar has, each other's swap target.
+_BOOLOP_TOKEN: dict[type, str] = {ast.And: "and", ast.Or: "or"}
+_BOOLOP_SWAP: dict[type, type] = {ast.And: ast.Or, ast.Or: ast.And}
+
+#: ``falsy-swap``'s empty-collection literal spellings, keyed by AST node
+#: type -- used only to build a human-readable ``Mutant.description``; the
+#: actual splice always replaces with the fixed text ``"None"`` regardless
+#: (see :func:`_falsy_swap_replacement`).
+_EMPTY_COLLECTION_TEXT: dict[type, str] = {
+    ast.List: "[]",
+    ast.Tuple: "()",
+    ast.Set: "set()",
+}
+
+
+class _Site(NamedTuple):
+    """One candidate mutation site, before line-eligibility filtering and
+    before it becomes a :class:`~assay.mutation.Mutant`. ``start``/``end``
+    are absolute UTF-8 BYTE offsets into the source
+    (:func:`assay.mutation.byte_offset`) bounding the EXACT bytes this site
+    replaces -- never a whole node's span, only the operator/value token
+    itself, so splicing preserves every surrounding byte untouched (O1)."""
+
+    lineno: int
+    operator: str
+    description: str
+    start: int
+    end: int
+    replacement: bytes
+
+
+def _find_token_span(
+    text_bytes: bytes, gap_start: int, gap_end: int, token: str, *, whole_word: bool
+) -> tuple[int, int]:
+    """The exact absolute byte span of *token* inside
+    ``text_bytes[gap_start:gap_end]`` (A-115's own "locate the exact
+    operator substring within that gap").
+
+    *whole_word* guards Python KEYWORD operators (``and``/``or``/``is``/
+    ``is not``) with ``\\b`` boundaries -- ``is`` must never match inside a
+    longer identifier, and ``is not``'s embedded whitespace is matched with
+    ``\\s+`` rather than a literal single space, since Python's grammar
+    tolerates any amount of whitespace (including a line break) between the
+    two keywords. Symbolic operators (``<``, ``<=``, ...) need no such
+    guard: ``ast`` has already disambiguated which one is actually present
+    at this site, so a plain literal search is unambiguous.
+
+    The AST guarantees an operator token lies entirely within the gap
+    between its two operands' own offsets -- Python's grammar allows
+    nothing else there but the operator itself and surrounding whitespace --
+    so a failed search is trusted to be unreachable for any text that
+    genuinely parsed to produce this site, rather than guarded with a
+    silently-skipping ``None`` branch: if ``pattern.search`` ever returned
+    no match here, that would mean the AST and the source text it was
+    parsed from disagree, which should crash loudly (a real bug), not
+    vanish as a quietly-dropped mutant.
+    """
+    gap_text = text_bytes[gap_start:gap_end].decode("utf-8")
+    if whole_word:
+        escaped_words = r"\s+".join(re.escape(word) for word in token.split())
+        pattern = re.compile(rf"\b{escaped_words}\b")
+    else:
+        pattern = re.compile(re.escape(token))
+    match = pattern.search(gap_text)
+    prefix_bytes = len(gap_text[: match.start()].encode("utf-8"))
+    token_bytes = len(gap_text[match.start() : match.end()].encode("utf-8"))
+    start = gap_start + prefix_bytes
+    return start, start + token_bytes
+
+
+def _compare_swap_sites(node: ast.Compare, text_bytes: bytes) -> list[_Site]:
+    """One site per operator in *node*'s own ``ops`` list that the
+    ``compare-swap`` catalogue covers -- a chain ``a < b < c`` has TWO
+    operators and so two independent sites, mirroring
+    :func:`_boolop_swap_sites`'s own N-1-sites-per-chain shape (A-115)."""
+    sites: list[_Site] = []
+    for index, op in enumerate(node.ops):
+        op_cls = type(op)
+        target_cls = _COMPARE_SWAP.get(op_cls)
+        if target_cls is None:
+            continue  # e.g. ast.In/ast.NotIn -- outside the catalogue (A-112)
+        left = node.left if index == 0 else node.comparators[index - 1]
+        right = node.comparators[index]
+        gap_start = byte_offset(text_bytes, left.end_lineno, left.end_col_offset)
+        gap_end = byte_offset(text_bytes, right.lineno, right.col_offset)
+        start, end = _find_token_span(
+            text_bytes,
+            gap_start,
+            gap_end,
+            _COMPARE_TOKEN[op_cls],
+            whole_word=op_cls in (ast.Is, ast.IsNot),
+        )
+        sites.append(
+            _Site(
+                lineno=line_for_offset(text_bytes, start),
+                operator="compare-swap",
+                description=f"{op_cls.__name__}->{target_cls.__name__}",
+                start=start,
+                end=end,
+                replacement=_COMPARE_TOKEN[target_cls].encode("utf-8"),
+            )
+        )
+    return sites
+
+
+def _boolop_swap_sites(node: ast.BoolOp, text_bytes: bytes) -> list[_Site]:
+    """One site per ADJACENT operand pair in *node*'s own ``values`` list --
+    a chain of N operands has N-1 independently-targetable operator tokens
+    (A-115's own worked example: ``a and b and c`` is a single ``BoolOp``
+    node but two textual ``and`` occurrences). Each site flips exactly its
+    own token; the node's shared ``.op`` is never reassigned wholesale,
+    which would conceptually flip every occurrence in the chain at once."""
+    op_cls = type(node.op)
+    target_cls = _BOOLOP_SWAP[op_cls]
+    token = _BOOLOP_TOKEN[op_cls]
+    replacement = _BOOLOP_TOKEN[target_cls].encode("utf-8")
+    description = f"{op_cls.__name__}->{target_cls.__name__}"
+    sites: list[_Site] = []
+    for left, right in zip(node.values, node.values[1:]):
+        gap_start = byte_offset(text_bytes, left.end_lineno, left.end_col_offset)
+        gap_end = byte_offset(text_bytes, right.lineno, right.col_offset)
+        start, end = _find_token_span(text_bytes, gap_start, gap_end, token, whole_word=True)
+        sites.append(
+            _Site(
+                lineno=line_for_offset(text_bytes, start),
+                operator="boolop-swap",
+                description=description,
+                start=start,
+                end=end,
+                replacement=replacement,
+            )
+        )
+    return sites
+
+
+def _bool_const_flip_site(node: ast.Constant, text_bytes: bytes) -> _Site:
+    """*node* is a ``True``/``False`` literal (the caller already checked
+    ``isinstance(node.value, bool)``) -- its own span is well-defined
+    directly from the ``Constant`` node's own offsets, unlike
+    ``compare-swap``/``boolop-swap``'s operator-in-a-gap search, so this
+    always produces exactly one site, never ``None``."""
+    new_value = not node.value
+    start = byte_offset(text_bytes, node.lineno, node.col_offset)
+    end = byte_offset(text_bytes, node.end_lineno, node.end_col_offset)
+    return _Site(
+        lineno=node.lineno,
+        operator="bool-const-flip",
+        description=f"{node.value}->{new_value}",
+        start=start,
+        end=end,
+        replacement=str(new_value).encode("utf-8"),
+    )
+
+
+def _falsy_swap_replacement(value: ast.expr) -> tuple[str, str] | None:
+    """The per-site eligibility classifier for ``falsy-swap`` (Work item
+    2's "private per-site classifier function", directly unit-testable —
+    P10's ``_check_ancestor_or_equal`` precedent). ``None`` means *value* is
+    not one of the direct-falsy-return shapes this catalogue member covers;
+    otherwise ``(original_text, replacement_text)``, both plain descriptive
+    strings built WITHOUT ``ast.unparse`` (A-112) — the splice always
+    replaces with the fixed literal text ``"None"``/``"[]"`` regardless of
+    the original source's own spelling (a hex ``0x0`` and a decimal ``0``
+    both describe as ``"0"`` here via ``repr``; the splice removes the
+    node's own byte span either way, so the original spelling is never
+    re-typed, only deleted).
+
+    Adopted from nyxloom's own ``_falsy_swap_target``, restated as textual
+    replacements rather than AST nodes: this package's byte-splice
+    mechanism has no tree to attach a replacement NODE to (A-112/A-114).
+    """
+    if isinstance(value, ast.Constant):
+        if isinstance(value.value, bool):
+            return None  # bool-const-flip's own territory, not falsy-swap's
+        if value.value is None:
+            return ("None", "[]")
+        if value.value == 0 or value.value == "" or value.value == b"":
+            return (repr(value.value), "None")
+        return None
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)) and not value.elts:
+        return (_EMPTY_COLLECTION_TEXT[type(value)], "None")
+    if isinstance(value, ast.Dict) and not value.keys:
+        return ("{}", "None")
+    return None
+
+
+def _falsy_swap_site(node: ast.Return, text_bytes: bytes) -> _Site | None:
+    """``None`` for a bare ``return`` (no value at all) or a returned value
+    :func:`_falsy_swap_replacement` does not cover -- both are genuine
+    per-site ineligibility, contributing zero sites rather than a special
+    marker (A-114's "explicit ineligible/ambiguous reasons... is a
+    TEST-layer property, not a public return value")."""
+    if node.value is None:
+        return None
+    replacement = _falsy_swap_replacement(node.value)
+    if replacement is None:
+        return None
+    original_text, replacement_text = replacement
+    start = byte_offset(text_bytes, node.value.lineno, node.value.col_offset)
+    end = byte_offset(text_bytes, node.value.end_lineno, node.value.end_col_offset)
+    return _Site(
+        lineno=node.lineno,
+        operator="falsy-swap",
+        description=f"{original_text}->{replacement_text}",
+        start=start,
+        end=end,
+        replacement=replacement_text.encode("utf-8"),
+    )
+
+
+def _generate_python_mutants(text: str, lines: set[int]) -> tuple[Mutant, ...] | None:
+    """The whole P11 engine: parse *text*, walk every candidate construct
+    (full :func:`ast.walk`, matching :func:`_statement_spans`'s own
+    not-just-top-level convention -- a mutable construct can be nested
+    arbitrarily deep), keep only sites whose OWN location sits on *lines*,
+    splice each independently against the ORIGINAL bytes (never against a
+    previously-mutated copy -- every ``Mutant`` is its own single-site
+    experiment against *text*, never a cumulative one). ``None`` on a parse
+    failure -- :meth:`PythonAdapter.generate_mutants` translates that to the
+    protocol's ``"UNSUPPORTED"`` sentinel (A-114's own
+    :func:`_statement_spans`-precedent translation).
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+
+    text_bytes = text.encode("utf-8")
+    sites: list[_Site] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            sites.extend(_compare_swap_sites(node, text_bytes))
+        elif isinstance(node, ast.BoolOp):
+            sites.extend(_boolop_swap_sites(node, text_bytes))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, bool):
+            sites.append(_bool_const_flip_site(node, text_bytes))
+        elif isinstance(node, ast.Return):
+            site = _falsy_swap_site(node, text_bytes)
+            if site is not None:
+                sites.append(site)
+
+    eligible = [site for site in sites if site.lineno in lines]
+    eligible.sort(
+        key=lambda site: (site.lineno, site.operator, site.description, site.start)
+    )
+    return tuple(
+        Mutant(
+            lineno=site.lineno,
+            operator=site.operator,
+            description=site.description,
+            mutated_text=(
+                text_bytes[: site.start] + site.replacement + text_bytes[site.end :]
+            ).decode("utf-8"),
+        )
+        for site in eligible
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
 class PythonAdapter:
     """The Python union of dstdns/topos/nyxloom's changed-line coverage
     gates, implemented against the frozen :class:`~assay.adapters.base.
-    LanguageAdapter` protocol (A-097, extended by P07/A-101 and P09/A-105)
-    — its five attributes and six methods, plus one adapter-private
-    constructor field (:attr:`coverage_key_prefix`) that the protocol does
-    not name and does not need to: a concrete adapter is free to carry
-    extra state beyond the protocol's structural surface, the same way
-    P05's own ``FakeAdapter`` (``tests/conftest.py``) carries
+    LanguageAdapter` protocol (A-097, extended by P07/A-101, P09/A-105 and
+    P11/A-114) — its five attributes and seven methods, plus one
+    adapter-private constructor field (:attr:`coverage_key_prefix`) that the
+    protocol does not name and does not need to: a concrete adapter is free
+    to carry extra state beyond the protocol's structural surface, the same
+    way P05's own ``FakeAdapter`` (``tests/conftest.py``) carries
     ``key_prefix``/``test_marker``/``no_code_marker`` alongside the five
     required attributes.
     """
@@ -444,3 +772,11 @@ class PythonAdapter:
 
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         return _inject_uncovered_line(text)
+
+    def generate_mutants(
+        self, text: str, lines: set[int]
+    ) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]:
+        mutants = _generate_python_mutants(text, lines)
+        if mutants is None:
+            return "UNSUPPORTED"
+        return mutants
