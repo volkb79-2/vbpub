@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P02-changed-lines-measurability, assay-P03-coverage-formats-registry, assay-P04-runner-cli-verdict-emission]
 session: fresh
 scope:
-  touch: ["src/assay/adapters/base.py", "src/assay/evaluate.py", "src/assay/registry.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/**"]
+  touch: ["src/assay/adapters/**", "src/assay/evaluate.py", "src/assay/registry.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas/**", "tests/**"]
   forbid: ["src/assay/config.py"]
 oracles:
   - id: O1
@@ -22,7 +22,7 @@ oracles:
     negative: "Adding a .py filter, AST import, or default adapter makes the synthetic-language fixture disappear or the unknown language silently select Python"
     gate: tester-unified
   - id: O3
-    observable: "Runner integration emits a schema-valid computed R1 claim with exact totals, percentage, missing locations, and reason; a hand-written expected artifact covers PASS and FAIL"
+    observable: "Runner integration emits a schema-valid computed R1 claim with exact totals, percentage, missing locations (missing_lines and files_missing_coverage, A-096), and reason; a hand-written expected artifact covers PASS and FAIL"
     negative: "A universal PASS evaluator, rounded threshold comparison, or producer/schema drift fails an independent full-artifact comparison"
     gate: tester-unified
   - id: O4
@@ -47,17 +47,18 @@ on branch `feat/assay-P05-language-free-evaluation-core`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§4–5, §6's NO_MEASUREMENT table, and decisions A-012–A-018, A-024, A-025, A-035, A-071, A-090, A-094.
+1. `docs/DESIGN-GUIDE.md` §§4–5, §6's NO_MEASUREMENT table, §11's adapter surface, and decisions A-012–A-018, A-024, A-025, A-035, A-071, A-084, A-090, A-092, A-094, A-096, A-097.
 2. `src/assay/diff.py`, `src/assay/measurability.py`, `coverage.py`, `runner.py`, `verdict.py`, and packaged schema.
-3. The evaluation functions in all four source implementations named by the design guide, especially topos directory-boundary matching and nyxloom/dstdns exclusion policy.
+3. The evaluation functions in all four source implementations named by the design guide, especially topos directory-boundary matching and nyxloom/dstdns exclusion policy — including their `uncovered`/`files_missing_coverage` fields (A-096).
+4. `tests/fixtures/verdicts/fail.json` and `pass.json` — the two existing hand-written fixtures with a `coverage` block. Both need `missing_lines`/`files_missing_coverage` added once A-096 lands, along with their builder call sites in `test_verdict_serialises.py`/`test_verdict_schema_rejects.py`/`test_verdict_claims.py`.
 
 ## Work
 
-1. Define the smallest adapter protocol needed for executable and excluded line classification and an explicit language registry.
-2. Implement the pure four-way set evaluation and threshold result.
-3. Integrate an additive R1 computed claim and closed schema branch into the runner, calling P02's measurability guards and P03's empty-coverage guard first and short-circuiting evaluation on any of the three (O4, A-090).
+1. Define the adapter protocol (`adapters/base.py`) with EXACTLY the surface A-097 names — the five attributes and three methods DESIGN-GUIDE §11 lists that this package's own O1/O2 exercise (`name`, `source_globs`, `excluded_dir_names`, `requires_span_attribution`, `external_tools`, `is_test_path`, `has_executable_code`, `normalize_coverage_key`). Do not add `statement_spans`, `inject_import_break`, `inject_uncovered_line`, or `generate_mutants` — each is a later package's addition (A-084), and P06/P08 have no scope to fix a missing method themselves if this package under- or over-builds. Add `adapters/__init__.py` if creating the package for the first time (scope is now `adapters/**`).
+2. Implement the pure four-way set evaluation and threshold result, producing `missing_lines`/`files_missing_coverage` per A-096's shape.
+3. Integrate an additive R1 computed claim and closed schema branch into the runner (A-096's two new `Coverage` fields), calling P02's measurability guards and P03's empty-coverage guard first and short-circuiting evaluation on any of the three (O4, A-090). `measurability.check_base_is_head`'s `base` argument has no lane-config field or CLI flag anywhere yet (no package before P14 touches `cli.py`) — this is expected, not a gap to fix: your tests hand it a literal ref string against a `tmp_path` git fixture, the same way P02's and P04's own tests call `runner`/`measurability` functions directly rather than through the CLI.
 4. Test with a fake non-Python adapter before any real adapter exists. Add independently written full verdict fixtures for new producer paths, including the three NO_MEASUREMENT branches.
-5. Break each set term, the language boundary, the three guards, and producer/schema agreement; record failure counts (A-067).
+5. Break each set term, the language boundary, the three guards, and producer/schema agreement; record failure counts (A-067). Follow A-092 throughout: frozen `kw_only` dataclasses, `errors.AssayError` raised directly, no locally-defined exception type.
 
 ## Test constraints copied from AUTHORING.md §3b
 
