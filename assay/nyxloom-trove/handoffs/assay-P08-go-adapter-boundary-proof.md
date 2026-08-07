@@ -10,8 +10,8 @@ stack: none
 depends_on: [assay-P07-statement-span-attribution, assay-P03-coverage-formats-registry]
 session: resume:assay-adapters
 scope:
-  touch: ["src/assay/adapters/go.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**"]
-  forbid: ["src/assay/verdict.py", "src/assay/schemas"]
+  touch: ["src/assay/adapters/go.py", "src/assay/registry.py", "src/assay/errors.py", "src/assay/schemas/**", "tests/fixtures/go/**", "tests/**"]
+  forbid: ["src/assay/config.py", "src/assay/verdict.py"]
 oracles:
   - id: O1
     observable: "Committed Go source plus pre-generated coverprofiles produce exact path/span mappings; has_executable_code declares the Go tool prerequisite and tests its subprocess boundary with fixed parser results, while a missing tool renders NO_MEASUREMENT rather than guessing"
@@ -22,8 +22,12 @@ oracles:
     negative: "A Python special case in core or a Go default-pass branch makes the paired result or ambiguity artifact differ"
     gate: tester-unified
   - id: O3
-    observable: "git diff from input revision touches no base protocol, evaluator, verdict, or schema file, while all pre-existing fake/Python adapter tests stay green"
-    negative: "Needing a core or schema edit produces a forbidden-path diff; deleting Python behavior fails the retained suite"
+    observable: "git diff from input revision touches no base protocol, evaluator, or verdict-model file; the schema diff is limited to the additive MISSING_EXTERNAL_TOOL reason, and all pre-existing fake/Python adapter tests stay green"
+    negative: "Needing a core/protocol reshape produces a forbidden-path diff; weakening Python behavior fails the retained suite; widening the schema beyond the one reason fails the diff assertion"
+    gate: tester-unified
+  - id: O4
+    observable: "When the declared Go parser prerequisite is absent, evaluation emits a complete independently written NO_MEASUREMENT/MISSING_EXTERNAL_TOOL artifact naming the tool; it never guesses has-code true or false"
+    negative: "Removing the preflight either produces ERROR/EXEC_FAILED, a false coverage result, or an artifact differing from the expected cause"
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
@@ -51,8 +55,8 @@ on branch `feat/assay-P08-go-adapter-boundary-proof`.
 
 1. Add only the Go adapter and registration. Declare the external Go parser prerequisite; test that boundary with fixed subprocess results and the missing-tool outcome, never an ambient tool.
 2. Commit hello-world source and pre-generated coverage text plus regeneration documentation. Do not add or invoke Go in tester-unified.
-3. Exercise the existing evaluator and verdict producer unchanged.
-4. Break block mapping, ambiguity refusal, and cross-language equivalence; record failure counts (A-067).
+3. Add `MISSING_EXTERNAL_TOOL` only to the NO_MEASUREMENT reason vocabulary/schema and exercise the existing evaluator and verdict model unchanged. Add a complete independent artifact for the missing prerequisite.
+4. Break block mapping, prerequisite refusal, ambiguity refusal, and cross-language equivalence; record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 
@@ -126,7 +130,7 @@ it is not an oracle yet.
 
 ## Scope / forbid
 
-The protocol is frozen after P07. Any required base/core edit is the package's mechanical BLOCKED condition.
+The evaluation protocol is frozen after P07. The one authorized contract addition is the closed missing-tool reason; any base/core or verdict-model edit is the package's mechanical BLOCKED condition.
 
 ## BLOCKED rule
 

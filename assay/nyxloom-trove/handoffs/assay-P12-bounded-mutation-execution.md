@@ -29,6 +29,10 @@ oracles:
     observable: "Killed, survived, error, and budget-exhausted mutation sets each emit independently written schema-valid R2 artifacts with all attempted and unattempted identities accounted for"
     negative: "Dropping unattempted identities, treating crashes as killed, or universal PASS differs from the complete expected artifact"
     gate: tester-unified
+  - id: O5
+    observable: "The baseline and every mutant invocation receive the lane's declared argv byte-for-byte; changing source paths changes no command argument unless the caller explicitly appended one under the existing lane rule"
+    negative: "Deriving tests/test_<module> from a mutated source path changes the fake runner's recorded argv and fails the paired two-source fixture"
+    gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "the jobs bound cannot be observed through the actual executor boundary without elapsed-time assertions"
@@ -54,10 +58,10 @@ on branch `feat/assay-P12-bounded-mutation-execution`.
 ## Work
 
 1. Require and record a clean baseline before generating/submitting mutants.
-2. Run mutants in isolated state through an injectable executor constructed with exactly `jobs`; never test concurrency by elapsed time.
+2. Run the lane's declared argv unchanged for baseline and mutants; never derive a test command from a source path. Use an injectable executor constructed with exactly `jobs`; never test concurrency by elapsed time.
 3. Restore bytes on every terminal path and serialize results deterministically.
 4. Add the closed R2 payload/schema branch and complete hand-written artifacts for all terminal result classes.
-5. Break baseline gating, executor bound, restoration, ordering, and result accounting; record failure counts (A-067).
+5. Break baseline gating, declared-argv fidelity, executor bound, restoration, ordering, and result accounting; record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 
