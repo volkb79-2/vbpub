@@ -6,77 +6,65 @@
 
 ## Where things stand
 
-**Merged on `main`:** P00/P01 (skeleton, lane config, verdict model + schema),
-**P02** (changed-line extraction + measurability guards), **P03** (coverage
-format registry), **P04** (runner, `assay run` CLI, R0 verdict emission),
-**P05** (adapter protocol, four-way union, R1 verdict emission), **P06**
-(Python `LanguageAdapter`), **P07** (statement-span attribution), **P08** (Go
-`LanguageAdapter` — last new-LANGUAGE package), **P09** (cause-sensitive
-canary — real end-to-end proof that the gate rejects known-bad input for the
-intended reason; Python's canary runs the FULL real R0+R1 pipeline twice
-against real git commits, Go's proves R1 only via committed coverprofiles,
-deliberately, since no Go toolchain exists here), **P10** (attested evidence
-staleness — new `attestation.py`: loads a Tier-3 external review into the
-already-reserved `Evidence` shape and proves only whether its declared
-reviewed paths are current, never verifying review content; equal-or-ancestor
-proven via `merge-base`, with every git-level failure on the externally
-supplied attested commit — unrelated history, malformed ref, descendant —
-caught and remapped to `ERROR`/`UNREADABLE_ARTIFACT` per A-110, never left to
-propagate as `GIT_FAILED`; the declared `(source, key)` list is a direct
-caller parameter per A-111, `config.py`/`assay.toml` untouched;
-`runner.assemble_verdict` gained optional `evidence`/`declared_evidence`
-parameters, defaulting to `()` so every prior caller is unaffected). Gate
-green at **1241 passed, exit 0, 100% statement AND branch** (1917 stmts / 746
-branches), independently reverified by the controller in the foreground gate
-container on every package, plus a post-merge local run on `main` each time.
-P10's own claimed mutation count for its highest-risk case (outer
-`try`/`except` removed in `evaluate_attestation`, A-110's core promise) was
-independently reproduced by the controller with a local spot-check mutation
-— 7 failing, exact match. **P11** (valid mutant construction — new
-`mutation.py`: frozen `Mutant` dataclass plus UTF-8-byte<->line arithmetic;
-`generate_mutants` added as `LanguageAdapter`'s 7th and final method,
-`tuple[Mutant, ...] | Literal["UNSUPPORTED"]`, whole-adapter-call level per
-A-114; Python's real engine splices each mutation site's own byte span
-against the ORIGINAL text — never `ast.unparse`'s whole-file reprint, which
-would fail O1's byte-preservation oracle — and treats a boolean chain's
-N-1 operator tokens as N-1 independent sites per A-115; Go is unconditional
-`UNSUPPORTED`, no toolchain ever). Gate green at **1301 passed, exit 0, 100%
-statement AND branch** (2064 stmts / 796 branches). The readiness pass for
-P11 caught the same wrong-citation defect class a third time (srdm
-`covergate/` cited for "mutation logic," zero occurrences — real prior art
-is `nyxloom/src/nyxloom/mutation_gate.py`) plus a genuinely unpinned return
-shape and a real technical trap (the reference implementation's
-`ast.unparse` mechanism is fundamentally incompatible with this package's
-own byte-preservation oracle) — all independently verified by the
-controller before ruling (grep counts, live `ast` structural checks,
-direct interactive exercise of `generate_mutants` against fresh inputs:
-3- and 4-operand boolean chains, chained comparisons, non-ASCII byte
-preservation, malformed-text `UNSUPPORTED`, empty-result-vs-`UNSUPPORTED`
-distinction, Go's unconditional `UNSUPPORTED`).
+**Merged on `main`, P00 through P12** — twelve packages, gate green
+throughout, each independently reverified by the controller in the
+foreground gate container (and post-merge on `main`) rather than trusted
+from the implementer's own report:
 
-**Outstanding:** P12–P14, three packages. **P12 is next** — *"do tests kill
-valid changed-line mutants under a declared, deterministic execution
-bound?"* (depends on P11 and P04, both merged). P12's handoff carries three
-propagated citations now: P10's `assemble_verdict` signature, the corrected
-mutation-execution prior art (`mutation_gate.py`'s `evaluate()`, A-113), and
-P11's own successor brief (the exact `Mutant`/`generate_mutants` shape it
-consumes, including the `() `-vs-`"UNSUPPORTED"` distinction it must handle
-separately). P13/P14 need nothing new from P11's landing — P11 added zero
-new runtime dependencies (stdlib only), and P11 attaches nothing to a
-`Claim`/`Verdict`, so P14's "P04–P12" range already covers it without
-special-casing.
+- P00/P01: skeleton, lane config, verdict model + schema.
+- P02: changed-line extraction + measurability guards.
+- P03: coverage format registry.
+- P04: runner, `assay run` CLI, R0 verdict emission.
+- P05: adapter protocol, four-way union, R1 verdict emission.
+- P06/P08: Python and Go `LanguageAdapter`s.
+- P07: statement-span attribution (the multi-line-statement gap).
+- P09: cause-sensitive canary — real end-to-end proof the gate rejects
+  known-bad input for the intended reason.
+- P10: attested evidence staleness — Tier-3 external review loading,
+  proving only whether declared reviewed paths are current, never
+  verifying content (A-110/A-111).
+- P11: valid mutant construction — `generate_mutants`, the adapter
+  protocol's 7th and final method; a byte-exact single-site splice, never
+  `ast.unparse`'s whole-file reprint (A-112/A-114/A-115).
+- **P12** (bounded mutation execution — the R2 producer): baseline-gated
+  (a red baseline stops before any mutant), `jobs`-bounded via an injected
+  executor factory (never `os.cpu_count()`, A-122), per-mutant
+  `shutil.copytree` isolation (never in-place, never a git worktree,
+  A-120) so the shared source is unchanged BY CONSTRUCTION, four
+  outcome buckets (killed/survived/crashed/budget_exceeded, A-116/A-117).
+  New `Mutation`/`MutantOutcome` payload types in `verdict.py`,
+  `Claim.mutation` gated to R2, a third schema `allOf` branch.
+  `assemble_verdict` gained `mutation_claim`. A real circular import
+  (`mutation -> runner -> adapters.base -> mutation`) was found and fixed
+  with a deferred import — independently verified safe under every entry
+  order by the controller. The controller also independently drove
+  `run_mutation` directly (not just the test suite) against a fresh copy
+  of the real fixture: confirmed a red baseline creates zero scratch
+  dirs, `jobs=1`/`jobs=3` render byte-identical results under real
+  concurrency, and the shared tree survives a real six-mutant run
+  byte-unchanged.
 
-Key commits: `f3f13580` (P11 merge), `887bae41` (P11 rulings,
-A-112–A-115), `638b4a54` (P10 merge), `aa5b28c7` (P10 rulings, A-110/A-111),
-`732d0dd4` (P09 merge), `23122f9b` (P09 rulings, A-105–A-109),
-`fde78867` (P08 merge), `c6bb7aa6` (P08 rulings, A-102–A-104), `9ae93057`
-(P07 merge), `9b9d38e8` (P07 controller repair), `90f9de44` (P07 rulings,
-A-100/A-101), `8e65b1c7` (P06 merge), `05ab843e` (P06 rulings, A-098/A-099),
-`291d6e30` (P05 merge), `0958efdf` (P05 rulings, A-096/A-097), `c46b0bcb`
-(P04 merge), `fd7ae88e` (P04 controller repair), `bfc467b8` (P04 rulings,
-A-094/A-095), `e7c92988` (P03 merge), `e97d6e6f` (P03 rulings, A-092/A-093),
-`89a489a0` (P02 merge), `04e72c9a` (P02 rulings, A-090/A-091), `27fb88d7`
-(P01c + reissue).
+Gate green at **1407 passed, exit 0, 100% statement AND branch** (2234
+stmts / 874 branches).
+
+**Outstanding:** P13–P14, two packages. **P13 is next** — *"the shipped
+wheel, not the source checkout, is a zero-runtime-dependency executable"*
+(depends on P09/P10/P12, all merged; already correctly listed before this
+session). P12 added zero new runtime dependencies (stdlib only:
+`concurrent.futures`, `shutil`, `datetime`) and P13's scope forbids
+`src/assay` entirely (packaging-only) — no handoff changes needed. P14's
+own "P04–P12" range in O1 already numerically covers P12 without
+special-casing. P12's own successor brief names two DELIBERATE wiring gaps
+neither P13 nor P14 is scoped to close (see "Watched," below) — do not
+invent scope creep to close them; that would be carving without
+independent review.
+
+Key commits: `fa65dd58` (P12 merge), `f828d14e` (P12 rulings,
+A-116–A-122), `f3f13580` (P11 merge), `887bae41` (P11 rulings,
+A-112–A-115), `638b4a54` (P10 merge), `aa5b28c7` (P10 rulings, A-110/A-111).
+Full history for P02–P09 in `decisions.md` (A-090–A-109) and their own
+merge commit messages; not repeated here now that twelve packages are
+in — this file's own job is "where things stand," not a full changelog.
 
 **The pattern across all nine packages so far**: every readiness pass has
 found at least one real gap, never zero — most either a capability built
@@ -100,15 +88,19 @@ message; not repeated here.
 closed `ReasonCode` for "cannot write my own output artifact." Low severity.
 
 **Watched but not acted on:**
-- P12 touches `runner.py`/`verdict.py` and now postdates both P10's
-  extension of `assemble_verdict` (`evidence`/`declared_evidence`,
-  identity-coverage guard) and P11's addition of `mutation.py`/`Mutant` —
-  propagated as citations in P12's own handoff this session; its own
-  readiness pass is still the right moment to catch anything these notes
-  missed, especially the new R2 `Claim.mutation` payload P12 must design
-  (no shape pinned yet, unlike P09/P10's own R1/R3 payloads — P12's own
-  readiness pass is where that gets pinned, matching A-101/A-108/A-114's
-  precedent).
+- **Two deliberate wiring gaps P12 left, named explicitly in its own
+  successor brief**: (1) nothing builds real `MutationTarget`s from a real
+  diff — P12 owns execution only, per its own scope; (2) nothing reads
+  `assay.toml`'s `judge.mutation` table (`jobs`/`operators` stay opaque,
+  A-121). Neither P13 (packaging-only, forbids `src/assay`) nor P14
+  (scope.touch has no `mutation.py`/`config.py`) is positioned to close
+  these — matching how attested evidence's own `assay.toml` wiring was
+  also left deliberately unbuilt by this whole v1 series. If either gap
+  ever needs closing, it is a new, separately-carved package, not scope
+  creep folded into P13/P14.
+- Also from P12: `cli.py` still does not call `run_mutation` or pass a
+  `mutation_claim` through anywhere — consistent with the above, not a
+  regression.
 - `cli.py` is only touched again by P14 among all remaining packages — full
   `assay run` CLI wiring across rigor levels is entirely P14's job by
   design, not a defect (confirmed intentional: assay's own `assay.toml` is
