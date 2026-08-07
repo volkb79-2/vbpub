@@ -1,6 +1,6 @@
 # assay — state of play
 
-> Written 2026-08-07, updated the same day after P07 landed. Update this file
+> Written 2026-08-07, updated the same day after P08 landed. Update this file
 > at the end of every session; it is the first thing the next controller
 > should read after `handoffs/README.md`.
 
@@ -10,39 +10,52 @@
 **P02** (changed-line extraction + measurability guards), **P03** (coverage
 format registry: coverage.py JSON, lcov, Cobertura XML, Go coverprofile),
 **P04** (runner, `assay run` CLI, R0 verdict emission), **P05** (adapter
-protocol, four-way union, registry, R1 verdict emission — first real
-coverage-judged verdict), **P06** (Python `LanguageAdapter`, the union of
-dstdns/topos/nyxloom), **P07** (statement-span attribution — the one
-deliberate post-P05 protocol extension, closing the "multi-line statement
-interior lines vanish" gap). Gate green at **1056 passed, exit 0, 100%
-statement AND branch** (1465 stmts / 566 branches), independently reverified
-by the controller in the foreground gate container on every package, plus a
+protocol, four-way union, registry, R1 verdict emission), **P06** (Python
+`LanguageAdapter`), **P07** (statement-span attribution — the one deliberate
+post-P05 protocol extension), **P08** (Go `LanguageAdapter` — the second and
+last new-adapter package; both adapters now exist, `adapters/base.py` is
+frozen for good). Gate green at **1110 passed, exit 0, 100% statement AND
+branch** (1626 stmts / 640 branches), independently reverified by the
+controller in the foreground gate container on every package, plus a
 post-merge local run on `main` each time.
 
-**Outstanding:** P08–P14, seven packages. **P08 is next** — *"is a second
-language additive, proving the adapter boundary is real?"* (the Go adapter,
-no toolchain in this devcontainer).
+**Outstanding:** P09–P14, six packages. **P09 is next** — *"does the whole
+gate reject valid known-bad input for the intended cause?"* (cause-sensitive
+canary — depends on P04 and P08, touches both adapters again to add
+`inject_import_break`/`inject_uncovered_line`).
 
-Key commits: `9ae93057` (P07 merge), `9b9d38e8` (P07 controller repair,
-pre-merge), `90f9de44` (P07 readiness rulings, A-100/A-101), `8e65b1c7` (P06
-merge), `05ab843e` (P06 rulings, A-098/A-099), `291d6e30` (P05 merge),
-`0958efdf` (P05 rulings, A-096/A-097), `c46b0bcb` (P04 merge), `fd7ae88e` (P04
-controller repair), `bfc467b8` (P04 rulings, A-094/A-095), `e7c92988` (P03
-merge), `e97d6e6f` (P03 rulings, A-092/A-093), `89a489a0` (P02 merge),
-`04e72c9a` (P02 rulings, A-090/A-091), `27fb88d7` (P01c + reissue).
+Key commits: `fde78867` (P08 merge), `c6bb7aa6` (P08 rulings, A-102/A-103/
+A-104), `9ae93057` (P07 merge), `9b9d38e8` (P07 controller repair), `90f9de44`
+(P07 rulings, A-100/A-101), `8e65b1c7` (P06 merge), `05ab843e` (P06 rulings,
+A-098/A-099), `291d6e30` (P05 merge), `0958efdf` (P05 rulings, A-096/A-097),
+`c46b0bcb` (P04 merge), `fd7ae88e` (P04 controller repair), `bfc467b8` (P04
+rulings, A-094/A-095), `e7c92988` (P03 merge), `e97d6e6f` (P03 rulings,
+A-092/A-093), `89a489a0` (P02 merge), `04e72c9a` (P02 rulings, A-090/A-091),
+`27fb88d7` (P01c + reissue).
 
-**The pattern across all seven packages so far**: every readiness pass has
+**The pattern across all eight packages so far**: every readiness pass has
 found at least one real gap, never zero. Most are the same shape — a
-capability built with no package yet scoped to consume it (A-090→A-093→A-096,
-the `runner.py` seam), or a decision that needs generalizing as later
-packages rediscover it (A-091→A-092). Two packages (P04, P07) additionally
-needed a genuine controller REPAIR after implementation, not just a
-pre-dispatch ruling — both were the same shape: real code the implementer
-correctly identified as outside their own `scope.touch`, left as a documented
-gap, and the controller closed because leaving it would have persisted
-through at least one more package with no scope to fix it either. Full detail
-on each package's specific findings lives in `decisions.md` (A-090 through
-A-101) and each merge commit message; not repeated here.
+capability built with no package yet scoped to consume it (the `runner.py`
+seam: A-090→A-093→A-096; the adapter-protocol seam: A-097→A-101→A-102), or a
+decision that needs generalizing as later packages rediscover it
+(A-091→A-092). Two packages (P04, P07) additionally needed a genuine
+controller REPAIR after implementation — both the same shape: real code the
+implementer correctly identified as outside their own `scope.touch`, left as
+a documented gap, closed by the controller because leaving it would have
+persisted with no later package guaranteed to touch that file either. P08
+(the project's own flagged lowest-confidence package) needed neither a
+repair nor further rulings — reviewed with extra care (hand-traced several
+adversarial lexer cases myself) and held up. Full detail on each package's
+specific findings lives in `decisions.md` (A-090 through A-104) and each
+merge commit message; not repeated here.
+
+**P09/P11 propagation note**: P08's own successor brief for them is
+unusually thorough (exact current `GoAdapter` shape, a proven-correct
+"function body start" anchor point to reuse for `inject_uncovered_line`, and
+three explicitly named known-limitations). No further handoff edits made —
+P08 is the last new-adapter package, so nothing else needs the adapter
+shape pinned down further; P09/P11's own readiness passes will read the
+brief directly.
 
 **Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
 closed `ReasonCode` for "cannot write my own output artifact." Low severity.
