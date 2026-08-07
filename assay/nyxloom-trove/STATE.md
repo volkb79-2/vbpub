@@ -32,18 +32,42 @@ container on every package, plus a post-merge local run on `main` each time.
 P10's own claimed mutation count for its highest-risk case (outer
 `try`/`except` removed in `evaluate_attestation`, A-110's core promise) was
 independently reproduced by the controller with a local spot-check mutation
-— 7 failing, exact match.
+— 7 failing, exact match. **P11** (valid mutant construction — new
+`mutation.py`: frozen `Mutant` dataclass plus UTF-8-byte<->line arithmetic;
+`generate_mutants` added as `LanguageAdapter`'s 7th and final method,
+`tuple[Mutant, ...] | Literal["UNSUPPORTED"]`, whole-adapter-call level per
+A-114; Python's real engine splices each mutation site's own byte span
+against the ORIGINAL text — never `ast.unparse`'s whole-file reprint, which
+would fail O1's byte-preservation oracle — and treats a boolean chain's
+N-1 operator tokens as N-1 independent sites per A-115; Go is unconditional
+`UNSUPPORTED`, no toolchain ever). Gate green at **1301 passed, exit 0, 100%
+statement AND branch** (2064 stmts / 796 branches). The readiness pass for
+P11 caught the same wrong-citation defect class a third time (srdm
+`covergate/` cited for "mutation logic," zero occurrences — real prior art
+is `nyxloom/src/nyxloom/mutation_gate.py`) plus a genuinely unpinned return
+shape and a real technical trap (the reference implementation's
+`ast.unparse` mechanism is fundamentally incompatible with this package's
+own byte-preservation oracle) — all independently verified by the
+controller before ruling (grep counts, live `ast` structural checks,
+direct interactive exercise of `generate_mutants` against fresh inputs:
+3- and 4-operand boolean chains, chained comparisons, non-ASCII byte
+preservation, malformed-text `UNSUPPORTED`, empty-result-vs-`UNSUPPORTED`
+distinction, Go's unconditional `UNSUPPORTED`).
 
-**Outstanding:** P11–P14, four packages. **P11 is next** — *"is each mutant
-a valid single changed-line experiment, not arbitrary broken text?"*
-(depends on P08 only; zero file overlap with P10 — P11 touches
-`adapters/base.py`/`python.py`/`go.py`/`mutation.py`, none of which P10
-touched). P12's handoff has been propagated with a citation to P10's own
-successor brief (`assemble_verdict`'s new signature) since P12 also edits
-`runner.py` and does not list P10 in its own `depends_on`; P13 already listed
-P10 in `depends_on` before this session.
+**Outstanding:** P12–P14, three packages. **P12 is next** — *"do tests kill
+valid changed-line mutants under a declared, deterministic execution
+bound?"* (depends on P11 and P04, both merged). P12's handoff carries three
+propagated citations now: P10's `assemble_verdict` signature, the corrected
+mutation-execution prior art (`mutation_gate.py`'s `evaluate()`, A-113), and
+P11's own successor brief (the exact `Mutant`/`generate_mutants` shape it
+consumes, including the `() `-vs-`"UNSUPPORTED"` distinction it must handle
+separately). P13/P14 need nothing new from P11's landing — P11 added zero
+new runtime dependencies (stdlib only), and P11 attaches nothing to a
+`Claim`/`Verdict`, so P14's "P04–P12" range already covers it without
+special-casing.
 
-Key commits: `638b4a54` (P10 merge), `aa5b28c7` (P10 rulings, A-110/A-111),
+Key commits: `f3f13580` (P11 merge), `887bae41` (P11 rulings,
+A-112–A-115), `638b4a54` (P10 merge), `aa5b28c7` (P10 rulings, A-110/A-111),
 `732d0dd4` (P09 merge), `23122f9b` (P09 rulings, A-105–A-109),
 `fde78867` (P08 merge), `c6bb7aa6` (P08 rulings, A-102–A-104), `9ae93057`
 (P07 merge), `9b9d38e8` (P07 controller repair), `90f9de44` (P07 rulings,
@@ -76,18 +100,15 @@ message; not repeated here.
 closed `ReasonCode` for "cannot write my own output artifact." Low severity.
 
 **Watched but not acted on:**
-- **P11's own "Context to read first" cites the same srdm `covergate/`
-  directory for "mutation logic" that P09's did for "canary behavior" — and
-  the same check (grep for the word across the whole directory) finds ZERO
-  "mutat*" occurrences there either.** Not resolved now — P11 is next;
-  flagged so its own readiness pass checks this deliberately rather than
-  trusting the citation, the same class of defect P09's own readiness pass
-  found and fixed (A-105).
-- P12 touches `runner.py` and now postdates P10's own extension of
-  `assemble_verdict` (the `evidence`/`declared_evidence` parameters and
-  identity-coverage guard) — propagated as a citation in P12's own handoff
-  this session; its own readiness pass is still the right moment to catch
-  anything this note missed.
+- P12 touches `runner.py`/`verdict.py` and now postdates both P10's
+  extension of `assemble_verdict` (`evidence`/`declared_evidence`,
+  identity-coverage guard) and P11's addition of `mutation.py`/`Mutant` —
+  propagated as citations in P12's own handoff this session; its own
+  readiness pass is still the right moment to catch anything these notes
+  missed, especially the new R2 `Claim.mutation` payload P12 must design
+  (no shape pinned yet, unlike P09/P10's own R1/R3 payloads — P12's own
+  readiness pass is where that gets pinned, matching A-101/A-108/A-114's
+  precedent).
 - `cli.py` is only touched again by P14 among all remaining packages — full
   `assay run` CLI wiring across rigor levels is entirely P14's job by
   design, not a defect (confirmed intentional: assay's own `assay.toml` is
