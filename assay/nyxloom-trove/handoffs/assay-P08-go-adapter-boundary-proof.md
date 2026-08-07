@@ -18,8 +18,8 @@ oracles:
     negative: "Treating coverprofile blocks as source lines changes the expected mapping; regex-only func matching misclassifies comments, strings, declarations, or malformed input in the paired fixtures"
     gate: tester-unified
   - id: O2
-    observable: "The same evaluator fixtures run once with Python and once with Go and return equivalent results; an unknown Go syntax region becomes UNCLASSIFIED rather than PASS"
-    negative: "A Python special case in core or a Go default-pass branch makes the paired result or ambiguity artifact differ"
+    observable: "The same evaluator fixtures run once with Python and once with Go and return equivalent results for genuinely equivalent constructs; Go declares requires_span_attribution=False (A-102) since its block-based coverprofile format structurally lacks Python's multi-line gap, so FAIL/UNCLASSIFIED_LINES is never reached for Go -- an unknown Go region instead renders FAIL/UNCOVERED_LINES via O4's fail-closed has_executable_code"
+    negative: "A Python special case in core makes the paired result differ; declaring requires_span_attribution=True without a genuine, non-synthetic ambiguity source to prove it is a scope violation (misusing the off-limits evaluator/protocol), not a stronger proof"
     gate: tester-unified
   - id: O3
     observable: "git diff from input revision touches no base protocol, evaluator, verdict, errors, or schema file, and all pre-existing fake/Python adapter tests stay green"
@@ -47,16 +47,17 @@ on branch `feat/assay-P08-go-adapter-boundary-proof`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§5 and 9; decisions A-013, A-042–A-044, A-097.
-2. `src/assay/adapters/base.py`, Python adapter, evaluator, and P03 Go parser. `nyxloom-trove/reports/assay-P05-BRIEF.md` for the frozen protocol shape (A-097 — exactly five attributes, three methods; do not add a ninth) and the path-spelling contract every method receives.
-3. `/workspaces/vbpub/shared-ramdisk-depot-manager/tools/covergate/` Go source classification and fixture behavior.
+1. `docs/DESIGN-GUIDE.md` §§5 and 9; decisions A-013, A-042–A-044, A-087, A-097, A-100–A-104.
+2. `src/assay/adapters/base.py` for the CURRENT frozen protocol shape (five attributes, FOUR methods since P07/A-101 — `statement_spans` included; do not add a fifth). Python adapter, evaluator, and P03 Go parser (`coverage_parsers/go_cover.py` — coverprofile PARSING only; this package never touches it or reparses profiles, it only adds source-text classification). `nyxloom-trove/reports/assay-P07-BRIEF.md` in full (written specifically for this package — it already confirms Go's block-based format lacks Python's gap and recommends `requires_span_attribution=False`, A-102) and the path-spelling contract every method receives.
+3. `/workspaces/vbpub/shared-ramdisk-depot-manager/tools/covergate/` Go source classification and fixture behavior. `evaluate.go`'s own comment documents the real historical incident behind O4's fixture requirements: "this gate's own first run flagged 94 lines across four comment-only doc.go files as uncovered." `hascode_test.go` carries the committed fixture set this maps onto almost one-to-one (comment-only, declarations-only, function-body-present, bodyless assembly/cgo, unreadable/unparseable) — port these as literal text, not invented cases.
 
 ## Work
 
-1. Add only the Go adapter and registration. Port the narrow semantic question from srdm's Go parser with a deterministic lexer/parser: strip comments and literals correctly, recognize function bodies, and fail closed (`true`) on uncertainty. Do not invoke an ambient tool.
-2. Commit hello-world source and pre-generated coverage text plus regeneration documentation. Do not add or invoke Go in tester-unified.
-3. Exercise the existing evaluator and verdict producer unchanged.
-4. Break block mapping, strict parser fallback, ambiguity refusal, and cross-language equivalence; record failure counts (A-067).
+1. Add only the Go adapter and registration. Port the narrow semantic question from srdm's Go parser with a deterministic lexer/parser: strip comments and literals correctly, recognize function bodies, and fail closed (`true`) on uncertainty. Do not invoke an ambient tool. `requires_span_attribution = False` (A-102); `statement_spans` returns `None` unconditionally — never called by `evaluate.py` given that flag, but required to satisfy the protocol's structural shape.
+2. The lexer must correctly skip line comments (`//`), block comments (`/* */`), interpreted strings (`"..."`, with escapes), raw strings (`` `...` ``), and rune literals (`'...'`) before searching for a word-boundary `func` token, and must not misclassify a generics type-parameter bracket (`func f[T any](...)`) as anything else — real syntax already present in this estate's own `covergate/profile_test.go:137` (A-104). Walk only TOP-LEVEL declarations, matching `PythonAdapter.has_executable_code`'s own `tree.body`-only convention.
+3. Commit hello-world source and pre-generated coverage text plus regeneration documentation. Do not add or invoke Go in tester-unified.
+4. Exercise the existing evaluator and verdict producer unchanged.
+5. Break block mapping, strict parser fallback, ambiguity refusal, and cross-language equivalence; record failure counts (A-067).
 
 ## Test constraints copied from AUTHORING.md §3b
 
