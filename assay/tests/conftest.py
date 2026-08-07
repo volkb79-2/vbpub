@@ -27,9 +27,13 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping
 
 import pytest
 from jsonschema import Draft202012Validator
+
+from assay.config import Lane
 
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
@@ -262,6 +266,85 @@ def verdict_fixture(outcome: str) -> dict:
     document really being canonical.
     """
     return json.loads(VERDICT_FIXTURES[outcome].read_text(encoding="utf-8"))
+
+
+# --- the runner's R0 verdicts (P04) -------------------------------------------
+#
+# Additional hand-written artifacts for branches P04's runner is the FIRST
+# producer of: an R0-only lane's own PASS, FAIL/COMMAND_FAILED, and two
+# distinct ERROR/EXEC_FAILED shapes (missing executable vs. an argv append the
+# lane never permitted). Kept OUT of `VERDICT_FIXTURES` deliberately: that dict
+# is asserted 1:1 against `Outcome` by
+# test_verdict_serialises.py::test_there_is_one_verdict_per_outcome_and_no_outcome_is_unproven,
+# and these are additional EXAMPLES of outcomes already represented there, not
+# new outcomes.
+
+RUNNER_VERDICT_FIXTURES: dict[str, Path] = {
+    "r0_pass": VERDICT_FIXTURE_DIR / "r0_pass.json",
+    "r0_fail_command_failed": VERDICT_FIXTURE_DIR / "r0_fail_command_failed.json",
+    "r0_error_exec_failed_missing_executable": (
+        VERDICT_FIXTURE_DIR / "r0_error_exec_failed_missing_executable.json"
+    ),
+    "r0_error_argv_append_rejected": (
+        VERDICT_FIXTURE_DIR / "r0_error_argv_append_rejected.json"
+    ),
+}
+
+
+def runner_verdict_fixture(name: str) -> dict:
+    """The hand-written expected artifact for one of P04's own R0 branches."""
+    return json.loads(RUNNER_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
+
+
+# --- Lane objects built directly, bypassing assay.toml/tomllib (P04) ---------
+#
+# Runner-level unit tests need exact control over a Lane's fields (a specific
+# commit-matching argv, a specific budget, allow_argv_append toggled) without
+# the ceremony of writing and loading a TOML file through config.py — that
+# ceremony belongs to config.py's OWN tests, which already prove the loader.
+# Bypassing it here only proves assay.runner, which is what the module under
+# test actually is.
+
+
+def make_lane(
+    *,
+    name: str = "package",
+    scope: str = "S1",
+    rigor: tuple[str, ...] = ("R0",),
+    enforcement: str = "gate",
+    argv: tuple[str, ...] = ("/bin/sh", "-c", "exit 0"),
+    env: Mapping[str, str] = MappingProxyType({}),
+    env_passthrough: tuple[str, ...] = (),
+    budget: str = "5m",
+    budget_seconds: float = 300.0,
+    allow_argv_append: bool = False,
+) -> Lane:
+    return Lane(
+        name=name,
+        scope=scope,
+        rigor=rigor,
+        enforcement=enforcement,
+        argv=argv,
+        env=MappingProxyType(dict(env)),
+        env_passthrough=env_passthrough,
+        budget=budget,
+        budget_seconds=budget_seconds,
+        allow_argv_append=allow_argv_append,
+        judge=None,
+        where=None,
+    )
+
+
+def fixed_clock(*moments):
+    """A ``runner.Clock`` stub returning *moments* in order, one per call.
+
+    Raises ``StopIteration`` if called more times than there are moments — a
+    silent extra call (e.g. a stray third timestamp) would otherwise go
+    unnoticed rather than failing the test that used it (AUTHORING.md §3b.A:
+    no real clock, and no test that could pass regardless of correctness).
+    """
+    iterator = iter(moments)
+    return lambda: next(iterator)
 
 
 @pytest.fixture(scope="session")

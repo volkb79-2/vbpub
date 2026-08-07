@@ -188,9 +188,11 @@ def test_a_subcommand_is_required():
     assert excinfo.value.code != 0
 
 
-def test_cli_exposes_only_the_lanes_subcommand():
-    # P01a ships `assay lanes` and nothing else: `run`, `verify` and `mutate`
-    # are P07's and later. A parser that already accepted them would be the
-    # lane-table-implies-capability failure in the CLI's own help.
-    with pytest.raises(SystemExit):
-        main(["run"])
+def test_cli_still_rejects_subcommands_not_yet_shipped():
+    # P04 adds `run` (see tests/test_cli_run.py); `verify` and `mutate` remain
+    # later packages' work. A parser that already accepted them would be the
+    # lane-table-implies-capability failure in the CLI's own help, one level
+    # up from the artifact assay itself is built to remove.
+    with pytest.raises(SystemExit) as excinfo:
+        main(["verify"])
+    assert excinfo.value.code == 2
