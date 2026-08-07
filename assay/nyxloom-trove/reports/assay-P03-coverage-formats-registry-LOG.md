@@ -2,7 +2,7 @@
 
 **Status:** DONE. Gate green.
 **Branch:** `feat/assay-P03-coverage-formats-registry`
-**Commit:** (recorded after commit — see final line of this LOG)
+**Commit:** `972e52c4`
 **Base:** `main` at `e97d6e6f`.
 
 ## Gate
