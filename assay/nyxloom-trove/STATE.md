@@ -1,93 +1,86 @@
 # assay — state of play
 
-> Written 2026-08-07, updated the same day after P04 landed. Update this file
+> Written 2026-08-07, updated the same day after P05 landed. Update this file
 > at the end of every session; it is the first thing the next controller
 > should read after `handoffs/README.md`.
 
 ## Where things stand
 
-**Merged on `main`:** P00 (skeleton + lane config loader), P01 (verdict model +
-JSON Schema), P01c (contract repair + the reissued series), **P02** (changed-line
-extraction + the `DIRTY_TREE`/`BASE_IS_HEAD` measurability guards), **P03**
+**Merged on `main`:** P00, P01 (skeleton, lane config, verdict model + schema),
+**P02** (changed-line extraction + `DIRTY_TREE`/`BASE_IS_HEAD` guards), **P03**
 (coverage format registry — coverage.py JSON, lcov, Cobertura XML, Go
-coverprofile — + the `EMPTY_COVERAGE` guard), **P04** (runner, `assay run` CLI
-subcommand, R0 verdict emission). Gate green at **896 passed, exit 0, 100%
-statement AND branch** (1169 stmts / 452 branches), independently reverified by
-the controller in the foreground gate container on every package (not just
-read from the implementer's report), plus a post-merge local run on `main`
-itself each time.
+coverprofile — + `EMPTY_COVERAGE` guard), **P04** (runner, `assay run` CLI,
+R0 verdict emission), **P05** (adapter protocol, four-way union, registry, R1
+verdict emission — the first real coverage-judged verdict). Gate green at
+**946 passed, exit 0, 100% statement AND branch** (1327 stmts / 504 branches),
+independently reverified by the controller in the foreground gate container on
+every package (not just read from the implementer's report), plus a post-merge
+local run on `main` each time.
 
-**Outstanding:** P05–P14, ten packages, all validating against nyxloom's
-real `handoff-frontmatter.schema.json` with a closed dependency graph.
-**P05 is next** — *"do all four changed-line sets get judged without the core
-knowing a source language?"*
+**Outstanding:** P06–P14, nine packages, all validating against nyxloom's real
+`handoff-frontmatter.schema.json` with a closed dependency graph. **P06 is
+next** — *"does the first real adapter supply the Python union without
+changing the language-free core?"*
 
-Key commits: `c46b0bcb` (P04 merge), `fd7ae88e` (P04 controller repair,
+Key commits: `291d6e30` (P05 merge), `0958efdf` (P05 readiness rulings,
+A-096/A-097), `c46b0bcb` (P04 merge), `fd7ae88e` (P04 controller repair,
 pre-merge), `bfc467b8` (P04 readiness rulings, A-094/A-095), `e7c92988` (P03
 merge), `e97d6e6f` (P03 readiness rulings, A-092/A-093), `89a489a0` (P02
 merge), `04e72c9a` (P02 readiness rulings, A-090/A-091), `27fb88d7` (P01c +
-reissue), `c1bb518d` (P00/P01 rename), `caf4fc78` (P01), `b2684da9` (P00),
-`a0c9e515` (original scoping).
+reissue), `c1bb518d` (P00/P01 rename), `caf4fc78` (P01), `b2684da9` (P00).
 
-**P04's own diff needed a repair before merge, not just readiness-pass
-rulings.** The implementer put "refuse any lane declaring rigor beyond R0"
-directly in `cli.py`, and its own successor brief told P05 to go edit that
-check — but `cli.py` is not in P05's `scope.touch`, so P05 would have hit
-BLOCKED on day one. Caught in controller review (reading the actual diff, not
-trusting the LOG's self-described "flagged for the controller" note alone),
-relocated into `runner.py`'s `assemble_verdict` (already in every later
-producer package's `scope.touch`), which now self-obsoletes the guard the
-moment a later package supplies the missing claim — no file to find or touch
-when that happens. Two new direct runner-level tests added; the successor
-brief corrected. This is the first package needing an actual code repair
-(P02/P03 only needed pre-implementation handoff rulings) — see WORKFLOW.md's
-repair-vs-redispatch threshold; this qualified as "local" (small, the design
-was right, only the file was wrong).
+**The pattern is now well-established across five packages**: every
+readiness pass so far has found at least one real gap (never zero), most
+of them the same shape — a capability built with no package yet scoped to
+consume it, or a decision (A-091→A-092, A-090→A-093→A-096) that needs
+restating/generalizing as later packages independently rediscover it. P04
+additionally needed a genuine controller REPAIR after implementation, not
+just a pre-dispatch ruling — see git log for `fd7ae88e` if the mechanics
+matter. Full narrative detail on P02–P04's individual findings lives in
+`decisions.md`'s A-090 through A-095 entries and each package's merge commit
+message; not repeated here to keep this file navigable.
+
+**P05's readiness pass found a genuine BLOCKER**, the first of the series:
+O3 required "missing locations" in the R1 claim, but `Coverage`/the schema's
+`coverage` `$def` had no such field anywhere — traced through git history to
+a schema `$comment` (naming `files_missing_coverage`, `excluded`,
+`unclassified`) that the `9bd7d206` P01c repair deleted without adding a
+replacement. A-096 pinned the shape (`missing_lines`, `files_missing_coverage`,
+both always present); A-097 pinned the adapter protocol's exact eight-member
+surface after auditing every later package's `scope.touch` (P06/P08 never
+touch `adapters/base.py` — whatever P05 shipped is final until P07/P09/P11
+extend it). Both confirmed correctly implemented on review — no repair needed
+this time, unlike P04.
 
 **Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
-closed `ReasonCode` for "cannot write my own output artifact" (e.g. a missing
-parent directory for `--verdict-json`); left as an uncaught `OSError` rather
-than inventing a code alone (A-050). Low real-world severity, not fixed.
+closed `ReasonCode` for "cannot write my own output artifact." Low severity,
+not fixed.
 
-**Watched but not acted on:** P09, P10 and P12 all touch `runner.py` too (not
-just P05). Their handoffs predate P04 and don't cite its actual function
-names, the same shape of gap A-090/A-093/A-094 already caught three times at
-the P0x→P05 seam. Deliberately NOT pre-emptively edited — P05 will extend
-`runner.py` further before any of P09/P10/P12 is dispatched, and editing now
-would guess at a shape that might change. Each package's own readiness pass
-is the right, information-rich moment to catch this, exactly as it did for
-P05 three times running; note it here so a future controller checks
-deliberately rather than by luck.
-
-**P02's readiness pass found a real carving gap** (git.py/measurability.py had
-no downstream consumer scoped to call them) and fixed it *before* implementation:
-A-090 assigns wiring P02's guards + P03's `EMPTY_COVERAGE` ahead of the R1
-evaluation to P05, which gained an O4 for it. Reviewing the actual merged code
-(not just the report) surfaced a second, P10-scoped trap: `git.run` raises on
-ANY non-zero exit, but ancestor-checking git commands use exit codes as data
-(`merge-base --is-ancestor` exit 1 means "no", not "broken") — flagged directly
-in P10's handoff rather than left to be rediscovered at P10's own readiness
-pass.
-
-**P03's readiness pass found the SAME shape of gap again**, one level down:
-A-091 (P02's dataclass/direct-`AssayError` convention) was worded around two
-named functions rather than as a rule, and P03's own cited sibling
-implementations all used the forbidden bare-dict/map shape — generalized by
-A-092 into a project-wide rule so it doesn't need rediscovering at every
-remaining package. A-093 required P03's `EMPTY_COVERAGE` guard
-(`check_empty_coverage`) to be named and independently callable, matching
-A-090's fix for P02 — confirmed on review to be exactly what P05's O4 needs,
-with the exact call sequence given in `assay-P03-BRIEF.md`. **Pattern for
-whoever reviews P04+:** check whether A-092's dataclass rule and the
-"named-independently-callable-guard" shape need restating for each new
-package, or whether two applications is now enough precedent that a reviewer
-can just point to A-090/A-092/A-093 without minting a new decision each time.
-lcov and Cobertura XML parsers were built with **zero prior art anywhere in
-the estate** — reviewed directly against the public specs, not just trusted;
-Cobertura's multi-`<class>`-per-file merge (executed wins on conflict) is the
-implementer's own extrapolation from the DTD, untested against any real-world
-sample. Low risk, worth remembering if a real Cobertura consumer ever
-surfaces a case this parser gets wrong.
+**Watched but not acted on:**
+- P09, P10, P12 touch `runner.py` and predate its current shape (now
+  significantly larger after P05). Each package's own readiness pass is the
+  right moment to catch a mismatch, as it has 4 times running for P05 itself.
+- **Architectural note worth remembering, not a defect**: `cli.py` is only
+  touched again by P14 among all remaining packages. `assay run`'s actual
+  end-to-end CLI wiring across multiple rigor levels is therefore entirely
+  P14's job — P05/P09/P12 each extend `runner.py`'s orchestration surface
+  incrementally (as P05 did with `evaluate_r1`), and P14 wires a single,
+  by-then-complete entry point into `cli.py`, rather than any earlier package
+  touching the CLI. Confirmed intentional (assay's own `assay.toml` is
+  explicitly R0-only "and P11 upgrades this file when the capability is real,
+  not before" per its own comment — though the actual upgrade, given scope,
+  can only really land in P14, which is the only package scoped for
+  `assay.toml`). Worth double-checking again at P14's own readiness pass that
+  `runner.py`'s accumulated surface by then is actually sufficient for one
+  generic CLI entry point.
+- P06's O2 ("source-root matching... sibling whose directory name merely
+  shares the root prefix") may be re-testing a property `evaluate.py`'s
+  `_is_considered` already proves in the CORE, not something the Python
+  adapter itself needs to guard. Flagged in P06's own handoff for its
+  readiness pass to resolve with the real code in hand.
+- lcov/Cobertura parsers (P03) have zero prior art anywhere in the estate;
+  Cobertura's multi-`<class>`-per-file merge is untested against any
+  real-world sample. Low risk.
 
 ## How the work is run
 

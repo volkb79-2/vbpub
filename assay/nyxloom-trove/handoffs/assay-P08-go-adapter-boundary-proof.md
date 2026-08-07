@@ -47,8 +47,8 @@ on branch `feat/assay-P08-go-adapter-boundary-proof`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§5 and 9; decisions A-013, A-042–A-044.
-2. `src/assay/adapters/base.py`, Python adapter, evaluator, and P03 Go parser.
+1. `docs/DESIGN-GUIDE.md` §§5 and 9; decisions A-013, A-042–A-044, A-097.
+2. `src/assay/adapters/base.py`, Python adapter, evaluator, and P03 Go parser. `nyxloom-trove/reports/assay-P05-BRIEF.md` for the frozen protocol shape (A-097 — exactly five attributes, three methods; do not add a ninth) and the path-spelling contract every method receives.
 3. `/workspaces/vbpub/shared-ramdisk-depot-manager/tools/covergate/` Go source classification and fixture behavior.
 
 ## Work

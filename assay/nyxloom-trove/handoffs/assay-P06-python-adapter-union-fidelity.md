@@ -43,8 +43,8 @@ on branch `feat/assay-P06-python-adapter-union-fidelity`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§4–5 and decisions A-014–A-018, A-C01–A-C03.
-2. `src/assay/adapters/base.py`, `evaluate.py`, and the P05 fake-adapter tests.
+1. `docs/DESIGN-GUIDE.md` §§4–5 and decisions A-014–A-018, A-097, A-C01–A-C03.
+2. `src/assay/adapters/base.py`, `evaluate.py`, and the P05 fake-adapter tests. `nyxloom-trove/reports/assay-P05-BRIEF.md` in full — it fixes the exact protocol shape (do not add a ninth member), the path-spelling contract every method receives, and states plainly that `evaluate.py`'s `_is_considered` already does source-root boundary matching (`Path.is_relative_to` on resolved paths, not string prefix) in the CORE — verify at your own readiness pass whether O2's "sibling whose directory name merely shares the root prefix" case is retesting that already-proven core property through the adapter, or is actually about `normalize_coverage_key`'s own prefix-strip logic (DESIGN-GUIDE §11's adapter-hook half of path normalisation) having an independent sibling-prefix hazard; the handoff was carved before either file existed and may need this pinned down before implementation.
 3. Python classification and exclusion logic in all three Python reference gates: dstdns, topos, and nyxloom.
 
 ## Work
