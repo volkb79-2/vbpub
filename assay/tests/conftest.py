@@ -44,6 +44,19 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
     f"pyproject.toml there"
 )
 
+#: P09's canary fixture (`tests/fixtures/canary/python/`) is a real, committed
+#: pytest project — `pkg/greet.py` + `tests/test_greet.py` — that
+#: `assay.canary`'s Python orchestration materialises into a disposable
+#: `tmp_path` and runs a GENUINE `pytest` subprocess against (A-107). It is
+#: not part of assay's OWN test suite: pytest's default `test_*.py` discovery
+#: would otherwise ALSO collect it directly from its committed location,
+#: where `from pkg.greet import greet` cannot resolve (this fixture's `pkg`
+#: is never on assay's own sys.path) — a collection ERROR that would break
+#: assay's own gate run. A nested `conftest.py` doing this instead would
+#: collide in `sys.modules['conftest']` with THIS file (pytest imports every
+#: rootless `conftest.py` under the same bare name), so the ignore lives here.
+collect_ignore_glob = ["fixtures/canary/python/**"]
+
 #: A complete, minimal R0 lane: the eight required top-level fields and nothing
 #: else. An R0-only lane has NO [judge] table (A-048).
 R0_LANE = """\
@@ -342,6 +355,33 @@ def span_verdict_fixture(name: str) -> dict:
     """The hand-written expected artifact for one of P07's own attribution
     branches."""
     return json.loads(SPAN_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
+
+
+# --- P09's own R3 verdicts: the cause-sensitive canary's four terminal shapes --
+#
+# Full, independently hand-written artifacts for A-109's four named terminal
+# paths: an attributed PASS, CANARY_SURVIVED via an unexpected pass,
+# CANARY_SURVIVED via the wrong observed reason, and CANARY_INCONCLUSIVE.
+# Built directly from `Claim`/`CanaryResult`/`Verdict` in the test module
+# that consumes them (O2's own "independently written schema-valid
+# artifact") -- kept out of the other *_VERDICT_FIXTURES dicts for the same
+# reason SPAN_VERDICT_FIXTURES is: additional EXAMPLES of outcomes already
+# represented in VERDICT_FIXTURES, not new outcomes.
+
+CANARY_VERDICT_FIXTURES: dict[str, Path] = {
+    name: VERDICT_FIXTURE_DIR / f"{name}.json"
+    for name in (
+        "r3_pass",
+        "r3_fail_canary_survived_unexpected_pass",
+        "r3_fail_canary_survived_wrong_reason",
+        "r3_inconclusive_canary_inconclusive",
+    )
+}
+
+
+def canary_verdict_fixture(name: str) -> dict:
+    """The hand-written expected artifact for one of P09's own R3 branches."""
+    return json.loads(CANARY_VERDICT_FIXTURES[name].read_text(encoding="utf-8"))
 
 
 def r1_verdict_fixture(name: str) -> dict:

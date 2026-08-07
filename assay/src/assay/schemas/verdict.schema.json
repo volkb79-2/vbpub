@@ -186,6 +186,40 @@
       },
       "additionalProperties": false
     },
+    "canary": {
+      "description": "The R3 claim payload (P09, A-092/A-108): a known-good control run alongside a deliberately minimal known-bad transform of the same input, both through the real pipeline, compared by cause -- not merely by pass/fail.",
+      "type": "object",
+      "required": ["mechanism", "description", "control_outcome"],
+      "properties": {
+        "mechanism": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "control_outcome": {"$ref": "#/$defs/outcome"},
+        "transformed_outcome": {
+          "description": "Absent exactly when the transformed half was never genuinely run: a malformed/unrecognised mechanism, or a transform that changed nothing to judge (O3).",
+          "$ref": "#/$defs/outcome"
+        },
+        "expected_reason_code": {"$ref": "#/$defs/reason_codes/FAIL"},
+        "observed_reason_code": {"$ref": "#/$defs/reason_code"}
+      },
+      "allOf": [
+        {
+          "if": {"not": {"required": ["transformed_outcome"]}},
+          "then": {"not": {"required": ["observed_reason_code"]}}
+        },
+        {
+          "if": {"required": ["transformed_outcome"], "properties": {"transformed_outcome": {"const": "PASS"}}},
+          "then": {"not": {"required": ["observed_reason_code"]}}
+        },
+        {
+          "if": {
+            "required": ["transformed_outcome"],
+            "properties": {"transformed_outcome": {"not": {"const": "PASS"}}}
+          },
+          "then": {"required": ["observed_reason_code"]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "claim": {
       "type": "object",
       "required": ["rigor", "source", "status", "verified_by_assay"],
@@ -195,13 +229,15 @@
         "status": {"$ref": "#/$defs/outcome"},
         "verified_by_assay": {"const": true},
         "reason_code": {"$ref": "#/$defs/reason_code"},
-        "coverage": {"$ref": "#/$defs/coverage"}
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "canary": {"$ref": "#/$defs/canary"}
       },
       "allOf": [
         {"$ref": "#/$defs/status_contract"},
         {"not": {"required": ["reason_code"], "properties": {"reason_code": {"enum": ["MISSING_ATTESTATION", "STALE_ATTESTATION"]}}}},
         {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R1"}}}}, "then": {"not": {"required": ["coverage"]}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"required": ["coverage"]}}}
+        {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R3"}}}}, "then": {"not": {"required": ["canary"]}}},
+        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"anyOf": [{"required": ["coverage"]}, {"required": ["canary"]}]}}}
       ],
       "additionalProperties": false
     },

@@ -5,16 +5,20 @@ syntax is allowed to live (DESIGN-GUIDE §11, A-097).
 extension, and never special-cases a language by name. Everything it needs
 to know about "is this changed line code" comes through this protocol's
 attributes and methods — nothing more. A-097 fixed the P05 surface at five
-attributes and three methods; P07 makes the ONE deliberate post-P05
-extension the series carves out for it (A-084/A-097's own note): it adds
+attributes and three methods; P07 added the ONE deliberate post-P05
+extension reserved for it (A-084/A-097's own note):
 :meth:`LanguageAdapter.statement_spans` and the new :class:`StatementSpan`
-type, and no later adapter package may modify this protocol again. P09 adds
-``inject_import_break``/``inject_uncovered_line``, P11 adds
-``generate_mutants``, each only in the package that first proves the need.
-Adding any of those here, now, would be P07 speculatively building capability
-nothing in this package's own oracles exercises — the same "capability with
-no scoped consumer" defect A-090/A-093/A-094 already found and fixed at
-earlier package seams.
+type. P09 (this package, A-084/A-105) adds the second deliberate extension:
+:meth:`LanguageAdapter.inject_import_break` and
+:meth:`LanguageAdapter.inject_uncovered_line`, the pure ``(text) -> (text,
+description)`` transforms :mod:`assay.canary` drives to build its
+cause-sensitive canary (A-010 — nyxloom's own versions of these two write the
+file directly; these do not touch a filesystem). P11 adds
+``generate_mutants``, again only in the package that first proves the need.
+Do not add that one here now — it would be this package speculatively
+building capability nothing in ITS OWN oracles exercises, the same
+"capability with no scoped consumer" defect A-090/A-093/A-094 already found
+and fixed at earlier package seams.
 
 **Path contract**, binding on every method below and on
 :func:`assay.evaluate.evaluate_coverage`'s own use of ``source_globs``: every
@@ -79,13 +83,14 @@ class StatementSpan:
 
 
 class LanguageAdapter(Protocol):
-    """A language's contribution to changed-line coverage evaluation.
+    """A language's contribution to changed-line coverage evaluation, plus
+    (P09) to the cause-sensitive canary.
 
-    Five attributes and four methods after P07 (A-097/A-101) — deliberately
-    not the full seven-capability list DESIGN-GUIDE §11 sketches for the
-    whole series. Do not add ``inject_import_break``, ``inject_uncovered_line``
-    or ``generate_mutants`` here; those remain P09's and P11's to add, each
-    only in the package that first proves the need (A-084).
+    Five attributes and six methods after P09 (A-097/A-101/A-105) —
+    deliberately not the full seven-capability list DESIGN-GUIDE §11
+    sketches for the whole series. Do not add ``generate_mutants`` here;
+    that remains P11's to add, only in the package that first proves the
+    need (A-084).
     """
 
     #: A short, stable, unique identifier — the exact string a lane's
@@ -202,5 +207,49 @@ class LanguageAdapter(Protocol):
           inconsistent ambiguity (A-100/A-101) — never naturally produced by
           a correct adapter walking correctly-nested source, so an adapter
           author does not need to guard against producing one deliberately.
+        """
+        ...
+
+    def inject_import_break(self, text: str) -> tuple[str, str]:
+        """A MINIMAL, valid-as-source, known-bad transform of *text* that
+        should make any test importing/loading it fail outright (P09,
+        A-010/A-105) — proves a gate rejects broken code AT ALL, the R0-level
+        half of the cause-sensitive canary.
+
+        Pure: returns ``(transformed_text, description)`` and never touches
+        a filesystem. *description* is a short, human-readable account of
+        what changed (e.g. "inserted `raise AssertionError(...)` at line
+        4"), carried into :class:`~assay.verdict.CanaryResult` for
+        diagnosis — never parsed back apart by any caller.
+
+        The mechanism is deliberately language-specific (this is the one
+        place a language's own rule for "where can a side effect legally go"
+        matters): Python has an executable module top level, so nyxloom's
+        own mechanism — insert a bare ``raise`` statement after any leading
+        docstring/``__future__`` import — ports directly (A-105). A language
+        with no executable top level (Go) cannot reuse that shape and must
+        pick its own equivalent within the SAME contract: minimal, additive,
+        never a whole-file reformat, and reliably tripped by merely
+        importing/loading the module.
+        """
+        ...
+
+    def inject_uncovered_line(self, text: str) -> tuple[str, str]:
+        """A MINIMAL, valid, lint-clean, test-neutral addition to *text*
+        whose lines are never executed by any test (P09, A-010/A-105) —
+        proves a gate specifically enforces a changed-line-coverage floor,
+        the R1-level half of the cause-sensitive canary: a tests-only gate
+        (one that runs the suite but never checks coverage) sails past this
+        transform, while a gate enforcing changed-line coverage rejects it.
+
+        Pure, same ``(transformed_text, description)`` contract as
+        :meth:`inject_import_break`. nyxloom's own mechanism — append a
+        never-called, typed, side-effect-free module-level function — ports
+        directly for every language with a top-level function-declaration
+        form (A-105): the function's own signature line is reached (and so
+        counted executed, where a format even attributes signature lines at
+        all) merely by the module loading, but its BODY is never called by
+        anything, so the body's own lines are changed, executable, and
+        uncovered — exactly the axis this canary needs to isolate.
         """
         ...

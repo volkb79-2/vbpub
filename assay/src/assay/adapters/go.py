@@ -7,7 +7,28 @@ own coverage format is structurally DIFFERENT from Python's coverage.py
 (block-based, not line-based -- P07's own successor brief, confirmed
 directly against ``coverage_parsers/go_cover.py``'s already-proven parser),
 which is what makes "additive" a real claim rather than a coincidence of two
-similar tools.
+similar tools. (P09, A-105/A-107) adds this adapter's two canary injection
+methods, ``inject_import_break``/``inject_uncovered_line``.
+
+**P09's canary mechanisms, and why they are BOTH pure appends (unlike
+Python's).** Go has no executable top-level statement -- a bare
+``raise``-equivalent cannot be written at package level the way nyxloom's
+Python mechanism does it (A-105's own citation). The Go-native equivalent of
+"a side effect that runs merely by the package loading" is ``func init()``,
+which the Go runtime calls automatically before any test in the package
+runs; appending ``func init() { panic(...) }`` reproduces
+``inject_import_break``'s own contract (any test that imports/loads the
+package fails) without needing an insertion point inside the existing
+source at all. ``inject_uncovered_line`` needs no such adjustment -- a
+never-called top-level function, nyxloom's own mechanism, is a plain append
+in Go exactly as it is in Python. Both are structurally valid, best-effort
+implementations satisfying the protocol's shape (A-107): P09's own R1-only
+Go canary exercises ONLY ``inject_uncovered_line`` (an inserted ``init()``
+panic prevents `go test` from ever writing a coverprofile at all, the same
+way a Python import-break prevents ``pytest-cov`` from writing one --
+verified empirically while authoring this package -- so there is no
+committed-coverprofile shape that could represent import-break's own
+R0-level rejection; that half of the claim is Python's alone, A-107).
 
 **No Go toolchain, anywhere (A-087).** This module never shells out, never
 imports ``subprocess``, and is proven entirely from committed text
@@ -389,11 +410,63 @@ def _has_top_level_func_body(text: str) -> bool:
     return _scan_for_top_level_func_body(masked)
 
 
+#: P09's canary snippets (A-105/A-107). Both are plain trailing appends --
+#: see this module's own docstring for why Go's ``inject_import_break`` must
+#: differ in SHAPE from Python's ``inject_import_break`` (no executable
+#: top-level statement exists to insert one into) while still matching the
+#: SAME contract nyxloom's own mechanism established: a side effect that
+#: fires merely by the package loading/being imported.
+_IMPORT_BREAK_SNIPPET = (
+    '\n\nfunc init() {\n\tpanic("assay-canary-import-break")\n}\n'
+)
+_UNCOVERED_CANARY_FUNC = "_assayCanaryUnreached"
+_UNCOVERED_CANARY_SNIPPET = (
+    f"\n\nfunc {_UNCOVERED_CANARY_FUNC}(value int) int {{\n"
+    "\tdoubled := value * 2 // assay-canary: executed by no test\n"
+    "\treturn doubled\n"
+    "}\n"
+)
+
+
+def _append_snippet(text: str, snippet: str) -> str:
+    """*text* plus *snippet*, guaranteeing exactly one trailing newline on
+    *text* first (a guaranteed-clean append boundary, mirroring
+    :mod:`~assay.adapters.python`'s own ``_inject_uncovered_line``) -- never
+    a whole-file reformat."""
+    body = text
+    if body and not body.endswith("\n"):
+        body += "\n"
+    return body + snippet
+
+
+def _inject_import_break(text: str) -> tuple[str, str]:
+    """Append :data:`_IMPORT_BREAK_SNIPPET` -- a package-``init()`` that
+    panics -- to *text*. Pure: returns the transformed text and a
+    description; never touches a filesystem (A-010). Structurally valid,
+    best-effort (A-107): not exercised by this package's own R1-only Go
+    canary (see this module's docstring)."""
+    return _append_snippet(text, _IMPORT_BREAK_SNIPPET), (
+        "appended a package `func init() { panic(...) }` -- Go has no "
+        "executable top-level statement, so import-break is modelled as a "
+        "panicking init() rather than nyxloom's bare `raise` (A-105)"
+    )
+
+
+def _inject_uncovered_line(text: str) -> tuple[str, str]:
+    """Append :data:`_UNCOVERED_CANARY_SNIPPET` -- a never-called top-level
+    function -- to *text*. Pure, same contract as :func:`_inject_import_break`."""
+    return _append_snippet(text, _UNCOVERED_CANARY_SNIPPET), (
+        f"appended never-called `func {_UNCOVERED_CANARY_FUNC}` "
+        "(2 uncovered lines) at end of file"
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
 class GoAdapter:
     """The Go :class:`~assay.adapters.base.LanguageAdapter` (P08), the
     second real adapter implemented against the frozen protocol (A-097,
-    extended once by P07/A-101 -- this package modifies neither).
+    extended by P07/A-101 and P09/A-105 -- this package modifies neither
+    extension, only adds the two methods P09 reserved for it).
     """
 
     name: str = "go"
@@ -425,3 +498,9 @@ class GoAdapter:
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None
+
+    def inject_import_break(self, text: str) -> tuple[str, str]:
+        return _inject_import_break(text)
+
+    def inject_uncovered_line(self, text: str) -> tuple[str, str]:
+        return _inject_uncovered_line(text)
