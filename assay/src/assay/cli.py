@@ -1,6 +1,6 @@
 """``assay`` command line entry point.
 
-Two subcommands ship so far:
+Three subcommands ship so far:
 
 * ``assay lanes`` (P01a) — list and validate the declared lanes. **It must not
   execute one.** A-054 governs its output contract: it renders **no verdict
@@ -23,8 +23,12 @@ Two subcommands ship so far:
   ``scope.touch``, so the guard self-obsoletes as R1+ evaluation lands
   instead of needing a CLI-level edit this package's successors have no
   scope to make.
+* ``assay verify`` (P14, A-129) — validate a verdict-JSON artifact
+  independently of how it was produced. See :mod:`assay.verify` for the full
+  contract; this module only wires its parser/dispatch in, exactly like the
+  other two subcommands.
 
-Both subcommands let the typed error out of :mod:`assay.config`/
+All three subcommands let the typed error out of :mod:`assay.config`/
 :mod:`assay.runner`/:mod:`assay.git` and map it to an exit code — the exit
 code *is* the verdict (§6), and stdout is for humans.
 """
@@ -42,6 +46,7 @@ from . import git, runner
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
 from .errors import AssayError, Outcome
 from .verdict import Verdict
+from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
 
@@ -104,16 +109,21 @@ def build_parser() -> argparse.ArgumentParser:
             "(A-028); omit to skip artifact emission entirely"
         ),
     )
+
+    build_verify_parser(subparsers)
+
     return parser
 
 
 def main(
     argv: Sequence[str] | None = None,
     *,
+    stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
     """Run the CLI and return the process exit code."""
+    inp = sys.stdin if stdin is None else stdin
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
     raw = list(sys.argv[1:] if argv is None else argv)
@@ -124,6 +134,8 @@ def main(
             _render_lanes(_resolve_lane_file(args.file), out)
         elif args.command == "run":
             return _cmd_run(args, appended, out)
+        elif args.command == "verify":
+            return cmd_verify(args.path, stdin=inp, stderr=err)
         else:  # pragma: no cover - argparse rejects unknown subcommands first
             raise AssertionError(f"unhandled command {args.command!r}")
     except AssayError as exc:

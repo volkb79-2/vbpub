@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "7777777777777777777777777777777777777777",
+  "outcome": "ERROR",
+  "reason_code": "UNREADABLE_ARTIFACT",
+  "exit_code": 2,
+  "started": "2026-08-07T14:20:00+00:00",
+  "ended": "2026-08-07T14:20:05+00:00",
+  "declared_rigor": ["R0"],
+  "declared_evidence": [
+    {"source": "attested", "key": "adversarial-review"}
+  ],
+  "argv_declared": ["pytest", "tests", "-q"],
+  "argv_appended": [],
+  "argv_effective": ["pytest", "tests", "-q"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "claims": [
+    {"rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": true}
+  ],
+  "evidence": [
+    {
+      "source": "attested",
+      "key": "adversarial-review",
+      "status": "ERROR",
+      "verified_by_assay": false,
+      "reason_code": "UNREADABLE_ARTIFACT"
+    }
+  ]
+}
