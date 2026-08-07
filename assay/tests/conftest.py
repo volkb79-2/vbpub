@@ -165,6 +165,64 @@ def project(tmp_path: Path) -> Project:
     return proj
 
 
+# --- real git state, materialised under tmp_path (P02, DESIGN-GUIDE §10) -----
+#
+# Runtime-materialised, never committed as a nested repository: "dirty-tree,
+# base-is-HEAD and merge-commit cases are `git init`'d into `tmp_path` at test
+# time. Committing a git repo inside a git repo is the alternative, and it is
+# worse." ``GitRepo`` drives a REAL ``git`` binary for both setup and, where a
+# test needs an independent expected value, verification — assay.git is a
+# thin subprocess boundary, so the only honest oracle for it is git itself.
+
+
+@dataclass(frozen=True)
+class GitRepo:
+    """A real git repository under ``tmp_path``."""
+
+    path: Path
+
+    def git(self, *args: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(self.path), *args], capture_output=True, text=True
+        )
+        assert proc.returncode == 0, (
+            f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr}"
+        )
+        return proc.stdout
+
+    def write(self, rel: str, text: str) -> Path:
+        target = self.path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        return target
+
+    def commit_all(self, message: str) -> str:
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.head()
+
+    def head(self) -> str:
+        return self.git("rev-parse", "HEAD").strip()
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> GitRepo:
+    """An initialised git repository with one committed file on ``main``.
+
+    The seed commit guarantees ``HEAD`` always exists and gives every test a
+    common ancestor to branch from, without any test having to special-case
+    "the very first commit has no parent".
+    """
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("README.md", "seed\n")
+    repo.commit_all("seed")
+    return repo
+
+
 # --- the verdict artifact (P01b) ---------------------------------------------
 #
 # The six fixture files under `fixtures/verdicts/` are HAND-WRITTEN JSON, not
