@@ -84,6 +84,7 @@ Session of 2026-08-06, base revision `d87f028b`.
 | A-O11 | Whether nyxloom's P90c migration reuses this decisions record or gets its own | Blocked on nyxloom's CORE REDESIGN reaching CR-14. |
 | A-O12 | Provenance verification for S3/S4 lanes (image revision matches commit under test) | ciu's, not assay's. assay records `declared_unverified`; the check needs `org.opencontainers.image.revision` stamped at bake time, which ciu does not do today (D7 lists it as a gap). |
 | A-O13 | mdt (`modern-debian-tools-python-debug`) adoption | Unconfirmed: no `tests/` tree found. Needs a look at whether it has a testable surface at all before it is placed in the adoption order. |
+| A-O14 | Does `runner.write_verdict` need a new closed `ReasonCode` for output-artifact write failures (e.g. `--verdict-json` naming a path whose parent directory does not exist), or is "the caller ensures the output path is writable" an acceptable contract with the uncaught `OSError` left as the operator's own bug? | Found reviewing P04: no existing `ERROR` code fits "cannot write my own output" — `UNREADABLE_ARTIFACT` is about reading an input artifact (coverage, attestation), not writing the verdict itself. Low real-world severity (a caller typo, not an assay-correctness issue); not fixed now, since A-050 says stop and ask rather than invent a code alone. |
 
 ## Decided — session 2, 2026-08-06 (from P01's pre-flight)
 

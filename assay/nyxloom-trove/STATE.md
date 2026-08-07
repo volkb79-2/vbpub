@@ -1,6 +1,6 @@
 # assay — state of play
 
-> Written 2026-08-07, updated the same day after P03 landed. Update this file
+> Written 2026-08-07, updated the same day after P04 landed. Update this file
 > at the end of every session; it is the first thing the next controller
 > should read after `handoffs/README.md`.
 
@@ -10,21 +10,54 @@
 JSON Schema), P01c (contract repair + the reissued series), **P02** (changed-line
 extraction + the `DIRTY_TREE`/`BASE_IS_HEAD` measurability guards), **P03**
 (coverage format registry — coverage.py JSON, lcov, Cobertura XML, Go
-coverprofile — + the `EMPTY_COVERAGE` guard). Gate green at **848 passed, exit
-0, 100% statement AND branch** (1047 stmts / 426 branches), independently
-reverified by the controller in the foreground gate container on every package
-(not just read from the implementer's report), plus a post-merge local run on
-`main` itself each time.
+coverprofile — + the `EMPTY_COVERAGE` guard), **P04** (runner, `assay run` CLI
+subcommand, R0 verdict emission). Gate green at **896 passed, exit 0, 100%
+statement AND branch** (1169 stmts / 452 branches), independently reverified by
+the controller in the foreground gate container on every package (not just
+read from the implementer's report), plus a post-merge local run on `main`
+itself each time.
 
-**Outstanding:** P04–P14, eleven packages, all validating against nyxloom's
+**Outstanding:** P05–P14, ten packages, all validating against nyxloom's
 real `handoff-frontmatter.schema.json` with a closed dependency graph.
-**P04 is next** — *"is the real command result recorded on every terminal
-path?"*
+**P05 is next** — *"do all four changed-line sets get judged without the core
+knowing a source language?"*
 
-Key commits: `e7c92988` (P03 merge), `e97d6e6f` (P03 readiness rulings,
-A-092/A-093), `89a489a0` (P02 merge), `04e72c9a` (P02 readiness rulings,
-A-090/A-091), `27fb88d7` (P01c + reissue), `c1bb518d` (P00/P01 rename),
-`caf4fc78` (P01), `b2684da9` (P00), `a0c9e515` (original scoping).
+Key commits: `c46b0bcb` (P04 merge), `fd7ae88e` (P04 controller repair,
+pre-merge), `bfc467b8` (P04 readiness rulings, A-094/A-095), `e7c92988` (P03
+merge), `e97d6e6f` (P03 readiness rulings, A-092/A-093), `89a489a0` (P02
+merge), `04e72c9a` (P02 readiness rulings, A-090/A-091), `27fb88d7` (P01c +
+reissue), `c1bb518d` (P00/P01 rename), `caf4fc78` (P01), `b2684da9` (P00),
+`a0c9e515` (original scoping).
+
+**P04's own diff needed a repair before merge, not just readiness-pass
+rulings.** The implementer put "refuse any lane declaring rigor beyond R0"
+directly in `cli.py`, and its own successor brief told P05 to go edit that
+check — but `cli.py` is not in P05's `scope.touch`, so P05 would have hit
+BLOCKED on day one. Caught in controller review (reading the actual diff, not
+trusting the LOG's self-described "flagged for the controller" note alone),
+relocated into `runner.py`'s `assemble_verdict` (already in every later
+producer package's `scope.touch`), which now self-obsoletes the guard the
+moment a later package supplies the missing claim — no file to find or touch
+when that happens. Two new direct runner-level tests added; the successor
+brief corrected. This is the first package needing an actual code repair
+(P02/P03 only needed pre-implementation handoff rulings) — see WORKFLOW.md's
+repair-vs-redispatch threshold; this qualified as "local" (small, the design
+was right, only the file was wrong).
+
+**Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
+closed `ReasonCode` for "cannot write my own output artifact" (e.g. a missing
+parent directory for `--verdict-json`); left as an uncaught `OSError` rather
+than inventing a code alone (A-050). Low real-world severity, not fixed.
+
+**Watched but not acted on:** P09, P10 and P12 all touch `runner.py` too (not
+just P05). Their handoffs predate P04 and don't cite its actual function
+names, the same shape of gap A-090/A-093/A-094 already caught three times at
+the P0x→P05 seam. Deliberately NOT pre-emptively edited — P05 will extend
+`runner.py` further before any of P09/P10/P12 is dispatched, and editing now
+would guess at a shape that might change. Each package's own readiness pass
+is the right, information-rich moment to catch this, exactly as it did for
+P05 three times running; note it here so a future controller checks
+deliberately rather than by luck.
 
 **P02's readiness pass found a real carving gap** (git.py/measurability.py had
 no downstream consumer scoped to call them) and fixed it *before* implementation:
