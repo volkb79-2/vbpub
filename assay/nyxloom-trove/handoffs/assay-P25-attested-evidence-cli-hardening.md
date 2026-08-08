@@ -4,13 +4,13 @@ id: assay-P25-attested-evidence-cli-hardening
 project: assay
 title: "Declared attested evidence is bounded, contained, and path-current"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P22-exact-reexecution-isolation]
 session: resume:assay-v11-attestation
 scope:
-  touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/attestation.py", "tests/**", "README.md"]
+  touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/attestation.py", "src/assay/safeio.py", "tests/**", "README.md"]
   forbid: ["src/assay/verdict.py", "src/assay/schemas", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters"]
 oracles:
   - id: O1
@@ -50,6 +50,89 @@ on branch `feat/assay-P25-attested-evidence-cli-hardening`.
 5. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` findings 7–8 and its security recommendations.
 6. `/workspaces/vbpub/nyxloom/reference/DOCTRINE.md` defaults, bounded evidence, and fail-closed input rules.
 
+## Implementation packet (normative)
+
+### Declaration and record grammar
+
+The only accepted lane shape is:
+
+```toml
+[lanes.<name>.judge]
+attestation_dir = ".assay/attestations"
+evidence = [
+  {source = "attested", key = "security-review"},
+  {source = "attested", key = "api-review.v2"},
+]
+```
+
+Both fields are required together and forbidden when the array is empty.
+`attestation_dir` is a nonempty project-relative path, never absolute or
+escaping, and every existing component from project root through the directory
+must be a real directory, not a symlink. Evidence preserves declaration order,
+has exactly `source` and `key`, supports only `source="attested"`, and rejects
+duplicate `(source,key)` identities. A key matches
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; therefore it cannot begin with `-` or contain
+a separator/control byte. Its file is exactly `<attestation_dir>/<key>.json`.
+
+The JSON record is a closed object with no unknown keys:
+
+```json
+{"producer":"human:alice","attested_commit":"<full-or-symbolic-revision>",
+ "reviewed_paths":["src/api.py","docs/contracts"]}
+```
+
+Invalid examples include a key containing a parent-directory segment, absolute `attestation_dir`, an
+unknown record member, duplicate paths, an empty producer, or a reviewed path
+containing NUL/`..`/absolute spelling. They all fail before a Git comparison.
+
+### Fixed bounds and safe I/O
+
+| Item | Bound | Refusal |
+|---|---:|---|
+| evidence declarations | 64 | `ERROR/BAD_LANE_CONFIG` |
+| attestation file | 1 MiB | `ERROR/UNREADABLE_ARTIFACT` |
+| producer UTF-8 bytes | 256 | `ERROR/UNREADABLE_ARTIFACT` |
+| reviewed paths per record | 1,000 | `ERROR/UNREADABLE_ARTIFACT` |
+| one reviewed path UTF-8 bytes | 4,096 | `ERROR/UNREADABLE_ARTIFACT` |
+| total Git path comparisons per lane | 4,096 | `ERROR/UNREADABLE_ARTIFACT` |
+
+Reuse P20's `safeio.py` regular-file open: `O_NONBLOCK|O_NOFOLLOW`, `fstat`
+before reading, read limit+1, one UTF-8 decode. Absence is the only
+`MISSING_ATTESTATION` case; symlink/special/oversized/malformed is unreadable.
+Enforce every structural/cardinality bound before the first Git call for that
+record, and the aggregate comparison bound before resolving any evidence.
+
+### Git flow and exact path semantics
+
+1. Resolve `attested_commit` once with sanitized `rev-parse --verify
+   --end-of-options <revision>^{commit}` and require one full OID.
+2. Interpret sanitized `merge-base --is-ancestor <attested-oid> <head-oid>`
+   exit 0 as current ancestry and exit 1 as unreadable/unrelated; no display
+   output is parsed.
+3. Prove each normalized repo-top-relative path exists at the attested OID.
+4. For each path, run sanitized `git --literal-pathspecs diff --quiet
+   --exit-code --no-ext-diff --no-textconv <attested-oid> <head-oid> --
+   <path>`. Exit 0 means current;
+   exit 1 means `NO_MEASUREMENT/STALE_ATTESTATION`; other exit is typed Git
+   failure. Git's pathspec makes a directory cover descendants and a file cover
+   only itself. Do not obtain a newline-delimited changed-name list at all.
+5. Resolve all declared identities independently and emit one ordered sibling
+   `evidence[]` entry per declaration with `verified_by_assay=false`.
+
+| State | Evidence result |
+|---|---|
+| file absent | `MISSING_ATTESTATION` |
+| unsafe/malformed/limit/unresolvable or unrelated revision | typed non-PASS for that identity; later identities still resolve |
+| descendant changed beneath reviewed directory | `STALE_ATTESTATION` |
+| unrelated path changed | current PASS evidence |
+| declaration omitted or duplicated in output | complete-artifact equality failure |
+
+Traceability: work 1–2 -> config containment -> O1/O2; work 3–5 -> safe
+record/path loader -> O2; work 6 -> Git path comparison -> O3; work 7–8 -> CLI
+ordering/artifacts -> O1 and all negatives. The REPORT gives actual tests and
+break counts. Private parser/helper names may vary; grammar, bounds, safe-open,
+Git commands/exit meanings, ordering, and sibling evidence placement may not.
+
 ## Work
 
 1. Add a closed ordered `judge.evidence` array of inline `{source, key}` declarations. Support only `source="attested"`; preserve the adjudicated sibling reservation without inventing a registry. Reject unknown keys, duplicate identities, unsafe keys, and evidence declarations on a lane whose configuration cannot resolve them.
@@ -57,7 +140,7 @@ on branch `feat/assay-P25-attested-evidence-cli-hardening`.
 3. Define fixed documented limits for file bytes, producer/key/path string lengths, reviewed-path count, and total Git comparisons. Enforce byte size before JSON parsing and all structural limits before launching Git.
 4. Restrict keys to a closed safe identifier grammar so `<key>.json` cannot contain separators, traversal, option-like syntax, or control bytes. Open only a regular non-symlink file beneath the resolved directory; missing remains `MISSING_ATTESTATION`.
 5. Require each reviewed path to be normalized, NUL-free, repo-top-relative, non-escaping, and present at the attested commit. Resolve `attested_commit` through an end-of-options-safe Git command to one full commit OID before ancestor/staleness work.
-6. Replace flat changed-name membership with one bounded Git path comparison per reviewed path, using pathspec end-of-options semantics. Route every name-only result through P20's byte/NUL-safe Git boundary (`-z` plus its single UTF-8 decode-or-reject policy), never `splitlines()` or Git's quoted display spelling. A reviewed directory is stale when any descendant changed; a file is stale only when that file changed.
+6. Replace flat changed-name membership with the packet's one bounded, literal-pathspec `git diff --quiet --exit-code` comparison per reviewed path. Interpret only its exit status through P20's sanitized Git boundary; do not request or decode a changed-name list. A reviewed directory is stale when any descendant changed; a file is stale only when that file changed, even when its name contains pathspec metacharacters.
 7. Wire declarations through `assay run` into exactly matching `declared_evidence[]`/`evidence[]` entries. Preserve order, `verified_by_assay=false`, and independent resolution of later identities after one malformed record.
 8. Add installed-wheel complete artifacts for current, stale file, stale directory, absent, malformed, unrelated/descendant commit, and limit violation. Break containment, bounds-before-Git, OID resolution, path staleness, sibling placement, and identity coverage separately; record exact A-067 failure counts.
 
@@ -67,9 +150,9 @@ on branch `feat/assay-P25-attested-evidence-cli-hardening`.
 `attestation._changed_paths` currently asks Git for newline-delimited display
 paths and then calls `splitlines()`. A filename containing a newline remains
 C-quoted and never matches its attested identity; a raw U+2028 is split into
-two phantom paths. Both were reproduced against real Git. P20 supplies the
-sanitized byte boundary; work item 6 must use it with `-z`, not recreate a
-second decoder.
+two phantom paths. Both were reproduced against real Git. The implementation
+packet removes the entire display-name set: one `diff --quiet` pathspec query
+answers the actual question without a second decoder or filename transport.
 
 P20–P22 also change the substrate this handoff inherits: verdicts are v4,
 all execution happens from the bound committed-object snapshot, and expected

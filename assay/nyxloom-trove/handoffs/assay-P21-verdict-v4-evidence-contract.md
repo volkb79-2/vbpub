@@ -4,13 +4,13 @@ id: assay-P21-verdict-v4-evidence-contract
 project: assay
 title: "Verdict v4 carries enough bounded evidence to verify every judgment"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P20-repository-artifact-boundary-integrity]
 session: fresh
 scope:
-  touch: ["src/assay/errors.py", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/config.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/runner.py", "src/assay/cli.py", "src/assay/schemas/**", "tests/**", "README.md", "docs/DESIGN-GUIDE.md", "assay.toml"]
+  touch: ["src/assay/errors.py", "src/assay/vocabulary.py", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/config.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/runner.py", "src/assay/cli.py", "src/assay/schemas/**", "tests/**", "README.md", "docs/DESIGN-GUIDE.md", "assay.toml"]
   forbid: ["src/assay/adapters/python.py", "src/assay/adapters/go.py", "pyproject.toml"]
 oracles:
   - id: O1
@@ -54,12 +54,110 @@ on branch `feat/assay-P21-verdict-v4-evidence-contract`.
 5. `src/assay/config.py`'s closed `MutationConfig` parsing and `JudgeConfig.as_declared`. No runtime consumer may invent a missing cap.
 6. P16's migration/conformance tests and P19's model/raw-verifier correspondence tests. Extend both independent layers; do not make `assay verify` import the producer model as its oracle.
 
+## Implementation packet (normative)
+
+### v4 grammar and owners
+
+`src/assay/vocabulary.py` is a new stdlib-only leaf owning
+`MUTATION_OPERATORS`. Config, mutant construction, verdict models, JSON Schema,
+and the raw verifier use that one ordered tuple; the Schema enum may be emitted
+from the same reviewed literal at authoring time but the shipped schema remains
+hand-readable and its conformance test compares the two sets.
+
+The following excerpt fixes the new serialized shapes (unchanged v3 fields are
+omitted here, not optional in the real document):
+
+```json
+{
+  "schema_version": 4,
+  "judgment": {
+    "r2": {"jobs": 2, "max_mutants": 50,
+           "operators": ["compare-swap"]},
+    "r3": {"mechanism": "uncovered-line", "target": "src/p.py"}
+  },
+  "claims": [{"rigor": "R1", "coverage": {
+    "exclusion_capability": "reported"
+  }}, {
+    "rigor": "R2",
+    "mutation": {
+      "candidate_count": 1,
+      "total": 1,
+      "killed": [{"path": "src/p.py", "lineno": 7,
+                  "operator": "compare-swap", "description": "< to <="}],
+      "survived": [], "crashed": [], "budget_exceeded": []
+    }
+  }, {
+    "rigor": "R3",
+    "canary": {"mechanism": "uncovered-line", "target": "src/p.py",
+               "description": "...", "control_outcome": "PASS",
+               "transformed_outcome": "FAIL",
+               "expected_reason_code": "UNCOVERED_LINES",
+               "observed_reason_code": "UNCOVERED_LINES"}
+  }]
+}
+```
+
+`Mutation.candidate_count` is the bounded number discovered. Normally it
+equals `total`, and `total` equals the lengths of all four identity arrays. On
+the pre-submission limit terminal it is exactly `max_mutants + 1`, `total` is
+zero, all four arrays are empty, and the R2 claim is
+`BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`; no mutant command ran. This sentinel
+shape is the independent evidence for the refusal, not a silently truncated
+list. Candidate discovery itself has a hard product ceiling of **10,001** so a
+malicious declared cap cannot create unbounded memory/work; `max_mutants` must
+be in `1..10,000`.
+
+`Coverage.exclusion_capability` is exactly `"reported"` or `"unavailable"`.
+`unavailable` requires both exclusion detail fields empty; `reported` permits
+empty or populated detail. `CanaryResult.target` is the normalized declared
+project-relative string and must equal `judgment.r3.target`. Invalid v4 examples
+that all three validation layers must reject: `"killed": 1`; operator
+`"unknown"`; `unavailable` with a nonempty excluded line; reversed timestamps;
+or different canary/policy targets. V1–v3 fail before any of these fields are
+visited with one version-only diagnostic.
+
+Add exactly these closed reasons in `errors.py`, Schema, model, and verifier:
+`ERROR/OUTPUT_WRITE_FAILED`,
+`BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, and
+`BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` (reserved here for P22's reachable
+snapshot refusal), plus `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL` (reserved here
+for P26's first real external-tool preflight). No generic fallback reason is
+permitted.
+
+### Required flow and decision table
+
+1. Load and validate the complete lane, including bounded `max_mutants`.
+2. Resolve HEAD and policy. Preflight/reserve the verdict destination before
+   any consumer command; reservation never redirects or invents a path.
+3. Construct only v4 producer models. Serialize atomically to the reserved
+   sibling temporary file and replace the destination.
+4. `verify.py` first checks the raw top-level version, then JSON Schema, then
+   re-derives cross-field rules without trusting producer constructors.
+
+| State | Outcome/reason | Payload/side effect |
+|---|---|---|
+| bad output parent/type/permission before run | `ERROR/OUTPUT_WRITE_FAILED` | no lane command; stable stderr because requested artifact cannot exist |
+| destination lost after run | `ERROR/OUTPUT_WRITE_FAILED` | no PASS claim and no fallback file |
+| candidates = max+1 | `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` | sentinel mutation payload; zero submissions |
+| snapshot exceeds P22 bound | `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` | complete artifact; zero command for that snapshot |
+| old schema | verify failure | exactly one version diagnostic |
+
+### Traceability and degrees of freedom
+
+Work 1–3 -> vocabulary/model/schema/verifier -> O1/O2 -> hand-authored v4 plus
+unknown/killed/limit mutations; work 5–7 -> canary/coverage/time correspondence
+-> O3/O4 -> exact field mutations; work 8 -> output reservation -> O4 -> a
+sentinel command proving zero calls. The REPORT repeats this mapping with real
+tests and controlled-break counts. Private helper names and dataclass field
+order may vary; serialized keys, ranges, sentinel shape, reasons, validation
+order, and independent raw re-derivation may not.
+
 ## Work
 
 1. Bump the verdict artifact to schema v4 in one atomic migration. Convert every hand-written expected artifact and installed-wheel witness deliberately. `assay verify` must return one version-only diagnostic for v1–v3 before reading foreign fields; it never upgrades, defaults, or rewrites them.
 2. Put the mutation-operator vocabulary in one cycle-safe module imported by config, mutation construction, verdict model, and raw verifier. Close both `MutationOutcome.operator` and `judgment.r2.operators` in the model and schema. Delete the current model/schema/verifier mismatch rather than maintaining parallel literal sets.
-3. Replace killed's count-only representation with ordered `MutantOutcome` identities, matching survived/crashed/budget-exceeded. Retain or derive a count only if it is mechanically cross-checked. Verify total equals the four bucket lengths and every payload operator belongs to the recorded policy. Sorting is stable by path/line/operator/description and independent of completion order.
-4. Make `judge.mutation.max_mutants` a required positive integer, record it in `judgment.r2`, and enforce it after bounded candidate discovery but before any mutant command is submitted. Discover at most `max_mutants + 1`; excess renders `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, with no partial sample and no credit. `jobs` remains only a concurrency bound and is never derived from machine capacity.
+3. Replace killed's count-only representation with ordered `MutantOutcome` identities, matching survived/crashed/budget-exceeded, and add the packet's `candidate_count`. Verify normal and limit-sentinel arithmetic exactly and require every payload operator to belong to the recorded policy. Sorting is stable by path/line/operator/description and independent of completion order.
+4. Make `judge.mutation.max_mutants` a required integer in `1..10,000`, record it in `judgment.r2`, and enforce it after bounded candidate discovery but before any mutant command is submitted. Discover at most `max_mutants + 1` and never more than 10,001; excess renders the packet's `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` sentinel, with no partial sample and no credit. `jobs` remains only a concurrency bound and is never derived from machine capacity.
 5. Add the project-relative canary target to `CanaryResult` and bind it exactly to `judgment.r3.target` in both construction and raw verification. The description remains explanation, never a parseable identity channel.
 6. Preserve A-008 in the artifact with a closed R1 exclusion-capability field (`reported` versus `unavailable`). `unavailable` may not carry excluded lines; `reported` may truthfully carry an empty mapping. Re-derive the same rule in `verify.py`; do not infer capability from a particular format name.
 7. Add construction/schema/raw-verifier checks that `ended >= started`. Use injected/fixed clocks in tests and exact timestamp values; no elapsed-time assertion.

@@ -379,3 +379,137 @@ Until then, the honest product statement is:
 > Assay has a strong language-neutral design and reachable Python R0–R3
 > prototypes, but its repeated-execution and evidence boundaries are not yet
 > safe enough to gate another project's merge.
+
+## Follow-up: why green implementation and review still missed the defects
+
+The five material defects were not missed because no one ran tests or because
+Nyxloom's standards were ignored. They were missed because implementation,
+tests, and review shared the same model of the problem.
+
+| Common assumption in the series | What the tests proved | What they never varied |
+|---|---|---|
+| baseline and repeats can reconstruct from `Lane` | each path ran its declared fixture command | caller-appended argv and resolved passthrough together |
+| project root is the isolation unit | copied single-project fixtures worked | project below repo top with a tracked sibling input |
+| copied scratch is a fresh execution | transformed fixtures produced expected profiles | stale ignored profile already present and producer writes nothing |
+| `git -C` selects the repository | ordinary Git calls used the expected repo | hostile ambient `GIT_DIR`/config selecting another repo |
+| pre-run cleanliness binds the run | dirty input was refused | command dirties a support path after HEAD is recorded |
+
+The existing 100% statement/branch figure is compatible with all five. It says
+every implemented branch ran; it says nothing about a missing branch or guard.
+The implementer wrote tests from the same interpretation used to write the
+code. The reviewer was independent as an actor, but the serial cadence and
+handoffs focused it on each package's diff, named negatives, and immediate
+controller repairs. It did not receive an independent end-to-end state model or
+an instruction to combine the dimensions across packages. That is a
+**common-mode specification failure**, not simply a low-intelligence failure.
+
+The standards were strong on behavioral oracles, real gates, no hollow tests,
+and mechanical escalation. They did not yet require the carver to transfer the
+load-bearing construction or require a reviewer to invent a different input
+distribution. A behavioral oracle can still be ambiguous about how repository
+identity, command identity, or freshness is preserved. A negative can still be
+too friendly. “Run the same command” sounded precise until the implementation
+had to decide whether “same” meant the lane declaration or the already-resolved
+argv/environment object.
+
+### Prevention: solution-bearing carving
+
+The proposed “more detailed handoffs” is correct with one qualification: add
+decisions and executable structure, not volume. The useful unit is an
+**implementation-shaped contract** or **executable design packet**. If a less
+capable implementer must invent a load-bearing interface, state machine,
+namespace translation, bound, or terminal, the carving is not finished.
+
+For complex packages the packet now requires:
+
+1. exact owned interfaces and a valid wire/schema example plus invalid examples;
+2. input-to-terminal construction flow and one owner for each identity,
+   freshness, policy, bound, and error translation;
+3. explicit repo/project, consumer/snapshot, artifact/destination, and
+   host/container topology;
+4. decision tables naming outcome, reason, payload, and permitted side effects;
+5. fixed bounds and the authoritative source for every non-fixed value;
+6. prepared fixtures and, when helpful, a compiling skeleton with failing
+   acceptance tests;
+7. work-to-owner-to-oracle-to-fixture-to-controlled-break traceability; and
+8. explicit degrees of freedom so private decomposition remains implementation
+   work while product behavior does not.
+
+Skeletons help when they freeze a validated seam: public dataclasses, protocol
+framing, function signatures, fixture topology, and TODO bodies. They hurt when
+they merely make an untested architecture look authoritative. The carver must
+run a tracer bullet and one hostile case against the proposed construction
+before dispatch; otherwise a separate probe/design package comes first.
+
+The canonical rule and copy-paste review prompt now live in
+`nyxloom/reference/AUTHORING.md` revision `2026-08-08-r4`. The review is best
+called a **pre-dispatch adversarial specification review**: “adversarial review”
+absolutely applies, but naming the object distinguishes it from the later code
+review. It must build requirement traceability, try to satisfy each oracle with
+a wrong implementation, find undefined facts/defaults/namespaces/terminals, and
+produce combined-axis fixtures before declaring READY.
+
+Three proof sources should also remain separate:
+
+- the carver supplies a normative contract and at least one independently
+  calculated expected artifact;
+- the implementer supplies unit/integration tests and the traceability receipt;
+- the reviewer adds new attacks not named by the implementation tests and runs
+  a post-series identity/freshness/containment/budget audit.
+
+The important addition is **combined axes**. Separate tests for nested project,
+appended argv, passthrough environment, and stale artifact can all pass while
+their composition fails. Require at least pairwise combinations for every
+load-bearing dimension and a full combined fixture for the primary path.
+
+### Changes applied to the waiting queue
+
+The before baseline is commit `ebbe208c4d4ff275da2ca6bd276bea103fca2563`.
+P20–P29 were then rewritten under the new mode. Each now includes a normative
+implementation packet with concrete interfaces/grammar, state flow, topology,
+bounds, decision/proof matrix, traceability, and remaining degrees of freedom.
+The rewrite itself found additional handoff defects before dispatch:
+
+- P23 now distinguishes the version in a verdict from the externally verified
+  wheel sha256; an installed package cannot truthfully rediscover its original
+  wheel bytes.
+- P24 compares Topos only on semantics its independent evaluator actually
+  expresses; Assay's richer exclusion provenance is checked against the hand
+  manifest rather than falsely demanding parity.
+- P25 replaces fragile changed-filename transport with one bounded
+  `diff --quiet` path query per attested identity.
+- P21 reserves the exact v4 terminals later packages need, P26 pins official
+  Go module parsing and effective-PATH ownership, and P27's protocol/operator
+  grammar is explicit.
+- P27 correctly inherits P26's external-tool preflight, and P28 now depends on
+  P27 so its registry update cannot erase R2.
+- P29 chooses concrete Istanbul same-line and repeated-lcov aggregation rules
+  instead of leaving the implementer to decide them.
+
+### What external Python qualification should replace self-hosting-only proof
+
+Self-hosting stays useful: it proves the wheel can run Assay's own declared
+gate without a source-tree shadow. It is insufficient as the only adoption
+proof because producer, fixture, config, and expectation can share Assay's own
+assumptions.
+
+P24's useful alternative is **differential qualification against an
+independently maintained real consumer**:
+
+1. take a pinned, disposable committed-object copy of Topos with its real
+   package/test/dependency topology;
+2. create a controlled two-commit delta with a hand-numbered manifest;
+3. run the exact version/hash-pinned installed Assay wheel and real coverage.py;
+4. run the unmodified copied Topos coverage evaluator against the same commits,
+   source root, profile, and floor;
+5. compare their common line buckets and terminal class, while a third hand
+   manifest judges facts only one tool can express;
+6. attack source-root normalization, missing/stale profile, base=HEAD, dirty and
+   post-command state, and a universal-PASS producer mutation; and
+7. prove the real Topos checkout is byte-identical before/after.
+
+This breaks common-mode failure and exercises packaging, monorepo paths,
+dependency closure, real test behavior, distribution isolation, and an
+independent oracle. It remains qualification, not migration. After P24 is
+green, actual adoption belongs to a Topos-owned handoff that runs old and new
+gates in shadow on real commits before replacing the old gate.

@@ -4,7 +4,7 @@ id: assay-P27-real-go-mutation-r2
 project: assay
 title: "Go changed-line mutants are valid single-site programs judged by real go test"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P22-exact-reexecution-isolation, assay-P26-real-go-r1-gate]
@@ -50,12 +50,95 @@ on branch `feat/assay-P27-real-go-mutation-r2`.
 5. `/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py` for the four conceptual operator names and deterministic ordering only; its Python AST/unparse mechanism is forbidden prior art.
 6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` P23 carve and finding 11.
 
+## Implementation packet (normative)
+
+### Helper protocol and operator grammar
+
+`cmd/assay-go-helper` is a single offline Go binary. It reads exactly one JSON
+request from stdin (maximum 64 MiB plus framing), writes exactly one JSON
+response to stdout, writes diagnostics only to stderr, and has no filesystem or
+network authority. JSON objects are closed; numbers are integers, never floats.
+
+```json
+{"schema_version":1,"source_b64":"<base64 of exact UTF-8 file bytes>",
+ "changed_lines":[7,11],
+ "operators":["compare-swap","boolop-swap","bool-const-flip"],
+ "max_sites":51}
+```
+
+```json
+{"schema_version":1,"sites":[
+ {"start_byte":83,"end_byte":84,"replacement_b64":"PD0=", "line":7,
+  "operator":"compare-swap","description":"< to <="}
+]}
+```
+
+`source_b64` decodes to valid UTF-8 with no NUL. `changed_lines` is sorted,
+unique, positive, and bounded; `operators` is an order-preserving subset of
+P21's vocabulary; `max_sites` is exactly `max_mutants + 1` and at most 10,001.
+The response contains at most that many sites, sorted by
+`(start_byte,end_byte,operator,replacement bytes)`, with nonoverlapping valid
+UTF-8 byte boundaries. A malformed request, invalid Go source, limit breach,
+unknown field, helper nonzero, or malformed response is a typed non-PASS before
+any mutant command; it is never `NO_MUTANTS`.
+
+The only Go replacements are:
+
+| Operator | Token replacements |
+|---|---|
+| `compare-swap` | `==`<->`!=`, `<`<->`<=`, `>`<->`>=` |
+| `boolop-swap` | `&&`<->`||` |
+| `bool-const-flip` | `true`<->`false` |
+| `falsy-swap` | no Go sites |
+
+Use `go/parser`, `go/ast`, and `go/token` to locate token spans. A site is
+eligible only when the operator/literal token itself begins on a declared
+changed physical line. Ignore lookalikes in comments/strings, all `_test.go`
+targets, and files bearing Go's canonical generated-file marker. For each site,
+splice only `[start_byte:end_byte]`, parse the resulting full file, and call
+`go/format.Source` only as an additional validity check; discard its output.
+Every byte outside the span must equal the original. Multiple sites on one line
+remain distinct by span even if their projected verdict descriptions match.
+
+Python owns protocol validation and constructs the existing `Mutant` from each
+one-splice result. After this package `GoAdapter.external_tools` is exactly
+`("go", "assay-go-helper")`, and its registry rigor is exactly `{"R1","R2"}`.
+P26's effective-PATH preflight applies to both names.
+
+### Execution and terminal matrix
+
+Each discovered candidate runs in its own P22 snapshot, receives the immutable
+baseline plan and remaining shared lane budget, and replaces one repo-relative
+target atomically. Classification uses only the process boundary:
+
+| Real result | R2 bucket/terminal |
+|---|---|
+| process starts, `go test` exits 0 | `survived[]` identity |
+| process starts, exits nonzero (including compile error) | `killed[]` identity |
+| process cannot start | `crashed[]` identity |
+| shared deadline stops/interrupts that candidate | `budget_exceeded[]` identity |
+| zero valid sites | `INCONCLUSIVE/NO_MUTANTS` |
+| helper finds max+1 | P21 limit sentinel; zero `go test` submissions |
+
+Prepared fixtures must include two same-line operators, operator tokens on a
+continuation line, multibyte text before the token, comment/string lookalikes,
+generated/test files, invalid source, and fixed killed/survived programs. A
+selected disposable srdm package supplies the non-toy topology; its expected
+sites are enumerated from source bytes, not helper output.
+
+Traceability: work 1–4 -> helper/protocol/splices -> O1; work 2/6 -> operator
+fixtures -> O2; work 5–6 -> P22 executor and v4 arrays -> O3; work 7 -> every
+negative. The REPORT attaches protocol examples, helper hash, exact site and
+process ledgers, tests, and break counts. Private Go visitor decomposition may
+vary; wire grammar, token rules/table, bounds, sorting, byte splice, external
+tools, and terminal mapping may not.
+
 ## Work
 
 1. Add a small offline-built `assay-go-helper` beneath `cmd/` that reads source plus selected lines through a bounded machine protocol and returns syntax-derived exact byte spans/replacements in deterministic order. Build it into P26's gate image and declare it as the Go adapter's external tool.
 2. Implement the three language-valid shared operator identities for Go: comparisons, `&&`/`||`, and boolean constants. `falsy-swap` is Python's swap among dynamically-typed falsy literals; Go has no equivalent valid across static types, so it deliberately produces no Go sites. Do not relabel a nil/zero/equality rewrite as falsy-swap.
 3. Produce each `Mutant` by one byte splice against the original UTF-8 source. Preserve all bytes outside the selected span; use Go parsing/formatting only to validate the result, never to generate whole-file output.
-4. Select only sites whose syntactic construct begins or is wholly attributed to a declared changed line under one documented rule. Exclude comments, strings, generated/test files, unchanged lines, and nested second-site changes.
+4. Select only sites whose operator/literal token begins on a declared changed physical line, exactly as the packet defines. Exclude comments, strings, generated/test files, unchanged token lines, and nested second-site changes.
 5. Run P22's existing exact-plan/snapshot path with real `go test`. Per A-158, a process that starts and exits nonzero — including a compiler rejection — is `killed`; exit zero is `survived`; inability to start/execute the command boundary is `crashed`; the shared lane deadline and max-mutant ceiling retain their own terminals. Never classify by scraping human-readable Go output.
 6. Add independently enumerated fixtures covering multiple same-line sites, Unicode before a span, multiline expressions, comments/strings resembling operators, invalid source, no sites, every terminal result, and selected real srdm packages in a disposable snapshot. Prove full killed identities and source hashes unchanged.
 7. Break AST/token discovery, line selection, byte splicing, validity checking, external-tool preflight, nonzero/boundary classification, max-mutant enforcement, and installed CLI wiring separately; run the real combined gate and record exact A-067 counts.
@@ -63,15 +146,11 @@ on branch `feat/assay-P27-real-go-mutation-r2`.
 ## Carried in from P17, merged (read before writing work items 1 and 7)
 
 **Work item 7's "external-tool preflight" is P26's mechanism, not one you
-build (A-144).** Until P22, nothing in assay preflighted
-`LanguageAdapter.external_tools` and the closed reason vocabulary had no
-truthful cause for a missing one (A-013/A-086, deferred by A-087 and again
-by A-142). P22 owns `MISSING_EXTERNAL_TOOL` and the preflight call site;
-`errors.py` and `cli.py` are in ITS `scope.touch`, deliberately not yours.
-Your half is work item 1's declaration — `assay-go-helper` named in
-`GoAdapter.external_tools` — plus the negative that proves removing it from
-that tuple stops the preflight from firing. If you find P22 did not build
-it, that is a BLOCKED, not an improvisation into `errors.py`.
+build (A-144).** P21 reserves `MISSING_EXTERNAL_TOOL` in v4 and P26 makes the
+effective-PATH preflight reachable for `go`. Your half is work item 1's
+extension to exactly `("go", "assay-go-helper")`, plus the negative proving
+the helper is checked through that same mechanism. If P26 did not deliver it,
+that is a BLOCKED, not an improvisation into `errors.py` or `cli.py`.
 
 **A-139/A-140, in one line each.** Every declared rigor level is checked
 against the registry before anything runs, so advancing Go through R2

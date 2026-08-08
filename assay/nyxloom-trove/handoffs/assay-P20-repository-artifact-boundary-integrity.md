@@ -4,13 +4,13 @@ id: assay-P20-repository-artifact-boundary-integrity
 project: assay
 title: "Repository identity and measured artifacts survive adversarial process state"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P19-isolated-r3-cli-pipeline]
 session: fresh
 scope:
-  touch: ["src/assay/git.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/runner.py", "src/assay/cli.py", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
+  touch: ["src/assay/git.py", "src/assay/safeio.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/runner.py", "src/assay/cli.py", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
   forbid: ["src/assay/schemas", "src/assay/verdict.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters"]
 oracles:
   - id: O1
@@ -53,6 +53,73 @@ on branch `feat/assay-P20-repository-artifact-boundary-integrity`.
 4. `src/assay/coverage.py::read_coverage_artifact`, `src/assay/evaluate.py`, and `src/assay/runner.py::{evaluate_r1,run_lane,write_verdict}` with their direct tests. Identify every call after `execute_command` that can raise an expected `AssayError`, `OSError`, or decode error outside artifact assembly.
 5. P15's byte/path decisions A-134–A-135 and P17's total-terminal decisions A-139–A-143. Preserve their exact path transport and one-complete-artifact contract.
 6. `/workspaces/vbpub/nyxloom/reference/DOCTRINE.md` §§4.2a, 5, and 6 for bounded evidence, fail-closed behavior, and real-gate discipline.
+
+## Implementation packet (normative)
+
+### Interfaces and ownership
+
+- `src/assay/git.py` remains the only module that launches Git. Keep `run(repo,
+  *args) -> str` and the typed wrappers; one raw-byte subprocess seam owns all
+  argv construction, environment replacement, exit translation, and UTF-8
+  decoding. No caller may invoke `git`, read `.git`, or add its own decoder.
+- Resolve the Git executable once to an absolute path. The child environment is
+  a replacement mapping containing only the locale needed for the documented
+  UTF-8 boundary and explicit Git protections; no ambient `GIT_*`, `HOME`,
+  `XDG_*`, pager, editor, or config selector crosses it. Disable system/global
+  config and, on diff commands, external diff and textconv explicitly. `-C
+  <resolved-repo-top>` precedes a fixed subcommand; user-controlled refs and
+  paths follow `--` wherever that subcommand accepts operands.
+- `src/assay/safeio.py` owns bounded nonblocking regular-file opening so P25
+  can reuse the same descriptor/inode/limit discipline for attestations.
+  Coverage freshness is represented by a private immutable reservation created
+  before launch and consumed once after launch. It contains the absolute path
+  and the resolved parent identity, not a timestamp. Preparation requires an
+  existing real parent directory, rejects a symlink/special destination, and
+  removes an old regular artifact only after every pre-run refusal has passed.
+  Consumption opens with `O_RDONLY|O_NONBLOCK|O_NOFOLLOW`, checks `fstat` is a
+  regular file no larger than **16 MiB**, verifies the open descriptor still
+  matches the path's device/inode, reads at most limit+1 bytes, then performs
+  the single UTF-8/format parse. A missing new file is `EMPTY_COVERAGE`; an
+  unsafe/unreadable/oversized object is `ERROR/UNREADABLE_ARTIFACT`.
+- `runner.run_lane` owns terminal assembly. After the command and before any
+  PASS claim, it calls the same sanitized `dirty_paths(repo_top)` over the
+  entire repository. Any staged, unstaged, or untracked path is
+  `NO_MEASUREMENT/DIRTY_TREE`; it does not restore consumer state.
+
+### Required flow and topology
+
+```text
+supplied project path -> sanitized repo_top + HEAD/base -> pre-run refusal checks
+                     -> reserve/remove coverage path -> execute command
+                     -> safe-open fresh artifact -> evaluate -> whole-repo dirty check
+                     -> exactly one complete verdict bound to the pre-run HEAD
+```
+
+The project may be `repo_top/apps/project`; Git identities and dirty paths are
+repo-top-relative, while the declared artifact remains project-relative. Join
+each spelling only at its named owner. Never validate a snapshot, host, or
+container spelling with the consumer process's local filesystem.
+
+### Decision and proof matrix
+
+| State | Terminal | Command allowed? | Required negative fixture |
+|---|---|---:|---|
+| hostile Git selectors/config | exact seeded repo identity or `ERROR/GIT_FAILED` | no wrong-repo run | two repos with different HEAD/path bytes |
+| stale regular profile | remove, then require a new inode/file | yes, after removal | zero-exit producer writes nothing |
+| FIFO/device/symlink/oversize | `ERROR/UNREADABLE_ARTIFACT` | never block | each real filesystem object |
+| command dirties any repo path | `NO_MEASUREMENT/DIRTY_TREE` | already ran | mutate a tracked support file outside source roots |
+| expected post-HEAD decode/evaluation error | complete typed artifact | as flow dictates | normalized-key collision plus invalid UTF-8 |
+
+Traceability is fixed: work 1–2 -> `git.py` -> O1 -> hostile two-repo ledger;
+work 3–4 -> coverage reservation -> O2/O4 -> special/stale/oversize matrix;
+work 5–6 -> `run_lane` -> O3 -> complete-artifact and post-dirty matrix. The
+REPORT names the actual tests and the failure count after breaking each guard.
+
+### Degrees of freedom
+
+Private helper and reservation type names may differ. The single Git owner,
+replacement environment, 16 MiB read ceiling, freshness protocol, terminal
+mapping, whole-repository post-check, and topology above may not.
 
 ## Work
 

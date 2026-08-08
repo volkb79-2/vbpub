@@ -7,7 +7,7 @@
 > here. One canonical source, one optional project delta.
 
 
-> **Revision:** 2026-07-23-r3 · (bump on every substantive change. Consumers no
+> **Revision:** 2026-08-08-r4 · (bump on every substantive change. Consumers no
 > longer hold copies to go stale — this file is read from the running nyxloom
 > product, so its revision is simply the product's doctrine version.)
 
@@ -61,6 +61,95 @@ full context: the code it will edit, the one test file to mirror, the spec
 section that defines the contract. This is the difference between an agent that
 spends its budget re-deriving the codebase and one that spends it implementing.
 State it explicitly — never assume the agent will find it.
+
+### 2a. Complex work gets an implementation-shaped contract
+
+A handoff is not an invitation to rediscover the carver's design. If correctness
+depends on a schema, protocol, state machine, path translation, snapshot,
+concurrency boundary, or external integration, the carver transfers the
+load-bearing solution into the package. The implementer should be choosing
+private decomposition and writing code, not inventing product semantics or the
+architecture that makes the oracles possible.
+
+Add an `## Implementation packet (normative)` before `## Work`. It contains the
+smallest useful version of each item below; omit an item only when genuinely
+irrelevant:
+
+1. **Owned interfaces.** Name the module owner and give exact public type,
+   function, or wire signatures. Pin field names, types, ordering, error
+   vocabulary, and which caller constructs/consumes each value. A schema or
+   protocol gets one valid example and at least two invalid examples.
+2. **Construction and state flow.** Give numbered pseudocode from input to
+   terminal artifact. Identify the single owner for identity, freshness,
+   policy, bounds, and error translation. Say which operations must happen
+   before side effects and which values are resolved once and carried forward.
+3. **Topology and namespaces.** Draw the relevant path/identity map: repository
+   top versus project root, consumer versus snapshot path, producer artifact
+   versus verdict destination, host versus container. State each translation
+   exactly once and forbid local validation of a foreign namespace.
+4. **Decision table.** For every important input/state combination, name the
+   output, stable reason, payload presence, and whether a side effect is legal.
+   This is especially important where `PASS`, refusal, failure, and budget
+   exhaustion meet.
+5. **Bounds and provenance.** Name the authoritative source for every value.
+   Give concrete fixed bounds or the exact declaration that supplies them.
+   Required facts are derived, read, or refused; the implementer may not invent
+   a fallback.
+6. **Prepared proof material.** Name the fixture topology, exact example
+   artifacts, and a wrong implementation each negative distinguishes. When an
+   interface or algorithm is non-obvious, provide a compiling skeleton with
+   TODO bodies and already-failing acceptance tests. The carver must run the
+   skeleton and witness each acceptance negative fail before dispatch.
+7. **Traceability.** Include a table mapping every work item to its owner,
+   behavioral oracle, test/fixture, and controlled break. The implementation
+   REPORT repeats the table with actual file/test names and failure counts.
+8. **Degrees of freedom.** State what is intentionally left to the implementer
+   (normally private helper names and equivalent local decomposition). Anything
+   capable of changing externally visible behavior is not a degree of freedom.
+
+The detail must transfer decisions, not dictate incidental syntax. An unprobed
+code sketch merely gives a bad assumption more authority. Before freezing the
+packet, the carver runs a tracer bullet through the proposed construction and
+one deliberately hostile case. Record those commands/results in the carve log
+or source review. If that cannot be done, carve a design/probe package first.
+
+Tests written by the implementer from the same handoff are not independent
+evidence: specification, implementation, and test can share one misconception.
+For a high-integrity package, the acceptance material must include at least one
+carver-authored expected artifact and the reviewer must add at least one new
+combined-axis attack that was not named by the implementer's tests. Varying
+`repo != project`, appended argv, and passthrough environment only in separate
+happy fixtures is insufficient; exercise the meaningful combination too.
+
+A compact packet template:
+
+```markdown
+## Implementation packet (normative)
+
+### Interfaces and grammar
+- Owner: `src/pkg/module.py`
+- `resolve(input: Declared) -> Resolved`; exact fields: ...
+- Valid: `...`; invalid: `...` -> `REASON`, `...` -> `REASON`.
+
+### Required flow
+1. Read/derive ... before any side effect.
+2. Construct ... once; all consumers receive that value.
+3. On ... emit ...; never fall through to ...
+
+### Topology and bounds
+`repo_top/project_prefix/... -> snapshot_root/project_prefix/...`
+Bound/source table: `field | source | limit | refusal`.
+
+### Decision table
+`state | outcome/reason | payload | side effects`.
+
+### Prepared proof and traceability
+`work | owner | oracle | fixture | controlled break`.
+
+### Degrees of freedom
+Private helper names and equivalent decomposition only; serialized and public
+shapes above are fixed.
+```
 
 ### 2b. Environment setup is a RECIPE, not a pre-built artifact
 If the package's oracles need a live stack or any non-default environment,
@@ -180,6 +269,9 @@ worktree changes are reviewed too, not discarded.
 ### The author's pre-flight checklist
 - [ ] Frontmatter present + valid (`nyxloom lint` passes).
 - [ ] "Context to read first" names exact files/sections — nothing to re-derive.
+- [ ] Complex work has a probed implementation packet: interfaces/examples,
+      flow, topology, decisions, bounds, proof material, traceability, and
+      explicit degrees of freedom.
 - [ ] Work steps are numbered, imperative, and scoped to named files.
 - [ ] Every oracle has observable + negative + gate; none is hollow.
 - [ ] **If the handoff asks for tests: §3b's anti-pattern list is pasted into it**
@@ -189,6 +281,32 @@ worktree changes are reviewed too, not discarded.
 - [ ] `scope.touch` / `forbid` are explicit; out-of-scope is a BLOCKED trigger.
 - [ ] BLOCKED rule present (mechanical); product gaps routed to a `D-` decision.
 - [ ] Small enough to finish in one focused pass.
+
+### Pre-dispatch adversarial handoff review
+
+Yes, **adversarial review** applies before implementation. Call this a
+*pre-dispatch adversarial specification review* so it is not confused with a
+later code-diff review. Use this prompt with the proposed handoff and its named
+context:
+
+> Review this handoff as a hostile implementer, a hostile environment, and an
+> independent acceptance engineer. Do not propose code yet. Build a
+> requirement-to-oracle traceability table and try to make every oracle pass
+> while violating the stated product goal. Identify: undefined interfaces or
+> data grammar; values the implementer must invent; shadowing or silent
+> defaults; ambiguous ownership; missing terminal states; repo/project,
+> host/container, source/artifact, or declared/effective namespace confusion;
+> stale or producer-authored evidence; unbounded work; order, clock, ambient
+> environment, and repeated-execution dependence; scope/dependency conflicts;
+> and tests that share the implementation's assumption. Then construct a
+> pairwise input matrix and name at least three combined-axis fixtures likely
+> to break a convenient implementation. For each oracle, give one plausible
+> wrong implementation that still passes the proposed test. Mark the handoff
+> NOT READY if any externally visible decision, interface, example, bound,
+> refusal, or proof source remains for the implementer to invent. Return only:
+> (1) blocking ambiguities, (2) false-PASS attacks, (3) missing implementation-
+> packet content, (4) scope/dependency defects, (5) a corrected oracle/fixture
+> matrix, and (6) READY or NOT READY with reasons.
 
 ## Level 2 — making it nyxloom-compatible (the frontmatter)
 

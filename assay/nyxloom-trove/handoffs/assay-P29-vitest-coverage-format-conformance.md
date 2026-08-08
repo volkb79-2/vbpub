@@ -4,7 +4,7 @@ id: assay-P29-vitest-coverage-format-conformance
 project: assay
 title: "Real Vitest coverage is parsed without losing or inventing statement judgment"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P21-verdict-v4-evidence-contract]
@@ -22,7 +22,7 @@ oracles:
     negative: "Last-statement-wins or any-hit-wins makes the mixed-count fixture falsely covered"
     gate: tester-unified
   - id: O3
-    observable: "Repeated lcov SF records for one file are either losslessly merged or explicitly rejected; they are never silently overwritten, and real Vitest syntax remains accepted"
+    observable: "Repeated lcov SF/DA records with the same exact SF spelling are merged by summing hit counts per line; record order and count partitioning cannot change the parsed profile, and real Vitest syntax remains accepted"
     negative: "Retaining files[path] = record makes reversed repeated records change the result"
     gate: tester-unified
 gates: ["tester-unified"]
@@ -54,13 +54,88 @@ on branch `feat/assay-P29-vitest-coverage-format-conformance`.
 
 Build an assay-owned `assay-node-gate:local` image from `gate/node/Dockerfile`. Pin the Node base and the fixture's npm lock; install dependencies at image-build time, never during the gate. Combine that pinned Node closure with `tester-unified:local` without modifying the shared image. Run the registered `tester-unified` gate with assay's verified cgroup parent. The test phase is offline and must fail if the lock/module closure is absent.
 
+## Implementation packet (normative)
+
+### Pinned producer and report grammar
+
+The fixture toolchain is Node **22.18.0**, `vitest==3.2.4`, and
+`@vitest/coverage-v8==3.2.4`, locked by `gate/node/package-lock.json` with no
+range specifiers. Pin the amd64 base exactly as
+`node:22.18.0-bookworm-slim@sha256:0d130e2ee18e88e1561375276daced6bff032539200173f2daf48c2e33f38ff5`
+and record the same string in `gate/node/BASE_IMAGE.lock`; an unavailable digest
+is BLOCKED, not permission to select a newer image. The lock must contain the
+registry integrity values observed at carve time: Vitest
+`sha512-LUCP5ev3GURDysTWiP47wRRUpLKMOfPh+yKTx3kVIEiu5KOMeqzpnYNsKyOoVrULivR8tLcks4+lga33Whn90A==`
+and coverage-v8
+`sha512-EyF9SXU6kS5Ku/U82E259WSnvg6c8KTjppUncuNdm5QHpe17mwREHnjDzozC8x9MZ0xfBUFSaLkRv4TMA75ALQ==`.
+The final image starts from `tester-unified:local` and copies the pinned Node
+runtime plus the lock-installed fixture closure. Gate execution is offline.
+
+Vitest config uses provider `v8`, `all=true`, and reporters `lcov` and `json` in
+one run. The committed TS/TSX fixture contains: two statements on one physical
+line with only one executed; a multiline statement; JSX; a branch whose line is
+executed but one arm is not; a type-only declaration; an Istanbul ignore; and a
+source file imported by no test. A separate literal manifest names expected
+statement anchor lines and counts. Generated `lcov.info` and
+`coverage-final.json` are absent from Git and deleted before each run.
+
+`istanbul-json` accepts a top-level object mapping file keys to closed records.
+Each record requires `path`, `statementMap`, and `s`; it may also contain the
+real producer's `branchMap`, `b`, `fnMap`, `f`, `inputSourceMap`, and
+`all` fields, whose types are validated but which do not decide line coverage.
+`statementMap` and `s` must have exactly the same decimal-string IDs. Each
+location has `start` and `end` objects with positive integer line and
+nonnegative integer column, ordered start<=end; each count is a nonnegative
+integer. The top key and record `path` must normalize to one nonempty identical
+slash path, and two records may not normalize to the same path.
+
+For one physical **start line**, sum nothing and lose no statement: the line is
+executed only if every statement anchored there has count > 0; any zero makes
+the line missing (**missing wins**). A multiline statement contributes its
+start line only. Its end position is validated but is not expanded across
+closing/comment/continuation lines; future TypeScript changed-line attribution
+comes from a language adapter's source spans, just as Python does, not from
+inventing executable physical lines in this parser. Therefore output remains a
+valid P15 `FileCoverage`, and `excluded=None` because Istanbul omits ignored
+statements rather than reporting exclusion identities.
+
+For lcov, choose merge rather than rejection. Accumulate hit counts by exact
+`(SF spelling, DA line)` across **all** closed records; a line is executed
+when the total is >0 and missing when it is 0. Repeated `SF` order and DA
+partitioning cannot change the profile. Different SF spellings remain separate
+format facts; if an adapter later normalizes them to one Git path, the existing
+normalization-collision guard refuses ambiguity rather than merging guesses.
+This differs intentionally from
+Istanbul's same-line statement rule: lcov has already collapsed statement
+identity, so only cross-report hit aggregation remains observable.
+
+### Decision and proof matrix
+
+| Input | Required normalized result |
+|---|---|
+| same-line Istanbul counts `[1,0]` | line missing |
+| same-line counts `[1,1]` | line executed |
+| multiline statement | start line only; ordered end validated |
+| repeated lcov line counts `0` then `2` | executed with either record order |
+| missing/mismatched Istanbul ID or bad position/count | `ERROR/UNREADABLE_ARTIFACT` |
+| ignored Istanbul statement | exclusion capability unavailable, not known-empty |
+| empty/stale/committed report | freshness/provenance negative fails |
+
+Work 1/7 -> image/real producer -> O1; work 2–4 -> Istanbul grammar and semantic
+manifest -> O1/O2; work 5 -> lcov aggregation -> O3; work 6/8 -> adversarial
+fixtures and controlled breaks -> all oracles. The REPORT records base digest,
+lock hash, Node/Vitest versions, generated report hashes, exact manifest,
+tests, and break counts. Private parser helpers and fixture names may vary;
+pins, grammar, aggregation rules, exclusion capability, real-generation
+provenance, and offline gate placement may not.
+
 ## Work
 
 1. Add a minimal pinned Vitest/V8 fixture and assay-owned combined Node/Python gate image. The fixture contains substantive TS and TSX control tests and emits both lcov and Istanbul JSON from the same real run.
 2. Register `istanbul-json` as a format with strict sniff/parse behavior. Validate object/key/value types, positive positions, matching statement IDs, nonnegative counts, normalized nonempty paths, duplicate files, and P15's disjoint common model.
-3. Aggregate multiple Istanbul statements beginning on one physical line with **missing wins**: a line is executed only when every instrumented statement anchored there ran; any zero-count statement makes it missing. This prevents one covered statement from laundering an uncovered sibling. Preserve statement end positions only if P26 needs them through an explicit common-model extension; otherwise escalate rather than discard silently.
+3. Aggregate multiple Istanbul statements beginning on one physical line with the packet's **missing wins** rule. Validate multiline end positions but emit only statement anchors; do not expand a statement across physical continuation/closing lines or add a common-model field without a separate language-adapter need.
 4. Compare lcov and Istanbul results from the same run by semantic facts each format can actually express. Do not require false parity: if lcov has already collapsed statement distinctions, document and test that loss and choose Istanbul for the React lane.
-5. Repair lcov's repeated-`SF` last-record overwrite. Either combine repeated records with a documented count rule or reject the duplicate before judgment; reversed valid input must never flip status.
+5. Repair lcov's repeated-`SF` last-record overwrite with the packet's cross-record summed-hit merge. Reversed valid input and different DA partitioning must never flip status.
 6. Cover JSX, multiline statements, same-line mixed statements, type-only code, ignored/uninstrumented lines, zero-hit files, absolute/relative paths, and empty/malformed output with hand-calculated expectations independent of assay.
 7. Extend the real gate command to execute the offline Node conformance after the ordinary installed-wheel proof, preserving cgroup and independent witness mechanics.
 8. Break real report generation, each parser validation, mixed-statement aggregation, duplicate-SF handling, registry binding, and semantic manifest comparison separately; record exact A-067 failure counts.

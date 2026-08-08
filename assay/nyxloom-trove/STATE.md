@@ -314,9 +314,11 @@ NOT record it; plus where `base` and `source_roots` come from), **P18**
 (its work item 4 turns `assay verify`'s R2 baseline proxy into an
 identity — do not reintroduce a second baseline run), **P19** (an
 inconclusive canary still renders a real `CanaryResult`; `ERROR`/
-`BUDGET_EXCEEDED` stay payload-free), **P22** (its independently
+`BUDGET_EXCEEDED` stay payload-free), historical **P22** (current **P26**;
+its independently
 calculated R1 expectation must now calculate `judgment.r1` too, not copy
-the Python fixture's), and **P25** (Istanbul has no exclusion channel).
+the Python fixture's), and historical **P25** (current **P29**; Istanbul has
+no exclusion channel).
 The v2 review supersedes the stale parts of those briefs: P21 closes
 A-O16/A-O18 in v4, P20 closes A-O17, P22 replaces working-tree copy
 isolation, and P26–P28 add real disposable-srdm validation.
@@ -348,7 +350,7 @@ sandboxed away. **P26 and P27 cannot be attempted again before Aug 12,
 `48771e48` through `bcf9afb9` (P15 through P25, one commit each, `git log`
 has the full list).
 
-**The pattern across the whole series**: every single readiness pass found
+**The pattern across the original package-local series**: every single readiness pass found
 at least one real gap, never zero — wrong/stale citations (P09's "canary"
 pointer, P11's "mutation" pointer, both pointing at the wrong estate
 project entirely), capability built with no package yet scoped to consume
@@ -360,21 +362,24 @@ caught all of it, every time: verify agent claims yourself, independently,
 before ruling — grep counts, live structural checks, direct interactive
 exercise of the real code, real gate re-runs in the foreground, never
 trusting a report at face value. Every package held up under that
-discipline; several needed controller repairs or corrected rulings before
-they did.
+package-local discipline; the v2 post-series review then disproved its
+completeness by combining axes and comparing all repeated executions as one
+system. "Independently reviewed" was real, but it did not mean
+"independently specified against a different input distribution."
 
 **A-O14 is DECIDED and assigned to P21 (A-157):** reserve/validate the
 declared verdict destination before execution and add the closed
 `OUTPUT_WRITE_FAILED` terminal. The physical impossibility of writing to an
 unavailable destination remains explicit; Assay does not invent a fallback.
 
-**A-O15 is assigned to P20.** `attestation._changed_paths` still uses
+**A-O15 is assigned to P25 and depends on P20.** `attestation._changed_paths` still uses
 newline-delimited Git display paths plus `splitlines()`. Real filenames with
-newlines or U+2028 were reproduced as wrong identities. P20 now explicitly
-uses P20's sanitized byte/NUL-safe `-z` boundary.
+newlines or U+2028 were reproduced as wrong identities. P20 supplies the
+sanitized Git boundary; P25 now avoids filename transport entirely by using one
+bounded `diff --quiet` pathspec query per reviewed identity.
 
 **A-O16 is DECIDED and assigned to P21 (A-157).** Schema v4 records the
-closed exclusion capability `reported` versus `unavailable`; P25 consumes
+closed exclusion capability `reported` versus `unavailable`; P29 consumes
 that decision for Istanbul rather than redesigning it.
 
 **A-O17 is assigned to P20, before P26.** The known Go-normalization
@@ -384,8 +389,8 @@ real Go collision fixture but owns no runner workaround.
 
 **A-O18 is DECIDED and assigned to P21 (A-157).** P21 is the deliberate
 schema-v4 consumer migration and adds `canary.target`, so
-`judgment.r3.target` becomes independently witnessable. P20–P25 may not
-reopen the schema.
+`judgment.r3.target` becomes independently witnessable. No successor may
+reopen the schema outside a newly carved migration.
 
 **A-128's "three structurally unreachable pairs" is CLOSED — merged, not
 merely carved (2026-08-08, P17 + A-141).** Work item 6 widened

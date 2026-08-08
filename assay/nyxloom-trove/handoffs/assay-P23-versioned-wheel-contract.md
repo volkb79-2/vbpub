@@ -4,13 +4,13 @@ id: assay-P23-versioned-wheel-contract
 project: assay
 title: "Every consumable assay wheel has a stable non-placeholder identity"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P22-exact-reexecution-isolation]
 session: resume:assay-v11-distribution
 scope:
-  touch: ["pyproject.toml", "src/assay/__init__.py", "assay.toml", "nyxloom-trove/nyxloom.toml", "tests/test_standalone.py", "tests/test_self_hosting.py", "README.md"]
+  touch: ["pyproject.toml", "src/assay/__init__.py", "assay.toml", "gate/distribution/**", "nyxloom-trove/nyxloom.toml", "tests/test_standalone.py", "tests/test_self_hosting.py", "tests/test_distribution.py", "README.md"]
   forbid: ["src/assay/cli.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas"]
 oracles:
   - id: O1
@@ -22,8 +22,8 @@ oracles:
     negative: "A placeholder or manually shadowed version lets changed source pass identity comparison"
     gate: tester-unified
   - id: O3
-    observable: "Consumer documentation pins an exact wheel version and sha256 and contains no monorepo-relative assay import"
-    negative: "A path-import example or unpinned install fails the distribution contract assertion"
+    observable: "The consumer recipe requires a release manifest containing exact wheel filename, version, and sha256, verifies bytes before install, and contains no monorepo-relative assay import"
+    negative: "A path import, absent/mismatched hash, filename/version mismatch, or unpinned install fails before assay executes"
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
@@ -34,7 +34,10 @@ mutexes: [merge-lane]
 
 # P23 — versioned wheel contract
 
-The claim to attack: **an assay artifact names the exact distributable assay build that produced it.**
+The claim to attack: **a verdict names a non-placeholder released Assay version,
+and the consumer's required manifest binds that version to the exact wheel
+bytes it installed.** The verdict does not pretend to contain a wheel hash it
+cannot derive after installation.
 
 ## Worktree and branch
 
@@ -50,13 +53,75 @@ on branch `feat/assay-P23-versioned-wheel-contract`.
 5. `/workspaces/vbpub/ciu/pyproject.toml`, `/workspaces/vbpub/cmru/pyproject.toml`, `/workspaces/vbpub/topos/pyproject.toml`, and their release-wheel conventions for estate-local prior art.
 6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` finding 10 and distribution recommendation.
 
+## Implementation packet (normative)
+
+### Release shapes and authoritative sources
+
+- Version authority is `setuptools_scm==10.0.5` using the existing
+  `assay-v<PEP440>` tag grammar. `src/assay/__init__.py` continues to read
+  `importlib.metadata`; it must not contain a second version literal.
+- The offline build wheelhouse contains exactly the build requirements named in
+  `[build-system].requires`. A missing requirement is a failed build, never an
+  implicit backend or a synthesized `0.0.0`.
+- The conformance fixture creates `release-root/assay`, commits with fixed Git
+  author/committer identity and timestamps, and tags the parent repository
+  `assay-v1.2.3`. Both builds use the same explicit `SOURCE_DATE_EPOCH` and
+  independent output/venv directories. A copied no-`.git` source exercises the
+  declared `fallback_version` separately; both paths must be non-placeholder.
+- A release manifest has this closed grammar; tests generate it from the wheel
+  just built and release automation persists those real values. No runtime
+  consumer invents them:
+
+```json
+{"schema_version":1,"filename":"assay-1.2.3-py3-none-any.whl",
+ "version":"1.2.3",
+ "sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
+```
+
+The all-zero hash demonstrates the syntax only and must fail byte verification;
+the positive fixture contains the actual calculated 64-character hash.
+
+The consumer verification helper accepts exactly `(wheel_path, manifest_path)`,
+rejects unknown/missing fields and basename mismatch, streams sha256, opens
+wheel `METADATA` to compare `Name: assay` and `Version`, and only then permits
+offline installation. It never searches a directory, selects the newest wheel,
+falls back to a sibling source tree, or imports before hash verification.
+
+### Required proof flow
+
+1. Build two clean tagged wheels from independent copies with the fixed epoch;
+   compare complete bytes and metadata.
+2. Install one into a fresh venv and prove metadata, `assay.__version__`, CLI
+   artifact `assay_version`, filename, and manifest version all equal `1.2.3`.
+3. Mutate tracked source without retagging. The build must either carry a
+   distinct SCM dirty/development identity or distinct bytes rejected by the
+   clean manifest; it may not present as the clean release.
+4. Build the copied no-VCS shape and assert the explicit fallback version; this
+   is a documented source-distribution fallback, not evidence for a tagged
+   release.
+
+| Corruption | Required failure |
+|---|---|
+| backend wheel absent | build fails offline before project metadata exists |
+| same tag plus dirty source | version or sha differs; clean manifest rejects |
+| sha/version/filename changed independently | verifier refuses before install |
+| sibling-source `PYTHONPATH` injection | isolation witness proves imported file remains in installed venv |
+| runtime dependency added | dependency-purity test fails |
+
+Traceability: work 1–4 -> build fixture/metadata -> O1/O2; work 5 plus manifest
+helper -> O3; work 6–7 -> installed artifact and controlled corruptions -> all
+oracles. The REPORT supplies exact wheel names/hashes, tests, and break counts.
+Shell organization and private helper language are free; version authority,
+manifest grammar, verification order, fixed build inputs, and no-source-import
+boundary are fixed.
+
 ## Work
 
 1. Make the real self-hosting build environment contain the exact build requirements declared in `pyproject.toml`, including `setuptools_scm==10.0.5`, without network access. Do not shadow the backend with a manual `__version__` or environment-only constant.
 2. Build from a source shape that exercises both tagged/SCM identity and the documented no-VCS fallback deliberately. A clean released wheel must never report `0.0.0`; wheel metadata, `importlib.metadata.version("assay")`, `assay.__version__`, and emitted `assay_version` must agree.
 3. Prove reproducibility with two independent offline builds from identical release input and fixed `SOURCE_DATE_EPOCH`, comparing wheel sha256. Prove a controlled source mutation cannot pass as that same clean release identity/artifact.
 4. Retain zero runtime dependencies. Build dependencies belong only to the build closure; the scratch installed environment must still contain assay plus stdlib and no leaked source tree.
-5. Document the consumer contract: publish/tagging is a controller release action; consuming gates install an exact assay wheel and verify its sha256; no `PYTHONPATH` or sibling-worktree import is supported distribution.
+5. Implement and document the packet's closed release manifest and verify-before-install consumer helper. Publish/tagging remains a controller release action; consuming gates supply an exact wheel and manifest; no `PYTHONPATH` or sibling-worktree import is supported distribution.
 6. Update self-hosting/standalone expected **v4** artifacts to assert a non-placeholder version while preserving their independent verifier and universal-PASS producer mutation. Do not retain a v3 compatibility writer or upgrade a historical artifact in place.
 7. Break backend availability, metadata/runtime/artifact agreement, reproducibility, mutation identity, dependency purity, hash pinning, and path-import prohibition separately; run the real gate and record exact A-067 counts.
 

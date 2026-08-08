@@ -4,7 +4,7 @@ id: assay-P24-real-python-project-qualification
 project: assay
 title: "An existing Python project obtains the same R1 answer from installed Assay"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P23-versioned-wheel-contract]
@@ -58,13 +58,108 @@ on branch `feat/assay-P24-real-python-project-qualification`.
 
 Use Assay's registered `tester-unified` gate only. Extend its existing command inside the same verified, uid-complete container after the installed-wheel/self-hosting step. Do not invoke Topos's outer Docker command and do not start an unplaced container. All Python wheels/dependencies come from the already-pinned offline image/closure.
 
+## Implementation packet (normative)
+
+### Qualification topology and fixed lane
+
+`gate/python/qualify_topos.py` owns the validation harness; production Assay
+code is forbidden. It records the exact vbpub input commit and extracts only
+that commit's tracked `topos/` subtree into a new disposable Git repository,
+still rooted as `repo/topos/...`. It then creates two deterministic commits:
+
+```text
+repo/
+  topos/src/topos/...               # real tracked package
+  topos/tests/...                   # real tracked suite
+  topos/tools/coverage_gate.py      # independent comparator
+  topos/src/topos/_assay_probe.py   # controlled delta only in HEAD
+  topos/tests/test_assay_probe.py   # imports real installed/project package
+  .assay/.gitignore                # tracked parent; ignores generated profile
+```
+
+The profile itself is absent from every commit; `.assay/.gitignore` contains
+`*` plus `!.gitignore`, so P20 can preflight a real tracked parent without the
+runtime output making the snapshot dirty. The probe source is a literal checked into `gate/python/`; its numbered manifest
+names one executed statement, one deliberately missing statement, one comment
+line, and one `pragma: no cover` line. The harness first asserts those literal
+line numbers against the seeded bytes, so an edited fixture cannot silently
+move the expectation.
+
+The lane is generated with no optional/defaulted fields:
+
+```toml
+schema_version = 1
+[lanes.topos-qualification]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "topos/tests", "-q",
+        "-n", "auto", "--cov=topos/src/topos", "--cov-branch",
+        "--cov-report=json:.assay/topos-coverage.json"]
+env = {PYTHONPATH = "topos/src:topos"}
+env_passthrough = []
+budget = "15m"
+allow_argv_append = false
+[lanes.topos-qualification.judge]
+language = "python"
+source_roots = ["topos/src/topos"]
+base = "<full seeded base OID>"
+fail_under = 100.0
+allow_excluded = true
+[lanes.topos-qualification.judge.coverage]
+format = "coverage.py-json"
+artifact = ".assay/topos-coverage.json"
+```
+
+The absolute interpreter is an image fact checked by the gate recipe, not an
+Assay fallback. `PYTHONPATH` exposes Topos only; a separate assertion proves
+the imported `assay` package and CLI live beneath P23's installed wheel venv.
+
+### Three independent witnesses
+
+1. Installed Assay emits the whole v4 artifact from the seeded commits and real
+   coverage file.
+2. The harness constructs a closed expected line manifest from its literal
+   probe bytes, Git OIDs, and declared lane. It never parses Assay output to
+   choose expected lines/status.
+3. The unmodified copied `topos/tools/coverage_gate.py` runs with
+   `--repo <repo> --base <base-oid> --coverage-json <profile> --source
+   topos/src/topos --fail-under 100` and its pure `evaluate` result is captured
+   separately.
+
+For executed/missing/comment and 0/0 cases, all three agree on covered,
+changed-executable, missing identities, and terminal class. Topos cannot report
+exclusion provenance: compare parity with Assay's `allow_excluded=true`, then
+run an **Assay-versus-hand-manifest** negative with `allow_excluded=false` and
+require `EXCLUDED_LINES`; do not falsely require Topos's older evaluator to
+express that fact. Dirty/base/profile/post-command integrity terminals are also
+Assay-versus-manifest checks, not invented Topos features.
+
+### Scenario matrix and traceability
+
+| Scenario | Assay | Topos comparator | Independent source |
+|---|---|---|---|
+| executed + comment delta | PASS | PASS | literal line manifest |
+| one missing statement | `UNCOVERED_LINES` | fail | literal line manifest |
+| excluded, allowed | PASS | PASS/line absent | coverage JSON + manifest |
+| excluded, forbidden | `EXCLUDED_LINES` | not compared | manifest only |
+| base=HEAD / missing or stale profile / dirty or post-run mutation | named non-PASS | not compared | seeded state + command ledger |
+| universal-PASS producer mutation | whole expected artifact differs | comparator/manifest remain honest | both independent witnesses |
+
+Work 1–3 -> harness/lane/expected artifact -> O1/O3; work 4–5 -> differential
+matrix -> O2/O4; work 6–7 -> provenance and controlled breaks -> all oracles.
+The REPORT records pinned input OID, wheel filename/version/hash, exact command,
+tree hashes, comparison table, tests, and break counts. Scratch naming and
+probe function names may vary; the topology, lane, three-way independence,
+policy comparison, and no-real-Topos-write rule may not.
+
 ## Work
 
 1. Materialize `/workspaces/vbpub/topos` tracked content into a disposable repository inside the gate and create a controlled two-commit delta containing independently enumerated executable, comment-only, covered, uncovered, excluded, and profile-missing cases. Preserve Topos's real package/test topology and dependency closure; do not reduce it to a copied hello-world module.
 2. Generate real coverage.py JSON by running Topos's real pytest suite (or the smallest pre-existing declared suite that still imports the actual package and exercises the controlled delta) through the exact installed-wheel Assay lane. No `PYTHONPATH` may expose Assay source; Topos source resolution is declared as part of the consumer command.
 3. Build the complete expected v4 artifact independently from the seeded commits, declared lane, and hand-calculated changed-line manifest. Compare the whole document except deliberately injected version/timestamps/OIDs, whose exact real values are asserted separately.
-4. Run the disposable copy of `topos/tools/coverage_gate.py` against the same base, HEAD, profile, source root, and floor. Compare line buckets and terminal class, translating presentation only. Neither tool's output may be used to construct the other's expectation.
-5. Exercise PASS, `UNCOVERED_LINES`, `EXCLUDED_LINES` under both policies, `EMPTY_COVERAGE`, dirty tree, base-is-HEAD, stale/missing output, and command-created repository mutation. Preserve Topos/shared-tree hashes across every terminal.
+4. Run the disposable copy of `topos/tools/coverage_gate.py` against the same base, HEAD, profile, source root, and floor. Compare the common coverage semantics exactly as fixed in the packet; separately prove Assay's richer exclusion policy against the hand manifest. Neither tool's output may be used to construct the other's expectation.
+5. Exercise PASS, `UNCOVERED_LINES`, allowed and forbidden exclusions under the packet's comparison rules, `EMPTY_COVERAGE`, dirty tree, base-is-HEAD, stale/missing output, and command-created repository mutation. Preserve Topos/shared-tree hashes across every terminal.
 6. Keep this a qualification, not a migration: add no `assay.toml` or dependency to real Topos, change no Topos gate, and make no claim that Topos consumes Assay. Record the exact wheel version/hash and the pinned Topos input revision used so a later Topos-owned adoption handoff can reproduce the comparison.
 7. Break the installed-wheel boundary, independent manifest, Topos comparator, source-root prefix, commit binding, profile freshness, and universal-PASS negative separately; run the real gate and record exact A-067 failure counts.
 

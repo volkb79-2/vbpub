@@ -4,10 +4,10 @@ id: assay-P28-real-go-canary-r3
 project: assay
 title: "A real Go pipeline catches each canary for its intended cause"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P22-exact-reexecution-isolation, assay-P26-real-go-r1-gate]
+depends_on: [assay-P22-exact-reexecution-isolation, assay-P27-real-go-mutation-r2]
 session: resume:assay-go-canary
 scope:
   touch: ["gate/go/**", "src/assay/canary.py", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
@@ -49,6 +49,77 @@ on branch `feat/assay-P28-real-go-canary-r3`.
 4. `src/assay/adapters/go.py` injectors and their tests. Confirm the appended `init` panic and never-called function are valid in the concrete package selected by the fixture.
 5. `tests/test_canary_python_pipeline.py` for cause-sensitive terminal cases, not Python-specific filesystem mechanics.
 6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` P24 carve.
+
+## Implementation packet (normative)
+
+### Fixed transforms and generic runner contract
+
+Do not invent Go canary syntax. Preserve these byte-exact trailing appends
+(normalizing the original to one trailing newline first, but never reformatting
+the original):
+
+```go
+func init() {
+	panic("assay-canary-import-break")
+}
+```
+
+```go
+func _assayCanaryUnreached(value int) int {
+	doubled := value * 2 // assay-canary: executed by no test
+	return doubled
+}
+```
+
+P22's one language-generic isolated canary entry point accepts the immutable
+command plan, snapshot spec, resolved adapter, declared project-relative target,
+mechanism, R1 policy, and shared deadline. This package calls it with the P27
+resolved `GoAdapter`; it does not create `run_go_*` orchestration. The returned
+v4 `CanaryResult.target` is exactly the declaration and must equal
+`judgment.r3.target`. After proof, the existing Go registry entry preserves R1
+and R2 and adds only R3: `{"R1","R2","R3"}`.
+
+Both real mechanisms use this state machine:
+
+1. Materialize a fresh control snapshot at the resolved HEAD, ensure the
+   profile is absent, and run the exact plan. Require R0 PASS, a fresh profile,
+   and R1 PASS before transforming anything.
+2. Apply exactly one append to the declared repo/project target bytes. Verify
+   changed bytes are the suffix only and construct P22's neutral transform
+   commit through Git plumbing.
+3. Materialize an independent transform snapshot, again with no profile, and
+   run the same argv/env/cwd with remaining lane budget.
+4. Judge the terminal using the table below. Never reuse the control profile,
+   accept an arbitrary non-PASS, or run R1 after a command failure produced no
+   artifact.
+
+| Mechanism/state | Required observation | R3 judgment |
+|---|---|---|
+| known-good control | R0 PASS + fresh R1 PASS | eligible to transform |
+| `import-break` | R0 `FAIL/COMMAND_FAILED`; profile may be absent | canary PASS |
+| `uncovered-line` | R0 PASS then R1 `FAIL/UNCOVERED_LINES` naming appended executable lines | canary PASS |
+| transform passes | R0/R1 PASS | `FAIL/CANARY_SURVIVED` |
+| fails for another cause | exact observed cause differs | cause-sensitive non-PASS |
+| broken control / malformed or no-op transform / missing tool/profile / timeout | retain distinct existing terminal | never canary PASS |
+
+### Prepared real attacks and traceability
+
+The tiny P26 module has one target package definitely imported by its tests and
+one package not imported by the selected test. Run `import-break` against both:
+the first yields `COMMAND_FAILED`; the second is the required real wrong-cause
+attack (R0 can pass and R1 catches added uncovered lines). Run uncovered-line
+against the imported package. Repeat both successful mechanisms on a selected
+tested package in the disposable srdm copy. Assertions compare process ledgers,
+fresh artifact inode/content, exact appended line identities, complete v4
+artifact, and pre/post consumer hashes.
+
+Work 1–3 -> generic runner/transforms -> O1/O2; work 4–5 -> state machine and
+identity/freshness -> O2/O3; work 6–7 -> unit plus real attack matrix -> all
+oracles. The REPORT records target/package rationale, exact ledgers/artifacts,
+tests, and break counts. Fixture package choice may change if the pinned tree
+does, but it must be proven imported/covered first; snippets, state flow,
+cause table, generic entry point, v4 target binding, and preserved R1/R2/R3
+registry are fixed.
 
 ## Work
 

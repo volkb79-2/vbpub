@@ -4,7 +4,7 @@ id: assay-P22-exact-reexecution-isolation
 project: assay
 title: "Every rigor level reexecutes one exact command against one exact commit"
 tier: implement-2
-input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
+input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P21-verdict-v4-evidence-contract]
@@ -22,8 +22,8 @@ oracles:
     negative: "A passing command that reads ../shared fails only in mutant copies and awards a killed mutant/PASS R2"
     gate: tester-unified
   - id: O3
-    observable: "Baseline, every mutant, canary control, and canary transform start from fresh committed-object snapshots with no inherited coverage output; contained symlinks are preserved and absolute/escaping/special entries are refused before execution"
-    negative: "A control/transform that writes no profile reads the baseline profile copied into scratch, or an external symlink is dereferenced into the snapshot"
+    observable: "Baseline, every mutant, canary control, and canary transform start from fresh committed-object snapshots with no inherited coverage output; contained symlinks are preserved, absolute/escaping symlinks and unsupported Git modes are refused, and untracked special files are neither copied nor consulted"
+    negative: "A control/transform that writes no profile reads the baseline profile copied into scratch, an external symlink is dereferenced, or an ignored FIFO from the consumer tree appears in the snapshot"
     gate: tester-unified
   - id: O4
     observable: "R0 is required in every lane, uncovered-line R3 also requires R1, max_mutants bounds submissions, and one lane budget covers snapshot/evaluation plus all repeated subprocesses"
@@ -54,12 +54,127 @@ on branch `feat/assay-P22-exact-reexecution-isolation`.
 5. `src/assay/config.py`'s rigor validation. Apply A-154 at load time so an illegal lane never reaches execution or verdict construction.
 6. `/workspaces/vbpub/shared-ramdisk-depot-manager` only to exercise the repository/project nesting and real Go file topology in tests; this package does not run Go or edit srdm.
 
+## Implementation packet (normative)
+
+### Interfaces and object ownership
+
+`runner.py` extends the existing immutable `CommandPlan`; do not add a second
+partial plan. Besides its existing argv/env fields it owns the declared budget,
+the repo-top-relative project working directory, and the captured passthrough
+values. `resolve_command_plan` is called once. Baseline, mutation, canary
+control, and canary transform accept that same plan; their process ledgers must
+compare equal for argv and environment.
+
+`src/assay/isolation.py` owns this boundary (names may be private only where
+shown):
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class SnapshotLimits:
+    max_entries: int = 100_000
+    max_path_bytes: int = 4_096
+    max_blob_bytes: int = 64 * 1024 * 1024
+    max_total_bytes: int = 1024 * 1024 * 1024
+
+@dataclass(frozen=True, kw_only=True)
+class SnapshotSpec:
+    repo_top: Path
+    commit: str                 # full resolved OID
+    project_prefix: PurePosixPath
+    limits: SnapshotLimits
+
+@dataclass(frozen=True, kw_only=True)
+class Snapshot:
+    root: Path
+    project_root: Path          # root / project_prefix
+    commit: str
+
+@contextmanager
+def materialize_snapshot(spec: SnapshotSpec) -> Iterator[Snapshot]: ...
+```
+
+The defaults above are product limits, not machine-derived suggestions. Limit
+failure is the P21 terminal
+`BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED`; there is no truncation. A test may
+inject smaller `SnapshotLimits` but production may not derive larger values
+from RAM, CPU, filesystem, or repository size.
+
+### Snapshot construction (one required solution)
+
+1. Through P20's sanitized Git boundary, resolve repo top, common object
+   directory, full HEAD/base, and `project_prefix = project_root.relative_to(
+   repo_top)`. Refuse a non-descendant; never guess `.`.
+2. Enumerate the full commit using NUL-delimited `ls-tree -rz --full-tree`.
+   Validate every repo-relative byte path before creating anything: no empty,
+   absolute, `.`/`..`, NUL, duplicate/prefix collision, overlong path, excessive
+   entry count, or unsupported mode. Accept only regular `100644`/`100755` and
+   symlink `120000`; reject gitlinks and all other modes.
+3. Create a fresh private Git repository under `Snapshot.root`. Point its
+   object alternates file at the already-resolved source object directory,
+   bind a private ref/HEAD to the full commit, and materialize each accepted
+   blob with sanitized `cat-file --batch`. Do **not** call checkout, clone,
+   archive, worktree, filters, hooks, or consumer commands. Enforce per-blob and
+   cumulative byte limits before writing.
+4. A symlink blob is its link text. Create it only when the target is relative
+   and its normalized resolution remains beneath snapshot root; do not
+   dereference it. Regular files are newly written in the snapshot, never
+   hardlinked. Preserve only executable versus non-executable mode.
+5. For a canary transform, use a private temporary Git index with `read-tree`,
+   `hash-object`, `update-index --cacheinfo`, `write-tree`, and `commit-tree -p`
+   under fixed neutral author/committer identity and timestamp. Then
+   materialize a new snapshot of that transform OID. No working-tree commit or
+   consumer config participates.
+
+This preserves:
+
+```text
+consumer repo/apps/project + repo/shared/input
+                    | same prefix and tracked bytes
+snapshot root/apps/project + snapshot root/shared/input
+```
+
+The declared coverage artifact is absent because untracked/ignored bytes are
+never materialized. P20's reservation/freshness protocol still runs for each
+baseline/control/transform command.
+
+### Execution state machine
+
+1. Validate rigor: first entry is `R0`; `uncovered-line` R3 also contains R1.
+2. Capture one `CommandPlan`, full commit identities, and one injected monotonic
+   deadline before snapshot work.
+3. Materialize baseline; run the plan at `snapshot.project_root`; consume fresh
+   coverage; retain its exact `CommandResult` for artifact assembly.
+4. If baseline prerequisites fail, emit the corresponding complete artifact
+   and start no repeated work.
+5. For each R2/R3 unit, materialize independently and call the same executor
+   with only `remaining = deadline - now`. If `remaining <= 0`, do not launch
+   the next unit; emit `LANE_TIMEOUT` with no partial credit.
+
+| Attack/state | Observable required |
+|---|---|
+| appended argv + passthrough collision + nested project | every ledger entry equals baseline plan; sibling input visible |
+| stale ignored coverage + command writes none | no measurement, never copied-profile PASS |
+| external/absolute symlink, gitlink, limit+1 | refusal before a consumer command |
+| ignored consumer FIFO/socket/device | absent from snapshot; never opened or copied |
+| R2-only or R3-uncovered without R1 | `BAD_LANE_CONFIG` at load |
+| deadline expires between mutants | no next submission; one lane-level budget terminal |
+
+### Traceability and degrees of freedom
+
+Work 1–2 -> plan/config -> O1/O4 -> combined plan ledger and invalid-rigor
+fixtures; work 3–6 -> `isolation.py` -> O2/O3 -> nested repository, stale
+profile, symlink/mode matrix; work 7 -> shared deadline -> O4 -> injected-clock
+submission ledger. The REPORT supplies actual tests and controlled-break
+counts. Temporary directory naming, private parsing helpers, and equivalent
+batched blob reads are free; the public objects, limits, plumbing-only design,
+topology, fresh-per-unit rule, and state machine are fixed.
+
 ## Work
 
 1. Introduce a frozen effective-command plan resolved exactly once from the lane plus caller inputs. It contains declared/appended/effective argv, declared/effective env (including captured allowlisted passthrough values), budget/deadline, and project working-directory identity. Artifact assembly and every process invocation consume that same object; no R2/R3 path may reconstruct a smaller plan from `Lane`.
 2. Require R0 in every lane at config load. Preserve independent R1/R2/R3 selection otherwise. Additionally require R1 when R3's mechanism is `uncovered-line`, because its expected cause is otherwise unproducible. Update examples and complete config diagnostics.
 3. Replace working-tree `copytree` isolation with one shared snapshot mechanism that materializes the resolved commit's tracked repository objects under a fresh root, preserving the project's repo-relative prefix and all tracked siblings. It must not execute consumer hooks, clean/smudge filters, external diff, or checkout helpers. Do not copy ignored/untracked files or infer an include list.
-4. Preserve contained relative symlinks as symlinks. Reject absolute or repository-escaping symlinks, devices, FIFOs, sockets, unsupported Git entry modes, path collisions, and archive traversal before any command. Validate paths/entry counts/bytes under fixed documented safety limits and render P21's truthful isolation-limit terminal; never truncate.
+4. Preserve contained relative symlinks as symlinks. Reject absolute or repository-escaping symlinks, unsupported Git entry modes, path collisions, and traversal before any command. Git cannot encode devices, FIFOs, or sockets as tracked tree entries; prove ignored/untracked special files in the consumer tree are absent from the snapshot rather than pretending to validate or copy them. Validate paths/entry counts/bytes under the packet's fixed limits and render P21's truthful isolation-limit terminal; never truncate.
 5. Run the initial R0 command inside a fresh committed snapshot, then use its exact result and plan for R1/R2 assembly. Every mutant starts from another fresh snapshot and changes one target by atomic replacement, never a shared hardlink/inode. The consumer checkout is read-only throughout.
 6. Start canary control and transform from two independent fresh snapshots. Ensure the declared coverage artifact is absent before each command and newly produced afterward. Build the transform commit from exact snapshot bytes with sanitized Git plumbing, neutral fixed identity, and no hooks/filters; retain the real base history needed for diff evaluation.
 7. Make `lane.budget` one end-to-end deadline covering snapshot construction, baseline, mutation collection/execution, canary control/transform, and evaluation. Pass only remaining budget to a child command. Stop before starting the next unit when exhausted; never award partial mutation/canary credit. Use P21's required `max_mutants` before submission.
