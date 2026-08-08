@@ -279,6 +279,10 @@ which only resolves correctly inside the gate image (A-069/A-124).
 exactly as ruled — and worth recording, because it means the gate cannot be
 run against a working tree, only against a commit.
 
+Re-run a second time, independently, directly against `main` after the merge
+(the project's own twice-per-package discipline): `tester-unified: PASS (exit
+0)`, commit `d1e1f258`.
+
 ## What could not be honored as written
 
 - **Work item 6's "no-op" artifact.** Not producible through the installed CLI
