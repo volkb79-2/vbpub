@@ -9,12 +9,14 @@
 > in code every package's own review had already passed. **Read that review
 > file before trusting anything else in this document as current** — the
 > P15–P25 repair series is carved directly against its findings and is now
-> being implemented, **P15, P16 and P17 merged, P18 next** (see "Where
+> being implemented, **P15–P18 merged, P19 next** (see "Where
 > things stand" below for live status). Sol finding 1 — "declared R1–R3
-> lanes cannot run" — is now HALF closed: a declared Python **R1** lane
-> runs and is judged end to end through the installed console script.
-> R2/R3 are still unreachable, but they are now refused *honestly*
-> (before the command runs, as a complete artifact) rather than after it.
+> lanes cannot run" — is now TWO THIRDS closed: declared Python **R1 and
+> R2** lanes both run and are judged end to end through the installed
+> console script, R2 executing real changed-line mutants under the lane's
+> own declared policy. R3 is still unreachable, but it is refused
+> *honestly* (before the command runs, as a complete artifact) rather than
+> after it.
 > If you are picking this project up: read the
 > review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
 > (the P14-era final-state brief — still accurate for what P00–P14 built,
@@ -23,10 +25,10 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P17** — the complete P00–P14 series, plus
-the first three packages of the P15–P25 repair series. Gate green at
-**1719 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
-(2839 stmts / 1138 branches) — counts measured INSIDE `tester-unified:
+**Merged on `main`, P00 through P18** — the complete P00–P14 series, plus
+the first four packages of the P15–P25 repair series. Gate green at
+**1781 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
+(2941 stmts / 1188 branches) — counts measured INSIDE `tester-unified:
 local` itself, not in the devcontainer, because the gate's own `argv`
 reports only an exit code and a cockpit venv carries different pins. Run
 through the REAL self-hosting mechanism P14
@@ -192,7 +194,44 @@ far, and it has never once come back clean.
   files confirmed untouched by empty diff. **No P17 LOG was written** —
   its deferral notes and mutation counts live in the implementation
   commit's own body instead, which is better than nothing and still not
-  where A-072 says a ruling belongs.
+  where A-072 says a ruling belongs. **Still not written at the P18 merge,
+  and deliberately not reconstructed then**: writing a package's record
+  after the fact from its own diff would produce a plausible artifact
+  nobody measured, which is the precise failure this project exists to
+  refuse. What P17 knew lives in its four commit bodies, in A-139–A-144,
+  and in the "Carried in from P17" sections of the P18/P19 handoffs.
+- **P18** (Python R2 CLI pipeline — sol finding 1 now two thirds closed):
+  `assay run` executes real changed-line mutation for a declared Python R2
+  lane. `judge.mutation` stops being an opaque passthrough and becomes a
+  validated closed table (positive integer `jobs` — never machine-derived,
+  A-082/A-122 — and a non-empty, duplicate-free, order-preserving
+  `operators` list cross-checked against `MUTATION_OPERATORS` at LOAD
+  time). `run_mutation`'s own internal baseline is GONE: the baseline is
+  now the exact `CommandResult` R0 already produced, so the lane's command
+  runs at most once per invocation (sol finding 11) and `assay verify`'s R2
+  baseline proxy becomes an identity (A-137). New
+  `resolve_mutation_targets` builds R2's candidate list from the SAME
+  resolved diff R1 measures against; new operator filtering keeps only the
+  declared subset before anything is submitted.
+  **Controller review found four defects (A-145–A-148) plus two oracle
+  gaps, on a branch that arrived gate-green at 100% coverage.** The worst:
+  `assay run` CRASHED with no artifact — after running the lane's command —
+  for any project living in a SUBDIRECTORY of its git repository, which is
+  assay's own layout inside `vbpub`. A mutation target's path is
+  repo-top-relative while each mutant's scratch tree is a copy of the
+  PROJECT root, and the two had never had to agree because every fixture in
+  the suite makes them the same directory (A-145). Work item 7 and O4 — an
+  installed-wheel R2 fixture with complete artifacts and shared-tree hashes
+  — were skipped entirely and not declared skipped (A-147); five of O4's
+  six shapes now exist, and the sixth is recorded in the suite as
+  unreachable, with the argument. `--help` still under-declared the build's
+  capability (A-146). And `judgment.r2` was populated while tied to nothing,
+  with no package in P19–P25 able to touch `verdict.py`/`verify.py` to fix
+  it — a deferral with no executor, found by reading downstream scopes
+  rather than the diff (A-148). Work item 8's own mutation set had never
+  been run; running it found two more properties with no discriminating
+  oracle. A LOG exists this time:
+  `nyxloom-trove/reports/assay-P18-r2-cli-pipeline-LOG.md`.
 
 Key commits: `d9839e81` (P17 controller repairs, A-139–A-143),
 `e5b81d4c` (P17 implementation), `340d9633` (P16 merge), `50110247` (P16 controller repairs),
@@ -482,7 +521,19 @@ review it.
 - `/opt/tester-venv` exists only inside the container; there is no
   `setuptools_scm` in it, so built wheels version as `0.0.0` (A-069) —
   this is now load-bearing, not incidental: `assay verify`/the self-hosting
-  proof both compare against this real, documented value.
+  proof both compare against this real, documented value. **The visible
+  consequence: `tests/test_standalone.py::test_a_real_pass_matches_the_
+  documented_r0_pass_shape` FAILS in the devcontainer and only there**
+  (`0.1.0` vs `0.0.0`), because `setuptools_scm` IS importable here. It
+  passes in the gate image. Do not read a bare `pytest` run's single red as
+  a regression, and do not "fix" it.
+- **A project root is not always its repository top, and assay's own is
+  not** (A-145). `git diff` paths are repo-top-relative; source roots,
+  coverage-artifact paths and each mutant's scratch copy are
+  project-root-relative. Every boundary that crosses between the two must
+  say which spelling it speaks — R2 shipped a crash for exactly this and
+  no fixture could see it, because every fixture in the suite makes the two
+  the same directory.
 - There is **no Go toolchain** and none is needed — Go fixtures ship
   pre-generated (A-042).
 - A hook blocks some scripted file edits. Use the editor, not `sed -i` or
