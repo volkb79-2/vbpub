@@ -829,6 +829,331 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     assert _tracked_file_hashes(git_repo.path) == before
 
 
+# --- P19 (work item 6 / O2-O3) adds R3: an isolated canary, through the ------
+# installed wheel, that copies the consumer's own repository into scratch
+# state and proves it never touches the real one.
+#
+# Work item 6 names six shapes: PASS, broken control, survivor, wrong
+# cause, no-op, and malformed configuration. Two of the six are NOT
+# producible through a real installed lane with the REAL PythonAdapter,
+# for the identical class of reason O4's own CRASHED-mutant shape is not
+# (P18's own LOG, "What could not be honored as written"): both
+# `_inject_import_break` and `_inject_uncovered_line` ALWAYS change the
+# text they are given (an unconditional insert/append, never a
+# conditional one), so a genuine "no-op" transform cannot happen through
+# them -- the existing unit-level proof
+# (`test_canary_python_pipeline.py::test_a_transform_that_produces_no_
+# change_is_inconclusive`) needs a deliberately no-op-returning FAKE
+# adapter subclass to exercise it at all, which the installed CLI has no
+# way to inject (`cli._built_in_registry` resolves the one real
+# `PythonAdapter`, always). "Wrong cause" has the identical shape one
+# level over: the mechanism/expected-reason pairing is fixed
+# (`import-break` -> `COMMAND_FAILED` via a genuine import failure,
+# `uncovered-line` -> `UNCOVERED_LINES` via genuine R1 coverage
+# evaluation), so producing a DIFFERENT real cause needs a deliberately
+# MISLABELED adapter
+# (`test_canary_python_pipeline.py::test_a_mechanism_that_fails_for_the_
+# wrong_reason_survives`'s own `_MislabeledAdapter`) -- again unreachable
+# through the real, un-mocked registry the installed CLI actually uses.
+# Recorded here rather than silently omitted (A-072/A-147).
+
+
+def _r3_lane_toml(*, script: str, mechanism: str, target: str) -> str:
+    return (
+        "schema_version = 1\n\n"
+        "[lanes.package]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R3"]\n'
+        'enforcement = "gate"\n'
+        f"argv = {json.dumps(['/bin/sh', '-c', script])}\n"
+        'env = { PATH = "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE = "1" }\n'
+        "env_passthrough = []\n"
+        'budget = "2m"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.package.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["pkg"]\n\n'
+        "[lanes.package.judge.canary]\n"
+        f'mechanism = "{mechanism}"\n'
+        f'target = "{target}"\n'
+    )
+
+
+_PKG_MOD = "def f():\n    return 1\n"
+_PKG_TEST_PASS = "from pkg.mod import f\n\n\ndef test_f():\n    assert f() == 1\n"
+_PKG_TEST_BROKEN = "from pkg.mod import f\n\n\ndef test_f():\n    assert f() == 'WRONG'\n"
+
+_IMPORT_BREAK_DESCRIPTION = (
+    'inserted `raise AssertionError("assay-canary-import-break")` at line 1'
+)
+_UNCOVERED_LINE_DESCRIPTION = (
+    "appended never-called `def _assay_canary_unreached` "
+    "(2 uncovered lines) at end of file"
+)
+
+
+def _seed_pkg(git_repo: GitRepo, *, test_body: str = _PKG_TEST_PASS) -> None:
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", _PKG_MOD)
+    git_repo.write("tests/test_mod.py", test_body)
+    git_repo.commit_all("add pkg")
+
+
+def _expected_r3_artifact(
+    *,
+    git_repo: GitRepo,
+    script: str,
+    mechanism: str,
+    target: str,
+    outcome: str,
+    reason_code: str | None,
+    exit_code: int,
+    r3_claim: dict,
+    r0_claim: dict | None = None,
+) -> dict:
+    """The COMPLETE expected document -- the established form this whole
+    module already uses for R1/R2 (``_expected_r2_artifact``'s own
+    docstring)."""
+    argv = ["/bin/sh", "-c", script]
+    env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+    document = {
+        "schema_version": 3,
+        "lane": "package",
+        "commit": git_repo.head(),
+        "outcome": outcome,
+        "exit_code": exit_code,
+        "declared_rigor": ["R0", "R3"],
+        "declared_evidence": [],
+        "argv_declared": argv,
+        "argv_appended": [],
+        "argv_effective": argv,
+        "argv_modified": False,
+        "env_declared": env,
+        "env_effective": env,
+        "scope": "S1",
+        "enforcement": "gate",
+        "judgment": {"r3": {"mechanism": mechanism, "target": target}},
+        "claims": [
+            r0_claim
+            or {
+                "rigor": "R0",
+                "source": "computed",
+                "status": "PASS",
+                "verified_by_assay": True,
+            },
+            r3_claim,
+        ],
+        "evidence": [],
+    }
+    if reason_code is not None:
+        document["reason_code"] = reason_code
+    return document
+
+
+def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O2/O3's PASS shape: a genuine control run, a genuine import-break
+    transform committed into an independently-owned scratch COPY, and a
+    genuine transformed run that fails for EXACTLY the expected reason --
+    through the installed console script, with the consumer's own
+    repository (HEAD, index, and every tracked file's bytes) unchanged."""
+    _seed_pkg(git_repo)
+    script = f"{sys.executable} -m pytest tests -q"
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r3_lane_toml(script=script, mechanism="import-break", target="pkg/mod.py"),
+    )
+    git_repo.commit_all("add assay.toml")
+    head_before = git_repo.head()
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 0, proc.stderr
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == [], "the real R3 artifact is not schema-valid"
+    _assert_complete(
+        real,
+        _expected_r3_artifact(
+            git_repo=git_repo,
+            script=script,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            outcome="PASS",
+            reason_code=None,
+            exit_code=0,
+            r3_claim={
+                "rigor": "R3",
+                "source": "computed",
+                "status": "PASS",
+                "verified_by_assay": True,
+                "canary": {
+                    "mechanism": "import-break",
+                    "description": _IMPORT_BREAK_DESCRIPTION,
+                    "control_outcome": "PASS",
+                    "transformed_outcome": "FAIL",
+                    "expected_reason_code": "COMMAND_FAILED",
+                    "observed_reason_code": "COMMAND_FAILED",
+                },
+            },
+        ),
+    )
+    # O2: the scratch copy's own control/transform commits never reach the
+    # shared, tracked source tree -- git-aware, so a real pytest run's own
+    # self-ignoring cache directories (`.pytest_cache/`, `.hypothesis/`,
+    # each carrying its own `.gitignore`) are correctly not mistaken for
+    # pollution the way a raw filesystem walk would be.
+    assert git_repo.head() == head_before
+    assert git_repo.git("status", "--porcelain") == ""
+
+
+def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O1's own negative, made concrete: the KNOWN-GOOD control is not
+    actually good (a real, genuine assertion failure) -- so nothing about
+    the transform's own cause can be concluded, and the R3 CLAIM itself is
+    INCONCLUSIVE, never a silent PASS. The transformed half still genuinely
+    runs (the real orchestration never short-circuits on a broken control
+    -- only a malformed/no-op transform does), and fails too, just not for
+    a reason this claim's own status depends on.
+
+    The OVERALL verdict is FAIL, not INCONCLUSIVE: R3's own control is a
+    copy of the SAME committed state R0 itself runs against, so a broken
+    control means R0's own real execution against the real repository
+    fails too -- correctly dominating the rollup (FAIL outranks
+    INCONCLUSIVE), with R3's own finding still fully recorded underneath
+    it rather than replacing it.
+    """
+    _seed_pkg(git_repo, test_body=_PKG_TEST_BROKEN)
+    script = f"{sys.executable} -m pytest tests -q"
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r3_lane_toml(script=script, mechanism="import-break", target="pkg/mod.py"),
+    )
+    git_repo.commit_all("add assay.toml")
+    head_before = git_repo.head()
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 1, proc.stderr  # Outcome.FAIL.exit_code
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == []
+    _assert_complete(
+        real,
+        _expected_r3_artifact(
+            git_repo=git_repo,
+            script=script,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            outcome="FAIL",
+            reason_code="COMMAND_FAILED",
+            exit_code=1,
+            r0_claim={
+                "rigor": "R0",
+                "source": "computed",
+                "status": "FAIL",
+                "verified_by_assay": True,
+                "reason_code": "COMMAND_FAILED",
+            },
+            r3_claim={
+                "rigor": "R3",
+                "source": "computed",
+                "status": "INCONCLUSIVE",
+                "verified_by_assay": True,
+                "reason_code": "CANARY_INCONCLUSIVE",
+                "canary": {
+                    "mechanism": "import-break",
+                    "description": _IMPORT_BREAK_DESCRIPTION,
+                    "control_outcome": "FAIL",
+                    "transformed_outcome": "FAIL",
+                    "expected_reason_code": "COMMAND_FAILED",
+                    "observed_reason_code": "COMMAND_FAILED",
+                },
+            },
+        ),
+    )
+    assert git_repo.head() == head_before
+    assert git_repo.git("status", "--porcelain") == ""
+
+
+def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_wheel(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O1's negative, the concrete case its own text names: an R3-only
+    lane's command never inspects changed-line coverage at all, so it
+    sails right past a valid, test-neutral, uncovered addition -- CANARY
+    survived via an unexpected PASS, never accepted as success."""
+    _seed_pkg(git_repo)
+    script = f"{sys.executable} -m pytest tests -q"
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r3_lane_toml(script=script, mechanism="uncovered-line", target="pkg/mod.py"),
+    )
+    git_repo.commit_all("add assay.toml")
+    head_before = git_repo.head()
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 1, proc.stderr  # Outcome.FAIL.exit_code
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == []
+    _assert_complete(
+        real,
+        _expected_r3_artifact(
+            git_repo=git_repo,
+            script=script,
+            mechanism="uncovered-line",
+            target="pkg/mod.py",
+            outcome="FAIL",
+            reason_code="CANARY_SURVIVED",
+            exit_code=1,
+            r3_claim={
+                "rigor": "R3",
+                "source": "computed",
+                "status": "FAIL",
+                "verified_by_assay": True,
+                "reason_code": "CANARY_SURVIVED",
+                "canary": {
+                    "mechanism": "uncovered-line",
+                    "description": _UNCOVERED_LINE_DESCRIPTION,
+                    "control_outcome": "PASS",
+                    "transformed_outcome": "PASS",
+                    "expected_reason_code": "UNCOVERED_LINES",
+                },
+            },
+        ),
+    )
+    assert git_repo.head() == head_before
+    assert git_repo.git("status", "--porcelain") == ""
+
+
+def test_a_malformed_canary_configuration_renders_no_artifact_through_the_wheel(
+    standalone: Standalone, git_repo: GitRepo
+):
+    """Work item 6's sixth shape: a lane-config failure, refused before
+    ``HEAD`` is even resolved -- there is no commit to attach a verdict
+    to, so this renders no artifact at all (never an ``R3`` claim with a
+    manufactured status), matching the "Carried in from P16" section's
+    own ruling in the P19 handoff."""
+    _seed_pkg(git_repo)
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r3_lane_toml(
+            script=f"{sys.executable} -m pytest tests -q",
+            mechanism="not-a-real-mechanism",
+            target="pkg/mod.py",
+        ),
+    )
+    git_repo.commit_all("add assay.toml")
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 2, proc.stderr  # Outcome.ERROR.exit_code
+    assert proc.stdout == ""
+    assert "judge.canary.mechanism" in proc.stderr
+
+
 def test_the_installed_wheel_ships_and_exposes_the_go_adapter(standalone: Standalone):
     """A-126's Go half: ADAPTER-LEVEL only. ``GoAdapter`` is imported from
     INSIDE the scratch venv (proving the wheel actually ships

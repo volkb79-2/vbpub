@@ -23,7 +23,7 @@ import tomllib
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 
-from assay.config import JUDGE_FIELDS_BY_RIGOR, load_lane_file
+from assay.config import CanaryConfig, JUDGE_FIELDS_BY_RIGOR, load_lane_file
 from assay.errors import LaneConfigError
 
 #: O2's six, spelled out rather than imported, so a change to the source of
@@ -56,7 +56,8 @@ operators = ["compare-swap", "boolop-swap"]
 
 CANARY_TABLE = """
 [lanes.package.judge.canary]
-mode = "import-break"
+mechanism = "import-break"
+target = "src/mod.py"
 """
 
 # Exactly what R2 requires and nothing more (A-062): language + source_roots
@@ -138,6 +139,7 @@ def test_r2_additionally_requires_mutation(project: Project):
 
 
 def test_r3_additionally_requires_canary(project: Project):
+    project.file("src/mod.py", "x = 1\n")
     without = project.write(
         _lane_with(["R0", "R1", "R3"], JUDGE_TABLE), name="without.toml"
     )
@@ -149,11 +151,12 @@ def test_r3_additionally_requires_canary(project: Project):
     )
     judge = load_lane_file(with_it).lane("package").judge
     assert judge is not None
-    assert dict(judge.canary or {}) == {"mode": "import-break"}
+    assert judge.canary == CanaryConfig(mechanism="import-break", target="src/mod.py")
     assert judge.mutation is None
 
 
 def test_full_ladder_lane_loads_with_every_table(project: Project):
+    project.file("src/mod.py", "x = 1\n")
     path = project.write(
         _lane_with(["R0", "R1", "R2", "R3"], JUDGE_TABLE, MUTATION_TABLE, CANARY_TABLE)
     )
@@ -249,8 +252,9 @@ def test_a_populated_judge_table_on_an_r0_lane_is_refused(project: Project):
 def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
     project: Project,
 ):
-    # The opaque payloads are P10's and P08's, so the proof that this loader
-    # does not touch them is that they come back byte-for-byte.
+    # The proof that this loader does not silently invent or drop a field
+    # is that the closed mutation/canary tables come back byte-for-byte.
+    project.file("src/mod.py", "x = 1\n")
     text = _lane_with(
         ["R0", "R1", "R2", "R3"], JUDGE_TABLE, MUTATION_TABLE, CANARY_TABLE
     )
@@ -261,7 +265,10 @@ def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
         "jobs": 4,
         "operators": ["compare-swap", "boolop-swap"],
     }
-    assert declared["judge"]["canary"] == {"mode": "import-break"}
+    assert declared["judge"]["canary"] == {
+        "mechanism": "import-break",
+        "target": "src/mod.py",
+    }
 
 
 def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
@@ -327,9 +334,9 @@ def test_mutation_that_is_not_a_table_is_rejected(project: Project):
 
 
 def test_canary_that_is_not_a_table_is_rejected(project: Project):
-    # The identical shape one field over, for `_as_opaque_table`'s own
-    # remaining caller now that `mutation` has its own dedicated loader
-    # (P18) -- declared at R3, so `canary` is REQUIRED and the type check,
+    # The identical shape one field over from `test_mutation_that_is_not_a_
+    # table_is_rejected`, now that `canary` has its own dedicated loader
+    # (P19) -- declared at R3, so `canary` is REQUIRED and the type check,
     # not the surplus guard, is what rejects it.
     r3_judge = """
 [lanes.package.judge]

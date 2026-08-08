@@ -33,7 +33,7 @@ from typing import Mapping
 import pytest
 from jsonschema import Draft202012Validator
 
-from assay.config import CoverageConfig, JudgeConfig, Lane, MutationConfig
+from assay.config import CanaryConfig, CoverageConfig, JudgeConfig, Lane, MutationConfig
 
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
@@ -558,6 +558,32 @@ def make_r2_judge(
         mutation=mutation,
         canary=None,
         base=base,
+    )
+
+
+def make_r3_judge(
+    *,
+    language: str = "zzz",
+    source_root_paths: tuple[Path, ...],
+    canary: CanaryConfig,
+) -> JudgeConfig:
+    """A fully-resolved R3-ONLY ``JudgeConfig`` (P19) -- language,
+    source_roots and canary, and nothing else: R1's coverage-floor fields
+    and R2's mutation policy stay ``None``, matching a real ``assay.toml``
+    lane that declares ``rigor = ["R0", "R3"]`` without R1/R2 alongside it
+    (A-062: a real loader would refuse ``fail_under``/``mutation`` here as
+    inert config for an undeclared level). ``base`` stays ``None`` too --
+    R3 alone does not require it (``JUDGE_FIELDS_BY_RIGOR["R3"]``)."""
+    return JudgeConfig(
+        language=language,
+        source_roots=tuple(str(p) for p in source_root_paths),
+        source_root_paths=source_root_paths,
+        fail_under=None,
+        allow_excluded=None,
+        coverage=None,
+        mutation=None,
+        canary=canary,
+        base=None,
     )
 
 

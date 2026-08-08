@@ -31,7 +31,7 @@ from conftest import mutation_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Claim, Mutation, MutantOutcome, Verdict
+from assay.verdict import Claim, Judgment, JudgmentR2, Mutation, MutantOutcome, Verdict
 
 BASE = {
     "lane": "package",
@@ -69,6 +69,7 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
         outcome=Outcome.PASS,
         started="2026-08-07T14:00:00+00:00",
         ended="2026-08-07T14:00:05+00:00",
+        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap", "boolop-swap"))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -92,6 +93,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
         reason_code=ReasonCode.MUTANTS_SURVIVED,
         started="2026-08-07T14:05:00+00:00",
         ended="2026-08-07T14:05:05+00:00",
+        judgment=Judgment(r2=JudgmentR2(jobs=2, operators=("compare-swap",))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -112,6 +114,7 @@ def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Valid
         reason_code=ReasonCode.NO_MUTANTS,
         started="2026-08-07T14:10:00+00:00",
         ended="2026-08-07T14:10:05+00:00",
+        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -135,6 +138,7 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
         reason_code=ReasonCode.LANE_TIMEOUT,
         started="2026-08-07T14:15:00+00:00",
         ended="2026-08-07T14:15:05+00:00",
+        judgment=Judgment(r2=JudgmentR2(jobs=2, operators=("boolop-swap", "compare-swap"))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -161,6 +165,7 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
         reason_code=ReasonCode.EXEC_FAILED,
         started="2026-08-07T14:20:00+00:00",
         ended="2026-08-07T14:20:05+00:00",
+        judgment=Judgment(r2=JudgmentR2(jobs=2, operators=("bool-const-flip", "compare-swap"))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())

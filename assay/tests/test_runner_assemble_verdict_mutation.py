@@ -20,7 +20,7 @@ from conftest import fixed_clock, make_lane
 
 from assay import runner
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Claim, MutantOutcome, Mutation
+from assay.verdict import Claim, Judgment, JudgmentR2, MutantOutcome, Mutation
 
 #: A PASSING R2 claim carries the buckets it passed on, and a
 #: MUTANTS_SURVIVED one carries the survivor it names (P16 review) -- an R2
@@ -66,6 +66,7 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
         claims=(runner.build_r0_claim(result),),
         assay_version="0.1.0",
         mutation_claim=mutation_claim,
+        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
     )
 
     assert verdict.outcome is Outcome.PASS
@@ -91,6 +92,7 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
         claims=(runner.build_r0_claim(result),),
         assay_version="0.1.0",
         mutation_claim=mutation_claim,
+        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("invert-comparison",))),
     )
 
     assert verdict.outcome is Outcome.FAIL

@@ -38,6 +38,7 @@ from assay.verdict import (
     EvidenceDeclaration,
     Judgment,
     JudgmentR1,
+    JudgmentR2,
     Mutation,
     Verdict,
     iso_utc,
@@ -272,6 +273,7 @@ def build_inconclusive() -> Verdict:
         env_effective={},
         scope="S1",
         enforcement="gate",
+        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
         claims=(
             Claim(
                 rigor="R0",

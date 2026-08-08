@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -325,22 +326,93 @@ def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
     assert "go" in err
 
 
-def test_run_refuses_r3_without_r1_declared_at_all(
+# --- this build evaluates R0, Python R1, Python R2 and Python R3 (P19) -------
+#
+# R3 declared with NO R1 beside it used to be exactly the level the
+# pre-A-139 gate could not see (the old ``if "R1" in lane.rigor`` guard
+# skipped the registry entirely) -- P19 closes that gap for real rather
+# than merely refusing it, so the CLI-level proof is now a genuine PASS,
+# not a refusal.
+
+
+def test_run_evaluates_a_real_r3_pass_end_to_end(git_repo: GitRepo):
+    """The full CLI wiring for a Python R3 PASS: a real installed pytest
+    run, in an independently-owned scratch copy this invocation owns end
+    to end, proves the declared import-break canary is caught for its
+    specific expected reason -- and that the consumer's own real repository
+    (HEAD, index, and worktree bytes) is untouched by any of it."""
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def f():\n    return 1\n")
+    git_repo.write(
+        "tests/test_mod.py",
+        "from pkg.mod import f\n\n\ndef test_f():\n    assert f() == 1\n",
+    )
+    git_repo.commit_all("add pkg")
+    lane = f"""\
+schema_version = 1
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R3"]
+enforcement = "gate"
+argv = ["{sys.executable}", "-m", "pytest", "tests", "-q"]
+env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["pkg"]
+
+[lanes.package.judge.canary]
+mechanism = "import-break"
+target = "pkg/mod.py"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+    head_before = git_repo.head()
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 0, err
+    document = json.loads(out)
+    assert document["outcome"] == "PASS"
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R3"]
+    r3_claim = document["claims"][1]
+    assert r3_claim["status"] == "PASS"
+    assert r3_claim["canary"]["mechanism"] == "import-break"
+    assert r3_claim["canary"]["control_outcome"] == "PASS"
+    assert r3_claim["canary"]["transformed_outcome"] == "FAIL"
+    assert r3_claim["canary"]["observed_reason_code"] == "COMMAND_FAILED"
+    assert document["judgment"]["r3"] == {
+        "mechanism": "import-break",
+        "target": "pkg/mod.py",
+    }
+    # O2: the consumer's own repository is exactly as it was before the run.
+    assert git_repo.head() == head_before
+    assert git_repo.git("status", "--porcelain") == ""
+
+
+def test_run_refuses_an_unregistered_language_at_r3_with_a_real_artifact(
     git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):
-    """The level the pre-A-139 gate could not see: R3 declared with NO R1
-    beside it, so the old ``if "R1" in lane.rigor`` guard skipped the
-    registry entirely. The refusal must name R3 -- proving the loop reached
-    the declared level rather than a hardcoded one."""
+    """The R3-level mirror of ``test_run_refuses_an_unregistered_language_
+    at_r1_with_a_real_artifact``: Go has no producer path wired to ANY
+    rigor level yet (P22), R3 included, so this is refused before the
+    lane's command ever runs -- proving the registry gate still guards R3
+    even though this build's OWN Python adapter now reaches it."""
     marker = tmp_path / "the-command-ran"
+    (git_repo.path / "src").mkdir(exist_ok=True)
+    (git_repo.path / "src" / "mod.go").write_text("package src\n", encoding="utf-8")
     lane = set_key(R0_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
     lane = set_key(lane, "rigor", '["R0", "R3"]')
     lane += (
         "\n[lanes.package.judge]\n"
-        'language = "python"\nsource_roots = ["src"]\n'
-        "\n[lanes.package.judge.canary]\nsite = \"src/mod.py\"\n"
+        'language = "go"\nsource_roots = ["src"]\n'
+        '\n[lanes.package.judge.canary]\n'
+        'mechanism = "import-break"\ntarget = "src/mod.go"\n'
     )
-    (git_repo.path / "src").mkdir(exist_ok=True)
     path = _write_and_commit_lane(git_repo, lane)
 
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
@@ -349,11 +421,14 @@ def test_run_refuses_r3_without_r1_declared_at_all(
     assert not marker.exists()
     document = json.loads(out)
     assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
     assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
         ("R0", "ERROR"),
         ("R3", "ERROR"),
     ]
-    assert "R3" in err
+    assert document.get("judgment") is None
+    assert "go" in err
 
 
 def test_run_evaluates_a_real_r1_pass_end_to_end(git_repo: GitRepo, tmp_path: Path):

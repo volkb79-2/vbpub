@@ -91,6 +91,7 @@ from .verdict import (
     Judgment,
     JudgmentR1,
     JudgmentR2,
+    JudgmentR3,
     Verdict,
     iso_utc,
     rollup,
@@ -875,12 +876,34 @@ def run_lane(
     `run_mutation`'s own only reason to return ``None`` for a caller-
     supplied baseline (:func:`~assay.mutation.run_mutation`'s own
     docstring) -- so the R2 claim built here always carries a ``mutation``
-    payload, and ``judgment.r2`` is populated unconditionally alongside it
-    (:class:`~assay.verdict.JudgmentR2` carries no construction-time
-    correspondence check against :class:`Claim` yet -- see its own
-    docstring -- so this function's own discipline, not that one, is what
-    keeps the two in step). Final ``ended`` is extended again to cover
-    R2's own completion too.
+    payload, and ``judgment.r2`` is populated unconditionally alongside it.
+    Final ``ended`` is extended again to cover R2's own completion too.
+
+    **P19: if R3 is declared, an isolated canary run is attempted AFTER R1
+    and R2, unconditionally** -- never gated on *result*'s own outcome the
+    way R2 is (R2 reuses *result* AS its baseline; R3 never reuses it at
+    all, so there is nothing of *result*'s to gate on). Delegated whole to
+    :func:`assay.canary.run_isolated_python_canary` (a deferred import --
+    see the call site's own comment for why), which owns its OWN
+    prerequisite refusals (a test-path target, a dirty *repo*) and its own
+    copy-and-run pipeline against *repo*/*project_root* -- never against a
+    tree this function has itself already validated clean for R1/R2's sake
+    only, since an isolated canary's cleanliness requirement (the copy IS
+    the control) is a genuinely different fact from R1/R2's "the diff being
+    measured is committed" one, even though both currently happen to
+    require the same clean-tree precondition. An :class:`~assay.errors.
+    AssayError` it raises (a config or prerequisite refusal) becomes a
+    payload-free R3 :class:`Claim` here, the identical shape R1/R2's own
+    guard sequences already use; otherwise :func:`assay.canary.
+    build_canary_claim` builds the real one and ``judgment.r3`` is
+    populated alongside it, unconditionally, the same "this function's own
+    discipline keeps the two in step" reasoning R2's ``judgment.r2``
+    already relies on (:class:`~assay.verdict.JudgmentR2`/:class:`~assay.
+    verdict.JudgmentR3` now ALSO carry their own construction-time
+    correspondence check against :class:`Claim` -- P19 work item 9/A-148 --
+    so this function's discipline and that check now agree rather than one
+    being the only witness). Final ``ended`` is extended a third time to
+    cover R3's own completion.
     """
     r1_declared = "R1" in lane.rigor
     artifact_path: Path | None = None
@@ -916,6 +939,7 @@ def run_lane(
         _remove_stale_coverage_artifact(artifact_path)
 
     r2_declared = "R2" in lane.rigor
+    r3_declared = "R3" in lane.rigor
 
     result = execute_command(
         lane,
@@ -929,6 +953,7 @@ def run_lane(
     claims: tuple[Claim, ...] = (r0_claim,)
     judgment_r1: JudgmentR1 | None = None
     judgment_r2: JudgmentR2 | None = None
+    judgment_r3: JudgmentR3 | None = None
     ended: str | None = None
     added_holder: list[diff.AddedLines] = []
 
@@ -1040,9 +1065,49 @@ def run_lane(
                     operators=judge.mutation.operators,
                 )
 
+    if r3_declared:
+        judge = lane.judge
+        canary_cfg = judge.canary
+        # Deferred, not module-level: `assay.canary` already imports
+        # `evaluate_r1`/`execute_command`/... from THIS module at its own
+        # module level, so a module-level import here would close a
+        # genuine cycle (runner -> canary -> runner) -- the identical
+        # reasoning `assay.mutation`'s own module docstring gives for
+        # resolving `execute_command` from a function body one claim tier
+        # over.
+        from .canary import build_canary_claim, run_isolated_python_canary
+
+        try:
+            canary_result = run_isolated_python_canary(
+                lane,
+                repo=repo,
+                project_root=project_root,
+                mechanism=canary_cfg.mechanism,
+                target=canary_cfg.target,
+                adapter=adapter,
+                process_runner=process_runner,
+                clock=clock,
+            )
+        except AssayError as exc:
+            claims += (
+                Claim(
+                    rigor="R3",
+                    source="computed",
+                    status=exc.outcome,
+                    verified_by_assay=True,
+                    reason_code=exc.reason_code,
+                ),
+            )
+        else:
+            claims += (build_canary_claim(canary_result),)
+            judgment_r3 = JudgmentR3(
+                mechanism=canary_cfg.mechanism, target=canary_cfg.target
+            )
+        ended = iso_utc(clock())
+
     judgment: Judgment | None = None
-    if judgment_r1 is not None or judgment_r2 is not None:
-        judgment = Judgment(r1=judgment_r1, r2=judgment_r2)
+    if judgment_r1 is not None or judgment_r2 is not None or judgment_r3 is not None:
+        judgment = Judgment(r1=judgment_r1, r2=judgment_r2, r3=judgment_r3)
 
     return assemble_verdict(
         lane=lane,

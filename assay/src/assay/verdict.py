@@ -852,16 +852,22 @@ class JudgmentR1:
 
 @dataclass(frozen=True, kw_only=True)
 class JudgmentR2:
-    """RESERVED (P16); populated by a future R2 CLI wiring package. The
-    mutation policy that decided which changed-line sites were candidates
-    and how many ran concurrently: ``jobs`` and the ORDERED, closed
-    ``operators`` list the lane declared — never a machine-derived job
-    count (A-082/A-122). Carries no correspondence check against
-    :class:`Mutation` yet: unlike R1, an independent consumer can already
-    re-derive the R2 claim's status from :class:`Mutation`'s own bucket
-    fields alone (:func:`assay.mutation.judge_mutation`'s mapping needs no
-    external policy input), so this shape is reserved capacity, not a gap
-    this package's own oracles need closed today.
+    """Populated by ``assay run``'s own R2 CLI wiring (P18) whenever the
+    rendered R2 claim carries a ``mutation`` payload. The mutation policy
+    that decided which changed-line sites were candidates and how many ran
+    concurrently: ``jobs`` and the ORDERED, closed ``operators`` list the
+    lane declared — never a machine-derived job count (A-082/A-122).
+
+    Unlike R1, an independent consumer can already re-derive the R2 claim's
+    *status* from :class:`Mutation`'s own bucket fields alone
+    (:func:`assay.mutation.judge_mutation`'s mapping needs no external
+    policy input) — this record exists so a consumer can also confirm which
+    POLICY produced those buckets. P19/A-148 gave this a construction-time
+    correspondence check one level up
+    (:meth:`Verdict._check_judgment_matches_claims`): present if and only
+    if the R2 claim carries a ``mutation`` payload, and every operator a
+    survived/crashed/budget-exceeded entry names must be one
+    :attr:`operators` actually declared.
     """
 
     jobs: int
@@ -891,14 +897,20 @@ class JudgmentR2:
 
 @dataclass(frozen=True, kw_only=True)
 class JudgmentR3:
-    """RESERVED (P16); populated by a future isolated R3 CLI wiring
-    package. The canary declaration that produced the rendered
-    :class:`CanaryResult`: the ``mechanism`` name and the project-relative
-    ``target`` path, so a consumer can tell WHICH declared canary a rendered
-    R3 claim answers for. Carries no correspondence check against
-    :class:`CanaryResult` yet, for the identical reason :class:`JudgmentR2`
-    does not: :func:`assay.canary.judge_canary` already re-derives R3
-    status from :class:`CanaryResult`'s own fields alone.
+    """Populated by ``assay run``'s own isolated R3 CLI wiring (P19)
+    whenever the rendered R3 claim carries a ``canary`` payload. The canary
+    declaration that produced it: the ``mechanism`` name and the
+    project-relative ``target`` path, so a consumer can tell WHICH declared
+    canary a rendered R3 claim answers for.
+
+    :func:`assay.canary.judge_canary` already re-derives R3 *status* from
+    :class:`CanaryResult`'s own fields alone, the identical reason
+    :class:`JudgmentR2` gives for its own case — this record exists so a
+    consumer can also confirm which declared canary produced that result.
+    P19/A-148 gave this a construction-time correspondence check one level
+    up (:meth:`Verdict._check_judgment_matches_claims`): present if and
+    only if the R3 claim carries a ``canary`` payload, and that payload's
+    own ``mechanism`` must match :attr:`mechanism` exactly.
     """
 
     mechanism: str
@@ -1454,8 +1466,13 @@ class Verdict:
         already guarantees at most one claim per rigor level, so "the R1
         claim" is unambiguous here.
 
-        ``judgment.r2``/``judgment.r3`` carry no such check yet — see
-        :class:`JudgmentR2`/:class:`JudgmentR3`'s own docstrings for why.
+        **P19/A-148 widens the identical rule to R2 and R3**, in BOTH
+        directions, plus one thing schema shape alone cannot express: every
+        operator/mechanism a claim's own payload NAMES must be one the
+        recorded policy actually declared. `judgment.rN` is tied to the
+        claim it describes the same way `judgment.r1` already was — a
+        deferral P18 left with no executor (`verdict.py`/`verify.py` were
+        both outside every package's `scope.touch` from P16 through P18).
         """
         if self.judgment is not None and self.declared_rigor is None:
             raise ValueError(
@@ -1477,6 +1494,64 @@ class Verdict:
                 "is absent -- an independent consumer cannot re-derive R1's "
                 "status without the policy that decided it"
             )
+
+        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
+        r2_judged = r2_claim is not None and r2_claim.mutation is not None
+        judgment_r2 = None if self.judgment is None else self.judgment.r2
+        if judgment_r2 is not None and not r2_judged:
+            raise ValueError(
+                "judgment.r2 is present but no R2 claim rendered a mutation "
+                "payload -- a policy is recorded for a judgment that never "
+                "happened"
+            )
+        if judgment_r2 is None and r2_judged:
+            raise ValueError(
+                "the R2 claim rendered a mutation payload but judgment.r2 "
+                "is absent -- an independent consumer cannot re-derive R2's "
+                "status without the policy that decided it"
+            )
+        if r2_judged and judgment_r2 is not None:
+            observed_operators = {
+                outcome.operator
+                for bucket in (
+                    r2_claim.mutation.survived,
+                    r2_claim.mutation.crashed,
+                    r2_claim.mutation.budget_exceeded,
+                )
+                for outcome in bucket
+            }
+            unknown_operators = sorted(observed_operators - set(judgment_r2.operators))
+            if unknown_operators:
+                raise ValueError(
+                    f"claim[R2].mutation records outcome(s) for operator(s) "
+                    f"{unknown_operators}, outside judgment.r2.operators "
+                    f"{list(judgment_r2.operators)} -- a mutant this policy "
+                    f"never selected cannot have been submitted"
+                )
+
+        r3_claim = next((claim for claim in self.claims if claim.rigor == "R3"), None)
+        r3_judged = r3_claim is not None and r3_claim.canary is not None
+        judgment_r3 = None if self.judgment is None else self.judgment.r3
+        if judgment_r3 is not None and not r3_judged:
+            raise ValueError(
+                "judgment.r3 is present but no R3 claim rendered a canary "
+                "payload -- a policy is recorded for a judgment that never "
+                "happened"
+            )
+        if judgment_r3 is None and r3_judged:
+            raise ValueError(
+                "the R3 claim rendered a canary payload but judgment.r3 "
+                "is absent -- an independent consumer cannot re-derive R3's "
+                "status without the policy that decided it"
+            )
+        if r3_judged and judgment_r3 is not None:
+            if r3_claim.canary.mechanism != judgment_r3.mechanism:
+                raise ValueError(
+                    f"claim[R3].canary was produced by mechanism "
+                    f"{r3_claim.canary.mechanism!r}, but judgment.r3 "
+                    f"records the policy as {judgment_r3.mechanism!r} -- the "
+                    f"two must name the same mechanism"
+                )
 
     # --- serialisation --------------------------------------------------------
 
