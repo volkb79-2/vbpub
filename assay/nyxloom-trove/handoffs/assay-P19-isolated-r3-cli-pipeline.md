@@ -88,6 +88,17 @@ lane-config failure and renders no R3 claim at all; do not route it into an
 between it and `Claim.canary`; decide whether that still holds once a real
 producer writes it.
 
+## Carried in from P17, implementer notes (unratified — flag for controller review)
+
+Not `decisions.md` entries; observations from actually building P17, kept
+short (<300 chars) per the controller's own request. Read before writing
+work items 3 and 5.
+
+- P19-specific: run_lane's whole-tree dirty check judges the CONSUMER's own worktree. R3 runs in an independently-owned scratch copy it deliberately commits into (work item 3) -- keep calling execute_command/evaluate_r1 directly there, like canary.py does, not run_lane.
+- evaluate_r1's signature/return type is FROZEN: assay.canary (this package's own file) already calls it expecting a bare Claim back. For judgment.r3's resolved-input analogue, an optional callback param is the precedent (see evaluate_r1's on_base_resolved), not a return-type change.
+- pytest-cov silently writes .pyc under source_roots unless the lane's env sets PYTHONDONTWRITEBYTECODE=1 -- already worked around in test_canary_python_pipeline.py's own `_ENV`; P17's own real-wheel R1 fixture hit the identical thing independently.
+- Least-confident call from P17, worth revisiting for R3 too: registry rejection (unsupported judge.language/rigor) is a bare AssayError with no verdict artifact, even though HEAD is already known by that point -- see P18's own copy of this note for the fuller reasoning.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)
