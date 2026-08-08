@@ -100,6 +100,17 @@ A-139–A-143. Treat as decided, not as observations.
 - **RULED (A-142) — external-tool preflighting is still deferred and is NOT yours.** It belongs to P23, the first package registering an adapter that genuinely declares one.
 - **Two evidence traps P17's review had to close; the same shapes apply to `judgment.r3`.** (1) Nothing distinguished a RESOLVED recorded input from an echoed one, because every test declared the already-resolved form (A-143) — make correct and incorrect genuinely different in at least one oracle. (2) An oracle demanding a "complete artifact" was satisfied with a handful of field assertions; this suite's established form is a whole-document `==` with only un-injectable fields excluded.
 
+## Carried in from P18, implementer notes (unratified — flag for controller review)
+
+Not `decisions.md` entries; observations from actually building P18, kept
+short (<300 chars) per the controller's own request. Read before writing
+work items 1 and 6.
+
+- cli.py's `_resolve_declared_adapters` tail is now `_ADAPTER_BEARING_LEVELS = ("R1", "R2")`, tried in order, first match wins. Add `"R3"` to that tuple -- one line -- rather than a third parallel lookup; `get_adapter` returns the same object per language regardless of which level resolved it.
+- If `judge.canary.mechanism` validates against a closed set `canary.py` owns (mirroring `mutation.operators` vs `MUTATION_OPERATORS`), importing it in `config.py` hits the same cycle `mutation.py` names. Fix: a deferred import in the loader function, not module-level -- see `config._load_mutation`.
+- `evaluate_r1` now carries two optional callbacks, `on_base_resolved` and `on_added_resolved`, both additive/default-`None`. R3 doesn't call it through `run_lane` though (`canary.py` calls it directly in its own scratch copy) -- check you actually need a third callback before adding one.
+- Before writing `judgment.r3`'s "populate iff a payload rendered" logic, trace whether that condition is reachable at all given R3's own upstream guards -- mine (`judgment.r2`) turned out unconditionally true once traced; the dead branch left behind was itself a defect (§3b.D).
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)

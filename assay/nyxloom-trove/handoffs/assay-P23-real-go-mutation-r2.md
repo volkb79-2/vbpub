@@ -81,6 +81,16 @@ artifact and is already total over `lane.rigor`. And the declared coverage
 artifact must be git-ignored, or the whole-tree cleanliness guard refuses
 the run before `go test` starts.
 
+## Carried in from P18, implementer notes (unratified — flag for controller review)
+
+Not `decisions.md` entries; observations from actually building P18, kept
+short (<300 chars) per the controller's own request. Read before writing
+work item 5, and check the first bullet BEFORE starting work at all.
+
+- **Possible carve gap, worth confirming before you start:** `cli._built_in_registry` (not `registry.py`) holds the "EXISTING `GoAdapter` entry". `scope.touch` names `registry.py`, not `cli.py`. If still true, work item 5 needs `cli.py` added -- mirrors A-144's P22/P23 finding for `errors.py`.
+- `assay.mutation.run_mutation`'s signature changed: `baseline` is now a REQUIRED caller-supplied `CommandResult` (never run internally), and `operators` is now REQUIRED too. Work item 5's "existing P18 executor/isolation path" means calling it with both, not the pre-P18 shape.
+- `assay.mutation.resolve_mutation_targets` (new in P18) filters candidates through `adapter.source_globs`/`excluded_dir_names`/`is_test_path`. P18 did not change `GoAdapter`'s own values for these (from P08) -- confirm they are still right now that R2 target scoping reads them.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)
