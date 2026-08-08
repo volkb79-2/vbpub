@@ -292,16 +292,24 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
     makes the raw check's own failure indistinguishable from reconstruction
     independently catching the same defect, which would make "is this raw
     check even reached" untestable by message content alone.
+
+    **P19/A-148 widens this to R2 and R3**, worded differently again from
+    :meth:`assay.verdict.Verdict._check_judgment_matches_claims`'s own R2/R3
+    messages for the identical reason, plus the one check no schema and no
+    reconstruction alone can express as cleanly on the raw document: every
+    operator/mechanism a claim's payload NAMES must be one the recorded
+    policy actually declared.
     """
     claims = document.get("claims")
     if not isinstance(claims, list):
         return
+    judgment = document.get("judgment")
+
     r1_claim = next(
         (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R1"),
         None,
     )
     r1_judged = r1_claim is not None and "coverage" in r1_claim
-    judgment = document.get("judgment")
     judgment_r1_present = isinstance(judgment, dict) and "r1" in judgment
     if judgment_r1_present and not r1_judged:
         failures.append(
@@ -311,6 +319,68 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         failures.append(
             "an R1 coverage claim is declared without a corresponding judgment.r1"
         )
+
+    r2_claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
+        None,
+    )
+    r2_judged = r2_claim is not None and "mutation" in r2_claim
+    judgment_r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    judgment_r2_present = isinstance(judgment, dict) and "r2" in judgment
+    if judgment_r2_present and not r2_judged:
+        failures.append(
+            "judgment.r2 is declared without a corresponding R2 mutation claim"
+        )
+    if r2_judged and not judgment_r2_present:
+        failures.append(
+            "an R2 mutation claim is declared without a corresponding judgment.r2"
+        )
+    if r2_judged and judgment_r2_present and isinstance(judgment_r2, dict):
+        mutation = r2_claim.get("mutation")
+        operators = judgment_r2.get("operators")
+        if isinstance(mutation, dict) and isinstance(operators, list):
+            observed: set = set()
+            for bucket_name in ("survived", "crashed", "budget_exceeded"):
+                bucket = mutation.get(bucket_name)
+                if not isinstance(bucket, list):
+                    continue
+                for entry in bucket:
+                    if isinstance(entry, dict) and isinstance(entry.get("operator"), str):
+                        observed.add(entry["operator"])
+            unknown_operators = sorted(observed - set(operators))
+            if unknown_operators:
+                failures.append(
+                    f"the R2 mutation payload names operator(s) "
+                    f"{unknown_operators} that judgment.r2.operators "
+                    f"{operators} never declared"
+                )
+
+    r3_claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R3"),
+        None,
+    )
+    r3_judged = r3_claim is not None and "canary" in r3_claim
+    judgment_r3 = judgment.get("r3") if isinstance(judgment, dict) else None
+    judgment_r3_present = isinstance(judgment, dict) and "r3" in judgment
+    if judgment_r3_present and not r3_judged:
+        failures.append(
+            "judgment.r3 is declared without a corresponding R3 canary claim"
+        )
+    if r3_judged and not judgment_r3_present:
+        failures.append(
+            "an R3 canary claim is declared without a corresponding judgment.r3"
+        )
+    if r3_judged and judgment_r3_present and isinstance(judgment_r3, dict):
+        canary = r3_claim.get("canary")
+        if isinstance(canary, dict):
+            observed_mechanism = canary.get("mechanism")
+            declared_mechanism = judgment_r3.get("mechanism")
+            if observed_mechanism != declared_mechanism:
+                failures.append(
+                    f"the R3 canary payload's mechanism "
+                    f"{observed_mechanism!r} does not match "
+                    f"judgment.r3.mechanism {declared_mechanism!r}"
+                )
 
 
 def _reject_unknown_keys(raw: dict, built: dict, what: str) -> None:

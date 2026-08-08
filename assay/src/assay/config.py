@@ -66,6 +66,7 @@ from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
 
 __all__ = [
+    "CanaryConfig",
     "CoverageConfig",
     "ENFORCEMENTS",
     "JUDGE_FIELDS_BY_RIGOR",
@@ -213,6 +214,33 @@ class MutationConfig:
         return {"jobs": self.jobs, "operators": list(self.operators)}
 
 
+_CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target")
+
+
+@dataclass(frozen=True)
+class CanaryConfig:
+    """``[lanes.X.judge.canary]`` (P19) -- the closed R3 declaration: which
+    :mod:`assay.canary` mechanism to attempt, and which single source file to
+    attempt it against. Exactly two fields, never a plural list (P19 work
+    item 2: one R3 claim is one mechanism execution, never several results
+    collapsed into schema v3's single canary payload).
+
+    Before P19 this table was opaque and unvalidated (A-106: P09 built the
+    mechanism, not the config reader for it); this loader is the first
+    reader of its actual shape. ``target`` is the DECLARED string, verbatim
+    and PROJECT-relative -- the same spelling :attr:`CoverageConfig.artifact`
+    already uses, and the one :func:`~assay.canary.run_python_canary` already
+    expects (A-145: repo-relative and project-relative are two spellings of
+    the same file, and this loader speaks the project-relative one).
+    """
+
+    mechanism: str
+    target: str
+
+    def as_declared(self) -> dict[str, Any]:
+        return {"mechanism": self.mechanism, "target": self.target}
+
+
 @dataclass(frozen=True)
 class JudgeConfig:
     """``[lanes.X.judge]`` — HOW to judge (D7's second question, A-015).
@@ -233,9 +261,9 @@ class JudgeConfig:
     #: the closed R2 execution policy (P18) -- ``None`` when the lane does
     #: not declare R2 at all.
     mutation: MutationConfig | None
-    #: opaque payload owned by P09/P19 (R3's own canary wiring); this
-    #: loader verifies only that it is a table.
-    canary: Mapping[str, Any] | None
+    #: the closed R3 declaration (P19) -- ``None`` when the lane does not
+    #: declare R3 at all.
+    canary: CanaryConfig | None
     #: (P17) the declared comparison ref R1/R2 diff against -- a git
     #: revision expression (branch name, tag, SHA...), resolved at RUN time
     #: (:func:`assay.git.resolve_base`/:func:`assay.measurability.
@@ -258,7 +286,7 @@ class JudgeConfig:
         if self.mutation is not None:
             declared["mutation"] = self.mutation.as_declared()
         if self.canary is not None:
-            declared["canary"] = dict(self.canary)
+            declared["canary"] = self.canary.as_declared()
         if self.base is not None:
             declared["base"] = self.base
         return declared
@@ -660,7 +688,9 @@ def _load_judge(
     mutation = None
     if "mutation" in table:
         mutation = _load_mutation(table["mutation"], where)
-    canary = _as_opaque_table(table.get("canary"), where, "judge.canary")
+    canary = None
+    if "canary" in table:
+        canary = _load_canary(table["canary"], where, project_root, source_root_paths)
 
     base = None
     if "base" in table:
@@ -795,6 +825,105 @@ def _load_mutation(value: Any, where: str) -> MutationConfig:
     return MutationConfig(jobs=jobs, operators=tuple(operators))
 
 
+def _load_canary(
+    value: Any,
+    where: str,
+    project_root: Path,
+    source_root_paths: tuple[Path, ...] | None,
+) -> CanaryConfig:
+    """``judge.canary`` (P19): a closed table, exactly ``mechanism`` and
+    ``target`` -- never a plural list (work item 2: one R3 claim is one
+    mechanism execution).
+
+    ``target`` must be a normalized, project-relative path to a REAL,
+    ordinary source file contained beneath one of the lane's own declared
+    ``source_roots`` -- the identical containment discipline
+    :func:`_resolve_source_root` already applies to a source root itself,
+    reused here rather than re-derived (both compare two already-resolved
+    paths via :meth:`~pathlib.Path.is_relative_to`, so a symlink escape or a
+    ``..`` traversal is caught the same way for either). Existence IS
+    checked at load time (unlike :func:`_load_coverage`'s own artifact,
+    which is this run's own OUTPUT and need not exist yet) -- a canary
+    target is real source code :mod:`assay.canary` reads and transforms, so
+    a typo'd path is a config mistake this loader can catch instead of a
+    bare ``FileNotFoundError`` surfacing deep inside a scratch-copy pipeline.
+
+    Whether *target* is itself a TEST path (an adapter-specific question --
+    Python's own convention differs from a future second language's) is
+    deliberately NOT decided here: this module carries zero adapter
+    knowledge anywhere else (``judge.language`` stays an opaque string all
+    the way through), and checking it would mean importing one. That
+    rejection belongs to :mod:`assay.canary`'s own orchestration, which
+    already receives a real, resolved adapter.
+    """
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' must be a table, got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - set(_CANARY_FIELDS))
+    if unknown:
+        raise LaneConfigError(
+            f"{where}: unknown judge.canary key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join(_CANARY_FIELDS)}"
+        )
+    for field in _CANARY_FIELDS:
+        if field not in value:
+            raise LaneConfigError(
+                f"{where}: missing required field 'judge.canary.{field}'"
+            )
+
+    mechanism = _as_str(value["mechanism"], where, "judge.canary.mechanism")
+    # Deferred, not module-level -- the identical reasoning `_load_mutation`
+    # already gives for `assay.mutation.MUTATION_OPERATORS`, one field over:
+    # `assay.canary` imports `Lane` from THIS module at ITS OWN module
+    # level, so a module-level import here would be a genuine cycle
+    # (config -> canary -> config).
+    from .canary import CANARY_MECHANISMS
+
+    if mechanism not in CANARY_MECHANISMS:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.mechanism' {mechanism!r} is not one of "
+            f"{sorted(CANARY_MECHANISMS)}"
+        )
+
+    target = _as_str(value["target"], where, "judge.canary.target")
+    if not target:
+        raise LaneConfigError(f"{where}: 'judge.canary.target' is empty")
+    candidate = Path(target)
+    if candidate.is_absolute():
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.target' {target!r} is absolute; it is "
+            f"relative to the project root, the same as source_roots"
+        )
+    raw_path = project_root / candidate
+    if raw_path.is_symlink():
+        # Checked first, exactly like `_is_unsafe_coverage_artifact`'s own
+        # ordering (`runner.py`): `is_symlink` never raises for a
+        # non-existent path, unlike a naive existence check that follows
+        # the link first.
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.target' {target!r} is a symlink; a "
+            f"canary target must be a real, ordinary source file"
+        )
+    resolved = raw_path.resolve()
+    roots = source_root_paths or ()
+    if not any(resolved.is_relative_to(root) for root in roots):
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.target' {target!r} resolves to "
+            f"{resolved}, which is not contained beneath any declared "
+            f"source root {[str(root) for root in roots]} (via '..' or a "
+            f"symlink) -- a canary target must live beneath a declared "
+            f"source root"
+        )
+    if not resolved.is_file():
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.target' {target!r} does not exist as "
+            f"a file under the project root {project_root} (looked for "
+            f"{resolved})"
+        )
+    return CanaryConfig(mechanism=mechanism, target=target)
+
+
 def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:
     """Resolve one declared source root against the PROJECT root (A-049).
 
@@ -894,15 +1023,3 @@ def _as_str_table(value: Any, where: str, field: str) -> dict[str, str]:
                 f"environment values are strings — quote it"
             )
     return dict(value)
-
-
-def _as_opaque_table(
-    value: Any, where: str, field: str
-) -> Mapping[str, Any] | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise LaneConfigError(
-            f"{where}: {field!r} must be a table, got {_type_name(value)}"
-        )
-    return MappingProxyType(dict(value))

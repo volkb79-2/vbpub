@@ -32,6 +32,12 @@
   "env_effective": {},
   "scope": "S1",
   "enforcement": "gate",
+  "judgment": {
+    "r3": {
+      "mechanism": "uncovered-line",
+      "target": "pkg/greet.py"
+    }
+  },
   "claims": [
     {
       "rigor": "R0",

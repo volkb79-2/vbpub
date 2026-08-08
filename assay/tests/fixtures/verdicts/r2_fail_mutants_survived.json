@@ -29,6 +29,12 @@
   "env_effective": {},
   "scope": "S1",
   "enforcement": "gate",
+  "judgment": {
+    "r2": {
+      "jobs": 2,
+      "operators": ["compare-swap"]
+    }
+  },
   "claims": [
     {
       "rigor": "R0",

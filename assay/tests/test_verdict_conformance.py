@@ -737,14 +737,106 @@ def test_verify_rejects_an_r1_coverage_claim_without_judgment():
     )
 
 
+# --- P19/A-148: the judgment.r2/r3 <-> claim correspondence, on the RAW
+# document (mirrors the R1 pair above; every message worded differently
+# from `Verdict._check_judgment_matches_claims`'s own, for the identical
+# "is the raw check even reached" reason that check's own docstring gives).
+
+
+def test_verify_rejects_an_r2_mutation_claim_without_judgment_r2():
+    document = _load("r2_pass.json")
+    del document["judgment"]
+    failures = verify_document(document)
+    assert any(
+        "an R2 mutation claim is declared without a corresponding judgment.r2" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_judgment_r2_present_without_an_r2_mutation_claim():
+    document = _load("r0_pass.json")
+    document["judgment"] = {"r2": {"jobs": 1, "operators": ["compare-swap"]}}
+    failures = verify_document(document)
+    assert any(
+        "judgment.r2 is declared without a corresponding R2 mutation claim" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_an_r2_operator_judgment_r2_never_declared():
+    document = _load("r2_fail_mutants_survived.json")
+    assert document["judgment"]["r2"]["operators"] == ["compare-swap"]
+    document["claims"][1]["mutation"]["survived"][0]["operator"] = "boolop-swap"
+    failures = verify_document(document)
+    assert any(
+        "names operator(s)" in f and "never declared" in f for f in failures
+    )
+
+
+def test_verify_skips_the_operator_check_when_a_bucket_is_not_a_list():
+    document = _load("r2_fail_mutants_survived.json")
+    document["claims"][1]["mutation"]["survived"] = "not-a-list"
+    failures = verify_document(document)
+    assert not any("names operator(s)" in f for f in failures)
+
+
+def test_verify_skips_the_operator_check_when_the_mutation_payload_is_malformed():
+    document = _load("r2_fail_mutants_survived.json")
+    document["claims"][1]["mutation"] = "not-a-dict"
+    failures = verify_document(document)
+    assert not any("names operator(s)" in f for f in failures)
+
+
+def test_verify_skips_the_operator_check_when_a_bucket_entry_is_malformed():
+    document = _load("r2_fail_mutants_survived.json")
+    document["claims"][1]["mutation"]["survived"][0] = "not-a-dict"
+    failures = verify_document(document)
+    assert not any("names operator(s)" in f for f in failures)
+
+
+def test_verify_rejects_an_r3_canary_claim_without_judgment_r3():
+    document = _load("r3_pass.json")
+    del document["judgment"]
+    failures = verify_document(document)
+    assert any(
+        "an R3 canary claim is declared without a corresponding judgment.r3" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_judgment_r3_present_without_an_r3_canary_claim():
+    document = _load("r0_pass.json")
+    document["judgment"] = {
+        "r3": {"mechanism": "uncovered-line", "target": "pkg/mod.py"}
+    }
+    failures = verify_document(document)
+    assert any(
+        "judgment.r3 is declared without a corresponding R3 canary claim" in f
+        for f in failures
+    )
+
+
+def test_verify_rejects_a_canary_mechanism_judgment_r3_never_declared():
+    document = _load("r3_pass.json")
+    assert document["claims"][1]["canary"]["mechanism"] == "uncovered-line"
+    document["judgment"]["r3"]["mechanism"] = "import-break"
+    failures = verify_document(document)
+    assert any("does not match judgment.r3.mechanism" in f for f in failures)
+
+
+def test_verify_skips_the_mechanism_check_when_the_canary_payload_is_malformed():
+    document = _load("r3_pass.json")
+    document["claims"][1]["canary"] = "not-a-dict"
+    failures = verify_document(document)
+    assert not any("does not match judgment.r3.mechanism" in f for f in failures)
+
+
 def test_verify_accepts_reconstructed_judgment_r2_and_r3():
-    # `judgment.r3` is still RESERVED -- no producer populates it until P19
-    # -- but reconstruction must accept it when present, since that package
-    # populates it additively without another schema bump. `judgment.r2` is
-    # NO LONGER reserved (P18 populates it on every R2 run that rendered a
-    # mutation payload); it keeps its synthesised half here anyway, because
-    # a reconstruction that only ever saw the ONE shape assay's own producer
-    # emits would not be an independent check of the closed shape.
+    # `judgment.r2`/`judgment.r3` are NO LONGER reserved (P18/P19 populate
+    # them on every R2/R3 run that rendered a payload); reconstruction
+    # keeps a synthesised pair here anyway, because a reconstruction that
+    # only ever saw the ONE shape assay's own producer emits would not be
+    # an independent check of the closed shape.
     document = _load("r2_pass.json")
     document["judgment"] = {"r2": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]}}
     assert verify_document(document) == []
@@ -773,12 +865,13 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
     }
     assert r2_claim["mutation"]["total"] == 2
 
-    # The one correspondence a consumer can check TODAY, stated here as the
-    # audit's own claim rather than as a rule `assay verify` enforces (it
-    # does not yet -- A-148): every operator naming a recorded mutant is one
-    # the declared policy actually selected. A payload naming an operator
-    # `judgment.r2.operators` never declared is a contradiction no schema
-    # can see.
+    # The correspondence `assay verify` NOW enforces (P19/A-148), restated
+    # here as the audit's own claim too rather than only trusting
+    # `verify_document` elsewhere: every operator naming a recorded mutant
+    # is one the declared policy actually selected. A payload naming an
+    # operator `judgment.r2.operators` never declared is a contradiction
+    # `verify_document`/`Verdict` construction both now reject on sight
+    # (see `test_the_r2_r3_judgment_correspondence_is_enforced` below).
     recorded = {
         entry["operator"]
         for bucket in ("survived", "crashed", "budget_exceeded")
@@ -787,17 +880,30 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
     assert recorded <= set(document["judgment"]["r2"]["operators"])
 
 
-def test_the_r2_judgment_fixture_is_the_only_one_carrying_it():
-    # The level-aware negative, the same shape P10's and P17's already have:
-    # dropping this one file must leave `judgment.r2` uncovered ENTIRELY, so
-    # a later deletion cannot be masked by some other fixture that happens
-    # to grow the field.
-    covered = [
-        path.name
-        for path in FIXTURE_PATHS
-        if "r2" in (_load_path(path).get("judgment") or {})
-    ]
-    assert covered == [JUDGMENT_R2_FIXTURE]
+def test_every_r2_or_r3_judged_claim_in_the_matrix_carries_its_judgment():
+    # A-148 made this the ORDINARY case rather than a single demonstrated
+    # shape (the pre-P19 `test_the_r2_judgment_fixture_is_the_only_one_
+    # carrying_it` this replaces): `Verdict` construction itself now
+    # refuses any fixture whose R2/R3 claim carries a payload with no
+    # matching `judgment.rN`, so every fixture reachable through `_load`
+    # (which reconstructs a real `Verdict`, see `test_dependency_purity`'s
+    # sibling suites) already proves this -- restated directly here so the
+    # invariant is visible without depending on which OTHER test happens
+    # to reconstruct each file.
+    for path in FIXTURE_PATHS:
+        document = _load_path(path)
+        judgment = document.get("judgment") or {}
+        claims = {
+            claim["rigor"]: claim
+            for claim in document.get("claims", [])
+            if isinstance(claim, dict)
+        }
+        r2_claim = claims.get("R2")
+        if r2_claim is not None and "mutation" in r2_claim:
+            assert "r2" in judgment, f"{path.name}: R2 mutation payload with no judgment.r2"
+        r3_claim = claims.get("R3")
+        if r3_claim is not None and "canary" in r3_claim:
+            assert "r3" in judgment, f"{path.name}: R3 canary payload with no judgment.r3"
 
 
 def test_verify_rejects_an_r1_pass_reporting_zero_percent_coverage():

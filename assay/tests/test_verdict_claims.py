@@ -33,6 +33,7 @@ from assay.verdict import (
     EvidenceDeclaration,
     Judgment,
     JudgmentR1,
+    JudgmentR2,
     Mutation,
     Verdict,
     rollup,
@@ -302,7 +303,9 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
         outcome=Outcome.PASS,
         declared_rigor=("R0", "R1", "R2"),
         claims=(passing("R0"), passing("R1"), passing("R2")),
-        judgment=R1_JUDGMENT,
+        judgment=Judgment(
+            r1=R1_JUDGMENT.r1, r2=JudgmentR2(jobs=1, operators=("compare-swap",))
+        ),
     )
     assert [claim.rigor for claim in verdict.claims] == ["R0", "R1", "R2"]
 

@@ -14,20 +14,18 @@ Three subcommands ship so far:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0, R1 and R2**, for Python only (P18):
-  ``_built_in_registry`` is the CLI's own closed capability declaration
-  (work item 2) — Python is registered at R1 and R2 and nothing else, so a
-  lane declaring ``judge.language`` as anything but ``"python"``, or a
-  rigor level for a language this registry does not know, is refused
-  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs. A
-  lane declaring R3 is refused by that SAME registry lookup
-  (:func:`_resolve_declared_adapters` checks every declared level, not
-  only the ones this build reaches — A-139), also before the command runs,
-  and — like every other post-``HEAD`` refusal here — as a COMPLETE
-  verdict artifact via :func:`assay.runner.refuse_lane`, never a bare
-  exception. That check self-obsoletes as R3 evaluation lands: P19 adds
-  the level to ``_built_in_registry``'s existing entry and the same loop
-  starts admitting it.
+  This build evaluates **R0, R1, R2 and R3**, for Python only (P19 closes
+  sol finding 1 in full): ``_built_in_registry`` is the CLI's own closed
+  capability declaration (work item 2, widened by every rigor-wiring
+  package since) — Python is registered at R1, R2 and R3 and nothing else,
+  so a lane declaring ``judge.language`` as anything but ``"python"``, or a
+  rigor level for a language this registry does not know (Go, at any
+  level — P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the
+  lane's command ever runs. A declared R3 lane's own canary run happens in
+  an independently-owned scratch copy of the consumer's repository
+  (:func:`assay.canary.run_isolated_canary`, via
+  :func:`assay.runner.run_lane`) — the consumer's real worktree is never
+  staged, committed, or written to.
 
   :func:`assay.runner.assemble_verdict`'s own "a declared rigor level has
   no claim" guard stays where it is as the library-level backstop for a
@@ -97,8 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Execute exactly the named lane's declared argv (plus anything "
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
-            "order or retry anything. This build evaluates R0, Python R1 "
-            "and Python R2."
+            "order or retry anything. This build evaluates R0, Python R1, "
+            "Python R2 and Python R3."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -183,29 +181,30 @@ def _built_in_registry() -> registry.Registry:
     is nothing a shared, module-level instance would buy beyond a mutable
     global to guard.
 
-    Python is registered at R1 AND R2 and nothing else: adding ``"R2"`` to
-    this ONE existing entry's ``rigor`` set is the whole registry change a
-    Python R2 CLI pipeline needs (P18's own carried-in note) -- R3 lands in
-    P19, and Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's fixture-
-    based proof) has no producer path wired in at any rigor level yet
-    (P22). Naming a capability this build does not actually reach is
+    Python is registered at R1, R2 AND R3 and nothing else: adding ``"R3"``
+    to this ONE existing entry's ``rigor`` set is the whole registry change
+    a Python R3 CLI pipeline needs (P18's own carried-in note, one level
+    further) -- Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's
+    fixture-based proof) has no producer path wired in at any rigor level
+    yet (P22). Naming a capability this build does not actually reach is
     exactly the failure the whole v1.1 repair series exists to remove one
     level up (the post-series review's own finding 1) -- this is that
     discipline applied to the registry itself.
     """
     return registry.new_registry(
         registry.RegistryEntry(
-            adapter=PythonAdapter(), rigor=frozenset({"R1", "R2"})
+            adapter=PythonAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
     )
 
 
 #: The rigor levels THIS module resolves an adapter for, in the order tried
-#: (P18): the FIRST one a lane declares wins the lookup below, but since
-#: `_built_in_registry`'s single entry per language returns the identical
-#: adapter OBJECT for either level, which one wins is never observable --
-#: this exists only to give the tail lookup a level string to pass.
-_ADAPTER_BEARING_LEVELS: tuple[str, ...] = ("R1", "R2")
+#: (P18, widened P19): the FIRST one a lane declares wins the lookup below,
+#: but since `_built_in_registry`'s single entry per language returns the
+#: identical adapter OBJECT for any of the three, which one wins is never
+#: observable -- this exists only to give the tail lookup a level string to
+#: pass.
+_ADAPTER_BEARING_LEVELS: tuple[str, ...] = ("R1", "R2", "R3")
 
 
 def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
@@ -233,13 +232,12 @@ def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
     The adapter itself is fetched by a SECOND, explicit lookup rather than
     captured inside the loop -- capturing it there would need branching on
     which level resolved successfully, which the loop's own job (refuse or
-    continue) has no other reason to do. R1 is tried before R2 in
+    continue) has no other reason to do. R1 is tried before R2 before R3 in
     :data:`_ADAPTER_BEARING_LEVELS` merely for a deterministic, stable
-    choice when a lane declares both; :func:`~assay.registry.get_adapter`
-    returns the SAME adapter object either way (one entry per language,
-    not per rigor level), so this ordering is never itself observable --
-    when P19 makes R3 reachable too, this tail needs widening the same
-    way.
+    choice when a lane declares more than one; :func:`~assay.registry.
+    get_adapter` returns the SAME adapter object regardless (one entry per
+    language, not per rigor level), so this ordering is never itself
+    observable.
     """
     built_in = _built_in_registry()
     for level in lane.rigor:

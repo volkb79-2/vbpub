@@ -37,7 +37,10 @@ _JUDGE_SUBTABLES = {
     "mutation": (
         '\n[lanes.package.judge.mutation]\njobs = 2\noperators = ["compare-swap"]\n'
     ),
-    "canary": '\n[lanes.package.judge.canary]\nmode = "import-break"\n',
+    "canary": (
+        '\n[lanes.package.judge.canary]\nmechanism = "import-break"\n'
+        'target = "src/canary_target.py"\n'
+    ),
 }
 
 
@@ -85,6 +88,10 @@ def test_every_declared_rigor_level_loads(level: str, project: Project):
     # Each level brings its own judge requirement, and A-062 refuses anything
     # beyond it, so the lane carries EXACTLY that level's table; the point
     # under test is that the LEVEL NAME is accepted.
+    if level == "R3":
+        # judge.canary.target must be a real file beneath a declared source
+        # root (P19) -- the `project` fixture only creates the directories.
+        project.file("src/canary_target.py", "x = 1\n")
     text = set_key(R0_LANE, "rigor", f'["{level}"]') + judge_table_for(level)
     lane = load_lane_file(project.write(text)).lane("package")
     assert lane.rigor == (level,)

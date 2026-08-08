@@ -29,7 +29,7 @@ from conftest import canary_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import CanaryResult, Claim, Verdict
+from assay.verdict import CanaryResult, Claim, Judgment, JudgmentR3, Verdict
 
 BASE = {
     "lane": "package",
@@ -77,6 +77,7 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
         outcome=Outcome.PASS,
         started="2026-08-07T13:00:00+00:00",
         ended="2026-08-07T13:00:05+00:00",
+        judgment=Judgment(r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py")),
         claims=(R0_PASS, r3_claim),
     )
 
@@ -111,6 +112,7 @@ def test_canary_survived_via_unexpected_pass_matches_the_hand_written_fixture(
         reason_code=ReasonCode.CANARY_SURVIVED,
         started="2026-08-07T13:05:00+00:00",
         ended="2026-08-07T13:05:05+00:00",
+        judgment=Judgment(r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py")),
         claims=(R0_PASS, r3_claim),
     )
 
@@ -145,6 +147,7 @@ def test_canary_survived_via_wrong_reason_matches_the_hand_written_fixture(
         reason_code=ReasonCode.CANARY_SURVIVED,
         started="2026-08-07T13:10:00+00:00",
         ended="2026-08-07T13:10:05+00:00",
+        judgment=Judgment(r3=JudgmentR3(mechanism="import-break", target="pkg/greet.py")),
         claims=(R0_PASS, r3_claim),
     )
 
@@ -177,6 +180,9 @@ def test_canary_inconclusive_matches_the_hand_written_fixture(
         reason_code=ReasonCode.CANARY_INCONCLUSIVE,
         started="2026-08-07T13:15:00+00:00",
         ended="2026-08-07T13:15:05+00:00",
+        judgment=Judgment(
+            r3=JudgmentR3(mechanism="not-a-real-mechanism", target="pkg/greet.py")
+        ),
         claims=(R0_PASS, r3_claim),
     )
 

@@ -306,10 +306,24 @@ static `Lane` attributes, present whenever a lane resolved, exactly like
 behind whichever claims rendered a real computed judgment. `judgment.r1`
 is present if and only if the R1 claim carries a `coverage` payload — an
 independent consumer with a coverage percentage and no policy learns
-nothing more from it than schema v2 already gave them. `judgment.r2`/`r3`
-are reserved, closed shapes a later CLI-wiring package populates
-additively; R2 and R3 status are already re-derivable from `Mutation`'s and
-`CanaryResult`'s own fields alone, with no external policy input needed.
+nothing more from it than schema v2 already gave them.
+
+`judgment.r2`/`r3` were reserved, closed shapes at v3's own introduction,
+on the reasoning that R2 and R3 *status* is already re-derivable from
+`Mutation`'s and `CanaryResult`'s own fields alone. P18 and P19's CLI
+wiring populated them, and **A-148 then extended the same
+if-and-only-if rule to both** (`Verdict._check_judgment_matches_claims`,
+and independently in `verify.py`): presence agrees with the payload-bearing
+claim in both directions, every operator a mutation payload names must be
+one `judgment.r2.operators` declared, and a canary payload's `mechanism`
+must be the one `judgment.r3` records. Re-derivable *status* was never the
+question — what the policy record adds is which policy produced it, and a
+recorded fact tied to nothing is exactly the "take it on trust" gap this
+schema exists to close. **One field remains untied and deliberately so:
+`judgment.r3.target` (A-152).** `CanaryResult` carries no target, so no
+rule inside v3 can witness it being wrong; closing it needs a `canary.target`
+field and therefore a v4 migration, which A-138 makes a consumer's decision
+rather than a producer's.
 
 **A judged status carries the payload it judged.** Re-derivation only bites
 where there is something to re-derive, so the cheapest evasion of it is not
@@ -530,6 +544,7 @@ fail_under = 100.0
 allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
 mutation = { jobs = 4, operators = ["compare-swap","boolop-swap","bool-const-flip","falsy-swap"] }
+canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
 
 [lanes.package.where]
 service = "test-runner"; instance = "worktree"
@@ -539,6 +554,18 @@ service = "test-runner"; instance = "worktree"
 `judge.{coverage, fail_under, allow_excluded, source_roots, language}` required
 to load; `R2` additionally requires `judge.mutation`; `R3` additionally requires
 `judge.canary`. A lane claiming R1 with no coverage config fails at parse time.
+Each of those three sub-tables is CLOSED, and each is cross-checked at load
+time against the vocabulary its own module owns: `coverage.format` against
+`assay.coverage.FORMAT_REGISTRY` (A-068), `mutation.operators` against
+`assay.mutation.MUTATION_OPERATORS`, and `canary.mechanism` against
+`assay.canary.CANARY_MECHANISMS` (P19). `canary` declares exactly one
+`mechanism` and one project-relative `target`, never a plural list — one R3
+claim is one mechanism execution, because schema v3 carries a single canary
+payload and collapsing several results into it would report a judgement
+nobody made. **A declared `uncovered-line` canary only ever reaches its own
+expected reason on a lane that also declares R1** (A-150): `UNCOVERED_LINES`
+comes from the R1 evaluation and from nowhere else, so an R0+R3 lane can
+report that mechanism as having survived and never as having been caught.
 **Scope stays an unverifiable declared claim** — assay cannot check S1-vs-S2 —
 but naming it is precisely what made dstdns's gap visible, so it is required and
 honest about being a claim.

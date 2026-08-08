@@ -9,14 +9,24 @@
 > in code every package's own review had already passed. **Read that review
 > file before trusting anything else in this document as current** — the
 > P15–P25 repair series is carved directly against its findings and is now
-> being implemented, **P15–P18 merged, P19 next** (see "Where
+> being implemented, **P15–P19 merged, P20 next** (see "Where
 > things stand" below for live status). Sol finding 1 — "declared R1–R3
-> lanes cannot run" — is now TWO THIRDS closed: declared Python **R1 and
-> R2** lanes both run and are judged end to end through the installed
-> console script, R2 executing real changed-line mutants under the lane's
-> own declared policy. R3 is still unreachable, but it is refused
-> *honestly* (before the command runs, as a complete artifact) rather than
-> after it.
+> lanes cannot run" — is **CLOSED**: declared Python **R1, R2 and R3**
+> lanes all run and are judged end to end through the installed console
+> script. R2 executes real changed-line mutants under the lane's own
+> declared policy; R3 proves one declared canary inside a disposable copy
+> of the consumer's repository, which is never staged, committed, or
+> written to. A lane declaring a language this build has no adapter for is
+> still refused *honestly* (before the command runs, as a complete
+> artifact) rather than after it.
+>
+> **Closed does not mean proven safe.** Sol finding 1 was about
+> reachability, and R3's own reachability is what P19 delivered — the
+> controller's review of it then found that the single most important
+> thing R3 can prove (`uncovered-line`, caught for its own reason) was
+> structurally impossible in the shipped branch and invisible to a
+> gate-green suite at 100% coverage (A-149/A-150). Read that pair before
+> assuming any newly-reachable level is also correct.
 > If you are picking this project up: read the
 > review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
 > (the P14-era final-state brief — still accurate for what P00–P14 built,
@@ -25,10 +35,10 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P18** — the complete P00–P14 series, plus
-the first four packages of the P15–P25 repair series. Gate green at
-**1781 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
-(2941 stmts / 1188 branches) — counts measured INSIDE `tester-unified:
+**Merged on `main`, P00 through P19** — the complete P00–P14 series, plus
+the first five packages of the P15–P25 repair series. Gate green at
+**1831 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
+(3070 stmts / 1256 branches) — counts measured INSIDE `tester-unified:
 local` itself, not in the devcontainer, because the gate's own `argv`
 reports only an exit code and a cockpit venv carries different pins. Run
 through the REAL self-hosting mechanism P14
@@ -232,6 +242,34 @@ far, and it has never once come back clean.
   been run; running it found two more properties with no discriminating
   oracle. A LOG exists this time:
   `nyxloom-trove/reports/assay-P18-r2-cli-pipeline-LOG.md`.
+- **P19** (isolated R3 CLI pipeline — sol finding 1 CLOSED): `assay run`
+  proves one declared canary for a Python R3 lane. `judge.canary` stops
+  being an opaque passthrough and becomes a closed, validated
+  `CanaryConfig` — exactly `mechanism` (cross-checked at load time against
+  `assay.canary.CANARY_MECHANISMS`) and `target` (a project-relative,
+  existing, ordinary file beneath a declared source root; absolute, empty,
+  traversing, symlinked, missing and directory targets each refused with
+  their own diagnostic). The consumer's whole repository is `copytree`d —
+  `.git` included, so a symbolic `judge.base` still resolves — into scratch
+  state the run owns end to end; the real worktree is never staged,
+  committed, or written to. **A-148 is closed**: `judgment.r2`/`r3` now
+  carry the same correspondence check `judgment.r1` had, in the model AND
+  in `verify.py`'s independent raw-document layer.
+  **Controller review found one structural defect, one absent oracle, one
+  false recorded impossibility and one misleading public name (A-149–A-152),
+  again on a branch that arrived gate-green at 100% coverage.** The worst:
+  the canary judged the scratch COPY using the consumer's own absolute
+  `judge.source_root_paths`, so every changed file fell outside every root,
+  `considered` was 0, `pct` was a vacuous 100.0, and R1 PASSed having
+  measured nothing — which made `uncovered-line`, one of exactly two
+  mechanisms, unable to ever PASS (A-149). It was invisible because every
+  R3 fixture declared a rigor set in which that mechanism's expected reason
+  was unreachable (A-150), so half of O3 had no witness at all. The suite
+  also recorded a wrong-observed-cause as unreachable through the real
+  adapter; it is reachable, and P24 had already been told to trust the
+  claim (A-151). `judgment.r3.target` stays untied on purpose — nothing in
+  schema v3 can witness it (A-152/A-O18). LOG:
+  `nyxloom-trove/reports/assay-P19-isolated-r3-cli-pipeline-LOG.md`.
 
 Key commits: `d9839e81` (P17 controller repairs, A-139–A-143),
 `e5b81d4c` (P17 implementation), `340d9633` (P16 merge), `50110247` (P16 controller repairs),
@@ -268,7 +306,7 @@ full, this summary is not a substitute.
 committed, and controller-verified. P26 (TypeScript adapter) and P27
 (the `dstdns`-side adoption package) are NOT yet carved.**
 
-**Implementation status of that series: P15, P16 and P17 are MERGED. P18
+**Implementation status of that series: P15 through P19 are MERGED. P20
 is next.** P16's outcome propagated into FIVE later handoffs, each now
 carrying a "Carried in from P16, merged" section (all six edited handoffs
 re-linted `clean`): **P17** (the `judgment.r1`-iff-`coverage` trap — a
@@ -373,6 +411,21 @@ they collide, and P22 is the package that derives that path from a real
 `go.mod`. The fix is moving two calls inside the existing `try`;
 `runner.py` is not in P22's `scope.touch`, so widen it if P22 agrees the
 repair is theirs. Recorded in P22's handoff too.
+
+**A-O18, new (found at the P19 merge, needs schema v4): `judgment.r3.
+target` is recorded and structurally unverifiable.** A-148 tied
+`judgment.r2`/`r3` to the claims they describe, and every part of that
+binding has a witness except one: `CanaryResult` carries a `mechanism`
+(checked, in both the model and `verify.py`) but no target, so nothing in
+a v3 artifact can catch `judgment.r3.target` naming the wrong file. The
+two ways to close it inside v3 — inferring the target from
+`judgment.r1.source_roots`, or parsing it out of the canary description
+string — would each be a rule that looks like verification and is not,
+which is the failure this series exists to remove. The real fix is a
+`canary.target` field, therefore schema v4, therefore a consumer
+migration (A-138) and not a producer upgrade. No package in P20–P25 may
+touch `src/assay/schemas`. **Decide when v4 is next opened**; until then
+the field is declared-only and is documented as such in DESIGN-GUIDE §6.
 
 **A-128's "three structurally unreachable pairs" is CLOSED — merged, not
 merely carved (2026-08-08, P17 + A-141).** Work item 6 widened

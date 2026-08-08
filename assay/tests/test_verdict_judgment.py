@@ -16,12 +16,15 @@ from __future__ import annotations
 import pytest
 
 from assay.verdict import (
+    CanaryResult,
     Claim,
     Coverage,
     Judgment,
     JudgmentR1,
     JudgmentR2,
     JudgmentR3,
+    MutantOutcome,
+    Mutation,
     Verdict,
 )
 from assay.errors import Outcome, ReasonCode
@@ -65,6 +68,39 @@ def r1_pass_claim() -> Claim:
     return Claim(
         rigor="R1", source="computed", status=Outcome.PASS,
         verified_by_assay=True, coverage=coverage,
+    )
+
+
+def r2_pass_claim(*, survivor_operator: str | None = None) -> Claim:
+    survived = ()
+    if survivor_operator is not None:
+        survived = (
+            MutantOutcome(
+                path="a.py", lineno=1, operator=survivor_operator, description="x->y"
+            ),
+        )
+        status, reason_code = Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED
+    else:
+        status, reason_code = Outcome.PASS, None
+    mutation = Mutation(total=1, killed=0 if survived else 1, survived=survived)
+    return Claim(
+        rigor="R2", source="computed", status=status,
+        verified_by_assay=True, reason_code=reason_code, mutation=mutation,
+    )
+
+
+def r3_pass_claim(*, mechanism: str = "uncovered-line") -> Claim:
+    canary = CanaryResult(
+        mechanism=mechanism,
+        description="x",
+        control_outcome=Outcome.PASS,
+        transformed_outcome=Outcome.FAIL,
+        expected_reason_code=ReasonCode.UNCOVERED_LINES,
+        observed_reason_code=ReasonCode.UNCOVERED_LINES,
+    )
+    return Claim(
+        rigor="R3", source="computed", status=Outcome.PASS,
+        verified_by_assay=True, canary=canary,
     )
 
 
@@ -430,3 +466,104 @@ def test_verdict_accepts_the_matched_r1_coverage_and_judgment_pair():
         judgment=Judgment(r1=JudgmentR1(**BASE_R1_POLICY)),
     )
     assert verdict.judgment.r1.language == "python"
+
+
+# --- Verdict: the judgment.r2 <-> R2-mutation correspondence (P19/A-148) ----
+
+
+def test_verdict_refuses_judgment_r2_present_without_an_r2_mutation_claim():
+    with pytest.raises(ValueError, match="no R2 claim rendered a mutation payload"):
+        Verdict(
+            **BASE_VERDICT,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0",),
+            claims=(r0_pass(),),
+            judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
+        )
+
+
+def test_verdict_refuses_an_r2_mutation_claim_without_judgment_r2():
+    verdict_kwargs = dict(
+        **BASE_VERDICT,
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.MUTANTS_SURVIVED,
+        declared_rigor=("R0", "R2"),
+        claims=(r0_pass(), r2_pass_claim(survivor_operator="compare-swap")),
+    )
+    with pytest.raises(ValueError, match="judgment.r2 is absent"):
+        Verdict(**verdict_kwargs)
+
+
+def test_verdict_accepts_the_matched_r2_mutation_and_judgment_pair():
+    verdict = Verdict(
+        **BASE_VERDICT,
+        outcome=Outcome.PASS,
+        declared_rigor=("R0", "R2"),
+        claims=(r0_pass(), r2_pass_claim()),
+        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
+    )
+    assert verdict.judgment.r2.jobs == 1
+
+
+def test_verdict_refuses_a_survivor_naming_an_operator_judgment_r2_never_declared():
+    with pytest.raises(ValueError, match="never selected"):
+        Verdict(
+            **BASE_VERDICT,
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.MUTANTS_SURVIVED,
+            declared_rigor=("R0", "R2"),
+            claims=(r0_pass(), r2_pass_claim(survivor_operator="compare-swap")),
+            judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("boolop-swap",))),
+        )
+
+
+# --- Verdict: the judgment.r3 <-> R3-canary correspondence (P19/A-148) -----
+
+
+def test_verdict_refuses_judgment_r3_present_without_an_r3_canary_claim():
+    with pytest.raises(ValueError, match="no R3 claim rendered a canary payload"):
+        Verdict(
+            **BASE_VERDICT,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0",),
+            claims=(r0_pass(),),
+            judgment=Judgment(
+                r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py")
+            ),
+        )
+
+
+def test_verdict_refuses_an_r3_canary_claim_without_judgment_r3():
+    with pytest.raises(ValueError, match="judgment.r3 is absent"):
+        Verdict(
+            **BASE_VERDICT,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0", "R3"),
+            claims=(r0_pass(), r3_pass_claim()),
+        )
+
+
+def test_verdict_accepts_the_matched_r3_canary_and_judgment_pair():
+    verdict = Verdict(
+        **BASE_VERDICT,
+        outcome=Outcome.PASS,
+        declared_rigor=("R0", "R3"),
+        claims=(r0_pass(), r3_pass_claim()),
+        judgment=Judgment(
+            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py")
+        ),
+    )
+    assert verdict.judgment.r3.target == "pkg/mod.py"
+
+
+def test_verdict_refuses_a_canary_payload_whose_mechanism_disagrees_with_judgment_r3():
+    with pytest.raises(ValueError, match="must name the same mechanism"):
+        Verdict(
+            **BASE_VERDICT,
+            outcome=Outcome.PASS,
+            declared_rigor=("R0", "R3"),
+            claims=(r0_pass(), r3_pass_claim(mechanism="uncovered-line")),
+            judgment=Judgment(
+                r3=JudgmentR3(mechanism="import-break", target="pkg/mod.py")
+            ),
+        )
