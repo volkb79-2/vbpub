@@ -34,7 +34,9 @@ _JUDGE_SCALARS = {
     "base": 'base = "main"',
 }
 _JUDGE_SUBTABLES = {
-    "mutation": "\n[lanes.package.judge.mutation]\njobs = 2\n",
+    "mutation": (
+        '\n[lanes.package.judge.mutation]\njobs = 2\noperators = ["compare-swap"]\n'
+    ),
     "canary": '\n[lanes.package.judge.canary]\nmode = "import-break"\n',
 }
 

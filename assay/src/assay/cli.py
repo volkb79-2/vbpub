@@ -14,19 +14,20 @@ Three subcommands ship so far:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0 and R1**, for Python only: ``_built_in_registry``
-  is the CLI's own closed capability declaration (work item 2) — Python is
-  registered at R1 and nothing else, so a lane declaring ``judge.language``
-  as anything but ``"python"``, or R1 for a language this registry does not
-  know, is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command
-  ever runs. A lane declaring R2 or R3 is refused by that SAME registry
-  lookup (:func:`_resolve_declared_adapters` checks every declared level,
-  not only R1 — A-139), also before the command runs, and — like every
-  other post-``HEAD`` refusal here — as a COMPLETE verdict artifact via
-  :func:`assay.runner.refuse_lane`, never a bare exception. That check
-  self-obsoletes as R2/R3 evaluation lands: P18/P19 add the level to
-  ``_built_in_registry``'s existing entry and the same loop starts
-  admitting it.
+  This build evaluates **R0, R1 and R2**, for Python only (P18):
+  ``_built_in_registry`` is the CLI's own closed capability declaration
+  (work item 2) — Python is registered at R1 and R2 and nothing else, so a
+  lane declaring ``judge.language`` as anything but ``"python"``, or a
+  rigor level for a language this registry does not know, is refused
+  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs. A
+  lane declaring R3 is refused by that SAME registry lookup
+  (:func:`_resolve_declared_adapters` checks every declared level, not
+  only the ones this build reaches — A-139), also before the command runs,
+  and — like every other post-``HEAD`` refusal here — as a COMPLETE
+  verdict artifact via :func:`assay.runner.refuse_lane`, never a bare
+  exception. That check self-obsoletes as R3 evaluation lands: P19 adds
+  the level to ``_built_in_registry``'s existing entry and the same loop
+  starts admitting it.
 
   :func:`assay.runner.assemble_verdict`'s own "a declared rigor level has
   no claim" guard stays where it is as the library-level backstop for a
@@ -174,61 +175,79 @@ def _resolve_lane_file(path: Path | None) -> LaneFile:
 
 
 def _built_in_registry() -> registry.Registry:
-    """This CLI's own closed capability declaration (P17, work item 2): a
-    fresh :class:`~assay.registry.Registry`, built on every call rather than
-    once at import time -- an adapter carries no state a test could leak
-    between calls (AUTHORING.md §3b.B), so there is nothing a shared,
-    module-level instance would buy beyond a mutable global to guard.
+    """This CLI's own closed capability declaration (P17 work item 2,
+    widened P18): a fresh :class:`~assay.registry.Registry`, built on
+    every call rather than once at import time -- an adapter carries no
+    state a test could leak between calls (AUTHORING.md §3b.B), so there
+    is nothing a shared, module-level instance would buy beyond a mutable
+    global to guard.
 
-    Python is registered at R1 and nothing else: R2/R3 land in P18/P19, and
-    Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's fixture-based
-    proof) has no producer path wired in at any rigor level yet (P22).
-    Naming a capability this build does not actually reach is exactly the
-    failure the whole v1.1 repair series exists to remove one level up
-    (the post-series review's own finding 1) -- this is that discipline
-    applied to the registry itself.
+    Python is registered at R1 AND R2 and nothing else: adding ``"R2"`` to
+    this ONE existing entry's ``rigor`` set is the whole registry change a
+    Python R2 CLI pipeline needs (P18's own carried-in note) -- R3 lands in
+    P19, and Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's fixture-
+    based proof) has no producer path wired in at any rigor level yet
+    (P22). Naming a capability this build does not actually reach is
+    exactly the failure the whole v1.1 repair series exists to remove one
+    level up (the post-series review's own finding 1) -- this is that
+    discipline applied to the registry itself.
     """
     return registry.new_registry(
-        registry.RegistryEntry(adapter=PythonAdapter(), rigor=frozenset({"R1"})),
+        registry.RegistryEntry(
+            adapter=PythonAdapter(), rigor=frozenset({"R1", "R2"})
+        ),
     )
+
+
+#: The rigor levels THIS module resolves an adapter for, in the order tried
+#: (P18): the FIRST one a lane declares wins the lookup below, but since
+#: `_built_in_registry`'s single entry per language returns the identical
+#: adapter OBJECT for either level, which one wins is never observable --
+#: this exists only to give the tail lookup a level string to pass.
+_ADAPTER_BEARING_LEVELS: tuple[str, ...] = ("R1", "R2")
 
 
 def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
     """Check EVERY declared rigor level above R0 against this build's own
-    registry, and return the R1 adapter :func:`assay.runner.run_lane`
-    needs (``None`` when R1 is not declared).
+    registry, and return the adapter :func:`assay.runner.run_lane` needs
+    for whichever of R1/R2 the lane declares (``None`` when neither is
+    declared).
 
     Work item 2's "reject declared rigor above that entry's capability"
-    (A-139). Checking only ``"R1"`` -- as this function's first version did
-    -- left the registry gate DEAD for the levels it exists to guard: a
-    lane declaring ``rigor = ["R0", "R2"]`` never consulted the registry at
-    all, so its command ran to completion and only THEN did
-    :func:`assay.runner.assemble_verdict` refuse it for a missing R2 claim,
-    with the side effects already committed and no artifact emitted. The
-    loop is over ``lane.rigor`` itself so a level this build cannot reach
-    is refused BEFORE anything executes, whichever level it is.
+    (A-139). Checking only the literal levels this build reaches -- as
+    this function's first version did for ``"R1"`` alone -- left the
+    registry gate DEAD for the levels it exists to guard: a lane declaring
+    ``rigor = ["R0", "R3"]`` never consulted the registry at all, so its
+    command ran to completion and only THEN did
+    :func:`assay.runner.assemble_verdict` refuse it for a missing R3
+    claim, with the side effects already committed and no artifact
+    emitted. The loop is over ``lane.rigor`` itself so a level this build
+    cannot reach is refused BEFORE anything executes, whichever level it
+    is.
 
     ``R0`` is skipped, not looked up: it needs no adapter, and
     :class:`~assay.registry.RegistryEntry` refuses to name it for exactly
     that reason.
 
-    The R1 adapter is fetched by a SECOND, explicit lookup rather than
-    captured inside the loop. Capturing it would need an ``if level ==
-    "R1"`` whose false arm only runs when some OTHER level also resolves
-    successfully -- impossible while R1 is the only level this build
-    reaches, so it would be a branch no test could ever take (AUTHORING.md
-    §3b.D: restructure so the unreachable line does not exist, never
-    pragma past it). The repeat lookup is a frozen-mapping ``get``; when
-    P18/P19 make a second level reachable, the loop above is already
-    correct and only this tail needs revisiting.
+    The adapter itself is fetched by a SECOND, explicit lookup rather than
+    captured inside the loop -- capturing it there would need branching on
+    which level resolved successfully, which the loop's own job (refuse or
+    continue) has no other reason to do. R1 is tried before R2 in
+    :data:`_ADAPTER_BEARING_LEVELS` merely for a deterministic, stable
+    choice when a lane declares both; :func:`~assay.registry.get_adapter`
+    returns the SAME adapter object either way (one entry per language,
+    not per rigor level), so this ordering is never itself observable --
+    when P19 makes R3 reachable too, this tail needs widening the same
+    way.
     """
     built_in = _built_in_registry()
     for level in lane.rigor:
         if level != "R0":
             registry.get_adapter(built_in, lane.judge.language, level)
-    if "R1" not in lane.rigor:
-        return None
-    return registry.get_adapter(built_in, lane.judge.language, "R1")
+    for level in _ADAPTER_BEARING_LEVELS:
+        if level in lane.rigor:
+            return registry.get_adapter(built_in, lane.judge.language, level)
+    return None
 
 
 def _cmd_run(

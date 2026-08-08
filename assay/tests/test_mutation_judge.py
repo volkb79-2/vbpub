@@ -23,7 +23,7 @@ from conftest import make_lane
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationTarget, build_mutation_claim, judge_mutation, run_mutation
-from assay.runner import CommandPlan, CommandResult
+from assay.runner import CommandPlan, CommandResult, execute_command
 
 _PLAN = CommandPlan(
     argv_declared=("pytest", "-q"),
@@ -165,15 +165,19 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
     (project_root / "pkg").mkdir(parents=True)
     (project_root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
     scratch_root.mkdir()
+    decide = _decide(project_root)
 
-    baseline, mutation = run_mutation(
+    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=_decide(project_root),
+        operators=("bool-const-flip",),
+        process_runner=decide,
     )
 
     assert baseline.outcome is Outcome.PASS

@@ -30,6 +30,7 @@ from conftest import make_lane
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
 from assay.mutation import MutationTarget, run_mutation
+from assay.runner import execute_command
 
 #: Four independent bool-const sites -- one per bucket this test drives
 #: into KILLED, SURVIVED, CRASHED, and BUDGET_EXCEEDED respectively, keyed
@@ -117,15 +118,19 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
     scratch_root = tmp_path / "scratch"
     _materialize_project(project_root)
     scratch_root.mkdir()
+    decide = _make_decide_by_mutated_content(project_root)
+    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=_make_decide_by_mutated_content(project_root),
+        operators=("bool-const-flip",),
+        process_runner=decide,
         executor_factory=lambda jobs: _SynchronousExecutor(),
     )
 
@@ -152,14 +157,18 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
         scratch_root = tmp_path / f"scratch-{jobs}"
         _materialize_project(project_root)
         scratch_root.mkdir()
-        baseline, mutation = run_mutation(
+        decide = _make_decide_by_mutated_content(project_root)
+        baseline = execute_command(lane, cwd=project_root, process_runner=decide)
+        mutation = run_mutation(
             lane,
+            baseline=baseline,
             project_root=project_root,
             scratch_root=scratch_root,
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=jobs,
-            process_runner=_make_decide_by_mutated_content(project_root),
+            operators=("bool-const-flip",),
+            process_runner=decide,
         )
         assert baseline.outcome is Outcome.PASS
         return mutation
@@ -186,15 +195,19 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
     _materialize_project(project_root)
     scratch_root.mkdir()
     before = (project_root / "pkg" / "flags.py").read_bytes()
+    decide = _make_decide_by_mutated_content(project_root)
+    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=_make_decide_by_mutated_content(project_root),
+        operators=("bool-const-flip",),
+        process_runner=decide,
     )
 
     assert baseline.outcome is Outcome.PASS
@@ -215,15 +228,19 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
     scratch_root = tmp_path / "scratch"
     _materialize_project(project_root)
     scratch_root.mkdir()
+    decide = _make_decide_by_mutated_content(project_root)
+    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=_make_decide_by_mutated_content(project_root),
+        operators=("bool-const-flip",),
+        process_runner=decide,
     )
 
     assert baseline.outcome is Outcome.PASS

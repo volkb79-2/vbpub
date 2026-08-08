@@ -25,6 +25,7 @@ from assay.adapters.python import PythonAdapter
 from assay.config import Lane
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationTarget, build_mutation_claim, run_mutation
+from assay.runner import execute_command
 
 FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "mutation_exec" / "python"
 assert (FIXTURE_DIR / "pkg" / "checks.py").is_file(), (
@@ -63,13 +64,17 @@ def test_a_real_pytest_run_produces_a_genuine_killed_and_a_genuine_survived_muta
         ),
     )
 
-    baseline, mutation = run_mutation(
-        _lane(),
+    lane = _lane()
+    baseline = execute_command(lane, cwd=project_root)
+    mutation = run_mutation(
+        lane,
+        baseline=baseline,
         project_root=project_root,
         scratch_root=scratch_root,
         targets=targets,
         adapter=PythonAdapter(),
         jobs=2,
+        operators=("compare-swap",),
     )
 
     assert baseline.outcome is Outcome.PASS, baseline
@@ -123,13 +128,17 @@ def test_a_real_broken_baseline_stops_before_any_real_mutant_run(tmp_path: Path)
         ),
     )
 
-    baseline, mutation = run_mutation(
-        _lane(),
+    lane = _lane()
+    baseline = execute_command(lane, cwd=project_root)
+    mutation = run_mutation(
+        lane,
+        baseline=baseline,
         project_root=project_root,
         scratch_root=scratch_root,
         targets=targets,
         adapter=PythonAdapter(),
         jobs=2,
+        operators=("compare-swap",),
     )
 
     assert baseline.outcome is Outcome.FAIL

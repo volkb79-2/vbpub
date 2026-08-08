@@ -183,7 +183,7 @@ def test_run_permits_an_append_when_allowed(git_repo: GitRepo, tmp_path: Path):
     assert marker.exists()
 
 
-# --- this build evaluates R0 and Python R1 only (P17) --------------------------
+# --- this build evaluates R0, Python R1 and Python R2 (P17, R2 wiring P18) ---
 
 
 def _r1_lane_writing_a_marker(marker: Path) -> str:
@@ -193,42 +193,67 @@ def _r1_lane_writing_a_marker(marker: Path) -> str:
     return set_key(R1_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
 
 
-def test_run_refuses_a_lane_declaring_r2_without_running_it(
-    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
-):
-    """R2 lands in P18. A-139: the CLI's own registry says Python reaches
-    R1 and nothing else, so an R2 lane is refused BEFORE its command runs
-    -- and, because HEAD is already resolved by then, as a COMPLETE
-    artifact (work item 3's "every later terminal path must emit a
-    complete artifact"), never a bare exception.
+def test_run_evaluates_a_real_r2_pass_end_to_end(git_repo: GitRepo):
+    """P18's own registry-wiring proof, the mirror of
+    ``test_run_evaluates_a_real_r1_pass_end_to_end`` one rigor level over:
+    a real two-commit diff introduces one ``compare-swap`` site (``x > 0``
+    has exactly ONE swap target, ``>=``, per the adapter's own closed
+    catalogue), a real ``/bin/sh`` command that greps the live file for the
+    literal substring ``x > 0`` PASSES against the unmutated baseline and
+    FAILS against the single generated mutant (whose own mutated text
+    reads ``x >= 0``) -- a genuine kill, through the installed CLI, not a
+    hand-asserted claim. R2 declared WITHOUT R1 alongside it, so this also
+    proves R2's own independent diff-resolution path (no R1 claim to reuse
+    ``on_added_resolved`` from)."""
+    (git_repo.path / "src").mkdir()
+    git_repo.write("src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
+    git_repo.commit_all("introduce a compare-swap site")
+    lane = f"""\
+schema_version = 1
 
-    Both halves are the point. Before A-139 the registry was consulted for
-    the literal ``"R1"`` only, so this lane ran its command to completion
-    and was refused afterwards by ``assemble_verdict``, with the side
-    effects already committed and nothing for a consumer to read."""
-    marker = tmp_path / "the-command-ran"
-    lane = set_key(_r1_lane_writing_a_marker(marker), "rigor", '["R0", "R1", "R2"]')
-    lane += "\n[lanes.package.judge.mutation]\njobs = 2\noperators = ["
-    lane += '"compare-swap"]\n'
-    path = _write_and_commit_lane(git_repo, lane)
-    for name in ("src", "scripts"):
-        (git_repo.path / name).mkdir(exist_ok=True)
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "grep -q 'x > 0' src/mod.py"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+operators = ["compare-swap"]
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
 
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
 
-    assert code == 2
-    assert not marker.exists(), "the lane's command ran despite an unreachable rigor"
+    assert code == 0, err
     document = json.loads(out)
-    assert why_invalid(validator, document) == []
-    assert document["outcome"] == "ERROR"
-    assert document["reason_code"] == "BAD_LANE_CONFIG"
-    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
-        ("R0", "ERROR"),
-        ("R1", "ERROR"),
-        ("R2", "ERROR"),
-    ]
-    assert document["commit"] == git_repo.head()
-    assert "R2" in err
+    assert document["outcome"] == "PASS"
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R2"]
+    r2_claim = document["claims"][1]
+    assert r2_claim["status"] == "PASS"
+    assert r2_claim["mutation"] == {
+        "total": 1,
+        "killed": 1,
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": [],
+    }
+    assert document["judgment"]["r2"] == {
+        "jobs": 1,
+        "operators": ["compare-swap"],
+    }
 
 
 def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(

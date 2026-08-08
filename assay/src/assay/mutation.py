@@ -34,14 +34,24 @@ sibling types live) is off-limits here.
 **P12 adds execution** (A-119): baseline-gated, isolated, ``jobs``-bounded
 mutation running lives HERE too, beside :class:`Mutant`, mirroring
 ``canary.py``'s own precedent of holding one claim-tier's entire
-orchestration in a single dedicated module. The new surface is
-:func:`run_mutation` (the entry point: mandatory baseline, then a bounded
-executor fan-out over :func:`collect_mutants`'s job list, then deterministic
-aggregation into a :class:`~assay.verdict.Mutation`), :func:`judge_mutation`
-/ :func:`build_mutation_claim` (the pure outcome mapping and R2
+orchestration in a single dedicated module. The surface is
+:func:`run_mutation` (the entry point: a bounded executor fan-out over
+:func:`collect_mutants`'s job list, then deterministic aggregation into a
+:class:`~assay.verdict.Mutation`), :func:`judge_mutation` /
+:func:`build_mutation_claim` (the pure outcome mapping and R2
 :class:`~assay.verdict.Claim` wiring, A-117), and :func:`collect_mutants`
 (the cross-file aggregation this package's own implementation choice, see
 the LOG).
+
+**P18 wires this into the installed CLI** (work items 2-5): the baseline
+:func:`run_mutation` gates on is no longer run BY this module — it is now
+a required *baseline* parameter, the exact :class:`~assay.runner.
+CommandResult` R0 already produced, so the lane's command runs at most
+once per ``assay run`` invocation (sol finding 11). :func:`
+resolve_mutation_targets` builds the per-file candidate list from the same
+resolved diff R1 measures against, and *operators* filters
+:func:`collect_mutants`'s output down to the lane's own declared,
+closed selection before anything is submitted.
 
 **A circular-import note, since it shapes this module's own imports below**:
 ``assay.runner`` imports ``assay.adapters.base``, which imports THIS module
@@ -65,14 +75,16 @@ empirically), and avoids re-opening the same cycle purely for a type hint.
 
 from __future__ import annotations
 
+import fnmatch
 import shutil
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 from .config import Lane
+from .diff import AddedLines
 from .errors import Outcome, ReasonCode
 from .verdict import Claim, Mutation, MutantOutcome
 
@@ -88,6 +100,7 @@ __all__ = [
     "collect_mutants",
     "judge_mutation",
     "line_for_offset",
+    "resolve_mutation_targets",
     "run_mutation",
 ]
 
@@ -262,6 +275,69 @@ class MutationTarget:
                 )
 
 
+def resolve_mutation_targets(
+    added: AddedLines,
+    *,
+    repo_top: Path,
+    source_root_paths: Sequence[Path],
+    adapter: LanguageAdapter,
+    read_source_text: Callable[[str], str],
+) -> tuple[MutationTarget, ...]:
+    """Build R2's per-file candidate list from the SAME resolved diff R1
+    measures against (P18, work item 2) -- *added* is
+    :func:`~assay.diff.parse_added_lines`'s own output, threaded in by the
+    caller (:func:`~assay.runner.run_lane`) rather than re-derived here, so
+    a lane declaring both R1 and R2 diffs its base exactly once (this
+    package's own carried-in note: "R2 target selection must consume the
+    same measurement, not invoke Git independently with a second base").
+
+    A changed file becomes a candidate target under the identical gates
+    :func:`assay.evaluate.evaluate_coverage`'s own (private)
+    ``_is_considered`` already applies for R1 -- under a declared source
+    root, not inside one of the adapter's own excluded directories, and
+    matching one of the adapter's own ``source_globs`` -- plus the
+    adapter's own :meth:`~assay.adapters.base.LanguageAdapter.is_test_path`
+    exclusion. Deliberately a SEPARATE, duplicated copy of that check
+    rather than an import from :mod:`assay.evaluate`: that module sits
+    outside this package's own ``scope.touch``, and two independently
+    written copies that must agree is a real check one level up -- the
+    same reasoning this module's own :func:`_mutant_outcome_sort_key`
+    already gives for keeping its own copy rather than importing
+    ``verdict``'s private sort key.
+
+    Returned in PATH order (never *added.by_file*'s own iteration order,
+    which is not itself a promised ordering) -- the same determinism
+    :func:`collect_mutants` already applies one level down, so a caller
+    never has to sort twice. *read_source_text* is the injectable
+    filesystem boundary (AUTHORING.md §3b.E), called once per considered
+    file, mirroring :func:`assay.runner.evaluate_r1`'s own
+    ``read_source_text`` closure.
+
+    A file contributing no lines that survive these gates is simply
+    absent from the result -- never present with an empty
+    :class:`MutationTarget`, which could not construct anyway (its own
+    ``lines`` field refuses empty, A-092).
+    """
+    targets: list[MutationTarget] = []
+    for path in sorted(added.by_file):
+        lines = added.by_file[path]
+        abs_path = (repo_top / path).resolve()
+        if not any(abs_path.is_relative_to(root) for root in source_root_paths):
+            continue
+        if any(part in adapter.excluded_dir_names for part in Path(path).parts[:-1]):
+            continue
+        if not any(fnmatch.fnmatch(path, glob) for glob in adapter.source_globs):
+            continue
+        if adapter.is_test_path(path):
+            continue
+        targets.append(
+            MutationTarget(
+                path=path, text=read_source_text(path), lines=frozenset(lines)
+            )
+        )
+    return tuple(targets)
+
+
 @dataclass(frozen=True, kw_only=True)
 class MutantJob:
     """One ``(file, mutant)`` pair — the unit of work :func:`run_mutation`
@@ -393,39 +469,81 @@ def _run_one_mutant(
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
+def _filter_by_operators(
+    jobs: tuple[MutantJob, ...], operators: frozenset[str]
+) -> tuple[MutantJob, ...]:
+    """P18 work item 3's own filtering step, kept separate from
+    :func:`collect_mutants` (P11's already-independently-tested
+    construction/aggregation surface) rather than folded into it: retains
+    only the jobs whose :attr:`Mutant.operator` is in the lane's declared,
+    closed *operators* set. An adapter's ``UNSUPPORTED`` return, a
+    syntactically valid file contributing no eligible site, and an
+    operator filter excluding every remaining candidate all collapse into
+    the identical empty result here — :func:`run_mutation` reads all three
+    the same honest way, ``total == 0`` -> ``INCONCLUSIVE``/``NO_MUTANTS``
+    (A-117), with no special-casing needed for which of the three actually
+    happened. Order is preserved from *jobs* (already path/lineno/operator/
+    description-ordered by :func:`collect_mutants`) — filtering removes
+    entries, it never reorders the survivors.
+    """
+    return tuple(job for job in jobs if job.mutant.operator in operators)
+
+
 def run_mutation(
     lane: Lane,
     *,
+    baseline: CommandResult,
     project_root: Path,
     scratch_root: Path,
     targets: Iterable[MutationTarget],
     adapter: LanguageAdapter,
     jobs: int,
+    operators: Iterable[str],
     process_runner: ProcessRunner | None = None,
     clock: Clock | None = None,
     executor_factory: ExecutorFactory = _default_executor_factory,
-) -> tuple[CommandResult, Mutation | None]:
-    """The R2 execution entry point (A-119/A-120): a MANDATORY baseline
-    first (O1), via the identical ``execute_command`` the lane's own R0
-    step uses, against *project_root* UNMODIFIED. A baseline that does not
-    PASS stops HERE — before :func:`collect_mutants` is even called, let
-    alone anything submitted to an executor (O1's own negative: "submits
-    mutant work... when the original suite is already red") — and the
-    second element of the return is ``None`` (A-116's baseline-conditional
-    presence rule: mutation testing never started).
+) -> Mutation | None:
+    """The R2 execution entry point (A-119/A-120; *baseline* refactored in
+    P18 work item 4). *baseline* is now a MANDATORY, ALREADY-OBTAINED
+    :class:`~assay.runner.CommandResult` — the exact R0 result
+    :func:`~assay.runner.run_lane` already produced for this same lane
+    against this same, still-unmodified *project_root* — never re-executed
+    here (sol finding 11: the old internal baseline doubled the command
+    ledger). A baseline that did not PASS stops HERE, before
+    :func:`collect_mutants` is even called, let alone anything submitted
+    to an executor (O1's own negative: "submits mutant work... when the
+    original suite is already red") — and this function returns ``None``
+    (A-116's baseline-conditional presence rule: mutation testing never
+    started). :func:`judge_mutation`/:func:`build_mutation_claim` read the
+    caller's OWN *baseline* to propagate its exact ``(outcome,
+    reason_code)`` verbatim in that case, so a caller passes the identical
+    object to both this function and those.
+
+    *jobs* is validated (a positive, non-boolean integer) BEFORE the
+    executor boundary (work item 5): this function is a public surface a
+    caller may invoke directly — every test in this module's own suite
+    does — so :mod:`assay.config`'s load-time discipline for a real
+    ``assay.toml`` cannot be assumed to have already run here.
 
     Only when the baseline PASSES: collects every candidate site across
-    *targets*, fans the resulting job list out over
-    ``executor_factory(jobs)`` — called with EXACTLY *jobs*, never a
-    derived or machine-sourced value (A-082/A-122) — isolating each mutant
-    into its own fresh scratch copy under *scratch_root* (A-120). Results
-    are collected POSITION-ALIGNED with the submitted job list (each
-    ``Future`` is awaited by its own index via the returned futures list,
-    never via ``as_completed`` or a dict keyed by arrival order), and the
-    three non-killed buckets are sorted by stable identity before
-    :class:`~assay.verdict.Mutation` is built — so ``jobs=1`` and
-    ``jobs=3`` render IDENTICAL records regardless of which thread's
-    subprocess happens to finish first (O2/O3).
+    *targets*, retains only the ones whose operator is in *operators*
+    (work item 3 — the lane's own declared, closed selection; a
+    :class:`Mutant` may name any of :data:`MUTATION_OPERATORS`, but only
+    the DECLARED subset is ever actually submitted; *operators* itself is
+    trusted here, not re-validated against the closed vocabulary — that
+    check is :mod:`assay.config`'s, at load time, and an unknown or empty
+    *operators* passed directly still degrades honestly, matching nothing
+    and collapsing into the same ``total == 0`` path below), then fans the
+    resulting job list out over ``executor_factory(jobs)`` — called with
+    EXACTLY *jobs*, never a derived or machine-sourced value (A-082/
+    A-122) — isolating each mutant into its own fresh scratch copy under
+    *scratch_root* (A-120). Results are collected POSITION-ALIGNED with
+    the submitted job list (each ``Future`` is awaited by its own index
+    via the returned futures list, never via ``as_completed`` or a dict
+    keyed by arrival order), and the three non-killed buckets are sorted
+    by stable identity before :class:`~assay.verdict.Mutation` is built —
+    so ``jobs=1`` and ``jobs=3`` render IDENTICAL records regardless of
+    which thread's subprocess happens to finish first (O2/O3).
 
     *process_runner*/*clock* default to the real boundary
     (``assay.runner.default_process_runner`` / a real UTC clock), resolved
@@ -433,26 +551,27 @@ def run_mutation(
     level — this module's own docstring explains why (a genuine circular
     import, not a style choice).
     """
+    if isinstance(jobs, bool) or not isinstance(jobs, int):
+        raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
+    if jobs < 1:
+        raise ValueError(f"run_mutation jobs must be >= 1, got {jobs}")
+
+    if baseline.outcome is not Outcome.PASS:
+        return None
+
+    job_list = _filter_by_operators(
+        collect_mutants(targets, adapter=adapter), frozenset(operators)
+    )
+    total = len(job_list)
+    if total == 0:
+        return Mutation(total=0, killed=0)
+
     from .runner import default_process_runner, execute_command
 
     resolved_process_runner = (
         default_process_runner if process_runner is None else process_runner
     )
     resolved_clock = _utc_now if clock is None else clock
-
-    baseline = execute_command(
-        lane,
-        cwd=project_root,
-        process_runner=resolved_process_runner,
-        clock=resolved_clock,
-    )
-    if baseline.outcome is not Outcome.PASS:
-        return baseline, None
-
-    job_list = collect_mutants(targets, adapter=adapter)
-    total = len(job_list)
-    if total == 0:
-        return baseline, Mutation(total=0, killed=0)
 
     def _run(job: MutantJob, index: int) -> CommandResult:
         return _run_one_mutant(
@@ -496,14 +615,13 @@ def run_mutation(
     crashed.sort(key=_mutant_outcome_sort_key)
     budget_exceeded.sort(key=_mutant_outcome_sort_key)
 
-    mutation = Mutation(
+    return Mutation(
         total=total,
         killed=killed,
         survived=tuple(survived),
         crashed=tuple(crashed),
         budget_exceeded=tuple(budget_exceeded),
     )
-    return baseline, mutation
 
 
 def judge_mutation(
