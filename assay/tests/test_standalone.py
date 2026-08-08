@@ -218,15 +218,39 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
 ):
     """O1: the installed wheel runs a REAL two-commit Python fixture and
-    emits exactly R0 and R1 claims. The coverage artifact is genuine
-    ``pytest-cov`` output (``--cov-report=json:...``), never hand-written --
-    the BASE commit is the fixture's own already-fully-tested control; the
-    HEAD commit adds one new, fully-tested function, so the changed-line
-    diff R1 measures is real and small enough to reason about by hand."""
+    emits exactly R0 and R1 claims matching a COMPLETE hand-written
+    schema-v3 artifact. The coverage artifact is genuine ``pytest-cov``
+    output (``--cov-report=json:...``), never hand-written -- the BASE
+    commit is the fixture's own already-fully-tested control; the HEAD
+    commit adds one new, fully-tested function, so the changed-line diff
+    R1 measures is real and small enough to reason about by hand.
+
+    Two things this asserts that a field-by-field version cannot:
+
+    * **The whole document.** ``expected`` below is written out in full and
+      compared with ``==`` (the established form -- see
+      ``test_a_real_pass_matches_the_documented_r0_pass_shape`` and the
+      eleven other complete comparisons across this suite), so a field the
+      producer adds, drops, or fills in wrongly fails here even though no
+      assertion names it. Only the three values a real run genuinely
+      cannot hand-inject are excluded.
+    * **``judge.base`` is RESOLVED, not echoed.** The lane declares a
+      SYMBOLIC branch name; ``judgment.r1.base`` must be the 40-char commit
+      it resolves to. Declaring a full SHA here -- as every other base
+      assertion in the suite does -- makes resolved and declared
+      indistinguishable, so ``base=judge.base`` would pass. It does not
+      pass this one (A-141).
+    """
     shutil.copytree(PYTHON_FIXTURE_DIR / "pkg", git_repo.path / "pkg")
     shutil.copytree(PYTHON_FIXTURE_DIR / "tests", git_repo.path / "tests")
     git_repo.commit_all("add control fixture")
     base_rev = git_repo.head()
+    subprocess.run(
+        ["git", "branch", "control-baseline", base_rev],
+        cwd=git_repo.path,
+        check=True,
+        capture_output=True,
+    )
 
     (git_repo.path / "pkg" / "farewell.py").write_text(
         'def farewell(name: str) -> str:\n    return f"Goodbye, {name}!"\n',
@@ -252,7 +276,10 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         # otherwise trip evaluate_r1's own post-execution check_dirty_tree
         # guard (test_canary_python_pipeline.py hit this exact case first).
         'env = { PYTHONDONTWRITEBYTECODE = "1" }\n'
-        'env_passthrough = ["PATH"]\n'
+        # No passthrough at all, so `env_effective` is fully determined and
+        # the complete comparison below stays honest -- the lane's argv is
+        # an absolute interpreter path and needs nothing from PATH.
+        "env_passthrough = []\n"
         'budget = "2m"\n'
         "allow_argv_append = false\n\n"
         "[lanes.package.judge]\n"
@@ -261,7 +288,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "fail_under = 100.0\n"
         "allow_excluded = false\n"
         'coverage = { format = "coverage-py-json", artifact = "cov.json" }\n'
-        f'base = "{base_rev}"\n'
+        'base = "control-baseline"\n'
     )
     lane_file = _write_lane_file(git_repo.path, lane_toml)
     git_repo.commit_all("add assay.toml")
@@ -271,13 +298,76 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     assert proc.returncode == 0, proc.stderr
     real = json.loads(proc.stdout)
     assert why_invalid(validator, real) == [], "the real artifact is not schema-valid"
-    assert real["outcome"] == "PASS"
-    assert [c["rigor"] for c in real["claims"]] == ["R0", "R1"]
-    assert real["claims"][0]["status"] == "PASS"
-    assert real["claims"][1]["status"] == "PASS"
-    assert real["claims"][1]["coverage"]["pct"] == 100.0
-    assert real["judgment"]["r1"]["base"] == base_rev
-    assert real["judgment"]["r1"]["source_roots"] == ["pkg"]
+
+    argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
+            "--cov-report=json:cov.json"]
+    expected = {
+        "schema_version": 3,
+        "lane": "package",
+        "commit": git_repo.head(),
+        "outcome": "PASS",
+        "exit_code": 0,
+        "declared_rigor": ["R0", "R1"],
+        "declared_evidence": [],
+        "argv_declared": argv,
+        "argv_appended": [],
+        "argv_effective": argv,
+        "argv_modified": False,
+        "env_declared": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "env_effective": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "scope": "S1",
+        "enforcement": "gate",
+        "judgment": {
+            "r1": {
+                "language": "python",
+                "source_roots": ["pkg"],
+                "coverage_format": "coverage-py-json",
+                "coverage_artifact": "cov.json",
+                "fail_under": 100.0,
+                "allow_excluded": False,
+                # the SYMBOLIC `control-baseline` above, resolved.
+                "base": base_rev,
+            }
+        },
+        "claims": [
+            {
+                "rigor": "R0",
+                "source": "computed",
+                "status": "PASS",
+                "verified_by_assay": True,
+            },
+            {
+                "rigor": "R1",
+                "source": "computed",
+                "status": "PASS",
+                "verified_by_assay": True,
+                "coverage": {
+                    # HEAD adds exactly `pkg/farewell.py`: one `def` line and
+                    # one `return` line, both executable, both executed by
+                    # the new test. `tests/test_farewell.py` is outside the
+                    # declared source root, so it is not considered at all.
+                    "considered": 1,
+                    "changed_executable": 2,
+                    "covered": 2,
+                    "pct": 100.0,
+                    "missing_lines": {},
+                    "files_missing_coverage": [],
+                    "unclassified_lines": {},
+                    "files_with_unclassified_lines": [],
+                    "excluded_lines": {},
+                    "files_with_excluded_lines": [],
+                },
+            },
+        ],
+        "evidence": [],
+    }
+    # `assay_version` is deliberately NOT pinned here: A-069/A-124's "0.0.0"
+    # claim is real but environment-specific, and
+    # `test_a_real_pass_matches_the_documented_r0_pass_shape` already owns
+    # it. Asserting it twice would make a SECOND test red outside the gate
+    # image for a reason that has nothing to do with R1.
+    volatile = {"assay_version", "started", "ended"}
+    assert {k: v for k, v in real.items() if k not in volatile} == expected
 
 
 def test_the_installed_wheel_ships_and_exposes_the_go_adapter(standalone: Standalone):

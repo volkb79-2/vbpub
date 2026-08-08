@@ -34,6 +34,13 @@ MOMENT_C = datetime(2026, 8, 8, 9, 0, 2, tzinfo=timezone.utc)
 
 
 def _seed_two_commits(repo: GitRepo) -> tuple[str, str]:
+    # A-140: the declared coverage artifact is this run's own OUTPUT, so a
+    # real consumer must git-ignore it -- otherwise it is untracked
+    # worktree state and `run_lane`'s whole-tree cleanliness guard refuses
+    # the run BEFORE removing anything (which is the point: the guard now
+    # judges the tree as it FOUND it, never one this function pre-cleaned).
+    # Committed in the BASE commit, so the base..head diff is unchanged.
+    repo.write(".gitignore", "cov.json\n")
     repo.write("pkg/mod.zzz", "BASE\n")
     base_rev = repo.commit_all("add pkg base")
     repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\nLINE4\nLINE5\n")
@@ -336,9 +343,18 @@ def test_run_lane_refuses_a_symlinked_artifact_path(git_repo: GitRepo, tmp_path:
 def test_run_lane_refuses_a_tracked_artifact_path(git_repo: GitRepo, tmp_path: Path):
     marker = tmp_path / "RAN"
     base_rev, head_rev = _seed_two_commits(git_repo)
-    git_repo.write("cov.json", "{}")
-    git_repo.commit_all("accidentally commit cov.json")
-    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    # Deliberately NOT `cov.json`: `_seed_two_commits` git-ignores that name
+    # (A-140), and an ignored path cannot be added by an ordinary
+    # `git add -A`, so committing it here would silently no-op and this
+    # test would prove nothing. A different, un-ignored name is genuinely
+    # tracked -- which is the state the guard exists to refuse.
+    git_repo.write("tracked_cov.json", "{}")
+    git_repo.commit_all("accidentally commit the coverage artifact")
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",),
+        base=base_rev,
+        coverage_artifact="tracked_cov.json",
+    )
     lane = make_lane(rigor=("R0", "R1"), judge=judge, argv=("/bin/sh", "-c", f"touch {marker}"))
 
     verdict = runner.run_lane(
@@ -498,3 +514,130 @@ def test_run_lane_renders_format_mismatch_as_a_complete_verdict(git_repo: GitRep
     assert verdict.claims[1].reason_code is ReasonCode.FORMAT_MISMATCH
     assert verdict.claims[1].coverage is None
     assert verdict.judgment is None
+
+
+# --- A-140: a refusal must not mutate the tree it refused to judge ------------
+
+
+def test_run_lane_refusing_a_dirty_tree_leaves_the_existing_artifact_intact(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """A-140's own negative. The artifact removal (work item 4) now runs
+    strictly AFTER the cleanliness guard (work item 3), so a run that
+    refuses to do anything really does nothing: the declared artifact is
+    still on disk, byte-for-byte, when ``NO_MEASUREMENT``/``DIRTY_TREE``
+    comes back.
+
+    Reverting the order fails this test at the ``read_text`` assertion --
+    which is the exact defect it was written from: reproduced against the
+    installed console script, where a lane declaring an untracked regular
+    file as its ``artifact`` had that file DELETED before the dirty tree
+    was ever reported.
+    """
+    marker = tmp_path / "RAN"
+    base_rev, _ = _seed_two_commits(git_repo)
+    seeded = _cov_json({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}})
+    git_repo.write("cov.json", seeded)  # git-ignored by _seed_two_commits
+    git_repo.write("uncommitted.txt", "the real dirt\n")
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"touch {marker}"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
+    )
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.DIRTY_TREE
+    assert not marker.exists(), "the command ran despite a refusal"
+    artifact = git_repo.path / "cov.json"
+    assert artifact.exists(), "a refused run deleted the consumer's artifact"
+    assert artifact.read_text(encoding="utf-8") == seeded
+
+
+# --- O4's remaining two named shapes, at pipeline level -----------------------
+
+
+def test_run_lane_a_missing_executable_renders_a_complete_artifact(
+    git_repo: GitRepo,
+):
+    """O4's "missing tool" shape, through the real pipeline: the lane's own
+    binary does not exist, so ``execute_command`` maps the ``OSError`` to
+    ``ERROR``/``EXEC_FAILED`` -- and R1 still renders a complete claim of
+    its own rather than the whole invocation dying (work item 3)."""
+    base_rev, _ = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=(str(git_repo.path / "no-such-binary"), "--please"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit="e" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
+    assert verdict.claims[0].status is Outcome.ERROR
+    assert verdict.claims[0].reason_code is ReasonCode.EXEC_FAILED
+    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert verdict.claims[1].coverage is None
+    assert verdict.judgment is None
+    assert verdict.outcome is Outcome.ERROR
+
+
+def test_run_lane_uncovered_changed_lines_fail_and_still_record_the_policy(
+    git_repo: GitRepo,
+):
+    """O4's "uncovered lines" shape -- the ONLY terminal shape where R1
+    renders a coverage payload on a NON-pass, so it is also the only place
+    proving ``judgment.r1`` is built from "the claim carries coverage" and
+    not from "the claim passed" (P16's iff-invariant, the direction a
+    PASS-only suite cannot distinguish)."""
+    base_rev, _ = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv(
+            {"pkg/mod.zzz": {"executed_lines": [2, 3], "missing_lines": [4, 5]}}
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit="f" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.FAIL
+    assert verdict.reason_code is ReasonCode.UNCOVERED_LINES
+    assert verdict.claims[1].coverage.pct == 50.0
+    assert verdict.claims[1].coverage.missing_lines == {
+        "pkg/mod.zzz": frozenset({4, 5})
+    }
+    assert isinstance(verdict.judgment, Judgment)
+    assert verdict.judgment.r1.base == base_rev
+    assert verdict.judgment.r1.fail_under == judge.fail_under
+    assert verdict.judgment.r1.allow_excluded == judge.allow_excluded
+    assert verdict.judgment.r1.coverage_format == judge.coverage.format
+    assert verdict.judgment.r1.coverage_artifact == judge.coverage.artifact

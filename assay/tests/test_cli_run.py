@@ -29,7 +29,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import R0_LANE, R1_LANE, GitRepo, set_key
+from conftest import R0_LANE, R1_LANE, GitRepo, set_key, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.cli import main
@@ -186,42 +186,112 @@ def test_run_permits_an_append_when_allowed(git_repo: GitRepo, tmp_path: Path):
 # --- this build evaluates R0 and Python R1 only (P17) --------------------------
 
 
-def test_run_refuses_a_lane_declaring_r2(git_repo: GitRepo, tmp_path: Path):
-    """R2 lands in P18: this build's ``runner.run_lane`` builds no R2
-    claim, so ``assemble_verdict``'s pre-existing "declared rigor not
-    covered by any claim" guard refuses it -- the same shape as before P17,
-    just no longer reachable for R1 itself."""
-    lane = set_key(R1_LANE, "rigor", '["R0", "R1", "R2"]')
-    lane += (
-        "\n[lanes.package.judge.mutation]\n"
-        'jobs = 2\noperators = ["compare-swap"]\n'
-    )
+def _r1_lane_writing_a_marker(marker: Path) -> str:
+    """An R1 lane whose command's ONLY observable effect is creating
+    *marker* -- so "did the command run?" is a filesystem fact, not a
+    call count on an injected seam this module deliberately never uses."""
+    return set_key(R1_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
+
+
+def test_run_refuses_a_lane_declaring_r2_without_running_it(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+):
+    """R2 lands in P18. A-139: the CLI's own registry says Python reaches
+    R1 and nothing else, so an R2 lane is refused BEFORE its command runs
+    -- and, because HEAD is already resolved by then, as a COMPLETE
+    artifact (work item 3's "every later terminal path must emit a
+    complete artifact"), never a bare exception.
+
+    Both halves are the point. Before A-139 the registry was consulted for
+    the literal ``"R1"`` only, so this lane ran its command to completion
+    and was refused afterwards by ``assemble_verdict``, with the side
+    effects already committed and nothing for a consumer to read."""
+    marker = tmp_path / "the-command-ran"
+    lane = set_key(_r1_lane_writing_a_marker(marker), "rigor", '["R0", "R1", "R2"]')
+    lane += "\n[lanes.package.judge.mutation]\njobs = 2\noperators = ["
+    lane += '"compare-swap"]\n'
     path = _write_and_commit_lane(git_repo, lane)
     for name in ("src", "scripts"):
         (git_repo.path / name).mkdir(exist_ok=True)
 
-    code, out, err = run(["run", "package", "--file", str(path)])
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
 
     assert code == 2
-    assert "ERROR/BAD_LANE_CONFIG" in err
+    assert not marker.exists(), "the lane's command ran despite an unreachable rigor"
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
+        ("R0", "ERROR"),
+        ("R1", "ERROR"),
+        ("R2", "ERROR"),
+    ]
+    assert document["commit"] == git_repo.head()
     assert "R2" in err
 
 
-def test_run_refuses_an_unregistered_language_at_r1(git_repo: GitRepo):
+def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+):
     """Go ships (``adapters/go.py``) but has no producer path wired to any
     rigor level yet (P22) -- the CLI's own built-in registry never
     advertises it, so this is refused BEFORE the lane's command runs, the
-    same as an entirely unknown language string would be."""
-    lane = set_key(R1_LANE, "language", '"go"')
+    same as an entirely unknown language string would be. A-139: HEAD is
+    known at that point, so the refusal is an artifact, not an exception
+    that leaves a consumer holding only an exit code."""
+    marker = tmp_path / "the-command-ran"
+    lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"go"')
     path = _write_and_commit_lane(git_repo, lane)
     for name in ("src", "scripts"):
         (git_repo.path / name).mkdir(exist_ok=True)
 
-    code, out, err = run(["run", "package", "--file", str(path)])
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
 
     assert code == 2
-    assert "ERROR/BAD_LANE_CONFIG" in err
+    assert not marker.exists()
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
+        ("R0", "ERROR"),
+        ("R1", "ERROR"),
+    ]
+    # P16's iff-invariant: no coverage claim rendered, so no policy recorded.
+    assert document.get("judgment") is None
     assert "go" in err
+
+
+def test_run_refuses_r3_without_r1_declared_at_all(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+):
+    """The level the pre-A-139 gate could not see: R3 declared with NO R1
+    beside it, so the old ``if "R1" in lane.rigor`` guard skipped the
+    registry entirely. The refusal must name R3 -- proving the loop reached
+    the declared level rather than a hardcoded one."""
+    marker = tmp_path / "the-command-ran"
+    lane = set_key(R0_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
+    lane = set_key(lane, "rigor", '["R0", "R3"]')
+    lane += (
+        "\n[lanes.package.judge]\n"
+        'language = "python"\nsource_roots = ["src"]\n'
+        "\n[lanes.package.judge.canary]\nsite = \"src/mod.py\"\n"
+    )
+    (git_repo.path / "src").mkdir(exist_ok=True)
+    path = _write_and_commit_lane(git_repo, lane)
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 2
+    assert not marker.exists()
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
+        ("R0", "ERROR"),
+        ("R3", "ERROR"),
+    ]
+    assert "R3" in err
 
 
 def test_run_evaluates_a_real_r1_pass_end_to_end(git_repo: GitRepo, tmp_path: Path):

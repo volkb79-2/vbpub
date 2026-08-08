@@ -1,0 +1,48 @@
+{
+  "schema_version": 3,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "9999999999999999999999999999999999999999",
+  "outcome": "ERROR",
+  "exit_code": 2,
+  "started": "2026-08-07T12:22:00+00:00",
+  "ended": "2026-08-07T12:22:01+00:00",
+  "reason_code": "UNREADABLE_ARTIFACT",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true,
+      "reason_code": "UNREADABLE_ARTIFACT"
+    }
+  ],
+  "evidence": []
+}

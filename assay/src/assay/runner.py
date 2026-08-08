@@ -103,6 +103,7 @@ __all__ = [
     "default_process_runner",
     "evaluate_r1",
     "execute_command",
+    "refuse_lane",
     "resolve_command_plan",
     "run_lane",
     "write_verdict",
@@ -660,42 +661,60 @@ def _remove_stale_coverage_artifact(artifact_path: Path) -> None:
     """Remove an existing coverage artifact before the lane's command runs
     (work item 4): a command that exits 0 without rewriting it must not let
     a PRIOR run's output stand in for this one's measurement. Only reached
-    once :func:`_is_unsafe_coverage_artifact` has already cleared the path,
-    so this is always a plain, untracked, non-symlinked regular file (or
-    nothing at all, which is a no-op).
+    once :func:`_is_unsafe_coverage_artifact` has already cleared the path
+    AND the whole worktree has been found clean (A-140), so this is always
+    a plain, untracked, git-IGNORED, non-symlinked regular file -- or
+    nothing at all, which is a no-op. Both of those facts are what make
+    this the only ``unlink`` in the module that cannot destroy something a
+    consumer still wanted: anything else at that path would have refused
+    the run one step earlier, with the file still there.
     """
     if artifact_path.exists():
         artifact_path.unlink()
 
 
-def _refuse_before_running(
+def refuse_lane(
     lane: Lane,
     *,
     commit: str,
-    r1_declared: bool,
     status: Outcome,
     reason_code: ReasonCode,
-    argv_append: Sequence[str],
-    passthrough_source: Mapping[str, str] | None,
+    argv_append: Sequence[str] = (),
+    passthrough_source: Mapping[str, str] | None = None,
     assay_version: str,
-    clock: Clock,
+    clock: Clock = _utc_now,
 ) -> Verdict:
     """Refuse the WHOLE invocation before the lane's own command ever
     starts (work items 3/5): the command's own :class:`CommandPlan` is
     still resolved and recorded (A-036 -- a refused run is not an
-    unrecorded one), but *process_runner* is never called. Both R0 and
-    (when declared) R1 render the exact SAME ``(status, reason_code)``: one
-    root cause stopped the whole run, never two independently-derived
-    stories about the same fact -- and neither carries a payload, which
-    both a ``NO_MEASUREMENT`` claim (A-025) and an ``ERROR`` claim (A-136)
+    unrecorded one), but *process_runner* is never called. EVERY declared
+    rigor level renders the exact SAME ``(status, reason_code)``: one root
+    cause stopped the whole run, never several independently-derived
+    stories about the same fact -- and none carries a payload, which a
+    ``NO_MEASUREMENT`` claim (A-025) and an ``ERROR`` claim (A-136) both
     already require unconditionally.
+
+    The claim set is built from ``lane.rigor`` itself rather than from a
+    "which levels did this build wire up" flag (A-139): the ONE thing
+    :func:`assemble_verdict` demands is a claim per DECLARED level, so
+    deriving the tuple from the declaration is what makes this function
+    total -- it can honestly refuse an ``R2``/``R3`` lane this build
+    cannot evaluate, which is exactly the terminal path :mod:`assay.cli`
+    used to let escape as a bare :class:`~assay.errors.AssayError` with no
+    artifact at all even though ``HEAD`` was already known (work item 3's
+    "every later terminal path must emit a complete artifact").
+
+    Public, unlike the rest of this module's helpers, because
+    :mod:`assay.cli` is the caller that owns the registry-capability
+    refusals (work item 2) and must render them as artifacts here rather
+    than re-deriving the shape itself.
     """
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source
     )
     started = clock()
     ended = clock()
-    rigor_levels = ("R0", "R1") if r1_declared else ("R0",)
+    rigor_levels = tuple(lane.rigor)
     claims = tuple(
         Claim(
             rigor=level,
@@ -749,20 +768,37 @@ def run_lane(
     ``"R1" not in lane.rigor`` -- this function never dereferences it
     otherwise.
 
-    Ordering (work items 2-7), all before the command runs:
+    Ordering (work items 2-7), all before the command runs, and in exactly
+    the handoff's own order -- 3 (refuse) strictly before 4 (mutate):
 
-    1. If R1 is declared, the coverage artifact path is validated
-       (:func:`_is_unsafe_coverage_artifact`) and any existing untracked
-       copy is removed (:func:`_remove_stale_coverage_artifact`) -- work
-       item 4's "cannot consume prior output" made true by construction:
-       whatever exists at that path once the command finishes was newly
-       written BY this run, because nothing else could still be there.
+    1. If R1 is declared, the coverage artifact path is VALIDATED
+       (:func:`_is_unsafe_coverage_artifact`) -- a pure check that reads
+       the filesystem and git's index and writes nothing.
     2. The WHOLE git worktree/index -- not merely the declared source
        roots -- must be clean (sol finding 6, live in the R0 path before
        this package: "every assay run invocation records HEAD and runs the
        live tree regardless of rigor level"). Either failure refuses the
-       ENTIRE invocation via :func:`_refuse_before_running` before
+       ENTIRE invocation via :func:`refuse_lane` before
        :func:`execute_command` is ever called.
+    3. ONLY THEN is an existing coverage artifact removed
+       (:func:`_remove_stale_coverage_artifact`) -- work item 4's "cannot
+       consume prior output" made true by construction: whatever exists at
+       that path once the command finishes was newly written BY this run,
+       because nothing else could still be there.
+
+    **Step 3 comes last on purpose (A-140).** Removing first made the
+    cleanliness guard at step 2 judge a tree this function had itself
+    just modified, and made a run that refuses to do anything nonetheless
+    DELETE a file -- reproduced against the installed console script: a
+    lane declaring any untracked regular file as its ``artifact`` had that
+    file destroyed before ``DIRTY_TREE`` was ever reported. The cost of
+    the correct order is a real requirement on the consumer, stated here
+    because nothing else states it: **the declared coverage artifact must
+    be git-ignored (or absent)**, otherwise it is itself untracked
+    worktree state and step 2 refuses -- loudly, and with the artifact
+    intact, which is the trade this project's own defaults policy
+    (AGENTS.md 4.2a) asks for over silently deleting to make the tree
+    look clean.
 
     Then the command runs exactly once, R0's claim is built, and -- if R1
     is declared -- :func:`evaluate_r1` runs UNCONDITIONALLY afterward,
@@ -784,14 +820,15 @@ def run_lane(
     plus R1 judgment").
     """
     r1_declared = "R1" in lane.rigor
+    artifact_path: Path | None = None
     if r1_declared:
-        judge = lane.judge
-        artifact_path = _resolve_artifact_path(judge.coverage.artifact, project_root)
+        artifact_path = _resolve_artifact_path(
+            lane.judge.coverage.artifact, project_root
+        )
         if _is_unsafe_coverage_artifact(repo, artifact_path):
-            return _refuse_before_running(
+            return refuse_lane(
                 lane,
                 commit=commit,
-                r1_declared=True,
                 status=Outcome.ERROR,
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
                 argv_append=argv_append,
@@ -799,13 +836,11 @@ def run_lane(
                 assay_version=assay_version,
                 clock=clock,
             )
-        _remove_stale_coverage_artifact(artifact_path)
 
     if git.dirty_paths(repo):
-        return _refuse_before_running(
+        return refuse_lane(
             lane,
             commit=commit,
-            r1_declared=r1_declared,
             status=Outcome.NO_MEASUREMENT,
             reason_code=ReasonCode.DIRTY_TREE,
             argv_append=argv_append,
@@ -813,6 +848,9 @@ def run_lane(
             assay_version=assay_version,
             clock=clock,
         )
+
+    if artifact_path is not None:
+        _remove_stale_coverage_artifact(artifact_path)
 
     result = execute_command(
         lane,

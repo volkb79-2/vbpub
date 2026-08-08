@@ -19,13 +19,19 @@ Three subcommands ship so far:
   registered at R1 and nothing else, so a lane declaring ``judge.language``
   as anything but ``"python"``, or R1 for a language this registry does not
   know, is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command
-  ever runs. A lane declaring R2 or R3 is refused the same way it always
-  was: :func:`assay.runner.run_lane`'s call into
-  :func:`assay.runner.assemble_verdict` finds a declared rigor level with no
-  claim to cover it. That refusal lives in ``runner.py``, not here — that
-  module is in every later producer package's ``scope.touch``, so the guard
-  self-obsoletes as R2/R3 evaluation lands instead of needing a CLI-level
-  edit this package's successors have no scope to make.
+  ever runs. A lane declaring R2 or R3 is refused by that SAME registry
+  lookup (:func:`_resolve_declared_adapters` checks every declared level,
+  not only R1 — A-139), also before the command runs, and — like every
+  other post-``HEAD`` refusal here — as a COMPLETE verdict artifact via
+  :func:`assay.runner.refuse_lane`, never a bare exception. That check
+  self-obsoletes as R2/R3 evaluation lands: P18/P19 add the level to
+  ``_built_in_registry``'s existing entry and the same loop starts
+  admitting it.
+
+  :func:`assay.runner.assemble_verdict`'s own "a declared rigor level has
+  no claim" guard stays where it is as the library-level backstop for a
+  caller that is not this CLI; it is simply no longer the thing a real
+  ``assay run`` reaches first.
 * ``assay verify`` (P14, A-129) — validate a verdict-JSON artifact
   independently of how it was produced. See :mod:`assay.verify` for the full
   contract; this module only wires its parser/dispatch in, exactly like the
@@ -46,6 +52,7 @@ from typing import Sequence, TextIO
 
 from . import __version__
 from . import git, registry, runner
+from .adapters.base import LanguageAdapter
 from .adapters.python import PythonAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
 from .errors import AssayError, Outcome
@@ -137,7 +144,7 @@ def main(
         if args.command == "lanes":
             _render_lanes(_resolve_lane_file(args.file), out)
         elif args.command == "run":
-            return _cmd_run(args, appended, out)
+            return _cmd_run(args, appended, out, err)
         elif args.command == "verify":
             return cmd_verify(args.path, stdin=inp, stderr=err)
         else:  # pragma: no cover - argparse rejects unknown subcommands first
@@ -186,22 +193,77 @@ def _built_in_registry() -> registry.Registry:
     )
 
 
-def _cmd_run(args: argparse.Namespace, appended: list[str], out: TextIO) -> int:
+def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
+    """Check EVERY declared rigor level above R0 against this build's own
+    registry, and return the R1 adapter :func:`assay.runner.run_lane`
+    needs (``None`` when R1 is not declared).
+
+    Work item 2's "reject declared rigor above that entry's capability"
+    (A-139). Checking only ``"R1"`` -- as this function's first version did
+    -- left the registry gate DEAD for the levels it exists to guard: a
+    lane declaring ``rigor = ["R0", "R2"]`` never consulted the registry at
+    all, so its command ran to completion and only THEN did
+    :func:`assay.runner.assemble_verdict` refuse it for a missing R2 claim,
+    with the side effects already committed and no artifact emitted. The
+    loop is over ``lane.rigor`` itself so a level this build cannot reach
+    is refused BEFORE anything executes, whichever level it is.
+
+    ``R0`` is skipped, not looked up: it needs no adapter, and
+    :class:`~assay.registry.RegistryEntry` refuses to name it for exactly
+    that reason.
+
+    The R1 adapter is fetched by a SECOND, explicit lookup rather than
+    captured inside the loop. Capturing it would need an ``if level ==
+    "R1"`` whose false arm only runs when some OTHER level also resolves
+    successfully -- impossible while R1 is the only level this build
+    reaches, so it would be a branch no test could ever take (AUTHORING.md
+    §3b.D: restructure so the unreachable line does not exist, never
+    pragma past it). The repeat lookup is a frozen-mapping ``get``; when
+    P18/P19 make a second level reachable, the loop above is already
+    correct and only this tail needs revisiting.
+    """
+    built_in = _built_in_registry()
+    for level in lane.rigor:
+        if level != "R0":
+            registry.get_adapter(built_in, lane.judge.language, level)
+    if "R1" not in lane.rigor:
+        return None
+    return registry.get_adapter(built_in, lane.judge.language, "R1")
+
+
+def _cmd_run(
+    args: argparse.Namespace, appended: list[str], out: TextIO, err: TextIO
+) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
     commit = git.head_rev(lane_file.project_root)
-    adapter = None
-    if "R1" in lane.rigor:
-        adapter = registry.get_adapter(_built_in_registry(), lane.judge.language, "R1")
-    verdict = runner.run_lane(
-        lane,
-        commit=commit,
-        repo=lane_file.project_root,
-        project_root=lane_file.project_root,
-        adapter=adapter,
-        assay_version=__version__,
-        argv_append=appended,
-    )
+    try:
+        adapter = _resolve_declared_adapters(lane)
+    except AssayError as exc:
+        # A-139: HEAD is already resolved above, so this is one of work
+        # item 3's "later terminal paths" and MUST emit a complete
+        # artifact. Letting the typed error reach main()'s handler would
+        # give a consumer the right exit code and nothing to read -- the
+        # exact shape of un-auditable refusal P17 exists to remove.
+        verdict = runner.refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            argv_append=appended,
+            assay_version=__version__,
+        )
+        print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
+    else:
+        verdict = runner.run_lane(
+            lane,
+            commit=commit,
+            repo=lane_file.project_root,
+            project_root=lane_file.project_root,
+            adapter=adapter,
+            assay_version=__version__,
+            argv_append=appended,
+        )
     if args.verdict_json is not None:
         runner.write_verdict(verdict, args.verdict_json, stdout=out)
     if args.verdict_json != "-":
