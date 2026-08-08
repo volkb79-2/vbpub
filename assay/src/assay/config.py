@@ -74,6 +74,7 @@ __all__ = [
     "LANE_SCHEMA_VERSION",
     "Lane",
     "LaneFile",
+    "MutationConfig",
     "REQUIRED_LANE_FIELDS",
     "RIGOR_LEVELS",
     "SCOPES",
@@ -187,6 +188,31 @@ class CoverageConfig:
         return {"format": self.format, "artifact": self.artifact}
 
 
+_MUTATION_FIELDS: tuple[str, ...] = ("jobs", "operators")
+
+
+@dataclass(frozen=True)
+class MutationConfig:
+    """``[lanes.X.judge.mutation]`` (P18) -- the closed R2 execution policy:
+    a required positive ``jobs`` worker count (A-082/A-122: never derived
+    from the running machine, so this loader is the one place a value for
+    it can come from at all) and a non-empty, duplicate-free, ORDER-
+    preserving ``operators`` list, cross-checked at LOAD time against
+    :data:`assay.mutation.MUTATION_OPERATORS` -- the same "vocabulary
+    imported from its own owner, never duplicated" discipline
+    :data:`assay.coverage.FORMAT_REGISTRY` already gets one field over
+    (A-068). Before P18 this table was an opaque, unvalidated passthrough
+    (P11/P12 owned construction/execution, not the declared policy); this
+    loader is the first reader of its actual shape.
+    """
+
+    jobs: int
+    operators: tuple[str, ...]
+
+    def as_declared(self) -> dict[str, Any]:
+        return {"jobs": self.jobs, "operators": list(self.operators)}
+
+
 @dataclass(frozen=True)
 class JudgeConfig:
     """``[lanes.X.judge]`` — HOW to judge (D7's second question, A-015).
@@ -204,9 +230,11 @@ class JudgeConfig:
     fail_under: float | None
     allow_excluded: bool | None
     coverage: CoverageConfig | None
-    #: opaque payloads owned by P11/P12 (mutation) and P09 (canary); this
-    #: loader verifies only that they are tables.
-    mutation: Mapping[str, Any] | None
+    #: the closed R2 execution policy (P18) -- ``None`` when the lane does
+    #: not declare R2 at all.
+    mutation: MutationConfig | None
+    #: opaque payload owned by P09/P19 (R3's own canary wiring); this
+    #: loader verifies only that it is a table.
     canary: Mapping[str, Any] | None
     #: (P17) the declared comparison ref R1/R2 diff against -- a git
     #: revision expression (branch name, tag, SHA...), resolved at RUN time
@@ -228,7 +256,7 @@ class JudgeConfig:
         if self.coverage is not None:
             declared["coverage"] = self.coverage.as_declared()
         if self.mutation is not None:
-            declared["mutation"] = dict(self.mutation)
+            declared["mutation"] = self.mutation.as_declared()
         if self.canary is not None:
             declared["canary"] = dict(self.canary)
         if self.base is not None:
@@ -629,7 +657,9 @@ def _load_judge(
     if "coverage" in table:
         coverage = _load_coverage(table["coverage"], where, project_root)
 
-    mutation = _as_opaque_table(table.get("mutation"), where, "judge.mutation")
+    mutation = None
+    if "mutation" in table:
+        mutation = _load_mutation(table["mutation"], where)
     canary = _as_opaque_table(table.get("canary"), where, "judge.canary")
 
     base = None
@@ -705,6 +735,64 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
             f"{sorted(FORMAT_REGISTRY)}"
         )
     return CoverageConfig(format=fmt, artifact=artifact)
+
+
+def _load_mutation(value: Any, where: str) -> MutationConfig:
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation' must be a table, got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - set(_MUTATION_FIELDS))
+    if unknown:
+        raise LaneConfigError(
+            f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join(_MUTATION_FIELDS)}"
+        )
+    for field in _MUTATION_FIELDS:
+        if field not in value:
+            raise LaneConfigError(
+                f"{where}: missing required field 'judge.mutation.{field}'"
+            )
+    jobs = value["jobs"]
+    if isinstance(jobs, bool) or not isinstance(jobs, int):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.jobs' must be an integer, got "
+            f"{_type_name(jobs)}"
+        )
+    if jobs < 1:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
+        )
+    operators = _as_str_list(value["operators"], where, "judge.mutation.operators")
+    if not operators:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' is empty; a policy that "
+            f"selects no operator mutates nothing"
+        )
+    if len(set(operators)) != len(operators):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' contains a duplicate: "
+            f"{operators}"
+        )
+    # Deferred, not module-level (A-068's own vocabulary-import discipline,
+    # one field over): `assay.mutation` imports `Lane` from THIS module at
+    # ITS OWN module level, so importing `assay.mutation` here at module
+    # level would be a genuine cycle (config -> mutation -> config) -- the
+    # identical reasoning `assay.mutation`'s own module docstring already
+    # gives for resolving `execute_command` via a function-body-local
+    # import instead of a module-level one. Safe here because by the time a
+    # lane is actually being LOADED, both modules have long finished
+    # importing, regardless of which one a caller imported first.
+    from .mutation import MUTATION_OPERATORS
+
+    unknown_operators = sorted(set(operators) - MUTATION_OPERATORS)
+    if unknown_operators:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
+            f"{', '.join(unknown_operators)}; known operators: "
+            f"{', '.join(sorted(MUTATION_OPERATORS))}"
+        )
+    return MutationConfig(jobs=jobs, operators=tuple(operators))
 
 
 def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:

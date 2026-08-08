@@ -18,11 +18,13 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 from conftest import make_lane
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
 from assay.mutation import MutationTarget, run_mutation
+from assay.runner import execute_command
 
 #: Five independent mutable sites (one per line -- each an unrelated
 #: `Constant(bool)`), deliberately MORE than any `jobs` value used below,
@@ -85,13 +87,17 @@ def _run_with_recording_factory(tmp_path: Path, jobs: int):
         seen.append(executor)
         return executor
 
-    baseline, mutation = run_mutation(
+    baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=jobs,
+        operators=("bool-const-flip",),
         process_runner=_always_pass,
         executor_factory=factory,
     )
@@ -143,13 +149,17 @@ def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: P
         seen.append(jobs)
         raise AssertionError("the executor must never be constructed for zero mutants")
 
-    baseline, mutation = run_mutation(
+    baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=(),  # nothing to mutate
         adapter=PythonAdapter(),
         jobs=3,
+        operators=("bool-const-flip",),
         process_runner=_always_pass,
         executor_factory=factory,
     )
@@ -174,13 +184,17 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
         scratch_root = tmp_path / f"scratch-{jobs}"
         _materialize_project(project_root)
         scratch_root.mkdir()
-        baseline, mutation = run_mutation(
+        baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
+        mutation = run_mutation(
             lane,
+            baseline=baseline,
             project_root=project_root,
+        repo_top=project_root,
             scratch_root=scratch_root,
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=jobs,
+            operators=("bool-const-flip",),
             process_runner=_always_pass,
         )
         assert baseline.outcome is Outcome.PASS
@@ -190,3 +204,88 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
     parallel = run(3)
 
     assert serial.to_dict() == parallel.to_dict()
+
+
+# --- jobs is validated BEFORE the executor boundary (P18 work item 5) ------
+
+
+def test_jobs_zero_is_rejected_before_the_executor_boundary(tmp_path: Path):
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=tmp_path, process_runner=_always_pass)
+
+    def factory(jobs: int):
+        raise AssertionError("the executor must never be constructed for jobs=0")
+
+    with pytest.raises(ValueError, match="jobs must be >= 1"):
+        run_mutation(
+            lane,
+            baseline=baseline,
+            project_root=tmp_path,
+            repo_top=tmp_path,
+            scratch_root=tmp_path,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=0,
+            operators=("bool-const-flip",),
+            executor_factory=factory,
+        )
+
+
+@pytest.mark.parametrize("bad_jobs", [True, False, "2", 1.5, None])
+def test_a_non_integer_jobs_is_rejected(tmp_path: Path, bad_jobs):
+    """``True``/``False`` are rejected too: ``bool`` is a subclass of
+    ``int`` in Python, so a naive ``isinstance(jobs, int)`` check alone
+    would silently accept ``jobs = true`` as ``1`` worker."""
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=tmp_path, process_runner=_always_pass)
+
+    with pytest.raises(ValueError, match="jobs must be an integer"):
+        run_mutation(
+            lane,
+            baseline=baseline,
+            project_root=tmp_path,
+            repo_top=tmp_path,
+            scratch_root=tmp_path,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=bad_jobs,
+            operators=("bool-const-flip",),
+        )
+
+
+def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
+    """Validation happens BEFORE the baseline check too -- a caller
+    passing a bad ``jobs`` gets the same mechanical failure regardless of
+    whether the baseline it also supplied would have short-circuited
+    first."""
+    from assay.errors import ReasonCode
+    from assay.runner import CommandPlan, CommandResult
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = CommandResult(
+        plan=CommandPlan(
+            argv_declared=("pytest", "-q"),
+            argv_appended=(),
+            argv_effective=("pytest", "-q"),
+            env_declared={},
+            env_effective={},
+        ),
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.COMMAND_FAILED,
+        returncode=1,
+        started="2026-08-08T00:00:00+00:00",
+        ended="2026-08-08T00:00:01+00:00",
+    )
+
+    with pytest.raises(ValueError, match="jobs must be >= 1"):
+        run_mutation(
+            lane,
+            baseline=baseline,
+            project_root=tmp_path,
+            repo_top=tmp_path,
+            scratch_root=tmp_path,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=-1,
+            operators=("bool-const-flip",),
+        )

@@ -132,10 +132,8 @@ def test_r2_additionally_requires_mutation(project: Project):
     judge = load_lane_file(with_it).lane("package").judge
     assert judge is not None
     assert judge.mutation is not None
-    assert dict(judge.mutation) == {
-        "jobs": 4,
-        "operators": ["compare-swap", "boolop-swap"],
-    }
+    assert judge.mutation.jobs == 4
+    assert judge.mutation.operators == ("compare-swap", "boolop-swap")
     assert judge.canary is None
 
 
@@ -325,6 +323,23 @@ def test_mutation_that_is_not_a_table_is_rejected(project: Project):
         _lane_with(["R2"], R2_MINIMAL_JUDGE).rstrip("\n") + "\nmutation = 4\n"
     )
     with pytest.raises(LaneConfigError, match="'judge.mutation' must be a table"):
+        load_lane_file(path)
+
+
+def test_canary_that_is_not_a_table_is_rejected(project: Project):
+    # The identical shape one field over, for `_as_opaque_table`'s own
+    # remaining caller now that `mutation` has its own dedicated loader
+    # (P18) -- declared at R3, so `canary` is REQUIRED and the type check,
+    # not the surplus guard, is what rejects it.
+    r3_judge = """
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+"""
+    path = project.write(
+        _lane_with(["R3"], r3_judge).rstrip("\n") + "\ncanary = 4\n"
+    )
+    with pytest.raises(LaneConfigError, match="'judge.canary' must be a table"):
         load_lane_file(path)
 
 

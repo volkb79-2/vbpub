@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P18-r2-cli-pipeline, assay-P22-real-go-r1-gate]
 session: resume:assay-go-mutation
 scope:
-  touch: ["cmd/assay-go-helper/**", "gate/go/**", "src/assay/adapters/go.py", "src/assay/registry.py", "src/assay/mutation.py", "tests/fixtures/go/**", "tests/**", "README.md"]
+  touch: ["cmd/assay-go-helper/**", "gate/go/**", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/registry.py", "src/assay/mutation.py", "tests/fixtures/go/**", "tests/**", "README.md"]
   forbid: ["src/assay/adapters/python.py", "src/assay/canary.py", "src/assay/verdict.py", "src/assay/schemas"]
 oracles:
   - id: O1
@@ -80,6 +80,17 @@ against the registry before anything runs, so advancing Go through R2
 artifact and is already total over `lane.rigor`. And the declared coverage
 artifact must be git-ignored, or the whole-tree cleanliness guard refuses
 the run before `go test` starts.
+
+## Carried in from P18, MERGED AND RATIFIED (read before work item 5)
+
+Reviewed at the P18 merge, corrected where wrong, ratified as A-145–A-147.
+Treat as decided.
+
+- **CONFIRMED and FIXED (A-147) — the carve gap P18's implementer flagged was real.** `cli._built_in_registry` (not `registry.py`) holds the `GoAdapter` entry work item 5 must widen to R2, and `scope.touch` did not name `cli.py`. It does now. Second instance of A-144's shape; if you find a third, it is a carving-process finding, not a one-off.
+- `assay.mutation.run_mutation`'s signature changed: `baseline` is now a REQUIRED caller-supplied `CommandResult` (never run internally), `operators` is REQUIRED, and `repo_top` is REQUIRED (A-145). Work item 5's "existing P18 executor/isolation path" means calling it with all three, not the pre-P18 shape.
+- **RULED (A-145) — a target's `path` is REPO-top-relative; the per-mutant copy is a copy of the PROJECT root.** P18 shipped a crash for any project in a subdirectory of its repo. Fixed via `mutation.project_prefix`, but a real Go module under `gate/go/**` is exactly that shape — fixture it, do not assume the two roots coincide.
+- `assay.mutation.resolve_mutation_targets` (new in P18) filters candidates through `adapter.source_globs`/`excluded_dir_names`/`is_test_path`. P18 did not change `GoAdapter`'s own values for these (from P08) -- confirm they are still right now that R2 target scoping reads them.
+- **Your O3 is P18's own O4, in Go.** `tests/test_standalone.py`'s five installed-wheel R2 comparisons are the working pattern (complete document `==`, tree hashes before/after, PATH declared not passed through). Reuse the shape; note that P18 records WHY a crashed mutant is unreachable through a real fixed-argv lane — for Go it IS reachable, because a mutant that fails to COMPILE is a different thing from one that fails to launch.
 
 ## Test constraints copied from AUTHORING.md §3b
 

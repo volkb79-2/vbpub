@@ -33,7 +33,7 @@ from typing import Mapping
 import pytest
 from jsonschema import Draft202012Validator
 
-from assay.config import CoverageConfig, JudgeConfig, Lane
+from assay.config import CoverageConfig, JudgeConfig, Lane, MutationConfig
 
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
@@ -511,6 +511,7 @@ def make_r1_judge(
     coverage_format: str = "coverage-py-json",
     coverage_artifact: str = "cov.json",
     base: str = "main",
+    mutation: "MutationConfig | None" = None,
 ) -> JudgeConfig:
     """A fully-resolved R1 ``JudgeConfig`` — every field
     ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names — built directly rather than
@@ -518,7 +519,9 @@ def make_r1_judge(
     placeholder string here: callers that exercise real base RESOLUTION
     (``runner.evaluate_r1``'s own tests) pass their own resolved/declared
     ref straight to that function, not through this field -- only
-    ``runner.run_lane`` reads ``judge.base`` itself."""
+    ``runner.run_lane`` reads ``judge.base`` itself. *mutation* (P18)
+    lets a caller build a combined R1+R2 judge without a second
+    constructor -- ``None`` (the default) is unchanged R1-only behaviour."""
     return JudgeConfig(
         language=language,
         source_roots=tuple(str(p) for p in source_root_paths),
@@ -526,7 +529,33 @@ def make_r1_judge(
         fail_under=fail_under,
         allow_excluded=allow_excluded,
         coverage=CoverageConfig(format=coverage_format, artifact=coverage_artifact),
-        mutation=None,
+        mutation=mutation,
+        canary=None,
+        base=base,
+    )
+
+
+def make_r2_judge(
+    *,
+    language: str = "zzz",
+    source_root_paths: tuple[Path, ...],
+    base: str = "main",
+    mutation: MutationConfig,
+) -> JudgeConfig:
+    """A fully-resolved R2-ONLY ``JudgeConfig`` (P18) — language,
+    source_roots, mutation and base, and nothing else: R1's coverage-floor
+    fields stay ``None``, matching a real ``assay.toml`` lane that
+    declares ``rigor = ["R0", "R2"]`` without R1 alongside it (A-062: a
+    real loader would refuse ``fail_under``/``coverage`` here as inert
+    config for an undeclared level)."""
+    return JudgeConfig(
+        language=language,
+        source_roots=tuple(str(p) for p in source_root_paths),
+        source_root_paths=source_root_paths,
+        fail_under=None,
+        allow_excluded=None,
+        coverage=None,
+        mutation=mutation,
         canary=None,
         base=base,
     )

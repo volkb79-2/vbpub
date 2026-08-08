@@ -71,13 +71,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, Sequence, TextIO
 
-from . import coverage, diff, git, measurability
+from . import coverage, diff, git, measurability, mutation
 from .adapters.base import LanguageAdapter
 from .config import Lane
 from .errors import AssayError, Outcome, ReasonCode
@@ -89,6 +90,7 @@ from .verdict import (
     EvidenceDeclaration,
     Judgment,
     JudgmentR1,
+    JudgmentR2,
     Verdict,
     iso_utc,
     rollup,
@@ -365,6 +367,7 @@ def evaluate_r1(
     base: str,
     adapter: LanguageAdapter,
     on_base_resolved: Callable[[str], None] | None = None,
+    on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -406,6 +409,17 @@ def evaluate_r1(
     the caller's own side would violate O2's "the comparison base resolves
     once" -- an additive, default-``None`` callback is the only channel
     that satisfies both constraints simultaneously.
+
+    *on_added_resolved* (P18), the identical mechanism one field over: if
+    given, called EXACTLY ONCE with the resolved
+    :class:`~assay.diff.AddedLines` the moment
+    :func:`assay.diff.parse_added_lines` produces it -- never on a path
+    where an earlier guard (including the coverage-artifact-specific ones
+    this function alone owns) trips first. This is how :func:`run_lane`
+    lets a DECLARED R2 reuse R1's own resolved diff instead of diffing the
+    same ``base``..``HEAD`` pair a second time, for the identical
+    frozen-signature reason *on_base_resolved* exists: :mod:`assay.canary`
+    already depends on this function returning a bare :class:`Claim`.
     """
     judge = lane.judge
     try:
@@ -432,6 +446,8 @@ def evaluate_r1(
         )
 
     added = diff.parse_added_lines(diff_text)
+    if on_added_resolved is not None:
+        on_added_resolved(added)
 
     def read_source_text(path: str) -> str:
         return (repo_top / path).read_text(encoding="utf-8")
@@ -755,17 +771,21 @@ def run_lane(
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> Verdict:
-    """``assay run``'s real pipeline (P17): resolve prerequisites, run the
-    lane's command AT MOST once, judge R1 when declared, and assemble ONE
-    verdict that encloses both.
+    """``assay run``'s real pipeline (P17, R2 wiring P18): resolve
+    prerequisites, run the lane's command AT MOST once, judge R1/R2 when
+    declared, and assemble ONE verdict that encloses all of it.
 
     *adapter* is the ALREADY-RESOLVED :class:`~assay.adapters.base.
-    LanguageAdapter` for ``lane.judge.language`` at R1 -- this function
-    knows nothing about a :class:`~assay.registry.Registry`; resolving
-    which adapter (or refusing an unsupported language/rigor pairing
-    outright, before anything here runs at all) is :mod:`assay.cli`'s own
-    job (work item 2). *adapter* is ``None`` exactly when
-    ``"R1" not in lane.rigor`` -- this function never dereferences it
+    LanguageAdapter` for ``lane.judge.language`` at whichever of R1/R2 is
+    declared -- this function knows nothing about a
+    :class:`~assay.registry.Registry`; resolving which adapter (or
+    refusing an unsupported language/rigor pairing outright, before
+    anything here runs at all) is :mod:`assay.cli`'s own job (work item
+    2). The SAME adapter object serves both R1's coverage evaluation and
+    R2's mutation generation (one adapter per language, not per rigor
+    level -- :class:`~assay.registry.RegistryEntry` already pairs them
+    this way). *adapter* is ``None`` exactly when NEITHER ``"R1"`` nor
+    ``"R2"`` is in ``lane.rigor`` -- this function never dereferences it
     otherwise.
 
     Ordering (work items 2-7), all before the command runs, and in exactly
@@ -818,6 +838,49 @@ def run_lane(
     comparison base resolves once"). Final ``ended`` covers R1's own
     completion, not merely R0's own (O2: "verdict timing encloses command
     plus R1 judgment").
+
+    **P18: if R2 is declared, mutation testing is attempted after R1** (and
+    regardless of whether R1 was even declared), using R0's OWN
+    :class:`CommandResult` (*result*) as :func:`assay.mutation.
+    run_mutation`'s mandatory *baseline* -- the lane's command still runs
+    only ONCE per invocation (sol finding 11). When *result* did not
+    ``PASS``, R2's own prerequisite chain is never even consulted: R2's
+    baseline gate is strictly stricter than R1's (a failed baseline makes
+    everything downstream of it moot), so the claim is built directly via
+    :func:`assay.mutation.build_mutation_claim(result, None)
+    <assay.mutation.build_mutation_claim>`, which propagates *result*'s own
+    ``(outcome, reason_code)`` verbatim -- the identical answer resolving
+    targets and calling :func:`~assay.mutation.run_mutation` anyway would
+    have produced, without the wasted diff/target work. When *result* DID
+    ``PASS``, R2 needs the same resolved diff R1 uses: if R1 was declared
+    and its own :func:`evaluate_r1` call reached the diff (surfaced via
+    ``on_added_resolved``, mirroring *on_base_resolved*), R2 reuses that
+    :class:`~assay.diff.AddedLines` rather than diffing ``base``..``HEAD``
+    a second time; otherwise (R1 not declared, or R1's own coverage-
+    specific guards tripped before reaching the diff) R2 resolves its own
+    prerequisite chain -- the identical ``check_dirty_tree``/
+    ``check_base_is_head`` guards R1 uses, since R1 and R2 read the exact
+    same ``judge.source_root_paths``/``judge.base`` -- and refuses
+    (``NO_MEASUREMENT``) on the SAME two causes R1 would if it hit them.
+    :func:`~assay.mutation.resolve_mutation_targets` then builds the
+    per-file candidate list, and mutation runs inside a fresh, self-
+    cleaning scratch directory (:func:`tempfile.TemporaryDirectory`) this
+    function owns end to end. ``repo_top`` is handed to
+    :func:`~assay.mutation.run_mutation` alongside *project_root* because
+    those two are NOT the same directory for a project living in a
+    subdirectory of its repository (A-145) — every target path is relative
+    to the former, while each mutant's scratch copy is a copy of the
+    latter. Reaching :func:`~assay.mutation.run_mutation`
+    at all in this branch already proves *result* PASSED, which is
+    `run_mutation`'s own only reason to return ``None`` for a caller-
+    supplied baseline (:func:`~assay.mutation.run_mutation`'s own
+    docstring) -- so the R2 claim built here always carries a ``mutation``
+    payload, and ``judgment.r2`` is populated unconditionally alongside it
+    (:class:`~assay.verdict.JudgmentR2` carries no construction-time
+    correspondence check against :class:`Claim` yet -- see its own
+    docstring -- so this function's own discipline, not that one, is what
+    keeps the two in step). Final ``ended`` is extended again to cover
+    R2's own completion too.
     """
     r1_declared = "R1" in lane.rigor
     artifact_path: Path | None = None
@@ -852,6 +915,8 @@ def run_lane(
     if artifact_path is not None:
         _remove_stale_coverage_artifact(artifact_path)
 
+    r2_declared = "R2" in lane.rigor
+
     result = execute_command(
         lane,
         argv_append=argv_append,
@@ -862,8 +927,10 @@ def run_lane(
     )
     r0_claim = build_r0_claim(result)
     claims: tuple[Claim, ...] = (r0_claim,)
-    judgment: Judgment | None = None
+    judgment_r1: JudgmentR1 | None = None
+    judgment_r2: JudgmentR2 | None = None
     ended: str | None = None
+    added_holder: list[diff.AddedLines] = []
 
     if r1_declared:
         judge = lane.judge
@@ -875,21 +942,107 @@ def run_lane(
             base=judge.base,
             adapter=adapter,
             on_base_resolved=resolved_base.append,
+            on_added_resolved=added_holder.append,
         )
         claims += (r1_claim,)
         ended = iso_utc(clock())
         if r1_claim.coverage is not None:
-            judgment = Judgment(
-                r1=JudgmentR1(
-                    language=judge.language,
-                    source_roots=judge.source_roots,
-                    coverage_format=judge.coverage.format,
-                    coverage_artifact=judge.coverage.artifact,
-                    fail_under=judge.fail_under,
-                    allow_excluded=judge.allow_excluded,
-                    base=resolved_base[0],
-                )
+            judgment_r1 = JudgmentR1(
+                language=judge.language,
+                source_roots=judge.source_roots,
+                coverage_format=judge.coverage.format,
+                coverage_artifact=judge.coverage.artifact,
+                fail_under=judge.fail_under,
+                allow_excluded=judge.allow_excluded,
+                base=resolved_base[0],
             )
+
+    if r2_declared:
+        judge = lane.judge
+        if result.outcome is not Outcome.PASS:
+            # R2's baseline gate is strictly stricter than R1's -- a
+            # non-PASS R0 makes mutation testing moot regardless of what
+            # R2's own prerequisite chain would say, so that chain is
+            # never even consulted (module docstring).
+            r2_claim = mutation.build_mutation_claim(result, None)
+            claims += (r2_claim,)
+            ended = iso_utc(clock())
+        else:
+            if added_holder:
+                added = added_holder[0]
+            else:
+                try:
+                    measurability.check_dirty_tree(repo, judge.source_root_paths)
+                    resolved = measurability.check_base_is_head(repo, judge.base)
+                    diff_text = git.run(
+                        repo,
+                        "diff",
+                        "--unified=0",
+                        resolved.base_rev,
+                        resolved.head_rev,
+                    )
+                    added = diff.parse_added_lines(diff_text)
+                except AssayError as exc:
+                    claims += (
+                        Claim(
+                            rigor="R2",
+                            source="computed",
+                            status=exc.outcome,
+                            verified_by_assay=True,
+                            reason_code=exc.reason_code,
+                        ),
+                    )
+                    ended = iso_utc(clock())
+                    added = None
+
+            if added is not None:
+                repo_top = git.repo_top(repo)
+
+                def _read_source_text(path: str) -> str:
+                    return (repo_top / path).read_text(encoding="utf-8")
+
+                targets = mutation.resolve_mutation_targets(
+                    added,
+                    repo_top=repo_top,
+                    source_root_paths=judge.source_root_paths,
+                    adapter=adapter,
+                    read_source_text=_read_source_text,
+                )
+                with tempfile.TemporaryDirectory(prefix="assay-r2-") as scratch:
+                    mutation_result = mutation.run_mutation(
+                        lane,
+                        baseline=result,
+                        project_root=project_root,
+                        repo_top=repo_top,
+                        scratch_root=Path(scratch),
+                        targets=targets,
+                        adapter=adapter,
+                        jobs=judge.mutation.jobs,
+                        operators=judge.mutation.operators,
+                        process_runner=process_runner,
+                        clock=clock,
+                    )
+                # `mutation_result` is NEVER `None` here: this branch is
+                # only reached when `result.outcome is Outcome.PASS`, and
+                # `run_mutation` returns `None` for exactly ONE reason --
+                # `baseline.outcome is not Outcome.PASS` -- which cannot be
+                # true for `baseline=result` in this branch. So
+                # `r2_claim.mutation` (literally `mutation_result`,
+                # unconditionally) is unconditionally present too, and
+                # `judgment_r2` is built the same "iff a payload rendered"
+                # way `judgment_r1` is, without a branch that could never
+                # take the other arm (AUTHORING.md §3b.D).
+                r2_claim = mutation.build_mutation_claim(result, mutation_result)
+                claims += (r2_claim,)
+                ended = iso_utc(clock())
+                judgment_r2 = JudgmentR2(
+                    jobs=judge.mutation.jobs,
+                    operators=judge.mutation.operators,
+                )
+
+    judgment: Judgment | None = None
+    if judgment_r1 is not None or judgment_r2 is not None:
+        judgment = Judgment(r1=judgment_r1, r2=judgment_r2)
 
     return assemble_verdict(
         lane=lane,

@@ -23,6 +23,7 @@ from conftest import make_lane
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
 from assay.mutation import MutationTarget, run_mutation
+from assay.runner import execute_command
 
 _DECLARED_ARGV = ("pytest", "tests", "-q", "--maxfail=1")
 
@@ -62,14 +63,18 @@ def test_baseline_and_every_mutant_receive_byte_identical_argv(tmp_path: Path):
     (project_root / "lib" / "b.py").write_text(_TEXT_B, encoding="utf-8")
     scratch_root.mkdir()
     recorder = _RecordingProcessRunner()
+    baseline = execute_command(lane, cwd=project_root, process_runner=recorder)
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        operators=("compare-swap",),
         process_runner=recorder,
     )
 
@@ -97,14 +102,18 @@ def test_cwd_is_the_only_thing_that_varies_between_calls(tmp_path: Path):
     (project_root / "lib" / "b.py").write_text(_TEXT_B, encoding="utf-8")
     scratch_root.mkdir()
     recorder = _RecordingProcessRunner()
+    baseline = execute_command(lane, cwd=project_root, process_runner=recorder)
 
     run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        operators=("compare-swap",),
         process_runner=recorder,
     )
 

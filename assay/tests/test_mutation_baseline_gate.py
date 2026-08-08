@@ -24,6 +24,7 @@ from conftest import fixed_clock, make_lane
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationTarget, build_mutation_claim, run_mutation
+from assay.runner import execute_command
 
 MOMENT_A = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 8, 7, 12, 0, 1, tzinfo=timezone.utc)
@@ -37,6 +38,23 @@ _TARGETS = (
         lines=frozenset({2}),
     ),
 )
+
+_OPERATORS = ("compare-swap",)
+
+
+def _baseline(lane, project_root, process_runner, clock=None):
+    """P18 work item 4: the baseline is now obtained BY THE CALLER (the
+    exact R0 :func:`~assay.runner.execute_command` result
+    :func:`~assay.runner.run_lane` already produces in the real pipeline)
+    and handed to :func:`~assay.mutation.run_mutation`, never re-run by it
+    -- this helper is every test in this module's own stand-in for that
+    already-obtained :class:`~assay.runner.CommandResult`. *clock* omitted
+    (``None``) uses ``execute_command``'s own real default.
+    """
+    kwargs = {} if clock is None else {"clock": clock}
+    return execute_command(
+        lane, cwd=project_root, process_runner=process_runner, **kwargs
+    )
 
 
 class _RecordingProcessRunner:
@@ -77,16 +95,20 @@ def _always_timeout(argv, *, env, cwd, timeout):
 def test_a_failing_baseline_stops_before_any_mutant_and_renders_fail(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
     recorder = _RecordingProcessRunner(_always_fail)
+    baseline = _baseline(
+        lane, tmp_path / "proj", recorder, fixed_clock(MOMENT_A, MOMENT_B)
+    )
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=tmp_path / "proj",
+        repo_top=tmp_path / "proj",
         scratch_root=tmp_path / "scratch",
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=recorder,
-        clock=fixed_clock(MOMENT_A, MOMENT_B),
+        operators=_OPERATORS,
     )
 
     assert baseline.outcome is Outcome.FAIL
@@ -98,16 +120,20 @@ def test_a_failing_baseline_stops_before_any_mutant_and_renders_fail(tmp_path: P
 def test_a_crashed_baseline_stops_before_any_mutant_and_renders_error(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
     recorder = _RecordingProcessRunner(_always_crash)
+    baseline = _baseline(
+        lane, tmp_path / "proj", recorder, fixed_clock(MOMENT_A, MOMENT_B)
+    )
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=tmp_path / "proj",
+        repo_top=tmp_path / "proj",
         scratch_root=tmp_path / "scratch",
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=recorder,
-        clock=fixed_clock(MOMENT_A, MOMENT_B),
+        operators=_OPERATORS,
     )
 
     assert baseline.outcome is Outcome.ERROR
@@ -121,16 +147,20 @@ def test_a_timed_out_baseline_stops_before_any_mutant_and_renders_budget_exceede
 ):
     lane = make_lane(argv=("pytest", "-q"), budget="5m", budget_seconds=300.0)
     recorder = _RecordingProcessRunner(_always_timeout)
+    baseline = _baseline(
+        lane, tmp_path / "proj", recorder, fixed_clock(MOMENT_A, MOMENT_B)
+    )
 
-    baseline, mutation = run_mutation(
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=tmp_path / "proj",
+        repo_top=tmp_path / "proj",
         scratch_root=tmp_path / "scratch",
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=recorder,
-        clock=fixed_clock(MOMENT_A, MOMENT_B),
+        operators=_OPERATORS,
     )
 
     assert baseline.outcome is Outcome.BUDGET_EXCEEDED
@@ -145,16 +175,20 @@ def test_no_scratch_directory_is_created_for_a_red_baseline(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
     scratch_root = tmp_path / "scratch"
     scratch_root.mkdir()
+    baseline = _baseline(
+        lane, tmp_path / "proj", _always_fail, fixed_clock(MOMENT_A, MOMENT_B)
+    )
 
     run_mutation(
         lane,
+        baseline=baseline,
         project_root=tmp_path / "proj",
+        repo_top=tmp_path / "proj",
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
-        process_runner=_always_fail,
-        clock=fixed_clock(MOMENT_A, MOMENT_B),
+        operators=_OPERATORS,
     )
 
     assert list(scratch_root.iterdir()) == []
@@ -177,13 +211,17 @@ def test_a_passing_baseline_proceeds_to_generating_and_running_mutants(tmp_path:
     # mutant, so it needs more than the two fixed moments `fixed_clock`
     # supplies elsewhere in this module -- and nothing here asserts on
     # timestamps, so the real clock is exactly as good an oracle.
-    baseline, mutation = run_mutation(
+    baseline = _baseline(lane, project_root, recorder, None)
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        operators=_OPERATORS,
         process_runner=recorder,
     )
 
@@ -209,15 +247,19 @@ def test_the_r2_claim_reuses_the_baselines_own_outcome_and_reason_code_verbatim(
     tmp_path: Path, decide, expected_outcome, expected_reason
 ):
     lane = make_lane(argv=("pytest", "-q"))
-    baseline, mutation = run_mutation(
+    baseline = _baseline(
+        lane, tmp_path / "proj", decide, fixed_clock(MOMENT_A, MOMENT_B)
+    )
+    mutation = run_mutation(
         lane,
+        baseline=baseline,
         project_root=tmp_path / "proj",
+        repo_top=tmp_path / "proj",
         scratch_root=tmp_path / "scratch",
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=1,
-        process_runner=decide,
-        clock=fixed_clock(MOMENT_A, MOMENT_B),
+        operators=_OPERATORS,
     )
     assert mutation is None
 
