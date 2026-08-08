@@ -88,16 +88,17 @@ lane-config failure and renders no R3 claim at all; do not route it into an
 between it and `Claim.canary`; decide whether that still holds once a real
 producer writes it.
 
-## Carried in from P17, implementer notes (unratified — flag for controller review)
+## Carried in from P17, MERGED AND RATIFIED (read before writing work items 3 and 5)
 
-Not `decisions.md` entries; observations from actually building P17, kept
-short (<300 chars) per the controller's own request. Read before writing
-work items 3 and 5.
+Written by P17's implementer, then reviewed, corrected and ratified as
+A-139–A-143. Treat as decided, not as observations.
 
-- P19-specific: run_lane's whole-tree dirty check judges the CONSUMER's own worktree. R3 runs in an independently-owned scratch copy it deliberately commits into (work item 3) -- keep calling execute_command/evaluate_r1 directly there, like canary.py does, not run_lane.
-- evaluate_r1's signature/return type is FROZEN: assay.canary (this package's own file) already calls it expecting a bare Claim back. For judgment.r3's resolved-input analogue, an optional callback param is the precedent (see evaluate_r1's on_base_resolved), not a return-type change.
-- pytest-cov silently writes .pyc under source_roots unless the lane's env sets PYTHONDONTWRITEBYTECODE=1 -- already worked around in test_canary_python_pipeline.py's own `_ENV`; P17's own real-wheel R1 fixture hit the identical thing independently.
-- Least-confident call from P17, worth revisiting for R3 too: registry rejection (unsupported judge.language/rigor) is a bare AssayError with no verdict artifact, even though HEAD is already known by that point -- see P18's own copy of this note for the fuller reasoning.
+- **RULED (A-139) — a terminal path with a known `HEAD` emits a COMPLETE artifact, refusals included.** P17's implementer flagged the opposite as its least-confident call; the ruling went against it. `cli._resolve_declared_adapters` checks EVERY declared level above R0 against the registry before anything runs, and `runner.refuse_lane` (public; formerly `_refuse_before_running`, now total over `lane.rigor`) renders the refusal as a real verdict with one claim per declared level. **For you: adding `"R3"` to `_built_in_registry`'s existing `PythonAdapter` entry is the whole registry change** — the loop already admits it. Do not add an R3 special case, and do not let any new R3 terminal path escape as a bare `AssayError` once `HEAD` is resolved.
+- **P19-specific, and A-140 sharpens it:** `run_lane`'s whole-tree dirty check judges the CONSUMER's own worktree, and its stale-artifact removal now runs only AFTER that check passes. R3 runs in an independently-owned scratch copy it deliberately commits into (work item 3), so keep calling `execute_command`/`evaluate_r1` directly there — as `canary.py` already does — never `run_lane`. Deciding which of the two guards applies to a scratch copy is a design question you own; state the answer, do not inherit it by accident.
+- `evaluate_r1`'s signature/return type is FROZEN: `assay.canary` (this package's own file) already calls it expecting a bare `Claim` back. For `judgment.r3`'s resolved-input analogue, an optional callback parameter is the precedent (`on_base_resolved`), not a return-type change.
+- pytest-cov silently writes `.pyc` under source roots unless the lane's env sets `PYTHONDONTWRITEBYTECODE=1` — already worked around in `test_canary_python_pipeline.py`'s own `_ENV`; P17's real-wheel R1 fixture hit the identical thing independently.
+- **RULED (A-142) — external-tool preflighting is still deferred and is NOT yours.** It belongs to P23, the first package registering an adapter that genuinely declares one.
+- **Two evidence traps P17's review had to close; the same shapes apply to `judgment.r3`.** (1) Nothing distinguished a RESOLVED recorded input from an echoed one, because every test declared the already-resolved form (A-143) — make correct and incorrect genuinely different in at least one oracle. (2) An oracle demanding a "complete artifact" was satisfied with a handful of field assertions; this suite's established form is a whole-document `==` with only un-injectable fields excluded.
 
 ## Test constraints copied from AUTHORING.md §3b
 

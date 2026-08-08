@@ -93,22 +93,25 @@ it, ask whether that still holds — a `jobs`/`operators` record that no
 rule ties to the claim it describes is a field a consumer must take on
 trust, which is the exact gap this whole series exists to close.
 
-## Carried in from P17, implementer notes (unratified — flag for controller review)
+## Carried in from P17, MERGED AND RATIFIED (read before writing work items 4 and 6)
 
-Not `decisions.md` entries; observations from actually building P17, kept
-short (<300 chars) per the controller's own request. Read before writing
-work items 2, 4, and 6.
+The notes below were written by P17's implementer and have since been
+reviewed, corrected where wrong, and ratified as A-139–A-143. **The one it
+flagged as its own least-confident call was a real defect, and the ruling
+went against it** — see the first bullet. Treat all of this as decided.
 
-- evaluate_r1's signature/return type is FROZEN: assay.canary (forbidden in P17 scope) calls it expecting a bare Claim back. To surface an internal value without re-computing it, add an optional callback param (see on_base_resolved) -- never change the return shape.
-- run_lane's R0 CommandResult is a local variable, never returned to cli.py. To reuse it as R2's baseline (avoiding a second command run per sol finding 11), extend run_lane's own body -- don't build a parallel R2 pipeline function that re-runs execute_command.
-- R1 now runs unconditionally after R0 regardless of R0's own outcome -- real pytest-cov writes coverage even when assertions fail. mutation.py's run_mutation already requires baseline PASS before mutating, so R2's own prerequisite is genuinely stricter than R1's.
-- The whole-tree dirty check (git.dirty_paths, every lane, before any command runs) is separate from and does not replace evaluate_r1's own source-root-scoped check_dirty_tree (post-execution). Route R2 through run_lane's existing pre-flight, don't reinvent it.
-- registry.get_adapter now takes (registry, language, rigor). cli.py's _built_in_registry must add 'R2' to PythonAdapter's rigor set in the SAME entry, not construct a second registry.
-- judge.base is already required for both R1 and R2 (config.py JUDGE_FIELDS_BY_RIGOR['R2']) -- P18 does not need to add it. It's the same declared ref R1 and R2 both diff against; don't re-derive or duplicate it.
-- pytest-cov silently writes .pyc under source_roots unless the lane's env sets PYTHONDONTWRITEBYTECODE=1 -- bit P09's canary test and P17's own real-wheel R1 test identically. Any R2 fixture running real pytest will hit this too.
-- _refuse_before_running (runner.py) builds R0(+R1) claims directly plus a synthetic CommandResult when a prerequisite fails pre-execution, bypassing execute_command. Reuse and widen this for R2 prerequisite failures rather than inventing a second mechanism.
-- External-tool preflighting (DESIGN-GUIDE §11/A-013) still has no code anywhere -- deferred again in P17 matching A-086/A-087's Go precedent, since Python declares none. If R2 mutation execution ever needs a real tool, that reason code (errors.py) is this package's call to add.
-- Least-confident call, worth revisiting: registry rejection (unsupported judge.language/rigor) is a bare AssayError, no verdict -- matching 'R2 declared, no claim' precedent, even though HEAD is known. Work item 3's 'every later path emits a complete artifact' may read more broadly.
+- **RULED (A-139) — every terminal path with a known `HEAD` emits a COMPLETE artifact, including a refusal.** P17's implementer flagged this as an open question; the answer is that work item 3 reads exactly as broadly as it feared. `cli._resolve_declared_adapters` now checks EVERY declared level above R0 against the registry BEFORE anything runs, and `runner.refuse_lane` (public; the old `_refuse_before_running`, generalised over `lane.rigor`) renders the refusal as a real verdict with one claim per declared level. **What this means for you: adding `"R2"` to `_built_in_registry`'s existing `PythonAdapter` entry is the WHOLE registry change.** The loop already admits it, and the R2-refused-before-P18 artifact stops being emitted the moment you do. Do not add a second registry, a second entry, or an R2 special case.
+- **RULED (A-140) — validate, then refuse, then mutate. Never mutate, then refuse.** `run_lane`'s order is: coverage-artifact safety check (pure) → whole-tree cleanliness → remove stale artifact → run. The reverse order shipped in P17 and deleted files on a refusal path. **Consequence you will hit in fixtures: the declared `judge.coverage.artifact` must be git-ignored**, or it is untracked worktree state and the run is refused. `tests/test_runner_run_lane.py::_seed_two_commits` commits a `.gitignore` for exactly this; copy that, do not work around it. Any R2 scratch/output path you add inherits the same rule.
+- **RULED (A-142) — external-tool preflighting is deferred again, and is NOT yours.** No code preflights `LanguageAdapter.external_tools`, and no `NO_MEASUREMENT` reason code exists for a missing one. Both belong to P23, the first package that registers an adapter genuinely declaring an external tool (its own `assay-go-helper`). If R2 mutation execution somehow needs a real tool here, that is an escalation, not a quiet addition to `errors.py`.
+- `evaluate_r1`'s signature/return type is FROZEN: `assay.canary` (forbidden in P17's scope, and in yours) calls it expecting a bare `Claim` back. To surface an internal value without recomputing it, add an optional callback parameter — see `on_base_resolved` — never change the return shape.
+- `run_lane`'s R0 `CommandResult` is a local variable, never returned to `cli.py`. To reuse it as R2's baseline (work item 4, sol finding 11), extend `run_lane`'s own body — do not build a parallel R2 pipeline function that re-runs `execute_command`.
+- R1 runs unconditionally after R0 regardless of R0's own outcome: real pytest-cov writes coverage even when assertions fail. `run_mutation` already requires a PASS baseline before mutating, so R2's prerequisite is genuinely stricter than R1's — that asymmetry is deliberate, not an inconsistency to "fix".
+- The whole-tree dirty check (`git.dirty_paths`, every lane, pre-command) is separate from and does not replace `evaluate_r1`'s own source-root-scoped `check_dirty_tree` (post-execution). Route R2 through `run_lane`'s existing pre-flight; don't reinvent it.
+- `registry.get_adapter` now takes `(registry, language, rigor)`.
+- `judge.base` is already required for R2 (`config.JUDGE_FIELDS_BY_RIGOR["R2"]`). It is the same declared ref R1 and R2 both diff against; don't re-derive or duplicate it.
+- pytest-cov silently writes `.pyc` under source roots unless the lane's env sets `PYTHONDONTWRITEBYTECODE=1` — this bit P09's canary test and P17's real-wheel R1 test identically. Any R2 fixture running real pytest will hit it too.
+- **Two evidence traps P17 shipped and its review had to close — check yourself against both.** (1) Every P17 test declared `judge.base` as a full SHA, and resolving a full SHA returns itself, so nothing distinguished a RESOLVED value from an echoed one; `judgment.r2`'s own recorded inputs need at least one oracle where correct and incorrect are genuinely different (A-143). (2) O1 asked for "a complete independent expected artifact" and got eight field assertions; this suite's established form is a whole-document `==` with only the un-injectable fields excluded, used a dozen times — use it, and note your work item 7 says "Compare complete artifacts" explicitly.
+- `runner.refuse_lane` (public since A-139; formerly `_refuse_before_running`) builds one claim per DECLARED rigor level plus a synthetic `CommandResult` when a prerequisite fails pre-execution, bypassing `execute_command` entirely. It is already total over `lane.rigor`, so an R2 prerequisite failure needs no widening — reuse it rather than inventing a second mechanism.
 
 ## Test constraints copied from AUTHORING.md §3b
 
