@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P23-real-go-mutation-r2
+id: assay-P27-real-go-mutation-r2
 project: assay
 title: "Go changed-line mutants are valid single-site programs judged by real go test"
 tier: implement-2
-input_revision: "48771e48c7b2ed7ed937cbe07e193718c6f242bb"
+input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P18-r2-cli-pipeline, assay-P22-real-go-r1-gate]
+depends_on: [assay-P22-exact-reexecution-isolation, assay-P26-real-go-r1-gate]
 session: resume:assay-go-mutation
 scope:
   touch: ["cmd/assay-go-helper/**", "gate/go/**", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/registry.py", "src/assay/mutation.py", "tests/fixtures/go/**", "tests/**", "README.md"]
@@ -22,8 +22,8 @@ oracles:
     negative: "Returning UNSUPPORTED or universal killed fails the expected per-mutant manifest"
     gate: tester-unified
   - id: O3
-    observable: "The installed CLI produces exact Go R2 killed, survived, compile-crashed, no-mutants, and budget-exceeded artifacts while the source module is unchanged"
-    negative: "Treating compilation failure as killed or editing the live module changes artifact or source hash"
+    observable: "The installed CLI produces exact v4 Go R2 killed, survived, command-boundary-crashed, no-mutants, mutant-limit, and lane-budget artifacts while the source module is unchanged"
+    negative: "Parsing unstructured go test output to relabel a normal nonzero, omitting killed identities, or editing the live module changes the artifact/source hash"
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
@@ -32,37 +32,37 @@ escalate_if:
 mutexes: []
 ---
 
-# P23 — real Go mutation R2
+# P27 — real Go mutation R2
 
 The claim to attack: **assay constructs valid single-site Go mutants on changed lines and reports what real `go test` does to each.**
 
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P23-real-go-mutation-r2`
-on branch `feat/assay-P23-real-go-mutation-r2`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P27-real-go-mutation-r2`
+on branch `feat/assay-P27-real-go-mutation-r2`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§6, 10–12; decisions A-003–A-004, A-041–A-043, A-067, A-082, A-112–A-122.
-2. P18's frozen R2 CLI/config contract and P22's real combined Go gate/module fixture. Reuse both without another orchestration or image.
+1. `docs/DESIGN-GUIDE.md` §§6, 10–12; decisions A-003–A-004, A-041–A-043, A-067, A-082, A-112–A-122 and A-155–A-161.
+2. P21's v4 R2 evidence/cap contract, P22's exact snapshot executor, and P26's real combined Go gate/module fixture. Reuse them without another orchestration or image.
 3. `src/assay/adapters/go.py::generate_mutants`, `src/assay/mutation.py`, and Python's byte-exact mutant implementation/tests as the protocol reference, not as Go syntax logic.
-4. Go standard `go/parser`, `go/ast`, `go/token`, and `go/format` APIs available in P22's pinned toolchain. The helper may use syntax/token positions to locate spans but must not reprint the whole file.
+4. Go standard `go/parser`, `go/ast`, `go/token`, and `go/format` APIs available in P26's pinned toolchain. The helper may use syntax/token positions to locate spans but must not reprint the whole file.
 5. `/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py` for the four conceptual operator names and deterministic ordering only; its Python AST/unparse mechanism is forbidden prior art.
 6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` P23 carve and finding 11.
 
 ## Work
 
-1. Add a small offline-built `assay-go-helper` beneath `cmd/` that reads source plus selected lines through a bounded machine protocol and returns syntax-derived exact byte spans/replacements in deterministic order. Build it into P22's gate image and declare it as the Go adapter's external tool.
+1. Add a small offline-built `assay-go-helper` beneath `cmd/` that reads source plus selected lines through a bounded machine protocol and returns syntax-derived exact byte spans/replacements in deterministic order. Build it into P26's gate image and declare it as the Go adapter's external tool.
 2. Implement the three language-valid shared operator identities for Go: comparisons, `&&`/`||`, and boolean constants. `falsy-swap` is Python's swap among dynamically-typed falsy literals; Go has no equivalent valid across static types, so it deliberately produces no Go sites. Do not relabel a nil/zero/equality rewrite as falsy-swap.
 3. Produce each `Mutant` by one byte splice against the original UTF-8 source. Preserve all bytes outside the selected span; use Go parsing/formatting only to validate the result, never to generate whole-file output.
 4. Select only sites whose syntactic construct begins or is wholly attributed to a declared changed line under one documented rule. Exclude comments, strings, generated/test files, unchanged lines, and nested second-site changes.
-5. Run the existing P18 executor/isolation path with real `go test`; compilation/non-test infrastructure errors are `crashed`, ordinary test rejection is `killed`, zero is `survived`, and timeout remains budget-exceeded. Advance Go's registry capability through R2 only after this installed path passes.
-6. Add independently enumerated fixtures covering multiple same-line sites, Unicode before a span, multiline expressions, comments/strings resembling operators, invalid source, no sites, and every terminal result. Prove source hashes unchanged.
-7. Break AST/token discovery, line selection, byte splicing, validity checking, external-tool preflight, crash/kill separation, and installed CLI wiring separately; run the real combined gate and record exact A-067 counts.
+5. Run P22's existing exact-plan/snapshot path with real `go test`. Per A-158, a process that starts and exits nonzero — including a compiler rejection — is `killed`; exit zero is `survived`; inability to start/execute the command boundary is `crashed`; the shared lane deadline and max-mutant ceiling retain their own terminals. Never classify by scraping human-readable Go output.
+6. Add independently enumerated fixtures covering multiple same-line sites, Unicode before a span, multiline expressions, comments/strings resembling operators, invalid source, no sites, every terminal result, and selected real srdm packages in a disposable snapshot. Prove full killed identities and source hashes unchanged.
+7. Break AST/token discovery, line selection, byte splicing, validity checking, external-tool preflight, nonzero/boundary classification, max-mutant enforcement, and installed CLI wiring separately; run the real combined gate and record exact A-067 counts.
 
 ## Carried in from P17, merged (read before writing work items 1 and 7)
 
-**Work item 7's "external-tool preflight" is P22's mechanism, not one you
+**Work item 7's "external-tool preflight" is P26's mechanism, not one you
 build (A-144).** Until P22, nothing in assay preflighted
 `LanguageAdapter.external_tools` and the closed reason vocabulary had no
 truthful cause for a missing one (A-013/A-086, deferred by A-087 and again
@@ -87,10 +87,10 @@ Reviewed at the P18 merge, corrected where wrong, ratified as A-145–A-147.
 Treat as decided.
 
 - **CONFIRMED and FIXED (A-147) — the carve gap P18's implementer flagged was real.** `cli._built_in_registry` (not `registry.py`) holds the `GoAdapter` entry work item 5 must widen to R2, and `scope.touch` did not name `cli.py`. It does now. Second instance of A-144's shape; if you find a third, it is a carving-process finding, not a one-off.
-- `assay.mutation.run_mutation`'s signature changed: `baseline` is now a REQUIRED caller-supplied `CommandResult` (never run internally), `operators` is REQUIRED, and `repo_top` is REQUIRED (A-145). Work item 5's "existing P18 executor/isolation path" means calling it with all three, not the pre-P18 shape.
-- **RULED (A-145) — a target's `path` is REPO-top-relative; the per-mutant copy is a copy of the PROJECT root.** P18 shipped a crash for any project in a subdirectory of its repo. Fixed via `mutation.project_prefix`, but a real Go module under `gate/go/**` is exactly that shape — fixture it, do not assume the two roots coincide.
+- `assay.mutation.run_mutation` consumes P22's immutable effective plan, required max-mutant ceiling, repository/project identities, and shared deadline. Do not call the pre-P22 `Lane`-re-resolution shape.
+- **A-145 was superseded structurally by A-156/A-161:** targets remain repo-top-relative, but each execution is now a committed-object snapshot of the WHOLE repository, with the project at its original prefix. A real Go module under `gate/go/**` and the disposable srdm copy are the required nested cases.
 - `assay.mutation.resolve_mutation_targets` (new in P18) filters candidates through `adapter.source_globs`/`excluded_dir_names`/`is_test_path`. P18 did not change `GoAdapter`'s own values for these (from P08) -- confirm they are still right now that R2 target scoping reads them.
-- **Your O3 is P18's own O4, in Go.** `tests/test_standalone.py`'s five installed-wheel R2 comparisons are the working pattern (complete document `==`, tree hashes before/after, PATH declared not passed through). Reuse the shape; note that P18 records WHY a crashed mutant is unreachable through a real fixed-argv lane — for Go it IS reachable, because a mutant that fails to COMPILE is a different thing from one that fails to launch.
+- **Your O3 is P18's own O4 migrated to v4, in Go.** `tests/test_standalone.py`'s installed-wheel R2 comparisons are the working shape (complete document `==`, tree hashes before/after, PATH declared not ambient). A compiler rejection is a normally-started nonzero and therefore killed (A-158); a crashed entry requires a real command-boundary failure, never output interpretation.
 
 ## Test constraints copied from AUTHORING.md §3b
 
@@ -143,7 +143,7 @@ Treat as decided.
 
 ## Scope / forbid
 
-This package adds Go mutation only. It must not change Python mutants, R2 payload/schema, canary, or shared gate declarations. P22's image may be extended with the helper without editing `nyxloom.toml`, so no merge mutex is needed.
+This package adds Go mutation only. It must not change Python mutants, the v4 R2 payload/schema, canary, or shared gate declarations. P26's image may be extended with the helper without editing `nyxloom.toml`, so no merge mutex is needed.
 
 ## BLOCKED rule
 

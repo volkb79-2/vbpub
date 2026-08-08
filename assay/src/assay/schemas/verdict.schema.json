@@ -285,7 +285,7 @@
       "additionalProperties": false
     },
     "judgment_r2": {
-      "description": "RESERVED (P16); populated by a future R2 CLI wiring package.",
+      "description": "The effective R2 policy populated by the R2 CLI pipeline (P18) and correspondence-checked against the R2 claim (A-148).",
       "type": "object",
       "required": ["jobs", "operators"],
       "properties": {
@@ -295,7 +295,7 @@
       "additionalProperties": false
     },
     "judgment_r3": {
-      "description": "RESERVED (P16); populated by a future isolated R3 CLI wiring package.",
+      "description": "The effective R3 policy populated by the isolated R3 CLI pipeline (P19) and correspondence-checked against the R3 claim where schema v3 can witness it (A-148/A-152).",
       "type": "object",
       "required": ["mechanism", "target"],
       "properties": {

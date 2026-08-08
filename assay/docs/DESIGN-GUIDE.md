@@ -293,6 +293,14 @@ never derives flags** — they come from the lane or the caller, never from assa
 inspecting the diff. Deriving them would be impact-based selection, which is
 the caller's domain (§7).
 
+**Repeated rigor consumes one immutable effective command plan (A-155).**
+The declared/appended/effective argv and declared/effective environment are
+not merely audit fields on R0: they are the process inputs for every mutant
+and both canary halves. Re-reading `Lane` inside a scratch directory loses
+caller appends and resolved passthrough values, producing a judgment about a
+different command than the artifact records. Relocation changes only the
+snapshot root beneath the plan's project-relative working-directory identity.
+
 ### Binding the effective judge policy (v3)
 
 A percentage alone does not let an independent consumer re-derive a status:
@@ -324,6 +332,15 @@ schema exists to close. **One field remains untied and deliberately so:
 rule inside v3 can witness it being wrong; closing it needs a `canary.target`
 field and therefore a v4 migration, which A-138 makes a consumer's decision
 rather than a producer's.
+
+**The post-P19 adversarial review makes v4 the next pre-adoption contract
+(A-157).** P21 adds that canary target; all killed-mutant identities (a count
+cannot prove which sites/operators were killed); a required recorded
+`max_mutants`; an explicit `reported`/`unavailable` exclusion capability; and
+model/schema/raw-verifier parity for the closed operator vocabulary and time
+interval. It also names output-write and mutation-limit terminals. These are
+batched into one migration before an external consumer exists; v3 remains the
+current implementation until P21 lands and is never upgraded in place.
 
 **A judged status carries the payload it judged.** Re-derivation only bites
 where there is something to re-derive, so the cheapest evasion of it is not
@@ -366,6 +383,11 @@ audit reference already requires `events.jsonl` and `summary.json` *"even when
 a baseline, mutant, or teardown fails."* Without it, a consumer cannot
 distinguish "assay errored" from "assay never ran", and the second is a
 transport failure that must fail closed.
+
+The physical output channel is the one exception nobody can wish away: if the
+declared destination cannot be reserved, Assay cannot put an artifact there.
+P21 detects that before running the lane, emits a stable
+`OUTPUT_WRITE_FAILED` diagnostic/exit, and never invents a fallback path.
 
 ## 7. What assay must never become
 
@@ -454,6 +476,11 @@ expected verdict artifact covering all six outcomes and every `reason_code`.
   git repo inside a git repo is the alternative, and it is worse.
 - A documented regeneration script for a host that *does* have Go, so profiles
   are reproducible rather than mystery bytes.
+- **A disposable copy of real srdm is the abstraction proof (A-159).** Tiny
+  modules keep parser failures legible; P26–P28 additionally run the installed
+  product over selected changes in `shared-ramdisk-depot-manager` and compare
+  R1 with its independent `tools/covergate`. This validates a real module,
+  repository nesting and package topology without migrating or editing srdm.
 
 **Go stays out of the devcontainer.** The cockpit currently has no Go toolchain
 at all, so — in srdm's Dockerfile's own words — *"it cannot even pretend"* to
@@ -543,7 +570,7 @@ source_roots = ["libs/common/src", "applications/controller/src", "scripts"]
 fail_under = 100.0
 allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
-mutation = { jobs = 4, operators = ["compare-swap","boolop-swap","bool-const-flip","falsy-swap"] }
+mutation = { jobs = 4, max_mutants = 200, operators = ["compare-swap","boolop-swap","bool-const-flip","falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
 
 [lanes.package.where]
@@ -560,8 +587,8 @@ time against the vocabulary its own module owns: `coverage.format` against
 `assay.mutation.MUTATION_OPERATORS`, and `canary.mechanism` against
 `assay.canary.CANARY_MECHANISMS` (P19). `canary` declares exactly one
 `mechanism` and one project-relative `target`, never a plural list — one R3
-claim is one mechanism execution, because schema v3 carries a single canary
-payload and collapsing several results into it would report a judgement
+claim is one mechanism execution, because the verdict contract carries a
+single canary payload (v3 and planned v4 alike) and collapsing several results into it would report a judgement
 nobody made. **A declared `uncovered-line` canary only ever reaches its own
 expected reason on a lane that also declares R1** (A-150): `UNCOVERED_LINES`
 comes from the R1 evaluation and from nowhere else, so an R0+R3 lane can
@@ -569,6 +596,20 @@ report that mechanism as having survived and never as having been caught.
 **Scope stays an unverifiable declared claim** — assay cannot check S1-vs-S2 —
 but naming it is precisely what made dstdns's gap visible, so it is required and
 honest about being a claim.
+
+**Every lane declares R0 (A-154).** R2 and R3 execute variants of the declared
+command and therefore have no honest meaning without its baseline identity;
+making that baseline implicit would omit a claim Assay actually ran. R1/R2/R3
+remain independently selectable after R0. An `uncovered-line` R3 lane also
+declares R1 because only R1 can produce its expected `UNCOVERED_LINES` cause.
+
+**One budget covers the lane (A-160).** The singular `budget` spans snapshot
+construction, baseline, evaluation, every mutant, and both canary halves; it is
+not reset per subprocess. `max_mutants` is the independent deterministic work
+cardinality ceiling. Repeated executions start from the resolved commit's
+tracked Git objects with the complete repository topology and project prefix
+(A-161), never a working-tree copy containing ignored stale evidence. Ignored
+or untracked files are not implicit inputs.
 
 Note the consequence, because it is easy to get backwards: an **R0-only lane has
 no `[judge]` table at all**, and therefore declares no `source_roots`,
@@ -608,6 +649,13 @@ can render different verdicts; a loop that hides which image failed is the same
 opacity being removed.
 
 ## 13. Adoption order, and what each consumer proves
+
+Before consumer migration, P24 qualifies the versioned installed wheel
+against a disposable current Topos tree and its independent changed-line gate
+(A-162). That is evidence that an existing Python project can obtain the same
+R1 answer, not a claim that Topos has adopted Assay. The real adoption package
+is carved later in Topos's own trove, after its active wave permits a stable
+input revision.
 
 | # | Consumer | Proves |
 |---|---|---|

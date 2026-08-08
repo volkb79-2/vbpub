@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P25-vitest-coverage-format-conformance
+id: assay-P29-vitest-coverage-format-conformance
 project: assay
 title: "Real Vitest coverage is parsed without losing or inventing statement judgment"
 tier: implement-2
-input_revision: "48771e48c7b2ed7ed937cbe07e193718c6f242bb"
+input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P15-measurement-input-integrity]
+depends_on: [assay-P21-verdict-v4-evidence-contract]
 session: resume:assay-react-formats
 scope:
   touch: ["gate/node/**", "nyxloom-trove/nyxloom.toml", "src/assay/coverage_parsers/lcov.py", "src/assay/coverage_parsers/istanbul.py", "src/assay/coverage_parsers/__init__.py", "src/assay/coverage.py", "tests/fixtures/coverage/**", "tests/**", "README.md"]
@@ -32,14 +32,14 @@ escalate_if:
 mutexes: [merge-lane]
 ---
 
-# P25 — Vitest coverage format conformance
+# P29 — Vitest coverage format conformance
 
 The claim to attack: **assay consumes real Vitest coverage without making result order or lossy format conversion part of the verdict.**
 
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P25-vitest-coverage-format-conformance`
-on branch `feat/assay-P25-vitest-coverage-format-conformance`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P29-vitest-coverage-format-conformance`
+on branch `feat/assay-P29-vitest-coverage-format-conformance`.
 
 ## Context to read first
 
@@ -65,27 +65,23 @@ Build an assay-owned `assay-node-gate:local` image from `gate/node/Dockerfile`. 
 7. Extend the real gate command to execute the offline Node conformance after the ordinary installed-wheel proof, preserving cgroup and independent witness mechanics.
 8. Break real report generation, each parser validation, mixed-statement aggregation, duplicate-SF handling, registry binding, and semantic manifest comparison separately; record exact A-067 failure counts.
 
-## Carried in from P16, merged (read before writing work items 2 and 6)
+## Carried in from P21 (read before writing work items 2 and 6)
 
-**A-O16 is open and this package is where it first bites — decide it
-before implementing work item 6's "ignored/uninstrumented lines."**
+**A-O16 is closed by the v4 contract — consume it; do not decide it again.**
 `FileCoverage.excluded is None` means "this format cannot tell me what was
 excluded"; `frozenset()` means "it told me, and the answer is none". The
-distinction is real upstream, but `evaluate_coverage` intersects the
-changed lines with `frozenset()` in both cases, so schema v3's
-`Coverage.excluded_lines` has no spelling for unknown — an R1 claim from a
-blind format is indistinguishable from one from a clean lane.
+distinction is real upstream, and P21's schema v4 carries it as the closed
+capability `reported` versus `unavailable`, checked independently.
 
-That is not a correctness defect (`has_disallowed_excluded` is false in
-both cases too, so status and payload agree), and P16 deliberately did not
-repair it: closing it needs a new artifact field and reaches the format
-registry and every adapter. It matters HERE because Istanbul's
+It matters HERE because Istanbul's
 `coverage-final.json` simply omits an `/* istanbul ignore */` statement
 from `statementMap` — there is no exclusion channel at all — so
 `istanbul-json` is the first registered format whose exclusion support
 genuinely differs from coverage.py's. Report which of the two states you
 can honestly produce; do not quietly emit `frozenset()` for "the format
-has no such concept" because it is the more convenient value.
+has no such concept" because it is the more convenient value. The real
+Istanbul artifact must say `unavailable`; lcov must say only what its real
+generated data proves.
 
 **A-136 — a judged status carries the payload it judged.** If any parser
 path here can render an R1 claim, note that `PASS`/`FAIL` now require a
@@ -142,7 +138,7 @@ path here can render an R1 claim, note that `PASS`/`FAIL` now require a
 
 ## Scope / forbid
 
-This package proves format fidelity only. It must not add a TypeScript adapter, CLI language semantics, mutation/canary, or verdict schema changes. `merge-lane` is required because the registered real gate command changes.
+This package proves format fidelity only. It must not add a TypeScript adapter, CLI language semantics, mutation/canary, or v4 verdict schema changes. `merge-lane` is required because the registered real gate command changes.
 
 ## BLOCKED rule
 

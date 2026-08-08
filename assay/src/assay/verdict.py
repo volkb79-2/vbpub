@@ -927,11 +927,11 @@ class JudgmentR3:
 @dataclass(frozen=True, kw_only=True)
 class Judgment:
     """The resolved judge policy for whichever declared rigor levels
-    actually rendered a real computed judgment (P16). ``r2``/``r3`` are
-    RESERVED, closed shapes a future package populates additively — see
-    their own docstrings for why only ``r1`` carries a construction-time
-    correspondence check against :class:`Claim` today
-    (:meth:`Verdict._check_judgment_matches_claims`).
+    actually rendered a real computed judgment (P16). P18/P19 populate
+    ``r2``/``r3`` and A-148 applies construction-time correspondence checks
+    between every populated policy and the :class:`Claim` it describes.
+    Schema v3 cannot witness ``r3.target`` (A-152); that requires a payload
+    field and a schema migration rather than an inferred correspondence.
     """
 
     r1: JudgmentR1 | None = None

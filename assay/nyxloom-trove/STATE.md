@@ -1,34 +1,25 @@
 # assay — state of play
 
-> **P00–P15 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
-> Written 2026-08-07, updated the same day after a post-series adversarial
-> review (`nyxloom-trove/reports/assay-v1-post-series-review-sol.md`) found
-> that "gate green" proved the library components, not the executable
-> product: no rigor above R0 is reachable through `assay run` at all, and
-> several confirmed defects (some live in the R0 path shipped today) exist
-> in code every package's own review had already passed. **Read that review
-> file before trusting anything else in this document as current** — the
-> P15–P25 repair series is carved directly against its findings and is now
-> being implemented, **P15–P19 merged, P20 next** (see "Where
-> things stand" below for live status). Sol finding 1 — "declared R1–R3
-> lanes cannot run" — is **CLOSED**: declared Python **R1, R2 and R3**
-> lanes all run and are judged end to end through the installed console
-> script. R2 executes real changed-line mutants under the lane's own
-> declared policy; R3 proves one declared canary inside a disposable copy
-> of the consumer's repository, which is never staged, committed, or
-> written to. A lane declaring a language this build has no adapter for is
-> still refused *honestly* (before the command runs, as a complete
-> artifact) rather than after it.
+> **P00–P19 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> The current review is
+> `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`;
+> read it before the older v1 review or this accumulated state. P15–P19 made
+> declared Python R1/R2/R3 reachable through the installed CLI, but the v2
+> adversarial pass reproduced false-PASS/integrity failures in exact command
+> reuse, monorepo mutation isolation, stale canary coverage, commit binding,
+> and ambient Git repository selection. Three prerequisite repair packages
+> are inserted by renumbering the still-unimplemented queue: **P20 → P21 →
+> P22; P20 is next**, followed by P23–P29 (A-153).
 >
-> **Closed does not mean proven safe.** Sol finding 1 was about
+> **Reachable does not mean proven safe.** Sol finding 1 was about
 > reachability, and R3's own reachability is what P19 delivered — the
 > controller's review of it then found that the single most important
 > thing R3 can prove (`uncovered-line`, caught for its own reason) was
 > structurally impossible in the shipped branch and invisible to a
 > gate-green suite at 100% coverage (A-149/A-150). Read that pair before
 > assuming any newly-reachable level is also correct.
-> If you are picking this project up: read the
-> review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
+> If you are picking this project up: read the v2 review, then the v1 review,
+> then `nyxloom-trove/reports/assay-P14-BRIEF.md`
 > (the P14-era final-state brief — still accurate for what P00–P14 built,
 > just not for whether it's ready to depend on), then this file, then
 > `decisions.md`.
@@ -302,12 +293,20 @@ the review. Full findings, direct answers to the controller's own
 questions, and an estate-adoption order are all in that file — read it in
 full, this summary is not a substitute.
 
-**Carving status (live, as of this update): P15 through P25 are carved,
-committed, and controller-verified. P26 (TypeScript adapter) and P27
-(the `dstdns`-side adoption package) are NOT yet carved.**
+**Carving status (live, as of this update): P15 through P29 are carved. A
+TypeScript adapter and any consumer-side adoption package are NOT yet
+carved.** Adoption belongs in the selected
+consumer's trove after Assay's wheel contract is real; it is not an Assay
+handoff with authority to edit another project.
 
 **Implementation status of that series: P15 through P19 are MERGED. P20
-is next.** P16's outcome propagated into FIVE later handoffs, each now
+is next.** The execution order is:
+
+`P20 repository/artifact boundary → P21 verdict v4 evidence → P22 exact
+reexecution/isolation → P23 wheel → P24 real Python qualification → P25
+attestation → P26/P27/P28 real Go R1/R2/R3 → P29 Vitest formats`.
+
+P16's outcome originally propagated into FIVE later handoffs, each now
 carrying a "Carried in from P16, merged" section (all six edited handoffs
 re-linted `clean`): **P17** (the `judgment.r1`-iff-`coverage` trap — a
 lane that resolves its R1 policy and then renders `NO_MEASUREMENT` must
@@ -317,13 +316,13 @@ identity — do not reintroduce a second baseline run), **P19** (an
 inconclusive canary still renders a real `CanaryResult`; `ERROR`/
 `BUDGET_EXCEEDED` stay payload-free), **P22** (its independently
 calculated R1 expectation must now calculate `judgment.r1` too, not copy
-the Python fixture's), and **P25** (A-O16 must be decided there —
-Istanbul has no exclusion channel at all, so it is the first format whose
-exclusion support genuinely differs from coverage.py's). P20/P21/P23/P24
-are unaffected. Nothing was re-carved; every consequence fitted inside an
-additive section.
+the Python fixture's), and **P25** (Istanbul has no exclusion channel).
+The v2 review supersedes the stale parts of those briefs: P21 closes
+A-O16/A-O18 in v4, P20 closes A-O17, P22 replaces working-tree copy
+isolation, and P26–P28 add real disposable-srdm validation.
 
-Sol was given write access (scoped by prompt, not sandbox, to new files
+For historical clarity, the next paragraph uses the handoff ids that existed
+when Sol carved them; A-153 records their current P23–P29 names. Sol was given write access (scoped by prompt, not sandbox, to new files
 under `nyxloom-trove/handoffs/` only) to materialize the twelve-package plan
 from its own review (P15 correctness repairs → P16 schema v3 → P17/P18/P19
 Python R1/R2/R3 CLI wiring → P20 attestation hardening → P21 versioned
@@ -364,68 +363,29 @@ trusting a report at face value. Every package held up under that
 discipline; several needed controller repairs or corrected rulings before
 they did.
 
-**Open, not blocking:** A-O14 (decisions.md) — `runner.write_verdict` has no
-closed `ReasonCode` for "cannot write my own output artifact." Low severity.
+**A-O14 is DECIDED and assigned to P21 (A-157):** reserve/validate the
+declared verdict destination before execution and add the closed
+`OUTPUT_WRITE_FAILED` terminal. The physical impossibility of writing to an
+unavailable destination remains explicit; Assay does not invent a fallback.
 
-**A-O15, new (open questions table): `attestation._changed_paths` has the
-exact pair of defects A-134 just closed everywhere else.** It reads `git
-diff --name-only` and splits with `str.splitlines()`, undoing neither of
-git's two path spellings. Reproduced against a real repository during
-P15's review, not inferred: `weird\nname.py` comes back as the literal
-quoted spelling `'"weird\nname.py"'`, and `sep<U+2028>name.py` comes back
-as two phantom entries `'sep'` and `'name.py'` with the real identity
-gone. Deliberately NOT fixed in P15 — `attestation.py` is in that
-package's `scope.forbid`, and improvising past a forbid is what the
-BLOCKED rule exists to prevent. Pre-existing since P10, unchanged by P15,
-unreachable without an adversarially-named file. P20 (attestation
-hardening) is the natural home but its handoff does not name it; decide
-before dispatching P20.
+**A-O15 is assigned to P20.** `attestation._changed_paths` still uses
+newline-delimited Git display paths plus `splitlines()`. Real filenames with
+newlines or U+2028 were reproduced as wrong identities. P20 now explicitly
+uses P20's sanitized byte/NUL-safe `-z` boundary.
 
-**A-O16, new (open questions table): a coverage format that cannot report
-exclusions is indistinguishable, in the artifact, from one that reported
-none.** `FileCoverage.excluded is None` (unknown) and `frozenset()`
-(known-empty) stay distinct upstream exactly as A-135 requires, but
-`evaluate_coverage` intersects with `frozenset()` in both cases, so schema
-v3's `Coverage.excluded_lines` has no spelling for unknown. NOT a
-correctness defect — `has_disallowed_excluded` is false in both cases too,
-so status and payload agree and R1 re-derivation is unaffected; the loss is
-diagnostic. Raised by P16's own work item 3 ("format inability... must not
-be rewritten to empty") and deliberately not repaired there: closing it
-needs a new artifact field and reaches the format registry and every
-adapter. **Decide before P25**, whose `istanbul-json` is the first
-registered format with no exclusion channel at all — its handoff now says
-so.
+**A-O16 is DECIDED and assigned to P21 (A-157).** Schema v4 records the
+closed exclusion capability `reported` versus `unavailable`; P25 consumes
+that decision for Istanbul rather than redesigning it.
 
-**A-O17, new (found at the P18 merge, assigned to P22): one `AssayError`
-still escapes `evaluate_r1` uncaught, and P22 is what makes it live.**
-`evaluate_r1` catches everything its own guard sequence raises and renders
-it as a complete R1 claim — but `evaluate.evaluate_coverage`'s raise (two
-distinct raw coverage keys normalizing to the SAME repository path,
-`ERROR`/`UNREADABLE_ARTIFACT`, P15) is the one call made after that `try`
-closes. It propagates: exit 2, no artifact, after the lane's command has
-run — A-139's own shape. Unreachable today ONLY because the CLI registers
-`PythonAdapter()` with the default empty `coverage_key_prefix`, making
-`normalize_coverage_key` the identity, so two distinct keys cannot
-collide. `GoAdapter` strips a real module path, which is precisely how
-they collide, and P22 is the package that derives that path from a real
-`go.mod`. The fix is moving two calls inside the existing `try`;
-`runner.py` is not in P22's `scope.touch`, so widen it if P22 agrees the
-repair is theirs. Recorded in P22's handoff too.
+**A-O17 is assigned to P20, before P26.** The known Go-normalization
+collision is one instance of the general rule that every expected post-HEAD
+Git/coverage/source/evaluation error renders a complete artifact. P22 keeps a
+real Go collision fixture but owns no runner workaround.
 
-**A-O18, new (found at the P19 merge, needs schema v4): `judgment.r3.
-target` is recorded and structurally unverifiable.** A-148 tied
-`judgment.r2`/`r3` to the claims they describe, and every part of that
-binding has a witness except one: `CanaryResult` carries a `mechanism`
-(checked, in both the model and `verify.py`) but no target, so nothing in
-a v3 artifact can catch `judgment.r3.target` naming the wrong file. The
-two ways to close it inside v3 — inferring the target from
-`judgment.r1.source_roots`, or parsing it out of the canary description
-string — would each be a rule that looks like verification and is not,
-which is the failure this series exists to remove. The real fix is a
-`canary.target` field, therefore schema v4, therefore a consumer
-migration (A-138) and not a producer upgrade. No package in P20–P25 may
-touch `src/assay/schemas`. **Decide when v4 is next opened**; until then
-the field is declared-only and is documented as such in DESIGN-GUIDE §6.
+**A-O18 is DECIDED and assigned to P21 (A-157).** P21 is the deliberate
+schema-v4 consumer migration and adds `canary.target`, so
+`judgment.r3.target` becomes independently witnessable. P20–P25 may not
+reopen the schema.
 
 **A-128's "three structurally unreachable pairs" is CLOSED — merged, not
 merely carved (2026-08-08, P17 + A-141).** Work item 6 widened
@@ -618,7 +578,8 @@ review it.
   it first and proceed; it no longer does, because that also deleted
   files that were not coverage artifacts at all. Every R1 fixture in the
   suite now commits a `.gitignore` for exactly this reason.
-- `--verdict-json <path-whose-parent-is-unwritable>` still raises a bare
+- `--verdict-json <path-whose-parent-is-unwritable>` currently raises a bare
   `OSError` and exits **1** — which a consumer reads as `FAIL`, not as a
-  tooling error (A-O14, still open; sol ruled "leave it", and P17 did).
-  Worth knowing before pointing a CI job at a path it cannot write.
+  tooling error. A-O14 is no longer open: P21 adds pre-execution destination
+  reservation and `OUTPUT_WRITE_FAILED`. Until P21 lands, do not point a CI
+  job at an unverified destination.

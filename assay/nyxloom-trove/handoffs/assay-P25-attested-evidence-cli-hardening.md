@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P20-attested-evidence-cli-hardening
+id: assay-P25-attested-evidence-cli-hardening
 project: assay
 title: "Declared attested evidence is bounded, contained, and path-current"
 tier: implement-2
-input_revision: "48771e48c7b2ed7ed937cbe07e193718c6f242bb"
+input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P17-r1-cli-pipeline]
+depends_on: [assay-P22-exact-reexecution-isolation]
 session: resume:assay-v11-attestation
 scope:
   touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/attestation.py", "tests/**", "README.md"]
@@ -32,18 +32,18 @@ escalate_if:
 mutexes: []
 ---
 
-# P20 — attested evidence CLI hardening
+# P25 — attested evidence CLI hardening
 
 The claim to attack: **every declared attestation is resolved exactly once from bounded contained input and is current for every path it claims to cover.**
 
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P20-attested-evidence-cli-hardening`
-on branch `feat/assay-P20-attested-evidence-cli-hardening`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P25-attested-evidence-cli-hardening`
+on branch `feat/assay-P25-attested-evidence-cli-hardening`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§3, 6, 7, and 12; decisions A-024, A-033–A-034, A-041, A-067, A-074–A-078, A-085, A-110–A-111.
+1. `docs/DESIGN-GUIDE.md` §§3, 6, 7, and 12; decisions A-024, A-033–A-034, A-041, A-067, A-074–A-078, A-085, A-110–A-111, A-134 and A-153–A-161.
 2. `src/assay/attestation.py` and every `tests/test_attestation_*` file. Reproduce finding 7's reviewed-directory false PASS and finding 8's `../` key escape before implementation.
 3. P15's lossless Git path boundary, P16's unchanged sibling evidence shape, and P17's commit-bound CLI assembly. Reuse them rather than adding a second Git/parser/verdict mechanism.
 4. `src/assay/config.py` and `JudgeConfig.as_declared`; there is currently no lane declaration source for evidence. Add one closed shape rather than another opaque table.
@@ -57,9 +57,24 @@ on branch `feat/assay-P20-attested-evidence-cli-hardening`.
 3. Define fixed documented limits for file bytes, producer/key/path string lengths, reviewed-path count, and total Git comparisons. Enforce byte size before JSON parsing and all structural limits before launching Git.
 4. Restrict keys to a closed safe identifier grammar so `<key>.json` cannot contain separators, traversal, option-like syntax, or control bytes. Open only a regular non-symlink file beneath the resolved directory; missing remains `MISSING_ATTESTATION`.
 5. Require each reviewed path to be normalized, NUL-free, repo-top-relative, non-escaping, and present at the attested commit. Resolve `attested_commit` through an end-of-options-safe Git command to one full commit OID before ancestor/staleness work.
-6. Replace flat changed-name membership with one bounded Git path comparison per reviewed path, using pathspec end-of-options semantics. A reviewed directory is stale when any descendant changed; a file is stale only when that file changed.
+6. Replace flat changed-name membership with one bounded Git path comparison per reviewed path, using pathspec end-of-options semantics. Route every name-only result through P20's byte/NUL-safe Git boundary (`-z` plus its single UTF-8 decode-or-reject policy), never `splitlines()` or Git's quoted display spelling. A reviewed directory is stale when any descendant changed; a file is stale only when that file changed.
 7. Wire declarations through `assay run` into exactly matching `declared_evidence[]`/`evidence[]` entries. Preserve order, `verified_by_assay=false`, and independent resolution of later identities after one malformed record.
 8. Add installed-wheel complete artifacts for current, stale file, stale directory, absent, malformed, unrelated/descendant commit, and limit violation. Break containment, bounds-before-Git, OID resolution, path staleness, sibling placement, and identity coverage separately; record exact A-067 failure counts.
+
+## Carried in from the P15–P19 post-series review
+
+**A-O15 is no longer open: this package owns it.**
+`attestation._changed_paths` currently asks Git for newline-delimited display
+paths and then calls `splitlines()`. A filename containing a newline remains
+C-quoted and never matches its attested identity; a raw U+2028 is split into
+two phantom paths. Both were reproduced against real Git. P20 supplies the
+sanitized byte boundary; work item 6 must use it with `-z`, not recreate a
+second decoder.
+
+P20–P22 also change the substrate this handoff inherits: verdicts are v4,
+all execution happens from the bound committed-object snapshot, and expected
+post-HEAD refusals are complete artifacts. Do not reintroduce a working-tree
+copy, ambient Git call, unbounded read, or v3 fixture while adding evidence.
 
 ## Test constraints copied from AUTHORING.md §3b
 

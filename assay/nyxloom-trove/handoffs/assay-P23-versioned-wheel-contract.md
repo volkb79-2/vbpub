@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P21-versioned-wheel-contract
+id: assay-P23-versioned-wheel-contract
 project: assay
 title: "Every consumable assay wheel has a stable non-placeholder identity"
 tier: implement-2
-input_revision: "48771e48c7b2ed7ed937cbe07e193718c6f242bb"
+input_revision: "1d31eae137156e31abf0c88e6c8381941696d66c"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P17-r1-cli-pipeline]
+depends_on: [assay-P22-exact-reexecution-isolation]
 session: resume:assay-v11-distribution
 scope:
   touch: ["pyproject.toml", "src/assay/__init__.py", "assay.toml", "nyxloom-trove/nyxloom.toml", "tests/test_standalone.py", "tests/test_self_hosting.py", "README.md"]
@@ -32,14 +32,14 @@ escalate_if:
 mutexes: [merge-lane]
 ---
 
-# P21 — versioned wheel contract
+# P23 — versioned wheel contract
 
 The claim to attack: **an assay artifact names the exact distributable assay build that produced it.**
 
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P21-versioned-wheel-contract`
-on branch `feat/assay-P21-versioned-wheel-contract`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P23-versioned-wheel-contract`
+on branch `feat/assay-P23-versioned-wheel-contract`.
 
 ## Context to read first
 
@@ -57,7 +57,7 @@ on branch `feat/assay-P21-versioned-wheel-contract`.
 3. Prove reproducibility with two independent offline builds from identical release input and fixed `SOURCE_DATE_EPOCH`, comparing wheel sha256. Prove a controlled source mutation cannot pass as that same clean release identity/artifact.
 4. Retain zero runtime dependencies. Build dependencies belong only to the build closure; the scratch installed environment must still contain assay plus stdlib and no leaked source tree.
 5. Document the consumer contract: publish/tagging is a controller release action; consuming gates install an exact assay wheel and verify its sha256; no `PYTHONPATH` or sibling-worktree import is supported distribution.
-6. Update self-hosting/standalone expected artifacts to assert a non-placeholder version while preserving their independent verifier and universal-PASS producer mutation.
+6. Update self-hosting/standalone expected **v4** artifacts to assert a non-placeholder version while preserving their independent verifier and universal-PASS producer mutation. Do not retain a v3 compatibility writer or upgrade a historical artifact in place.
 7. Break backend availability, metadata/runtime/artifact agreement, reproducibility, mutation identity, dependency purity, hash pinning, and path-import prohibition separately; run the real gate and record exact A-067 counts.
 
 ## Test constraints copied from AUTHORING.md §3b
