@@ -23,7 +23,7 @@ Three subcommands ship so far:
   level — P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the
   lane's command ever runs. A declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
-  (:func:`assay.canary.run_isolated_python_canary`, via
+  (:func:`assay.canary.run_isolated_canary`, via
   :func:`assay.runner.run_lane`) — the consumer's real worktree is never
   staged, committed, or written to.
 

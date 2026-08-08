@@ -44,8 +44,8 @@ against is not itself known-good.
 **P19 closes the gap A-106 deliberately left open.** ``config.py``'s loader
 now parses ``judge.canary`` as a CLOSED table (:class:`~assay.config.
 CanaryConfig`: exactly ``mechanism`` and ``target``) instead of an opaque
-mapping — :func:`run_isolated_python_canary`, below, is the first real
-reader of it. The two module-level functions above this point
+mapping — :func:`run_isolated_canary`, below, is the first real reader
+of it. The two module-level functions above this point
 (:func:`run_python_canary`/:func:`run_go_canary`) are UNCHANGED: they still
 take *mechanism*/*target_path* as plain arguments and know nothing about
 ``assay.toml`` at all, exactly as P09 built them — this package's own
@@ -53,8 +53,8 @@ orchestration is a NEW caller layered on top, not a rewrite of the
 mechanism underneath it.
 
 **P19's own addition: the installed CLI proves one declared canary without
-touching the consumer's repository.** :func:`run_isolated_python_canary`
-is the CLI-facing entry point :mod:`assay.runner`'s ``run_lane`` calls (a
+touching the consumer's repository.** :func:`run_isolated_canary` is
+the CLI-facing entry point :mod:`assay.runner`'s ``run_lane`` calls (a
 deferred import there, for the identical circular-import reason
 :mod:`assay.mutation`'s own module docstring already gives for resolving
 ``execute_command`` from a function body: this module already imports
@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -109,7 +110,7 @@ __all__ = [
     "build_canary_claim",
     "judge_canary",
     "run_go_canary",
-    "run_isolated_python_canary",
+    "run_isolated_canary",
     "run_python_canary",
 ]
 
@@ -334,7 +335,46 @@ def _project_prefix(*, repo_top: Path, project_root: Path) -> str:
     return "" if relative == Path(".") else f"{relative.as_posix()}/"
 
 
-def run_isolated_python_canary(
+def _relocate_source_roots(
+    lane: Lane, *, project_root: Path, scratch_project_root: Path
+) -> Lane:
+    """*lane* with :attr:`~assay.config.JudgeConfig.source_root_paths`
+    respelled against *scratch_project_root* instead of *project_root*
+    (A-149).
+
+    ``source_root_paths`` are RESOLVED, ABSOLUTE directories under the
+    CONSUMER's own project root (:func:`assay.config._resolve_source_root`,
+    which also guarantees the containment this function's
+    :meth:`~pathlib.Path.relative_to` relies on). Every judgement made
+    inside the scratch copy compares them against paths under the COPY --
+    :func:`assay.evaluate.evaluate_coverage`'s own source-root boundary and
+    :func:`assay.measurability.check_dirty_tree`'s scoping, both reached
+    through :func:`~assay.runner.evaluate_r1`. Handing the consumer's own
+    absolute roots to a run rooted somewhere else does not raise: every
+    changed file simply falls outside every root, ``considered`` is 0,
+    ``pct`` is a vacuous 100.0, and R1 PASSes having measured nothing.
+    That is the laundering-gate shape A-016/A-035 already names for a
+    typo'd source root, reached by relocation instead of by typo -- and it is
+    silent in exactly the direction that matters, since a canary reads a
+    vacuous transformed PASS as ``CANARY_SURVIVED``.
+
+    Only ``source_root_paths`` needs respelling: every other path-bearing
+    field the copy is judged through is already PROJECT-relative and
+    resolved against whichever project root it is handed
+    (``judge.coverage.artifact`` via :func:`~assay.runner.
+    _resolve_artifact_path`, ``judge.canary.target`` via
+    :func:`run_python_canary`), and ``judge.base`` is a revision, not a
+    path.
+    """
+    judge = lane.judge
+    relocated = tuple(
+        scratch_project_root / root.relative_to(project_root)
+        for root in judge.source_root_paths
+    )
+    return replace(lane, judge=replace(judge, source_root_paths=relocated))
+
+
+def run_isolated_canary(
     lane: Lane,
     *,
     repo: Path,
@@ -421,9 +461,13 @@ def run_isolated_python_canary(
     with tempfile.TemporaryDirectory(prefix="assay-r3-") as scratch:
         scratch_repo_top = Path(scratch) / "repo"
         shutil.copytree(repo_top, scratch_repo_top)
-        scratch_project_root = scratch_repo_top / prefix
+        scratch_project_root = (scratch_repo_top / prefix).resolve()
         return run_python_canary(
-            lane,
+            _relocate_source_roots(
+                lane,
+                project_root=project_root.resolve(),
+                scratch_project_root=scratch_project_root,
+            ),
             repo=scratch_project_root,
             project_root=scratch_project_root,
             base_commit=base_for_control,

@@ -883,7 +883,7 @@ def run_lane(
     and R2, unconditionally** -- never gated on *result*'s own outcome the
     way R2 is (R2 reuses *result* AS its baseline; R3 never reuses it at
     all, so there is nothing of *result*'s to gate on). Delegated whole to
-    :func:`assay.canary.run_isolated_python_canary` (a deferred import --
+    :func:`assay.canary.run_isolated_canary` (a deferred import --
     see the call site's own comment for why), which owns its OWN
     prerequisite refusals (a test-path target, a dirty *repo*) and its own
     copy-and-run pipeline against *repo*/*project_root* -- never against a
@@ -1075,10 +1075,10 @@ def run_lane(
         # reasoning `assay.mutation`'s own module docstring gives for
         # resolving `execute_command` from a function body one claim tier
         # over.
-        from .canary import build_canary_claim, run_isolated_python_canary
+        from .canary import build_canary_claim, run_isolated_canary
 
         try:
-            canary_result = run_isolated_python_canary(
+            canary_result = run_isolated_canary(
                 lane,
                 repo=repo,
                 project_root=project_root,

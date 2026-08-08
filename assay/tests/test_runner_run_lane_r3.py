@@ -1,5 +1,5 @@
 """``runner.run_lane``'s R3 orchestration (P19): an isolated canary proof
-delegated whole to :func:`assay.canary.run_isolated_python_canary` -- the
+delegated whole to :func:`assay.canary.run_isolated_canary` -- the
 consumer's own repository is copied into independently-owned scratch state
 and never staged, committed, or written to.
 
@@ -129,6 +129,154 @@ def test_r3_reports_canary_survived_when_the_transform_is_never_actually_caught(
     assert verdict.judgment.r3 == runner.JudgmentR3(
         mechanism="uncovered-line", target="pkg/mod.py"
     )
+
+
+# --- the SECOND mechanism, proved for its OWN reason (O3, A-149) ------------
+
+
+def _seed_covered_package(git_repo: GitRepo) -> str:
+    """A real two-commit history whose HEAD commit ADDS ``pkg/mod.py`` and
+    whose tests genuinely cover every line of it, with ``cov.json``
+    git-ignored (A-140). Returns the base revision -- so ``base..HEAD``
+    really has changed source lines to measure, in the copy as well as in
+    the consumer."""
+    git_repo.write(".gitignore", "cov.json\n.coverage\n")
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("tests/__init__.py", "")
+    base_rev = git_repo.commit_all("add package skeleton")
+    git_repo.write("pkg/mod.py", "def f(x):\n    return x > 0\n")
+    git_repo.write(
+        "tests/test_mod.py",
+        "from pkg.mod import f\n\n\ndef test_f():\n    assert f(1)\n",
+    )
+    git_repo.commit_all("add mod.py and its test")
+    return base_rev
+
+
+_COV_ARGV = (
+    sys.executable, "-m", "pytest", "tests", "-q",
+    "--cov=pkg", "--cov-report=json:cov.json",
+)
+
+
+def _r1_r3_judge(
+    git_repo: GitRepo, *, base_rev: str, mechanism: str, target: str
+) -> JudgeConfig:
+    return JudgeConfig(
+        language="python",
+        source_roots=("pkg",),
+        source_root_paths=(git_repo.path / "pkg",),
+        fail_under=100.0,
+        allow_excluded=False,
+        coverage=CoverageConfig(format="coverage-py-json", artifact="cov.json"),
+        mutation=None,
+        canary=CanaryConfig(mechanism=mechanism, target=target),
+        base=base_rev,
+    )
+
+
+def test_r3_proves_the_uncovered_line_canary_for_its_own_reason_when_r1_is_declared(
+    git_repo: GitRepo,
+):
+    """O3's second half, and the ONE configuration in which it is reachable
+    at all: ``uncovered-line``'s expected reason is ``UNCOVERED_LINES``,
+    which only R1 can ever produce -- so the mechanism can only be PROVED
+    by a lane that declares R1 alongside R3. Every other R3 test in this
+    module declares R0+R3 alone, where the canary's own transform can only
+    ever be reported as having SURVIVED.
+
+    This is also A-149's regression oracle. ``judge.source_root_paths`` are
+    absolute and rooted at the CONSUMER's project; the run happens in a
+    scratch COPY. Hand the copy the consumer's own roots and every changed
+    file falls outside every root, ``considered`` is 0, and R1 PASSes
+    having measured nothing -- so the transformed half PASSes too and this
+    same canary reports ``CANARY_SURVIVED``, vacuously, forever.
+    """
+    base_rev = _seed_covered_package(git_repo)
+    lane = make_lane(
+        rigor=("R0", "R1", "R3"),
+        judge=_r1_r3_judge(
+            git_repo, base_rev=base_rev, mechanism="uncovered-line", target="pkg/mod.py"
+        ),
+        argv=_COV_ARGV,
+        env=_ENV,
+        env_passthrough=("PATH",),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    r3_claim = verdict.claims[-1]
+    assert r3_claim.status is Outcome.PASS
+    assert r3_claim.canary.control_outcome is Outcome.PASS
+    assert r3_claim.canary.transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert r3_claim.canary.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    # The lane's R1 half really measures this history (one considered
+    # file, fully covered) -- so the copy's own control half, running the
+    # identical evaluation against the identical bytes, is not being
+    # graded 0/0 either. Under A-149 both halves scored a vacuous 0/0
+    # PASS and the assertions above read CANARY_SURVIVED instead.
+    assert verdict.claims[1].coverage.considered == 1
+    assert verdict.claims[1].coverage.changed_executable == 2
+    assert git_repo.git("status", "--porcelain") == ""
+
+
+def test_r3_reports_a_real_wrong_cause_as_survived_with_the_unmocked_adapter(
+    git_repo: GitRepo,
+):
+    """A transformed half that genuinely FAILS, for a genuinely DIFFERENT
+    reason than the mechanism declares -- with the real
+    :class:`~assay.adapters.python.PythonAdapter`, no mislabeled subclass.
+
+    ``import-break`` expects ``COMMAND_FAILED``. Break a module the lane's
+    own tests never import and R0 keeps passing; R1 then catches the
+    injected line as uncovered, so the observed reason is
+    ``UNCOVERED_LINES``. Accepting any transformed non-PASS (O3's own
+    negative) makes this green.
+    """
+    git_repo.write(".gitignore", "cov.json\n.coverage\n")
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def f(x):\n    return x > 0\n")
+    git_repo.write("pkg/other.py", "def g():\n    return 2\n")
+    base_rev = git_repo.commit_all("add pkg")
+    git_repo.write(
+        "tests/test_other.py",
+        "from pkg.other import g\n\n\ndef test_g():\n    assert g() == 2\n",
+    )
+    git_repo.commit_all("add test")
+    lane = make_lane(
+        rigor=("R0", "R1", "R3"),
+        judge=_r1_r3_judge(
+            git_repo, base_rev=base_rev, mechanism="import-break", target="pkg/mod.py"
+        ),
+        argv=_COV_ARGV,
+        env=_ENV,
+        env_passthrough=("PATH",),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    r3_claim = verdict.claims[-1]
+    assert r3_claim.status is Outcome.FAIL
+    assert r3_claim.reason_code is ReasonCode.CANARY_SURVIVED
+    assert r3_claim.canary.transformed_outcome is Outcome.FAIL, "it DID fail"
+    assert r3_claim.canary.expected_reason_code is ReasonCode.COMMAND_FAILED
+    assert r3_claim.canary.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert git_repo.git("status", "--porcelain") == ""
 
 
 # --- the two prerequisite refusals become payload-free claims ----------------
@@ -266,7 +414,7 @@ def test_ended_covers_r3s_own_completion_not_only_r0s(git_repo: GitRepo):
         # R0 (started/ended) + the control run (started/ended) + the
         # transformed run (started/ended) + run_lane's own final `ended`
         # read -- seven clock() calls total, none of which
-        # `run_isolated_python_canary`/`run_python_canary` add beyond
+        # `run_isolated_canary`/`run_python_canary` add beyond
         # `execute_command`'s own two per invocation (evaluate_r1 -- unused
         # here, R1 is not declared -- takes no clock at all).
         clock=fixed_clock(
