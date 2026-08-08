@@ -243,7 +243,41 @@ No property scores zero. Three observations worth carrying:
 
 ## Gate output (real `tester-unified` Docker container)
 
-<!--GATE-OUTPUT-->
+Run by parsing `nyxloom-trove/nyxloom.toml`'s own `[gates.tester-unified]`
+`argv` and executing it verbatim — never a transcript, never a hand-typed
+approximation of it. The gate builds a wheel offline from this tree, installs
+it into a scratch venv, runs `assay run tester-unified` through the installed
+console script (self-hosting, P14), and then runs
+`tests/test_self_hosting.py` through the container's OWN interpreter as the
+independent oracle.
+
+```
+tester-unified: PASS (exit 0)
+  commit: 67533325890e94360a6cc3a373c6bf4df383fce3
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+.......                                                                  [100%]
+7 passed in 11.41s
+EXIT 0
+```
+
+The gate's own `argv` reports an exit code and nothing else, so counts and
+coverage were measured in a SECOND run INSIDE `tester-unified:local` itself
+(not in the devcontainer, whose venv carries different pins):
+
+```
+TOTAL   3070 stmts   0 miss   1256 branch   0 partial   100%
+1831 passed, 1 skipped in 125.70s
+```
+
+**1831 passed, 1 skipped, 100% statement AND branch coverage** (3070
+statements / 1256 branches), up from P18's 1781 / 2941 / 1188. The one test
+deselected in the devcontainer run above passes here — it pins `assay_version`,
+which only resolves correctly inside the gate image (A-069/A-124).
+
+**A first attempt at this gate returned `NO_MEASUREMENT`/`DIRTY_TREE` (exit
+3)**, with the controller's own repairs uncommitted. That is A-140 working
+exactly as ruled — and worth recording, because it means the gate cannot be
+run against a working tree, only against a commit.
 
 ## What could not be honored as written
 

@@ -37,8 +37,8 @@
 
 **Merged on `main`, P00 through P19** — the complete P00–P14 series, plus
 the first five packages of the P15–P25 repair series. Gate green at
-**1781 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
-(2941 stmts / 1188 branches) — counts measured INSIDE `tester-unified:
+**1831 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
+(3070 stmts / 1256 branches) — counts measured INSIDE `tester-unified:
 local` itself, not in the devcontainer, because the gate's own `argv`
 reports only an exit code and a cockpit venv carries different pins. Run
 through the REAL self-hosting mechanism P14
