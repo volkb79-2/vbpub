@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P24-real-python-project-qualification
+id: assay-P25-real-python-project-qualification
 project: assay
 title: "An existing Python project obtains the same R1 answer from installed Assay"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
-depends_on: [assay-P23-versioned-wheel-contract]
+depends_on: [assay-P24-versioned-wheel-contract]
 session: fresh
 scope:
   touch: ["gate/python/**", "nyxloom-trove/nyxloom.toml", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
@@ -36,22 +36,37 @@ escalate_if:
 mutexes: [merge-lane]
 ---
 
-# P24 — real Python project qualification
+# P25 — real Python project qualification
 
 The claim to attack: **a real existing Python project can replace its changed-line evaluator with the installed Assay product without changing the answer.**
 
+## Dispatch contract
+
+- Contract class: **2d — constrained implementation**.
+- Required roles: **Sonnet xhigh implementer → Opus xhigh independent reviewer**.
+- Readiness: **PROVISIONAL until P24 merges.** Before dispatch, the controller
+  resolves and records the exact Topos commit and Sol/Opus freezes the disposable
+  patch, hand manifest, expected v4 artifact, and independent Topos command.
+- Implementer freedom: fixture plumbing and equivalent test decomposition only;
+  the external project, commits, comparison semantics, and no-adoption boundary
+  are fixed.
+
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P24-real-python-project-qualification`
-on branch `feat/assay-P24-real-python-project-qualification`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P25-real-python-project-qualification`
+on branch `feat/assay-P25-real-python-project-qualification`.
 
 ## Context to read first
 
 1. `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md` §§Original-goal comparison and Future plan; decisions A-037–A-041, A-130–A-131, A-153–A-162.
-2. P22's committed-snapshot/effective-plan contract and P23's versioned-wheel contract. This package writes no Assay production code; a failure requiring it is BLOCKED and routes back upstream.
+2. P22/P23's committed-snapshot/effective-plan contract and P24's versioned-
+   wheel contract. This package writes no Assay production code; a failure
+   requiring it is BLOCKED and routes back upstream.
 3. `/workspaces/vbpub/topos/pyproject.toml`, `tools/coverage_gate.py`, `tests/conftest.py`, and `nyxloom-trove/nyxloom.toml`'s `gates.topos-suite` semantics. Read behavior, not its literal Docker argv: that config currently hardcodes host path/cgroup values and is not reusable launch code under the repo-wide doctrine.
 4. `/workspaces/vbpub/topos/src/topos` and representative tests only far enough to select stable executable, comment-only, excluded, and unmeasured cases. Never edit that tree.
-5. `tests/test_self_hosting.py` and P21's wheel/hash witness for the two-environment installed-product pattern and independent complete-artifact comparison.
+5. `tests/test_self_hosting.py` and P24's wheel/hash witness for the two-
+   environment installed-product pattern and independent complete-artifact
+   comparison.
 6. `/workspaces/vbpub/nyxloom/reference/DOCTRINE.md` gate, bounded evidence, independent oracle and consumer-ownership rules.
 
 ## Environment setup
@@ -113,7 +128,7 @@ artifact = ".assay/topos-coverage.json"
 
 The absolute interpreter is an image fact checked by the gate recipe, not an
 Assay fallback. `PYTHONPATH` exposes Topos only; a separate assertion proves
-the imported `assay` package and CLI live beneath P23's installed wheel venv.
+the imported `assay` package and CLI live beneath P24's installed wheel venv.
 
 ### Three independent witnesses
 

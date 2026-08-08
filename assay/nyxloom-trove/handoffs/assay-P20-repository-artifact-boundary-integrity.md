@@ -4,7 +4,7 @@ id: assay-P20-repository-artifact-boundary-integrity
 project: assay
 title: "Repository identity and measured artifacts survive adversarial process state"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P19-isolated-r3-cli-pipeline]
@@ -40,6 +40,20 @@ mutexes: []
 
 The claim to attack: **the repository and evidence Assay records are the ones it actually measured, even under hostile ambient process and filesystem state.**
 
+## Dispatch contract
+
+- Contract class: **2c — bounded integration** (`implement-3` when deployed;
+  frontmatter uses today's live `implement-2` route).
+- Required roles: **Sol xhigh carver/prober → Sonnet xhigh implementer → Opus
+  xhigh independent reviewer**.
+- Readiness: **NEXT, JIT-FREEZE REQUIRED.** Before implementation, Sol reruns
+  AUTHORING's exact pre-dispatch adversarial specification review at current
+  HEAD and commits the hostile Git/artifact acceptance inputs named below. A
+  prose-only test plan is not dispatch-ready.
+- Implementer freedom: private helper names and equivalent local decomposition
+  only. Git environment, safe-open state machine, reason mapping, limits, and
+  side-effect order are fixed by this packet.
+
 ## Worktree and branch
 
 Work only in `/workspaces/vbpub/.worktrees/assay-P20-repository-artifact-boundary-integrity`
@@ -62,24 +76,55 @@ on branch `feat/assay-P20-repository-artifact-boundary-integrity`.
   *args) -> str` and the typed wrappers; one raw-byte subprocess seam owns all
   argv construction, environment replacement, exit translation, and UTF-8
   decoding. No caller may invoke `git`, read `.git`, or add its own decoder.
-- Resolve the Git executable once to an absolute path. The child environment is
-  a replacement mapping containing only the locale needed for the documented
-  UTF-8 boundary and explicit Git protections; no ambient `GIT_*`, `HOME`,
-  `XDG_*`, pager, editor, or config selector crosses it. Disable system/global
-  config and, on diff commands, external diff and textconv explicitly. `-C
-  <resolved-repo-top>` precedes a fixed subcommand; user-controlled refs and
-  paths follow `--` wherever that subcommand accepts operands.
-- `src/assay/safeio.py` owns bounded nonblocking regular-file opening so P25
+- Resolve the Git executable once from the caller's declared `PATH` with
+  `shutil.which`, require an absolute regular executable, and carry that exact
+  path. Absence is `ERROR/GIT_FAILED`; never try a conventional location. Each
+  Git child receives this **replacement** environment and no other key:
+
+  ```python
+  {
+      "LC_ALL": "C.UTF-8",
+      "LANG": "C.UTF-8",
+      "GIT_CONFIG_NOSYSTEM": "1",
+      "GIT_CONFIG_SYSTEM": os.devnull,
+      "GIT_CONFIG_GLOBAL": os.devnull,
+      "GIT_ATTR_NOSYSTEM": "1",
+      "GIT_TERMINAL_PROMPT": "0",
+      "GIT_OPTIONAL_LOCKS": "0",
+      "GIT_PAGER": "",
+      "PAGER": "",
+  }
+  ```
+
+  The JIT probe must prove `C.UTF-8` exists in `tester-unified`; if not, Sol
+  changes this literal to the one probed UTF-8 locale before dispatch. No
+  ambient `GIT_*`, `HOME`, `XDG_*`, `PATH`, pager, editor, config counter,
+  object directory, alternate, work-tree, or repository selector crosses the
+  boundary. Fixed global argv is: absolute executable, `--no-pager`,
+  `--no-optional-locks`, `--literal-pathspecs`, `-c core.quotePath=false`,
+  `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=`, `-C
+  <resolved-repo-top>`, then a fixed
+  subcommand. Diff calls also carry `--no-ext-diff --no-textconv`. No command
+  invokes checkout, filters, hooks, aliases, an editor, transport, or a user
+  program. User-controlled revisions are first validated/resolved to full OIDs;
+  paths follow `--` under `--literal-pathspecs`.
+- `src/assay/safeio.py` owns bounded nonblocking regular-file opening so P26
   can reuse the same descriptor/inode/limit discipline for attestations.
   Coverage freshness is represented by a private immutable reservation created
-  before launch and consumed once after launch. It contains the absolute path
-  and the resolved parent identity, not a timestamp. Preparation requires an
-  existing real parent directory, rejects a symlink/special destination, and
-  removes an old regular artifact only after every pre-run refusal has passed.
-  Consumption opens with `O_RDONLY|O_NONBLOCK|O_NOFOLLOW`, checks `fstat` is a
-  regular file no larger than **16 MiB**, verifies the open descriptor still
-  matches the path's device/inode, reads at most limit+1 bytes, then performs
-  the single UTF-8/format parse. A missing new file is `EMPTY_COVERAGE`; an
+  before launch and consumed once after launch. It contains an open parent
+  directory descriptor, basename, parent device/inode, and any removed prior
+  file's device/inode—not merely an absolute path or timestamp. Traverse from
+  an opened project-root descriptor with `openat`/`dir_fd` and
+  `O_DIRECTORY|O_NOFOLLOW`; never validate a parent and reopen it by pathname.
+  Preparation requires an existing real parent directory, rejects a
+  symlink/special destination, and unlinks an old regular artifact relative to
+  the held parent descriptor only after every pre-run refusal has passed.
+  Consumption opens the basename relative to that same descriptor with
+  `O_RDONLY|O_NONBLOCK|O_NOFOLLOW`, checks `fstat` is a regular file no larger
+  than **16 MiB**, rejects the removed prior inode if it was relinked, reads at
+  most limit+1 bytes, then performs the single UTF-8/format parse. Renaming the
+  parent and writing at a replacement pathname yields missing output, never a
+  read from the replacement tree. A missing new file is `EMPTY_COVERAGE`; an
   unsafe/unreadable/oversized object is `ERROR/UNREADABLE_ARTIFACT`.
 - `runner.run_lane` owns terminal assembly. After the command and before any
   PASS claim, it calls the same sanitized `dirty_paths(repo_top)` over the
@@ -109,6 +154,15 @@ container spelling with the consumer process's local filesystem.
 | FIFO/device/symlink/oversize | `ERROR/UNREADABLE_ARTIFACT` | never block | each real filesystem object |
 | command dirties any repo path | `NO_MEASUREMENT/DIRTY_TREE` | already ran | mutate a tracked support file outside source roots |
 | expected post-HEAD decode/evaluation error | complete typed artifact | as flow dictates | normalized-key collision plus invalid UTF-8 |
+
+The terminal translation is closed, not a blanket `except`: sanitized Git
+exit/decode -> `ERROR/GIT_FAILED`; missing or well-formed zero-file coverage ->
+`NO_MEASUREMENT/EMPTY_COVERAGE`; unsafe type, bound, UTF-8, source read, or
+normalized-key collision -> `ERROR/UNREADABLE_ARTIFACT`; declared-format sniff
+or parser failure -> `ERROR/FORMAT_MISMATCH`; post-command dirty state ->
+`NO_MEASUREMENT/DIRTY_TREE`. Already-typed `AssayError` values retain their
+pair. Unexpected exceptions escape as programmer defects and cannot be rendered
+as a plausible verdict.
 
 Traceability is fixed: work 1–2 -> `git.py` -> O1 -> hostile two-repo ledger;
 work 3–4 -> coverage reservation -> O2/O4 -> special/stale/oversize matrix;

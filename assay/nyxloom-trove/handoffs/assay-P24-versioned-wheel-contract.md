@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P23-versioned-wheel-contract
+id: assay-P24-versioned-wheel-contract
 project: assay
 title: "Every consumable assay wheel has a stable non-placeholder identity"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P22-exact-reexecution-isolation]
+depends_on: [assay-P23-exact-reexecution-integration]
 session: resume:assay-v11-distribution
 scope:
   touch: ["pyproject.toml", "src/assay/__init__.py", "assay.toml", "gate/distribution/**", "nyxloom-trove/nyxloom.toml", "tests/test_standalone.py", "tests/test_self_hosting.py", "tests/test_distribution.py", "README.md"]
@@ -32,17 +32,28 @@ escalate_if:
 mutexes: [merge-lane]
 ---
 
-# P23 — versioned wheel contract
+# P24 — versioned wheel contract
 
 The claim to attack: **a verdict names a non-placeholder released Assay version,
 and the consumer's required manifest binds that version to the exact wheel
 bytes it installed.** The verdict does not pretend to contain a wheel hash it
 cannot derive after installation.
 
+## Dispatch contract
+
+- Contract class: **2d — constrained implementation**.
+- Required roles: **Sonnet xhigh implementer → Opus xhigh independent reviewer**;
+  route to Sol before dispatch only if P23 changes the distribution contract.
+- Readiness: **PROVISIONAL until P23 merges.** The pre-dispatch review must pin a
+  real offline backend/wheelhouse manifest and a carver-authored positive release
+  manifest; placeholders in this handoff are not proof assets.
+- Implementer freedom: packaging mechanics compatible with the fixed offline,
+  reproducible, version/hash-bound behavior.
+
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P23-versioned-wheel-contract`
-on branch `feat/assay-P23-versioned-wheel-contract`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P24-versioned-wheel-contract`
+on branch `feat/assay-P24-versioned-wheel-contract`.
 
 ## Context to read first
 

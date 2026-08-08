@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P25-attested-evidence-cli-hardening
+id: assay-P26-attested-evidence-cli-hardening
 project: assay
 title: "Declared attested evidence is bounded, contained, and path-current"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P22-exact-reexecution-isolation]
+depends_on: [assay-P25-real-python-project-qualification]
 session: resume:assay-v11-attestation
 scope:
   touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/attestation.py", "src/assay/safeio.py", "tests/**", "README.md"]
@@ -32,14 +32,25 @@ escalate_if:
 mutexes: []
 ---
 
-# P25 — attested evidence CLI hardening
+# P26 — attested evidence CLI hardening
 
 The claim to attack: **every declared attestation is resolved exactly once from bounded contained input and is current for every path it claims to cover.**
 
+## Dispatch contract
+
+- Contract class: **2c — bounded integration**.
+- Required roles: **Sonnet xhigh implementer → Opus xhigh independent reviewer**;
+  route to Sol if P21's final v4 evidence grammar differs from this packet.
+- Readiness: **PROVISIONAL until P25 merges.** The pre-dispatch pass must replace
+  symbolic attested commits with full object IDs and commit the hostile directory,
+  newline, traversal, symlink-swap, and oversize fixtures.
+- Implementer freedom: private safe-I/O and loop decomposition only. Declaration
+  grammar, identity, bounds, per-path Git query, and terminal mapping are fixed.
+
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P25-attested-evidence-cli-hardening`
-on branch `feat/assay-P25-attested-evidence-cli-hardening`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P26-attested-evidence-cli-hardening`
+on branch `feat/assay-P26-attested-evidence-cli-hardening`.
 
 ## Context to read first
 
@@ -77,13 +88,15 @@ a separator/control byte. Its file is exactly `<attestation_dir>/<key>.json`.
 The JSON record is a closed object with no unknown keys:
 
 ```json
-{"producer":"human:alice","attested_commit":"<full-or-symbolic-revision>",
+{"producer":"human:alice","attested_commit":"<40 lowercase hex object id>",
  "reviewed_paths":["src/api.py","docs/contracts"]}
 ```
 
 Invalid examples include a key containing a parent-directory segment, absolute `attestation_dir`, an
-unknown record member, duplicate paths, an empty producer, or a reviewed path
-containing NUL/`..`/absolute spelling. They all fail before a Git comparison.
+unknown record member, duplicate paths, an empty producer, a symbolic/short/
+uppercase commit, or a reviewed path containing NUL/`..`/absolute spelling.
+They all fail before a Git comparison. `attested_commit` is evidence identity,
+not a revision expression: only `[0-9a-f]{40}` is accepted.
 
 ### Fixed bounds and safe I/O
 
@@ -96,20 +109,29 @@ containing NUL/`..`/absolute spelling. They all fail before a Git comparison.
 | one reviewed path UTF-8 bytes | 4,096 | `ERROR/UNREADABLE_ARTIFACT` |
 | total Git path comparisons per lane | 4,096 | `ERROR/UNREADABLE_ARTIFACT` |
 
-Reuse P20's `safeio.py` regular-file open: `O_NONBLOCK|O_NOFOLLOW`, `fstat`
-before reading, read limit+1, one UTF-8 decode. Absence is the only
+Reuse/extend P20's `safeio.py` regular-file open, but traverse from an opened
+`project_root` directory descriptor: open every `attestation_dir` component
+with `dir_fd`, `O_DIRECTORY|O_NOFOLLOW`, then open `<key>.json` relative to the
+final descriptor with `O_NONBLOCK|O_NOFOLLOW`. Never `resolve()`/`is_file()` and
+then reopen a pathname; that is a symlink-swap race. `fstat` the already-open
+descriptor before reading, read limit+1, and decode UTF-8 once. Absence is the only
 `MISSING_ATTESTATION` case; symlink/special/oversized/malformed is unreadable.
 Enforce every structural/cardinality bound before the first Git call for that
 record, and the aggregate comparison bound before resolving any evidence.
 
 ### Git flow and exact path semantics
 
-1. Resolve `attested_commit` once with sanitized `rev-parse --verify
-   --end-of-options <revision>^{commit}` and require one full OID.
+1. Require the declared 40-lowercase-hex `attested_commit`, then verify that
+   exact identity once with sanitized `rev-parse --verify --end-of-options
+   <oid>^{commit}` and require byte-for-byte the same full OID. Never accept or
+   resolve `HEAD`, a branch/tag, abbreviation, uppercase spelling, or reflog.
 2. Interpret sanitized `merge-base --is-ancestor <attested-oid> <head-oid>`
    exit 0 as current ancestry and exit 1 as unreadable/unrelated; no display
    output is parsed.
-3. Prove each normalized repo-top-relative path exists at the attested OID.
+3. Prove each normalized repo-top-relative path exists at the attested OID with
+   sanitized `git --literal-pathspecs ls-tree -z <oid> -- <path>`. Parse the
+   bounded NUL record as bytes and require exactly one exact path match of blob
+   or tree type; no text decode/display-name membership decides identity.
 4. For each path, run sanitized `git --literal-pathspecs diff --quiet
    --exit-code --no-ext-diff --no-textconv <attested-oid> <head-oid> --
    <path>`. Exit 0 means current;
@@ -139,7 +161,12 @@ Git commands/exit meanings, ordering, and sibling evidence placement may not.
 2. Add an explicit project-relative attestation directory declaration. Resolve it beneath project root, reject symlink escape, and never derive or default its location.
 3. Define fixed documented limits for file bytes, producer/key/path string lengths, reviewed-path count, and total Git comparisons. Enforce byte size before JSON parsing and all structural limits before launching Git.
 4. Restrict keys to a closed safe identifier grammar so `<key>.json` cannot contain separators, traversal, option-like syntax, or control bytes. Open only a regular non-symlink file beneath the resolved directory; missing remains `MISSING_ATTESTATION`.
-5. Require each reviewed path to be normalized, NUL-free, repo-top-relative, non-escaping, and present at the attested commit. Resolve `attested_commit` through an end-of-options-safe Git command to one full commit OID before ancestor/staleness work.
+5. Require each reviewed path to be normalized, NUL-free, repo-top-relative,
+   non-escaping, and present at the attested commit through the packet's exact
+   bounded `ls-tree -z` query. Require `attested_commit` itself to be a full
+   lowercase object identity and verify it through the end-of-options-safe Git
+   command before ancestor/staleness work; never turn a symbolic current name
+   into apparently immutable evidence.
 6. Replace flat changed-name membership with the packet's one bounded, literal-pathspec `git diff --quiet --exit-code` comparison per reviewed path. Interpret only its exit status through P20's sanitized Git boundary; do not request or decode a changed-name list. A reviewed directory is stale when any descendant changed; a file is stale only when that file changed, even when its name contains pathspec metacharacters.
 7. Wire declarations through `assay run` into exactly matching `declared_evidence[]`/`evidence[]` entries. Preserve order, `verified_by_assay=false`, and independent resolution of later identities after one malformed record.
 8. Add installed-wheel complete artifacts for current, stale file, stale directory, absent, malformed, unrelated/descendant commit, and limit violation. Break containment, bounds-before-Git, OID resolution, path staleness, sibling placement, and identity coverage separately; record exact A-067 failure counts.
@@ -154,8 +181,8 @@ two phantom paths. Both were reproduced against real Git. The implementation
 packet removes the entire display-name set: one `diff --quiet` pathspec query
 answers the actual question without a second decoder or filename transport.
 
-P20–P22 also change the substrate this handoff inherits: verdicts are v4,
-all execution happens from the bound committed-object snapshot, and expected
+P20–P23 also change the substrate this handoff inherits: verdicts are v4,
+all execution happens from the bound committed-object snapshot/plan, and expected
 post-HEAD refusals are complete artifacts. Do not reintroduce a working-tree
 copy, ambient Git call, unbounded read, or v3 fixture while adding evidence.
 

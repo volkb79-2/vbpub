@@ -6,6 +6,14 @@
 **Serial review/correction/merge:** Claude Opus 5, xhigh (per controller record)  
 **Disposition:** **NOT READY FOR EXTERNAL ADOPTION**
 
+> **Successor-plan addendum (2026-08-08):** this document's P20–P29 numbering
+> and staffing table are the historical first recarve, not the live queue. A-167
+> supersedes them with the cost-aware thirteen-package P20–P32 sequence; A-168–
+> A-172 close further protocol/schema/Go-contract defects found while applying
+> the new authoring mode. The exact post-recarve adversarial specification audit
+> is `assay-P20-P32-pre-dispatch-adversarial-review.md`. The P15–P19 findings and
+> original-goal assessment below remain current.
+
 ## Executive verdict
 
 P15–P19 are valuable work, and they did close the v1 review's most visible

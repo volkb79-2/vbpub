@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P28-real-go-canary-r3
+id: assay-P31-real-go-canary-r3
 project: assay
 title: "A real Go pipeline catches each canary for its intended cause"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P22-exact-reexecution-isolation, assay-P27-real-go-mutation-r2]
+depends_on: [assay-P30-real-go-mutation-r2-integration]
 session: resume:assay-go-canary
 scope:
   touch: ["gate/go/**", "src/assay/canary.py", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
@@ -32,23 +32,37 @@ escalate_if:
 mutexes: []
 ---
 
-# P28 — real Go canary R3
+# P31 — real Go canary R3
 
 The claim to attack: **the real Go gate rejects each declared canary for that canary's specific intended cause.**
 
+## Dispatch contract
+
+- Contract class: **2d — constrained implementation**.
+- Required roles: **Sonnet xhigh implementer → Opus xhigh independent reviewer**.
+- Readiness: **PROVISIONAL until P30 merges.** Freeze real installed-CLI artifacts
+  for good control, each intended cause, survivor, wrong cause, malformed and
+  no-op cases before dispatch.
+- Implementer freedom: fixture plumbing and private transform helpers only; the
+  transforms, expected reasons, isolated execution path, and terminal table are
+  fixed.
+
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P28-real-go-canary-r3`
-on branch `feat/assay-P28-real-go-canary-r3`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P31-real-go-canary-r3`
+on branch `feat/assay-P31-real-go-canary-r3`.
 
 ## Context to read first
 
 1. `docs/DESIGN-GUIDE.md` §§6, 10–12; decisions A-010, A-041–A-043, A-067, A-084, A-105–A-109.
-2. P22's exact-plan committed-snapshot R3 contract and P26's tiny plus real-srdm Go fixtures. Go must fit both without a second canary runner or gate declaration.
+2. P22's committed snapshot, P23's exact-plan R3 orchestration, P27's tiny
+   Go fixture, and P28's real-srdm harness. Go must fit all of them without a
+   second canary runner or gate declaration.
 3. `src/assay/canary.py`, especially the pre-generated-profile `run_go_canary`; replace its adapter-level proof as the product oracle while retaining pure helpers that remain useful.
 4. `src/assay/adapters/go.py` injectors and their tests. Confirm the appended `init` panic and never-called function are valid in the concrete package selected by the fixture.
 5. `tests/test_canary_python_pipeline.py` for cause-sensitive terminal cases, not Python-specific filesystem mechanics.
-6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` P24 carve.
+6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md`'s historical
+   pre-renumber P24 carve.
 
 ## Implementation packet (normative)
 
@@ -71,7 +85,7 @@ func _assayCanaryUnreached(value int) int {
 }
 ```
 
-P22's one language-generic isolated canary entry point accepts the immutable
+P23's one language-generic isolated canary entry point accepts the immutable
 command plan, snapshot spec, resolved adapter, declared project-relative target,
 mechanism, R1 policy, and shared deadline. This package calls it with the P27
 resolved `GoAdapter`; it does not create `run_go_*` orchestration. The returned
@@ -104,12 +118,16 @@ Both real mechanisms use this state machine:
 
 ### Prepared real attacks and traceability
 
-The tiny P26 module has one target package definitely imported by its tests and
-one package not imported by the selected test. Run `import-break` against both:
-the first yields `COMMAND_FAILED`; the second is the required real wrong-cause
-attack (R0 can pass and R1 catches added uncovered lines). Run uncovered-line
-against the imported package. Repeat both successful mechanisms on a selected
-tested package in the disposable srdm copy. Assertions compare process ledgers,
+The tiny P27 module has `used/` and `unused/` packages. Positive mechanisms use
+the normal real `go test ./...` plan and target `used/`. The wrong-cause attack
+uses a separate declared lane whose exact plan is `go test ./used` while R1
+source roots still include both packages, then applies `import-break` to
+`unused/`: R0 remains PASS because that package is outside the selected command,
+and R1 catches its changed executable lines as `UNCOVERED_LINES` instead of the
+expected `COMMAND_FAILED`. Merely saying “not imported” under `go test ./...` is
+invalid—`./...` still builds/runs the package's own test binary and executes its
+`init`. Run uncovered-line against `used/`. Repeat both successful mechanisms on
+a selected tested package in the disposable srdm copy. Assertions compare process ledgers,
 fresh artifact inode/content, exact appended line identities, complete v4
 artifact, and pre/post consumer hashes.
 
@@ -123,7 +141,9 @@ registry are fixed.
 
 ## Work
 
-1. Route a Go R3 lane through P22's isolated control/transform orchestration in P26's combined image. Both halves run the same real `go test -coverprofile` R0/R1 pipeline through the installed wheel.
+1. Route a Go R3 lane through P23's isolated control/transform orchestration in
+   P27's combined image. Both halves run the same real
+   `go test -coverprofile` R0/R1 pipeline through the installed wheel.
 2. For import-break, append the valid panicking `init`, run the transformed command, and accept only `FAIL/COMMAND_FAILED`. Do not attempt R1 when command failure legitimately produced no profile.
 3. For uncovered-line, append the valid never-called function, require R0 PASS and a newly generated profile, and accept only R1 `FAIL/UNCOVERED_LINES` for the injected lines.
 4. Require the real control to PASS at every rigor level the transformed comparison needs. Broken control, missing tool/profile, malformed/no-op transform, transformed PASS, and wrong adverse cause remain distinct complete R3 evidence.
@@ -131,10 +151,11 @@ registry are fixed.
 6. Delete no adapter-level fixtures merely because the real proof exists; retain them as pure unit coverage but make them incapable of satisfying the installed-product oracle alone.
 7. Break real subprocess use, control gating, each expected cause, profile freshness, isolation, and installed CLI invocation separately; run the real combined gate and record exact A-067 counts.
 
-## Carried in from P20–P22
+## Carried in from P20–P23
 
 P22 replaces P19's working-tree `copytree` implementation with one generic
-committed-object snapshot runner. The old relocation helpers and duplicated
+committed-object snapshot substrate; P23 owns the generic runner. The old
+relocation helpers and duplicated
 `_project_prefix` are historical implementation details, not interfaces to
 copy. Reuse the effective plan and fresh control/transform snapshots as-is.
 The v4 canary payload already carries and verifies `target`; a Go-specific
@@ -144,18 +165,25 @@ Exercise both mechanisms against selected packages in the disposable real
 srdm copy as well as the tiny fixture. This validates adapter abstraction; it
 does not authorize edits to srdm or registration of an srdm consumer lane.
 
-## Historical P19 findings retained after P22 (read before work items 1, 4 and 5)
+## Historical P19 findings retained after P23 (read before work items 1, 4 and 5)
 
 Written by P19's implementer, then reviewed, corrected and ratified as
-A-149–A-152. The behavioral cases remain binding; P22 supersedes P19's
+A-149–A-152. The behavioral cases remain binding; P22/P23 supersede P19's
 working-tree-copy mechanics.
 
-- **RULED (A-149/A-155) — snapshot paths and the effective command plan are relocated as one object.** `judge.source_root_paths` are absolute; handing a snapshot the consumer paths silently yields 0/0 PASS. P22's generic runner owns the relocation. Do not add a Go-side relocation path.
+- **RULED (A-149/A-155) — snapshot paths and the effective command plan are
+  relocated as one object.** `judge.source_root_paths` are absolute; handing a
+  snapshot the consumer paths silently yields 0/0 PASS. P23's generic runner
+  owns the relocation. Do not add a Go-side relocation path.
 - **RULED (A-150) — `uncovered-line` can only be PROVED by a lane that also declares R1**, because `UNCOVERED_LINES` is produced by R1 and by nothing else. An R0+R3 lane can only ever report that mechanism as SURVIVED. Your work item 3 already requires R0 PASS plus a fresh profile; make at least one fixture declare `rigor = ["R0","R1","R3"]`, or the mechanism has no PASS witness at all.
 - **CORRECTED — a wrong-observed-cause IS reachable with the real, un-mocked adapter.** P19's implementer recorded the opposite. `import-break` injected into a module the lane's own tests never import leaves R0 passing and is caught by R1 instead: observed `UNCOVERED_LINES` against an expected `COMMAND_FAILED`. Both a unit and an installed-wheel artifact now exist. Only a genuine NO-OP transform is unreachable through a real adapter.
-- **The canary runner is adapter-generic.** Reuse P22's public generic entry point with `GoAdapter`; do not create a parallel Go orchestration.
+- **The canary runner is adapter-generic.** Reuse P23's public generic entry
+  point with `GoAdapter`; do not create a parallel Go orchestration.
 - **`scope.touch` gained `src/assay/cli.py`** (A-144's shape, third instance): widening `_built_in_registry`'s GoAdapter entry with `"R3"` is a one-line change, and without it a declared Go R3 lane is refused before anything runs. `runner.py` is deliberately NOT added — its R3 block is already language-neutral, so it needs calling, not writing.
-- P22 starts each half from tracked committed objects and requires fresh coverage. Go build/test caches stay outside the snapshot; ignored files are not implicit inputs. There is no Go-specific project-prefix helper to duplicate.
+- P22/P23 start each half from tracked committed objects and require fresh
+  coverage. Go build/test caches stay outside the snapshot; ignored files are
+  not implicit inputs. There is no Go-specific project-prefix helper to
+  duplicate.
 
 ## Test constraints copied from AUTHORING.md §3b
 
@@ -208,7 +236,9 @@ working-tree-copy mechanics.
 
 ## Scope / forbid
 
-This package adds genuine Go R3 only. It must not change Python, mutation, the v4 schema, or the already-registered gate command; P26's image and gate are reused, so no merge mutex is needed.
+This package adds genuine Go R3 only. It must not change Python, mutation, the
+v4 schema, or the already-registered gate command; P27's image and gate are
+reused, so no merge mutex is needed.
 
 ## BLOCKED rule
 

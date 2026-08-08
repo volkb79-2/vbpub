@@ -1,13 +1,13 @@
 ---
 schema_version: 1
-id: assay-P26-real-go-r1-gate
+id: assay-P27-go-gate-adapter-resolution
 project: assay
-title: "A real Go toolchain produces an R1 verdict through the installed assay CLI"
+title: "The installed CLI resolves real Go coverage without language-specific defaults"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
-depends_on: [assay-P24-real-python-project-qualification]
+depends_on: [assay-P26-attested-evidence-cli-hardening]
 session: resume:assay-go
 scope:
   touch: ["gate/go/**", "nyxloom-trove/nyxloom.toml", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/config.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
@@ -25,10 +25,6 @@ oracles:
     observable: "Real profiles exercise multi-line blocks, columns, comments, doc.go, test files, partial coverage, and empty coverage against an independently calculated changed-line manifest"
     negative: "Inclusive line expansion that attributes a non-statement closing line disagrees with the independent manifest"
     gate: tester-unified
-  - id: O4
-    observable: "A disposable two-commit copy of the real srdm module produces the same changed-line classification and terminal result through installed Assay and srdm's independent covergate"
-    negative: "A toy-only module-prefix, repository-root, or block-expansion assumption disagrees on the real srdm tree"
-    gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "tester-unified-go cannot be used as an immutable toolchain stage for an assay-owned Python-plus-Go image"
@@ -36,23 +32,40 @@ escalate_if:
 mutexes: [merge-lane]
 ---
 
-# P26 — real Go R1 gate
+# P27 — Go gate and adapter resolution
 
-The claim to attack: **a real Go project can obtain a genuine changed-line coverage verdict through the installed assay product.**
+The claim to attack: **the installed Assay product derives a real Go module's
+coverage-key mapping and changed-line semantics from declared files, never from
+a language-specific default or pre-generated profile.**
+
+## Dispatch contract
+
+- Contract class: **2c — bounded integration**.
+- Required roles: **Sonnet xhigh implementer → Opus xhigh independent reviewer**;
+  route to Sol if the pinned Go profile contradicts the fixed grammar.
+- Readiness: **PROVISIONAL until P26 merges.** Before dispatch, pin the exact
+  Python+Go image inputs and lock, commit the real tiny-module profiles plus hand
+  manifests, freeze the probed half-open block-to-line grammar, and replace every
+  symbolic toolchain reference with its digest or repository source of truth.
+- Implementer freedom: internal parser/helper decomposition only. Module
+  resolution, path grammar, aggregation, image boundary, and expected artifacts
+  are fixed.
 
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P26-real-go-r1-gate`
-on branch `feat/assay-P26-real-go-r1-gate`.
+Work only in `/workspaces/vbpub/.worktrees/assay-P27-go-gate-adapter-resolution`
+on branch `feat/assay-P27-go-gate-adapter-resolution`.
 
 ## Context to read first
 
 1. `docs/DESIGN-GUIDE.md` §§10–13; decisions A-006, A-008, A-010, A-042–A-043, A-067, A-084, A-087, A-102–A-107, A-114, A-126.
-2. P17's CLI contract and P23's installed versioned wheel. This package proves Go through that path, never through direct adapter calls.
+2. P17's CLI contract, P23's exact executor, and P24's installed versioned
+   wheel. This package proves Go through that path, never through direct adapter
+   calls.
 3. `src/assay/adapters/go.py`, `src/assay/coverage_parsers/go_cover.py`, and all Go adapter/parser tests; identify every assertion based only on hand-written profiles.
 4. `/workspaces/vbpub/tester-unified/Dockerfile` and `/workspaces/vbpub/tester-unified-go/Dockerfile`. Treat both as immutable stages; create the combined image only beneath assay's `gate/go/`.
-5. `/workspaces/vbpub/shared-ramdisk-depot-manager/go.mod`, representative `internal/` packages, `tools/covergate/` in full (especially `main.go`, `profile.go`, `evaluate.go`, and `hascode.go`), and `nyxloom-trove/GUIDE.md`'s coverage section. This is both the real Go validation target and the independent behavioral reference; never edit it from this package.
-6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` finding 12 and its P22 carve.
+5. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` finding 12 and
+   its historical Go carve. P28, not this package, owns the real srdm comparison.
 
 ## Environment setup
 
@@ -72,7 +85,7 @@ network commands.
 
 `GoAdapter.external_tools` becomes exactly `("go",)`. P21 already reserves
 `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL`; this package makes it reachable. Resolve
-the immutable P22 command plan first, find `go` only through its effective
+the immutable P23 command plan first, find `go` only through its effective
 `PATH`, and use that absolute executable for preflight and module parsing. No
 ambient PATH or conventional `/usr/local/go/bin` fallback is legal.
 
@@ -83,13 +96,15 @@ def resolve_go_adapter(*, project_root: Path,
                        plan: CommandPlan) -> GoAdapter: ...
 ```
 
-It runs `<absolute-go> mod edit -json` with `cwd=project_root`, the plan's
-controlled environment, no network, and a bounded output read. Parse the
-official JSON object and require one nonempty `.Module.Path` string; tolerate
-other correctly typed keys emitted by the pinned Go tool, but do not interpret
-them as module identity. Reject missing `go.mod`, malformed/duplicate module
-directives, null/missing `Module`, control bytes, or a path ending/starting with
-`/`. The returned
+It runs `<absolute-go> list -m -json` with `cwd=project_root`, the plan's
+controlled environment plus fixed `GOWORK=off`, `GOTOOLCHAIN=local`, and
+`GOPROXY=off`, and a bounded output read. This main-module query must not resolve
+or download dependencies. Parse the pinned tool's official JSON object and
+require exactly one `Main: true` object with one nonempty `Path` string;
+tolerate other correctly typed keys emitted by the pinned Go tool, but do not
+interpret them as module identity. Missing/duplicate/malformed module
+directives or an invalid module path are the Go tool's error, never a partial
+Assay grammar or default. The returned
 `GoAdapter(module_path=<derived>)` is the one object used by normalization and
 artifact policy. Do not hand-parse Go's quoted module grammar and do not default
 the module name.
@@ -111,7 +126,7 @@ repo/app/doc.go
 repo/.assay/.gitignore             tracked parent, generated profile ignored
 ```
 
-Its lane uses P22's exact snapshot command:
+Its lane uses P23's exact snapshot-backed command plan:
 `go test ./... -coverpkg=./... -covermode=atomic
 -coverprofile=.assay/coverage.out`, with `cwd=repo/app`, declared effective
 PATH, R0+R1, `source_roots=["."]`, `language="go"`, and full base OID. A literal
@@ -123,14 +138,6 @@ paths; only derived prefix normalization may make both cases pass.
 The tracked `.assay/.gitignore` contains `*` plus `!.gitignore`; the profile is
 absent in commits but its real parent exists for P20's output preflight.
 
-The external case extracts the pinned commit's tracked
-`shared-ramdisk-depot-manager/` subtree into a disposable two-commit repository
-at that same prefix. Use selected existing `internal/` packages and the copied
-`tools/covergate`; run installed Assay and covergate against the identical base,
-HEAD, profile, source prefix, and 100% floor. A hand-maintained manifest is the
-third witness for selected changed lines. Neither tool constructs the other's
-expectation.
-
 ### Decision/traceability matrix
 
 | State | Required result |
@@ -140,26 +147,42 @@ expectation.
 | real multiline block | attribution agrees with instrumented Go statements and manifest |
 | module rename + nested project | identical repo-path classification |
 | stale/prebuilt profile | freshness refusal; real generation ledger required |
-| real srdm disagreement | package BLOCKED with exact three-witness diff, not normalized away |
 
 Work 1–2 -> image/gate -> O1; work 3/7 -> adapter/tool/module -> O2; work 4–6 ->
-tiny real module -> O1/O3; work 8 -> srdm differential -> O4; work 9 -> all
+tiny real module -> O1/O3; work 8 -> all
 controlled breaks. The REPORT records image IDs, Go version, wheel hash, input
 OIDs, exact ledgers/manifests, tests, and break counts. Private harness layout
 may vary; image provenance, effective-PATH resolution, official module parser,
-fixture topology, three witnesses, and R1-only capability may not.
+fixture topology, independent expected artifacts, and R1-only capability may
+not.
 
 ## Work
 
 1. Add the assay-owned multi-stage gate image and mechanically verify full uid/group/HOME/XDG identity, writable Go caches outside the bind-mounted repository, `GOTOOLCHAIN=local`, installed assay wheel, and exact expected Go version.
 2. Extend the existing `tester-unified` gate command to run the ordinary Python proof and a real-Go proof in the combined image, preserving cgroup verification and P14/P21's independent self-hosting witness. The gate id remains `tester-unified`; do not create an unregistered handoff gate name.
-3. Derive Go module path through the packet's effective-PATH `go mod edit -json` adapter construction and advance Go's registry capability through R1 only. Missing, duplicate, malformed, or escaping module declarations fail; never use a hand parser, hardcoded module fallback, or advertise Go R2/R3.
+3. Derive Go module path through the packet's effective-PATH offline
+   `go list -m -json` adapter construction and advance Go's registry capability
+   through R1 only. Missing, duplicate, malformed, or invalid module
+   declarations fail; never use a hand parser/partial path validator, hardcoded
+   module fallback, or advertise Go R2/R3.
 4. Materialize a small two-commit Go module at test time. Its lane runs genuine `go test ./... -coverpkg=./... -covermode=atomic -coverprofile=<artifact>` through the installed CLI, with no network/module download.
-5. Compare assay's exact v4 R1 artifact and changed-line manifest against an independently calculated expectation and the srdm reference behavior for executable bodies, comments, `doc.go`, `_test.go`, missing profile files, exclusion capability, and 0/0.
-6. Generate real profiles whose blocks cross physical lines and vary start/end columns. The required normalization is the existing srdm rule: each block classifies the inclusive physical range `startLine..endLine`, and executed wins when blocks overlap a line. The real fixture must confirm that rule against the pinned toolchain; a contradiction is BLOCKED for a product decision, not permission to invent a different parser locally.
+5. Compare assay's exact v4 R1 artifact and changed-line manifest against an
+   independently hand-calculated expectation for executable bodies, comments,
+   `doc.go`, `_test.go`, missing profile files, exclusion capability, and 0/0.
+6. Generate real profiles whose blocks cross physical lines and vary start/end
+   columns, including an end position at column 1 on a closing-brace line. The
+   JIT carver must freeze the exact half-open position-to-physical-line grammar
+   after comparing real source bytes, the pinned profile, and a hand statement
+   manifest. A convenient inclusive `startLine..endLine` expansion is explicitly
+   not normative: it can attribute a non-statement closing line. If the three
+   inputs do not support one lossless common-model rule, return BLOCKED for a
+   product decision rather than choosing the current parser or srdm behavior by
+   authority.
 7. Change the fixture module name and repository nesting to prove module-prefix derivation and boundary-safe normalization. Missing `go`, wrong Go version, or unavailable helper prerequisites render honest non-PASS outcomes.
-8. Materialize a disposable two-commit copy of the real `/workspaces/vbpub/shared-ramdisk-depot-manager` tracked tree, select representative changes beneath `internal/`, generate its profile with the pinned toolchain, and run both installed Assay and the copied `tools/covergate` against the same commit/profile. Compare exact changed-line buckets and terminal class; do not mutate or migrate srdm itself.
-9. Break real tool execution, wheel installation, module derivation, prefix boundary, line/column attribution, doc/test exclusion, the real-srdm comparison, and independent artifact comparison separately; run the full real gate and record exact A-067 counts.
+8. Break real tool execution, wheel installation, module derivation, prefix
+   boundary, line/column attribution, doc/test exclusion, repeated normalized
+   keys, and independent artifact comparison separately; run the full real gate
+   and record exact A-067 counts.
 
 ## Carried in from P17, merged (read before writing work items 5 and 7)
 
@@ -195,18 +218,18 @@ module's `-coverprofile=<artifact>` target is untracked worktree state
 until you ignore it, and the run will be refused `NO_MEASUREMENT`/
 `DIRTY_TREE` before `go test` ever starts.
 
-## Carried in from P20–P22 (read before work items 2, 5 and 8)
+## Carried in from P20–P23 (read before work items 2 and 5)
 
 P20 closed A-O17 before Go makes it reachable: normalized-key collisions
 and every other expected post-HEAD evaluation error now render complete
 artifacts. Preserve the collision fixture here with two real Go profile keys;
 do not widen `runner.py` or rebuild the terminal mapping.
 
-P21 migrated the artifact to v4, including explicit exclusion capability,
-and P22 runs from committed-object snapshots with one immutable effective
-command plan and total lane budget. The srdm exercise must use that installed
+P21 migrated the artifact to v4, including explicit exclusion capability. P22
+provides committed-object snapshots and P23 supplies the immutable effective
+command plan and total lane budget. The real fixture must use that installed
 path. A direct `GoAdapter` call or a pre-generated profile is useful unit
-coverage but cannot satisfy O4.
+coverage but cannot satisfy O1.
 
 ## Carried in from P16, merged (read before writing work item 5)
 
@@ -278,7 +301,11 @@ non-PASS outcomes" must therefore pick between `NO_MEASUREMENT` and
 
 ## Scope / forbid
 
-This package proves Go R1 and owns only assay's derived gate image/config plus Go R1 adapter behavior. It must not edit shared tester images, srdm, mutation, canary, or Python semantics. `merge-lane` is required because the real gate declaration changes.
+This package proves the Go adapter and tiny real R1 gate. It owns only assay's
+derived gate image/config plus Go R1 adapter behavior. It must not edit shared
+tester images, srdm, mutation, canary, or Python semantics. `merge-lane` is
+required because the real gate declaration changes. P28 owns external srdm
+qualification.
 
 ## BLOCKED rule
 

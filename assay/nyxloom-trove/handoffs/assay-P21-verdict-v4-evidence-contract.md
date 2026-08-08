@@ -4,7 +4,7 @@ id: assay-P21-verdict-v4-evidence-contract
 project: assay
 title: "Verdict v4 carries enough bounded evidence to verify every judgment"
 tier: implement-2
-input_revision: "ebbe208c4d4ff275da2ca6bd276bea103fca2563"
+input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P20-repository-artifact-boundary-integrity]
@@ -39,6 +39,21 @@ mutexes: []
 # P21 — verdict v4 evidence contract
 
 The claim to attack: **every fact needed to reproduce Assay's judgment is present, bounded, and independently checkable in one v4 artifact.**
+
+## Dispatch contract
+
+- Contract class: **2b — complex solution-bearing execution** (`implement-4`
+  when deployed; frontmatter names the live `implement-2` route).
+- Required roles: **Sol xhigh carver/prober → Opus xhigh implementer → a fresh
+  Opus xhigh independent reviewer session**. Do not let one Opus context author
+  and adjudicate the migration.
+- Readiness: **PROVISIONAL until P20 merges, then JIT-FREEZE REQUIRED.** Sol must
+  replace every abbreviated object below with a complete canonical v4 example,
+  two invalid examples per public shape, and carver-authored model/schema/raw-
+  verifier acceptance inputs before dispatch.
+- Implementer freedom: private construction only. Names, types, requiredness,
+  operator/reason vocabularies, migration behavior, and cross-field invariants
+  are fixed.
 
 ## Worktree and branch
 
@@ -83,6 +98,8 @@ omitted here, not optional in the real document):
       "candidate_count": 1,
       "total": 1,
       "killed": [{"path": "src/p.py", "lineno": 7,
+                  "start_byte": 83, "end_byte": 84,
+                  "replacement_sha256": "<64 lowercase hex>",
                   "operator": "compare-swap", "description": "< to <="}],
       "survived": [], "crashed": [], "budget_exceeded": []
     }
@@ -107,6 +124,18 @@ list. Candidate discovery itself has a hard product ceiling of **10,001** so a
 malicious declared cap cannot create unbounded memory/work; `max_mutants` must
 be in `1..10,000`.
 
+Every `MutantOutcome` identity is exactly
+`(path,start_byte,end_byte,replacement_sha256,operator)`. `lineno` and
+`description` remain diagnosis, not uniqueness. Byte offsets are zero-based
+half-open UTF-8 byte offsets into the exact source file at the recorded commit;
+`0 <= start_byte < end_byte`; `replacement_sha256` is lowercase SHA-256 of the
+replacement bytes only. P21 derives the unique minimal changed byte span from
+the existing original/mutated-text pair when constructing the outcome; if a
+candidate has no change or cannot be represented as one contiguous replacement,
+it is refused before execution. This gives P29's site protocol its final wire
+identity without forcing v5 and prevents two same-line/same-description mutants
+from collapsing.
+
 `Coverage.exclusion_capability` is exactly `"reported"` or `"unavailable"`.
 `unavailable` requires both exclusion detail fields empty; `reported` permits
 empty or populated detail. `CanaryResult.target` is the normalized declared
@@ -118,11 +147,15 @@ visited with one version-only diagnostic.
 
 Add exactly these closed reasons in `errors.py`, Schema, model, and verifier:
 `ERROR/OUTPUT_WRITE_FAILED`,
+`ERROR/MUTATION_DISCOVERY_FAILED`,
 `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, and
 `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` (reserved here for P22's reachable
 snapshot refusal), plus `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL` (reserved here
-for P26's first real external-tool preflight). No generic fallback reason is
-permitted.
+for P27's first real external-tool preflight). No generic fallback reason is
+permitted. P29/P30 use `MUTATION_DISCOVERY_FAILED` for invalid source, invalid
+helper request/response, helper nonzero, or an otherwise failed syntax-aware
+candidate boundary; valid discovery with zero sites remains
+`INCONCLUSIVE/NO_MUTANTS`.
 
 ### Required flow and decision table
 
@@ -138,6 +171,7 @@ permitted.
 |---|---|---|
 | bad output parent/type/permission before run | `ERROR/OUTPUT_WRITE_FAILED` | no lane command; stable stderr because requested artifact cannot exist |
 | destination lost after run | `ERROR/OUTPUT_WRITE_FAILED` | no PASS claim and no fallback file |
+| mutation discovery/helper protocol fails | `ERROR/MUTATION_DISCOVERY_FAILED` | complete R2 claim; zero mutant submissions |
 | candidates = max+1 | `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` | sentinel mutation payload; zero submissions |
 | snapshot exceeds P22 bound | `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` | complete artifact; zero command for that snapshot |
 | old schema | verify failure | exactly one version diagnostic |
@@ -145,7 +179,7 @@ permitted.
 ### Traceability and degrees of freedom
 
 Work 1–3 -> vocabulary/model/schema/verifier -> O1/O2 -> hand-authored v4 plus
-unknown/killed/limit mutations; work 5–7 -> canary/coverage/time correspondence
+unknown/killed/same-line-identity/limit mutations; work 5–7 -> canary/coverage/time correspondence
 -> O3/O4 -> exact field mutations; work 8 -> output reservation -> O4 -> a
 sentinel command proving zero calls. The REPORT repeats this mapping with real
 tests and controlled-break counts. Private helper names and dataclass field
@@ -156,7 +190,14 @@ order, and independent raw re-derivation may not.
 
 1. Bump the verdict artifact to schema v4 in one atomic migration. Convert every hand-written expected artifact and installed-wheel witness deliberately. `assay verify` must return one version-only diagnostic for v1–v3 before reading foreign fields; it never upgrades, defaults, or rewrites them.
 2. Put the mutation-operator vocabulary in one cycle-safe module imported by config, mutation construction, verdict model, and raw verifier. Close both `MutationOutcome.operator` and `judgment.r2.operators` in the model and schema. Delete the current model/schema/verifier mismatch rather than maintaining parallel literal sets.
-3. Replace killed's count-only representation with ordered `MutantOutcome` identities, matching survived/crashed/budget-exceeded, and add the packet's `candidate_count`. Verify normal and limit-sentinel arithmetic exactly and require every payload operator to belong to the recorded policy. Sorting is stable by path/line/operator/description and independent of completion order.
+3. Replace killed's count-only representation with ordered `MutantOutcome`
+   identities, matching survived/crashed/budget-exceeded, and add the packet's
+   `candidate_count`. Identity includes the packet's UTF-8 byte span and
+   replacement hash; derive it from the original/mutated pair and reject a
+   no-op or non-contiguous edit before execution. Verify normal and limit-
+   sentinel arithmetic exactly and require every payload operator to belong to
+   the recorded policy. Sorting uses the identity tuple, never description or
+   completion order.
 4. Make `judge.mutation.max_mutants` a required integer in `1..10,000`, record it in `judgment.r2`, and enforce it after bounded candidate discovery but before any mutant command is submitted. Discover at most `max_mutants + 1` and never more than 10,001; excess renders the packet's `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` sentinel, with no partial sample and no credit. `jobs` remains only a concurrency bound and is never derived from machine capacity.
 5. Add the project-relative canary target to `CanaryResult` and bind it exactly to `judgment.r3.target` in both construction and raw verification. The description remains explanation, never a parseable identity channel.
 6. Preserve A-008 in the artifact with a closed R1 exclusion-capability field (`reported` versus `unavailable`). `unavailable` may not carry excluded lines; `reported` may truthfully carry an empty mapping. Re-derive the same rule in `verify.py`; do not infer capability from a particular format name.
@@ -236,7 +277,10 @@ it is not an oracle yet.
 
 ## Scope / forbid
 
-This package is the one pre-adoption v4 migration. It must not add Go/TypeScript behavior, change distribution identity, or redesign isolation. P22 consumes the new cap and evidence fields to make repeated execution faithful.
+This package is the one pre-adoption v4 migration. It must not add Go/TypeScript
+behavior, change distribution identity, or redesign isolation. P22 consumes the
+snapshot terminal; P23 and later R2/R3 packages consume the cap and evidence
+fields to make repeated execution faithful.
 
 ## BLOCKED rule
 

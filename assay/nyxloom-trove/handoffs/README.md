@@ -1,7 +1,61 @@
-# assay — repaired v1 package series
+# assay — package series
+
+## Current pre-adoption queue: P20–P32
+
+P00–P19 are merged. P20–P32 are the only active implementation queue,
+recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
+revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
+contracts are JIT-frozen after the predecessor merges, so a future packet does
+not pretend uncertain signatures or fixtures are already true.
+
+`tier: implement-2` is the only suitable live implementation band today; the
+body's contract class records the planned five-band fit. Model names below are
+mandatory for this semi-manual wave, not permanent product routing:
+
+| # | Claim boundary | class | JIT carve | implement | independent review |
+|---|---|---|---|---|---|
+| P20 | repository/artifact integrity | 2c | Sol xhigh required | Sonnet xhigh | fresh Opus xhigh |
+| P21 | verdict v4 evidence contract | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
+| P22 | committed-object snapshot substrate | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
+| P23 | exact reexecution integration | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P24 | versioned wheel contract | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P25 | external Python/Topos qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P26 | attested-evidence CLI hardening | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P27 | Go gate and adapter resolution | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P28 | real srdm R1 qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P29 | Go mutation-helper/site protocol | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
+| P30 | real Go/srdm R2 integration | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+
+Every package currently says `PROVISIONAL` or `JIT-FREEZE REQUIRED`. That is
+intentional, not missing ceremony. Before ACTIVE, its named proof assets are
+committed and AUTHORING's exact pre-dispatch adversarial specification review
+must return READY at the actual post-predecessor HEAD. P20 is next; no later
+package should be dispatched merely because `nyxloom lint` accepts its header.
+
+The dependency chain is exactly:
+
+```text
+P19 -> P20 -> P21 -> P22 -> P23 -> P24 -> P25 -> P26
+    -> P27 -> P28 -> P29 -> P30 -> P31 -> P32
+```
+
+The apparent expansion from ten to thirteen packages is three splits, not a
+microtask explosion: snapshot substrate/integration, Go adapter/real-srdm R1,
+and Go helper/real R2. These are the points where one side has an independent
+failure oracle and materially different model requirement. The remaining
+packages stay intentionally large and solution-bearing to amortize orientation,
+gate, review, and merge overhead.
+
+Luna may run the frozen-orientation/fork workflow mechanically from
+`nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,
+change contracts, choose product semantics, or replace Sol/Opus.
+
+## Historical P00–P14 record
 
 Reissued 2026-08-07 from repaired input revision `9bd7d206`. P00 and P01 are
-merged. P01c repaired their contract before any outstanding implementation was
+merged. P01c repaired their contract before the then-outstanding implementation was
 dispatched: verdict schema v2 separates computed rigor from external evidence,
 adds honest command failure, and freezes PATH/attestation/cgroup semantics.
 
@@ -10,7 +64,7 @@ The carving rule remains:
 > Put the thing whose **claim** needs attacking in its own package. Do not split
 > mechanical consequences that exist only to make that one claim observable.
 
-That rule yields thirteen outstanding packages, not twenty. Runner + emission
+That rule yielded thirteen packages, not twenty. Runner + emission
 remain one package because both answer which command result was recorded.
 Canary construction + execution remain one because neither half can prove a
 known-good/known-bad pair alone. Go parsing + its adapter remain one additive

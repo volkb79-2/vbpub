@@ -7,9 +7,11 @@
 > declared Python R1/R2/R3 reachable through the installed CLI, but the v2
 > adversarial pass reproduced false-PASS/integrity failures in exact command
 > reuse, monorepo mutation isolation, stale canary coverage, commit binding,
-> and ambient Git repository selection. Three prerequisite repair packages
-> are inserted by renumbering the still-unimplemented queue: **P20 → P21 →
-> P22; P20 is next**, followed by P23–P29 (A-153).
+> and ambient Git repository selection. The cost-aware recarve is a serial
+> **P20 → … → P32** queue; P20 is next (A-167). Three original bundles were
+> split at independent security/integration seams, not expanded into 33
+> microtasks. Every outstanding packet is provisional until its predecessor
+> merges and its named JIT proof assets pass the exact pre-dispatch review.
 >
 > **Reachable does not mean proven safe.** Sol finding 1 was about
 > reachability, and R3's own reachability is what P19 delivered — the
@@ -27,7 +29,7 @@
 ## Where things stand
 
 **Merged on `main`, P00 through P19** — the complete P00–P14 series, plus
-the first five packages of the P15–P25 repair series. Gate green at
+the five-package P15–P19 repair/validation series. Gate green at
 **1831 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
 (3070 stmts / 1256 branches) — counts measured INSIDE `tester-unified:
 local` itself, not in the devcontainer, because the gate's own `argv`
@@ -293,7 +295,7 @@ the review. Full findings, direct answers to the controller's own
 questions, and an estate-adoption order are all in that file — read it in
 full, this summary is not a substitute.
 
-**Carving status (live, as of this update): P15 through P29 are carved. A
+**Carving status (live, as of this update): P15 through P32 are carved. A
 TypeScript adapter and any consumer-side adoption package are NOT yet
 carved.** Adoption belongs in the selected
 consumer's trove after Assay's wheel contract is real; it is not an Assay
@@ -302,9 +304,10 @@ handoff with authority to edit another project.
 **Implementation status of that series: P15 through P19 are MERGED. P20
 is next.** The execution order is:
 
-`P20 repository/artifact boundary → P21 verdict v4 evidence → P22 exact
-reexecution/isolation → P23 wheel → P24 real Python qualification → P25
-attestation → P26/P27/P28 real Go R1/R2/R3 → P29 Vitest formats`.
+`P20 repository/artifact boundary → P21 verdict v4 → P22 committed snapshot →
+P23 exact reexecution integration → P24 wheel → P25 real Python qualification →
+P26 attestation → P27 Go gate/adapter → P28 real srdm R1 → P29 Go helper/site
+protocol → P30 real Go R2 → P31 real Go R3 → P32 Vitest formats`.
 
 P16's outcome originally propagated into FIVE later handoffs, each now
 carrying a "Carried in from P16, merged" section (all six edited handoffs
@@ -314,17 +317,17 @@ NOT record it; plus where `base` and `source_roots` come from), **P18**
 (its work item 4 turns `assay verify`'s R2 baseline proxy into an
 identity — do not reintroduce a second baseline run), **P19** (an
 inconclusive canary still renders a real `CanaryResult`; `ERROR`/
-`BUDGET_EXCEEDED` stay payload-free), historical **P22** (current **P26**;
+`BUDGET_EXCEEDED` stay payload-free), historical **P22** (current **P27/P28**;
 its independently
 calculated R1 expectation must now calculate `judgment.r1` too, not copy
-the Python fixture's), and historical **P25** (current **P29**; Istanbul has
+the Python fixture's), and historical **P25** (current **P32**; Istanbul has
 no exclusion channel).
 The v2 review supersedes the stale parts of those briefs: P21 closes
-A-O16/A-O18 in v4, P20 closes A-O17, P22 replaces working-tree copy
-isolation, and P26–P28 add real disposable-srdm validation.
+A-O16/A-O18 in v4, P20 closes A-O17, P22/P23 replace working-tree copy
+isolation, and P27–P31 add real disposable-srdm validation.
 
 For historical clarity, the next paragraph uses the handoff ids that existed
-when Sol carved them; A-153 records their current P23–P29 names. Sol was given write access (scoped by prompt, not sandbox, to new files
+when Sol carved them; A-153 and then A-167 record both renumbering steps. Sol was given write access (scoped by prompt, not sandbox, to new files
 under `nyxloom-trove/handoffs/` only) to materialize the twelve-package plan
 from its own review (P15 correctness repairs → P16 schema v3 → P17/P18/P19
 Python R1/R2/R3 CLI wiring → P20 attestation hardening → P21 versioned
@@ -372,19 +375,19 @@ declared verdict destination before execution and add the closed
 `OUTPUT_WRITE_FAILED` terminal. The physical impossibility of writing to an
 unavailable destination remains explicit; Assay does not invent a fallback.
 
-**A-O15 is assigned to P25 and depends on P20.** `attestation._changed_paths` still uses
+**A-O15 is assigned to P26 and depends on P20.** `attestation._changed_paths` still uses
 newline-delimited Git display paths plus `splitlines()`. Real filenames with
 newlines or U+2028 were reproduced as wrong identities. P20 supplies the
-sanitized Git boundary; P25 now avoids filename transport entirely by using one
+sanitized Git boundary; P26 now avoids filename transport entirely by using one
 bounded `diff --quiet` pathspec query per reviewed identity.
 
 **A-O16 is DECIDED and assigned to P21 (A-157).** Schema v4 records the
-closed exclusion capability `reported` versus `unavailable`; P29 consumes
+closed exclusion capability `reported` versus `unavailable`; P32 consumes
 that decision for Istanbul rather than redesigning it.
 
-**A-O17 is assigned to P20, before P26.** The known Go-normalization
+**A-O17 is assigned to P20, before P27.** The known Go-normalization
 collision is one instance of the general rule that every expected post-HEAD
-Git/coverage/source/evaluation error renders a complete artifact. P22 keeps a
+Git/coverage/source/evaluation error renders a complete artifact. P27 keeps a
 real Go collision fixture but owns no runner workaround.
 
 **A-O18 is DECIDED and assigned to P21 (A-157).** P21 is the deliberate
@@ -450,10 +453,13 @@ since there is no more series left to fold any of it into:**
   `ASSAY_SELF_HOSTING_VERDICT` skips without it. The gate's own `argv` does
   ignore that file, correctly — it runs it as a separate second step.
 
-## How the work was run
+## How the work was and will be run
 
-The loop is over — this section is now a record of the process for
-whoever runs a similarly-shaped effort next, not a live instruction set.
+The paragraphs below record the P00–P19 process. P20–P32 use the supported
+frozen-orientation/fork pilot in
+`nyxloom/docs/frozen-orientation-fork-workflow.md` and the mechanical Luna
+prompt `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`; transcript-file
+backup/restore is superseded. Each run still processes one package serially.
 
 `WORKFLOW.md` is the loop. `MEASUREMENTS.md` is what it costs and what it
 catches — read both; several of their claims are corrections of earlier claims
@@ -516,7 +522,8 @@ review it.
 
 ## Longer-lived notes (not repeated in "Watched" above)
 
-- **The snapshot lineage was considered for P02 and deliberately NOT built.**
+- **HISTORICAL/SUPERSEDED: the transcript-snapshot lineage was considered for
+  P02 and deliberately not built.**
   Orientation measures ~142k tokens per package — more than the implementation
   it precedes — and a restored snapshot costs ~14k, so the paper savings are
   real (~128k/package × 13). But the only *verified* case is a trivial 0-tool,
