@@ -214,6 +214,72 @@ def test_a_real_python_fixture_passes_through_the_installed_wheel(
     assert real["argv_effective"] == [sys.executable, "-m", "pytest", "tests", "-q"]
 
 
+def test_a_real_r1_lane_passes_through_the_installed_wheel(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O1: the installed wheel runs a REAL two-commit Python fixture and
+    emits exactly R0 and R1 claims. The coverage artifact is genuine
+    ``pytest-cov`` output (``--cov-report=json:...``), never hand-written --
+    the BASE commit is the fixture's own already-fully-tested control; the
+    HEAD commit adds one new, fully-tested function, so the changed-line
+    diff R1 measures is real and small enough to reason about by hand."""
+    shutil.copytree(PYTHON_FIXTURE_DIR / "pkg", git_repo.path / "pkg")
+    shutil.copytree(PYTHON_FIXTURE_DIR / "tests", git_repo.path / "tests")
+    git_repo.commit_all("add control fixture")
+    base_rev = git_repo.head()
+
+    (git_repo.path / "pkg" / "farewell.py").write_text(
+        'def farewell(name: str) -> str:\n    return f"Goodbye, {name}!"\n',
+        encoding="utf-8",
+    )
+    (git_repo.path / "tests" / "test_farewell.py").write_text(
+        "from pkg.farewell import farewell\n\n\n"
+        "def test_farewell_returns_a_goodbye_message():\n"
+        '    assert farewell("world") == "Goodbye, world!"\n',
+        encoding="utf-8",
+    )
+    git_repo.commit_all("add farewell")
+
+    lane_toml = (
+        "schema_version = 1\n\n"
+        "[lanes.package]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R1"]\n'
+        'enforcement = "gate"\n'
+        f"argv = {json.dumps([sys.executable, '-m', 'pytest', 'tests', '-q', '--cov=pkg', '--cov-report=json:cov.json'])}\n"
+        # pytest writes .pyc caches under pkg/__pycache__ unless told not to
+        # -- untracked files UNDER the declared source root, which would
+        # otherwise trip evaluate_r1's own post-execution check_dirty_tree
+        # guard (test_canary_python_pipeline.py hit this exact case first).
+        'env = { PYTHONDONTWRITEBYTECODE = "1" }\n'
+        'env_passthrough = ["PATH"]\n'
+        'budget = "2m"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.package.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["pkg"]\n'
+        "fail_under = 100.0\n"
+        "allow_excluded = false\n"
+        'coverage = { format = "coverage-py-json", artifact = "cov.json" }\n'
+        f'base = "{base_rev}"\n'
+    )
+    lane_file = _write_lane_file(git_repo.path, lane_toml)
+    git_repo.commit_all("add assay.toml")
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 0, proc.stderr
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == [], "the real artifact is not schema-valid"
+    assert real["outcome"] == "PASS"
+    assert [c["rigor"] for c in real["claims"]] == ["R0", "R1"]
+    assert real["claims"][0]["status"] == "PASS"
+    assert real["claims"][1]["status"] == "PASS"
+    assert real["claims"][1]["coverage"]["pct"] == 100.0
+    assert real["judgment"]["r1"]["base"] == base_rev
+    assert real["judgment"]["r1"]["source_roots"] == ["pkg"]
+
+
 def test_the_installed_wheel_ships_and_exposes_the_go_adapter(standalone: Standalone):
     """A-126's Go half: ADAPTER-LEVEL only. ``GoAdapter`` is imported from
     INSIDE the scratch venv (proving the wheel actually ships

@@ -8,7 +8,7 @@ mapping that every test mutates (``register(...)`` / forgets to unregister)
 is exactly the shared-state hazard AUTHORING.md §3b.B warns about: a test
 that registers a fake adapter under the name ``"python"`` would leak into
 whichever test runs next on the same worker. :func:`new_registry` instead
-builds a fresh, frozen :class:`Registry` from an explicit set of adapters
+builds a fresh, frozen :class:`Registry` from an explicit set of entries
 supplied at the call site — there is nothing here for a test to forget to
 clean up, and no import of this module can ever come pre-loaded with an
 adapter.
@@ -18,6 +18,32 @@ This is also the mechanical guarantee behind O2's negative: there is no
 ``language`` string cannot silently resolve to Python (or to anything) —
 :func:`get_adapter` raises when the name is not in the registry it was
 handed, full stop.
+
+**P17's addition: a registered adapter names the rigor levels reachable
+THROUGH IT, not just its own existence.** Shipping ``adapters/go.py`` proves
+the Go adapter's own methods; it does not mean an installed ``assay`` build
+actually evaluates Go at any rigor level yet (DESIGN-GUIDE §6/§7: a library
+surface is not a product capability until a supported producer path reaches
+it — the whole gap the post-series review found). So a :class:`RegistryEntry`
+pairs one adapter with the CLOSED set of rigor levels THIS BUILD wires it
+into: the CLI (:mod:`assay.cli`) builds its own registry naming Python at
+``R1`` only, and no entry at all for Go, so ``judge.language = "go"`` is
+refused exactly the same way an unknown language string is — never a
+guess, never "the adapter exists so the level must work."
+
+**Deferred, deliberately: external-tool preflighting.** DESIGN-GUIDE §11
+and A-013 both say a declared adapter prerequisite tool that is absent from
+``PATH`` should render ``NO_MEASUREMENT`` rather than fail unpredictably
+mid-run — but the closed reason-code vocabulary (``errors.py``, outside
+this package's own ``scope.touch``) has no member for it yet. A-086
+recorded this gap explicitly and A-087 (P08, the Go adapter) already
+declined to add one: Go ships with ``external_tools = ()``, so "no
+missing-tool state becomes reachable, so adding its reason would be
+decorative." The identical reasoning applies here — the only adapter this
+package's own built-in registry advertises (Python, at R1) also declares
+``external_tools = ()`` — so this module adds no preflight machinery of its
+own; the reason code, and the check that raises it, belong to whichever
+future package first registers an adapter that actually needs one.
 """
 
 from __future__ import annotations
@@ -29,56 +55,102 @@ from typing import Mapping
 from .adapters.base import LanguageAdapter
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["Registry", "get_adapter", "new_registry"]
+__all__ = ["Registry", "RegistryEntry", "get_adapter", "new_registry"]
+
+#: Rigor levels a registered adapter may claim reachability for. R0 needs no
+#: adapter at all (:mod:`assay.runner` never looks one up for it), so it is
+#: deliberately excluded — an entry naming it would claim a capability the
+#: registry mechanism has no way to exercise.
+_ADAPTER_RIGOR_LEVELS: frozenset[str] = frozenset({"R1", "R2", "R3"})
+
+
+@dataclass(frozen=True, kw_only=True)
+class RegistryEntry:
+    """One adapter, paired with the rigor levels THIS BUILD reaches through
+    it — never the adapter's own theoretical capability, only what a real
+    producer path (:mod:`assay.runner`, wired in by a specific package) has
+    actually been connected to.
+    """
+
+    adapter: LanguageAdapter
+    rigor: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not self.rigor:
+            raise ValueError(
+                f"registry entry for adapter {self.adapter.name!r} declares "
+                f"no reachable rigor level; an entry that reaches nothing "
+                f"should not be registered at all"
+            )
+        unknown = sorted(self.rigor - _ADAPTER_RIGOR_LEVELS)
+        if unknown:
+            raise ValueError(
+                f"registry entry for adapter {self.adapter.name!r} declares "
+                f"rigor {unknown}, not in {sorted(_ADAPTER_RIGOR_LEVELS)} — "
+                f"R0 needs no adapter, so it is never a reachable level here"
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
 class Registry:
-    """An immutable set of adapters, keyed by :attr:`LanguageAdapter.name`.
+    """An immutable set of entries, keyed by :attr:`LanguageAdapter.name`.
 
     Never constructed directly outside this module — :func:`new_registry` is
     the only way to build one, so duplicate-name detection (below) cannot be
     bypassed by handing :class:`Registry` an already-broken mapping.
     """
 
-    adapters: Mapping[str, LanguageAdapter]
+    entries: Mapping[str, RegistryEntry]
 
 
-def new_registry(*adapters: LanguageAdapter) -> Registry:
-    """Build a fresh :class:`Registry` from explicit adapters.
+def new_registry(*entries: RegistryEntry) -> Registry:
+    """Build a fresh :class:`Registry` from explicit entries.
 
-    Zero adapters is a legal, useful registry — every :func:`get_adapter`
+    Zero entries is a legal, useful registry — every :func:`get_adapter`
     call against it raises, which is exactly what a project that declared no
     language-bound rigor level needs. Raises :class:`ValueError` for two
-    adapters sharing a :attr:`~assay.adapters.base.LanguageAdapter.name`:
+    entries sharing a :attr:`~assay.adapters.base.LanguageAdapter.name`:
     silently letting the second shadow the first would make registration
     order an invisible input.
     """
-    by_name: dict[str, LanguageAdapter] = {}
-    for adapter in adapters:
-        if adapter.name in by_name:
+    by_name: dict[str, RegistryEntry] = {}
+    for entry in entries:
+        name = entry.adapter.name
+        if name in by_name:
             raise ValueError(
-                f"two adapters both declare name {adapter.name!r}; "
-                f"adapter names must be unique within a registry"
+                f"two entries both declare adapter name {name!r}; adapter "
+                f"names must be unique within a registry"
             )
-        by_name[adapter.name] = adapter
-    return Registry(adapters=MappingProxyType(by_name))
+        by_name[name] = entry
+    return Registry(entries=MappingProxyType(by_name))
 
 
-def get_adapter(registry: Registry, language: str) -> LanguageAdapter:
-    """The adapter *registry* has registered under *language*.
+def get_adapter(registry: Registry, language: str, rigor: str) -> LanguageAdapter:
+    """The adapter *registry* has registered under *language*, if *rigor* is
+    among the levels THIS BUILD reaches through it.
 
     Raises :class:`~assay.errors.AssayError` (``ERROR``/``BAD_LANE_CONFIG``)
-    when *language* is not a name this registry knows — never a fallback to
-    some "default" adapter (O2's negative names this exact hazard: "an
-    unknown declared language silently selects Python").
+    for either failure, never a fallback: an unknown *language* (O2's
+    negative: "an unknown declared language silently selects Python"), or a
+    *language* this registry knows but has not wired for *rigor* (e.g.
+    ``"go"`` at any rigor before P22, or ``"python"`` at ``R2``/``R3`` before
+    P18/P19) — a real adapter existing is not the same claim as this build
+    having a producer path to it (DESIGN-GUIDE §7).
     """
-    try:
-        return registry.adapters[language]
-    except KeyError:
+    entry = registry.entries.get(language)
+    if entry is None:
         raise AssayError(
             f"{language!r} is not a language this registry knows; "
-            f"declared adapters: {sorted(registry.adapters)}",
+            f"declared adapters: {sorted(registry.entries)}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
-        ) from None
+        )
+    if rigor not in entry.rigor:
+        raise AssayError(
+            f"{language!r} is registered, but this assay build has not "
+            f"wired {rigor} evaluation for it; reachable here: "
+            f"{sorted(entry.rigor)}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    return entry.adapter

@@ -14,14 +14,14 @@ from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
 from assay.errors import Outcome
 from assay.evaluate import evaluate_coverage
-from assay.registry import get_adapter, new_registry
+from assay.registry import RegistryEntry, get_adapter, new_registry
 
 
 def test_the_python_adapter_registers_under_its_own_declared_name():
     adapter = PythonAdapter()
-    registry = new_registry(adapter)
+    registry = new_registry(RegistryEntry(adapter=adapter, rigor=frozenset({"R1"})))
 
-    assert get_adapter(registry, "python") is adapter
+    assert get_adapter(registry, "python", "R1") is adapter
     assert adapter.name == "python"
 
 
@@ -46,8 +46,10 @@ def test_a_registry_built_adapter_evaluates_coverage_identically_to_a_direct_one
     directly and one retrieved back out of a fresh ``Registry`` -- the
     registry is a pure lookup (P05's own O2), proven here by actually
     driving ``evaluate_coverage`` with the registry-obtained instance."""
-    registry = new_registry(PythonAdapter())
-    adapter = get_adapter(registry, "python")
+    registry = new_registry(
+        RegistryEntry(adapter=PythonAdapter(), rigor=frozenset({"R1"}))
+    )
+    adapter = get_adapter(registry, "python", "R1")
 
     added = AddedLines(by_file=MappingProxyType({"pkg/mod.py": frozenset({1})}))
     profile = CoverageProfile(

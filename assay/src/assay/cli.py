@@ -7,22 +7,25 @@ Three subcommands ship so far:
   artifact**. It does not run a lane, so A-027 ("emitted on every outcome")
   does not apply, and A-028 makes emission conditional on an explicit path
   this subcommand has no flag for.
-* ``assay run`` (P04) — execute exactly one declared lane's ``argv`` and emit
-  its R0 verdict. It never discovers, selects, orders or retries anything
-  (§7): the argv is the lane's, plus whatever the CALLER appends after a
-  literal ``--`` (A-036) — never derived by assay itself. An append attempted
-  without the lane's ``allow_argv_append`` is refused before the process
-  starts (A-095, via :mod:`assay.runner`).
+* ``assay run`` (P04, R1 wiring P17) — execute exactly one declared lane's
+  ``argv`` and emit its verdict. It never discovers, selects, orders or
+  retries anything (§7): the argv is the lane's, plus whatever the CALLER
+  appends after a literal ``--`` (A-036) — never derived by assay itself. An
+  append attempted without the lane's ``allow_argv_append`` is refused before
+  the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0 only**: a lane declaring any rigor beyond
-  ``["R0"]`` is refused with ``ERROR``/``BAD_LANE_CONFIG`` rather than
-  crashing partway through verdict assembly when
-  :class:`~assay.verdict.Verdict` finds a declared rigor level with no claim
-  to cover it. The refusal lives in :func:`assay.runner.assemble_verdict`,
-  not here — that module is in every later producer package's
-  ``scope.touch``, so the guard self-obsoletes as R1+ evaluation lands
-  instead of needing a CLI-level edit this package's successors have no
-  scope to make.
+  This build evaluates **R0 and R1**, for Python only: ``_built_in_registry``
+  is the CLI's own closed capability declaration (work item 2) — Python is
+  registered at R1 and nothing else, so a lane declaring ``judge.language``
+  as anything but ``"python"``, or R1 for a language this registry does not
+  know, is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command
+  ever runs. A lane declaring R2 or R3 is refused the same way it always
+  was: :func:`assay.runner.run_lane`'s call into
+  :func:`assay.runner.assemble_verdict` finds a declared rigor level with no
+  claim to cover it. That refusal lives in ``runner.py``, not here — that
+  module is in every later producer package's ``scope.touch``, so the guard
+  self-obsoletes as R2/R3 evaluation lands instead of needing a CLI-level
+  edit this package's successors have no scope to make.
 * ``assay verify`` (P14, A-129) — validate a verdict-JSON artifact
   independently of how it was produced. See :mod:`assay.verify` for the full
   contract; this module only wires its parser/dispatch in, exactly like the
@@ -42,7 +45,8 @@ from pathlib import Path
 from typing import Sequence, TextIO
 
 from . import __version__
-from . import git, runner
+from . import git, registry, runner
+from .adapters.python import PythonAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
 from .errors import AssayError, Outcome
 from .verdict import Verdict
@@ -162,18 +166,41 @@ def _resolve_lane_file(path: Path | None) -> LaneFile:
     return load_lane_file(find_lane_file() if path is None else path)
 
 
+def _built_in_registry() -> registry.Registry:
+    """This CLI's own closed capability declaration (P17, work item 2): a
+    fresh :class:`~assay.registry.Registry`, built on every call rather than
+    once at import time -- an adapter carries no state a test could leak
+    between calls (AUTHORING.md §3b.B), so there is nothing a shared,
+    module-level instance would buy beyond a mutable global to guard.
+
+    Python is registered at R1 and nothing else: R2/R3 land in P18/P19, and
+    Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's fixture-based
+    proof) has no producer path wired in at any rigor level yet (P22).
+    Naming a capability this build does not actually reach is exactly the
+    failure the whole v1.1 repair series exists to remove one level up
+    (the post-series review's own finding 1) -- this is that discipline
+    applied to the registry itself.
+    """
+    return registry.new_registry(
+        registry.RegistryEntry(adapter=PythonAdapter(), rigor=frozenset({"R1"})),
+    )
+
+
 def _cmd_run(args: argparse.Namespace, appended: list[str], out: TextIO) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
     commit = git.head_rev(lane_file.project_root)
-    result = runner.execute_command(lane, argv_append=appended, cwd=lane_file.project_root)
-    r0_claim = runner.build_r0_claim(result)
-    verdict = runner.assemble_verdict(
-        lane=lane,
+    adapter = None
+    if "R1" in lane.rigor:
+        adapter = registry.get_adapter(_built_in_registry(), lane.judge.language, "R1")
+    verdict = runner.run_lane(
+        lane,
         commit=commit,
-        result=result,
-        claims=(r0_claim,),
+        repo=lane_file.project_root,
+        project_root=lane_file.project_root,
+        adapter=adapter,
         assay_version=__version__,
+        argv_append=appended,
     )
     if args.verdict_json is not None:
         runner.write_verdict(verdict, args.verdict_json, stdout=out)

@@ -31,6 +31,7 @@ _JUDGE_SCALARS = {
     "fail_under": "fail_under = 100.0",
     "allow_excluded": "allow_excluded = false",
     "coverage": 'coverage = { format = "coverage-py-json", artifact = "cov.json" }',
+    "base": 'base = "main"',
 }
 _JUDGE_SUBTABLES = {
     "mutation": "\n[lanes.package.judge.mutation]\njobs = 2\n",

@@ -81,6 +81,7 @@ from .verdict import (
     Evidence,
     EvidenceDeclaration,
     Judgment,
+    JudgmentR1,
     Verdict,
     iso_utc,
     rollup,
@@ -96,6 +97,7 @@ __all__ = [
     "evaluate_r1",
     "execute_command",
     "resolve_command_plan",
+    "run_lane",
     "write_verdict",
 ]
 
@@ -176,8 +178,17 @@ class CommandResult:
     """
 
     plan: CommandPlan
-    #: one of PASS, FAIL, ERROR, BUDGET_EXCEEDED -- never NO_MEASUREMENT or
-    #: INCONCLUSIVE; those are not R0-producible outcomes in this package.
+    #: PASS, FAIL, ERROR or BUDGET_EXCEEDED for :func:`execute_command`'s
+    #: own output -- never NO_MEASUREMENT or INCONCLUSIVE, those are not
+    #: R0-producible outcomes in this package. :func:`run_lane` (P17) MAY
+    #: construct a :class:`CommandResult` with ``ERROR`` or
+    #: ``NO_MEASUREMENT`` directly, WITHOUT calling
+    #: :func:`execute_command` at all, to represent "a prerequisite failed
+    #: and the command never launched" (work items 3/5) -- the plan and
+    #: timing still need somewhere honest to live, and this is that
+    #: somewhere; :func:`build_r0_claim` is never called on one of these
+    #: (:func:`run_lane` builds the refusal claims by hand instead), so no
+    #: caller reads this field back out as if it were R0's own judgement.
     outcome: Outcome
     reason_code: ReasonCode | None
     #: ``None`` when the process never started (append refused, exec failed,
@@ -345,52 +356,73 @@ def evaluate_r1(
     project_root: Path,
     base: str,
     adapter: LanguageAdapter,
+    on_base_resolved: Callable[[str], None] | None = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
     -- then the four-way union (:func:`assay.evaluate.evaluate_coverage`).
 
     Mirrors :func:`execute_command`'s own contract: never raises for a
-    JUDGED outcome. A guard tripping with ``NO_MEASUREMENT`` is caught and
-    returned as an R1 :class:`~assay.verdict.Claim` carrying that status and
-    reason_code and NO ``coverage`` payload -- omitted, not zeroed (A-025),
-    exactly what :class:`~assay.verdict.Claim` itself would refuse to
-    construct otherwise. Any OTHER :class:`~assay.errors.AssayError` (a
-    genuinely broken coverage artifact -- ``FORMAT_MISMATCH``,
-    ``UNREADABLE_ARTIFACT`` -- or a git failure) is a structural failure,
-    not a judged outcome, and propagates uncaught, the same way
-    ``git.head_rev`` failing propagates out of ``cli.py``'s call chain today.
+    JUDGED outcome. Every :class:`~assay.errors.AssayError` this function's
+    own guard sequence can raise -- P02's two measurability guards, P03's
+    ``EMPTY_COVERAGE`` guard, a broken coverage artifact
+    (``FORMAT_MISMATCH``, ``UNREADABLE_ARTIFACT``), or a git failure
+    resolving the base or diffing it (``GIT_FAILED``) -- is caught and
+    returned as a complete R1 :class:`~assay.verdict.Claim` carrying that
+    exact status and reason_code (P17 work item 6, closing three of sol's
+    "permanently unreachable" pairs, A-O15/STATE.md). NO ``coverage``
+    payload accompanies any of them -- omitted, not zeroed (A-025 for the
+    three ``NO_MEASUREMENT`` causes; A-136 for the three ``ERROR`` ones,
+    which are payload-free by construction regardless of cause. Only a
+    non-:class:`AssayError` exception (a genuine programmer error) still
+    propagates uncaught -- this function never invents a generic PASS/ERROR
+    fallback for one.
 
     *lane.judge* must be fully resolved for R1 (every field
     ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names) -- guaranteed by
     :mod:`assay.config`'s loader for any lane that actually declares R1
     rigor, which is the only way a caller should reach this function.
-    *base* is the declared comparison ref (no lane-config field or CLI flag
-    names it yet -- a caller supplies it directly, the same way P02's own
-    tests do).
+    *base* is the declared comparison ref, exactly as ``judge.base``
+    declares it (a caller resolves nothing before passing it in).
+
+    *on_base_resolved* (P17), if given, is called EXACTLY ONCE with the
+    resolved full base commit (:attr:`~assay.measurability.ResolvedBase.
+    base_rev`) the moment :func:`assay.measurability.check_base_is_head`
+    produces it -- never on a path where that guard itself trips. This is
+    how :func:`run_lane` builds ``judgment.r1.base`` (P16's "the FULL
+    resolved comparison commit, never the lane's own possibly-symbolic
+    ``base`` ref") WITHOUT this function's own signature or return type
+    changing: :mod:`assay.canary` calls this function directly today and
+    expects a bare :class:`~assay.verdict.Claim` back, so a second return
+    value is not available here, and re-resolving the base a second time
+    the caller's own side would violate O2's "the comparison base resolves
+    once" -- an additive, default-``None`` callback is the only channel
+    that satisfies both constraints simultaneously.
     """
     judge = lane.judge
     try:
         measurability.check_dirty_tree(repo, judge.source_root_paths)
         resolved = measurability.check_base_is_head(repo, base)
+        if on_base_resolved is not None:
+            on_base_resolved(resolved.base_rev)
         artifact_path = _resolve_artifact_path(judge.coverage.artifact, project_root)
         profile = coverage.read_coverage_artifact(
             artifact_path, declared_format=judge.coverage.format
         )
         coverage.check_empty_coverage(profile)
+        repo_top = git.repo_top(repo)
+        diff_text = git.run(
+            repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev
+        )
     except AssayError as exc:
-        if exc.outcome is Outcome.NO_MEASUREMENT:
-            return Claim(
-                rigor="R1",
-                source="computed",
-                status=exc.outcome,
-                verified_by_assay=True,
-                reason_code=exc.reason_code,
-            )
-        raise
+        return Claim(
+            rigor="R1",
+            source="computed",
+            status=exc.outcome,
+            verified_by_assay=True,
+            reason_code=exc.reason_code,
+        )
 
-    repo_top = git.repo_top(repo)
-    diff_text = git.run(repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev)
     added = diff.parse_added_lines(diff_text)
 
     def read_source_text(path: str) -> str:
@@ -438,6 +470,7 @@ def assemble_verdict(
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     mutation_claim: Claim | None = None,
     judgment: Judgment | None = None,
+    ended: str | None = None,
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -506,6 +539,19 @@ def assemble_verdict(
     way it would if it were a claim -- ``rollup`` does not distinguish which
     array a status came from, matching :class:`~assay.verdict.Verdict`'s own
     ``_check_outcome_agrees_with_rollup``.
+
+    *ended* (P17, O2) overrides ``result.ended`` for the verdict's own
+    ``ended`` timestamp -- ``started`` always stays ``result.started``.
+    Every caller through P16 leaves it ``None`` (``result.ended`` is R0's
+    own, and R0 was the only work done), so behaviour is unchanged for all
+    of them. :func:`run_lane` passes the real timestamp taken AFTER R1
+    evaluation completes: "verdict timing encloses command plus R1
+    judgment" (O2) means the window a consumer sees must cover BOTH steps,
+    not just R0's, and R1 has no started/ended of its own in schema v3 to
+    carry that separately (there is exactly one ``started``/``ended`` pair
+    per verdict) -- widening the ONE pair this function already emits is
+    the only way to make that honest without a schema change P16 already
+    closed the book on.
     """
     claims = claims if mutation_claim is None else (*claims, mutation_claim)
     covered = {claim.rigor for claim in claims}
@@ -564,7 +610,7 @@ def assemble_verdict(
         outcome=outcome,
         reason_code=reason_code,
         started=result.started,
-        ended=result.ended,
+        ended=result.ended if ended is None else ended,
         assay_version=assay_version,
         declared_rigor=lane.rigor,
         declared_evidence=declared_evidence,
@@ -578,6 +624,236 @@ def assemble_verdict(
         judgment=judgment,
         claims=claims,
         evidence=evidence,
+    )
+
+
+def _is_unsafe_coverage_artifact(repo: Path, artifact_path: Path) -> bool:
+    """True when *artifact_path* -- the resolved ``judge.coverage.artifact``
+    a lane is about to write to and read back -- must be refused outright
+    (P17 work item 3, closing sol finding 6's coverage-artifact half): a
+    symlink (could point anywhere, read silently by
+    :func:`assay.coverage.read_coverage_artifact`'s own ``read_text``), an
+    existing path that is not a regular file (a directory left where a
+    file belongs), or a path already tracked by git (measurement output
+    has no business being committed, and this run is about to overwrite
+    it). Checked BEFORE the command runs, so a bad declaration is refused
+    before anything executes rather than discovered after -- ``is_symlink``
+    is checked first because it never raises for a non-existent path,
+    unlike a naive existence check that follows the link first.
+    """
+    if artifact_path.is_symlink():
+        return True
+    if artifact_path.exists() and not artifact_path.is_file():
+        return True
+    tracked = git.run(repo, "ls-files", "--", str(artifact_path))
+    return bool(tracked.strip())
+
+
+def _remove_stale_coverage_artifact(artifact_path: Path) -> None:
+    """Remove an existing coverage artifact before the lane's command runs
+    (work item 4): a command that exits 0 without rewriting it must not let
+    a PRIOR run's output stand in for this one's measurement. Only reached
+    once :func:`_is_unsafe_coverage_artifact` has already cleared the path,
+    so this is always a plain, untracked, non-symlinked regular file (or
+    nothing at all, which is a no-op).
+    """
+    if artifact_path.exists():
+        artifact_path.unlink()
+
+
+def _refuse_before_running(
+    lane: Lane,
+    *,
+    commit: str,
+    r1_declared: bool,
+    status: Outcome,
+    reason_code: ReasonCode,
+    argv_append: Sequence[str],
+    passthrough_source: Mapping[str, str] | None,
+    assay_version: str,
+    clock: Clock,
+) -> Verdict:
+    """Refuse the WHOLE invocation before the lane's own command ever
+    starts (work items 3/5): the command's own :class:`CommandPlan` is
+    still resolved and recorded (A-036 -- a refused run is not an
+    unrecorded one), but *process_runner* is never called. Both R0 and
+    (when declared) R1 render the exact SAME ``(status, reason_code)``: one
+    root cause stopped the whole run, never two independently-derived
+    stories about the same fact -- and neither carries a payload, which
+    both a ``NO_MEASUREMENT`` claim (A-025) and an ``ERROR`` claim (A-136)
+    already require unconditionally.
+    """
+    plan = resolve_command_plan(
+        lane, argv_append=argv_append, passthrough_source=passthrough_source
+    )
+    started = clock()
+    ended = clock()
+    rigor_levels = ("R0", "R1") if r1_declared else ("R0",)
+    claims = tuple(
+        Claim(
+            rigor=level,
+            source="computed",
+            status=status,
+            verified_by_assay=True,
+            reason_code=reason_code,
+        )
+        for level in rigor_levels
+    )
+    result = CommandResult(
+        plan=plan,
+        outcome=status,
+        reason_code=reason_code,
+        returncode=None,
+        started=iso_utc(started),
+        ended=iso_utc(ended),
+    )
+    return assemble_verdict(
+        lane=lane,
+        commit=commit,
+        result=result,
+        claims=claims,
+        assay_version=assay_version,
+    )
+
+
+def run_lane(
+    lane: Lane,
+    *,
+    commit: str,
+    repo: Path,
+    project_root: Path,
+    adapter: LanguageAdapter | None,
+    assay_version: str,
+    argv_append: Sequence[str] = (),
+    passthrough_source: Mapping[str, str] | None = None,
+    process_runner: ProcessRunner = default_process_runner,
+    clock: Clock = _utc_now,
+) -> Verdict:
+    """``assay run``'s real pipeline (P17): resolve prerequisites, run the
+    lane's command AT MOST once, judge R1 when declared, and assemble ONE
+    verdict that encloses both.
+
+    *adapter* is the ALREADY-RESOLVED :class:`~assay.adapters.base.
+    LanguageAdapter` for ``lane.judge.language`` at R1 -- this function
+    knows nothing about a :class:`~assay.registry.Registry`; resolving
+    which adapter (or refusing an unsupported language/rigor pairing
+    outright, before anything here runs at all) is :mod:`assay.cli`'s own
+    job (work item 2). *adapter* is ``None`` exactly when
+    ``"R1" not in lane.rigor`` -- this function never dereferences it
+    otherwise.
+
+    Ordering (work items 2-7), all before the command runs:
+
+    1. If R1 is declared, the coverage artifact path is validated
+       (:func:`_is_unsafe_coverage_artifact`) and any existing untracked
+       copy is removed (:func:`_remove_stale_coverage_artifact`) -- work
+       item 4's "cannot consume prior output" made true by construction:
+       whatever exists at that path once the command finishes was newly
+       written BY this run, because nothing else could still be there.
+    2. The WHOLE git worktree/index -- not merely the declared source
+       roots -- must be clean (sol finding 6, live in the R0 path before
+       this package: "every assay run invocation records HEAD and runs the
+       live tree regardless of rigor level"). Either failure refuses the
+       ENTIRE invocation via :func:`_refuse_before_running` before
+       :func:`execute_command` is ever called.
+
+    Then the command runs exactly once, R0's claim is built, and -- if R1
+    is declared -- :func:`evaluate_r1` runs UNCONDITIONALLY afterward,
+    regardless of R0's own outcome: a coverage artifact a real test command
+    wrote is a fact about what executed, not about whether its own
+    assertions passed, so an R0 FAIL does not itself make R1 vacuous (and
+    an R0 EXEC_FAILED/BUDGET_EXCEEDED still lets R1 render honestly too --
+    work item 4's own pre-run removal means an artifact that was never
+    rewritten is simply absent, and :func:`assay.coverage.
+    read_coverage_artifact` renders that ``ERROR``/``UNREADABLE_ARTIFACT``
+    on its own; no special-casing "did R0 pass" is needed here at all).
+    ``judgment.r1`` is built if and only if the rendered R1 claim carries a
+    ``coverage`` payload (P16's own invariant, :meth:`~assay.verdict.
+    Verdict._check_judgment_matches_claims`) -- using the base
+    :func:`evaluate_r1` itself already resolved, surfaced through
+    *on_base_resolved* rather than re-resolved a second time (O2: "the
+    comparison base resolves once"). Final ``ended`` covers R1's own
+    completion, not merely R0's own (O2: "verdict timing encloses command
+    plus R1 judgment").
+    """
+    r1_declared = "R1" in lane.rigor
+    if r1_declared:
+        judge = lane.judge
+        artifact_path = _resolve_artifact_path(judge.coverage.artifact, project_root)
+        if _is_unsafe_coverage_artifact(repo, artifact_path):
+            return _refuse_before_running(
+                lane,
+                commit=commit,
+                r1_declared=True,
+                status=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                assay_version=assay_version,
+                clock=clock,
+            )
+        _remove_stale_coverage_artifact(artifact_path)
+
+    if git.dirty_paths(repo):
+        return _refuse_before_running(
+            lane,
+            commit=commit,
+            r1_declared=r1_declared,
+            status=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            assay_version=assay_version,
+            clock=clock,
+        )
+
+    result = execute_command(
+        lane,
+        argv_append=argv_append,
+        cwd=project_root,
+        passthrough_source=passthrough_source,
+        process_runner=process_runner,
+        clock=clock,
+    )
+    r0_claim = build_r0_claim(result)
+    claims: tuple[Claim, ...] = (r0_claim,)
+    judgment: Judgment | None = None
+    ended: str | None = None
+
+    if r1_declared:
+        judge = lane.judge
+        resolved_base: list[str] = []
+        r1_claim = evaluate_r1(
+            lane,
+            repo=repo,
+            project_root=project_root,
+            base=judge.base,
+            adapter=adapter,
+            on_base_resolved=resolved_base.append,
+        )
+        claims += (r1_claim,)
+        ended = iso_utc(clock())
+        if r1_claim.coverage is not None:
+            judgment = Judgment(
+                r1=JudgmentR1(
+                    language=judge.language,
+                    source_roots=judge.source_roots,
+                    coverage_format=judge.coverage.format,
+                    coverage_artifact=judge.coverage.artifact,
+                    fail_under=judge.fail_under,
+                    allow_excluded=judge.allow_excluded,
+                    base=resolved_base[0],
+                )
+            )
+
+    return assemble_verdict(
+        lane=lane,
+        commit=commit,
+        result=result,
+        claims=claims,
+        assay_version=assay_version,
+        judgment=judgment,
+        ended=ended,
     )
 
 

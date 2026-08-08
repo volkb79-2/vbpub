@@ -125,8 +125,9 @@ JUDGE_FIELDS_BY_RIGOR: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "fail_under",
             "allow_excluded",
             "coverage",
+            "base",
         ),
-        "R2": ("language", "source_roots", "mutation"),
+        "R2": ("language", "source_roots", "mutation", "base"),
         "R3": ("language", "source_roots", "canary"),
     }
 )
@@ -139,6 +140,7 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
     "coverage",
     "mutation",
     "canary",
+    "base",
 )
 
 _COVERAGE_FIELDS: tuple[str, ...] = ("format", "artifact")
@@ -206,6 +208,12 @@ class JudgeConfig:
     #: loader verifies only that they are tables.
     mutation: Mapping[str, Any] | None
     canary: Mapping[str, Any] | None
+    #: (P17) the declared comparison ref R1/R2 diff against -- a git
+    #: revision expression (branch name, tag, SHA...), resolved at RUN time
+    #: (:func:`assay.git.resolve_base`/:func:`assay.measurability.
+    #: check_base_is_head`), never guessed here. Required, never defaulted
+    #: to "main" or another assumed ref (A-018's own "no invented values").
+    base: str | None
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {}
@@ -223,6 +231,8 @@ class JudgeConfig:
             declared["mutation"] = dict(self.mutation)
         if self.canary is not None:
             declared["canary"] = dict(self.canary)
+        if self.base is not None:
+            declared["base"] = self.base
         return declared
 
 
@@ -617,10 +627,16 @@ def _load_judge(
 
     coverage = None
     if "coverage" in table:
-        coverage = _load_coverage(table["coverage"], where)
+        coverage = _load_coverage(table["coverage"], where, project_root)
 
     mutation = _as_opaque_table(table.get("mutation"), where, "judge.mutation")
     canary = _as_opaque_table(table.get("canary"), where, "judge.canary")
+
+    base = None
+    if "base" in table:
+        base = _as_str(table["base"], where, "judge.base")
+        if not base:
+            raise LaneConfigError(f"{where}: 'judge.base' is empty")
 
     return JudgeConfig(
         language=language,
@@ -631,10 +647,11 @@ def _load_judge(
         coverage=coverage,
         mutation=mutation,
         canary=canary,
+        base=base,
     )
 
 
-def _load_coverage(value: Any, where: str) -> CoverageConfig:
+def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{where}: 'judge.coverage' must be a table, got {_type_name(value)}"
@@ -656,6 +673,28 @@ def _load_coverage(value: Any, where: str) -> CoverageConfig:
         raise LaneConfigError(f"{where}: 'judge.coverage.format' is empty")
     if not artifact:
         raise LaneConfigError(f"{where}: 'judge.coverage.artifact' is empty")
+    # P17 (work item 3): the artifact this build will later remove-and-await
+    # a fresh copy of, and read back, must resolve inside the project it
+    # measures -- the identical containment reasoning
+    # `_resolve_source_root` already applies to `source_roots`, one field
+    # over. Existence is NOT checked here (A-048's own timing: the artifact
+    # is an OUTPUT of the lane's own command, so it need not exist yet at
+    # load time).
+    if Path(artifact).is_absolute():
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.artifact' {artifact!r} is absolute; "
+            f"it is relative to the directory containing assay.toml "
+            f"({project_root}), the same as source_roots"
+        )
+    resolved_artifact = (project_root / artifact).resolve()
+    if not resolved_artifact.is_relative_to(project_root):
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.artifact' {artifact!r} resolves to "
+            f"{resolved_artifact}, which is not contained beneath the "
+            f"project root {project_root} (via '..' or a symlink) -- a lane "
+            f"must not be able to point its coverage artifact outside the "
+            f"project it declares"
+        )
     if fmt not in FORMAT_REGISTRY:
         # A-068: cross-checked against the parser registry's own keys, not a
         # second hardcoded list, so the vocabulary can never drift out of

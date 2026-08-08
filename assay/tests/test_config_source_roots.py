@@ -45,6 +45,7 @@ source_roots = %s
 fail_under = 100.0
 allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
+base = "main"
 """
 
 

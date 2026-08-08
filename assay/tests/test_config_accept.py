@@ -99,6 +99,7 @@ def test_r1_lane_round_trips_exactly_what_the_file_declared(project: Project):
         "fail_under",
         "allow_excluded",
         "coverage",
+        "base",
     }
 
 

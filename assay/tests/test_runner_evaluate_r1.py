@@ -449,7 +449,10 @@ def test_evaluate_r1_reads_real_file_text_for_a_file_missing_from_coverage(
     assert claim.coverage.missing_lines == {"pkg/newfile.zzz": frozenset({1})}
 
 
-# --- structural: never raises for a JUDGED outcome; propagates a real error ---
+# --- structural: never raises for ANY AssayError from its own guard sequence -
+# (P17 work item 6: GIT_FAILED, FORMAT_MISMATCH and UNREADABLE_ARTIFACT join
+# the three pre-existing NO_MEASUREMENT causes as complete R1 claims, closing
+# three of sol's "permanently unreachable" reason-code pairs.)
 
 
 def test_evaluate_r1_never_raises_for_any_of_the_three_no_measurement_causes(
@@ -474,25 +477,160 @@ def test_evaluate_r1_never_raises_for_any_of_the_three_no_measurement_causes(
     assert claim.coverage is None
 
 
-def test_evaluate_r1_propagates_a_genuinely_structural_failure(git_repo: GitRepo):
-    """A malformed coverage artifact (FORMAT_MISMATCH, an ERROR outcome, not
-    NO_MEASUREMENT) is NOT a judged outcome and must propagate, unlike the
-    three guard branches above."""
+def test_evaluate_r1_renders_format_mismatch_as_a_complete_claim(git_repo: GitRepo):
+    """A malformed coverage artifact (FORMAT_MISMATCH, an ERROR outcome) is
+    now a JUDGED terminal path (work item 6), not a propagating exception --
+    the whole point being that a consumer polling for an artifact gets one
+    even here."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     (git_repo.path / "cov.json").write_text("not json at all", encoding="utf-8")
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
     lane = make_lane(rigor=("R0", "R1"), judge=judge)
 
-    with pytest.raises(AssayError) as excinfo:
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=base_rev,
+        adapter=ADAPTER,
+    )
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.FORMAT_MISMATCH
+    assert claim.coverage is None
+
+
+def test_evaluate_r1_renders_unreadable_artifact_as_a_complete_claim(git_repo: GitRepo):
+    """No coverage artifact at the declared path at all -- work item 4's
+    "a command that writes nothing" -- is UNREADABLE_ARTIFACT, ALSO now a
+    judged terminal path, not a propagating exception."""
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    # No cov.json written at all.
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=base_rev,
+        adapter=ADAPTER,
+    )
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.coverage is None
+
+
+def test_evaluate_r1_renders_git_failed_as_a_complete_claim(git_repo: GitRepo):
+    """A *base* that does not resolve at all (distinct from BASE_IS_HEAD's
+    "resolves, but equals HEAD") is GIT_FAILED -- reachable through
+    :func:`assay.git.resolve_base`'s own ``merge-base`` call, which fails
+    outright for a ref that does not exist, rather than through
+    ``check_base_is_head``'s own guard."""
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    git_repo.commit_all("add pkg base")
+    write_coverage_json(git_repo.path / "cov.json", {"pkg/mod.zzz": {"executed_lines": [1]}})
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base="this-ref-does-not-exist-anywhere",
+        adapter=ADAPTER,
+    )
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.GIT_FAILED
+    assert claim.coverage is None
+
+
+def test_evaluate_r1_still_propagates_a_genuine_programmer_error(git_repo: GitRepo):
+    """Only a non-:class:`AssayError` exception still propagates -- work
+    item 6's "do not catch programmer errors": a broken adapter raising
+    something else entirely is not a judged outcome and must not be
+    laundered into any claim."""
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    write_coverage_json(
+        git_repo.path / "cov.json", {"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}
+    )
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+
+    @dataclass(frozen=True, kw_only=True)
+    class _BrokenAdapter:
+        name: str = "broken"
+        source_globs: tuple[str, ...] = ("*.zzz",)
+        excluded_dir_names: frozenset[str] = frozenset()
+        requires_span_attribution: bool = False
+        external_tools: tuple[str, ...] = ()
+
+        def is_test_path(self, rel_path: str) -> bool:
+            return False
+
+        def has_executable_code(self, rel_path: str, text: str) -> bool:
+            return True
+
+        def normalize_coverage_key(self, key: str) -> str:
+            raise RuntimeError("a real programmer error, not an AssayError")
+
+    with pytest.raises(RuntimeError, match="a real programmer error"):
         runner.evaluate_r1(
             lane,
             repo=git_repo.path,
             project_root=git_repo.path,
             base=base_rev,
-            adapter=ADAPTER,
+            adapter=_BrokenAdapter(),
         )
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.FORMAT_MISMATCH
+
+
+# --- on_base_resolved (P17): fires once, exactly when the base guard clears --
+
+
+def test_on_base_resolved_fires_once_with_the_real_resolved_base(git_repo: GitRepo):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    write_coverage_json(
+        git_repo.path / "cov.json", {"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}
+    )
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+    seen: list[str] = []
+
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=base_rev,
+        adapter=ADAPTER,
+        on_base_resolved=seen.append,
+    )
+
+    assert claim.status is Outcome.PASS
+    assert seen == [base_rev]
+
+
+def test_on_base_resolved_never_fires_when_the_base_is_head_guard_trips(
+    git_repo: GitRepo,
+):
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    write_coverage_json(
+        git_repo.path / "cov.json", {"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}
+    )
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+    seen: list[str] = []
+
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=head_rev,
+        adapter=ADAPTER,
+        on_base_resolved=seen.append,
+    )
+
+    assert claim.status is Outcome.NO_MEASUREMENT
+    assert claim.reason_code is ReasonCode.BASE_IS_HEAD
+    assert seen == []
 
 
 def test_evaluate_r1_wires_unclassified_lines_through_to_the_real_coverage_payload(

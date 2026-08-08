@@ -77,3 +77,22 @@ def test_read_coverage_artifact_still_cross_checks_the_signature(tmp_path: Path)
     with pytest.raises(AssayError) as excinfo:
         read_coverage_artifact(artifact, declared_format="coverage-py-json")
     assert excinfo.value.reason_code is ReasonCode.FORMAT_MISMATCH
+
+
+def test_read_coverage_artifact_refuses_a_symlink_even_to_a_valid_file(
+    tmp_path: Path,
+):
+    # P17: read_text() would otherwise follow the link silently, letting a
+    # coverage artifact this run never produced (potentially outside the
+    # declared project entirely) stand in for a real measurement.
+    real = tmp_path / "real.json"
+    real.write_text(
+        '{"files": {"a.py": {"executed_lines": [1], "missing_lines": []}}}',
+        encoding="utf-8",
+    )
+    link = tmp_path / "cov.json"
+    link.symlink_to(real)
+    with pytest.raises(AssayError) as excinfo:
+        read_coverage_artifact(link, declared_format="coverage-py-json")
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
