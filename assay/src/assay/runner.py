@@ -18,14 +18,15 @@ steps rather than one run-and-build-verdict function (A-094):
 * :func:`build_r0_claim` — the R0 :class:`~assay.verdict.Claim` from a
   :class:`CommandResult`. A one-line pure mapping, kept separate so nothing
   has to reach into :func:`execute_command`'s internals to get it.
-* :func:`evaluate_r1` (P05) — the R1 step: P02's two measurability guards,
-  then P03's ``EMPTY_COVERAGE`` guard, short-circuiting on any of the three
-  with a ``NO_MEASUREMENT`` claim (A-090); otherwise runs
-  :func:`assay.evaluate.evaluate_coverage`'s four-way union and builds the
-  R1 :class:`~assay.verdict.Claim`. Like :func:`execute_command`, this never
-  raises for a judged outcome — a guard tripping is a returned ``Claim``,
-  not an exception; only a genuinely structural failure (an unreadable
-  artifact, a git failure) propagates.
+* :func:`evaluate_r1` (P05, widened P17) — the R1 step: P02's two
+  measurability guards, then P03's ``EMPTY_COVERAGE`` guard, then reading
+  and diffing against the resolved base, short-circuiting on the first
+  :class:`~assay.errors.AssayError` any of them raises with a matching
+  R1 :class:`~assay.verdict.Claim` (A-090, widened by P17 work item 6 to
+  every ``AssayError`` this guard sequence can raise, not only the three
+  ``NO_MEASUREMENT`` causes — see its own docstring). Like
+  :func:`execute_command`, this never raises for a judged outcome; only a
+  genuine programmer error (not an ``AssayError`` at all) propagates.
 * :func:`assemble_verdict` — final verdict construction (A-023's rollup,
   A-036's transparency fields, A-024's one-claim-per-declared-rigor). Takes
   the *whole* ``claims`` tuple, not just R0's, so a caller appends the R1
@@ -35,7 +36,13 @@ steps rather than one run-and-build-verdict function (A-094):
   more optional parameter, *mutation_claim* (A-119), for the R2 claim
   :func:`assay.mutation.build_mutation_claim` produces — appended to
   *claims* here rather than requiring every caller to remember to fold it
-  in by hand.
+  in by hand. P17 adds *ended* (default ``None``, so every earlier caller
+  is unaffected) — see its own docstring.
+* :func:`run_lane` (P17) — the real pipeline :mod:`assay.cli` calls: ties
+  the four functions above together into one commit-bound operation, plus
+  the prerequisite checks (whole-tree cleanliness, coverage-artifact
+  safety) none of them owns alone. See its own docstring for the full
+  ordering.
 
 **The injectable process/budget boundary** (work item 1): the real
 ``subprocess`` is :func:`default_process_runner`, the seam's default: a

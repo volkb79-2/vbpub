@@ -16,10 +16,10 @@ wiring around it.
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
 
 from assay import runner
@@ -98,6 +98,12 @@ def test_run_lane_full_pass_builds_judgment_and_covers_ended_after_r1(
     assert verdict.ended == "2026-08-08T09:00:02+00:00", "covers R1's own completion"
     assert isinstance(verdict.judgment, Judgment)
     assert verdict.judgment.r1.base == base_rev
+    # make_r1_judge's own .source_roots is a stringified copy of the SAME
+    # absolute source_root_paths (conftest.py's own documented shortcut),
+    # so this assertion cannot by itself distinguish "read judge.source_roots"
+    # from "stringify judge.source_root_paths" -- that discriminating
+    # assertion lives in test_cli_run.py, against a REAL assay.toml load,
+    # where the two genuinely differ.
     assert verdict.judgment.r1.source_roots == judge.source_roots
     assert verdict.judgment.r1.language == judge.language
 
@@ -432,6 +438,38 @@ def test_run_lane_r1_renders_unreadable_artifact_when_r0_never_starts(git_repo: 
     assert verdict.claims[1].status is Outcome.ERROR
     assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert verdict.outcome is Outcome.ERROR
+
+
+def _raise_timeout(argv, *, env, cwd, timeout):
+    raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+
+
+def test_run_lane_r1_renders_unreadable_artifact_when_r0_budget_expires(
+    git_repo: GitRepo,
+):
+    """The same shape as EXEC_FAILED (no real wall-clock wait -- the fake
+    raises immediately, AUTHORING.md §3b.A): the artifact was pre-removed
+    and the process never completed, so it was never rewritten either."""
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(rigor=("R0", "R1"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit="b" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        process_runner=_raise_timeout,
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[0].status is Outcome.BUDGET_EXCEEDED
+    assert verdict.claims[0].reason_code is ReasonCode.LANE_TIMEOUT
+    assert verdict.claims[1].status is Outcome.ERROR
+    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert verdict.outcome is Outcome.ERROR, "rollup: ERROR outranks BUDGET_EXCEEDED"
 
 
 # --- malformed coverage renders a complete claim, never propagates ------------

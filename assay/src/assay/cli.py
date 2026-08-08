@@ -84,12 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser(
         "run",
-        help="execute a declared lane's argv and emit its R0 verdict",
+        help="execute a declared lane's argv and emit its verdict",
         description=(
             "Execute exactly the named lane's declared argv (plus anything "
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
-            "order or retry anything."
+            "order or retry anything. This build evaluates R0 and Python R1."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")

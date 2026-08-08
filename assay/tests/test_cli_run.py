@@ -284,6 +284,12 @@ base = "{base_rev}"
     assert document["claims"][1]["rigor"] == "R1"
     assert document["claims"][1]["coverage"]["pct"] == 100.0
     assert document["judgment"]["r1"]["base"] == base_rev
+    # judgment.r1.source_roots must be the DECLARED relative string ("src"),
+    # never judge.source_root_paths' resolved absolute form -- through a
+    # real assay.toml load the two genuinely differ, unlike the make_r1_judge
+    # test helper (conftest.py), which stores the same absolute string in
+    # both fields and so could not catch this the other way.
+    assert document["judgment"]["r1"]["source_roots"] == ["src"]
 
 
 # --- structural failures: no verdict can even be built -----------------------
