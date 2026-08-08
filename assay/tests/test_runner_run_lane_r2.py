@@ -323,5 +323,11 @@ def test_ended_covers_r2s_own_completion_not_only_r0s(git_repo: GitRepo):
         clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C, MOMENT_D, MOMENT_E),
     )
 
+    # jobs=1 and exactly one generated mutant makes the clock() sequence
+    # deterministic: R0 (A/B), the one mutant (C/D), then this function's
+    # own final `ended` read (E) -- an EXACT expected value, not merely
+    # "differs from R0's own ended", the same discipline
+    # test_run_lane_full_pass_builds_judgment_and_covers_ended_after_r1
+    # already applies one rigor level over.
     assert verdict.started == "2026-08-08T10:00:00+00:00", "R0's own start, unchanged"
-    assert verdict.ended != "2026-08-08T10:00:01+00:00", "not merely R0's own ended"
+    assert verdict.ended == "2026-08-08T10:00:04+00:00", "covers the mutant's own completion"

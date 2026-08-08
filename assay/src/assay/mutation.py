@@ -470,7 +470,7 @@ def _run_one_mutant(
 
 
 def _filter_by_operators(
-    jobs: tuple[MutantJob, ...], operators: frozenset[str]
+    job_list: tuple[MutantJob, ...], operators: frozenset[str]
 ) -> tuple[MutantJob, ...]:
     """P18 work item 3's own filtering step, kept separate from
     :func:`collect_mutants` (P11's already-independently-tested
@@ -482,11 +482,11 @@ def _filter_by_operators(
     the identical empty result here — :func:`run_mutation` reads all three
     the same honest way, ``total == 0`` -> ``INCONCLUSIVE``/``NO_MUTANTS``
     (A-117), with no special-casing needed for which of the three actually
-    happened. Order is preserved from *jobs* (already path/lineno/operator/
-    description-ordered by :func:`collect_mutants`) — filtering removes
-    entries, it never reorders the survivors.
+    happened. Order is preserved from *job_list* (already path/lineno/
+    operator/description-ordered by :func:`collect_mutants`) — filtering
+    removes entries, it never reorders the survivors.
     """
-    return tuple(job for job in jobs if job.mutant.operator in operators)
+    return tuple(job for job in job_list if job.mutant.operator in operators)
 
 
 def run_mutation(
