@@ -1,10 +1,10 @@
 # Assay P20–P32 pre-dispatch adversarial specification review
 
-> **Review date:** 2026-08-08  
-> **Roadmap input anchor:** `2f2167f5928e5deacd93f1e9565238aef8acfe32`  
+> **Review date:** 2026-08-08
+> **Roadmap input anchor:** `2f2167f5928e5deacd93f1e9565238aef8acfe32`
 > **Authoring doctrine:** `nyxloom/reference/AUTHORING.md` revision
-> `2026-08-08-r5`  
-> **Scope:** every outstanding handoff P20–P32 after the A-167 recarve  
+> `2026-08-08-r5`
+> **Scope:** every outstanding handoff P20–P32 after the A-167 recarve
 > **Method:** the exact `Pre-dispatch adversarial handoff review` prompt in
 > AUTHORING: hostile implementer, hostile environment, independent acceptance
 > engineer; requirement/oracle traceability; false-PASS attempts; undefined
@@ -167,4 +167,3 @@ The intended next action is not to recarve all thirteen again. JIT-freeze P20,
 rerun this exact review against its current context until READY, implement/review/
 merge it, then update only the successor horizon affected by what actually
 landed.
-
