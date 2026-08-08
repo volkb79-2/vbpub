@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P19-isolated-r3-cli-pipeline, assay-P22-real-go-r1-gate]
 session: resume:assay-go-canary
 scope:
-  touch: ["gate/go/**", "src/assay/canary.py", "src/assay/adapters/go.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
+  touch: ["gate/go/**", "src/assay/canary.py", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
   forbid: ["src/assay/adapters/python.py", "src/assay/mutation.py", "src/assay/verdict.py", "src/assay/schemas", "nyxloom-trove/nyxloom.toml"]
 oracles:
   - id: O1
@@ -60,17 +60,20 @@ on branch `feat/assay-P24-real-go-canary-r3`.
 6. Delete no adapter-level fixtures merely because the real proof exists; retain them as pure unit coverage but make them incapable of satisfying the installed-product oracle alone.
 7. Break real subprocess use, control gating, each expected cause, profile freshness, isolation, and installed CLI invocation separately; run the real combined gate and record exact A-067 counts.
 
-## Carried in from P19, implementer notes (unratified — flag for controller review)
+## Carried in from P19, MERGED AND RATIFIED (read before work items 1, 4 and 5)
 
-Not `decisions.md` entries; observations from actually building P19, kept
-short (<300 chars) per the controller's own request. Read before writing
-work items 1 and 5.
+Written by P19's implementer, then reviewed, corrected and ratified as
+A-149–A-152 at the P19 merge. Treat as decided, not as observations. Two of
+the five original notes were wrong and are corrected here rather than
+deleted, because the correction is the useful part.
 
-- cli.py is missing from your scope.touch (P22/P23 both include it to widen `_built_in_registry`'s GoAdapter entry) -- you need the same one-line rigor-set widening to add "R3", or R3 refuses before running regardless of what you build. Flag for controller before dispatch.
-- run_isolated_python_canary (canary.py) is NOT Python-specific despite its name -- it takes adapter: LanguageAdapter generically, never touching PythonAdapter by name. runner.py's R3 wiring imports and calls it verbatim; reuse as-is (pass GoAdapter) may need less new code than a parallel function.
-- The isolated-canary scratch copy's own dirty check (git.dirty_paths(repo)) is UNSCOPED -- the whole repo, not just declared source_roots, unlike R1/R2's own scoped post-execution check. An untracked file anywhere in the repo before R3 runs trips DIRTY_TREE even outside source_roots.
-- A genuine no-op transform and a genuine wrong-observed-cause both proved UNREACHABLE through the real installed CLI with the real PythonAdapter -- only a mocked adapter subclass produces either. test_standalone.py documents this rather than faking it; check GoAdapter's own injectors first.
-- _project_prefix (canary.py, private) is a SECOND independent copy of mutation.project_prefix, written fresh since mutation.py is forbidden here too -- duplicate, never import, when the owning module is out of scope. The same call applies to any Go-side equivalent you build.
+- **RULED (A-149) — a run relocated into a copy must be judged by relocated paths, and `run_isolated_canary` now does it for you.** `judge.source_root_paths` are ABSOLUTE and rooted at the consumer's project; every judgement made inside the copy compares against paths under the COPY. Handing the copy the consumer's own roots does not raise — every changed file simply falls outside every root, `considered` is 0, `pct` is a vacuous 100.0, and R1 PASSes having measured nothing. Enumerate the lane's absolute-path fields yourself before adding any Go-side relocation; do not assume `source_root_paths` is still the only one.
+- **RULED (A-150) — `uncovered-line` can only be PROVED by a lane that also declares R1**, because `UNCOVERED_LINES` is produced by R1 and by nothing else. An R0+R3 lane can only ever report that mechanism as SURVIVED. Your work item 3 already requires R0 PASS plus a fresh profile; make at least one fixture declare `rigor = ["R0","R1","R3"]`, or the mechanism has no PASS witness at all.
+- **CORRECTED — a wrong-observed-cause IS reachable with the real, un-mocked adapter.** P19's implementer recorded the opposite. `import-break` injected into a module the lane's own tests never import leaves R0 passing and is caught by R1 instead: observed `UNCOVERED_LINES` against an expected `COMMAND_FAILED`. Both a unit and an installed-wheel artifact now exist. Only a genuine NO-OP transform is unreachable through a real adapter.
+- **RENAMED — the function is `canary.run_isolated_canary`, not `run_isolated_python_canary`.** It is adapter-generic (takes `adapter: LanguageAdapter`, never names `PythonAdapter`), and `runner.run_lane` calls it for whatever adapter resolved. Reuse as-is with `GoAdapter`; a parallel Go function is almost certainly the wrong shape.
+- **`scope.touch` gained `src/assay/cli.py`** (A-144's shape, third instance): widening `_built_in_registry`'s GoAdapter entry with `"R3"` is a one-line change, and without it a declared Go R3 lane is refused before anything runs. `runner.py` is deliberately NOT added — its R3 block is already language-neutral, so it needs calling, not writing.
+- The isolated-canary dirty check (`git.dirty_paths(repo)`) is UNSCOPED — the whole repo, not just declared `source_roots`, unlike R1/R2's own scoped post-execution check. An untracked file anywhere in the repo before R3 runs trips `DIRTY_TREE`. Go build/test caches must land outside the repo or be git-ignored.
+- `_project_prefix` (canary.py, private) is a SECOND independent copy of `mutation.project_prefix`, written fresh because `mutation.py` is forbidden here too — duplicate, never import, when the owning module is out of scope. The same call applies to any Go-side equivalent you build.
 
 ## Test constraints copied from AUTHORING.md §3b
 
