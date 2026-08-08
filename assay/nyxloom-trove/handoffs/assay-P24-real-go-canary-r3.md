@@ -60,6 +60,18 @@ on branch `feat/assay-P24-real-go-canary-r3`.
 6. Delete no adapter-level fixtures merely because the real proof exists; retain them as pure unit coverage but make them incapable of satisfying the installed-product oracle alone.
 7. Break real subprocess use, control gating, each expected cause, profile freshness, isolation, and installed CLI invocation separately; run the real combined gate and record exact A-067 counts.
 
+## Carried in from P19, implementer notes (unratified — flag for controller review)
+
+Not `decisions.md` entries; observations from actually building P19, kept
+short (<300 chars) per the controller's own request. Read before writing
+work items 1 and 5.
+
+- cli.py is missing from your scope.touch (P22/P23 both include it to widen `_built_in_registry`'s GoAdapter entry) -- you need the same one-line rigor-set widening to add "R3", or R3 refuses before running regardless of what you build. Flag for controller before dispatch.
+- run_isolated_python_canary (canary.py) is NOT Python-specific despite its name -- it takes adapter: LanguageAdapter generically, never touching PythonAdapter by name. runner.py's R3 wiring imports and calls it verbatim; reuse as-is (pass GoAdapter) may need less new code than a parallel function.
+- The isolated-canary scratch copy's own dirty check (git.dirty_paths(repo)) is UNSCOPED -- the whole repo, not just declared source_roots, unlike R1/R2's own scoped post-execution check. An untracked file anywhere in the repo before R3 runs trips DIRTY_TREE even outside source_roots.
+- A genuine no-op transform and a genuine wrong-observed-cause both proved UNREACHABLE through the real installed CLI with the real PythonAdapter -- only a mocked adapter subclass produces either. test_standalone.py documents this rather than faking it; check GoAdapter's own injectors first.
+- _project_prefix (canary.py, private) is a SECOND independent copy of mutation.project_prefix, written fresh since mutation.py is forbidden here too -- duplicate, never import, when the owning module is out of scope. The same call applies to any Go-side equivalent you build.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)
