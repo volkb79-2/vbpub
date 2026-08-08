@@ -358,6 +358,22 @@ adapter. **Decide before P25**, whose `istanbul-json` is the first
 registered format with no exclusion channel at all — its handoff now says
 so.
 
+**A-O17, new (found at the P18 merge, assigned to P22): one `AssayError`
+still escapes `evaluate_r1` uncaught, and P22 is what makes it live.**
+`evaluate_r1` catches everything its own guard sequence raises and renders
+it as a complete R1 claim — but `evaluate.evaluate_coverage`'s raise (two
+distinct raw coverage keys normalizing to the SAME repository path,
+`ERROR`/`UNREADABLE_ARTIFACT`, P15) is the one call made after that `try`
+closes. It propagates: exit 2, no artifact, after the lane's command has
+run — A-139's own shape. Unreachable today ONLY because the CLI registers
+`PythonAdapter()` with the default empty `coverage_key_prefix`, making
+`normalize_coverage_key` the identity, so two distinct keys cannot
+collide. `GoAdapter` strips a real module path, which is precisely how
+they collide, and P22 is the package that derives that path from a real
+`go.mod`. The fix is moving two calls inside the existing `try`;
+`runner.py` is not in P22's `scope.touch`, so widen it if P22 agrees the
+repair is theirs. Recorded in P22's handoff too.
+
 **A-128's "three structurally unreachable pairs" is CLOSED — merged, not
 merely carved (2026-08-08, P17 + A-141).** Work item 6 widened
 `evaluate_r1` to render every `AssayError` its own guard sequence raises

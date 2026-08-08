@@ -98,6 +98,27 @@ module's `-coverprofile=<artifact>` target is untracked worktree state
 until you ignore it, and the run will be refused `NO_MEASUREMENT`/
 `DIRTY_TREE` before `go test` ever starts.
 
+## Carried in from the P18 merge (read BEFORE work item 2, A-O16)
+
+**You are the package that makes a latent A-139 violation live, and it
+sits squarely on your work item 2.** `evaluate_r1` catches every
+`AssayError` its guard sequence raises and renders it as a complete R1
+claim — but `evaluate.evaluate_coverage`'s own raise (two distinct raw
+coverage keys normalizing to the SAME repository path, `ERROR`/
+`UNREADABLE_ARTIFACT`, P15) is the one call made AFTER that `try` block
+closes, so it propagates uncaught: exit 2, no artifact, after the lane's
+command has already run.
+
+It is unreachable today only because the CLI registers `PythonAdapter()`
+with the default empty `coverage_key_prefix`, which makes
+`normalize_coverage_key` the identity — two distinct raw keys cannot
+collide. **`GoAdapter` strips a real module path, which is exactly how two
+keys collide**, and work item 2 is "derive the module path from the
+fixture's `go.mod`". Moving those two calls inside the existing `try` is
+the whole fix; `runner.py` is not in your `scope.touch`, so if you agree
+this is yours, say so and the scope gets widened — do not improvise around
+it, and do not leave it for someone to rediscover from a raw traceback.
+
 ## Carried in from P16, merged (read before writing work item 5)
 
 **Work item 5's "assay's exact R1 artifact" is a schema-v3 artifact, and
