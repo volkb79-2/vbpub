@@ -7,7 +7,7 @@
 > here. One canonical source, one optional project delta.
 
 
-> **Revision:** 2026-08-08-r4 · (bump on every substantive change. Consumers no
+> **Revision:** 2026-08-08-r5 · (bump on every substantive change. Consumers no
 > longer hold copies to go stale — this file is read from the running nyxloom
 > product, so its revision is simply the product's doctrine version.)
 
@@ -62,16 +62,82 @@ section that defines the contract. This is the difference between an agent that
 spends its budget re-deriving the codebase and one that spends it implementing.
 State it explicitly — never assume the agent will find it.
 
-### 2a. Complex work gets an implementation-shaped contract
+### The 2a-2e implementation-contract ladder
 
 A handoff is not an invitation to rediscover the carver's design. If correctness
 depends on a schema, protocol, state machine, path translation, snapshot,
 concurrency boundary, or external integration, the carver transfers the
-load-bearing solution into the package. The implementer should be choosing
-private decomposition and writing code, not inventing product semantics or the
-architecture that makes the oracles possible.
+load-bearing solution into the package. The implementer should be choosing only
+the decisions deliberately assigned to its contract class, not reconstructing
+unstated product semantics or the architecture that makes the oracles possible.
 
-Add an `## Implementation packet (normative)` before `## Work`. It contains the
+Classify the **irreducible reasoning left after carving**, not the number of
+files, estimated tokens, or apparent prestige of the feature. Carve toward the
+lowest class that is honest. A large mechanical migration can be `2e`; a small
+concurrency fix can be `2a`. The class orders hardest to easiest and maps to the
+planned implementer bands, whose numeric order runs in the opposite direction:
+
+| contract class | planned tier | work left to the implementer |
+|---|---|---|
+| `2a` | `implement-5` | bounded design choices remain; frontier reasoning is part of the task |
+| `2b` | `implement-4` | the solution and public behavior are fixed; difficult private construction remains |
+| `2c` | `implement-3` | bounded multi-component integration against fixed contracts |
+| `2d` | `implement-2` | constrained implementation from examples, skeletons, and prepared proof |
+| `2e` | `implement-1` | mechanical completion of a locked edit map and acceptance suite |
+
+Only `implement-1` and `implement-2` are deployed today. Until the remaining
+bands exist, `contract_class` is an authoring/review classification recorded in
+the body, while frontmatter `tier` names a live route. Do not put a nonexistent
+tier in frontmatter. Routing a `2a`-`2c` package through `implement-2` requires an
+explicit human/controller override and a frontier-capable route; preferably
+carve it down first.
+
+#### 2a. Design-bearing implementation (`implement-5`, hardest)
+
+Use only when a product-approved outcome is fixed but some architecture,
+algorithm, or failure-model choice cannot economically be resolved before
+implementation. Enumerate every open choice, its admissible options, invariants,
+and the evidence that decides it. State which choices require a `D-<NNN>` product
+decision. Give a tracer-bullet prototype or probe for the dangerous seam. `2a`
+does **not** mean “figure it out”: unspecified externally visible behavior is an
+authoring defect, not implementer discretion.
+
+#### 2b. Complex solution-bearing execution (`implement-4`)
+
+All public interfaces, serialized forms, state transitions, error vocabulary,
+ownership, bounds, and side-effect ordering are fixed. The implementer may make
+difficult choices about private data structures, algorithms, and decomposition,
+but none may change observable behavior. Supply full examples and a proved
+construction path for the highest-risk seam.
+
+#### 2c. Bounded integration (`implement-3`)
+
+Component contracts and control flow are fixed. Name every call site and owner,
+provide the adapter/conversion table, prescribe error translation, and include
+fixtures for both ends of each seam. The implementer selects only local glue and
+equivalent internal decomposition. Cross-component ambiguity triggers BLOCKED.
+
+#### 2d. Constrained implementation (`implement-2`)
+
+Provide exact signatures and shapes, a numbered construction recipe, a compiling
+skeleton for non-obvious code, prepared acceptance fixtures, and controlled
+negative tests. Limit work to one subsystem or one already-specified integration.
+The remaining judgment should be ordinary code construction and local debugging,
+not contract discovery.
+
+#### 2e. Mechanical execution (`implement-1`, easiest)
+
+Provide an exact edit map, fixed replacement/creation shapes, a compiling or
+schema-valid skeleton, locked acceptance tests, and one unambiguous command for
+the gate. No externally visible decision, novel algorithm, interface invention,
+or multi-owner reconciliation may remain. If the implementer must infer what a
+field means, choose an error, or design a seam, the package is not `2e`.
+
+#### Implementation packet (normative for `2a`-`2d`)
+
+Add an `## Implementation packet (normative)` before `## Work`. A `2e` package
+may use the compact equivalent (`edit map + skeleton + locked proof`) but must not
+omit information needed for mechanical execution. The packet contains the
 smallest useful version of each item below; omit an item only when genuinely
 irrelevant:
 
@@ -151,7 +217,7 @@ Private helper names and equivalent decomposition only; serialized and public
 shapes above are fixed.
 ```
 
-### 2b. Environment setup is a RECIPE, not a pre-built artifact
+### Environment setup is a RECIPE, not a pre-built artifact
 If the package's oracles need a live stack or any non-default environment,
 the handoff carries a mechanical `## Environment setup` section: the exact
 command sequence the **implementing agent executes at dispatch time from
@@ -321,10 +387,10 @@ schema_version: 1
 id: <project>-P<NN>-<kebab-slug>      # unique per project
 project: <project id>
 title: "<one line>"
-tier: sonnet5-high                     # routing: which model/effort implements
+tier: implement-2                      # live capability band, not a model name
 input_revision: "<base commit short sha>"
 depends_on: []                         # [P52, D-006] — merged handoffs / open decisions
-session: fresh                         # or: resume <area>  (cache-reuse hint)
+session: fresh                         # or: resume:<area>  (cache-reuse hint)
 source: {kind: product-goal|roadmap, ref: <trove path>}
 scope:
   touch:  ["src/<pkg>/<file>.py", "tests/<file>.py"]
@@ -342,7 +408,7 @@ escalate_if:
 ```
 
 - `tier` drives the routing matrix (cheap model first; BLOCKED re-routes up).
-- `session: resume <area>` reuses a warm cache for a related package; `fresh`
+- `session: resume:<area>` reuses a warm cache for a related package; `fresh`
   builds a focused cache for an independent one.
 - `depends_on` mixes merged handoffs (`P52`) and open decisions (`D-006`) — the
   daemon holds the task until they resolve.

@@ -39,7 +39,15 @@ In those cases the correct move is: fix the handoff, discard the branch,
 re-dispatch. Rewriting a structurally-wrong package by hand costs more than
 re-running it and produces work no oracle was written against.
 
-## The economics — a stable prefix, not a forked snapshot
+## The economics — a frozen orientation and supported fork
+
+> **SUPERSEDED 2026-08-08.** Claude Code now exposes `--fork-session`. Do not
+> copy, restore, or otherwise mutate transcript JSONL as described in the
+> historical measurement narrative below. The replacement workflow records a
+> full orientation commit, forks the named base without resuming it in place,
+> and makes each child reconcile the scoped base-to-HEAD diff before work. See
+> `nyxloom/docs/frozen-orientation-fork-workflow.md`. The token measurements in
+> this section remain useful historical evidence; the mechanism does not.
 
 > **CORRECTED 2026-08-07 by measurement.** The first version of this section
 > claimed a frozen preamble was the lever. It is not — it buys ~1.5k tokens

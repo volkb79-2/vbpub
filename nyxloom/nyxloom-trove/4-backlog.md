@@ -234,6 +234,46 @@ items:
   type: feature
   component: gate
   context_estimate: medium
+- id: B31
+  title: 'frozen-orientation fork policy: add role/model/effort/epoch base records,
+    full orientation anchors and manifests, supported CLI child-fork templates,
+    scoped anchor-to-HEAD reconciliation, typed stale-base refusal, and epoch
+    rotation. Pilot manually before changing today''s growing resume behavior.
+    Design: docs/frozen-orientation-fork-workflow.md.'
+  type: feature
+  component: dispatch
+  context_estimate: large
+  folds_into: F010
+- id: B32
+  title: 'structured successor-brief lifecycle: implementer candidates, blind-first
+    reviewer adjudication, carver promotion to durable contract/epoch/decision,
+    and controller-only target routing plus one-hop expiry. Surface every
+    disposition in the per-handoff processing trace; never let the controller
+    invent semantic truth. Design: docs/frozen-orientation-fork-workflow.md.'
+  type: feature
+  component: review
+  context_estimate: medium
+  folds_into: F005
+- id: B33
+  title: 'five-band implementation-contract routing: codify AUTHORING 2a-2e as
+    implement-5 (design-bearing) down through implement-1 (mechanical), add a
+    schema/frontmatter field and lintable per-class required assets, then deploy
+    implement-3/4/5 routes without changing the established numeric direction.'
+  type: feature
+  component: routing
+  context_estimate: medium
+  folds_into: F009
+- id: B34
+  title: 'prompt-cache experiment and observability: compare fresh, warm compact
+    fork, cold fork, and historical broad orientation; persist cache-read/write
+    tokens, latency, time-to-first-edit, reviewer defects, and rework. Trial
+    opt-in disposable-child keepalives around the measured TTL; never report a
+    warm cache without provider telemetry. Design:
+    docs/frozen-orientation-fork-workflow.md.'
+  type: feature
+  component: routing
+  context_estimate: medium
+  folds_into: F009
 ---
 
 # nyxloom — backlog
