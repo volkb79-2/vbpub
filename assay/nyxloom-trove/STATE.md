@@ -23,10 +23,13 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P16** — the complete P00–P14 series, plus
-the first two packages of the P15–P25 repair series. Gate green at **1657
-passed, 1 skipped, exit 0, 100% statement AND branch coverage** (2752
-stmts / 1094 branches), run through the REAL self-hosting mechanism P14
+**Merged on `main`, P00 through P17** — the complete P00–P14 series, plus
+the first three packages of the P15–P25 repair series. Gate green at
+**1719 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
+(2839 stmts / 1138 branches) — counts measured INSIDE `tester-unified:
+local` itself, not in the devcontainer, because the gate's own `argv`
+reports only an exit code and a cockpit venv carries different pins. Run
+through the REAL self-hosting mechanism P14
 itself built (see below) — independently reproduced by the controller
 twice per package: once in the package's own worktree before merge, once
 again directly against `main` after merge, by literally parsing
