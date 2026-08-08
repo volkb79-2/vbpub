@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P21-versioned-wheel-contract]
 session: resume:assay-go
 scope:
-  touch: ["gate/go/**", "nyxloom-trove/nyxloom.toml", "src/assay/adapters/go.py", "src/assay/config.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
+  touch: ["gate/go/**", "nyxloom-trove/nyxloom.toml", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/config.py", "src/assay/errors.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
   forbid: ["src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters/python.py"]
 oracles:
   - id: O1
@@ -64,6 +64,39 @@ From fresh main, build the existing base images by their documented commands, th
 6. Generate real profiles whose blocks cross physical lines and vary start/end columns. Decide the suspected inclusive-line issue from those observations: preserve current behavior only if it agrees with Go's instrumented statement semantics; otherwise repair it without inventing data absent from the profile.
 7. Change the fixture module name and repository nesting to prove module-prefix derivation and boundary-safe normalization. Missing `go`, wrong Go version, or unavailable helper prerequisites render honest non-PASS outcomes.
 8. Break real tool execution, wheel installation, module derivation, prefix boundary, line/column attribution, doc/test exclusion, and independent artifact comparison separately; run the full real gate and record exact A-067 counts.
+
+## Carried in from P17, merged (read before writing work items 5 and 7)
+
+**You own `MISSING_EXTERNAL_TOOL`, and `errors.py` plus `cli.py` were added
+to this package's `scope.touch` so that you can (A-144).** Work item 7 says
+"Missing `go`, wrong Go version, or unavailable helper prerequisites render
+honest non-PASS outcomes" — and DESIGN-GUIDE §11/A-013 say a missing
+declared adapter prerequisite is `NO_MEASUREMENT`, not `ERROR`. A-086
+already named the member and ruled that it "belongs to the package that
+first makes the state reachable"; A-087 deferred it (P08's Go adapter
+shipped `external_tools = ()`), and A-142 deferred it again for the same
+reason in P17. **You are that package**: this is the first one where an
+adapter genuinely declares a tool it cannot run without. Do not settle for
+`ERROR`/`EXEC_FAILED` — that is the lane's own command failing to start,
+a different fact, and A-086 already rejected it as a lie. Preflight in
+`cli._resolve_declared_adapters` (where the capability gate already lives)
+and render the refusal through the EXISTING `runner.refuse_lane`; you do
+not need `runner.py` and it is deliberately still out of scope.
+
+**A-139 — every declared rigor level is checked against the registry
+before anything runs, and every post-`HEAD` terminal path emits a COMPLETE
+artifact.** So advancing Go's capability (work item 5) means adding a
+`RegistryEntry` for `GoAdapter` naming `R1`; `cli._resolve_declared_
+adapters` already loops over `lane.rigor` and will admit it with no other
+CLI change. Your missing-tool refusal must go out as an artifact too —
+`refuse_lane` builds one claim per declared level and is already total.
+
+**A-140 — the declared `judge.coverage.artifact` must be git-ignored.**
+`run_lane` validates the artifact path, then requires a clean whole
+worktree, and only then removes a stale artifact. Your disposable Go
+module's `-coverprofile=<artifact>` target is untracked worktree state
+until you ignore it, and the run will be refused `NO_MEASUREMENT`/
+`DIRTY_TREE` before `go test` ever starts.
 
 ## Carried in from P16, merged (read before writing work item 5)
 

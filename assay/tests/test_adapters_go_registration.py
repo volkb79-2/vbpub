@@ -17,14 +17,14 @@ from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
 from assay.errors import Outcome
 from assay.evaluate import evaluate_coverage
-from assay.registry import get_adapter, new_registry
+from assay.registry import RegistryEntry, get_adapter, new_registry
 
 
 def test_the_go_adapter_registers_under_its_own_declared_name():
     adapter = GoAdapter()
-    registry = new_registry(adapter)
+    registry = new_registry(RegistryEntry(adapter=adapter, rigor=frozenset({"R1"})))
 
-    assert get_adapter(registry, "go") is adapter
+    assert get_adapter(registry, "go", "R1") is adapter
     assert adapter.name == "go"
 
 
@@ -58,8 +58,8 @@ def test_a_registry_built_go_adapter_evaluates_coverage_identically_to_a_direct_
     directly and one retrieved back out of a fresh ``Registry`` -- the
     registry is a pure lookup (P05's own O2), proven here by actually
     driving ``evaluate_coverage`` with the registry-obtained Go instance."""
-    registry = new_registry(GoAdapter())
-    adapter = get_adapter(registry, "go")
+    registry = new_registry(RegistryEntry(adapter=GoAdapter(), rigor=frozenset({"R1"})))
+    adapter = get_adapter(registry, "go", "R1")
 
     added = AddedLines(by_file=MappingProxyType({"pkg/f.go": frozenset({1})}))
     profile = CoverageProfile(
@@ -97,8 +97,11 @@ def test_go_and_python_adapters_coexist_in_one_registry_each_independently_addre
     second language (O3)."""
     go_adapter = GoAdapter()
     python_adapter = PythonAdapter()
-    registry = new_registry(go_adapter, python_adapter)
+    registry = new_registry(
+        RegistryEntry(adapter=go_adapter, rigor=frozenset({"R1"})),
+        RegistryEntry(adapter=python_adapter, rigor=frozenset({"R1"})),
+    )
 
-    assert get_adapter(registry, "go") is go_adapter
-    assert get_adapter(registry, "python") is python_adapter
-    assert get_adapter(registry, "go") is not get_adapter(registry, "python")
+    assert get_adapter(registry, "go", "R1") is go_adapter
+    assert get_adapter(registry, "python", "R1") is python_adapter
+    assert get_adapter(registry, "go", "R1") is not get_adapter(registry, "python", "R1")

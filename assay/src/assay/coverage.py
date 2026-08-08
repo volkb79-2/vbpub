@@ -129,7 +129,21 @@ def read_coverage_artifact(path: Path, *, declared_format: str) -> CoverageProfi
     undecodable file is ``ERROR``/``UNREADABLE_ARTIFACT`` — the artifact
     could not be READ, which is the same class of failure as an artifact that
     reads fine but does not parse, just caught one step earlier.
+
+    A symlink at *path* is refused the same way (P17): ``read_text`` would
+    otherwise follow it silently, letting a coverage artifact this run
+    never produced (potentially outside the declared project entirely)
+    stand in for a real measurement. Checked here, at the one I/O boundary
+    every format passes through, rather than by every caller separately.
     """
+    if Path(path).is_symlink():
+        raise AssayError(
+            f"coverage artifact {path}: is a symlink, refused -- a "
+            f"measurement must read what this run itself produced, not "
+            f"whatever the link happens to point at",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:

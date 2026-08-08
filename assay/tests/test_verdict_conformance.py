@@ -8,17 +8,29 @@ own outcome/``reason_code`` table — deliberately never
 ``assay.errors.REASON_CODES`` (``tests/test_errors.py`` already proves THAT
 table agrees with the design guide; auditing the fixtures against the same
 enum they exist to independently check would only prove the fixtures agree
-with the code, never that the code agrees with the design). A-128 narrows
-the 19-pair closed vocabulary to the 17 pairs a complete ``Verdict``
-artifact can actually represent — ``ERROR``/``GIT_FAILED`` and claim-level
-``ERROR``/``FORMAT_MISMATCH`` are structurally unreachable by pre-existing
-design (confirmed by reading ``runner.py``/``cli.py`` directly: a genuinely
-broken coverage artifact or git failure propagates UNCAUGHT before any
-``Verdict`` is ever built) and are excluded here, not fixtured. The one
-genuinely missing, genuinely closeable gap — EVIDENCE-level
-``ERROR``/``UNREADABLE_ARTIFACT`` (P10's attested-evidence path, A-110) — is
-closed by ``tests/fixtures/verdicts/evidence_unreadable_artifact.json``,
-this package's one new fixture.
+with the code, never that the code agrees with the design).
+
+**A-128 is CLOSED (P17/A-141): all 19 pairs are now fixtured.** A-128 used
+to narrow the closed vocabulary to 17, on the reading that
+``ERROR``/``GIT_FAILED`` and claim-level ``ERROR``/``FORMAT_MISMATCH`` and
+``ERROR``/``UNREADABLE_ARTIFACT`` were structurally unreachable — a
+genuinely broken coverage artifact or git failure propagated UNCAUGHT out
+of ``evaluate_r1`` before any ``Verdict`` was built. That was a true
+description of the code, never of the design: P17's work item 6 widened
+``evaluate_r1`` to render every ``AssayError`` its own guard sequence can
+raise as a complete R1 claim, so all three are now ordinary producer
+terminals — reproduced against the installed console script, not inferred.
+``EXCLUDED_ENTIRELY`` is therefore empty, and it stays a named constant
+rather than being deleted so that re-narrowing the audit is a visible,
+argued edit rather than a silent one.
+
+The audit is LEVEL-AWARE, because "this pair appears somewhere" is a weaker
+claim than either package actually made: ``ERROR``/``UNREADABLE_ARTIFACT``
+is reachable at claim level (P17, a coverage artifact the lane's command
+never wrote) AND at evidence level (P10's attested-evidence path, A-110),
+and each has its own fixture and its own negative below. Auditing only the
+flattened pair set would let either fixture silently cover for the other's
+deletion.
 
 **O2.** ``assay verify``'s own contract (A-129): parse JSON, reconstruct the
 same :mod:`assay.verdict` dataclass graph the packaged schema is maintained
@@ -96,24 +108,44 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
     (outcome, code) for outcome, codes in VOCABULARY.items() for code in codes
 )
 
-#: A-128: structurally unreachable as a COMPLETE Verdict artifact, by
-#: pre-existing design — `evaluate_r1`'s own docstring states a genuinely
-#: broken coverage artifact or a git failure "propagates uncaught," and
-#: `cli.py main()`'s only exception handler exits WITHOUT ever calling
-#: `assemble_verdict`/`write_verdict`. No complete artifact can exist to
-#: fixture for these two; do not try, and do not "fix" `evaluate_r1` to make
-#: them reachable (`runner.py` is forbidden, A-132).
-EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("ERROR", "GIT_FAILED"),
-        ("ERROR", "FORMAT_MISMATCH"),
-    }
-)
+#: EMPTY since P17 (A-141). Every pair in the closed vocabulary is now
+#: reachable as a COMPLETE Verdict artifact and is fixtured below. Kept as
+#: a named constant, rather than deleted, so that any future re-narrowing
+#: of this audit has to be written down here and argued — a shrinking
+#: REQUIRED set is precisely the change that would quietly weaken the whole
+#: conformance claim.
+EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset()
 
-#: ERROR/UNREADABLE_ARTIFACT is deliberately NOT in EXCLUDED_ENTIRELY: the
-#: pair is excluded only at CLAIM level (same unreachability as the two
-#: above); it remains reachable — and required — at EVIDENCE level.
 REQUIRED_PAIRS: frozenset[tuple[str, str]] = ALL_PAIRS - EXCLUDED_ENTIRELY
+
+#: The three pairs P17's work item 6 turned from "structurally unreachable"
+#: (A-128) into real R1 producer terminals, and the fixture each one is
+#: closed by. Asserted BY LEVEL below: a pair being present *somewhere* is
+#: not the claim P17 made.
+P17_CLAIM_LEVEL_FIXTURES: dict[tuple[str, str], str] = {
+    ("ERROR", "GIT_FAILED"): "r1_error_git_failed.json",
+    ("ERROR", "FORMAT_MISMATCH"): "r1_error_format_mismatch.json",
+    ("ERROR", "UNREADABLE_ARTIFACT"): "r1_error_unreadable_artifact.json",
+}
+
+
+def _claim_pairs_in(document: dict) -> set[tuple[str, str]]:
+    """Every (status, reason_code) pair *document* names on a CLAIM."""
+    return {
+        (claim["status"], claim["reason_code"])
+        for claim in document.get("claims", [])
+        if claim.get("reason_code") is not None
+    }
+
+
+def _evidence_pairs_in(document: dict) -> set[tuple[str, str]]:
+    """Every (status, reason_code) pair *document* names on an EVIDENCE
+    entry."""
+    return {
+        (item["status"], item["reason_code"])
+        for item in document.get("evidence", [])
+        if item.get("reason_code") is not None
+    }
 
 
 def _pairs_in(document: dict) -> set[tuple[str, str]]:
@@ -122,13 +154,7 @@ def _pairs_in(document: dict) -> set[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
     if document.get("reason_code") is not None:
         pairs.add((document["outcome"], document["reason_code"]))
-    for claim in document.get("claims", []):
-        if claim.get("reason_code") is not None:
-            pairs.add((claim["status"], claim["reason_code"]))
-    for item in document.get("evidence", []):
-        if item.get("reason_code") is not None:
-            pairs.add((item["status"], item["reason_code"]))
-    return pairs
+    return pairs | _claim_pairs_in(document) | _evidence_pairs_in(document)
 
 
 def test_the_transcribed_manifest_matches_the_closed_vocabularys_known_size():
@@ -137,8 +163,8 @@ def test_the_transcribed_manifest_matches_the_closed_vocabularys_known_size():
     # independent transcriptions of the same design-guide table, expected to
     # agree in SIZE without either importing the other's source of truth.
     assert len(ALL_PAIRS) == 19
-    assert len(EXCLUDED_ENTIRELY) == 2
-    assert len(REQUIRED_PAIRS) == 17
+    assert len(EXCLUDED_ENTIRELY) == 0, "A-141: nothing is unreachable any more"
+    assert len(REQUIRED_PAIRS) == 19
 
 
 def test_every_required_vocabulary_pair_has_a_covering_fixture():
@@ -156,44 +182,69 @@ def test_every_required_vocabulary_pair_has_a_covering_fixture():
     assert unexpected == [], f"fixture(s) use a pair outside the closed vocabulary: {unexpected}"
 
 
-def test_the_audits_own_negative_deleting_a_fixture_leaves_a_pair_uncovered():
-    # O1's own negative, demonstrated in-suite: covered-WITHOUT this
-    # package's one new fixture must be missing EXACTLY the one pair it
-    # exists to close, never more, never a different one.
-    covered: dict[tuple[str, str], list[str]] = {}
+def test_the_evidence_audits_own_negative_p10s_fixture_is_the_only_cover():
+    # P10's own negative, kept level-aware (A-141): at EVIDENCE level,
+    # dropping `evidence_unreadable_artifact.json` must leave exactly the
+    # one pair it exists to close uncovered. Flattening levels would let
+    # P17's new CLAIM-level fixture silently cover for its deletion —
+    # which is exactly the kind of accidental cross-cover this audit
+    # exists to prevent.
+    covered: set[tuple[str, str]] = set()
     for path in FIXTURE_PATHS:
         if path.name == "evidence_unreadable_artifact.json":
             continue
-        for pair in _pairs_in(_load_path(path)):
-            covered.setdefault(pair, []).append(path.name)
-    missing = sorted(REQUIRED_PAIRS - covered.keys())
-    assert missing == [("ERROR", "UNREADABLE_ARTIFACT")]
+        covered |= _evidence_pairs_in(_load_path(path))
+    assert ("ERROR", "UNREADABLE_ARTIFACT") not in covered
 
 
-def test_error_unreadable_artifact_is_reachable_only_via_evidence_never_a_claim():
-    # A-128: the identical ReasonCode is excluded at CLAIM level (structurally
-    # unreachable, same reasoning as GIT_FAILED/FORMAT_MISMATCH) but
-    # required — and present — at EVIDENCE level (P10's attested path).
-    claim_hits = []
-    evidence_hits = []
+def test_the_claim_audits_own_negative_p17s_three_fixtures_are_the_only_cover():
+    # P17's own negative (A-141), the mirror of P10's above: dropping the
+    # three fixtures work item 6 made reachable must leave EXACTLY those
+    # three pairs uncovered at CLAIM level, never more and never a
+    # different one. Before P17 this test could not have been written at
+    # all — the three pairs had no complete artifact to fixture.
+    covered: set[tuple[str, str]] = set()
     for path in FIXTURE_PATHS:
-        document = _load_path(path)
-        for claim in document.get("claims", []):
-            if (claim.get("status"), claim.get("reason_code")) == (
-                "ERROR",
-                "UNREADABLE_ARTIFACT",
-            ):
-                claim_hits.append(path.name)
-        for item in document.get("evidence", []):
-            if (item.get("status"), item.get("reason_code")) == (
-                "ERROR",
-                "UNREADABLE_ARTIFACT",
-            ):
-                evidence_hits.append(path.name)
-    assert claim_hits == [], (
-        f"ERROR/UNREADABLE_ARTIFACT must never appear on a claim (A-128); "
-        f"found in {claim_hits}"
+        if path.name in P17_CLAIM_LEVEL_FIXTURES.values():
+            continue
+        covered |= _claim_pairs_in(_load_path(path))
+    still_missing = sorted(set(P17_CLAIM_LEVEL_FIXTURES) - covered)
+    assert still_missing == sorted(P17_CLAIM_LEVEL_FIXTURES)
+
+
+@pytest.mark.parametrize(
+    ("pair", "fixture_name"),
+    sorted(P17_CLAIM_LEVEL_FIXTURES.items()),
+    ids=lambda value: value if isinstance(value, str) else "/".join(value),
+)
+def test_each_p17_pair_is_covered_by_its_own_named_claim_fixture(
+    pair: tuple[str, str], fixture_name: str
+):
+    # A-141 replaces A-128's "must never appear on a claim" assertion,
+    # which had become an active LIE: it forbade the very fixture the
+    # shipped product now genuinely emits, so a correct fixture would have
+    # FAILED the suite. Each pair is pinned to its own file, so deleting
+    # one fixture cannot be masked by another.
+    document = _load(fixture_name)
+    assert pair in _claim_pairs_in(document)
+
+
+def test_error_unreadable_artifact_is_now_reachable_at_both_levels():
+    # The one ReasonCode with two genuinely different producers: a coverage
+    # artifact the lane's own command never wrote (claim level, P17) and a
+    # broken attestation file (evidence level, P10, A-110). Both are real;
+    # neither substitutes for the other.
+    claim_hits = sorted(
+        path.name
+        for path in FIXTURE_PATHS
+        if ("ERROR", "UNREADABLE_ARTIFACT") in _claim_pairs_in(_load_path(path))
     )
+    evidence_hits = sorted(
+        path.name
+        for path in FIXTURE_PATHS
+        if ("ERROR", "UNREADABLE_ARTIFACT") in _evidence_pairs_in(_load_path(path))
+    )
+    assert claim_hits == ["r1_error_unreadable_artifact.json"]
     assert evidence_hits == ["evidence_unreadable_artifact.json"]
 
 

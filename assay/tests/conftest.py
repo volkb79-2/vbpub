@@ -101,6 +101,7 @@ source_roots = ["src", "scripts"]
 fail_under = 100.0
 allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
+base = "main"
 
 [lanes.package.where]
 service = "test-runner"
@@ -509,10 +510,15 @@ def make_r1_judge(
     allow_excluded: bool = False,
     coverage_format: str = "coverage-py-json",
     coverage_artifact: str = "cov.json",
+    base: str = "main",
 ) -> JudgeConfig:
     """A fully-resolved R1 ``JudgeConfig`` — every field
     ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names — built directly rather than
-    through ``assay.toml``, mirroring :func:`make_lane`."""
+    through ``assay.toml``, mirroring :func:`make_lane`. *base* is a
+    placeholder string here: callers that exercise real base RESOLUTION
+    (``runner.evaluate_r1``'s own tests) pass their own resolved/declared
+    ref straight to that function, not through this field -- only
+    ``runner.run_lane`` reads ``judge.base`` itself."""
     return JudgeConfig(
         language=language,
         source_roots=tuple(str(p) for p in source_root_paths),
@@ -522,6 +528,7 @@ def make_r1_judge(
         coverage=CoverageConfig(format=coverage_format, artifact=coverage_artifact),
         mutation=None,
         canary=None,
+        base=base,
     )
 
 

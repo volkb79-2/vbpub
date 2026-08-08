@@ -9,8 +9,13 @@
 > in code every package's own review had already passed. **Read that review
 > file before trusting anything else in this document as current** — the
 > P15–P25 repair series is carved directly against its findings and is now
-> being implemented, **P15 and P16 merged, P17 next** (see "Where things
-> stand" below for live status). If you are picking this project up: read the
+> being implemented, **P15, P16 and P17 merged, P18 next** (see "Where
+> things stand" below for live status). Sol finding 1 — "declared R1–R3
+> lanes cannot run" — is now HALF closed: a declared Python **R1** lane
+> runs and is judged end to end through the installed console script.
+> R2/R3 are still unreachable, but they are now refused *honestly*
+> (before the command runs, as a complete artifact) rather than after it.
+> If you are picking this project up: read the
 > review, then `nyxloom-trove/reports/assay-P14-BRIEF.md`
 > (the P14-era final-state brief — still accurate for what P00–P14 built,
 > just not for whether it's ready to depend on), then this file, then
@@ -145,8 +150,49 @@ far, and it has never once come back clean.
   would. Deleting `_check_r2_rederivation` or `_check_r3_rederivation`
   wholesale failed exactly ONE test each before that pass; six and three
   after. All five forbidden files confirmed untouched by empty diff.
+- **P17** (Python R1 CLI pipeline — closing the first half of sol
+  finding 1): `assay run` now executes AND judges a declared Python R1
+  lane as one commit-bound operation. New `runner.run_lane` ties the four
+  P04/P05 functions together and owns the prerequisites none of them did:
+  the WHOLE worktree must be clean (sol finding 6, live in the shipped R0
+  path until now), the declared coverage artifact must be untracked, a
+  regular file and not a symlink, and a stale copy is removed so the
+  artifact judged is provably this run's own output. `evaluate_r1` widened
+  to render `GIT_FAILED`/`FORMAT_MISMATCH`/`UNREADABLE_ARTIFACT` as
+  complete R1 claims (closing A-128, below) via an additive
+  `on_base_resolved` callback that surfaces the resolved base WITHOUT a
+  second git resolution and WITHOUT breaking `canary.py`'s frozen call
+  contract. `registry.py` redesigned so an entry names the rigor levels
+  **this build actually reaches** through an adapter — shipping
+  `adapters/go.py` is no longer mistakable for "Go works". `judge.base` is
+  now required for R1/R2 and never defaulted.
+  **Controller review found three defects (A-139–A-141), all invisible
+  from the diff and from the green gate, and all found within minutes of
+  feeding real documents to the real entry point** — the method the P16
+  review's own successor brief prescribed, and its first independent
+  confirmation. Two terminal paths with a known HEAD emitted no artifact
+  at all, and the worse of them (an R2/R3 lane, which never reached the
+  capability gate because the registry was only ever consulted for the
+  literal `"R1"`) **ran the lane's command to completion first** — side
+  effects committed, nothing written. A refusal deleted a file before
+  refusing: the stale-artifact removal ran BEFORE the cleanliness guard
+  instead of after it, so a lane naming ANY untracked regular file as its
+  `artifact` had that file destroyed and the guard then judged a tree the
+  code had itself modified. And the conformance matrix that audits
+  reachability never moved, while simultaneously asserting the new shape
+  must never exist — so a correct fixture would have failed the suite.
+  Four oracle clauses were honored only in part and are now closed: O1's
+  "complete artifact" was eight field assertions; nothing distinguished a
+  RESOLVED `judgment.r1.base` from an echoed one (every test declared a
+  full SHA, so `base=judge.base` passed everything); and two of O4's six
+  named terminal shapes had no pipeline-level test. All four forbidden
+  files confirmed untouched by empty diff. **No P17 LOG was written** —
+  its deferral notes and mutation counts live in the implementation
+  commit's own body instead, which is better than nothing and still not
+  where A-072 says a ruling belongs.
 
-Key commits: `340d9633` (P16 merge), `50110247` (P16 controller repairs),
+Key commits: `d9839e81` (P17 controller repairs, A-139–A-143),
+`e5b81d4c` (P17 implementation), `340d9633` (P16 merge), `50110247` (P16 controller repairs),
 `326507f1` (P15 merge), `a8357405` (P15 rulings, A-134–A-135),
 `2ab50f75` (P14 merge, the P00–P14 series-closing commit), `56c821c2`
 (P14 rulings, A-128–A-133), `bca3c345` (P13 merge), `a42fe02a` (P13
@@ -180,8 +226,8 @@ full, this summary is not a substitute.
 committed, and controller-verified. P26 (TypeScript adapter) and P27
 (the `dstdns`-side adoption package) are NOT yet carved.**
 
-**Implementation status of that series: P15 and P16 are MERGED. P17 is
-next.** P16's outcome propagated into FIVE later handoffs, each now
+**Implementation status of that series: P15, P16 and P17 are MERGED. P18
+is next.** P16's outcome propagated into FIVE later handoffs, each now
 carrying a "Carried in from P16, merged" section (all six edited handoffs
 re-linted `clean`): **P17** (the `judgment.r1`-iff-`coverage` trap — a
 lane that resolves its R1 policy and then renders `NO_MEASUREMENT` must
@@ -270,23 +316,30 @@ adapter. **Decide before P25**, whose `istanbul-json` is the first
 registered format with no exclusion channel at all — its handoff now says
 so.
 
-**A-128's "three structurally unreachable pairs" is no longer permanent
-debt.** P17's work item 6 is explicitly scoped to make `GIT_FAILED`,
-`FORMAT_MISMATCH` and `UNREADABLE_ARTIFACT` reachable as complete R1
-claims. That is the "real design decision first" A-128 asked for; the
-debt entry below is superseded by P17's carve, not by anything merged yet.
+**A-128's "three structurally unreachable pairs" is CLOSED — merged, not
+merely carved (2026-08-08, P17 + A-141).** Work item 6 widened
+`evaluate_r1` to render every `AssayError` its own guard sequence raises
+as a complete R1 claim, so `ERROR`/`GIT_FAILED` and claim-level
+`ERROR`/`FORMAT_MISMATCH` and `ERROR`/`UNREADABLE_ARTIFACT` are now
+ordinary producer terminals, each with a hand-written fixture. All 19
+pairs are covered; `EXCLUDED_ENTIRELY` in `tests/test_verdict_
+conformance.py` is empty and the audit is level-aware. **The debt bullet
+that used to sit below is DELETED rather than annotated** — a
+"permanent debt" entry that is no longer true is worse than no entry.
+
+The half of that closure worth carrying forward: **the capability landed
+and the audit that measures it did not move with it.** The conformance
+test still excluded two pairs as structurally unreachable, still told its
+reader not to "fix" `evaluate_r1` to reach them (which is precisely what
+this package was chartered to do), and still asserted claim-level
+`ERROR`/`UNREADABLE_ARTIFACT` "must never appear" — so a CORRECT fixture
+would have turned the suite red. It stayed green only because nobody
+wrote one. When a package's charter is to make something reachable, the
+matrix that calls it unreachable is inside that package's scope, not a
+follow-up.
 
 **Accepted, permanent debt — recorded here rather than silently dropped,
 since there is no more series left to fold any of it into:**
-- Three `(outcome, reason_code)` pairs in the closed 19-pair vocabulary are
-  structurally unreachable as complete `Verdict` artifacts and are not
-  fixtured: `ERROR`/`GIT_FAILED`, and claim-level `ERROR`/`FORMAT_MISMATCH`
-  and `ERROR`/`UNREADABLE_ARTIFACT` (the evidence-level `UNREADABLE_ARTIFACT`
-  pair IS reachable and IS fixtured, P14). All three propagate uncaught out
-  of `evaluate_r1`/`cli.py`'s own top-level handler before any `Verdict` is
-  ever constructed — documented, deliberate, pre-existing behavior (A-128),
-  not a gap any future package is expected to close without a real design
-  decision first.
 - Two deliberate wiring gaps from P12, never closed by P13 or P14 (neither
   was scoped to): nothing builds real `MutationTarget`s from a real diff;
   nothing reads `assay.toml`'s `judge.mutation` table (`jobs`/`operators`
@@ -431,3 +484,18 @@ review it.
   pre-generated (A-042).
 - A hook blocks some scripted file edits. Use the editor, not `sed -i` or
   script-driven writes; a silent no-op reads as success.
+- **Since P17, `assay run` refuses a dirty worktree — and the gate's own
+  first step IS an `assay run`.** So uncommitted work in the worktree now
+  makes the gate report `NO_MEASUREMENT`/`DIRTY_TREE` instead of running
+  the suite. Commit before gating; a red gate whose only symptom is exit
+  3 is almost always this, not a test failure.
+- **A lane's declared `judge.coverage.artifact` must be git-ignored (or
+  absent), A-140.** It is this run's own OUTPUT, so an unignored copy is
+  untracked worktree state and the run is refused. assay used to delete
+  it first and proceed; it no longer does, because that also deleted
+  files that were not coverage artifacts at all. Every R1 fixture in the
+  suite now commits a `.gitignore` for exactly this reason.
+- `--verdict-json <path-whose-parent-is-unwritable>` still raises a bare
+  `OSError` and exits **1** — which a consumer reads as `FAIL`, not as a
+  tooling error (A-O14, still open; sol ruled "leave it", and P17 did).
+  Worth knowing before pointing a CI job at a path it cannot write.

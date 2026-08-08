@@ -26,9 +26,17 @@ from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 from assay.config import JUDGE_FIELDS_BY_RIGOR, load_lane_file
 from assay.errors import LaneConfigError
 
-#: O2's five, spelled out rather than imported, so a change to the source of
-#: truth has to be made deliberately in two places.
-R1_JUDGE_FIELDS = ("coverage", "fail_under", "allow_excluded", "source_roots", "language")
+#: O2's six, spelled out rather than imported, so a change to the source of
+#: truth has to be made deliberately in two places. P17 adds ``base`` (the
+#: declared comparison ref, required wherever a diff is measured).
+R1_JUDGE_FIELDS = (
+    "coverage",
+    "fail_under",
+    "allow_excluded",
+    "source_roots",
+    "language",
+    "base",
+)
 
 JUDGE_TABLE = """
 [lanes.package.judge]
@@ -37,6 +45,7 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
+base = "main"
 """
 
 MUTATION_TABLE = """
@@ -50,13 +59,15 @@ CANARY_TABLE = """
 mode = "import-break"
 """
 
-# Exactly what R2 requires and nothing more (A-062): language + source_roots,
-# with the mutation sub-table appended separately. A lane declaring R2 alone
-# may not carry R1's fail_under/allow_excluded/coverage.
+# Exactly what R2 requires and nothing more (A-062): language + source_roots
+# + base (P17 -- mutation measures the same declared diff R1 does), with the
+# mutation sub-table appended separately. A lane declaring R2 alone may not
+# carry R1's fail_under/allow_excluded/coverage.
 R2_MINIMAL_JUDGE = """
 [lanes.package.judge]
 language = "python"
 source_roots = ["src"]
+base = "main"
 """
 
 
@@ -72,7 +83,7 @@ def test_r0_only_lane_with_no_judge_table_loads_clean(project: Project):
     assert lane.judge is None
 
 
-def test_r1_lane_with_all_five_loads(project: Project):
+def test_r1_lane_with_all_six_loads(project: Project):
     lane = load_lane_file(project.write(R1_LANE)).lane("package")
 
     judge = lane.judge
@@ -82,10 +93,11 @@ def test_r1_lane_with_all_five_loads(project: Project):
     assert judge.fail_under == 100.0
     assert judge.allow_excluded is False
     assert judge.coverage is not None
+    assert judge.base == "main"
 
 
 @pytest.mark.parametrize("field", R1_JUDGE_FIELDS)
-def test_r1_lane_missing_any_of_the_five_is_rejected(field: str, project: Project):
+def test_r1_lane_missing_any_of_the_six_is_rejected(field: str, project: Project):
     # Direction 1 — the complete R1 lane loads.
     assert load_lane_file(project.write(R1_LANE)).lane("package").judge is not None
 
@@ -163,6 +175,7 @@ def test_r2_without_r1_requires_only_what_mutation_needs(project: Project):
 [lanes.package.judge]
 language = "python"
 source_roots = ["src"]
+base = "main"
 """
     path = project.write(_lane_with(["R0", "R2"], partial, MUTATION_TABLE))
     judge = load_lane_file(path).lane("package").judge
@@ -256,8 +269,9 @@ def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
 def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
     # Nothing in `judge` is filled in on absence: a field this level does not
     # require, and the file did not declare, stays None rather than being
-    # invented. An R2 lane needs language + source_roots + mutation and NOTHING
-    # else -- so R1's three fields must come back None, not defaulted.
+    # invented. An R2 lane needs language + source_roots + mutation + base
+    # and NOTHING else -- so R1's three coverage-floor fields must come back
+    # None, not defaulted.
     path = project.write(_lane_with(["R2"], R2_MINIMAL_JUDGE, MUTATION_TABLE))
     lane = load_lane_file(path).lane("package")
 
@@ -268,12 +282,14 @@ def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
     assert judge.allow_excluded is None
     assert judge.coverage is None
     assert judge.canary is None
+    assert judge.base == "main"
     # as_declared() reconstructs exactly the file's own keys -- no absent field
     # reappears with a filled-in value (P07 depends on this for argv_declared).
     assert lane.as_declared()["judge"] == {
         "language": "python",
         "source_roots": ["src"],
         "mutation": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]},
+        "base": "main",
     }
 
 

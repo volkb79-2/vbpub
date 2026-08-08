@@ -69,6 +69,7 @@ def _lane(repo_path: Path, rigor: tuple[str, ...]) -> Lane:
             coverage=CoverageConfig(format="coverage-py-json", artifact="cov.json"),
             mutation=None,
             canary=None,
+            base="main",
         )
     return Lane(
         name="package",

@@ -60,6 +60,27 @@ on branch `feat/assay-P23-real-go-mutation-r2`.
 6. Add independently enumerated fixtures covering multiple same-line sites, Unicode before a span, multiline expressions, comments/strings resembling operators, invalid source, no sites, and every terminal result. Prove source hashes unchanged.
 7. Break AST/token discovery, line selection, byte splicing, validity checking, external-tool preflight, crash/kill separation, and installed CLI wiring separately; run the real combined gate and record exact A-067 counts.
 
+## Carried in from P17, merged (read before writing work items 1 and 7)
+
+**Work item 7's "external-tool preflight" is P22's mechanism, not one you
+build (A-144).** Until P22, nothing in assay preflighted
+`LanguageAdapter.external_tools` and the closed reason vocabulary had no
+truthful cause for a missing one (A-013/A-086, deferred by A-087 and again
+by A-142). P22 owns `MISSING_EXTERNAL_TOOL` and the preflight call site;
+`errors.py` and `cli.py` are in ITS `scope.touch`, deliberately not yours.
+Your half is work item 1's declaration — `assay-go-helper` named in
+`GoAdapter.external_tools` — plus the negative that proves removing it from
+that tuple stops the preflight from firing. If you find P22 did not build
+it, that is a BLOCKED, not an improvisation into `errors.py`.
+
+**A-139/A-140, in one line each.** Every declared rigor level is checked
+against the registry before anything runs, so advancing Go through R2
+(work item 5) is one added level on the EXISTING `GoAdapter` entry;
+`runner.refuse_lane` renders any pre-execution refusal as a complete
+artifact and is already total over `lane.rigor`. And the declared coverage
+artifact must be git-ignored, or the whole-tree cleanliness guard refuses
+the run before `go test` starts.
+
 ## Test constraints copied from AUTHORING.md §3b
 
 **A. Nothing may make the verdict depend on how fast the machine is.** (L20)
