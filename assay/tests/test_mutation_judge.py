@@ -172,6 +172,7 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
         lane,
         baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),

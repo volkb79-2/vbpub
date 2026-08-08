@@ -865,7 +865,12 @@ def run_lane(
     :func:`~assay.mutation.resolve_mutation_targets` then builds the
     per-file candidate list, and mutation runs inside a fresh, self-
     cleaning scratch directory (:func:`tempfile.TemporaryDirectory`) this
-    function owns end to end. Reaching :func:`~assay.mutation.run_mutation`
+    function owns end to end. ``repo_top`` is handed to
+    :func:`~assay.mutation.run_mutation` alongside *project_root* because
+    those two are NOT the same directory for a project living in a
+    subdirectory of its repository (A-145) — every target path is relative
+    to the former, while each mutant's scratch copy is a copy of the
+    latter. Reaching :func:`~assay.mutation.run_mutation`
     at all in this branch already proves *result* PASSED, which is
     `run_mutation`'s own only reason to return ``None`` for a caller-
     supplied baseline (:func:`~assay.mutation.run_mutation`'s own
@@ -1008,6 +1013,7 @@ def run_lane(
                         lane,
                         baseline=result,
                         project_root=project_root,
+                        repo_top=repo_top,
                         scratch_root=Path(scratch),
                         targets=targets,
                         adapter=adapter,

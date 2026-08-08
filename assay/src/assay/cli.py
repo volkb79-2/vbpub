@@ -97,7 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Execute exactly the named lane's declared argv (plus anything "
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
-            "order or retry anything. This build evaluates R0 and Python R1."
+            "order or retry anything. This build evaluates R0, Python R1 "
+            "and Python R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")

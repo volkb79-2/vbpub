@@ -90,6 +90,7 @@ def test_run_mutation_never_submits_an_undeclared_operators_mutant(tmp_path: Pat
         lane,
         baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),

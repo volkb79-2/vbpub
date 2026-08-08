@@ -738,10 +738,13 @@ def test_verify_rejects_an_r1_coverage_claim_without_judgment():
 
 
 def test_verify_accepts_reconstructed_judgment_r2_and_r3():
-    # judgment.r2/r3 are RESERVED, closed shapes (P16) -- no real producer
-    # populates them yet, but reconstruction must accept them when present,
-    # since a future package populates them additively without another
-    # schema bump.
+    # `judgment.r3` is still RESERVED -- no producer populates it until P19
+    # -- but reconstruction must accept it when present, since that package
+    # populates it additively without another schema bump. `judgment.r2` is
+    # NO LONGER reserved (P18 populates it on every R2 run that rendered a
+    # mutation payload); it keeps its synthesised half here anyway, because
+    # a reconstruction that only ever saw the ONE shape assay's own producer
+    # emits would not be an independent check of the closed shape.
     document = _load("r2_pass.json")
     document["judgment"] = {"r2": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]}}
     assert verify_document(document) == []
@@ -749,6 +752,52 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
     document2 = _load("r3_pass.json")
     document2["judgment"] = {"r3": {"mechanism": "uncovered-line", "target": "pkg/mod.py"}}
     assert verify_document(document2) == []
+
+
+#: A-141, applied to what P18 made real: `judgment.r2` acquired a genuine
+#: producer, so the hand-written matrix has to carry the shape that producer
+#: actually emits -- not merely a synthesised one injected into an R1-era
+#: fixture. `r2_pass_with_judgment.json` is that shape, transcribed by hand
+#: from what a real `assay run` of an R0+R2 lane emits (see
+#: `test_standalone.py`'s own installed-wheel R2 comparisons), never
+#: generated from it.
+JUDGMENT_R2_FIXTURE = "r2_pass_with_judgment.json"
+
+
+def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
+    document = _load(JUDGMENT_R2_FIXTURE)
+    r2_claim = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
+
+    assert document["judgment"] == {
+        "r2": {"jobs": 2, "operators": ["compare-swap", "bool-const-flip"]}
+    }
+    assert r2_claim["mutation"]["total"] == 2
+
+    # The one correspondence a consumer can check TODAY, stated here as the
+    # audit's own claim rather than as a rule `assay verify` enforces (it
+    # does not yet -- A-148): every operator naming a recorded mutant is one
+    # the declared policy actually selected. A payload naming an operator
+    # `judgment.r2.operators` never declared is a contradiction no schema
+    # can see.
+    recorded = {
+        entry["operator"]
+        for bucket in ("survived", "crashed", "budget_exceeded")
+        for entry in r2_claim["mutation"][bucket]
+    }
+    assert recorded <= set(document["judgment"]["r2"]["operators"])
+
+
+def test_the_r2_judgment_fixture_is_the_only_one_carrying_it():
+    # The level-aware negative, the same shape P10's and P17's already have:
+    # dropping this one file must leave `judgment.r2` uncovered ENTIRELY, so
+    # a later deletion cannot be masked by some other fixture that happens
+    # to grow the field.
+    covered = [
+        path.name
+        for path in FIXTURE_PATHS
+        if "r2" in (_load_path(path).get("judgment") or {})
+    ]
+    assert covered == [JUDGMENT_R2_FIXTURE]
 
 
 def test_verify_rejects_an_r1_pass_reporting_zero_percent_coverage():

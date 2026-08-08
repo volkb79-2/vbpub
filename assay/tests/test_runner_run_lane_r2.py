@@ -161,6 +161,173 @@ def test_r2_without_r1_refuses_on_dirty_tree_the_command_itself_created(
     assert r2_claim.mutation is None
 
 
+def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
+    git_repo: GitRepo,
+):
+    """A-143's shape applied to ``judgment.r2``. Every other R2 fixture in
+    the suite declares ``jobs = 1`` and the single operator its own fixture
+    happens to use -- so a producer that hardcoded ``jobs=1``, or that
+    recorded the operators it actually SUBMITTED rather than the ones the
+    lane declared, or that canonicalised the list, would pass all of them.
+
+    This lane declares a ``jobs`` no default could coincide with, and TWO
+    operators in an order that is neither alphabetical nor
+    ``MUTATION_OPERATORS``'s own -- of which the fixture exercises exactly
+    one. Both must come back untouched: the record is the DECLARED policy,
+    not a summary of what happened.
+    """
+    base_rev, _ = _seed_compare_swap_site(git_repo)
+    declared = MutationConfig(jobs=3, operators=("falsy-swap", "compare-swap"))
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+
+    verdict = runner.run_lane(
+        lane,
+        commit="6" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=_kill_on_mutation(git_repo.path),
+    )
+
+    assert verdict.claims[1].mutation.total == 1, "only the compare-swap site exists"
+    assert verdict.judgment.r2.jobs == 3
+    assert verdict.judgment.r2.operators == ("falsy-swap", "compare-swap")
+
+
+def test_the_lanes_command_runs_exactly_once_against_the_unmodified_tree(
+    git_repo: GitRepo,
+):
+    """O3's own negative, at the level it is actually about: "calling
+    run_mutation's old baseline path increments the command ledger twice".
+    ``run_mutation`` no longer HAS that path (its own suite proves the
+    function itself never re-runs a baseline), but the property O3 states
+    is a property of the PIPELINE -- so it is counted here, where R0 and R2
+    meet, against the real ``cwd`` each invocation receives.
+
+    One execution against *project_root* (R0's own, reused verbatim as R2's
+    baseline) and one per mutant, each in its own scratch copy.
+    """
+    base_rev, _ = _seed_compare_swap_site(git_repo)
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+    decide = _kill_on_mutation(git_repo.path)
+    cwds: list[Path] = []
+
+    def counting(argv, *, env, cwd, timeout):
+        cwds.append(Path(cwd))
+        return decide(argv, env=env, cwd=cwd, timeout=timeout)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="7" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=counting,
+    )
+
+    assert verdict.claims[1].mutation.total == 1
+    assert cwds.count(git_repo.path) == 1, (
+        "the lane's own command must run exactly ONCE against the "
+        "unmodified tree -- R0's result IS R2's baseline"
+    )
+    assert len(cwds) == 2, "one baseline plus one mutant, and nothing else"
+
+
+# --- the project is a SUBDIRECTORY of its repository (A-145) -----------------
+
+
+def test_r2_mutates_a_project_that_lives_in_a_subdirectory_of_its_repo(
+    git_repo: GitRepo,
+):
+    """A-145. Every target path is REPO-relative (``sub/src/mod.py``) while
+    each mutant's scratch tree is a copy of the PROJECT root (``sub/``), so
+    the two spellings differ by exactly the project's own prefix. Before
+    the fix this raised ``FileNotFoundError`` out of a worker thread, out
+    of ``run_lane``, and out of ``assay run`` -- AFTER the lane's command
+    had already run, with no artifact emitted at all (the A-139 shape).
+    Not a hypothetical layout: it is assay's own, inside ``vbpub``.
+
+    The lane's own ``grep`` is what decides kill vs survival, and it names
+    ``src/mod.py`` -- the PROJECT-relative spelling, because that is what
+    the command's own ``cwd`` sees. That the same file is
+    ``sub/src/mod.py`` in the artifact is the whole point.
+    """
+    project_root = git_repo.path / "sub"
+    git_repo.write("sub/src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.write("sub/src/mod.py", "def f(x):\n    return x > 0\n")
+    git_repo.commit_all("introduce a compare-swap site")
+    judge = make_r2_judge(
+        source_root_paths=(project_root / "src",), base=base_rev, mutation=_MUTATION
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        argv=("/bin/sh", "-c", "grep -q 'x > 0' src/mod.py"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit="9" * 40,
+        repo=git_repo.path,
+        project_root=project_root,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    r2_claim = verdict.claims[1]
+    assert r2_claim.mutation.total == 1
+    assert r2_claim.mutation.killed == 1, (
+        "the mutant must reach src/mod.py INSIDE the copy -- a kill proves "
+        "the splice landed on the file the command actually greps"
+    )
+
+
+def test_a_surviving_mutant_in_a_subdirectory_project_keeps_its_repo_relative_path(
+    git_repo: GitRepo,
+):
+    """The other half of A-145: the path the ARTIFACT records is the
+    repo-relative one (``sub/src/mod.py``), the same spelling
+    ``Coverage.missing_lines``'s own keys and ``git diff`` already use --
+    never the project-relative one the write step needs internally. A
+    survivor is what makes that observable, because only the non-killed
+    buckets carry per-mutant identities at all."""
+    project_root = git_repo.path / "sub"
+    git_repo.write("sub/src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.write("sub/src/mod.py", "def f(x):\n    return x > 0\n")
+    git_repo.commit_all("introduce a compare-swap site")
+    judge = make_r2_judge(
+        source_root_paths=(project_root / "src",), base=base_rev, mutation=_MUTATION
+    )
+    # exits 0 regardless of what the file says: nothing asserts the change,
+    # so the mutant genuinely survives.
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit="8" * 40,
+        repo=git_repo.path,
+        project_root=project_root,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    r2_claim = verdict.claims[1]
+    assert r2_claim.status is Outcome.FAIL
+    assert r2_claim.reason_code is ReasonCode.MUTANTS_SURVIVED
+    assert [entry.path for entry in r2_claim.mutation.survived] == ["sub/src/mod.py"]
+
+
 # --- a non-PASS R0 baseline is R2's own necessary prerequisite ---------------
 
 

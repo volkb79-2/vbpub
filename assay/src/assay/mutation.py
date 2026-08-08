@@ -51,7 +51,10 @@ once per ``assay run`` invocation (sol finding 11). :func:`
 resolve_mutation_targets` builds the per-file candidate list from the same
 resolved diff R1 measures against, and *operators* filters
 :func:`collect_mutants`'s output down to the lane's own declared,
-closed selection before anything is submitted.
+closed selection before anything is submitted. Wiring it also fixed the
+path spelling two of these surfaces had never had to agree on before
+(A-145): a target's ``path`` is REPO-relative, while each mutant's scratch
+tree is a copy of the PROJECT root — see :func:`project_prefix`.
 
 **A circular-import note, since it shapes this module's own imports below**:
 ``assay.runner`` imports ``assay.adapters.base``, which imports THIS module
@@ -100,6 +103,7 @@ __all__ = [
     "collect_mutants",
     "judge_mutation",
     "line_for_offset",
+    "project_prefix",
     "resolve_mutation_targets",
     "run_mutation",
 ]
@@ -435,10 +439,46 @@ def _classify_mutant_result(result: CommandResult) -> str:
     return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
 
 
+def project_prefix(*, repo_top: Path, project_root: Path) -> str:
+    """*project_root*'s own location inside *repo_top*, as the forward-slash
+    prefix its repo-relative paths carry — ``""`` when the two are the same
+    directory, ``"assay/"`` when the project is a SUBDIRECTORY of its
+    repository (A-145).
+
+    That second case is not exotic: it is assay's own layout inside the
+    ``vbpub`` monorepo, and it is the difference between two spellings of
+    the same file that this module has to keep straight.
+    :class:`MutationTarget`'s ``path`` is repo-top-relative (its own
+    documented contract, and the spelling ``git diff`` and
+    :class:`~assay.verdict.Coverage`'s own keys already use, so the artifact
+    stays internally consistent), while the scratch tree each mutant runs in
+    is a copy of *project_root* — so a repo-relative path must have this
+    prefix removed before it names anything inside that copy.
+    """
+    relative = project_root.resolve().relative_to(repo_top.resolve())
+    return "" if relative == Path(".") else f"{relative.as_posix()}/"
+
+
+def _within_project(path: str, prefix: str) -> str:
+    """*path* (repo-relative) respelled relative to the project root, or a
+    refusal. A target outside the project root has no counterpart inside
+    the scratch copy at all, so writing it would either land outside the
+    copy or fail deep inside a worker thread with a bare
+    ``FileNotFoundError`` naming a path no caller ever supplied — checked
+    here, once, before anything is submitted."""
+    if not path.startswith(prefix):
+        raise ValueError(
+            f"mutation target {path!r} is outside the project root "
+            f"({prefix!r}) -- it has no location inside the per-mutant copy"
+        )
+    return path[len(prefix) :]
+
+
 def _run_one_mutant(
     lane: Lane,
     *,
     job: MutantJob,
+    write_path: str,
     project_root: Path,
     scratch_parent: Path,
     index: int,
@@ -448,12 +488,17 @@ def _run_one_mutant(
 ) -> CommandResult:
     """Isolate *job* into a FRESH ``shutil.copytree`` scratch directory
     (A-120 — never in-place, never a ``git worktree``), write
-    ``job.mutant.mutated_text`` over ``job.path`` INSIDE the copy, and run
+    ``job.mutant.mutated_text`` over *write_path* INSIDE the copy, and run
     the SAME ``execute_command`` (*execute*) the baseline used, varying
     only ``cwd``. The scratch copy is discarded afterward; *project_root*
     itself is never opened for writing here — that is what makes "the
     shared source tree is provably unchanged" true BY CONSTRUCTION, not by
     a write-then-restore round-trip (O3).
+
+    *write_path* is ``job.path`` respelled relative to *project_root* by
+    :func:`_within_project` (A-145) — the copy's own root is
+    *project_root*, not the repository top ``job.path`` is relative to, and
+    those differ for any project living in a subdirectory of its repo.
 
     *index* names the scratch directory (``mutant-{index:06d}``) — unique
     per submitted job with no shared counter or uuid needed, because the
@@ -463,7 +508,9 @@ def _run_one_mutant(
     scratch_dir = scratch_parent / f"mutant-{index:06d}"
     shutil.copytree(project_root, scratch_dir)
     try:
-        (scratch_dir / job.path).write_text(job.mutant.mutated_text, encoding="utf-8")
+        (scratch_dir / write_path).write_text(
+            job.mutant.mutated_text, encoding="utf-8"
+        )
         return execute(lane, cwd=scratch_dir, process_runner=process_runner, clock=clock)
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
@@ -494,6 +541,7 @@ def run_mutation(
     *,
     baseline: CommandResult,
     project_root: Path,
+    repo_top: Path,
     scratch_root: Path,
     targets: Iterable[MutationTarget],
     adapter: LanguageAdapter,
@@ -524,6 +572,14 @@ def run_mutation(
     caller may invoke directly — every test in this module's own suite
     does — so :mod:`assay.config`'s load-time discipline for a real
     ``assay.toml`` cannot be assumed to have already run here.
+
+    *repo_top* is the repository top every ``targets`` path is relative to
+    (A-145). It is REQUIRED, and deliberately not defaulted to
+    *project_root*: the two differ for any project living in a
+    subdirectory of its repository — assay's own layout — and a default
+    that silently assumes they are equal is exactly how a caller ends up
+    writing a mutant to a path that does not exist inside the copy. See
+    :func:`project_prefix`.
 
     Only when the baseline PASSES: collects every candidate site across
     *targets*, retains only the ones whose operator is in *operators*
@@ -566,6 +622,9 @@ def run_mutation(
     if total == 0:
         return Mutation(total=0, killed=0)
 
+    prefix = project_prefix(repo_top=repo_top, project_root=project_root)
+    write_paths = tuple(_within_project(job.path, prefix) for job in job_list)
+
     from .runner import default_process_runner, execute_command
 
     resolved_process_runner = (
@@ -573,10 +632,11 @@ def run_mutation(
     )
     resolved_clock = _utc_now if clock is None else clock
 
-    def _run(job: MutantJob, index: int) -> CommandResult:
+    def _run(job: MutantJob, write_path: str, index: int) -> CommandResult:
         return _run_one_mutant(
             lane,
             job=job,
+            write_path=write_path,
             project_root=project_root,
             scratch_parent=scratch_root,
             index=index,
@@ -586,7 +646,10 @@ def run_mutation(
         )
 
     with executor_factory(jobs) as pool:
-        futures = [pool.submit(_run, job, index) for index, job in enumerate(job_list)]
+        futures = [
+            pool.submit(_run, job, write_path, index)
+            for index, (job, write_path) in enumerate(zip(job_list, write_paths))
+        ]
         results = [future.result() for future in futures]
 
     killed = 0

@@ -23,13 +23,21 @@ from __future__ import annotations
 
 import subprocess
 from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 from conftest import make_lane
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
-from assay.mutation import MutationTarget, run_mutation
+from assay.mutation import (
+    Mutant,
+    MutationTarget,
+    _within_project,
+    project_prefix,
+    run_mutation,
+)
 from assay.runner import execute_command
 
 #: Four independent bool-const sites -- one per bucket this test drives
@@ -125,6 +133,7 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
         lane,
         baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
@@ -163,6 +172,7 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
             lane,
             baseline=baseline,
             project_root=project_root,
+        repo_top=project_root,
             scratch_root=scratch_root,
             targets=_TARGETS,
             adapter=PythonAdapter(),
@@ -202,6 +212,7 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
         lane,
         baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
@@ -235,6 +246,7 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
         lane,
         baseline=baseline,
         project_root=project_root,
+        repo_top=project_root,
         scratch_root=scratch_root,
         targets=_TARGETS,
         adapter=PythonAdapter(),
@@ -246,3 +258,129 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
     assert baseline.outcome is Outcome.PASS
     assert mutation.total == 4
     assert list(scratch_root.iterdir()) == []
+
+
+# --- the bucket sort is what makes ordering adapter-independent --------------
+
+
+def _always_pass(argv, *, env, cwd, timeout):
+    return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+
+
+@dataclass(frozen=True)
+class _ReverseOrderAdapter:
+    """An adapter that emits its mutants in DELIBERATELY reverse identity
+    order. `PythonAdapter.generate_mutants` sorts its own output by
+    ``(lineno, operator, description, start)``, and `collect_mutants` sorts
+    targets by path -- so with the only real generating adapter in the
+    suite, `run_mutation`'s own three bucket sorts can never change
+    anything, and removing them passes every other test in this module.
+
+    ``adapters/base.py``'s protocol promises no order at all, though, which
+    is what those sorts exist for and what the next generating adapter
+    (Go, P23) will exercise for real. This stub is that adapter's stand-in
+    today: without the sorts, the recorded survivors come back in
+    submission order, which is this adapter's own reverse order.
+    """
+
+    name: str = "rev"
+    source_globs: tuple[str, ...] = ("*.py",)
+    excluded_dir_names: frozenset[str] = frozenset()
+    requires_span_attribution: bool = False
+    external_tools: tuple[str, ...] = ()
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return False
+
+    def has_executable_code(self, rel_path: str, text: str) -> bool:
+        return True
+
+    def normalize_coverage_key(self, key: str) -> str:
+        return key
+
+    def generate_mutants(self, text: str, lines: set[int]):
+        return tuple(
+            Mutant(
+                lineno=lineno,
+                operator="bool-const-flip",
+                description=f"True->False (line {lineno})",
+                mutated_text=text.replace(
+                    f"    x{lineno} = True", f"    x{lineno} = False"
+                ),
+            )
+            for lineno in sorted(lines, reverse=True)
+        )
+
+
+def test_the_recorded_buckets_are_ordered_by_identity_not_by_submission(
+    tmp_path: Path,
+):
+    lane = make_lane(argv=("pytest", "-q"))
+    project_root = tmp_path / "proj"
+    scratch_root = tmp_path / "scratch"
+    (project_root / "pkg").mkdir(parents=True)
+    text = "def flags():\n" + "".join(f"    x{n} = True\n" for n in (2, 3, 4))
+    (project_root / "pkg" / "flags.py").write_text(text, encoding="utf-8")
+    scratch_root.mkdir()
+    targets = (
+        MutationTarget(path="pkg/flags.py", text=text, lines=frozenset({2, 3, 4})),
+    )
+    baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
+
+    mutation = run_mutation(
+        lane,
+        baseline=baseline,
+        project_root=project_root,
+        repo_top=project_root,
+        scratch_root=scratch_root,
+        targets=targets,
+        adapter=_ReverseOrderAdapter(),
+        jobs=1,
+        operators=("bool-const-flip",),
+        process_runner=_always_pass,
+    )
+
+    # everything survives (`_always_pass`), so all three identities land in
+    # the one bucket and their ORDER is the whole observation.
+    assert [entry.lineno for entry in mutation.survived] == [2, 3, 4]
+
+
+# --- where the mutant is WRITTEN inside the copy (A-145) ---------------------
+#
+# A target's `path` is REPO-relative; the scratch tree is a copy of the
+# PROJECT root. Those are the same string only when the project IS the
+# repository top -- which is what every fixture above happens to be, and
+# exactly why the mismatch survived until a real subdirectory project ran.
+
+
+def test_project_prefix_is_empty_when_the_project_is_the_repository_top(
+    tmp_path: Path,
+):
+    assert project_prefix(repo_top=tmp_path, project_root=tmp_path) == ""
+
+
+def test_project_prefix_names_the_projects_own_subdirectory(tmp_path: Path):
+    (tmp_path / "assay").mkdir()
+
+    assert project_prefix(repo_top=tmp_path, project_root=tmp_path / "assay") == "assay/"
+
+
+def test_a_nested_project_prefix_uses_forward_slashes(tmp_path: Path):
+    (tmp_path / "libs" / "assay").mkdir(parents=True)
+
+    prefix = project_prefix(repo_top=tmp_path, project_root=tmp_path / "libs" / "assay")
+
+    assert prefix == "libs/assay/"
+
+
+def test_a_repo_relative_target_is_respelled_relative_to_the_project_root():
+    assert _within_project("assay/src/mod.py", "assay/") == "src/mod.py"
+
+
+def test_a_target_outside_the_project_root_is_refused_before_submission():
+    """The check earns its place: without it this path is written into the
+    copy anyway (or, more often, crashes deep in a worker thread with a
+    bare ``FileNotFoundError``), because the copy simply has no counterpart
+    for a file that lives outside the directory it was copied from."""
+    with pytest.raises(ValueError, match="outside the project root"):
+        _within_project("other/src/mod.py", "assay/")

@@ -24,6 +24,7 @@ the older convention every test in this module used through P16 — now trips
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -32,7 +33,18 @@ import pytest
 from conftest import R0_LANE, R1_LANE, GitRepo, set_key, why_invalid
 from jsonschema import Draft202012Validator
 
-from assay.cli import main
+from assay.cli import _built_in_registry, main
+from assay.config import RIGOR_LEVELS
+
+
+def _run_parser_description() -> str:
+    """Exactly what a user sees from ``assay run --help`` -- captured from
+    the real parser's own output, never read off the source line that
+    writes it."""
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured), pytest.raises(SystemExit):
+        main(["run", "--help"])
+    return captured.getvalue()
 
 
 def run(argv: list[str]) -> tuple[int, str, str]:
@@ -191,6 +203,31 @@ def _r1_lane_writing_a_marker(marker: Path) -> str:
     *marker* -- so "did the command run?" is a filesystem fact, not a
     call count on an injected seam this module deliberately never uses."""
     return set_key(R1_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
+
+
+def test_the_run_help_declares_exactly_the_levels_the_registry_reaches():
+    """A-146. ``assay run --help``'s own last sentence is a CAPABILITY
+    DECLARATION addressed to a human, and it had gone stale the moment P18
+    widened the registry -- it still said "R0 and Python R1" while the
+    build genuinely reached R2. Pinned to the registry itself rather than
+    to a literal, so the two cannot drift apart again: the levels named in
+    the prose are exactly the levels ``_built_in_registry`` declares, plus
+    ``R0``, which needs no adapter and is therefore in no entry.
+
+    Under-declaring is not harmless just because it is the safe direction:
+    this project exists to remove the gap between a declared capability
+    and a real one, in EITHER direction (the post-series review's own
+    finding 1)."""
+    entry_levels = {
+        level
+        for entry in _built_in_registry().entries.values()
+        for level in entry.rigor
+    }
+    description = _run_parser_description()
+
+    named = {level for level in RIGOR_LEVELS if level in description}
+
+    assert named == entry_levels | {"R0"}
 
 
 def test_run_evaluates_a_real_r2_pass_end_to_end(git_repo: GitRepo):

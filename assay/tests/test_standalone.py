@@ -42,6 +42,18 @@ what those two do NOT yet cover:
   proven here by validating the REAL emitted R0 artifact against it, rather
   than re-proving what ``test_verdict_schema_is_packaged.py`` already does.
 
+**P17 added** the same proof one rigor level up: a real two-commit Python
+fixture judged at R1 through the installed console script, compared as a
+COMPLETE document.
+
+**P18 (work item 7 / O4) adds R2**: real changed-line mutants, built and
+executed by the installed wheel, rendered as complete documents for five of
+the six terminal shapes O4 names -- killed, survived, no-mutants,
+baseline-adverse, and budget-exceeded -- each with the shared source tree
+hashed before and after. The sixth (a CRASHED mutant) is not producible
+through a real lane at all; the section below says why, at the point where
+its absence would otherwise look like an omission.
+
 A-125: nothing here is a committed ``test_*.py`` under
 ``tests/fixtures/standalone/`` — every fixture used is either already
 committed and already ``collect_ignore_glob``-excluded
@@ -51,6 +63,7 @@ materialised as a literal string/temp file at test time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -368,6 +381,452 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     # image for a reason that has nothing to do with R1.
     volatile = {"assay_version", "started", "ended"}
     assert {k: v for k, v in real.items() if k not in volatile} == expected
+
+
+# --- O4 (P18 work item 7): a real R2 lane through the installed wheel --------
+#
+# Every lane below declares its PATH explicitly (`env = { PATH = ... }`,
+# `env_passthrough = []`) rather than passing the ambient one through: the
+# commands genuinely need `grep`/`sleep`, and a passed-through PATH would put
+# a machine-specific string into `env_effective` and make the complete
+# document comparisons below dishonest.
+#
+# ONE of O4's six named terminal shapes is deliberately absent: a CRASHED
+# mutant (`ERROR`/`EXEC_FAILED`). That bucket means the mutant's process
+# could not be STARTED at all, and it is not producible through a real
+# installed lane: `argv` is byte-identical for the baseline and every mutant
+# (A-118, proven in `test_mutation_argv_fidelity.py`), the scratch tree is a
+# faithful `copytree` of the project root, and only ONE source file's text
+# differs -- so any argv that launches for the baseline launches for every
+# mutant too, and any argv that fails to launch fails the baseline first,
+# short-circuiting before a mutant is ever submitted. It is reachable only
+# through an injected process boundary, where `test_mutation_isolation.py`
+# and `test_mutation_judge.py` already drive it alongside the other three.
+# Recorded here rather than silently omitted (A-147).
+
+
+def _r2_lane_toml(
+    *,
+    script: str,
+    base: str,
+    operators: tuple[str, ...] = ("compare-swap",),
+    jobs: int = 1,
+    budget: str = "2m",
+) -> str:
+    operators_toml = ", ".join(json.dumps(name) for name in operators)
+    return (
+        "schema_version = 1\n\n"
+        "[lanes.package]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R2"]\n'
+        'enforcement = "gate"\n'
+        f"argv = {json.dumps(['/bin/sh', '-c', script])}\n"
+        'env = { PATH = "/usr/bin:/bin" }\n'
+        "env_passthrough = []\n"
+        f'budget = "{budget}"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.package.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["src"]\n'
+        f'base = "{base}"\n\n'
+        "[lanes.package.judge.mutation]\n"
+        f"jobs = {jobs}\n"
+        f"operators = [{operators_toml}]\n"
+    )
+
+
+#: The command every kill/survive lane below runs: PASS iff the live
+#: ``src/mod.py`` still contains the literal ``x > 0``. The baseline does;
+#: the ``Gt->GtE`` mutant of line 2 does not, so it is genuinely KILLED,
+#: while the mutant of line 6 leaves line 2 untouched and SURVIVES.
+_GREP_LINE_2 = "grep -q 'x > 0' src/mod.py"
+
+_MOD_AT_BASE = "def f(x):\n    return 0\n\n\ndef g(y):\n    return 0\n"
+_MOD_AT_HEAD = "def f(x):\n    return x > 0\n\n\ndef g(y):\n    return y > 1\n"
+
+_ARGV_KEYS = ("argv_declared", "argv_effective")
+
+
+def _tracked_file_hashes(root: Path) -> dict[str, str]:
+    """Every file in the worktree except git's own bookkeeping, by sha256 --
+    O4's "shared source bytes remain unchanged" half. ``.git`` is excluded
+    because a real `assay run` legitimately refreshes the index's stat cache
+    while checking cleanliness; nothing under it is source."""
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and ".git" not in path.relative_to(root).parts
+    }
+
+
+def _seed_two_compare_swap_sites(git_repo: GitRepo) -> str:
+    """A real two-commit history introducing exactly TWO ``compare-swap``
+    sites (lines 2 and 6), with a BRANCH NAME left pointing at the base --
+    the lane declares that symbolic ref, never the 40-char SHA."""
+    (git_repo.path / "src").mkdir()
+    (git_repo.path / "src" / "mod.py").write_text(_MOD_AT_BASE, encoding="utf-8")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.git("branch", "control-baseline", base_rev)
+    (git_repo.path / "src" / "mod.py").write_text(_MOD_AT_HEAD, encoding="utf-8")
+    git_repo.commit_all("introduce two compare-swap sites")
+    return base_rev
+
+
+def _expected_r2_artifact(
+    *,
+    git_repo: GitRepo,
+    script: str,
+    outcome: str,
+    reason_code: str,
+    exit_code: int,
+    r2_claim: dict,
+    jobs: int = 1,
+    operators: list[str] | None = None,
+    r0_claim: dict | None = None,
+) -> dict:
+    """The COMPLETE expected document, written out in full so a field the
+    producer adds, drops, or fills in wrongly fails even though no assertion
+    names it (the established form -- a dozen other comparisons in this
+    suite are written the same way). ``judgment`` is omitted entirely when
+    *operators* is ``None``, which is what a run that never rendered a
+    mutation payload must emit."""
+    argv = ["/bin/sh", "-c", script]
+    document = {
+        "schema_version": 3,
+        "lane": "package",
+        "commit": git_repo.head(),
+        "outcome": outcome,
+        # the ROLLUP's own cause, stated independently rather than copied
+        # off *r2_claim* -- an artifact whose top-level reason disagreed
+        # with the claim it came from would otherwise pass unnoticed.
+        "reason_code": reason_code,
+        "exit_code": exit_code,
+        "declared_rigor": ["R0", "R2"],
+        "declared_evidence": [],
+        "argv_declared": argv,
+        "argv_appended": [],
+        "argv_effective": argv,
+        "argv_modified": False,
+        "env_declared": {"PATH": "/usr/bin:/bin"},
+        "env_effective": {"PATH": "/usr/bin:/bin"},
+        "scope": "S1",
+        "enforcement": "gate",
+        "claims": [
+            r0_claim
+            or {
+                "rigor": "R0",
+                "source": "computed",
+                "status": "PASS",
+                "verified_by_assay": True,
+            },
+            r2_claim,
+        ],
+        "evidence": [],
+    }
+    if operators is not None:
+        document["judgment"] = {"r2": {"jobs": jobs, "operators": operators}}
+    return document
+
+
+def _assert_complete(real: dict, expected: dict) -> None:
+    # `assay_version`/`started`/`ended` are the three values a real run
+    # genuinely cannot hand-inject; everything else is compared.
+    volatile = {"assay_version", "started", "ended"}
+    assert {k: v for k, v in real.items() if k not in volatile} == expected
+
+
+def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wheel(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O4's first two terminal shapes in ONE artifact, through the installed
+    console script: two independently enumerated changed-line mutants, one
+    genuinely killed by a real subprocess and one genuinely surviving it.
+
+    A universal-killed bug (O4's own first negative) fails here, because the
+    survivor's own identity -- path, lineno, operator, description -- is in
+    the expected document; so does an omitted unattempted identity, because
+    ``total`` and the bucket are compared together. And the shared source
+    tree is hashed before and after: live-tree mutation (the third negative)
+    changes ``src/mod.py``'s digest.
+    """
+    _seed_two_compare_swap_sites(git_repo)
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r2_lane_toml(script=_GREP_LINE_2, base="control-baseline"),
+    )
+    git_repo.commit_all("add assay.toml")
+    before = _tracked_file_hashes(git_repo.path)
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 1, proc.stderr  # Outcome.FAIL.exit_code
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == [], "the real R2 artifact is not schema-valid"
+    _assert_complete(
+        real,
+        _expected_r2_artifact(
+            git_repo=git_repo,
+            script=_GREP_LINE_2,
+            outcome="FAIL",
+            reason_code="MUTANTS_SURVIVED",
+            exit_code=1,
+            operators=["compare-swap"],
+            r2_claim={
+                "rigor": "R2",
+                "source": "computed",
+                "status": "FAIL",
+                "verified_by_assay": True,
+                "reason_code": "MUTANTS_SURVIVED",
+                "mutation": {
+                    "total": 2,
+                    "killed": 1,
+                    # line 2's `x > 0` -> `x >= 0` is what the lane's own
+                    # grep looks for, so THAT one dies; line 6's `y > 1` is
+                    # unobserved by the command and lives.
+                    "survived": [
+                        {
+                            "path": "src/mod.py",
+                            "lineno": 6,
+                            "operator": "compare-swap",
+                            "description": "Gt->GtE",
+                        }
+                    ],
+                    "crashed": [],
+                    "budget_exceeded": [],
+                },
+            },
+        ),
+    )
+    assert _tracked_file_hashes(git_repo.path) == before, (
+        "every mutant runs in its own copy -- the shared tree must be "
+        "byte-identical afterwards"
+    )
+
+
+def test_a_real_r2_lane_diffs_the_resolved_merge_base_not_the_declared_ref(
+    standalone: Standalone, git_repo: GitRepo
+):
+    """A-143's shape, one rigor level over and made genuinely
+    discriminating. ``judgment.r2`` records no base, so a symbolic ref alone
+    proves nothing here -- instead the declared ref is a branch that has
+    DIVERGED, so ``base..HEAD`` and ``merge-base(base, HEAD)..HEAD`` name
+    different changed lines and therefore a different number of mutants.
+
+    ``control-baseline`` already carries line 2's own ``x > 0``, so diffing
+    against the branch TIP would see only line 6 change and build ONE
+    mutant. Diffing against the fork point -- what ``git.resolve_base``
+    actually does -- sees both and builds TWO. The count in the artifact is
+    the discriminator.
+    """
+    (git_repo.path / "src").mkdir()
+    (git_repo.path / "src" / "mod.py").write_text(_MOD_AT_BASE, encoding="utf-8")
+    git_repo.commit_all("the fork point")
+
+    git_repo.git("checkout", "-q", "-b", "control-baseline")
+    (git_repo.path / "src" / "mod.py").write_text(
+        "def f(x):\n    return x > 0\n\n\ndef g(y):\n    return 0\n", encoding="utf-8"
+    )
+    git_repo.commit_all("diverge: line 2 already at its HEAD value")
+
+    git_repo.git("checkout", "-q", "main")
+    (git_repo.path / "src" / "mod.py").write_text(_MOD_AT_HEAD, encoding="utf-8")
+    git_repo.commit_all("introduce two compare-swap sites")
+
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r2_lane_toml(script=_GREP_LINE_2, base="control-baseline"),
+    )
+    git_repo.commit_all("add assay.toml")
+
+    proc = _run_assay(standalone, lane_file)
+
+    real = json.loads(proc.stdout)
+    mutation = real["claims"][1]["mutation"]
+    assert mutation["total"] == 2, (
+        "two mutants means the fork point was diffed; one would mean the "
+        "declared branch tip was used verbatim"
+    )
+    assert [entry["lineno"] for entry in mutation["survived"]] == [6]
+
+
+def test_a_real_r2_lane_with_no_declared_operator_site_is_inconclusive(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O4's ``no-mutants`` shape. The one changed line IS a real mutation
+    site -- a ``bool-const-flip`` -- but the lane declares only
+    ``compare-swap``, so the operator filter empties the job list and the
+    honest answer is ``INCONCLUSIVE``/``NO_MUTANTS`` with a real, empty
+    payload. Never PASS: nothing was measured."""
+    (git_repo.path / "src").mkdir()
+    (git_repo.path / "src" / "mod.py").write_text(
+        "def f():\n    return 0\n", encoding="utf-8"
+    )
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.git("branch", "control-baseline", base_rev)
+    (git_repo.path / "src" / "mod.py").write_text(
+        "def f():\n    return True\n", encoding="utf-8"
+    )
+    git_repo.commit_all("change the one line to a bool-const site")
+    lane_file = _write_lane_file(
+        git_repo.path, _r2_lane_toml(script="exit 0", base="control-baseline")
+    )
+    git_repo.commit_all("add assay.toml")
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 5, proc.stderr  # Outcome.INCONCLUSIVE.exit_code
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == []
+    _assert_complete(
+        real,
+        _expected_r2_artifact(
+            git_repo=git_repo,
+            script="exit 0",
+            outcome="INCONCLUSIVE",
+            reason_code="NO_MUTANTS",
+            exit_code=5,
+            operators=["compare-swap"],
+            r2_claim={
+                "rigor": "R2",
+                "source": "computed",
+                "status": "INCONCLUSIVE",
+                "verified_by_assay": True,
+                "reason_code": "NO_MUTANTS",
+                "mutation": {
+                    "total": 0,
+                    "killed": 0,
+                    "survived": [],
+                    "crashed": [],
+                    "budget_exceeded": [],
+                },
+            },
+        ),
+    )
+
+
+def test_a_real_r2_lane_propagates_an_adverse_baseline_verbatim(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O4's ``baseline-adverse`` shape, and work item 4's own contract read
+    end to end: the lane's command fails, so no mutant is ever built and the
+    R2 claim reuses R0's own ``(outcome, reason_code)`` VERBATIM with NO
+    mutation payload -- and no ``judgment.r2``, because no policy was ever
+    applied to anything."""
+    _seed_two_compare_swap_sites(git_repo)
+    lane_file = _write_lane_file(
+        git_repo.path, _r2_lane_toml(script="exit 7", base="control-baseline")
+    )
+    git_repo.commit_all("add assay.toml")
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 1, proc.stderr  # Outcome.FAIL.exit_code
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == []
+    _assert_complete(
+        real,
+        _expected_r2_artifact(
+            git_repo=git_repo,
+            script="exit 7",
+            outcome="FAIL",
+            reason_code="COMMAND_FAILED",
+            exit_code=1,
+            operators=None,
+            r0_claim={
+                "rigor": "R0",
+                "source": "computed",
+                "status": "FAIL",
+                "verified_by_assay": True,
+                "reason_code": "COMMAND_FAILED",
+            },
+            r2_claim={
+                "rigor": "R2",
+                "source": "computed",
+                "status": "FAIL",
+                "verified_by_assay": True,
+                "reason_code": "COMMAND_FAILED",
+            },
+        ),
+    )
+
+
+def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
+    standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
+):
+    """O4's ``budget-exceeded`` shape, through a real timeout rather than an
+    injected one -- the only one of the six that a real lane can only reach
+    by actually waiting.
+
+    The command is content-dependent in the opposite direction to the kill
+    test: it sleeps only when ``x > 0`` is ABSENT, which is true for line
+    2's mutant and false for the baseline and for line 6's. So the baseline
+    and one mutant finish immediately, and exactly one mutant is stopped by
+    the lane's own budget -- never conflated with a kill (a timeout exits
+    non-zero too, which is precisely the conflation A-122 refuses).
+
+    The margin is deliberate, not tuned: 5s of budget against a 300s sleep,
+    with the passing paths doing one `grep` on a six-line file. This cannot
+    flip on a slow machine without the whole suite already having failed
+    for a different reason (AUTHORING.md §3b.A's own reading -- a slow-host
+    red here would be a TRUE red).
+    """
+    script = "grep -q 'x > 0' src/mod.py || sleep 300"
+    _seed_two_compare_swap_sites(git_repo)
+    lane_file = _write_lane_file(
+        git_repo.path,
+        _r2_lane_toml(script=script, base="control-baseline", jobs=2, budget="5s"),
+    )
+    git_repo.commit_all("add assay.toml")
+    before = _tracked_file_hashes(git_repo.path)
+
+    proc = _run_assay(standalone, lane_file)
+
+    assert proc.returncode == 4, proc.stderr  # Outcome.BUDGET_EXCEEDED.exit_code
+    real = json.loads(proc.stdout)
+    assert why_invalid(validator, real) == []
+    _assert_complete(
+        real,
+        _expected_r2_artifact(
+            git_repo=git_repo,
+            script=script,
+            outcome="BUDGET_EXCEEDED",
+            reason_code="LANE_TIMEOUT",
+            exit_code=4,
+            jobs=2,
+            operators=["compare-swap"],
+            r2_claim={
+                "rigor": "R2",
+                "source": "computed",
+                "status": "BUDGET_EXCEEDED",
+                "verified_by_assay": True,
+                "reason_code": "LANE_TIMEOUT",
+                "mutation": {
+                    "total": 2,
+                    # line 6's mutant leaves `x > 0` in place, so the grep
+                    # succeeds, nothing sleeps, and it SURVIVES.
+                    "killed": 0,
+                    "survived": [
+                        {
+                            "path": "src/mod.py",
+                            "lineno": 6,
+                            "operator": "compare-swap",
+                            "description": "Gt->GtE",
+                        }
+                    ],
+                    "crashed": [],
+                    "budget_exceeded": [
+                        {
+                            "path": "src/mod.py",
+                            "lineno": 2,
+                            "operator": "compare-swap",
+                            "description": "Gt->GtE",
+                        }
+                    ],
+                },
+            },
+        ),
+    )
+    assert _tracked_file_hashes(git_repo.path) == before
 
 
 def test_the_installed_wheel_ships_and_exposes_the_go_adapter(standalone: Standalone):

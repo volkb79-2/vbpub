@@ -10,8 +10,8 @@ stack: none
 depends_on: [assay-P17-r1-cli-pipeline]
 session: resume:assay-v11-canary
 scope:
-  touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/registry.py", "src/assay/canary.py", "tests/**", "README.md"]
-  forbid: ["src/assay/verdict.py", "src/assay/schemas", "src/assay/mutation.py", "src/assay/attestation.py", "src/assay/adapters/go.py"]
+  touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/registry.py", "src/assay/canary.py", "src/assay/verdict.py", "src/assay/verify.py", "tests/**", "README.md"]
+  forbid: ["src/assay/schemas", "src/assay/mutation.py", "src/assay/attestation.py", "src/assay/adapters/go.py"]
 oracles:
   - id: O1
     observable: "judge.canary has a closed mechanism and project-relative target contract; unknown keys, unknown mechanisms, traversal, and targets outside source roots fail loading"
@@ -61,6 +61,7 @@ on branch `feat/assay-P19-isolated-r3-cli-pipeline`.
 6. Populate P16's R3 policy, advance only Python's registry capability through R3, and append exactly one R3 claim. Create complete hand-written installed-wheel artifacts for PASS, broken control, survivor, wrong cause, no-op, and malformed configuration.
 7. Fingerprint consumer HEAD, index, tracked/untracked paths, and file bytes before and after every terminal case. The fingerprint is the restoration oracle; a call ledger alone is insufficient.
 8. Break config closure, target containment, scratch isolation, shared-pipeline use, expected-reason comparison, control gating, and final timing separately; run the real gate and record exact A-067 counts.
+9. **(A-148, added at the P18 merge — read that ruling first.)** Tie `judgment.r2` and `judgment.r3` to the claims they describe, in BOTH places `judgment.r1` already is: `Verdict._check_judgment_matches_claims` (construction) and `verify._check_judgment_matches_claims` (an independent consumer). Presence must agree with the corresponding payload-bearing claim in both directions, and every operator/mechanism a claim's payload NAMES must be one the recorded policy declared. `verdict.py`/`verify.py` are in `scope.touch` for exactly this, and for the two stale "RESERVED; populated by a future package" docstrings P18 already falsified. `src/assay/schemas` stays forbidden: both shapes already exist, so no schema bump is involved.
 
 ## Carried in from P16, merged (read before writing work items 4 and 6)
 
@@ -100,16 +101,19 @@ A-139–A-143. Treat as decided, not as observations.
 - **RULED (A-142) — external-tool preflighting is still deferred and is NOT yours.** It belongs to P23, the first package registering an adapter that genuinely declares one.
 - **Two evidence traps P17's review had to close; the same shapes apply to `judgment.r3`.** (1) Nothing distinguished a RESOLVED recorded input from an echoed one, because every test declared the already-resolved form (A-143) — make correct and incorrect genuinely different in at least one oracle. (2) An oracle demanding a "complete artifact" was satisfied with a handful of field assertions; this suite's established form is a whole-document `==` with only un-injectable fields excluded.
 
-## Carried in from P18, implementer notes (unratified — flag for controller review)
+## Carried in from P18, MERGED AND RATIFIED (read before work items 1, 6 and 9)
 
-Not `decisions.md` entries; observations from actually building P18, kept
-short (<300 chars) per the controller's own request. Read before writing
-work items 1 and 6.
+Reviewed at the P18 merge, corrected where wrong, ratified as A-145–A-148.
+Treat as decided, not as observations.
 
 - cli.py's `_resolve_declared_adapters` tail is now `_ADAPTER_BEARING_LEVELS = ("R1", "R2")`, tried in order, first match wins. Add `"R3"` to that tuple -- one line -- rather than a third parallel lookup; `get_adapter` returns the same object per language regardless of which level resolved it.
+- **RULED (A-146) — `assay run --help`'s "this build evaluates ..." sentence is a capability declaration, and P18 left it stale.** It is now pinned to `_built_in_registry` by a test, so widening the registry to R3 without widening that sentence is a red, not a docs chore.
 - If `judge.canary.mechanism` validates against a closed set `canary.py` owns (mirroring `mutation.operators` vs `MUTATION_OPERATORS`), importing it in `config.py` hits the same cycle `mutation.py` names. Fix: a deferred import in the loader function, not module-level -- see `config._load_mutation`.
 - `evaluate_r1` now carries two optional callbacks, `on_base_resolved` and `on_added_resolved`, both additive/default-`None`. R3 doesn't call it through `run_lane` though (`canary.py` calls it directly in its own scratch copy) -- check you actually need a third callback before adding one.
-- Before writing `judgment.r3`'s "populate iff a payload rendered" logic, trace whether that condition is reachable at all given R3's own upstream guards -- mine (`judgment.r2`) turned out unconditionally true once traced; the dead branch left behind was itself a defect (§3b.D).
+- Before writing `judgment.r3`'s "populate iff a payload rendered" logic, trace whether that condition is reachable at all given R3's own upstream guards -- P18's turned out unconditionally true once traced.
+- **RULED (A-145) — repo-relative and project-relative are two spellings of the same file, and R3 meets them too.** P18 shipped a crash for any project in a SUBDIRECTORY of its repo (assay's own layout): diff paths are repo-top-relative, the per-mutant copy is a copy of the PROJECT root. Your `judge.canary.target` is declared project-relative while `evaluate_r1`'s diff is not. Say which spelling each boundary uses, and fixture a subdirectory project.
+- **RULED (A-148) — work item 9 is yours, which is why `verdict.py`/`verify.py` are now in your `scope.touch`.** P18 populated `judgment.r2` and tied it to nothing; you populate `judgment.r3`. No package in P19–P25 could touch either file, so this was a deferral with no executor.
+- **"A complete artifact" means a whole-document `==`, and this is the third package told so.** P18's work item 7 (installed-wheel R2 fixture, complete artifacts, source hashes) was skipped entirely and written during review; your work item 6 asks for six of them.
 
 ## Test constraints copied from AUTHORING.md §3b
 
