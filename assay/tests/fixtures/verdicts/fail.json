@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
@@ -75,6 +75,7 @@
         "changed_executable": 3,
         "pct": 66.66666666666667,
         "considered": 1,
+        "exclusion_capability": "reported",
         "missing_lines": {
           "src/assay/verdict.py": [
             42

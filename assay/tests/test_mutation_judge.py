@@ -25,6 +25,9 @@ from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationTarget, build_mutation_claim, judge_mutation, run_mutation
 from assay.runner import CommandPlan, CommandResult, execute_command
 
+#: sha256(b"<="), hand-computed rather than read back from the code (A-067).
+_SHA_LTE = "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
+
 _PLAN = CommandPlan(
     argv_declared=("pytest", "-q"),
     argv_appended=(),
@@ -57,7 +60,7 @@ def test_zero_total_is_inconclusive_no_mutants():
     from assay.verdict import Mutation
 
     baseline = _baseline(Outcome.PASS, None)
-    mutation = Mutation(total=0, killed=0)
+    mutation = Mutation(candidate_count=0, total=0)
     assert judge_mutation(baseline, mutation) == (Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS)
 
 
@@ -67,11 +70,15 @@ def test_crashed_outranks_survived_and_budget_exceeded_when_all_three_are_presen
     or budget_exceeded FIRST would silently launder a real crash."""
     from assay.verdict import Mutation, MutantOutcome
 
-    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, operator="compare-swap", description="Lt->LtE")
-    crashed = MutantOutcome(path="pkg/mod.py", lineno=2, operator="compare-swap", description="Lt->LtE")
-    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, operator="compare-swap", description="Lt->LtE")
+    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    crashed = MutantOutcome(path="pkg/mod.py", lineno=2, start_byte=20, end_byte=21, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, start_byte=30, end_byte=31, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
     mutation = Mutation(
-        total=3, killed=0, survived=(survivor,), crashed=(crashed,), budget_exceeded=(stopped,)
+        candidate_count=3,
+        total=3,
+        survived=(survivor,),
+        crashed=(crashed,),
+        budget_exceeded=(stopped,),
     )
     baseline = _baseline(Outcome.PASS, None)
     assert judge_mutation(baseline, mutation) == (Outcome.ERROR, ReasonCode.EXEC_FAILED)
@@ -80,9 +87,11 @@ def test_crashed_outranks_survived_and_budget_exceeded_when_all_three_are_presen
 def test_budget_exceeded_outranks_survived_when_both_are_present():
     from assay.verdict import Mutation, MutantOutcome
 
-    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, operator="compare-swap", description="Lt->LtE")
-    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, operator="compare-swap", description="Lt->LtE")
-    mutation = Mutation(total=2, killed=0, survived=(survivor,), budget_exceeded=(stopped,))
+    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, start_byte=30, end_byte=31, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    mutation = Mutation(
+        candidate_count=2, total=2, survived=(survivor,), budget_exceeded=(stopped,)
+    )
     baseline = _baseline(Outcome.PASS, None)
     assert judge_mutation(baseline, mutation) == (Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT)
 
@@ -90,8 +99,8 @@ def test_budget_exceeded_outranks_survived_when_both_are_present():
 def test_survived_alone_is_fail_mutants_survived():
     from assay.verdict import Mutation, MutantOutcome
 
-    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, operator="compare-swap", description="Lt->LtE")
-    mutation = Mutation(total=1, killed=0, survived=(survivor,))
+    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    mutation = Mutation(candidate_count=1, total=1, survived=(survivor,))
     baseline = _baseline(Outcome.PASS, None)
     assert judge_mutation(baseline, mutation) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
 
@@ -99,7 +108,21 @@ def test_survived_alone_is_fail_mutants_survived():
 def test_every_bucket_empty_with_a_positive_total_is_pass():
     from assay.verdict import Mutation
 
-    mutation = Mutation(total=3, killed=3)
+    from assay.verdict import MutantOutcome
+
+    killed = tuple(
+        MutantOutcome(
+            path="pkg/mod.py",
+            lineno=index,
+            start_byte=index * 10,
+            end_byte=index * 10 + 1,
+            replacement_sha256=_SHA_LTE,
+            operator="compare-swap",
+            description="Lt->LtE",
+        )
+        for index in (1, 2, 3)
+    )
+    mutation = Mutation(candidate_count=3, total=3, killed=killed)
     baseline = _baseline(Outcome.PASS, None)
     assert judge_mutation(baseline, mutation) == (Outcome.PASS, None)
 
@@ -110,7 +133,21 @@ def test_every_bucket_empty_with_a_positive_total_is_pass():
 def test_build_mutation_claim_wires_status_reason_and_the_mutation_payload():
     from assay.verdict import Mutation
 
-    mutation = Mutation(total=2, killed=2)
+    from assay.verdict import MutantOutcome
+
+    killed = tuple(
+        MutantOutcome(
+            path="pkg/mod.py",
+            lineno=index,
+            start_byte=index * 10,
+            end_byte=index * 10 + 1,
+            replacement_sha256=_SHA_LTE,
+            operator="compare-swap",
+            description="Lt->LtE",
+        )
+        for index in (1, 2)
+    )
+    mutation = Mutation(candidate_count=2, total=2, killed=killed)
     baseline = _baseline(Outcome.PASS, None)
 
     claim = build_mutation_claim(baseline, mutation)
@@ -177,22 +214,37 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=decide,
     )
 
     assert baseline.outcome is Outcome.PASS
     assert mutation.total == 4
-    assert mutation.killed == 1
+    assert len(mutation.killed) == 1
     assert len(mutation.survived) == 1
     assert len(mutation.crashed) == 1
     assert len(mutation.budget_exceeded) == 1
     assert mutation.total == (
-        mutation.killed
+        len(mutation.killed)
         + len(mutation.survived)
         + len(mutation.crashed)
         + len(mutation.budget_exceeded)
     )
+    # P21/A-180: every attempted mutant is now an identity, killed included,
+    # and no identity may appear twice across the four buckets.
+    identities = [
+        entry.identity
+        for bucket in (
+            mutation.killed,
+            mutation.survived,
+            mutation.crashed,
+            mutation.budget_exceeded,
+        )
+        for entry in bucket
+    ]
+    assert len(set(identities)) == 4
+    assert mutation.candidate_count == 4
 
     claim = build_mutation_claim(baseline, mutation)
     assert claim.status is Outcome.ERROR

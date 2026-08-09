@@ -97,6 +97,7 @@ def _run_with_recording_factory(tmp_path: Path, jobs: int):
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=jobs,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=_always_pass,
         executor_factory=factory,
@@ -159,6 +160,7 @@ def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: P
         targets=(),  # nothing to mutate
         adapter=PythonAdapter(),
         jobs=3,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=_always_pass,
         executor_factory=factory,
@@ -194,7 +196,8 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=jobs,
-            operators=("bool-const-flip",),
+            max_mutants=50,
+        operators=("bool-const-flip",),
             process_runner=_always_pass,
         )
         assert baseline.outcome is Outcome.PASS
@@ -226,7 +229,8 @@ def test_jobs_zero_is_rejected_before_the_executor_boundary(tmp_path: Path):
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=0,
-            operators=("bool-const-flip",),
+            max_mutants=50,
+        operators=("bool-const-flip",),
             executor_factory=factory,
         )
 
@@ -249,7 +253,8 @@ def test_a_non_integer_jobs_is_rejected(tmp_path: Path, bad_jobs):
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=bad_jobs,
-            operators=("bool-const-flip",),
+            max_mutants=50,
+        operators=("bool-const-flip",),
         )
 
 
@@ -287,5 +292,6 @@ def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=-1,
-            operators=("bool-const-flip",),
+            max_mutants=50,
+        operators=("bool-const-flip",),
         )

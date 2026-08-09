@@ -32,7 +32,7 @@ from conftest import make_lane
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
 from assay.mutation import (
-    Mutant,
+    MutationSite,
     MutationTarget,
     _within_project,
     project_prefix,
@@ -138,6 +138,7 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=decide,
         executor_factory=lambda jobs: _SynchronousExecutor(),
@@ -145,7 +146,7 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
 
     assert baseline.outcome is Outcome.PASS
     assert mutation.total == 4
-    assert mutation.killed == 1
+    assert len(mutation.killed) == 1
     assert [o.lineno for o in mutation.survived] == [3]
     assert [o.lineno for o in mutation.crashed] == [4]
     assert [o.lineno for o in mutation.budget_exceeded] == [5]
@@ -177,7 +178,8 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=jobs,
-            operators=("bool-const-flip",),
+            max_mutants=50,
+        operators=("bool-const-flip",),
             process_runner=decide,
         )
         assert baseline.outcome is Outcome.PASS
@@ -217,6 +219,7 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=decide,
     )
@@ -224,7 +227,7 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
     assert baseline.outcome is Outcome.PASS
     # all four buckets were genuinely reached by this same run, each
     # correctly attributed regardless of which thread finished first.
-    assert mutation.killed == 1
+    assert len(mutation.killed) == 1
     assert [o.lineno for o in mutation.survived] == [3]
     assert [o.lineno for o in mutation.crashed] == [4]
     assert [o.lineno for o in mutation.budget_exceeded] == [5]
@@ -251,6 +254,7 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=decide,
     )
@@ -269,18 +273,18 @@ def _always_pass(argv, *, env, cwd, timeout):
 
 @dataclass(frozen=True)
 class _ReverseOrderAdapter:
-    """An adapter that emits its mutants in DELIBERATELY reverse identity
-    order. `PythonAdapter.generate_mutants` sorts its own output by
-    ``(lineno, operator, description, start)``, and `collect_mutants` sorts
-    targets by path -- so with the only real generating adapter in the
-    suite, `run_mutation`'s own three bucket sorts can never change
-    anything, and removing them passes every other test in this module.
+    """A minimal generating adapter, used with an executor that completes
+    its work in REVERSE submission order.
 
-    ``adapters/base.py``'s protocol promises no order at all, though, which
-    is what those sorts exist for and what the next generating adapter
-    (Go, P23) will exercise for real. This stub is that adapter's stand-in
-    today: without the sorts, the recorded survivors come back in
-    submission order, which is this adapter's own reverse order.
+    P21 note: this stub used to emit its sites in reverse identity order,
+    because `run_mutation` then sorted each bucket afterwards. That sort is
+    gone -- `collect_mutation_sites` now refuses an out-of-order batch
+    outright, so no input could reach the sort and AUTHORING 3b.D asks for
+    an unreachable line to be restructured away rather than kept. What
+    remains genuinely observable, and what this stub now exercises, is
+    POSITION ALIGNMENT: each future is awaited by its own index, so a result
+    lands with the job that produced it no matter which subprocess finished
+    first. An `as_completed` implementation would scramble exactly this.
     """
 
     name: str = "rev"
@@ -298,32 +302,51 @@ class _ReverseOrderAdapter:
     def normalize_coverage_key(self, key: str) -> str:
         return key
 
-    def generate_mutants(self, text: str, lines: set[int]):
-        return tuple(
-            Mutant(
-                lineno=lineno,
-                operator="bool-const-flip",
-                description=f"True->False (line {lineno})",
-                mutated_text=text.replace(
-                    f"    x{lineno} = True", f"    x{lineno} = False"
-                ),
+    def generate_mutation_sites(
+        self, text: str, lines: set[int], *, operators: tuple[str, ...], limit: int
+    ):
+        source = text.encode("utf-8")
+        sites = []
+        for lineno in sorted(lines):
+            needle = f"    x{lineno} = True".encode("utf-8")
+            start = source.index(needle) + len(needle) - len(b"True")
+            sites.append(
+                MutationSite(
+                    start_byte=start,
+                    end_byte=start + len(b"True"),
+                    replacement=b"False",
+                    lineno=lineno,
+                    operator="bool-const-flip",
+                    description=f"True->False (line {lineno})",
+                )
             )
-            for lineno in sorted(lines, reverse=True)
-        )
+        return tuple(sites[:limit])
 
 
-def test_the_recorded_buckets_are_ordered_by_identity_not_by_submission(
+def test_the_recorded_buckets_come_out_identity_ordered_across_files(
     tmp_path: Path,
 ):
+    """End to end, across TWO files handed in reverse path order: the
+    recorded bucket is ordered by identity (which leads with `path`), not by
+    the order the caller happened to supply its targets in.
+
+    `Mutation` itself refuses an out-of-order bucket, so this is not merely
+    an assertion about a list -- it is the reason `run_mutation` can build
+    one without sorting: `collect_mutation_sites` visits targets by path and
+    each per-file batch is already identity-ordered, and results are
+    consumed position-aligned with that job list."""
     lane = make_lane(argv=("pytest", "-q"))
     project_root = tmp_path / "proj"
     scratch_root = tmp_path / "scratch"
     (project_root / "pkg").mkdir(parents=True)
     text = "def flags():\n" + "".join(f"    x{n} = True\n" for n in (2, 3, 4))
     (project_root / "pkg" / "flags.py").write_text(text, encoding="utf-8")
+    (project_root / "pkg" / "aaa.py").write_text(text, encoding="utf-8")
     scratch_root.mkdir()
+    # Supplied z-then-a on purpose: path order is the collector's job.
     targets = (
         MutationTarget(path="pkg/flags.py", text=text, lines=frozenset({2, 3, 4})),
+        MutationTarget(path="pkg/aaa.py", text=text, lines=frozenset({2, 3, 4})),
     )
     baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
 
@@ -335,14 +358,23 @@ def test_the_recorded_buckets_are_ordered_by_identity_not_by_submission(
         scratch_root=scratch_root,
         targets=targets,
         adapter=_ReverseOrderAdapter(),
-        jobs=1,
+        jobs=3,
+        max_mutants=50,
         operators=("bool-const-flip",),
         process_runner=_always_pass,
     )
 
-    # everything survives (`_always_pass`), so all three identities land in
-    # the one bucket and their ORDER is the whole observation.
-    assert [entry.lineno for entry in mutation.survived] == [2, 3, 4]
+    # everything survives (`_always_pass`), so all six identities land in the
+    # one bucket and their ORDER is the whole observation.
+    recorded = [(entry.path, entry.lineno) for entry in mutation.survived]
+    assert recorded == [
+        ("pkg/aaa.py", 2),
+        ("pkg/aaa.py", 3),
+        ("pkg/aaa.py", 4),
+        ("pkg/flags.py", 2),
+        ("pkg/flags.py", 3),
+        ("pkg/flags.py", 4),
+    ]
 
 
 # --- where the mutant is WRITTEN inside the copy (A-145) ---------------------

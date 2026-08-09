@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "111111111111111111111111111111111111111a",
@@ -31,6 +31,7 @@
   "judgment": {
     "r2": {
       "jobs": 1,
+      "max_mutants": 50,
       "operators": ["compare-swap", "boolop-swap"]
     }
   },
@@ -47,8 +48,28 @@
       "status": "PASS",
       "verified_by_assay": true,
       "mutation": {
+        "candidate_count": 2,
         "total": 2,
-        "killed": 2,
+        "killed": [
+          {
+            "path": "pkg/checks.py",
+            "lineno": 12,
+            "start_byte": 100,
+            "end_byte": 101,
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "operator": "compare-swap",
+            "description": "Lt->LtE"
+          },
+          {
+            "path": "pkg/checks.py",
+            "lineno": 18,
+            "start_byte": 240,
+            "end_byte": 243,
+            "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+            "operator": "boolop-swap",
+            "description": "And->Or"
+          }
+        ],
         "survived": [],
         "crashed": [],
         "budget_exceeded": []

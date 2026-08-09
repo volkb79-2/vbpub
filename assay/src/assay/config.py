@@ -55,15 +55,17 @@ already applies to `scope`/`rigor`/`enforcement` via their own `frozenset`s.
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
+from .vocabulary import MUTATION_OPERATORS
 
 __all__ = [
     "CanaryConfig",
@@ -189,7 +191,15 @@ class CoverageConfig:
         return {"format": self.format, "artifact": self.artifact}
 
 
-_MUTATION_FIELDS: tuple[str, ...] = ("jobs", "operators")
+_MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
+
+#: (P21/A-163) the declared candidate ceiling's inclusive bounds. Required,
+#: never defaulted: "no runtime consumer may invent a missing cap" is the
+#: whole point -- a default cap would be a policy assay chose while looking
+#: like one the lane declared, and if it were wrong nothing would fail
+#: loudly (AGENTS.md 4.2a's own test).
+MIN_MAX_MUTANTS = 1
+MAX_MAX_MUTANTS = 10_000
 
 
 @dataclass(frozen=True)
@@ -208,10 +218,19 @@ class MutationConfig:
     """
 
     jobs: int
+    #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``.
+    #: ``jobs`` bounds CONCURRENCY; this bounds total work and memory, which
+    #: concurrency never did (A-160's own "jobs bounds workers, not total
+    #: executions").
+    max_mutants: int
     operators: tuple[str, ...]
 
     def as_declared(self) -> dict[str, Any]:
-        return {"jobs": self.jobs, "operators": list(self.operators)}
+        return {
+            "jobs": self.jobs,
+            "max_mutants": self.max_mutants,
+            "operators": list(self.operators),
+        }
 
 
 _CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target")
@@ -793,6 +812,17 @@ def _load_mutation(value: Any, where: str) -> MutationConfig:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
         )
+    max_mutants = value["max_mutants"]
+    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.max_mutants' must be an integer, got "
+            f"{_type_name(max_mutants)}"
+        )
+    if not MIN_MAX_MUTANTS <= max_mutants <= MAX_MAX_MUTANTS:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.max_mutants' must be in "
+            f"{MIN_MAX_MUTANTS}..{MAX_MAX_MUTANTS:,}, got {max_mutants}"
+        )
     operators = _as_str_list(value["operators"], where, "judge.mutation.operators")
     if not operators:
         raise LaneConfigError(
@@ -804,25 +834,22 @@ def _load_mutation(value: Any, where: str) -> MutationConfig:
             f"{where}: 'judge.mutation.operators' contains a duplicate: "
             f"{operators}"
         )
-    # Deferred, not module-level (A-068's own vocabulary-import discipline,
-    # one field over): `assay.mutation` imports `Lane` from THIS module at
-    # ITS OWN module level, so importing `assay.mutation` here at module
-    # level would be a genuine cycle (config -> mutation -> config) -- the
-    # identical reasoning `assay.mutation`'s own module docstring already
-    # gives for resolving `execute_command` via a function-body-local
-    # import instead of a module-level one. Safe here because by the time a
-    # lane is actually being LOADED, both modules have long finished
-    # importing, regardless of which one a caller imported first.
-    from .mutation import MUTATION_OPERATORS
-
-    unknown_operators = sorted(set(operators) - MUTATION_OPERATORS)
+    # P21 work item 2: a MODULE-LEVEL import now (see the top of this file).
+    # The deferred import this used to need existed only because the
+    # vocabulary lived in `assay.mutation`, which imports `Lane` from here --
+    # a genuine `config -> mutation -> config` cycle. `assay.vocabulary` is a
+    # leaf that imports nothing, so the workaround is deleted rather than
+    # maintained.
+    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
     if unknown_operators:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names unknown operator(s): "
             f"{', '.join(unknown_operators)}; known operators: "
-            f"{', '.join(sorted(MUTATION_OPERATORS))}"
+            f"{', '.join(MUTATION_OPERATORS)}"
         )
-    return MutationConfig(jobs=jobs, operators=tuple(operators))
+    return MutationConfig(
+        jobs=jobs, max_mutants=max_mutants, operators=tuple(operators)
+    )
 
 
 def _load_canary(
@@ -921,7 +948,27 @@ def _load_canary(
             f"a file under the project root {project_root} (looked for "
             f"{resolved})"
         )
-    return CanaryConfig(mechanism=mechanism, target=target)
+    # P21/A-152: the declared spelling becomes the NORMALIZED wire spelling
+    # here, at the one boundary that reads it, so `CanaryResult.target` and
+    # `judgment.r3.target` are equal as STRINGS rather than merely as
+    # filesystem paths. `./src/p.py` and `src/p.py` name one file; if both
+    # spellings could reach the artifact, the equality check that finally
+    # makes `judgment.r3.target` witnessable could be satisfied -- or
+    # broken -- by spelling alone. Normalizing at load also means the model
+    # never receives a shape its wire grammar would refuse, so a legal lane
+    # can never crash a producer.
+    if "\\" in target:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.target' {target!r} contains a backslash; "
+            f"declare it with forward slashes regardless of platform"
+        )
+    normalized = PurePosixPath(os.path.normpath(target)).as_posix()
+    if normalized == "." or normalized.startswith("../"):
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.target' {target!r} does not normalize to "
+            f"a path inside the project ({normalized!r})"
+        )
+    return CanaryConfig(mechanism=mechanism, target=normalized)
 
 
 def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:

@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "6666666666666666666666666666666666666666",
@@ -32,6 +32,7 @@
   "judgment": {
     "r2": {
       "jobs": 1,
+      "max_mutants": 50,
       "operators": ["compare-swap"]
     }
   },
@@ -49,8 +50,9 @@
       "verified_by_assay": true,
       "reason_code": "NO_MUTANTS",
       "mutation": {
+        "candidate_count": 0,
         "total": 0,
-        "killed": 0,
+        "killed": [],
         "survived": [],
         "crashed": [],
         "budget_exceeded": []

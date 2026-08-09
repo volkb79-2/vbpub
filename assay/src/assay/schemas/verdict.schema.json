@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:3",
+  "$id": "urn:assay:schema:verdict:4",
   "title": "assay verdict artifact",
-  "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model.",
+  "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.target against judgment.r3.target), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks.",
   "type": "object",
   "required": [
     "schema_version",
@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml's lane schema version.",
+      "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "assay_version": {"type": "string", "minLength": 1},
     "lane": {"type": "string", "minLength": 1},
@@ -128,17 +128,20 @@
         "UNCOVERED_LINES", "EXCLUDED_LINES", "UNCLASSIFIED_LINES",
         "MUTANTS_SURVIVED", "CANARY_SURVIVED", "COMMAND_FAILED",
         "GIT_FAILED", "UNREADABLE_ARTIFACT", "FORMAT_MISMATCH",
-        "BAD_LANE_CONFIG", "EXEC_FAILED", "DIRTY_TREE", "BASE_IS_HEAD",
-        "EMPTY_COVERAGE", "MISSING_ATTESTATION", "STALE_ATTESTATION",
-        "LANE_TIMEOUT", "NO_MUTANTS", "CANARY_INCONCLUSIVE"
+        "BAD_LANE_CONFIG", "EXEC_FAILED", "OUTPUT_WRITE_FAILED",
+        "MUTATION_DISCOVERY_FAILED", "DIRTY_TREE", "HEAD_CHANGED",
+        "BASE_IS_HEAD", "EMPTY_COVERAGE", "MISSING_ATTESTATION",
+        "STALE_ATTESTATION", "MISSING_EXTERNAL_TOOL", "LANE_TIMEOUT",
+        "MUTANT_LIMIT_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED", "NO_MUTANTS",
+        "MUTATION_UNSUPPORTED", "CANARY_INCONCLUSIVE"
       ]
     },
     "reason_codes": {
       "FAIL": {"enum": ["UNCOVERED_LINES", "EXCLUDED_LINES", "UNCLASSIFIED_LINES", "MUTANTS_SURVIVED", "CANARY_SURVIVED", "COMMAND_FAILED"]},
-      "ERROR": {"enum": ["GIT_FAILED", "UNREADABLE_ARTIFACT", "FORMAT_MISMATCH", "BAD_LANE_CONFIG", "EXEC_FAILED"]},
-      "NO_MEASUREMENT": {"enum": ["DIRTY_TREE", "BASE_IS_HEAD", "EMPTY_COVERAGE", "MISSING_ATTESTATION", "STALE_ATTESTATION"]},
-      "BUDGET_EXCEEDED": {"enum": ["LANE_TIMEOUT"]},
-      "INCONCLUSIVE": {"enum": ["NO_MUTANTS", "CANARY_INCONCLUSIVE"]}
+      "ERROR": {"enum": ["GIT_FAILED", "UNREADABLE_ARTIFACT", "FORMAT_MISMATCH", "BAD_LANE_CONFIG", "EXEC_FAILED", "OUTPUT_WRITE_FAILED", "MUTATION_DISCOVERY_FAILED"]},
+      "NO_MEASUREMENT": {"enum": ["DIRTY_TREE", "HEAD_CHANGED", "BASE_IS_HEAD", "EMPTY_COVERAGE", "MISSING_ATTESTATION", "STALE_ATTESTATION", "MISSING_EXTERNAL_TOOL"]},
+      "BUDGET_EXCEEDED": {"enum": ["LANE_TIMEOUT", "MUTANT_LIMIT_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED"]},
+      "INCONCLUSIVE": {"enum": ["NO_MUTANTS", "MUTATION_UNSUPPORTED", "CANARY_INCONCLUSIVE"]}
     },
     "status_contract": {
       "allOf": [
@@ -152,12 +155,23 @@
     },
     "coverage": {
       "type": "object",
-      "required": ["covered", "changed_executable", "pct", "considered", "missing_lines", "files_missing_coverage", "unclassified_lines", "files_with_unclassified_lines", "excluded_lines", "files_with_excluded_lines"],
+      "required": ["covered", "changed_executable", "pct", "considered", "exclusion_capability", "missing_lines", "files_missing_coverage", "unclassified_lines", "files_with_unclassified_lines", "excluded_lines", "files_with_excluded_lines"],
+      "allOf": [
+        {
+          "description": "A-183: a format that cannot report exclusions cannot have reported any. The converse is deliberately NOT a rule -- 'reported' with an empty mapping is a capable format that truthfully found nothing, and forbidding it would re-collapse the very distinction A-008 keeps.",
+          "if": {"required": ["exclusion_capability"], "properties": {"exclusion_capability": {"const": "unavailable"}}},
+          "then": {"properties": {"excluded_lines": {"maxProperties": 0}, "files_with_excluded_lines": {"maxItems": 0}}}
+        }
+      ],
       "properties": {
         "covered": {"type": "integer", "minimum": 0},
         "changed_executable": {"type": "integer", "minimum": 0},
         "pct": {"type": "number", "minimum": 0, "maximum": 100},
         "considered": {"type": "integer", "minimum": 0},
+        "exclusion_capability": {
+          "description": "Whether the coverage FORMAT could report exclusions at all (A-008/A-183), derived from unanimous parser evidence -- never inferred from an empty exclusion mapping, never from a format name.",
+          "enum": ["reported", "unavailable"]
+        },
         "missing_lines": {
           "description": "Changed, executable, non-excluded lines that were not executed, keyed by path (A-096). A file contributing none is absent, never present with an empty array.",
           "type": "object",
@@ -212,9 +226,13 @@
     "canary": {
       "description": "The R3 claim payload (P09, A-092/A-108): a known-good control run alongside a deliberately minimal known-bad transform of the same input, both through the real pipeline, compared by cause -- not merely by pass/fail.",
       "type": "object",
-      "required": ["mechanism", "description", "control_outcome"],
+      "required": ["mechanism", "target", "description", "control_outcome"],
       "properties": {
         "mechanism": {"type": "string", "minLength": 1},
+        "target": {
+          "description": "The project-relative file the transform ran against (A-152/A-183). Its EQUALITY with judgment.r3.target is cross-object and belongs to the model and the raw verifier; this schema owns only the normalized spelling.",
+          "$ref": "#/$defs/wire_path"
+        },
         "description": {"type": "string", "minLength": 1},
         "control_outcome": {"$ref": "#/$defs/outcome"},
         "transformed_outcome": {
@@ -243,26 +261,36 @@
       ],
       "additionalProperties": false
     },
+    "wire_path": {
+      "description": "A normalized relative forward-slash path (A-182): at least one component, no empty/'.'/'..' component, no leading or trailing slash, no backslash, no NUL. Deliberately NOT applied to judgment.r1.source_roots, where '.' is a legal declared directory (a Go module rooted at its own repository top declares exactly that).",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$"
+    },
     "mutation_operator": {"enum": ["compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap"]},
     "mutant_outcome": {
-      "description": "One attempted mutant's identity, projected for the artifact (A-116): deliberately WITHOUT the full mutated text.",
+      "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
       "type": "object",
-      "required": ["path", "lineno", "operator", "description"],
+      "required": ["path", "lineno", "start_byte", "end_byte", "replacement_sha256", "operator", "description"],
       "properties": {
-        "path": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/wire_path"},
         "lineno": {"type": "integer", "minimum": 1},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 1},
+        "replacement_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "operator": {"$ref": "#/$defs/mutation_operator"},
         "description": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false
     },
     "mutation": {
-      "description": "The R2 claim payload (P12, A-116): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a caller-declared jobs count. Four buckets: killed is a bare count; survived/crashed/budget_exceeded carry the actual mutant identities.",
+      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FOUR identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants, is cross-object and lives in the model and the raw verifier.",
       "type": "object",
-      "required": ["total", "killed", "survived", "crashed", "budget_exceeded"],
+      "required": ["candidate_count", "total", "killed", "survived", "crashed", "budget_exceeded"],
       "properties": {
+        "candidate_count": {"type": "integer", "minimum": 0, "maximum": 10001},
         "total": {"type": "integer", "minimum": 0},
-        "killed": {"type": "integer", "minimum": 0},
+        "killed": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
         "survived": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
         "crashed": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
         "budget_exceeded": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}}
@@ -287,20 +315,21 @@
     "judgment_r2": {
       "description": "The effective R2 policy populated by the R2 CLI pipeline (P18) and correspondence-checked against the R2 claim (A-148).",
       "type": "object",
-      "required": ["jobs", "operators"],
+      "required": ["jobs", "max_mutants", "operators"],
       "properties": {
-        "jobs": {"type": "integer", "minimum": 1},
-        "operators": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        "jobs": {"description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122).", "type": "integer", "minimum": 1},
+        "max_mutants": {"description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory.", "type": "integer", "minimum": 1, "maximum": 10000},
+        "operators": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/mutation_operator"}}
       },
       "additionalProperties": false
     },
     "judgment_r3": {
-      "description": "The effective R3 policy populated by the isolated R3 CLI pipeline (P19) and correspondence-checked against the R3 claim where schema v3 can witness it (A-148/A-152).",
+      "description": "The effective R3 policy populated by the isolated R3 CLI pipeline (P19) and correspondence-checked against the R3 claim (A-148). P21 closed A-152: `canary.target` now exists, so BOTH `mechanism` and `target` are witnessable -- though the equality itself is cross-object and therefore owned by the model and the raw verifier, not by this document.",
       "type": "object",
       "required": ["mechanism", "target"],
       "properties": {
         "mechanism": {"type": "string", "minLength": 1},
-        "target": {"type": "string", "minLength": 1}
+        "target": {"$ref": "#/$defs/wire_path"}
       },
       "additionalProperties": false
     },
@@ -334,7 +363,37 @@
         {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R1"}}}}, "then": {"not": {"required": ["coverage"]}}},
         {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R3"}}}}, "then": {"not": {"required": ["canary"]}}},
         {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R2"}}}}, "then": {"not": {"required": ["mutation"]}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"anyOf": [{"required": ["coverage"]}, {"required": ["canary"]}, {"required": ["mutation"]}]}}}
+        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"anyOf": [{"required": ["coverage"]}, {"required": ["canary"]}, {"required": ["mutation"]}]}}},
+        {
+          "description": "A-183: capability absence and a failed discovery boundary are both payload-free. Attaching a zero/zero mutation payload to either would make 'no analysis happened' indistinguishable from 'an analysis observed nothing'.",
+          "if": {"required": ["reason_code"], "properties": {"reason_code": {"enum": ["MUTATION_UNSUPPORTED", "MUTATION_DISCOVERY_FAILED"]}}},
+          "then": {"not": {"required": ["mutation"]}, "properties": {"rigor": {"const": "R2"}}}
+        },
+        {
+          "description": "A-183: NO_MUTANTS is the SUPPORTED empty result, so it must carry the zero/zero payload that proves an analysis ran. A payload-free NO_MUTANTS is the forgery this closes.",
+          "if": {"required": ["reason_code"], "properties": {"reason_code": {"const": "NO_MUTANTS"}}},
+          "then": {"required": ["mutation"], "properties": {"rigor": {"const": "R2"}}}
+        },
+        {
+          "description": "A-163: the pre-submission limit refusal carries the exact sentinel -- nothing attempted, four empty buckets. Whether candidate_count equals max_mutants + 1 is cross-object and lives in the model and raw verifier.",
+          "if": {"required": ["reason_code"], "properties": {"reason_code": {"const": "MUTANT_LIMIT_EXCEEDED"}}},
+          "then": {
+            "required": ["mutation"],
+            "properties": {
+              "rigor": {"const": "R2"},
+              "mutation": {
+                "properties": {
+                  "total": {"const": 0},
+                  "candidate_count": {"minimum": 1},
+                  "killed": {"maxItems": 0},
+                  "survived": {"maxItems": 0},
+                  "crashed": {"maxItems": 0},
+                  "budget_exceeded": {"maxItems": 0}
+                }
+              }
+            }
+          }
+        }
       ],
       "additionalProperties": false
     },

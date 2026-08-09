@@ -324,7 +324,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 3,
+        "schema_version": 4,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -372,6 +372,11 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
                     "changed_executable": 2,
                     "covered": 2,
                     "pct": 100.0,
+                    # P21/A-183: coverage.py's JSON DOES carry an exclusion
+                    # channel, so a clean run reports "reported" with an
+                    # empty mapping -- never "unavailable", which is
+                    # reserved for a format that structurally cannot say.
+                    "exclusion_capability": "reported",
                     "missing_lines": {},
                     "files_missing_coverage": [],
                     "unclassified_lines": {},
@@ -414,6 +419,13 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
 # Recorded here rather than silently omitted (A-147).
 
 
+#: (P21/A-163) the declared candidate ceiling every R2 lane in this module
+#: uses. Comfortably above the two sites the fixtures seed, so the cap is
+#: recorded and enforced without truncating any of them -- the max+1 refusal
+#: itself has its own dedicated coverage in the locked acceptance suite.
+MAX_MUTANTS = 50
+
+
 def _r2_lane_toml(
     *,
     script: str,
@@ -440,6 +452,7 @@ def _r2_lane_toml(
         f'base = "{base}"\n\n'
         "[lanes.package.judge.mutation]\n"
         f"jobs = {jobs}\n"
+        f"max_mutants = {MAX_MUTANTS}\n"
         f"operators = [{operators_toml}]\n"
     )
 
@@ -454,6 +467,31 @@ _MOD_AT_BASE = "def f(x):\n    return 0\n\n\ndef g(y):\n    return 0\n"
 _MOD_AT_HEAD = "def f(x):\n    return x > 0\n\n\ndef g(y):\n    return y > 1\n"
 
 _ARGV_KEYS = ("argv_declared", "argv_effective")
+
+
+def _gt_site(lineno: int) -> dict:
+    """The expected v4 identity of the ``>`` -> ``>=`` site on *lineno* of
+    :data:`_MOD_AT_HEAD` (P21/A-180).
+
+    Derived by scanning the LITERAL fixture text and hashing the literal
+    replacement bytes -- never read back from assay's own output, which
+    would make the expected artifact producer-authored (A-041). The
+    arithmetic is the same shape the locked site manifest states by hand.
+    """
+    source = _MOD_AT_HEAD.encode("utf-8")
+    line_start = 0
+    for _ in range(lineno - 1):
+        line_start = source.index(b"\n", line_start) + 1
+    start = source.index(b">", line_start, source.index(b"\n", line_start))
+    return {
+        "path": "src/mod.py",
+        "lineno": lineno,
+        "start_byte": start,
+        "end_byte": start + 1,
+        "replacement_sha256": hashlib.sha256(b">=").hexdigest(),
+        "operator": "compare-swap",
+        "description": "Gt->GtE",
+    }
 
 
 def _tracked_file_hashes(root: Path) -> dict[str, str]:
@@ -501,7 +539,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 3,
+        "schema_version": 4,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -533,7 +571,15 @@ def _expected_r2_artifact(
         "evidence": [],
     }
     if operators is not None:
-        document["judgment"] = {"r2": {"jobs": jobs, "operators": operators}}
+        document["judgment"] = {
+            "r2": {
+                "jobs": jobs,
+                # P21/A-163: the declared ceiling every R2 lane in this
+                # module writes (see `_r2_lane_toml`).
+                "max_mutants": MAX_MUTANTS,
+                "operators": operators,
+            }
+        }
     return document
 
 
@@ -587,19 +633,19 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
                 "verified_by_assay": True,
                 "reason_code": "MUTANTS_SURVIVED",
                 "mutation": {
+                    "candidate_count": 2,
                     "total": 2,
-                    "killed": 1,
                     # line 2's `x > 0` -> `x >= 0` is what the lane's own
                     # grep looks for, so THAT one dies; line 6's `y > 1` is
                     # unobserved by the command and lives.
-                    "survived": [
-                        {
-                            "path": "src/mod.py",
-                            "lineno": 6,
-                            "operator": "compare-swap",
-                            "description": "Gt->GtE",
-                        }
-                    ],
+                    #
+                    # P21/A-180: the killed bucket is an IDENTITY list
+                    # through the real installed wheel now, so the artifact
+                    # names which site the suite actually caught -- a count
+                    # could not distinguish this run from one that killed
+                    # line 6 and let line 2 live.
+                    "killed": [_gt_site(2)],
+                    "survived": [_gt_site(6)],
                     "crashed": [],
                     "budget_exceeded": [],
                 },
@@ -702,8 +748,11 @@ def test_a_real_r2_lane_with_no_declared_operator_site_is_inconclusive(
                 "verified_by_assay": True,
                 "reason_code": "NO_MUTANTS",
                 "mutation": {
+                    # A supported analysis that observed nothing eligible --
+                    # distinct from Go's payload-free capability absence.
+                    "candidate_count": 0,
                     "total": 0,
-                    "killed": 0,
+                    "killed": [],
                     "survived": [],
                     "crashed": [],
                     "budget_exceeded": [],
@@ -810,27 +859,14 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
                 "verified_by_assay": True,
                 "reason_code": "LANE_TIMEOUT",
                 "mutation": {
+                    "candidate_count": 2,
                     "total": 2,
                     # line 6's mutant leaves `x > 0` in place, so the grep
                     # succeeds, nothing sleeps, and it SURVIVES.
-                    "killed": 0,
-                    "survived": [
-                        {
-                            "path": "src/mod.py",
-                            "lineno": 6,
-                            "operator": "compare-swap",
-                            "description": "Gt->GtE",
-                        }
-                    ],
+                    "killed": [],
+                    "survived": [_gt_site(6)],
                     "crashed": [],
-                    "budget_exceeded": [
-                        {
-                            "path": "src/mod.py",
-                            "lineno": 2,
-                            "operator": "compare-swap",
-                            "description": "Gt->GtE",
-                        }
-                    ],
+                    "budget_exceeded": [_gt_site(2)],
                 },
             },
         ),
@@ -930,7 +966,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 3,
+        "schema_version": 4,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1002,6 +1038,9 @@ def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
                 "verified_by_assay": True,
                 "canary": {
                     "mechanism": "import-break",
+                    # P21/A-152: the field that finally makes
+                    # `judgment.r3.target` witnessable end to end.
+                    "target": "pkg/mod.py",
                     "description": _IMPORT_BREAK_DESCRIPTION,
                     "control_outcome": "PASS",
                     "transformed_outcome": "FAIL",
@@ -1077,6 +1116,9 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                 "reason_code": "CANARY_INCONCLUSIVE",
                 "canary": {
                     "mechanism": "import-break",
+                    # P21/A-152: the field that finally makes
+                    # `judgment.r3.target` witnessable end to end.
+                    "target": "pkg/mod.py",
                     "description": _IMPORT_BREAK_DESCRIPTION,
                     "control_outcome": "FAIL",
                     "transformed_outcome": "FAIL",
@@ -1129,6 +1171,7 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
                 "reason_code": "CANARY_SURVIVED",
                 "canary": {
                     "mechanism": "uncovered-line",
+                    "target": "pkg/mod.py",
                     "description": _UNCOVERED_LINE_DESCRIPTION,
                     "control_outcome": "PASS",
                     "transformed_outcome": "PASS",
@@ -1249,7 +1292,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 3,
+        "schema_version": 4,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1347,6 +1390,11 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                     "changed_executable": 2,
                     "covered": 2,
                     "pct": 100.0,
+                    # P21/A-183: coverage.py's JSON DOES carry an exclusion
+                    # channel, so a clean run reports "reported" with an
+                    # empty mapping -- never "unavailable", which is
+                    # reserved for a format that structurally cannot say.
+                    "exclusion_capability": "reported",
                     "missing_lines": {},
                     "files_missing_coverage": [],
                     "unclassified_lines": {},
@@ -1362,6 +1410,7 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                 "verified_by_assay": True,
                 "canary": {
                     "mechanism": "uncovered-line",
+                    "target": "pkg/mod.py",
                     "description": _UNCOVERED_LINE_DESCRIPTION,
                     "control_outcome": "PASS",
                     "transformed_outcome": "FAIL",
@@ -1431,6 +1480,11 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
                     "changed_executable": 2,
                     "covered": 2,
                     "pct": 100.0,
+                    # P21/A-183: coverage.py's JSON DOES carry an exclusion
+                    # channel, so a clean run reports "reported" with an
+                    # empty mapping -- never "unavailable", which is
+                    # reserved for a format that structurally cannot say.
+                    "exclusion_capability": "reported",
                     "missing_lines": {},
                     "files_missing_coverage": [],
                     "unclassified_lines": {},
@@ -1447,6 +1501,14 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
                 "reason_code": "CANARY_SURVIVED",
                 "canary": {
                     "mechanism": "import-break",
+                    # P21/A-152: the field that finally makes
+                    # `judgment.r3.target` witnessable end to end.
+                    # P21/A-152: the payload's own target, which must EQUAL
+                    # `judgment.r3.target`. This lane declares `lonely.py`,
+                    # not the diffed `mod.py` -- exactly the case where a
+                    # target copied from the wrong place would have gone
+                    # unnoticed under v3.
+                    "target": "pkg/lonely.py",
                     "description": _IMPORT_BREAK_DESCRIPTION,
                     "control_outcome": "PASS",
                     "transformed_outcome": "FAIL",

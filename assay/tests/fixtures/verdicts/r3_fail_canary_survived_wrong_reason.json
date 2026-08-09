@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -54,6 +54,7 @@
       "reason_code": "CANARY_SURVIVED",
       "canary": {
         "mechanism": "import-break",
+        "target": "pkg/greet.py",
         "description": "mislabeled: performed the uncovered-line transform under the import-break mechanism name",
         "control_outcome": "PASS",
         "transformed_outcome": "FAIL",

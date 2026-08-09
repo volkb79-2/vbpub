@@ -30,6 +30,7 @@ import pytest
 from conftest import PROJECT_ROOT
 
 from assay.adapters.python import PythonAdapter, _falsy_swap_replacement
+from assay.mutation import MutationDiscoveryError
 
 FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "python"
 SAMPLE_TEXT = (FIXTURE_DIR / "sample.py").read_text(encoding="utf-8")
@@ -144,6 +145,34 @@ EXPECTED_IDENTITIES = frozenset(
     for text in texts
 )
 
+#: Every operator the catalogue knows -- this module exercises the fixture's
+#: whole eligible set, so it always selects all four.
+ALL_OPERATORS = ("compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap")
+
+#: Comfortably above the fixture's 27 sites, so `limit` never truncates here
+#: (the bound itself is proven in `test_mutation_collect.py`).
+NO_TRUNCATION = 1000
+
+
+def _sites(lines, *, operators=ALL_OPERATORS, limit=NO_TRUNCATION, text=None):
+    """P21: the bounded seam replaces ``generate_mutants``. Sites carry a
+    byte span and a replacement rather than a full mutated file."""
+    return ADAPTER.generate_mutation_sites(
+        SAMPLE_TEXT if text is None else text,
+        lines,
+        operators=operators,
+        limit=limit,
+    )
+
+
+def _applied(site, text: str = None) -> str:
+    """The full mutated text a site produces -- what P11's ``mutated_text``
+    used to carry eagerly, now materialised on demand. Every assertion in
+    this module that used to read ``mutant.mutated_text`` reads this, so the
+    hand-derived expected manifest is unchanged and still independent."""
+    source = (SAMPLE_TEXT if text is None else text).encode("utf-8")
+    return site.apply(source).decode("utf-8")
+
 #: Total eligible sites the fixture is hand-verified to contain — 8
 #: compare-swap + 5 boolop-swap (2 + 3 across the two chains) + 6
 #: bool-const-flip + 8 falsy-swap.
@@ -167,14 +196,14 @@ def test_every_eligible_site_produces_the_hand_derived_exact_mutated_text():
     against :data:`EXPECTED_MUTATIONS` — built independently by rewriting
     exactly one line of the ORIGINAL text, never by calling this method and
     trusting its output."""
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
+    mutants = _sites(ALL_LINES)
     assert isinstance(mutants, tuple)
     assert len(mutants) == EXPECTED_TOTAL
 
     grouped: dict[tuple[int, str, str], list[str]] = {}
     for mutant in mutants:
         key = (mutant.lineno, mutant.operator, mutant.description)
-        grouped.setdefault(key, []).append(mutant.mutated_text)
+        grouped.setdefault(key, []).append(_applied(mutant))
 
     assert set(grouped) == set(EXPECTED_MUTATIONS)
     for triple, expected_texts in EXPECTED_MUTATIONS.items():
@@ -188,17 +217,17 @@ def test_a_boolean_chains_untouched_operator_token_is_still_literally_present():
     text still contains a literal ``or``-untouched... i.e. each site
     flips exactly ONE of the two ``and`` tokens, never both at once (which
     reassigning the shared ``ast.BoolOp.op`` field wholesale would do)."""
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, {48})
+    mutants = _sites({48})
     assert len(mutants) == 2
     first, second = mutants  # sorted by byte offset — left-to-right
 
-    assert "if a or b and c:" in first.mutated_text
-    assert "if a and b or c:" in second.mutated_text
+    assert "if a or b and c:" in _applied(first)
+    assert "if a and b or c:" in _applied(second)
     # Neither site's own splice touched the OTHER "and" -- each mutated
     # text contains exactly one "or" and one "and" on that line, never two
     # "or"s.
-    changed_line_first = first.mutated_text.splitlines()[47]
-    changed_line_second = second.mutated_text.splitlines()[47]
+    changed_line_first = _applied(first).splitlines()[47]
+    changed_line_second = _applied(second).splitlines()[47]
     assert changed_line_first.count(" or ") == 1
     assert changed_line_first.count(" and ") == 1
     assert changed_line_second.count(" or ") == 1
@@ -212,14 +241,14 @@ def test_the_non_ascii_comment_survives_every_mutation_byte_for_byte():
     misalign against the multi-byte character above it."""
     non_ascii_line = SAMPLE_TEXT.splitlines(keepends=True)[15]
     assert "café" in non_ascii_line
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
+    mutants = _sites(ALL_LINES)
     assert mutants  # guard against a vacuously-true loop below
     for mutant in mutants:
-        assert mutant.mutated_text.splitlines(keepends=True)[15] == non_ascii_line
+        assert _applied(mutant).splitlines(keepends=True)[15] == non_ascii_line
 
 
 def test_mutant_identity_is_stable_and_unique_across_the_whole_fixture():
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
+    mutants = _sites(ALL_LINES)
     identities = [m.identity for m in mutants]
     assert len(set(identities)) == len(identities), "two sites share one identity"
     # Calling .identity twice on the SAME mutant is stable.
@@ -227,8 +256,8 @@ def test_mutant_identity_is_stable_and_unique_across_the_whole_fixture():
 
 
 def test_generate_mutants_is_deterministic_across_repeated_calls():
-    first = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
-    second = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
+    first = _sites(ALL_LINES)
+    second = _sites(ALL_LINES)
     assert first == second
 
 
@@ -236,15 +265,23 @@ def test_generate_mutants_is_deterministic_across_repeated_calls():
 
 
 def test_every_generated_mutant_parses_with_ast_parse():
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
+    mutants = _sites(ALL_LINES)
     assert mutants
     for mutant in mutants:
-        ast.parse(mutant.mutated_text)  # raises on any invalid syntax
+        ast.parse(_applied(mutant))  # raises on any invalid syntax
 
 
-def test_unparseable_source_returns_unsupported():
-    result = ADAPTER.generate_mutants(BROKEN_TEXT, {1, 2})
-    assert result == "UNSUPPORTED"
+def test_unparseable_source_raises_the_typed_discovery_failure():
+    """P21/A-183 changes this terminal deliberately. Under P11 unparseable
+    Python returned ``"UNSUPPORTED"``, which now means something else
+    entirely -- *the adapter has no mutation engine* -- and is Go's answer
+    until P29. Python HAS an engine, so source it cannot parse is a FAILED
+    boundary (``ERROR``/``MUTATION_DISCOVERY_FAILED``), never capability
+    absence and never a valid empty result. Collapsing any pair of the
+    three would turn an inability to measure into evidence that nothing was
+    mutable."""
+    with pytest.raises(MutationDiscoveryError, match="cannot parse"):
+        _sites({1, 2}, text=BROKEN_TEXT)
 
 
 def test_an_unsupported_construct_in_an_otherwise_parseable_file_contributes_zero_sites_not_an_abort():
@@ -253,13 +290,13 @@ def test_an_unsupported_construct_in_an_otherwise_parseable_file_contributes_zer
     correct outcome is a real (here empty) tuple for those two lines, never
     ``"UNSUPPORTED"`` (A-114's own "an individual unsupported construct...
     simply contributes zero mutants... never an early abort")."""
-    result = ADAPTER.generate_mutants(SAMPLE_TEXT, {40, 42})
+    result = _sites({40, 42})
     assert result == ()
     assert result != "UNSUPPORTED"
 
 
 def test_a_non_falsy_return_and_a_bare_return_contribute_zero_sites():
-    result = ADAPTER.generate_mutants(SAMPLE_TEXT, {94, 98})
+    result = _sites({94, 98})
     assert result == ()
 
 
@@ -269,22 +306,34 @@ def test_a_non_falsy_return_and_a_bare_return_contribute_zero_sites():
 def test_only_sites_on_the_declared_lines_are_returned():
     """Requesting a SINGLE line returns exactly the one site on it, never
     any of the other 26 real sites elsewhere in the same file."""
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, {24})
+    mutants = _sites({24})
     assert len(mutants) == 1
-    assert mutants[0].mutated_text == EXPECTED_MUTATIONS[(24, "compare-swap", "Lt->LtE")][0]
+    assert _applied(mutants[0]) == EXPECTED_MUTATIONS[(24, "compare-swap", "Lt->LtE")][0]
 
 
 def test_an_empty_lines_set_returns_an_empty_tuple_never_unsupported():
-    result = ADAPTER.generate_mutants(SAMPLE_TEXT, set())
+    result = _sites(set())
     assert result == ()
 
 
 def test_o3_actual_identity_manifest_equals_the_independent_expected_manifest_exactly():
     """The oracle's own negative, directly: removing any eligibility filter
     in the implementation would add an identity absent from
-    :data:`EXPECTED_IDENTITIES`, which this equality catches immediately."""
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
-    actual_identities = frozenset(m.identity for m in mutants)
+    :data:`EXPECTED_IDENTITIES`, which this equality catches immediately.
+
+    P21 note: the comparison key is the hand-derived
+    ``(lineno, operator, description, full mutated text)`` -- NOT the new
+    wire identity. That is deliberate. The expected manifest is built by
+    rewriting exactly one line of the original text, independently of this
+    implementation; comparing against byte spans instead would mean
+    hand-transcribing 27 offsets FROM the implementation, which is the
+    producer-authored evidence A-041 forbids. The wire identity's own
+    uniqueness and stability are asserted separately above."""
+    mutants = _sites(ALL_LINES)
+    actual_identities = frozenset(
+        (site.lineno, site.operator, site.description, _applied(site))
+        for site in mutants
+    )
     assert actual_identities == EXPECTED_IDENTITIES
 
 
@@ -293,7 +342,7 @@ def test_o3_manifest_multiset_counts_match_not_just_the_set_of_triples():
     is wrong" (e.g. only one of the chain's two `And->Or` sites fired) --
     the plain set-equality check above would not catch a count mismatch on
     its own."""
-    mutants = ADAPTER.generate_mutants(SAMPLE_TEXT, ALL_LINES)
+    mutants = _sites(ALL_LINES)
     actual_counts = Counter((m.lineno, m.operator, m.description) for m in mutants)
     expected_counts = Counter(
         {triple: len(texts) for triple, texts in EXPECTED_MUTATIONS.items()}

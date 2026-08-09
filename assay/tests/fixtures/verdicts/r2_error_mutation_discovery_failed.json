@@ -1,0 +1,48 @@
+{
+  "schema_version": 4,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "333333333333333333333333333333333333333d",
+  "outcome": "ERROR",
+  "exit_code": 2,
+  "started": "2026-08-09T14:10:00+00:00",
+  "ended": "2026-08-09T14:10:05+00:00",
+  "reason_code": "MUTATION_DISCOVERY_FAILED",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true,
+      "reason_code": "MUTATION_DISCOVERY_FAILED"
+    }
+  ],
+  "evidence": []
+}

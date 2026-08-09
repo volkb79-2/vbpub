@@ -9,13 +9,15 @@ directly against ``coverage_parsers/go_cover.py``'s already-proven parser),
 which is what makes "additive" a real claim rather than a coincidence of two
 similar tools. (P09, A-105/A-107) adds this adapter's two canary injection
 methods, ``inject_import_break``/``inject_uncovered_line``. (P11,
-A-042/A-114) adds :meth:`GoAdapter.generate_mutants`, unconditionally
+A-042/A-114, migrated to the bounded seam by P21/A-183) adds
+:meth:`GoAdapter.generate_mutation_sites`, unconditionally
 ``"UNSUPPORTED"`` -- this devcontainer has no Go toolchain anywhere (A-042),
 so nothing here can prove a generated mutant is even valid Go syntax, and
 O2's own negative is explicit that a text-guessed mutant standing in for
 that proof is exactly the failure to avoid. ``UNSUPPORTED`` renders
-``INCONCLUSIVE_NO_MUTANTS`` (DESIGN-GUIDE §11), never a green mutation
-claim.
+payload-free ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` (A-183), never a
+green mutation claim -- and deliberately never ``NO_MUTANTS``, which would
+assert that a supported analysis ran and observed nothing mutable.
 
 **P09's canary mechanisms, and why they are BOTH pure appends (unlike
 Python's).** Go has no executable top-level statement -- a bare
@@ -156,7 +158,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ..mutation import Mutant
+from ..mutation import MutationSite
 from .base import StatementSpan
 
 __all__ = ["GoAdapter"]
@@ -515,13 +517,28 @@ class GoAdapter:
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         return _inject_uncovered_line(text)
 
-    def generate_mutants(
-        self, text: str, lines: set[int]
-    ) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]:
-        """Unconditionally ``"UNSUPPORTED"`` (A-042/A-114) -- see this
-        module's own docstring. Neither *text* nor *lines* is consulted:
-        there is no partial, best-effort Go mutation engine to fall back
-        to, the same "no Go toolchain, ever" boundary that already makes
-        this adapter's ``external_tools`` empty rather than declaring one
-        it could never satisfy in this devcontainer."""
+    def generate_mutation_sites(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """Unconditionally ``"UNSUPPORTED"`` (A-042/A-183) -- see this
+        module's own docstring. No argument is consulted: there is no
+        partial, best-effort Go mutation engine to fall back to, the same
+        "no Go toolchain, ever" boundary that already makes this adapter's
+        ``external_tools`` empty rather than declaring one it could never
+        satisfy in this devcontainer.
+
+        **P21 migrates only the signature and the imported type** (A-183).
+        The behaviour is unchanged and deliberately so: the marker now
+        renders as payload-free ``INCONCLUSIVE/MUTATION_UNSUPPORTED``
+        instead of being collapsed into ``NO_MUTANTS``, which is what keeps
+        "assay cannot analyse Go" distinguishable from "assay analysed Go
+        and found nothing mutable". P29 replaces this return with real
+        bounded sites; P30 makes that capability reachable through the
+        registry. Until then Go is not registered for R2 at all.
+        """
         return "UNSUPPORTED"

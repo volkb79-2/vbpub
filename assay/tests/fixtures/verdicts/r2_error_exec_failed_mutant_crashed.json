@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "555555555555555555555555555555555555555e",
@@ -32,6 +32,7 @@
   "judgment": {
     "r2": {
       "jobs": 2,
+      "max_mutants": 50,
       "operators": ["bool-const-flip", "compare-swap"]
     }
   },
@@ -49,13 +50,27 @@
       "verified_by_assay": true,
       "reason_code": "EXEC_FAILED",
       "mutation": {
+        "candidate_count": 2,
         "total": 2,
-        "killed": 1,
+        "killed": [
+          {
+            "path": "pkg/broken.py",
+            "lineno": 2,
+            "start_byte": 20,
+            "end_byte": 21,
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "operator": "compare-swap",
+            "description": "Lt->LtE"
+          }
+        ],
         "survived": [],
         "crashed": [
           {
             "path": "pkg/broken.py",
             "lineno": 4,
+            "start_byte": 60,
+            "end_byte": 64,
+            "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe",
             "operator": "bool-const-flip",
             "description": "True->False"
           }

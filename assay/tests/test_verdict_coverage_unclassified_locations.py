@@ -22,6 +22,8 @@ BASE = {
     "changed_executable": 2,
     "pct": 100.0,
     "considered": 1,
+    # P21: required, never defaulted -- see `Coverage.exclusion_capability`.
+    "exclusion_capability": "reported",
     "missing_lines": {},
     "files_missing_coverage": (),
     "unclassified_lines": {"src/mod.py": frozenset({3})},
@@ -36,14 +38,21 @@ def test_the_untouched_form_builds():
 
 
 def test_the_new_fields_default_to_empty():
-    """Backward compatibility: a producer that has not been updated to pass
-    these through (P07 does not touch ``assay.runner``, outside its
-    ``scope.touch``) still builds a valid ``Coverage``."""
+    """P07's own pair defaults to empty: a producer that does not pass them
+    still builds a valid ``Coverage``.
+
+    P21 note: ``exclusion_capability`` is deliberately NOT in that group and
+    is passed explicitly here. Defaulting it would mean a producer that
+    forgot it silently claimed a capability, which is the shadowing default
+    AGENTS.md 4.2a forbids -- and it is exactly the collapse A-008/A-O16
+    spent two packages keeping open.
+    """
     coverage = Coverage(
         covered=1,
         changed_executable=1,
         pct=100.0,
         considered=1,
+        exclusion_capability="reported",
         missing_lines={},
         files_missing_coverage=(),
     )
@@ -111,6 +120,7 @@ def test_to_dict_always_emits_both_keys_even_when_empty():
         changed_executable=0,
         pct=100.0,
         considered=0,
+        exclusion_capability="reported",
         missing_lines={},
         files_missing_coverage=(),
     )

@@ -31,7 +31,7 @@ def _lane_with_mutation(mutation_table: str) -> str:
 
 def test_a_minimal_valid_mutation_table_loads(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 1\noperators = [\"compare-swap\"]\n"
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\noperators = [\"compare-swap\"]\n"
     )
     judge = load_lane_file(project.write(lane)).lane("package").judge
 
@@ -46,7 +46,7 @@ def test_every_declared_operator_is_accepted(project: Project):
     :data:`MUTATION_OPERATORS` loads on its own."""
     for operator in sorted(MUTATION_OPERATORS):
         lane = _lane_with_mutation(
-            f'\n[lanes.package.judge.mutation]\njobs = 1\noperators = ["{operator}"]\n'
+            f'\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\noperators = ["{operator}"]\n'
         )
         judge = load_lane_file(project.write(lane, name=f"{operator}.toml")).lane(
             "package"
@@ -59,7 +59,7 @@ def test_an_unknown_operator_is_rejected(project: Project):
     """Direction 2: a name outside the closed vocabulary is refused, and
     the message names both the offender and the known set."""
     lane = _lane_with_mutation(
-        '\n[lanes.package.judge.mutation]\njobs = 1\noperators = ["typo-swap"]\n'
+        '\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\noperators = ["typo-swap"]\n'
     )
     with pytest.raises(LaneConfigError) as exc:
         load_lane_file(project.write(lane))
@@ -70,7 +70,7 @@ def test_an_unknown_operator_is_rejected(project: Project):
 
 def test_operators_is_order_preserving(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 1\n"
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
         'operators = ["falsy-swap", "compare-swap", "boolop-swap"]\n'
     )
     judge = load_lane_file(project.write(lane)).lane("package").judge
@@ -81,7 +81,7 @@ def test_operators_is_order_preserving(project: Project):
 
 def test_an_empty_operators_list_is_rejected(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 1\noperators = []\n"
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\noperators = []\n"
     )
     with pytest.raises(LaneConfigError, match="operators' is empty"):
         load_lane_file(project.write(lane))
@@ -89,7 +89,7 @@ def test_an_empty_operators_list_is_rejected(project: Project):
 
 def test_a_duplicate_operator_is_rejected(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 1\n"
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
         'operators = ["compare-swap", "compare-swap"]\n'
     )
     with pytest.raises(LaneConfigError, match="operators' contains a duplicate"):
@@ -99,7 +99,7 @@ def test_a_duplicate_operator_is_rejected(project: Project):
 @pytest.mark.parametrize("bad_jobs", ["0", "-1", "true", '"2"', "1.5"])
 def test_jobs_must_be_a_positive_integer(bad_jobs: str, project: Project):
     lane = _lane_with_mutation(
-        f'\n[lanes.package.judge.mutation]\njobs = {bad_jobs}\noperators = ["compare-swap"]\n'
+        f'\n[lanes.package.judge.mutation]\njobs = {bad_jobs}\nmax_mutants = 50\noperators = ["compare-swap"]\n'
     )
     with pytest.raises(LaneConfigError, match="judge.mutation.jobs"):
         load_lane_file(project.write(lane))
@@ -114,7 +114,7 @@ def test_a_missing_jobs_field_is_rejected(project: Project):
 
 
 def test_a_missing_operators_field_is_rejected(project: Project):
-    lane = _lane_with_mutation("\n[lanes.package.judge.mutation]\njobs = 1\n")
+    lane = _lane_with_mutation("\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n")
     with pytest.raises(
         LaneConfigError, match="missing required field 'judge.mutation.operators'"
     ):
@@ -123,7 +123,7 @@ def test_a_missing_operators_field_is_rejected(project: Project):
 
 def test_an_unknown_mutation_key_is_rejected(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 1\n"
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
         'operators = ["compare-swap"]\ntimeout = 5\n'
     )
     with pytest.raises(LaneConfigError, match="unknown judge.mutation key"):
@@ -132,12 +132,13 @@ def test_an_unknown_mutation_key_is_rejected(project: Project):
 
 def test_mutation_as_declared_round_trips_exactly(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 3\n"
+        "\n[lanes.package.judge.mutation]\njobs = 3\nmax_mutants = 50\n"
         'operators = ["compare-swap", "falsy-swap"]\n'
     )
     loaded = load_lane_file(project.write(lane)).lane("package")
 
     assert loaded.as_declared()["judge"]["mutation"] == {
         "jobs": 3,
+        "max_mutants": 50,
         "operators": ["compare-swap", "falsy-swap"],
     }

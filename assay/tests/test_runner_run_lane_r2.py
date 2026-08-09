@@ -34,7 +34,7 @@ MOMENT_C = datetime(2026, 8, 8, 10, 0, 2, tzinfo=timezone.utc)
 MOMENT_D = datetime(2026, 8, 8, 10, 0, 3, tzinfo=timezone.utc)
 MOMENT_E = datetime(2026, 8, 8, 10, 0, 4, tzinfo=timezone.utc)
 
-_MUTATION = MutationConfig(jobs=1, operators=("compare-swap",))
+_MUTATION = MutationConfig(jobs=1, max_mutants=50, operators=("compare-swap",))
 
 
 def _seed_compare_swap_site(repo: GitRepo) -> tuple[str, str]:
@@ -100,7 +100,7 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     r2_claim = verdict.claims[1]
     assert r2_claim.status is Outcome.PASS
     assert r2_claim.mutation.total == 1
-    assert r2_claim.mutation.killed == 1
+    assert len(r2_claim.mutation.killed) == 1
     assert verdict.judgment.r2.jobs == 1
     assert verdict.judgment.r2.operators == ("compare-swap",)
     assert verdict.judgment.r1 is None
@@ -186,7 +186,9 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
     not a summary of what happened.
     """
     base_rev, _ = _seed_compare_swap_site(git_repo)
-    declared = MutationConfig(jobs=3, operators=("falsy-swap", "compare-swap"))
+    declared = MutationConfig(
+        jobs=3, max_mutants=50, operators=("falsy-swap", "compare-swap")
+    )
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
     )
@@ -295,7 +297,7 @@ def test_r2_mutates_a_project_that_lives_in_a_subdirectory_of_its_repo(
     assert verdict.outcome is Outcome.PASS
     r2_claim = verdict.claims[1]
     assert r2_claim.mutation.total == 1
-    assert r2_claim.mutation.killed == 1, (
+    assert len(r2_claim.mutation.killed) == 1, (
         "the mutant must reach src/mod.py INSIDE the copy -- a kill proves "
         "the splice landed on the file the command actually greps"
     )

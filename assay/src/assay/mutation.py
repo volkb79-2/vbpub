@@ -1,15 +1,26 @@
-"""Mutant identity, and the byte-offset arithmetic every mutation engine
-shares — P11: **each mutant assay generates is a valid single changed-line
-experiment, not arbitrary broken text.**
+"""Mutation-site identity, and the byte-offset arithmetic every mutation
+engine shares — P11: **each mutant assay generates is a valid single
+changed-line experiment, not arbitrary broken text**, and P21: **and the
+declared cap on how many of them exist is TRUE.**
 
 This module owns exactly two things, both deliberately language-free so a
-future second mutation engine (were one ever built — none is, for Go, per
-A-042) would not need to duplicate them:
+future second mutation engine (were one ever built — none is, for Go, until
+P29) would not need to duplicate them:
 
-* :class:`Mutant` — the typed result of one construction (A-092/A-114).
-  Lives here, not in ``adapters/base.py``, because ``verdict.py`` is
-  forbidden to this package and ``Mutant`` needs a home the frozen protocol
-  module can import from for its own type hint.
+* :class:`MutationSite` — the BOUNDED descriptor of one candidate
+  (A-180), plus :class:`MutantJob` and :class:`MutationDiscoveryError`.
+  Lives here, not in ``adapters/base.py``, because the frozen protocol
+  module imports it for its own type hint.
+
+  **P21 replaced P11's ``Mutant``**, which carried ``mutated_text``: a full
+  copy of the mutated file, per candidate. That shape made ``max_mutants``
+  unenforceable by construction — every candidate's entire source had to
+  exist before anything could count them, so a cap applied afterwards
+  bounded neither memory nor work. The old ``Mutant``,
+  ``generate_mutants``, ``collect_mutants`` and full-text identity are
+  DELETED rather than kept as compatibility surfaces; ``go.py`` was
+  migrated with them (A-183) and still returns the adapter-wide
+  ``"UNSUPPORTED"`` marker until P29.
 * :func:`byte_offset` / :func:`line_for_offset` — the ``(lineno,
   col_offset) <-> absolute byte index`` conversions a byte-exact splice
   needs. ``ast``'s own ``col_offset``/``end_col_offset`` are **UTF-8 byte**
@@ -27,21 +38,28 @@ adapter-surface split: a source language's own syntax lives only in its
 adapter) and stay in ``adapters/python.py``, mirroring where P07 put
 ``_statement_spans`` — the shared TYPE (``StatementSpan``) lives beside the
 protocol, the language-specific WALK stays in the language's own adapter
-file. ``Mutant`` is the identical split, one module over, forced sideways
-into its own module only because ``verdict.py`` (where ``StatementSpan``'s
-sibling types live) is off-limits here.
+file. :class:`MutationSite` is the identical split, one module over.
 
 **P12 adds execution** (A-119): baseline-gated, isolated, ``jobs``-bounded
-mutation running lives HERE too, beside :class:`Mutant`, mirroring
-``canary.py``'s own precedent of holding one claim-tier's entire
-orchestration in a single dedicated module. The surface is
-:func:`run_mutation` (the entry point: a bounded executor fan-out over
-:func:`collect_mutants`'s job list, then deterministic aggregation into a
-:class:`~assay.verdict.Mutation`), :func:`judge_mutation` /
-:func:`build_mutation_claim` (the pure outcome mapping and R2
-:class:`~assay.verdict.Claim` wiring, A-117), and :func:`collect_mutants`
-(the cross-file aggregation this package's own implementation choice, see
-the LOG).
+mutation running lives HERE too, mirroring ``canary.py``'s own precedent of
+holding one claim-tier's entire orchestration in a single dedicated module.
+The surface is :func:`run_mutation` (the entry point: a bounded executor
+fan-out over :func:`collect_mutation_sites`'s job list, then deterministic
+aggregation into a :class:`~assay.verdict.Mutation`),
+:func:`judge_mutation` / :func:`build_mutation_claim` (the pure outcome
+mapping and R2 :class:`~assay.verdict.Claim` wiring, A-117), and
+:func:`collect_mutation_sites` (the bounded cross-file aggregation).
+
+**P21 makes the cap a WORK bound** (A-180/A-183): each adapter call receives
+the REMAINING capacity, later files are not called once it is exhausted, and
+the one full replacement file per mutant is materialised inside its own
+worker. :func:`collect_mutation_sites` distinguishes three results that must
+never collapse into each other — an adapter with no engine
+(``"UNSUPPORTED"`` -> payload-free ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED``),
+a failed discovery boundary (:class:`MutationDiscoveryError` ->
+``ERROR``/``MUTATION_DISCOVERY_FAILED``), and a supported analysis that
+observed nothing (``()`` -> ``INCONCLUSIVE``/``NO_MUTANTS`` with its exact
+zero/zero payload).
 
 **P18 wires this into the installed CLI** (work items 2-5): the baseline
 :func:`run_mutation` gates on is no longer run BY this module — it is now
@@ -49,16 +67,19 @@ a required *baseline* parameter, the exact :class:`~assay.runner.
 CommandResult` R0 already produced, so the lane's command runs at most
 once per ``assay run`` invocation (sol finding 11). :func:`
 resolve_mutation_targets` builds the per-file candidate list from the same
-resolved diff R1 measures against, and *operators* filters
-:func:`collect_mutants`'s output down to the lane's own declared,
-closed selection before anything is submitted. Wiring it also fixed the
+resolved diff R1 measures against, and *operators* is the lane's own
+declared, closed selection. (P21 moved that selection from a post-hoc
+filter over collected jobs INTO the adapter call itself: filtering
+afterwards meant the adapter had already built candidates the lane never
+selected, so the cap would have been counting work that could never run.)
+Wiring it also fixed the
 path spelling two of these surfaces had never had to agree on before
 (A-145): a target's ``path`` is REPO-relative, while each mutant's scratch
 tree is a copy of the PROJECT root — see :func:`project_prefix`.
 
 **A circular-import note, since it shapes this module's own imports below**:
 ``assay.runner`` imports ``assay.adapters.base``, which imports THIS module
-for :class:`Mutant`. A module-level ``from .runner import execute_command``
+for :class:`MutationSite`. A module-level ``from .runner import execute_command``
 here would therefore be a genuine cycle (``mutation -> runner -> adapters.
 base -> mutation``), not merely a style preference — verified empirically
 while authoring this package: it breaks for whichever entry point happens
@@ -86,21 +107,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+import hashlib
+from typing import Literal
+
 from .config import Lane
 from .diff import AddedLines
-from .errors import Outcome, ReasonCode
-from .verdict import Claim, Mutation, MutantOutcome
+from .errors import AssayError, Outcome, ReasonCode
+from .verdict import MAX_CANDIDATE_CEILING, Claim, Mutation, MutantOutcome
+from .vocabulary import MUTATION_OPERATORS
 
 __all__ = [
+    "MAX_CANDIDATE_CEILING",
     "MUTATION_OPERATORS",
     "Clock",
     "ExecutorFactory",
-    "Mutant",
     "MutantJob",
+    "MutationDiscoveryError",
+    "MutationSite",
     "MutationTarget",
     "build_mutation_claim",
     "byte_offset",
-    "collect_mutants",
+    "collect_mutation_sites",
     "judge_mutation",
     "line_for_offset",
     "project_prefix",
@@ -108,86 +135,133 @@ __all__ = [
     "run_mutation",
 ]
 
+#: (P21/A-183) the adapter-wide capability sentinel, retained from the old
+#: ``generate_mutants`` union. It means the adapter has NO mutation
+#: implementation at all -- never a parse failure, never an unrecognised
+#: individual construct, never a valid analysis that found nothing.
+UNSUPPORTED = "UNSUPPORTED"
+
 #: The injectable clock, identical in shape to ``assay.runner.Clock`` --
 #: duplicated rather than imported (this module's own circular-import note,
 #: above): a plain function type alias costs nothing to restate and needs
 #: no deferral, unlike the runtime-called ``execute_command``.
 Clock = Callable[[], datetime]
 
-#: The closed, four-value mutation catalogue (A-112/A-114), adopted verbatim
-#: from ``/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`` and
-#: DESIGN-GUIDE §11's own TOML example (``operators =
-#: ["compare-swap","boolop-swap","bool-const-flip","falsy-swap"]``).
-#: ``Mutant.operator`` is validated against this set as a plain ``str``, not
-#: an enum — matching :class:`~assay.verdict.CanaryResult`'s own
-#: ``mechanism: str`` precedent for a package-local closed vocabulary
-#: (A-114).
-MUTATION_OPERATORS: frozenset[str] = frozenset(
-    {"compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap"}
-)
+class MutationDiscoveryError(AssayError):
+    """A syntax-aware discovery BOUNDARY failed (P21/A-171).
+
+    Always ``ERROR``/``MUTATION_DISCOVERY_FAILED``, so no call site can pair
+    it with a different outcome. Reachable in P21 for source the adapter
+    genuinely cannot parse, and for an adapter that claims supported
+    discovery and then contradicts itself mid-collection; P29 adds the
+    helper-protocol failures.
+
+    Deliberately NOT the same thing as either neighbour: ``UNSUPPORTED``
+    means no engine exists to fail, and an empty tuple means the engine ran
+    and found nothing. Collapsing any pair of the three turns an inability
+    to measure into apparent evidence, which is the failure this whole
+    project exists to remove.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.MUTATION_DISCOVERY_FAILED,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
-class Mutant:
-    """One valid, single-site mutation of a source file (A-092/A-114).
+class MutationSite:
+    """One candidate mutation, as a BOUNDED descriptor (P21/A-180).
 
-    ``mutated_text`` is the FULL text with exactly ONE construct changed —
-    the byte-exact splice result, never a whole-file reprint (A-112's own
-    "not ``ast.unparse`` on a tree copy" ruling). Every byte of
-    ``mutated_text`` outside the one changed span is identical to the input
-    ``text`` :meth:`~assay.adapters.python.PythonAdapter.generate_mutants`
-    was called with, including every newline, comment, and quote style —
-    that byte-preservation property is O1's own claim and is proven at the
-    test layer (a hand-derived one-diff assertion per fixture), not
-    re-asserted structurally here: this dataclass has no way to see the
-    original ``text`` to compare against, by design (A-114 lists exactly
-    four fields; carrying the pre-mutation text as a fifth would let a
-    caller diff against the WRONG original after a mutant crosses a
-    boundary, e.g. a JSON round-trip, where only ``mutated_text`` survives).
+    This replaces P11's ``Mutant``, whose ``mutated_text`` carried a full
+    copy of the mutated file. That shape made ``max_mutants`` unenforceable
+    by construction: the adapter had to materialise every candidate's entire
+    source before any cap could look at the collection, so a limit applied
+    afterwards bounded neither memory nor work. A site is instead the
+    smallest thing that still names the experiment exactly — a byte span and
+    its replacement — and the full replacement text is materialised only
+    inside a submitted worker, at most ``jobs`` of them alive at once.
 
-    :attr:`identity` is **derived**, not stored (A-114): it mirrors
-    :class:`~assay.verdict.EvidenceDeclaration.identity` /
-    :class:`~assay.verdict.Evidence.identity`'s own "a property built from
-    already-present fields" shape. ``(lineno, operator, description)`` alone
-    is not always unique — a 3+-operand boolean chain (A-115) produces
-    several sites sharing an identical ``(lineno, operator, description)``
-    triple (e.g. two ``"And->Or"`` sites on the same line, for ``a and b
-    and c``) — so ``mutated_text`` is folded into the tuple too: two
-    genuinely different splices always produce two different full texts
-    (the changed span sits at a different byte offset), which is exactly
-    the "stable identity" O1 asks for without inventing a fifth stored
-    field (a byte-offset column) nothing else in the return contract needs.
+    ``start_byte``/``end_byte`` are zero-based, half-open, absolute UTF-8
+    byte offsets into the source the adapter was handed. Operating in bytes
+    rather than ``str`` units is not a style choice: ``ast``'s own
+    ``col_offset`` is a UTF-8 BYTE offset within a physical line, so any
+    arithmetic done in character units silently misaligns the moment source
+    contains a non-ASCII character (the locked site manifest opens with
+    ``π`` precisely to keep that honest).
     """
 
+    start_byte: int
+    end_byte: int
+    replacement: bytes
     lineno: int
     operator: str
     description: str
-    mutated_text: str
 
     def __post_init__(self) -> None:
-        if isinstance(self.lineno, bool) or not isinstance(self.lineno, int):
-            raise ValueError(f"Mutant.lineno must be an integer, got {self.lineno!r}")
+        for name in ("start_byte", "end_byte", "lineno"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(
+                    f"MutationSite.{name} must be an integer, got {value!r}"
+                )
+        if self.start_byte < 0:
+            raise ValueError(
+                f"MutationSite.start_byte must be >= 0, got {self.start_byte}"
+            )
+        if self.end_byte <= self.start_byte:
+            raise ValueError(
+                f"MutationSite byte span [{self.start_byte}, {self.end_byte}) is "
+                f"empty or reversed; a site always replaces at least one byte"
+            )
         if self.lineno < 1:
-            raise ValueError(f"Mutant.lineno must be >= 1, got {self.lineno}")
+            raise ValueError(f"MutationSite.lineno must be >= 1, got {self.lineno}")
+        if not isinstance(self.replacement, bytes) or not self.replacement:
+            raise ValueError(
+                f"MutationSite.replacement must be non-empty bytes, got "
+                f"{self.replacement!r}"
+            )
+        try:
+            self.replacement.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"MutationSite.replacement {self.replacement!r} is not valid "
+                f"UTF-8: {exc}"
+            ) from exc
         if self.operator not in MUTATION_OPERATORS:
             raise ValueError(
-                f"Mutant.operator must be one of {sorted(MUTATION_OPERATORS)}, "
-                f"got {self.operator!r}"
+                f"MutationSite.operator must be one of "
+                f"{list(MUTATION_OPERATORS)}, got {self.operator!r}"
             )
         if not isinstance(self.description, str) or not self.description:
             raise ValueError(
-                f"Mutant.description must be a non-empty string, got "
+                f"MutationSite.description must be a non-empty string, got "
                 f"{self.description!r}"
-            )
-        if not isinstance(self.mutated_text, str) or not self.mutated_text:
-            raise ValueError(
-                f"Mutant.mutated_text must be a non-empty string, got "
-                f"{self.mutated_text!r}"
             )
 
     @property
-    def identity(self) -> tuple[int, str, str, str]:
-        return (self.lineno, self.operator, self.description, self.mutated_text)
+    def replacement_sha256(self) -> str:
+        """Lowercase SHA-256 of the REPLACEMENT BYTES ONLY (A-180).
+
+        Never a hash of the mutated file, and never derived by diffing two
+        full texts: a minimal text diff does not recover a syntax site at
+        all (``<`` -> ``<=`` collapses to a zero-width insertion, ``True`` ->
+        ``False`` to ``Tru`` -> ``Fals``).
+        """
+        return hashlib.sha256(self.replacement).hexdigest()
+
+    @property
+    def identity(self) -> tuple[int, int, str, str]:
+        """The per-file ordering and uniqueness key (A-180). ``lineno`` and
+        ``description`` are excluded on purpose: they diagnose a site, they
+        do not distinguish two sites."""
+        return (self.start_byte, self.end_byte, self.replacement_sha256, self.operator)
+
+    def apply(self, original: bytes) -> bytes:
+        """The one-site splice, materialised at execution time only."""
+        return original[: self.start_byte] + self.replacement + original[self.end_byte :]
 
 
 def byte_offset(text_bytes: bytes, lineno: int, col_offset: int) -> int:
@@ -237,8 +311,9 @@ class MutationTarget:
     forward-slash, repo-top-relative spelling ``adapters/base.py``'s own
     path contract requires), its CURRENT text, and the changed line numbers
     scoping candidate sites — the exact per-file input
-    ``LanguageAdapter.generate_mutants(text, lines)`` needs (P11), paired
-    with the *path* identity :class:`Mutant` itself carries no field for.
+    ``LanguageAdapter.generate_mutation_sites(text, lines, ...)`` needs,
+    paired with the *path* identity a :class:`MutationSite` itself carries
+    no field for.
 
     Building this from a real diff/adapter/filesystem is deliberately
     OUTSIDE this package's scope — P12 owns EXECUTION, not diff-to-target
@@ -304,15 +379,12 @@ def resolve_mutation_targets(
     exclusion. Deliberately a SEPARATE, duplicated copy of that check
     rather than an import from :mod:`assay.evaluate`: that module sits
     outside this package's own ``scope.touch``, and two independently
-    written copies that must agree is a real check one level up -- the
-    same reasoning this module's own :func:`_mutant_outcome_sort_key`
-    already gives for keeping its own copy rather than importing
-    ``verdict``'s private sort key.
+    written copies that must agree is a real check one level up.
 
     Returned in PATH order (never *added.by_file*'s own iteration order,
     which is not itself a promised ordering) -- the same determinism
-    :func:`collect_mutants` already applies one level down, so a caller
-    never has to sort twice. *read_source_text* is the injectable
+    :func:`collect_mutation_sites` already applies one level down, so a
+    caller never has to sort twice. *read_source_text* is the injectable
     filesystem boundary (AUTHORING.md §3b.E), called once per considered
     file, mirroring :func:`assay.runner.evaluate_r1`'s own
     ``read_source_text`` closure.
@@ -344,48 +416,195 @@ def resolve_mutation_targets(
 
 @dataclass(frozen=True, kw_only=True)
 class MutantJob:
-    """One ``(file, mutant)`` pair — the unit of work :func:`run_mutation`
-    fans out over the executor. A dataclass rather than a bare tuple
-    (A-092): the two fields are semantically distinct (a file identity and
-    a construction result), not an ad hoc pair.
+    """One ``(file, site)`` pair — the unit of work :func:`run_mutation` fans
+    out over the executor.
+
+    ``original_text`` is a SHARED REFERENCE to the target's own text, never a
+    per-site copy (A-180). Python strings are immutable, so every job for one
+    file points at the same object; the replacement file is built once, inside
+    the worker that is about to run it, and discarded with its scratch tree.
     """
 
     path: str
-    mutant: Mutant
+    original_text: str
+    site: MutationSite
 
 
-def collect_mutants(
+def _check_operator_policy(operators: tuple[str, ...]) -> None:
+    """The declared selection: ordered, non-empty, duplicate-free, and a
+    subset of the closed catalogue. Validated HERE as well as at config load
+    because :func:`collect_mutation_sites` is a public surface a caller may
+    invoke directly, and an unvalidated policy would silently become the
+    bound handed to every adapter."""
+    if not isinstance(operators, tuple) or not operators:
+        raise ValueError(
+            f"collect_mutation_sites operators must be a non-empty tuple, got "
+            f"{operators!r}"
+        )
+    if len(set(operators)) != len(operators):
+        raise ValueError(
+            f"collect_mutation_sites operators contains a duplicate: "
+            f"{list(operators)}"
+        )
+    unknown = [item for item in operators if item not in MUTATION_OPERATORS]
+    if unknown:
+        raise ValueError(
+            f"collect_mutation_sites operators names unknown operator(s) "
+            f"{unknown}; the catalogue is closed: {list(MUTATION_OPERATORS)}"
+        )
+
+
+def _validate_sites(
+    sites: tuple[MutationSite, ...],
+    *,
+    target: MutationTarget,
+    operators: tuple[str, ...],
+    remaining: int,
+) -> None:
+    """Every rule an adapter's returned batch must satisfy before a single
+    job is built from it (A-180).
+
+    An adapter is a language's own code and this is the boundary that keeps
+    a wrong one from silently poisoning the artifact's identities: spans must
+    address real bytes of the exact text handed in, on UTF-8 code-point
+    boundaries; the splice must actually change those bytes; the recorded
+    line must be the line the span really starts on; the operator must be one
+    the caller SELECTED (not merely one the catalogue knows); the batch must
+    be identity-ordered and duplicate-free; and it must respect the remaining
+    capacity it was given.
+    """
+    if len(sites) > remaining:
+        raise MutationDiscoveryError(
+            f"mutation discovery for {target.path!r} returned {len(sites)} "
+            f"site(s) for a remaining capacity of {remaining}; an adapter may "
+            f"never exceed the limit it was handed"
+        )
+    source = target.text.encode("utf-8")
+    selected = set(operators)
+    for site in sites:
+        if site.end_byte > len(source):
+            raise MutationDiscoveryError(
+                f"mutation site {site.identity} for {target.path!r} ends at "
+                f"byte {site.end_byte}, past the {len(source)}-byte source"
+            )
+        for name, offset in (("start_byte", site.start_byte), ("end_byte", site.end_byte)):
+            if offset < len(source) and (source[offset] & 0xC0) == 0x80:
+                raise MutationDiscoveryError(
+                    f"mutation site {site.identity} for {target.path!r} has "
+                    f"{name} {offset} inside a UTF-8 character"
+                )
+        if site.replacement == source[site.start_byte : site.end_byte]:
+            raise MutationDiscoveryError(
+                f"mutation site {site.identity} for {target.path!r} replaces "
+                f"its span with the identical bytes; a no-op is not an "
+                f"experiment"
+            )
+        try:
+            site.apply(source).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise MutationDiscoveryError(
+                f"mutation site {site.identity} for {target.path!r} produces "
+                f"invalid UTF-8: {exc}"
+            ) from exc
+        expected_line = line_for_offset(source, site.start_byte)
+        if site.lineno != expected_line:
+            raise MutationDiscoveryError(
+                f"mutation site {site.identity} for {target.path!r} records "
+                f"line {site.lineno} but starts on line {expected_line}"
+            )
+        if site.operator not in selected:
+            raise MutationDiscoveryError(
+                f"mutation site {site.identity} for {target.path!r} uses "
+                f"operator {site.operator!r}, outside the selected policy "
+                f"{list(operators)}"
+            )
+    identities = [site.identity for site in sites]
+    if identities != sorted(identities):
+        raise MutationDiscoveryError(
+            f"mutation sites for {target.path!r} are not identity-ordered: "
+            f"{identities}"
+        )
+    if len(set(identities)) != len(identities):
+        raise MutationDiscoveryError(
+            f"mutation sites for {target.path!r} repeat an identity: "
+            f"{identities}"
+        )
+
+
+def collect_mutation_sites(
     targets: Iterable[MutationTarget],
     *,
     adapter: LanguageAdapter,
-) -> tuple[MutantJob, ...]:
-    """Aggregate every candidate mutant across POSSIBLY MANY changed files
-    into ONE deterministic job list — this package's own answer to
-    aggregating a lane-wide claim from per-file ``generate_mutants`` calls
-    (a design choice the handoff leaves to the implementer; see the LOG for
-    the full reasoning).
+    operators: tuple[str, ...],
+    limit: int,
+) -> tuple[MutantJob, ...] | Literal["UNSUPPORTED"]:
+    """Aggregate bounded candidate sites across possibly many changed files
+    into ONE deterministic job list, or report adapter-wide capability
+    absence (P21/A-180/A-183).
 
-    Calls ``adapter.generate_mutants(target.text, set(target.lines))`` once
-    per *target*, in *target.path* order — deterministic regardless of the
-    iteration order of *targets* itself, so a caller passing an unordered
-    collection still gets a stable job list. ``"UNSUPPORTED"`` for one file
-    contributes ZERO mutants from that file and is never an abort of the
-    whole call (P11's own per-file union, A-114); the ALL-UNSUPPORTED-or-
-    empty case collapses naturally into ``len(result) == 0``, which
-    :func:`run_mutation` reads as ``total == 0`` -> ``NO_MUTANTS`` (A-117)
-    without this function needing to special-case it.
+    Targets are visited in ``path`` order, and each call receives only the
+    REMAINING capacity — so the total number of descriptors this function
+    ever holds is bounded by *limit* regardless of how many candidates the
+    files actually contain. Once capacity is exhausted, later files are not
+    called at all: that is what makes the bound a work bound and not merely
+    a reporting one.
 
-    Within one file, P11's own ``generate_mutants`` order (``lineno``,
-    ``operator``, ``description``, byte offset) is preserved verbatim —
-    this function only adds the cross-file ``path`` ordering on top.
+    Three results, deliberately distinguishable (A-183):
+
+    * ``"UNSUPPORTED"`` — the FIRST adapter answer was the capability
+      marker, so no language analysis happened anywhere. Returned
+      immediately, with no jobs.
+    * a tuple of :class:`MutantJob` — possibly empty, meaning a supported
+      analysis genuinely observed that many candidates (zero included).
+    * :class:`MutationDiscoveryError` — including the inconsistent case
+      where an adapter first claims supported discovery (even an empty
+      tuple) and then returns the marker. That adapter is contradicting
+      itself about its own capability, and no partial job list from it can
+      be trusted.
+
+    With no targets at all the result is the supported empty tuple: no
+    language analysis was required, so nothing can be said about capability.
     """
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError(f"collect_mutation_sites limit must be an integer, got {limit!r}")
+    if not 1 <= limit <= MAX_CANDIDATE_CEILING:
+        raise ValueError(
+            f"collect_mutation_sites limit must be in 1..{MAX_CANDIDATE_CEILING}, "
+            f"got {limit}"
+        )
+    _check_operator_policy(operators)
+
     jobs: list[MutantJob] = []
+    remaining = limit
+    saw_supported = False
     for target in sorted(targets, key=lambda item: item.path):
-        result = adapter.generate_mutants(target.text, set(target.lines))
-        if result == "UNSUPPORTED":
-            continue
-        for mutant in result:
-            jobs.append(MutantJob(path=target.path, mutant=mutant))
+        if remaining <= 0:
+            break
+        result = adapter.generate_mutation_sites(
+            target.text,
+            set(target.lines),
+            operators=operators,
+            limit=remaining,
+        )
+        if result == UNSUPPORTED:
+            if saw_supported:
+                raise MutationDiscoveryError(
+                    f"adapter {getattr(adapter, 'name', adapter)!r} reported "
+                    f"supported mutation discovery and then returned "
+                    f"{UNSUPPORTED!r} for {target.path!r}; capability is a "
+                    f"property of the adapter, not of one file"
+                )
+            return UNSUPPORTED
+        saw_supported = True
+        sites = tuple(result)
+        _validate_sites(
+            sites, target=target, operators=operators, remaining=remaining
+        )
+        for site in sites:
+            jobs.append(
+                MutantJob(path=target.path, original_text=target.text, site=site)
+            )
+        remaining -= len(sites)
     return tuple(jobs)
 
 
@@ -401,18 +620,6 @@ ExecutorFactory = Callable[[int], Executor]
 
 def _default_executor_factory(jobs: int) -> Executor:
     return ThreadPoolExecutor(max_workers=jobs)
-
-
-def _mutant_outcome_sort_key(outcome: MutantOutcome) -> tuple[str, int, str, str]:
-    """The stable identity :func:`run_mutation` sorts the three non-killed
-    buckets by before constructing :class:`~assay.verdict.Mutation` — kept
-    as this module's OWN copy rather than importing ``verdict``'s private
-    validation helper of the same shape: two independently written copies
-    that must agree is a real check (a drift between them would surface as
-    ``Mutation`` refusing to construct, A-067's own "two independently
-    verified layers" discipline one level down), not merely duplication.
-    """
-    return (outcome.path, outcome.lineno, outcome.operator, outcome.description)
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -474,6 +681,25 @@ def _within_project(path: str, prefix: str) -> str:
     return path[len(prefix) :]
 
 
+def _outcome_of(job: MutantJob) -> MutantOutcome:
+    """The artifact projection of one attempted mutant (A-180).
+
+    Built DIRECTLY from the validated site, so the wire identity and the
+    experiment that produced it cannot disagree — never reconstructed by
+    diffing the mutated file against the original, which does not recover a
+    syntax site at all.
+    """
+    return MutantOutcome(
+        path=job.path,
+        lineno=job.site.lineno,
+        start_byte=job.site.start_byte,
+        end_byte=job.site.end_byte,
+        replacement_sha256=job.site.replacement_sha256,
+        operator=job.site.operator,
+        description=job.site.description,
+    )
+
+
 def _run_one_mutant(
     lane: Lane,
     *,
@@ -488,7 +714,8 @@ def _run_one_mutant(
 ) -> CommandResult:
     """Isolate *job* into a FRESH ``shutil.copytree`` scratch directory
     (A-120 — never in-place, never a ``git worktree``), write
-    ``job.mutant.mutated_text`` over *write_path* INSIDE the copy, and run
+    the ONE full replacement file (spliced here, from the job's shared
+    original plus its site) over *write_path* INSIDE the copy, and run
     the SAME ``execute_command`` (*execute*) the baseline used, varying
     only ``cwd``. The scratch copy is discarded afterward; *project_root*
     itself is never opened for writing here — that is what makes "the
@@ -508,32 +735,16 @@ def _run_one_mutant(
     scratch_dir = scratch_parent / f"mutant-{index:06d}"
     shutil.copytree(project_root, scratch_dir)
     try:
-        (scratch_dir / write_path).write_text(
-            job.mutant.mutated_text, encoding="utf-8"
+        # A-180: the ONE place a full replacement file exists. It is built
+        # here, inside the worker that is about to run it, from the shared
+        # original plus this site's own splice -- so at most `jobs` of them
+        # are alive at once, rather than one per candidate at discovery time.
+        (scratch_dir / write_path).write_bytes(
+            job.site.apply(job.original_text.encode("utf-8"))
         )
         return execute(lane, cwd=scratch_dir, process_runner=process_runner, clock=clock)
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
-
-
-def _filter_by_operators(
-    job_list: tuple[MutantJob, ...], operators: frozenset[str]
-) -> tuple[MutantJob, ...]:
-    """P18 work item 3's own filtering step, kept separate from
-    :func:`collect_mutants` (P11's already-independently-tested
-    construction/aggregation surface) rather than folded into it: retains
-    only the jobs whose :attr:`Mutant.operator` is in the lane's declared,
-    closed *operators* set. An adapter's ``UNSUPPORTED`` return, a
-    syntactically valid file contributing no eligible site, and an
-    operator filter excluding every remaining candidate all collapse into
-    the identical empty result here — :func:`run_mutation` reads all three
-    the same honest way, ``total == 0`` -> ``INCONCLUSIVE``/``NO_MUTANTS``
-    (A-117), with no special-casing needed for which of the three actually
-    happened. Order is preserved from *job_list* (already path/lineno/
-    operator/description-ordered by :func:`collect_mutants`) — filtering
-    removes entries, it never reorders the survivors.
-    """
-    return tuple(job for job in job_list if job.mutant.operator in operators)
 
 
 def run_mutation(
@@ -546,11 +757,12 @@ def run_mutation(
     targets: Iterable[MutationTarget],
     adapter: LanguageAdapter,
     jobs: int,
-    operators: Iterable[str],
+    max_mutants: int,
+    operators: tuple[str, ...],
     process_runner: ProcessRunner | None = None,
     clock: Clock | None = None,
     executor_factory: ExecutorFactory = _default_executor_factory,
-) -> Mutation | None:
+) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (A-119/A-120; *baseline* refactored in
     P18 work item 4). *baseline* is now a MANDATORY, ALREADY-OBTAINED
     :class:`~assay.runner.CommandResult` — the exact R0 result
@@ -558,7 +770,7 @@ def run_mutation(
     against this same, still-unmodified *project_root* — never re-executed
     here (sol finding 11: the old internal baseline doubled the command
     ledger). A baseline that did not PASS stops HERE, before
-    :func:`collect_mutants` is even called, let alone anything submitted
+    :func:`collect_mutation_sites` is even called, let alone anything submitted
     to an executor (O1's own negative: "submits mutant work... when the
     original suite is already red") — and this function returns ``None``
     (A-116's baseline-conditional presence rule: mutation testing never
@@ -582,15 +794,17 @@ def run_mutation(
     :func:`project_prefix`.
 
     Only when the baseline PASSES: collects every candidate site across
-    *targets*, retains only the ones whose operator is in *operators*
-    (work item 3 — the lane's own declared, closed selection; a
-    :class:`Mutant` may name any of :data:`MUTATION_OPERATORS`, but only
-    the DECLARED subset is ever actually submitted; *operators* itself is
-    trusted here, not re-validated against the closed vocabulary — that
-    check is :mod:`assay.config`'s, at load time, and an unknown or empty
-    *operators* passed directly still degrades honestly, matching nothing
-    and collapsing into the same ``total == 0`` path below), then fans the
-    resulting job list out over ``executor_factory(jobs)`` — called with
+    *targets*, passing *operators* — the lane's own declared, closed,
+    order-preserving selection — INTO each adapter call, so a candidate the
+    lane never selected is never built in the first place (P21 moved this
+    from a post-hoc filter over already-collected jobs; filtering afterwards
+    meant the cap counted work that could never run). *operators* is
+    re-validated by :func:`collect_mutation_sites` itself, not merely at
+    :mod:`assay.config` load time: it is a public surface a caller may
+    invoke directly, and an empty, duplicated, or unknown selection raises
+    ``ValueError`` there rather than silently becoming the bound handed to
+    every adapter. Then fans the resulting job list out over
+    ``executor_factory(jobs)`` — called with
     EXACTLY *jobs*, never a derived or machine-sourced value (A-082/
     A-122) — isolating each mutant into its own fresh scratch copy under
     *scratch_root* (A-120). Results are collected POSITION-ALIGNED with
@@ -611,16 +825,39 @@ def run_mutation(
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
     if jobs < 1:
         raise ValueError(f"run_mutation jobs must be >= 1, got {jobs}")
+    if isinstance(max_mutants, bool) or not isinstance(max_mutants, int):
+        raise ValueError(
+            f"run_mutation max_mutants must be an integer, got {max_mutants!r}"
+        )
+    if not 1 <= max_mutants <= 10_000:
+        raise ValueError(
+            f"run_mutation max_mutants must be in 1..10,000, got {max_mutants}"
+        )
 
     if baseline.outcome is not Outcome.PASS:
         return None
 
-    job_list = _filter_by_operators(
-        collect_mutants(targets, adapter=adapter), frozenset(operators)
+    # A-180: discovery is bounded at max+1 -- one MORE than the cap, so the
+    # difference between "exactly at the cap" and "more than the cap" is an
+    # observation rather than a guess, and the sentinel can state a fact.
+    collected = collect_mutation_sites(
+        targets, adapter=adapter, operators=operators, limit=max_mutants + 1
     )
-    total = len(job_list)
+    # A-183: propagated BEFORE project-prefix arithmetic, scratch creation,
+    # executor construction, or submission. There is nothing to isolate and
+    # nothing to run when no analysis ever happened.
+    if collected == UNSUPPORTED:
+        return UNSUPPORTED
+
+    job_list = collected
+    candidate_count = len(job_list)
+    if candidate_count > max_mutants:
+        # The pre-submission refusal. No partial sample and no credit: the
+        # sentinel records what was observed and that nothing was attempted.
+        return Mutation(candidate_count=candidate_count, total=0)
+    total = candidate_count
     if total == 0:
-        return Mutation(total=0, killed=0)
+        return Mutation(candidate_count=0, total=0)
 
     prefix = project_prefix(repo_top=repo_top, project_root=project_root)
     write_paths = tuple(_within_project(job.path, prefix) for job in job_list)
@@ -652,43 +889,45 @@ def run_mutation(
         ]
         results = [future.result() for future in futures]
 
-    killed = 0
-    survived: list[MutantOutcome] = []
-    crashed: list[MutantOutcome] = []
-    budget_exceeded: list[MutantOutcome] = []
+    buckets: dict[str, list[MutantOutcome]] = {
+        "killed": [],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": [],
+    }
     for job, result in zip(job_list, results):
-        bucket = _classify_mutant_result(result)
-        if bucket == "killed":
-            killed += 1
-            continue
-        outcome_entry = MutantOutcome(
-            path=job.path,
-            lineno=job.mutant.lineno,
-            operator=job.mutant.operator,
-            description=job.mutant.description,
-        )
-        if bucket == "survived":
-            survived.append(outcome_entry)
-        elif bucket == "crashed":
-            crashed.append(outcome_entry)
-        else:
-            budget_exceeded.append(outcome_entry)
-
-    survived.sort(key=_mutant_outcome_sort_key)
-    crashed.sort(key=_mutant_outcome_sort_key)
-    budget_exceeded.sort(key=_mutant_outcome_sort_key)
+        # A-180: killed is an identity list now, so every attempted mutant --
+        # including the ones the suite caught -- is recorded and bindable to
+        # the declared operator policy.
+        #
+        # Results are consumed POSITION-ALIGNED with the submitted job list
+        # (each future awaited by its own index, never `as_completed`), and
+        # `collect_mutation_sites` guarantees that list is identity-ordered:
+        # per file by `_validate_sites`, across files by path order, and
+        # `MutantOutcome.identity` leads with `path`. Appending in that order
+        # therefore leaves every bucket identity-ordered already.
+        #
+        # P21 note: v3 sorted each bucket here afterwards. That sort is now
+        # unreachable -- no input `collect_mutation_sites` can produce would
+        # change under it -- and AUTHORING 3b.D asks for such a line to be
+        # restructured away rather than kept and never exercised. The
+        # invariant itself is not weakened: `Mutation` REFUSES to construct
+        # an out-of-order bucket, so a future change that broke the ordering
+        # would raise here rather than emit a scrambled artifact.
+        buckets[_classify_mutant_result(result)].append(_outcome_of(job))
 
     return Mutation(
+        candidate_count=candidate_count,
         total=total,
-        killed=killed,
-        survived=tuple(survived),
-        crashed=tuple(crashed),
-        budget_exceeded=tuple(budget_exceeded),
+        killed=tuple(buckets["killed"]),
+        survived=tuple(buckets["survived"]),
+        crashed=tuple(buckets["crashed"]),
+        budget_exceeded=tuple(buckets["budget_exceeded"]),
     )
 
 
 def judge_mutation(
-    baseline: CommandResult, mutation: Mutation | None
+    baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
 ) -> tuple[Outcome, ReasonCode | None]:
     """A-117's outcome/reason-code mapping, using only already-existing
     ``ReasonCode``s (``errors.py`` stays forbidden, A-121): baseline
@@ -703,6 +942,16 @@ def judge_mutation(
     """
     if mutation is None:
         return baseline.outcome, baseline.reason_code
+    # A-183: capability absence, before any payload arithmetic. There is no
+    # `Mutation` to read here at all, which is exactly the point -- a
+    # zero/zero payload would assert an analysis that never ran.
+    if mutation == UNSUPPORTED:
+        return Outcome.INCONCLUSIVE, ReasonCode.MUTATION_UNSUPPORTED
+    if mutation.is_limit_sentinel:
+        # A-163: the refusal happened BEFORE submission, so this is not a
+        # budget the run exhausted while working -- it is one it declined to
+        # start against. `LANE_TIMEOUT` would misname it.
+        return Outcome.BUDGET_EXCEEDED, ReasonCode.MUTANT_LIMIT_EXCEEDED
     if mutation.total == 0:
         return Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS
     if mutation.crashed:
@@ -714,16 +963,24 @@ def judge_mutation(
     return Outcome.PASS, None
 
 
-def build_mutation_claim(baseline: CommandResult, mutation: Mutation | None) -> Claim:
+def build_mutation_claim(
+    baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
+) -> Claim:
     """The R2 :class:`~assay.verdict.Claim` from :func:`run_mutation`'s own
     return — the exact mapping ``assay.runner.build_r0_claim`` /
-    ``assay.canary.build_canary_claim`` perform, one level over."""
+    ``assay.canary.build_canary_claim`` perform, one level over.
+
+    The capability marker attaches NO payload (A-183): ``MUTATION_UNSUPPORTED``
+    says no candidate analysis happened, and :class:`~assay.verdict.Claim`
+    itself refuses the pairing if a payload is attached anyway.
+    """
     status, reason_code = judge_mutation(baseline, mutation)
+    payload = None if mutation == UNSUPPORTED else mutation
     return Claim(
         rigor="R2",
         source="computed",
         status=status,
         verified_by_assay=True,
         reason_code=reason_code,
-        mutation=mutation,
+        mutation=payload,
     )

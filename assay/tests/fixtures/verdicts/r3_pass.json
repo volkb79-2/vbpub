@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "cccccccccccccccccccccccccccccccccccccccc",
@@ -52,6 +52,7 @@
       "verified_by_assay": true,
       "canary": {
         "mechanism": "uncovered-line",
+        "target": "pkg/greet.py",
         "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
         "control_outcome": "PASS",
         "transformed_outcome": "FAIL",

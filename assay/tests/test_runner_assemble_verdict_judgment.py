@@ -33,6 +33,7 @@ def _r0_pass_result(tmp_path: Path):
 def _r1_pass_claim() -> Claim:
     coverage = Coverage(
         covered=1, changed_executable=1, pct=100.0, considered=1,
+        exclusion_capability="reported",
         missing_lines={}, files_missing_coverage=(),
     )
     return Claim(

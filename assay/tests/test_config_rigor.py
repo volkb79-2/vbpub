@@ -51,6 +51,7 @@ base = "main"
 MUTATION_TABLE = """
 [lanes.package.judge.mutation]
 jobs = 4
+max_mutants = 50
 operators = ["compare-swap", "boolop-swap"]
 """
 
@@ -263,6 +264,7 @@ def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
     assert declared == tomllib.loads(text)["lanes"]["package"]
     assert declared["judge"]["mutation"] == {
         "jobs": 4,
+        "max_mutants": 50,
         "operators": ["compare-swap", "boolop-swap"],
     }
     assert declared["judge"]["canary"] == {
@@ -293,7 +295,11 @@ def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
     assert lane.as_declared()["judge"] == {
         "language": "python",
         "source_roots": ["src"],
-        "mutation": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]},
+        "mutation": {
+            "jobs": 4,
+            "max_mutants": 50,
+            "operators": ["compare-swap", "boolop-swap"],
+        },
         "base": "main",
     }
 

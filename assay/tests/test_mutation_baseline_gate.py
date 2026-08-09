@@ -108,6 +108,7 @@ def test_a_failing_baseline_stops_before_any_mutant_and_renders_fail(tmp_path: P
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=_OPERATORS,
     )
 
@@ -133,6 +134,7 @@ def test_a_crashed_baseline_stops_before_any_mutant_and_renders_error(tmp_path: 
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=_OPERATORS,
     )
 
@@ -160,6 +162,7 @@ def test_a_timed_out_baseline_stops_before_any_mutant_and_renders_budget_exceede
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=_OPERATORS,
     )
 
@@ -188,6 +191,7 @@ def test_no_scratch_directory_is_created_for_a_red_baseline(tmp_path: Path):
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=_OPERATORS,
     )
 
@@ -221,6 +225,7 @@ def test_a_passing_baseline_proceeds_to_generating_and_running_mutants(tmp_path:
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=_OPERATORS,
         process_runner=recorder,
     )
@@ -259,6 +264,7 @@ def test_the_r2_claim_reuses_the_baselines_own_outcome_and_reason_code_verbatim(
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=1,
+        max_mutants=50,
         operators=_OPERATORS,
     )
     assert mutation is None

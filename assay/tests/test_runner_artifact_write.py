@@ -18,12 +18,14 @@ itself has no opinion on when it is called — that decision belongs to the CLI.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
 import pytest
 
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.output import reserve_verdict_output
 from assay.verdict import Claim, Verdict
 from assay import runner
 
@@ -88,76 +90,58 @@ def _no_measurement_verdict() -> Verdict:
 
 
 @pytest.mark.parametrize("build", [_pass_verdict, _no_measurement_verdict])
-def test_write_verdict_creates_the_file_with_exact_json(tmp_path: Path, build):
+def test_write_verdict_emits_exact_json_through_a_reservation(tmp_path: Path, build):
+    """The writer stays outcome-agnostic: a NO_MEASUREMENT verdict is
+    serialised exactly like a PASS. P21 changed WHERE the destination is
+    decided, not WHAT gets written."""
     verdict = build()
     target = tmp_path / "verdict.json"
 
-    runner.write_verdict(verdict, str(target), stdout=None)  # type: ignore[arg-type]
+    with reserve_verdict_output(str(target), stdout=io.StringIO()) as destination:
+        runner.write_verdict(verdict, destination)
 
     assert json.loads(target.read_text(encoding="utf-8")) == json.loads(verdict.to_json())
+    assert target.read_text(encoding="utf-8") == verdict.to_json()
 
 
 def test_write_verdict_leaves_no_temp_file_behind(tmp_path: Path):
-    target = tmp_path / "verdict.json"
-
-    runner.write_verdict(_pass_verdict(), str(target), stdout=None)  # type: ignore[arg-type]
+    with reserve_verdict_output(
+        str(tmp_path / "verdict.json"), stdout=io.StringIO()
+    ) as destination:
+        runner.write_verdict(_pass_verdict(), destination)
 
     leftovers = [p for p in tmp_path.iterdir() if p.name != "verdict.json"]
     assert leftovers == [], f"temp file(s) left behind: {leftovers}"
 
 
-def test_write_verdict_dash_writes_json_to_stdout_and_no_file(tmp_path: Path):
-    import io
-
+def test_write_verdict_through_a_stdout_reservation_touches_no_file(tmp_path: Path):
     out = io.StringIO()
     verdict = _pass_verdict()
 
-    runner.write_verdict(verdict, "-", stdout=out)
+    with reserve_verdict_output("-", stdout=out) as destination:
+        runner.write_verdict(verdict, destination)
 
     assert json.loads(out.getvalue()) == json.loads(verdict.to_json())
     assert list(tmp_path.iterdir()) == [], "a '-' target must never touch the filesystem"
 
 
-def test_an_injected_replacement_failure_preserves_the_old_artifact(tmp_path: Path):
+def test_a_lost_destination_preserves_the_object_that_took_its_place(tmp_path: Path):
+    """P21/A-181: the old artifact-preservation claim, now expressed through
+    the reservation that owns it. The failure is the CLOSED
+    ``ERROR``/``OUTPUT_WRITE_FAILED`` terminal rather than a bare
+    ``OSError`` -- which is the whole point of A-O14: a consumer used to
+    read that as FAIL."""
     target = tmp_path / "verdict.json"
-    old_verdict = _pass_verdict()
-    target.write_text(old_verdict.to_json(), encoding="utf-8")
+    target.write_text(_pass_verdict().to_json(), encoding="utf-8")
 
-    def broken_replace(src: str, dst: str) -> None:
-        raise OSError("simulated replace failure -- disk full, permissions, whatever")
+    with reserve_verdict_output(str(target), stdout=io.StringIO()) as destination:
+        target.unlink()
+        target.write_text("someone else's artifact\n", encoding="utf-8")
 
-    new_verdict = _no_measurement_verdict()
-    with pytest.raises(OSError):
-        runner.write_verdict(
-            new_verdict, str(target), stdout=None, replace=broken_replace  # type: ignore[arg-type]
-        )
+        with pytest.raises(AssayError) as caught:
+            runner.write_verdict(_no_measurement_verdict(), destination)
 
-    assert json.loads(target.read_text(encoding="utf-8")) == json.loads(old_verdict.to_json()), (
-        "the old artifact must survive a failed replace untouched"
-    )
+    assert caught.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert target.read_text(encoding="utf-8") == "someone else's artifact\n"
     leftovers = [p for p in tmp_path.iterdir() if p.name != "verdict.json"]
-    assert leftovers == [], f"a failed replace must not leave its temp file: {leftovers}"
-
-
-def test_an_injected_replacement_failure_with_no_prior_artifact_leaves_none(tmp_path: Path):
-    target = tmp_path / "verdict.json"
-
-    def broken_replace(src: str, dst: str) -> None:
-        raise OSError("simulated replace failure")
-
-    with pytest.raises(OSError):
-        runner.write_verdict(
-            _pass_verdict(), str(target), stdout=None, replace=broken_replace  # type: ignore[arg-type]
-        )
-
-    assert not target.exists()
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_write_verdict_is_stable_and_matches_to_json_exactly(tmp_path: Path):
-    verdict = _pass_verdict()
-    target = tmp_path / "verdict.json"
-
-    runner.write_verdict(verdict, str(target), stdout=None)  # type: ignore[arg-type]
-
-    assert target.read_text(encoding="utf-8") == verdict.to_json()
+    assert leftovers == [], f"a failed emission must not leave its temp file: {leftovers}"

@@ -46,16 +46,36 @@ EXPECTED_REASON_CODES = {
         "FORMAT_MISMATCH",
         "BAD_LANE_CONFIG",
         "EXEC_FAILED",
+        # P21: assay cannot write its OWN output (A-O14/A-181), and a
+        # syntax-aware discovery BOUNDARY failed (A-171).
+        "OUTPUT_WRITE_FAILED",
+        "MUTATION_DISCOVERY_FAILED",
     },
     "NO_MEASUREMENT": {
         "DIRTY_TREE",
+        # P21/A-178: a clean tree whose HEAD moved is not dirty.
+        "HEAD_CHANGED",
         "BASE_IS_HEAD",
         "EMPTY_COVERAGE",
         "MISSING_ATTESTATION",
         "STALE_ATTESTATION",
+        # P21/A-163, reserved for P27's first real external-tool preflight.
+        "MISSING_EXTERNAL_TOOL",
     },
-    "BUDGET_EXCEEDED": {"LANE_TIMEOUT"},
-    "INCONCLUSIVE": {"NO_MUTANTS", "CANARY_INCONCLUSIVE"},
+    "BUDGET_EXCEEDED": {
+        "LANE_TIMEOUT",
+        # P21/A-163: a refusal BEFORE submission, and P22's snapshot bound.
+        "MUTANT_LIMIT_EXCEEDED",
+        "SNAPSHOT_LIMIT_EXCEEDED",
+    },
+    "INCONCLUSIVE": {
+        "NO_MUTANTS",
+        # P21/A-183: the adapter has no mutation engine at all -- payload-
+        # free, and deliberately NOT NO_MUTANTS, which asserts that a
+        # supported analysis ran and observed nothing.
+        "MUTATION_UNSUPPORTED",
+        "CANARY_INCONCLUSIVE",
+    },
 }
 
 

@@ -117,6 +117,7 @@ def _r1_claim(result: CoverageEvaluation) -> Claim:
             changed_executable=result.changed_executable,
             pct=result.pct,
             considered=result.considered,
+            exclusion_capability=result.exclusion_capability,
             missing_lines=result.missing_lines,
             files_missing_coverage=result.files_missing_coverage,
             unclassified_lines=result.unclassified_lines,
@@ -226,6 +227,7 @@ def test_omitting_unclassified_locations_differs_from_the_expected_artifact():
             changed_executable=result.changed_executable,
             pct=result.pct,
             considered=result.considered,
+            exclusion_capability=result.exclusion_capability,
             missing_lines=result.missing_lines,
             files_missing_coverage=result.files_missing_coverage,
             # unclassified_lines/files_with_unclassified_lines OMITTED --
@@ -262,6 +264,7 @@ def test_rolling_up_unclassified_as_pass_differs_from_the_expected_artifact():
             changed_executable=result.changed_executable,
             pct=result.pct,
             considered=result.considered,
+            exclusion_capability=result.exclusion_capability,
             missing_lines=result.missing_lines,
             files_missing_coverage=result.files_missing_coverage,
             unclassified_lines=result.unclassified_lines,

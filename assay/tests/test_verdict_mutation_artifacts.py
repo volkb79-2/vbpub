@@ -49,6 +49,13 @@ BASE = {
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)
 
+#: Replacement hashes, hand-computed rather than read back from the code
+#: under test (A-067). Each is sha256 of the REPLACEMENT BYTES only.
+SHA_LTE = "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
+SHA_OR = "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6"
+SHA_NE = "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2"
+SHA_FALSE = "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe"
+
 
 def _validate(document: dict, validator: Draft202012Validator) -> None:
     assert why_invalid(validator, document) == []
@@ -58,7 +65,22 @@ def _validate(document: dict, validator: Draft202012Validator) -> None:
 
 
 def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
-    mutation = Mutation(total=2, killed=2)
+    mutation = Mutation(
+        candidate_count=2,
+        total=2,
+        killed=(
+            MutantOutcome(
+                path="pkg/checks.py", lineno=12, start_byte=100, end_byte=101,
+                replacement_sha256=SHA_LTE, operator="compare-swap",
+                description="Lt->LtE",
+            ),
+            MutantOutcome(
+                path="pkg/checks.py", lineno=18, start_byte=240, end_byte=243,
+                replacement_sha256=SHA_OR, operator="boolop-swap",
+                description="And->Or",
+            ),
+        ),
+    )
     r2_claim = Claim(
         rigor="R2", source="computed", status=Outcome.PASS,
         verified_by_assay=True, mutation=mutation,
@@ -69,7 +91,7 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
         outcome=Outcome.PASS,
         started="2026-08-07T14:00:00+00:00",
         ended="2026-08-07T14:00:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap", "boolop-swap"))),
+        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap", "boolop-swap"))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -79,9 +101,18 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
 
 def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft202012Validator):
     survivor = MutantOutcome(
-        path="pkg/checks.py", lineno=30, operator="compare-swap", description="Eq->NotEq"
+        path="pkg/checks.py", lineno=30, start_byte=300, end_byte=302,
+        replacement_sha256=SHA_NE, operator="compare-swap",
+        description="Eq->NotEq",
     )
-    mutation = Mutation(total=2, killed=1, survived=(survivor,))
+    killed = MutantOutcome(
+        path="pkg/checks.py", lineno=14, start_byte=120, end_byte=121,
+        replacement_sha256=SHA_LTE, operator="compare-swap",
+        description="Lt->LtE",
+    )
+    mutation = Mutation(
+        candidate_count=2, total=2, killed=(killed,), survived=(survivor,)
+    )
     r2_claim = Claim(
         rigor="R2", source="computed", status=Outcome.FAIL,
         verified_by_assay=True, reason_code=ReasonCode.MUTANTS_SURVIVED, mutation=mutation,
@@ -93,7 +124,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
         reason_code=ReasonCode.MUTANTS_SURVIVED,
         started="2026-08-07T14:05:00+00:00",
         ended="2026-08-07T14:05:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=2, operators=("compare-swap",))),
+        judgment=Judgment(r2=JudgmentR2(jobs=2, max_mutants=50, operators=("compare-swap",))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -102,7 +133,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
 
 
 def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Validator):
-    mutation = Mutation(total=0, killed=0)
+    mutation = Mutation(candidate_count=0, total=0)
     r2_claim = Claim(
         rigor="R2", source="computed", status=Outcome.INCONCLUSIVE,
         verified_by_assay=True, reason_code=ReasonCode.NO_MUTANTS, mutation=mutation,
@@ -114,7 +145,7 @@ def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Valid
         reason_code=ReasonCode.NO_MUTANTS,
         started="2026-08-07T14:10:00+00:00",
         ended="2026-08-07T14:10:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
+        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -124,9 +155,17 @@ def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Valid
 
 def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012Validator):
     stopped = MutantOutcome(
-        path="pkg/slow.py", lineno=9, operator="boolop-swap", description="And->Or"
+        path="pkg/slow.py", lineno=9, start_byte=96, end_byte=99,
+        replacement_sha256=SHA_OR, operator="boolop-swap", description="And->Or",
     )
-    mutation = Mutation(total=2, killed=1, budget_exceeded=(stopped,))
+    killed = MutantOutcome(
+        path="pkg/slow.py", lineno=5, start_byte=40, end_byte=41,
+        replacement_sha256=SHA_LTE, operator="compare-swap",
+        description="Lt->LtE",
+    )
+    mutation = Mutation(
+        candidate_count=2, total=2, killed=(killed,), budget_exceeded=(stopped,)
+    )
     r2_claim = Claim(
         rigor="R2", source="computed", status=Outcome.BUDGET_EXCEEDED,
         verified_by_assay=True, reason_code=ReasonCode.LANE_TIMEOUT, mutation=mutation,
@@ -138,7 +177,7 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
         reason_code=ReasonCode.LANE_TIMEOUT,
         started="2026-08-07T14:15:00+00:00",
         ended="2026-08-07T14:15:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=2, operators=("boolop-swap", "compare-swap"))),
+        judgment=Judgment(r2=JudgmentR2(jobs=2, max_mutants=50, operators=("boolop-swap", "compare-swap"))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -151,9 +190,18 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
     baseline itself PASSED (an R2 mutation payload exists at all), but one
     attempted mutant's process crashed."""
     crashed = MutantOutcome(
-        path="pkg/broken.py", lineno=4, operator="bool-const-flip", description="True->False"
+        path="pkg/broken.py", lineno=4, start_byte=60, end_byte=64,
+        replacement_sha256=SHA_FALSE, operator="bool-const-flip",
+        description="True->False",
     )
-    mutation = Mutation(total=2, killed=1, crashed=(crashed,))
+    killed = MutantOutcome(
+        path="pkg/broken.py", lineno=2, start_byte=20, end_byte=21,
+        replacement_sha256=SHA_LTE, operator="compare-swap",
+        description="Lt->LtE",
+    )
+    mutation = Mutation(
+        candidate_count=2, total=2, killed=(killed,), crashed=(crashed,)
+    )
     r2_claim = Claim(
         rigor="R2", source="computed", status=Outcome.ERROR,
         verified_by_assay=True, reason_code=ReasonCode.EXEC_FAILED, mutation=mutation,
@@ -165,7 +213,7 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
         reason_code=ReasonCode.EXEC_FAILED,
         started="2026-08-07T14:20:00+00:00",
         ended="2026-08-07T14:20:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=2, operators=("bool-const-flip", "compare-swap"))),
+        judgment=Judgment(r2=JudgmentR2(jobs=2, max_mutants=50, operators=("bool-const-flip", "compare-swap"))),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -273,7 +321,7 @@ def test_a_mutation_payload_outside_the_r2_branch_is_rejected(validator: Draft20
 
 
 def test_the_model_refuses_a_mutation_payload_outside_r2():
-    mutation = Mutation(total=0, killed=0)
+    mutation = Mutation(candidate_count=0, total=0)
     with pytest.raises(ValueError, match="a mutation payload belongs to the R2 claim"):
         Claim(
             rigor="R1", source="computed", status=Outcome.PASS,
@@ -282,7 +330,7 @@ def test_the_model_refuses_a_mutation_payload_outside_r2():
 
 
 def test_the_model_refuses_a_mutation_payload_on_a_no_measurement_claim():
-    mutation = Mutation(total=0, killed=0)
+    mutation = Mutation(candidate_count=0, total=0)
     with pytest.raises(ValueError, match="NO_MEASUREMENT carries no mutation payload"):
         Claim(
             rigor="R2", source="computed", status=Outcome.NO_MEASUREMENT,

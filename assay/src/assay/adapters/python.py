@@ -156,11 +156,18 @@ exactly as ``adapters/base.py``'s own docstring specifies.
 from __future__ import annotations
 
 import ast
+import hashlib
+import heapq
 import re
 from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
-from ..mutation import Mutant, byte_offset, line_for_offset
+from ..mutation import (
+    MutationDiscoveryError,
+    MutationSite,
+    byte_offset,
+    line_for_offset,
+)
 from .base import StatementSpan
 
 __all__ = ["PythonAdapter"]
@@ -600,7 +607,7 @@ def _bool_const_flip_site(node: ast.Constant, text_bytes: bytes) -> _Site:
     start = byte_offset(text_bytes, node.lineno, node.col_offset)
     end = byte_offset(text_bytes, node.end_lineno, node.end_col_offset)
     return _Site(
-        lineno=node.lineno,
+        lineno=line_for_offset(text_bytes, start),
         operator="bool-const-flip",
         description=f"{node.value}->{new_value}",
         start=start,
@@ -655,8 +662,13 @@ def _falsy_swap_site(node: ast.Return, text_bytes: bytes) -> _Site | None:
     original_text, replacement_text = replacement
     start = byte_offset(text_bytes, node.value.lineno, node.value.col_offset)
     end = byte_offset(text_bytes, node.value.end_lineno, node.value.end_col_offset)
+    # P21: the SITE's own line, not the enclosing `return`'s. A parenthesised
+    # `return (\n    0\n)` puts the value on a different physical line than
+    # the statement, and the v4 contract pins `lineno` to
+    # `line_for_offset(source, start_byte)` -- the line a reader must open to
+    # find the bytes this experiment actually replaces.
     return _Site(
-        lineno=node.lineno,
+        lineno=line_for_offset(text_bytes, start),
         operator="falsy-swap",
         description=f"{original_text}->{replacement_text}",
         start=start,
@@ -665,51 +677,100 @@ def _falsy_swap_site(node: ast.Return, text_bytes: bytes) -> _Site | None:
     )
 
 
-def _generate_python_mutants(text: str, lines: set[int]) -> tuple[Mutant, ...] | None:
-    """The whole P11 engine: parse *text*, walk every candidate construct
-    (full :func:`ast.walk`, matching :func:`_statement_spans`'s own
-    not-just-top-level convention -- a mutable construct can be nested
-    arbitrarily deep), keep only sites whose OWN location sits on *lines*,
-    splice each independently against the ORIGINAL bytes (never against a
-    previously-mutated copy -- every ``Mutant`` is its own single-site
-    experiment against *text*, never a cumulative one). ``None`` on a parse
-    failure -- :meth:`PythonAdapter.generate_mutants` translates that to the
-    protocol's ``"UNSUPPORTED"`` sentinel (A-114's own
-    :func:`_statement_spans`-precedent translation).
+@dataclass(frozen=True)
+class _Worst:
+    """Inverted ordering, so :mod:`heapq`'s min-heap behaves as a MAX-heap.
+
+    Retaining "the smallest *limit* identities" needs cheap access to the
+    LARGEST retained identity, which is what gets evicted. Wrapping the key
+    rather than negating it is what lets the key stay a heterogeneous tuple
+    of ints and strings.
+    """
+
+    key: tuple[int, int, str, str]
+
+    def __lt__(self, other: "_Worst") -> bool:
+        return other.key < self.key
+
+
+def _candidate_sites(node: ast.AST, text_bytes: bytes) -> list[_Site]:
+    """Every catalogue site *node* itself contributes, before any filtering."""
+    if isinstance(node, ast.Compare):
+        return _compare_swap_sites(node, text_bytes)
+    if isinstance(node, ast.BoolOp):
+        return _boolop_swap_sites(node, text_bytes)
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return [_bool_const_flip_site(node, text_bytes)]
+    if isinstance(node, ast.Return):
+        site = _falsy_swap_site(node, text_bytes)
+        return [] if site is None else [site]
+    return []
+
+
+def _generate_python_sites(
+    text: str, lines: set[int], *, operators: tuple[str, ...], limit: int
+) -> tuple[MutationSite, ...]:
+    """The whole P21 Python discovery engine: parse *text*, walk every
+    candidate construct (full :func:`ast.walk`, matching
+    :func:`_statement_spans`'s own not-just-top-level convention -- a mutable
+    construct can be nested arbitrarily deep), keep only sites whose OWN
+    location sits on *lines* and whose operator was SELECTED, and retain at
+    most *limit* of them.
+
+    **Bounded WHILE walking (A-180).** The retained set never exceeds *limit*
+    entries: a candidate worse than the current worst retained identity is
+    dropped immediately rather than appended and sliced away later. Parsing
+    the (already 16-MiB-bounded) source is permitted; holding every
+    candidate is not, and holding a full mutated file per candidate -- which
+    P11's own ``mutated_text`` did -- is what made the cap untrue.
+
+    Raises :class:`~assay.mutation.MutationDiscoveryError` for source that
+    does not parse. Python has a real engine, so an input it cannot analyse
+    is a FAILED boundary, never the adapter-wide ``"UNSUPPORTED"`` marker
+    (A-183) and never a valid empty result -- both would turn an inability to
+    measure into evidence that nothing was mutable.
     """
     try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError):
-        return None
+    except (SyntaxError, ValueError) as exc:
+        raise MutationDiscoveryError(
+            f"python mutation discovery cannot parse the source: {exc}"
+        ) from exc
 
     text_bytes = text.encode("utf-8")
-    sites: list[_Site] = []
+    selected = set(operators)
+    heap: list[tuple[_Worst, int, _Site]] = []
+    seen = 0
     for node in ast.walk(tree):
-        if isinstance(node, ast.Compare):
-            sites.extend(_compare_swap_sites(node, text_bytes))
-        elif isinstance(node, ast.BoolOp):
-            sites.extend(_boolop_swap_sites(node, text_bytes))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, bool):
-            sites.append(_bool_const_flip_site(node, text_bytes))
-        elif isinstance(node, ast.Return):
-            site = _falsy_swap_site(node, text_bytes)
-            if site is not None:
-                sites.append(site)
+        for site in _candidate_sites(node, text_bytes):
+            if site.lineno not in lines or site.operator not in selected:
+                continue
+            key = (
+                site.start,
+                site.end,
+                hashlib.sha256(site.replacement).hexdigest(),
+                site.operator,
+            )
+            seen += 1
+            entry = (_Worst(key), seen, site)
+            if len(heap) < limit:
+                heapq.heappush(heap, entry)
+            elif key < heap[0][0].key:
+                # `heap[0]` is the WORST retained identity under `_Worst`'s
+                # inverted ordering, so this evicts it and nothing else.
+                heapq.heapreplace(heap, entry)
 
-    eligible = [site for site in sites if site.lineno in lines]
-    eligible.sort(
-        key=lambda site: (site.lineno, site.operator, site.description, site.start)
-    )
+    retained = sorted(heap, key=lambda entry: entry[0].key)
     return tuple(
-        Mutant(
+        MutationSite(
+            start_byte=site.start,
+            end_byte=site.end,
+            replacement=site.replacement,
             lineno=site.lineno,
             operator=site.operator,
             description=site.description,
-            mutated_text=(
-                text_bytes[: site.start] + site.replacement + text_bytes[site.end :]
-            ).decode("utf-8"),
         )
-        for site in eligible
+        for _, _, site in retained
     )
 
 
@@ -773,10 +834,16 @@ class PythonAdapter:
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         return _inject_uncovered_line(text)
 
-    def generate_mutants(
-        self, text: str, lines: set[int]
-    ) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]:
-        mutants = _generate_python_mutants(text, lines)
-        if mutants is None:
-            return "UNSUPPORTED"
-        return mutants
+    def generate_mutation_sites(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """Never ``"UNSUPPORTED"`` (A-183): Python HAS a mutation engine, so
+        an input it cannot analyse is a discovery failure, not capability
+        absence. The union member exists on the protocol for Go's sake until
+        P29; this implementation simply never selects it."""
+        return _generate_python_sites(text, lines, operators=operators, limit=limit)

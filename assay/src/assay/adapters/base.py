@@ -15,11 +15,14 @@ description)`` transforms :mod:`assay.canary` drives to build its
 cause-sensitive canary (A-010 — nyxloom's own versions of these two write the
 file directly; these do not touch a filesystem). P11 (this package,
 A-084/A-112/A-114) adds the THIRD and final deliberate extension DESIGN-GUIDE
-§11 sketches: :meth:`LanguageAdapter.generate_mutants` and the new
-:class:`~assay.mutation.Mutant` type it returns — construction only; P12
-consumes the returned mutants to actually run tests against them, which is
-out of THIS package's scope (A-114's own "construct, never execute"
-boundary).
+§11 sketches: mutation construction — construction only; P12 consumes the
+result to actually run tests against it (A-114's own "construct, never
+execute" boundary). **P21 (A-180/A-183) replaces that third extension's
+shape**: :meth:`LanguageAdapter.generate_mutation_sites` returns bounded
+:class:`~assay.mutation.MutationSite` descriptors (or the adapter-wide
+``"UNSUPPORTED"`` marker) instead of a tuple of full mutated source files,
+because the old return contract made a candidate cap unenforceable by
+construction.
 
 **Path contract**, binding on every method below and on
 :func:`assay.evaluate.evaluate_coverage`'s own use of ``source_globs``: every
@@ -38,7 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from ..mutation import Mutant
+from ..mutation import MutationSite
 
 __all__ = ["LanguageAdapter", "StatementSpan"]
 
@@ -92,7 +95,7 @@ class LanguageAdapter(Protocol):
     Five attributes and SEVEN methods after P11 (A-097/A-101/A-105/A-114) —
     now DESIGN-GUIDE §11's full flat seven-capability list, reached only
     because each of the three post-P05 extensions (:meth:`statement_spans`,
-    the ``inject_*`` pair, :meth:`generate_mutants`) was added by the
+    the ``inject_*`` pair, :meth:`generate_mutation_sites`) was added by the
     package that first proved the need for it (A-084), never spec'd in
     ahead of that need.
     """
@@ -258,51 +261,60 @@ class LanguageAdapter(Protocol):
         """
         ...
 
-    def generate_mutants(
-        self, text: str, lines: set[int]
-    ) -> tuple[Mutant, ...] | Literal["UNSUPPORTED"]:
-        """Every valid, single-site mutation of a changed-line construct in
-        *text* whose own site sits on one of *lines* (P11, A-084/A-112/A-114)
-        — construction only; nothing here runs a test or judges a survivor,
-        that is P12's job against the returned :class:`~assay.mutation.Mutant`
-        tuple.
+    def generate_mutation_sites(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """At most *limit* candidate mutation SITES in *text* whose own
+        location sits on one of *lines* and whose operator is in *operators*
+        (P21, A-180/A-183) — construction only; nothing here runs a test or
+        judges a survivor.
 
-        A WHOLE-ADAPTER-CALL return union, pinned by A-114, never a
-        per-construct one: ``UNSUPPORTED`` means "this adapter cannot mutate
-        *text* AT ALL" (renders ``INCONCLUSIVE_NO_MUTANTS``, never green,
-        DESIGN-GUIDE §11) — for :class:`~assay.adapters.go.GoAdapter` this is
-        unconditional (no Go toolchain exists anywhere to prove a generated
-        mutant is even valid Go syntax, A-042); for
-        :class:`~assay.adapters.python.PythonAdapter` this fires only when
-        *text* itself fails ``ast.parse`` (mirrors :meth:`statement_spans`'s
-        own ``SyntaxError``/``ValueError`` -> ``None`` precedent). An
-        individual construct this adapter's own catalogue does not cover
-        (e.g. Python's ``in``/``not in`` comparators, outside the
-        ``compare-swap`` catalogue) is never a reason to return
-        ``UNSUPPORTED`` — it simply contributes zero mutants for that one
-        site, inside an otherwise-normal, possibly-empty, returned tuple.
+        **This replaces P11's ``generate_mutants``.** That method returned a
+        tuple of full mutated source files, which made a candidate cap
+        unenforceable by construction: every candidate's entire text had to
+        exist before anything could count them, so a limit applied afterwards
+        bounded neither memory nor work (A-180). An implementation must
+        retain at most *limit* descriptors WHILE walking — a bounded
+        selection or heap — never append every candidate and slice at the
+        end, which reintroduces exactly the unbounded retention this shape
+        exists to remove. Parsing or scanning the (already bounded) source is
+        permitted; retaining more than *limit* descriptors, or any full
+        mutated file, is not.
 
-        *lines* scopes candidate sites to the SAME "changed line" concept
-        :mod:`assay.diff`/:mod:`assay.measurability` already use (a set of
-        1-based new-side line numbers) — a construct whose own site does not
-        sit on one of *lines* is never mutated, this method's own half of
-        O3's "never outside-diff" claim (the coverage-artifact half —
-        excluded/unclassified lines — is P12's concern, this method never
-        sees a coverage artifact at all).
+        *operators* is the caller's ORDERED, already-validated selection, and
+        a site outside it must never be produced — filtering afterwards would
+        make the cap count candidates the lane never selected. *limit* is the
+        REMAINING capacity across all files, so an adapter that returns fewer
+        sites than *limit* is telling the collector it exhausted this file.
 
-        Every returned :class:`~assay.mutation.Mutant`'s
-        :attr:`~assay.mutation.Mutant.mutated_text` differs from *text* at
-        exactly the bytes of ONE construct's own site — every other byte,
-        including every newline, comment, and quote style, is preserved
-        (O1) — never :func:`ast.unparse` on a modified tree copy, which
-        reprints the WHOLE file and loses exactly that (A-112's own
-        citation-correction, verified empirically against nyxloom's
-        reference implementation while authoring this package). A boolean
-        chain's ``N - 1`` textual operator occurrences (``a and b and c`` is
-        ONE ``ast.BoolOp`` node but TWO ``and`` tokens) are ``N - 1``
-        independently-targetable sites, each its own ``Mutant`` flipping
-        exactly one token (A-115) — never the shared AST node's ``.op``
-        field reassigned wholesale, which would conceptually flip every
-        occurrence in the chain at once.
+        Three results, and the distinction between them is load-bearing
+        (A-183):
+
+        * ``tuple[MutationSite, ...]`` — a supported analysis ran. An empty
+          tuple is a real measurement: this file has no eligible site.
+        * ``"UNSUPPORTED"`` — the ADAPTER has no mutation implementation at
+          all, for any input. Whole-adapter-call, never per-construct
+          (A-114's discipline, retained): an individual construct outside
+          the catalogue simply contributes zero sites. For
+          :class:`~assay.adapters.go.GoAdapter` this is unconditional until
+          P29, because no Go toolchain exists anywhere to prove a generated
+          mutant is even valid Go syntax (A-042). Rendered as payload-free
+          ``INCONCLUSIVE/MUTATION_UNSUPPORTED``, never green.
+        * :class:`~assay.mutation.MutationDiscoveryError` — a discovery
+          boundary FAILED. For :class:`~assay.adapters.python.PythonAdapter`
+          this is source that does not parse; P29 adds the helper-protocol
+          failures. **Python never returns ``"UNSUPPORTED"``** — it has an
+          engine, so its failures are failures, not absence.
+
+        A boolean chain's ``N - 1`` textual operator occurrences (``a and b
+        and c`` is ONE ``ast.BoolOp`` node but TWO ``and`` tokens) are
+        ``N - 1`` independently-targetable sites, each flipping exactly one
+        token (A-115) — never the shared AST node's ``.op`` reassigned
+        wholesale, which would conceptually flip every occurrence at once.
         """
         ...

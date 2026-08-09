@@ -1,0 +1,63 @@
+{
+  "schema_version": 4,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "333333333333333333333333333333333333333f",
+  "outcome": "BUDGET_EXCEEDED",
+  "exit_code": 4,
+  "started": "2026-08-09T14:30:00+00:00",
+  "ended": "2026-08-09T14:30:05+00:00",
+  "reason_code": "MUTANT_LIMIT_EXCEEDED",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r2": {
+      "jobs": 2,
+      "max_mutants": 3,
+      "operators": ["compare-swap", "boolop-swap"]
+    }
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "BUDGET_EXCEEDED",
+      "verified_by_assay": true,
+      "reason_code": "MUTANT_LIMIT_EXCEEDED",
+      "mutation": {
+        "candidate_count": 4,
+        "total": 0,
+        "killed": [],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": []
+      }
+    }
+  ],
+  "evidence": []
+}

@@ -58,6 +58,7 @@ def _validate(document: dict, validator: Draft202012Validator) -> None:
 def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
     canary_result = CanaryResult(
         mechanism="uncovered-line",
+        target="pkg/greet.py",
         description=(
             "appended never-called `def _assay_canary_unreached` "
             "(2 uncovered lines) at end of file"
@@ -91,6 +92,7 @@ def test_canary_survived_via_unexpected_pass_matches_the_hand_written_fixture(
 ):
     canary_result = CanaryResult(
         mechanism="uncovered-line",
+        target="pkg/greet.py",
         description=(
             "appended never-called `def _assay_canary_unreached` "
             "(2 uncovered lines) at end of file"
@@ -126,6 +128,7 @@ def test_canary_survived_via_wrong_reason_matches_the_hand_written_fixture(
 ):
     canary_result = CanaryResult(
         mechanism="import-break",
+        target="pkg/greet.py",
         description=(
             "mislabeled: performed the uncovered-line transform under the "
             "import-break mechanism name"
@@ -161,6 +164,7 @@ def test_canary_inconclusive_matches_the_hand_written_fixture(
 ):
     canary_result = CanaryResult(
         mechanism="not-a-real-mechanism",
+        target="pkg/greet.py",
         description=(
             "'not-a-real-mechanism' is not a known canary mechanism -- "
             "expected one of ['import-break', 'uncovered-line']; nothing "
@@ -241,7 +245,8 @@ def test_a_canary_payload_outside_the_r3_branch_is_rejected(
 
 def test_the_model_refuses_a_canary_payload_outside_r3():
     canary_result = CanaryResult(
-        mechanism="uncovered-line", description="x", control_outcome=Outcome.PASS,
+        mechanism="uncovered-line", target="pkg/greet.py", description="x",
+        control_outcome=Outcome.PASS,
     )
     with pytest.raises(ValueError, match="a canary payload belongs to the R3 claim"):
         Claim(
@@ -252,7 +257,8 @@ def test_the_model_refuses_a_canary_payload_outside_r3():
 
 def test_the_model_refuses_a_canary_payload_on_a_no_measurement_claim():
     canary_result = CanaryResult(
-        mechanism="uncovered-line", description="x", control_outcome=Outcome.PASS,
+        mechanism="uncovered-line", target="pkg/greet.py", description="x",
+        control_outcome=Outcome.PASS,
     )
     with pytest.raises(ValueError, match="NO_MEASUREMENT carries no canary payload"):
         Claim(

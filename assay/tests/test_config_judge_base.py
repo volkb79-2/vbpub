@@ -17,6 +17,7 @@ from assay.errors import LaneConfigError
 MUTATION_TABLE = """
 [lanes.package.judge.mutation]
 jobs = 4
+max_mutants = 50
 operators = ["compare-swap"]
 """
 

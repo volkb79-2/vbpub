@@ -1,0 +1,55 @@
+{
+  "schema_version": 4,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "333333333333333333333333333333333333333e",
+  "outcome": "INCONCLUSIVE",
+  "exit_code": 5,
+  "started": "2026-08-09T14:20:00+00:00",
+  "ended": "2026-08-09T14:20:05+00:00",
+  "reason_code": "MUTATION_UNSUPPORTED",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "go",
+    "test",
+    "./..."
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "go",
+    "test",
+    "./..."
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r2": {
+      "jobs": 2,
+      "max_mutants": 50,
+      "operators": ["compare-swap"]
+    }
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "INCONCLUSIVE",
+      "verified_by_assay": true,
+      "reason_code": "MUTATION_UNSUPPORTED"
+    }
+  ],
+  "evidence": []
+}
