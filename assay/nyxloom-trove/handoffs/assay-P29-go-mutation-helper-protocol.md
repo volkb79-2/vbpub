@@ -83,6 +83,13 @@ operator set during AST traversal, not after producing an unbounded catalogue.
 No `mutated_text` appears on the wire or in discovery. P30 applies one site to
 one fresh P22 snapshot only when the candidate is submitted.
 
+P21 leaves Go's method on the common union but unconditionally returns the
+adapter-wide `"UNSUPPORTED"` marker, which renders payload-free
+`INCONCLUSIVE/MUTATION_UNSUPPORTED` (A-183). P29 replaces that body with helper
+sites/errors; it does not reinterpret capability absence as an empty success.
+P27's effective-PATH preflight owns a genuinely absent helper before this
+method is called, and P30 alone registers the completed Go R2 path.
+
 ### Go helper wire grammar
 
 The offline `assay-go-helper` reads one bounded JSON object from stdin and writes

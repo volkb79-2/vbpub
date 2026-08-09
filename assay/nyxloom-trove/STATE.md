@@ -10,7 +10,7 @@
 > and ambient Git repository selection. The cost-aware recarve is a serial
 > **P20 → … → P32** queue; P20 merged as `618b6f15`. P21 is next and
 > JIT-READY against that merge with locked carver assets and an exact
-> adversarial review (A-180–A-182). Three original bundles were
+> adversarial review (A-180–A-183). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
 > microtasks. P22–P32 remain provisional until their predecessor merges and
 > their named JIT proof assets pass the exact pre-dispatch review.
@@ -337,7 +337,11 @@ and deriving byte identity from old/full text pairs produces false spans for
 insertions and shared suffixes. P21 therefore lands the already-designed
 bounded common/Python `MutationSite` seam; P23 consumes it without editing
 adapters (A-180). P21 also freezes the descriptor-owned verdict output boundary
-and honest Schema/model/raw-verifier ownership (A-181/A-182).
+and honest Schema/model/raw-verifier ownership (A-181/A-182). Its first Opus
+dispatch correctly stopped on the residual forbidden Go import: A-183 widens
+only that forced seam migration and preserves adapter-wide `UNSUPPORTED` as
+payload-free `INCONCLUSIVE/MUTATION_UNSUPPORTED`, distinct from supported
+zero-site `NO_MUTANTS`. Go syntax discovery and R2 registration remain P29/P30.
 
 For historical clarity, the next paragraph uses the handoff ids that existed
 when Sol carved them; A-153 and then A-167 record both renumbering steps. Sol was given write access (scoped by prompt, not sandbox, to new files

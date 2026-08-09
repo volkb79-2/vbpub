@@ -20,13 +20,14 @@ replaces existing types and is specified by the handoff plus the independently
 hand-authored `python-site-manifest.json`; it is not duplicated as a conflicting
 second production skeleton.
 
-`expected/combined-pass-v4.json`, `expected/r1-unavailable-v4.json`, and
-`expected/r2-limit-v4.json` are complete, hand-authored artifacts. Assay never
-generates its own expected inputs. `invalid-cases.json` defines complete invalid
-documents mechanically as one named canonical base plus exact JSON-pointer
-replacements; this keeps every negative reviewable without copying hundreds of
-unchanged producer fields. Every changed public v4 shape has at least two
-invalid cases.
+The four files under `expected/` are complete, hand-authored artifacts,
+including the distinct payload-free
+`INCONCLUSIVE/MUTATION_UNSUPPORTED` Go-capability terminal. Assay never
+generates its own expected inputs. `invalid-cases.json` defines complete
+invalid documents mechanically as one named canonical base plus exact
+JSON-pointer replacements; this keeps every negative reviewable without
+copying hundreds of unchanged producer fields. Every changed public v4 shape
+has at least two invalid cases.
 
 The controller runs this locked suite separately, then the ordinary tests and
 the registered `tester-unified` gate. A reviewer must add at least one new

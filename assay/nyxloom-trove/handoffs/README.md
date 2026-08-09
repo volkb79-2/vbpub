@@ -15,7 +15,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | # | Claim boundary | class | JIT carve | implement | independent review |
 |---|---|---|---|---|---|
 | P20 | repository/artifact integrity | 2c | **merged as `618b6f15`** | Sonnet xhigh | fresh Opus xhigh |
-| P21 | verdict v4 + bounded Python site contract | 2b | **complete against `618b6f15` (A-180–A-182)** | Opus xhigh | fresh Opus xhigh |
+| P21 | verdict v4 + bounded Python site contract | 2b | **complete against `618b6f15` (A-180–A-183)** | Opus xhigh | fresh Opus xhigh |
 | P22 | committed-object snapshot substrate | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
 | P23 | exact reexecution integration over landed sites | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P24 | versioned wheel contract | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
@@ -55,7 +55,11 @@ P21's JIT review moved the already-designed common/Python `MutationSite` seam
 forward from P23 into P21. This is not a new package: a cap cannot truthfully be
 claimed while the adapter still materializes an unbounded tuple of full source
 copies. P23 now consumes that seam and owns only exact snapshot reexecution,
-plan reuse, and the total lane budget (A-180).
+plan reuse, and the total lane budget (A-180). Its first dispatch then exposed
+the residual forbidden Go import and omitted capability terminal; the corrected
+P21 seam retains adapter-wide `UNSUPPORTED` as payload-free
+`INCONCLUSIVE/MUTATION_UNSUPPORTED`, while real Go discovery remains P29
+(A-183).
 
 Luna may run the frozen-orientation/fork workflow mechanically from
 `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,

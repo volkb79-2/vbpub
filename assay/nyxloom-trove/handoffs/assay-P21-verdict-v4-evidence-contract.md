@@ -10,16 +10,16 @@ stack: none
 depends_on: [assay-P20-repository-artifact-boundary-integrity]
 session: fresh
 scope:
-  touch: ["src/assay/errors.py", "src/assay/vocabulary.py", "src/assay/output.py", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/config.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/runner.py", "src/assay/cli.py", "src/assay/adapters/base.py", "src/assay/adapters/python.py", "src/assay/schemas/**", "tests/**", "README.md", "docs/DESIGN-GUIDE.md", "assay.toml"]
-  forbid: ["src/assay/adapters/go.py", "pyproject.toml", "nyxloom-trove/carve-assets/P21/README.md", "nyxloom-trove/carve-assets/P21/skeleton.patch", "nyxloom-trove/carve-assets/P21/test_acceptance.py", "nyxloom-trove/carve-assets/P21/python-site-manifest.json", "nyxloom-trove/carve-assets/P21/invalid-cases.json", "nyxloom-trove/carve-assets/P21/expected/combined-pass-v4.json", "nyxloom-trove/carve-assets/P21/expected/r1-unavailable-v4.json", "nyxloom-trove/carve-assets/P21/expected/r2-limit-v4.json"]
+  touch: ["src/assay/errors.py", "src/assay/vocabulary.py", "src/assay/output.py", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/config.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/runner.py", "src/assay/cli.py", "src/assay/adapters/base.py", "src/assay/adapters/python.py", "src/assay/adapters/go.py", "src/assay/schemas/**", "tests/**", "README.md", "docs/DESIGN-GUIDE.md", "assay.toml"]
+  forbid: ["pyproject.toml", "nyxloom-trove/carve-assets/P21/README.md", "nyxloom-trove/carve-assets/P21/skeleton.patch", "nyxloom-trove/carve-assets/P21/test_acceptance.py", "nyxloom-trove/carve-assets/P21/python-site-manifest.json", "nyxloom-trove/carve-assets/P21/invalid-cases.json", "nyxloom-trove/carve-assets/P21/expected/combined-pass-v4.json", "nyxloom-trove/carve-assets/P21/expected/r1-unavailable-v4.json", "nyxloom-trove/carve-assets/P21/expected/r2-limit-v4.json", "nyxloom-trove/carve-assets/P21/expected/r2-unsupported-v4.json"]
 oracles:
   - id: O1
     observable: "Model construction, shipped JSON Schema, and independent raw-document verification accept the same closed v4 vocabulary and reject every v1-v3 artifact with one version-only diagnostic"
     negative: "An unknown mutant operator passes assay verify, or a v3 artifact is coerced/defaulted into v4"
     gate: tester-unified
   - id: O2
-    observable: "Every attempted mutant, including killed mutants, carries a stable byte-site identity and is bound to the declared operator policy; Python discovery retains at most max_mutants+1 small site descriptors and excess candidates stop before any mutant command"
-    negative: "Changing both a killed operator and its policy to an unknown name remains verify-clean, full mutated files are retained per candidate, or max_mutants+1 submissions run as a silently truncated sample"
+    observable: "Every attempted mutant, including killed mutants, carries a stable byte-site identity and is bound to the declared operator policy; Python discovery retains at most max_mutants+1 small site descriptors; Go capability absence remains distinct from valid empty discovery; neither terminal submits a mutant command"
+    negative: "Changing both a killed operator and its policy to an unknown name remains verify-clean, full mutated files are retained per candidate, max_mutants+1 submissions run as a silently truncated sample, or Go UNSUPPORTED is rewritten as NO_MUTANTS with a fake empty payload"
     gate: tester-unified
   - id: O3
     observable: "A canary payload records the exact project-relative target and coverage records whether exclusion data was reported or unavailable; both correspond to the resolved judgment policy"
@@ -76,13 +76,15 @@ on branch `feat/assay-P21-verdict-v4-evidence-contract`.
 2. `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`, findings
    F08–F15, and `docs/DESIGN-GUIDE.md` §6 in full; decisions A-008,
    A-027–A-029, A-041, A-050, A-067, A-116–A-117, A-135–A-138, A-148,
-   A-152, A-157–A-158, A-163, A-168, A-170–A-171, A-178, and A-180–A-182.
+   A-152, A-157–A-158, A-163, A-168, A-170–A-171, A-178, and A-180–A-183.
 3. `src/assay/verdict.py`, `src/assay/schemas/verdict.schema.json`, and `src/assay/verify.py` side by side. List each cross-field invariant and prove which of the three layers owns it before editing.
 4. `src/assay/mutation.py::{Mutant,collect_mutants,run_mutation,judge_mutation}`,
-   `src/assay/adapters/{base,python}.py`, `src/assay/canary.py`,
+   `src/assay/adapters/{base,python,go}.py`, `src/assay/canary.py`,
    `src/assay/evaluate.py`, and their complete-artifact fixtures. The old
    full-text candidate seam is deliberately replaced here because it cannot
-   enforce P21's bound. Preserve A-158: a normally-started nonzero mutant
+   enforce P21's bound. Go's edit is restricted to the forced import/method
+   migration and its truthful pre-P29 `UNSUPPORTED` terminal (A-183).
+   Preserve A-158: a normally-started nonzero mutant
    command is killed; crashed means the command boundary could not execute.
 5. `src/assay/config.py`'s closed `MutationConfig` parsing and `JudgeConfig.as_declared`. No runtime consumer may invent a missing cap.
 6. P16's migration/conformance tests and P19's model/raw-verifier
@@ -127,7 +129,7 @@ class MutationDiscoveryError(AssayError):
 def generate_mutation_sites(
     self, text: str, lines: set[int], *,
     operators: tuple[str, ...], limit: int,
-) -> tuple[MutationSite, ...]: ...
+) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]: ...
 
 @dataclass(frozen=True, kw_only=True)
 class MutantJob:
@@ -138,7 +140,7 @@ class MutantJob:
 def collect_mutation_sites(
     targets: Iterable[MutationTarget], *, adapter: LanguageAdapter,
     operators: tuple[str, ...], limit: int,
-) -> tuple[MutantJob, ...]: ...
+) -> tuple[MutantJob, ...] | Literal["UNSUPPORTED"]: ...
 
 def run_mutation(
     lane: Lane, *, baseline: CommandResult, project_root: Path,
@@ -147,7 +149,7 @@ def run_mutation(
     operators: tuple[str, ...], process_runner: ProcessRunner | None = None,
     clock: Clock | None = None,
     executor_factory: ExecutorFactory = _default_executor_factory,
-) -> Mutation | None: ...
+) -> Mutation | Literal["UNSUPPORTED"] | None: ...
 ```
 
 Each site requires non-boolean integers with
@@ -165,15 +167,42 @@ source is permitted; retaining more than `limit` descriptors or any full
 mutated file is not. Invalid Python syntax raises `MutationDiscoveryError`;
 valid syntax with zero sites returns `()`.
 
+`"UNSUPPORTED"` remains a third, capability-wide discovery result. It means
+the adapter has no mutation implementation at all; it is not a parse failure,
+an unsupported individual construct, or a valid empty analysis. Until P29,
+`GoAdapter.generate_mutation_sites` returns it unconditionally for every
+text/line/operator/limit input. Python never returns it: invalid Python is the
+typed discovery error above. This supersedes A-114's old invalid-Python use
+while retaining its whole-adapter-call discipline.
+
 `collect_mutation_sites` validates `limit in 1..10_001`, an ordered unique
 nonempty operator subset, every adapter result, and the fixed order. It visits
 targets by path, passes only remaining capacity, stops calling later files once
 the sentinel is full, and stores one reference to each target's original text.
+On a first adapter `"UNSUPPORTED"`, it returns that marker immediately with no
+jobs. An adapter that first claims supported discovery (even an empty tuple)
+and later returns `"UNSUPPORTED"` is inconsistent and raises
+`MutationDiscoveryError`; no partial jobs survive. With no targets, collection
+returns the supported empty tuple because no language analysis was required.
 One replacement file is materialized only inside a submitted worker from
 `original_bytes[:start] + replacement + original_bytes[end:]`. The old
 `Mutant`, `generate_mutants`, `collect_mutants`, and full-text identity are
-deleted, not retained as compatibility surfaces. Go R2 is not registered;
-`go.py` remains untouched until P29 implements this already-landed protocol.
+deleted, not retained as compatibility surfaces.
+
+The deletion necessarily touches `go.py`: replace its `Mutant` import and old
+`generate_mutants` signature with the common `MutationSite` import and exact
+`generate_mutation_sites` union above; keep the body as unconditional
+`return "UNSUPPORTED"`. Update only mutation-contract prose/tests around that
+forced seam—do not add Go syntax discovery, a helper, tool declaration, or R2
+registration. P29 replaces this marker with real bounded Go sites; P30 makes
+that capability reachable through the registry.
+
+`run_mutation` propagates `"UNSUPPORTED"` before project-prefix calculation,
+executor construction, scratch creation, or submission. `judge_mutation` maps
+it to `INCONCLUSIVE/MUTATION_UNSUPPORTED`; `build_mutation_claim` emits no
+`mutation` payload for that marker. Valid supported zero remains
+`INCONCLUSIVE/NO_MUTANTS` with the exact zero/zero `Mutation` payload. Thus v4
+does not let capability absence impersonate an observed empty candidate set.
 
 The locked `python-site-manifest.json` is the before/after candidate oracle. In
 particular, deriving a “minimal diff” from old/full mutated strings is
@@ -219,7 +248,7 @@ after a lane loads, output refusal precedes repository/consumer work.
 ### v4 grammar and owners
 
 The following excerpt highlights the new serialized keys. It is not the
-canonical document: the three complete documents under
+canonical document: the four complete documents under
 `carve-assets/P21/expected/` are normative and contain every unchanged required
 v3 field as well.
 
@@ -288,7 +317,7 @@ the normalized declared project-relative string and must equal
 `judgment.r3.target`. Project-relative and repo-relative wire paths use
 forward-slash components, with no empty, `.`, `..`, leading slash, trailing
 slash, backslash, or NUL component. Schema enforces local grammar; model and raw
-verifier enforce cross-field rules. The exact fourteen invalid complete inputs and
+verifier enforce cross-field rules. The exact sixteen invalid complete inputs and
 their applicable layers are `carve-assets/P21/invalid-cases.json`. V1–v3 fail
 before required-field or foreign-shape inspection with exactly one version-only
 diagnostic.
@@ -300,14 +329,20 @@ Add exactly these closed reasons in `errors.py`, Schema, model, and verifier:
 `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` (reserved here for P22's reachable
 snapshot refusal), plus `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL` (reserved here
 for P27's first real external-tool preflight), and
-`NO_MEASUREMENT/HEAD_CHANGED`. After the command, call `dirty_paths` once. If
+`NO_MEASUREMENT/HEAD_CHANGED`, plus
+`INCONCLUSIVE/MUTATION_UNSUPPORTED`. The last one is payload-free and belongs
+only to the adapter-wide `"UNSUPPORTED"` discovery marker; `NO_MUTANTS`
+requires a present supported zero/zero mutation payload. This supersedes
+A-011's collapsed reason spelling while retaining its INCONCLUSIVE outcome and
+never-green rule. After the command, call `dirty_paths` once. If
 it is nonempty, use `DIRTY_TREE` and do not resolve post-HEAD. Only a clean
 result calls `head_rev` once and may use `HEAD_CHANGED`; this fixes precedence
 without duplicate Git observations. No generic fallback reason is permitted.
 P21 makes `MUTATION_DISCOVERY_FAILED` reachable for invalid Python source; P29
 uses it for invalid helper request/response, helper nonzero, or another failed
-syntax-aware candidate boundary. Valid discovery with zero sites remains
-`INCONCLUSIVE/NO_MUTANTS`.
+syntax-aware candidate boundary. Pre-P29 Go capability absence is
+`INCONCLUSIVE/MUTATION_UNSUPPORTED`; valid discovery with zero sites remains
+`INCONCLUSIVE/NO_MUTANTS` with a present zero payload.
 
 `Mutation` construction permits exactly two arithmetic shapes: normal
 `candidate_count == total == sum(bucket lengths)`; or a prospective sentinel
@@ -317,10 +352,15 @@ with `candidate_count in 1..10_001`, `total == 0`, and four empty arrays.
 `candidate_count == judgment.r2.max_mutants + 1`. Conversely that reason
 requires that exact sentinel. A zero/zero normal payload is
 `INCONCLUSIVE/NO_MUTANTS`. `JudgmentR2.max_mutants` is required in `1..10_000`;
-normal totals cannot exceed it. The model and raw verifier perform these
-relations independently; JSON Schema performs every locally expressible enum,
-range, requiredness, and reason/shape conditional but is not misrepresented as
-supporting cross-object arithmetic or timestamp comparison.
+normal totals cannot exceed it. Payload-free
+`INCONCLUSIVE/MUTATION_UNSUPPORTED` is the only legal adapter-capability
+absence and is mutually exclusive with every `Mutation` shape; payload-free
+`NO_MUTANTS` and payload-bearing `MUTATION_UNSUPPORTED` are invalid in model,
+Schema, and raw verification. The model and raw verifier perform the
+cross-object relations independently; JSON Schema performs every locally
+expressible enum, range, requiredness, and reason/payload conditional but is
+not misrepresented as supporting cross-object arithmetic or timestamp
+comparison.
 
 Timestamp order compares parsed offset-aware instants, not strings and not
 wall-clock duration. The canonical combined document deliberately starts at
@@ -346,6 +386,8 @@ before start is rejected by the model and independently by the raw verifier.
 | bad output parent/type/permission before run | `ERROR/OUTPUT_WRITE_FAILED` | no lane command; stable stderr because requested artifact cannot exist |
 | destination lost after run | process `ERROR/OUTPUT_WRITE_FAILED` | lane result is not reported as process PASS; no requested artifact and no fallback file |
 | mutation discovery/helper protocol fails | `ERROR/MUTATION_DISCOVERY_FAILED` | complete payload-free R2 claim; zero mutant submissions |
+| adapter has no mutation implementation | `INCONCLUSIVE/MUTATION_UNSUPPORTED` | complete payload-free R2 claim; zero executor/scratch/submissions; Go only until P29 |
+| supported discovery finds zero selected sites | `INCONCLUSIVE/NO_MUTANTS` | exact zero/zero mutation payload; zero submissions |
 | candidates = max+1 | `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` | sentinel mutation payload; zero submissions |
 | snapshot exceeds P22 bound | `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` | complete artifact; zero command for that snapshot |
 | command leaves dirt, whether or not HEAD moved | `NO_MEASUREMENT/DIRTY_TREE` | actual R0 preserved for higher rigor; no higher-rigor work |
@@ -355,8 +397,9 @@ before start is rejected by the model and independently by the raw verifier.
 ### Traceability and degrees of freedom
 
 Work 1–4 -> vocabulary/model/schema/verifier/config/site seam -> O1/O2 ->
-complete v4 documents, agreeing-unknown operator, UTF-8 site manifest, and
-max+1 zero-executor sentinel; work 5–7 -> canary/coverage/time correspondence
+complete v4 documents, agreeing-unknown operator, UTF-8 site manifest,
+distinct Go-unsupported/valid-empty terminals, and max+1 zero-executor
+sentinel; work 5–7 -> canary/coverage/time correspondence
 -> O3/O4 -> exact field mutations; work 8 -> output reservation -> O4 -> a
 real CLI marker proving zero consumer calls; work 10 -> O5 -> real clean-commit
 and commit-plus-dirt repositories. The REPORT repeats this mapping with actual
@@ -378,6 +421,11 @@ sentinel shape, reasons, and independent raw re-derivation may not.
    the recorded policy. Sorting uses the identity tuple, never description or
    completion order.
 4. Make `judge.mutation.max_mutants` a required integer in `1..10,000`, record it in `judgment.r2`, implement the exact bounded `MutationSite`/Python adapter seam, and enforce it before any mutant command is submitted. Retain at most `max_mutants + 1` descriptors and never more than 10,001; excess renders the packet's `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` sentinel, with no partial sample and no credit. Invalid Python syntax renders the payload-free discovery terminal; valid zero sites remain `NO_MUTANTS`. `jobs` remains only a concurrency bound and is never derived from machine capacity.
+   Migrate Go's forced import/method surface in the same atomic deletion but
+   leave it unconditionally `"UNSUPPORTED"`; propagate that marker to the
+   payload-free `INCONCLUSIVE/MUTATION_UNSUPPORTED` claim. It must never become
+   a fake supported-empty payload, discovery error, executor call, helper, or
+   R2 registry capability.
 5. Add the project-relative canary target to `CanaryResult` and bind it exactly to `judgment.r3.target` in both construction and raw verification. The description remains explanation, never a parseable identity channel.
 6. Preserve A-008 in the artifact with a closed R1 exclusion-capability field (`reported` versus `unavailable`). `unavailable` may not carry excluded lines; `reported` may truthfully carry an empty mapping. Re-derive the same rule in `verify.py`; do not infer capability from a particular format name.
 7. Add construction/schema/raw-verifier checks that `ended >= started`. Use injected/fixed clocks in tests and exact timestamp values; no elapsed-time assertion.
@@ -463,11 +511,13 @@ it is not an oracle yet.
 ## Scope / forbid
 
 This package is the one pre-adoption v4 migration and the bounded common/Python
-site seam required to make its cap true immediately. It must not add Go or
-TypeScript behavior, change distribution identity, or redesign isolation.
-`adapters/go.py` remains forbidden and Python's candidate set must match the
-locked manifest. P22 consumes the snapshot terminal; P23 consumes the already-
-landed site/cap interface while making repeated R0/R2/R3 execution faithful.
+site seam required to make its cap true immediately. Its only Go change is the
+forced old-to-new mutation import/signature migration and unchanged truthful
+`UNSUPPORTED` behavior. It must not add Go syntax discovery, an external
+helper/tool declaration, Go R2 registration, TypeScript behavior, distribution
+changes, or isolation redesign. Python's candidate set must match the locked
+manifest. P22 consumes the snapshot terminal; P23 consumes the already-landed
+site/cap interface while making repeated R0/R2/R3 execution faithful.
 
 ## BLOCKED rule
 

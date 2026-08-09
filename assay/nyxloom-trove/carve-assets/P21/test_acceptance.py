@@ -171,7 +171,12 @@ def test_complete_combined_v4_is_constructible_and_exact() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["combined-pass-v4.json", "r1-unavailable-v4.json", "r2-limit-v4.json"],
+    [
+        "combined-pass-v4.json",
+        "r1-unavailable-v4.json",
+        "r2-limit-v4.json",
+        "r2-unsupported-v4.json",
+    ],
 )
 def test_complete_v4_examples_pass_schema_and_independent_raw_verifier(name: str) -> None:
     assert VERDICT_SCHEMA_VERSION == 4
@@ -233,6 +238,109 @@ def test_python_sites_match_handwritten_utf8_byte_manifest_and_bound() -> None:
             for site in sites
         ]
         assert rendered == case["sites"]
+
+    with pytest.raises(mutation.MutationDiscoveryError):
+        PythonAdapter().generate_mutation_sites(
+            "def broken(",
+            {1},
+            operators=("compare-swap",),
+            limit=1,
+        )
+
+
+def test_go_unsupported_is_distinct_from_valid_empty_discovery(tmp_path: Path) -> None:
+    from assay.adapters.go import GoAdapter
+    from assay.mutation import MutationTarget
+
+    baseline = SimpleNamespace(outcome=Outcome.PASS, reason_code=None)
+
+    def forbidden_executor(_jobs: int):
+        raise AssertionError("unsupported discovery must submit no mutant command")
+
+    result = mutation.run_mutation(
+        SimpleNamespace(),
+        baseline=baseline,
+        project_root=tmp_path,
+        repo_top=tmp_path,
+        scratch_root=tmp_path / "scratch",
+        targets=(
+            MutationTarget(
+                path="p.go",
+                text="package p\nfunc F() bool { return true }\n",
+                lines=frozenset({2}),
+            ),
+        ),
+        adapter=GoAdapter(),
+        jobs=2,
+        max_mutants=2,
+        operators=("bool-const-flip",),
+        executor_factory=forbidden_executor,
+    )
+    assert result == "UNSUPPORTED"
+    claim = mutation.build_mutation_claim(baseline, result)
+    assert claim.status is Outcome.INCONCLUSIVE
+    assert claim.reason_code is ReasonCode.MUTATION_UNSUPPORTED
+    assert claim.mutation is None
+
+    class EmptyAdapter:
+        def generate_mutation_sites(self, text, lines, *, operators, limit):
+            return ()
+
+    empty = mutation.run_mutation(
+        SimpleNamespace(),
+        baseline=baseline,
+        project_root=tmp_path,
+        repo_top=tmp_path,
+        scratch_root=tmp_path / "scratch-empty",
+        targets=(
+            MutationTarget(path="p.py", text="x = 1\n", lines=frozenset({1})),
+        ),
+        adapter=EmptyAdapter(),
+        jobs=2,
+        max_mutants=2,
+        operators=("compare-swap",),
+        executor_factory=forbidden_executor,
+    )
+    assert empty == mutation.Mutation(
+        candidate_count=0,
+        total=0,
+        killed=(),
+        survived=(),
+        crashed=(),
+        budget_exceeded=(),
+    )
+    empty_claim = mutation.build_mutation_claim(baseline, empty)
+    assert empty_claim.status is Outcome.INCONCLUSIVE
+    assert empty_claim.reason_code is ReasonCode.NO_MUTANTS
+    assert empty_claim.mutation is empty
+
+    class MixedAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_mutation_sites(self, text, lines, *, operators, limit):
+            self.calls += 1
+            return () if self.calls == 1 else "UNSUPPORTED"
+
+    with pytest.raises(mutation.MutationDiscoveryError):
+        mutation.collect_mutation_sites(
+            (
+                MutationTarget(path="a.py", text="x = 1\n", lines=frozenset({1})),
+                MutationTarget(path="b.py", text="y = 2\n", lines=frozenset({1})),
+            ),
+            adapter=MixedAdapter(),
+            operators=("compare-swap",),
+            limit=3,
+        )
+    assert (
+        mutation.collect_mutation_sites(
+            (),
+            adapter=MixedAdapter(),
+            operators=("compare-swap",),
+            limit=3,
+        )
+        == ()
+    )
 
 
 def test_max_plus_one_is_a_zero_submission_terminal(tmp_path: Path) -> None:
