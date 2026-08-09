@@ -82,16 +82,57 @@ class ReasonCode(StrEnum):
     FORMAT_MISMATCH = "FORMAT_MISMATCH"
     BAD_LANE_CONFIG = "BAD_LANE_CONFIG"
     EXEC_FAILED = "EXEC_FAILED"
+    #: (P21/A-O14/A-181) assay could not write its OWN declared output
+    #: artifact. Distinct from `UNREADABLE_ARTIFACT`, which is about reading
+    #: an INPUT (coverage, attestation): "cannot write my own output" had no
+    #: truthful code at all before v4, and surfaced as a bare `OSError` and
+    #: exit 1, which a consumer reads as FAIL rather than as a tooling error.
+    OUTPUT_WRITE_FAILED = "OUTPUT_WRITE_FAILED"
+    #: (P21/A-171) a syntax-aware mutation-discovery boundary FAILED: invalid
+    #: source the adapter genuinely cannot parse (P21, Python), or -- from
+    #: P29 -- an invalid helper request/response, a nonzero helper, or an
+    #: adapter that claims supported discovery and then contradicts itself.
+    #: Never "the adapter has no mutation engine" (that is
+    #: `MUTATION_UNSUPPORTED`) and never "a valid analysis found nothing"
+    #: (that is `NO_MUTANTS`).
+    MUTATION_DISCOVERY_FAILED = "MUTATION_DISCOVERY_FAILED"
     # NO_MEASUREMENT
     DIRTY_TREE = "DIRTY_TREE"
+    #: (P21/A-178) the lane's command left a CLEAN tree but moved `HEAD`.
+    #: P20 collapsed this into `DIRTY_TREE` to stay schema-v3-compatible,
+    #: which is a false diagnosis for a command that commits: the tree is not
+    #: dirty, the commit under measurement simply is not the one recorded.
+    #: Dirt keeps precedence when both are true.
+    HEAD_CHANGED = "HEAD_CHANGED"
     BASE_IS_HEAD = "BASE_IS_HEAD"
     EMPTY_COVERAGE = "EMPTY_COVERAGE"
     MISSING_ATTESTATION = "MISSING_ATTESTATION"
     STALE_ATTESTATION = "STALE_ATTESTATION"
+    #: (P21/A-163, RESERVED for P27) a declared adapter prerequisite named in
+    #: `LanguageAdapter.external_tools` is absent, so the check it gates
+    #: cannot run. Reserved by the one pre-adoption schema migration so P27
+    #: can render it without a second version bump (A-013/A-086/A-144).
+    MISSING_EXTERNAL_TOOL = "MISSING_EXTERNAL_TOOL"
     # BUDGET_EXCEEDED
     LANE_TIMEOUT = "LANE_TIMEOUT"
+    #: (P21/A-163) candidate discovery reached the declared `max_mutants`
+    #: ceiling: exactly `max_mutants + 1` candidates were observed and assay
+    #: deliberately stopped. A refusal BEFORE submission, never a truncated
+    #: sample -- the sentinel payload proves zero mutants were attempted.
+    MUTANT_LIMIT_EXCEEDED = "MUTANT_LIMIT_EXCEEDED"
+    #: (P21/A-163, RESERVED for P22) a committed-object snapshot exceeded its
+    #: declared bound. Reserved here for the same one-migration reason
+    #: `MISSING_EXTERNAL_TOOL` is.
+    SNAPSHOT_LIMIT_EXCEEDED = "SNAPSHOT_LIMIT_EXCEEDED"
     # INCONCLUSIVE
     NO_MUTANTS = "NO_MUTANTS"
+    #: (P21/A-183) the ADAPTER has no mutation implementation at all, so no
+    #: candidate analysis ever happened. Payload-free, and deliberately NOT
+    #: `NO_MUTANTS`: a zero/zero `Mutation` payload asserts that a supported
+    #: analysis ran and observed nothing mutable, which is a measurement
+    #: claim no Go analysis exists to support. Go carries this until P29
+    #: lands real bounded sites; Python never renders it.
+    MUTATION_UNSUPPORTED = "MUTATION_UNSUPPORTED"
     CANARY_INCONCLUSIVE = "CANARY_INCONCLUSIVE"
 
 
@@ -117,20 +158,34 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.FORMAT_MISMATCH,
                 ReasonCode.BAD_LANE_CONFIG,
                 ReasonCode.EXEC_FAILED,
+                ReasonCode.OUTPUT_WRITE_FAILED,
+                ReasonCode.MUTATION_DISCOVERY_FAILED,
             }
         ),
         Outcome.NO_MEASUREMENT: frozenset(
             {
                 ReasonCode.DIRTY_TREE,
+                ReasonCode.HEAD_CHANGED,
                 ReasonCode.BASE_IS_HEAD,
                 ReasonCode.EMPTY_COVERAGE,
                 ReasonCode.MISSING_ATTESTATION,
                 ReasonCode.STALE_ATTESTATION,
+                ReasonCode.MISSING_EXTERNAL_TOOL,
             }
         ),
-        Outcome.BUDGET_EXCEEDED: frozenset({ReasonCode.LANE_TIMEOUT}),
+        Outcome.BUDGET_EXCEEDED: frozenset(
+            {
+                ReasonCode.LANE_TIMEOUT,
+                ReasonCode.MUTANT_LIMIT_EXCEEDED,
+                ReasonCode.SNAPSHOT_LIMIT_EXCEEDED,
+            }
+        ),
         Outcome.INCONCLUSIVE: frozenset(
-            {ReasonCode.NO_MUTANTS, ReasonCode.CANARY_INCONCLUSIVE}
+            {
+                ReasonCode.NO_MUTANTS,
+                ReasonCode.MUTATION_UNSUPPORTED,
+                ReasonCode.CANARY_INCONCLUSIVE,
+            }
         ),
     }
 )

@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "222222222222222222222222222222222222222b",
@@ -32,6 +32,7 @@
   "judgment": {
     "r2": {
       "jobs": 2,
+      "max_mutants": 50,
       "operators": ["compare-swap"]
     }
   },
@@ -49,12 +50,26 @@
       "verified_by_assay": true,
       "reason_code": "MUTANTS_SURVIVED",
       "mutation": {
+        "candidate_count": 2,
         "total": 2,
-        "killed": 1,
+        "killed": [
+          {
+            "path": "pkg/checks.py",
+            "lineno": 14,
+            "start_byte": 120,
+            "end_byte": 121,
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "operator": "compare-swap",
+            "description": "Lt->LtE"
+          }
+        ],
         "survived": [
           {
             "path": "pkg/checks.py",
             "lineno": 30,
+            "start_byte": 300,
+            "end_byte": 302,
+            "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
             "operator": "compare-swap",
             "description": "Eq->NotEq"
           }

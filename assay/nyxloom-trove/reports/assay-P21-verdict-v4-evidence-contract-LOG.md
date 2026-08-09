@@ -1,15 +1,28 @@
 # assay-P21 — implementation LOG
 
-> **Result: BLOCKED.** No product code was written. The branch contains this
-> LOG and nothing else.
+> **Result: DONE**, after one mechanical BLOCKED exit and a routed carver
+> correction (A-183). This LOG is APPENDED to, never rewritten: leg 1's
+> block is the record of why the contract changed, and deleting it would
+> hide the most useful thing this package produced (A-072's own discipline,
+> and canonical DOCTRINE §6's "append the outcome rather than editing the
+> original entries").
 >
-> **Implementer:** fresh Opus xhigh child, forked from the package-neutral
-> frozen orientation base at `20beeda152a08114692fb846aee6dc0118f1e86a`.
+> **Implementer:** one Opus xhigh child, forked from the package-neutral
+> frozen orientation base at `20beeda152a08114692fb846aee6dc0118f1e86a` and
+> RESUMED in place after the correction merge — not a second child.
 > **Worktree:** `/workspaces/vbpub/.worktrees/assay-P21-verdict-v4-evidence-contract`
 > **Branch:** `feat/assay-P21-verdict-v4-evidence-contract`
 > **Date:** 2026-08-09
+>
+> | leg | anchor | outcome |
+> |---|---|---|
+> | 1 | `20beeda1` | BLOCKED — `71b1b961` (see below) |
+> | correction | — | `ddad505b` carve + `76ecc814` merge (A-183) |
+> | 2 | `76ecc814` | implemented, this commit |
 
-## BLOCKED
+---
+
+# Leg 1 — BLOCKED (historical, preserved verbatim)
 
 `BLOCKED: the frozen packet's mandatory deletion of the old full-text mutation
 surface cannot be performed without editing src/assay/adapters/go.py, which is
@@ -202,3 +215,130 @@ recomputed against the declared text and confirmed correct — `<` at bytes
 36/40, `and` at 44-47, `True` at 48-52, with the two-byte `π` prefix accounted
 for), the max+1 zero-submission sentinel, the output reservation state machine,
 and the `HEAD_CHANGED`/`DIRTY_TREE` precedence repair.
+
+---
+
+# Leg 2 — implemented against the A-183 correction
+
+## Reconciliation
+
+The same child was resumed in place. All five checks passed before anything
+was read:
+
+```text
+worktree                 .worktrees/assay-P21-verdict-v4-evidence-contract
+branch                   feat/assay-P21-verdict-v4-evidence-contract
+git rev-parse HEAD       76ecc814bfcf4a0e6b759bf3d295f7544e42e29a
+anchor 20beeda1          ancestor of HEAD           yes
+blocked commit 71b1b961  ancestor of HEAD           yes
+```
+
+`git diff --name-status 20beeda1..HEAD` showed 13 files: the handoff, the
+amended JIT report, `decisions.md` (A-183), `STATE.md`, `DESIGN-GUIDE.md`,
+the P29 handoff, the series README, the pre-dispatch review, the four
+changed/added locked assets, and leg 1's own LOG. **`assay/src` and
+`assay/tests` were untouched**, so the product tree was still exactly the
+pristine anchor state.
+
+A-183 grants precisely what leg 1 said was missing, and nothing more: `go.py`
+enters `scope.touch` for the forced import/signature migration only, and the
+adapter-wide `"UNSUPPORTED"` marker survives the bounded seam as a
+payload-free `INCONCLUSIVE/MUTATION_UNSUPPORTED`. I did not widen it further.
+
+## Controlled red, witnessed at the corrected tree
+
+```text
+$ git apply assay/nyxloom-trove/carve-assets/P21/skeleton.patch      ok
+$ python -m py_compile assay/src/assay/output.py                     ok
+$ PYTHONPATH=assay/src python -m pytest --override-ini=pythonpath= \
+    assay/nyxloom-trove/carve-assets/P21/test_acceptance.py -q
+28 failed in 0.85s
+```
+
+**28 failed, zero collection/setup errors** — exactly the count the amended
+JIT report witnesses (`All 28 are controlled red on the exact anchor`).
+
+## What was built
+
+| work item | where | note |
+|---|---|---|
+| 1 v4 migration | `verdict.py`, `schemas/verdict.schema.json`, `verify.py`, 38 fixtures, 4 installed-wheel witnesses | one atomic bump; v1-v3 rejected with one version-only diagnostic, checked BEFORE required-field inspection |
+| 2 one vocabulary | new `vocabulary.py` leaf | imported by config, mutation, model, raw verifier; deletes `config.py`'s deferred-import cycle workaround and closes `MutantOutcome.operator` + `judgment.r2.operators` in the model for the first time |
+| 3 killed identities | `verdict.py`, `mutation.py` | `killed` is an identity list; identity is `(path,start_byte,end_byte,replacement_sha256,operator)`, built from the validated site, never a text diff; unique within AND across all four buckets |
+| 4 bounded seam + cap | `adapters/{base,python,go}.py`, `mutation.py`, `config.py` | `MutationSite`/`MutationDiscoveryError`/`collect_mutation_sites`; Python retains at most `limit` descriptors via a max-heap while walking; `max_mutants` required in `1..10_000`; Go migrated to the new signature, still unconditionally `"UNSUPPORTED"` |
+| 5 canary target | `canary.py`, `config.py`, `verdict.py`, `verify.py` | all six `CanaryResult` sites; target normalized at config load so model and policy compare one spelling |
+| 6 exclusion capability | `coverage.py`, `evaluate.py`, `verdict.py` | `derive_exclusion_capability` from unanimous parser evidence; mixed profile is `ERROR/UNREADABLE_ARTIFACT` |
+| 7 interval ordering | `verdict.py`, `verify.py` | parsed offset-aware instants in model + raw verifier; schema deliberately NOT credited |
+| 8 output reservation | new `output.py`, `cli.py`, `runner.py` | descriptor-held parent, no temp across execution, appeared/changed destination preserved; `write_verdict` now only serialises |
+| 9 adversarial artifacts | fixtures + 4 new test modules | see the controlled-break table |
+| 10 HEAD_CHANGED | `runner.py`, `errors.py` | one `dirty_paths` call, `head_rev` only on the clean branch; dirt keeps precedence |
+
+## Two judgement calls worth flagging to the reviewer
+
+1. **`run_mutation`'s per-bucket sorts were deleted, not kept.** Once
+   `collect_mutation_sites` refuses an out-of-order batch and visits targets
+   by path — and `MutantOutcome.identity` leads with `path` — no input the
+   collector can produce would change under those sorts. AUTHORING §3b.D asks
+   for an unreachable line to be restructured away rather than kept and never
+   exercised. The invariant is not weakened: `Mutation` still REFUSES an
+   out-of-order bucket, so a future regression raises instead of emitting a
+   scrambled artifact. `test_mutation_isolation.py`'s ordering test was
+   rewritten to assert the cross-file property that IS observable.
+2. **`judge.canary.target` is normalized at config load.** The packet requires
+   `CanaryResult.target` to be "the normalized declared project-relative
+   string" and to EQUAL `judgment.r3.target`. Config validated containment but
+   never the spelling, so a legal `./src/p.py` would have reached the model's
+   wire grammar and raised an uncaught `ValueError` in a producer path.
+   Normalizing at the one boundary that reads it makes the equality mean what
+   it says and keeps a legal lane from crashing a run.
+
+## A-067 controlled breaks
+
+Each break was applied to the real tree, run against the narrowest
+discriminating selection, then reverted; `grep` confirms none survives.
+
+| # | break | tests run | red |
+|---|---|---|---|
+| 1 | `MutantOutcome.identity` reverts to line+description | mutation payload + artifacts | **7** |
+| 2 | `JudgmentR2` stops closing its operator vocabulary | judgment + locked | **2** |
+| 3 | `run_mutation` discovers with `max_mutants + 1000` | locked + collect | **1** |
+| 4 | `Verdict` stops comparing canary target to policy | locked + judgment | **1** |
+| 5 | `derive_exclusion_capability` always returns `reported` | capability + four-way union | **2** |
+| 6 | `Verdict` stops comparing the parsed instants | interval + locked | **2** |
+| 7 | version check moved after required-field inspection | locked + conformance | **3** |
+| 8 | CLI reserves output AFTER the lane runs | locked + CLI | **1** |
+
+Break 2 is the informative one: only two tests went red because the SCHEMA
+and `MutantOutcome`'s own closure still reject the same artifact. That is
+layer redundancy working as A-182 intends, not a hole — the locked
+`mutation-agreeing-unknown-operator` case survived precisely because two
+other layers caught it.
+
+## Evidence
+
+```text
+$ PYTHONPATH=src python -m pytest --override-ini=pythonpath= \
+    nyxloom-trove/carve-assets/P21/test_acceptance.py -q
+28 passed in 0.80s
+
+$ PYTHONPATH=src python -m pytest tests -q --override-ini=pythonpath=
+2098 passed, 1 skipped in 98.69s
+```
+
+The single skip is the documented `ASSAY_SELF_HOSTING_VERDICT` case, which
+skips without the gate's own first-step artifact (STATE.md's standing note).
+Both runs are DEVCONTAINER runs and therefore diagnostic, not a ship signal.
+
+```text
+handoff lint        only the intentional L10 size warning (A-089)
+locked assets       byte-identical to HEAD (git status on carve-assets: empty)
+```
+
+The installed-wheel witnesses were migrated deliberately, not mechanically:
+`test_standalone.py`'s expected mutant identities are derived by scanning the
+LITERAL fixture text and hashing the literal replacement bytes
+(`_gt_site`), never read back from assay's own output — A-041's rule that
+assay may not generate its own expected artifacts.
+
+**No registered `tester-unified` gate run was performed** — the controller
+owns that, and this LOG claims nothing about it.

@@ -26,18 +26,41 @@ from assay.verdict import Claim, Judgment, JudgmentR2, MutantOutcome, Mutation
 #: MUTANTS_SURVIVED one carries the survivor it names (P16 review) -- an R2
 #: status read off buckets that are not in the artifact is exactly what
 #: ``assay verify`` cannot re-derive.
-_KILLED_EVERYTHING = Mutation(total=2, killed=2)
-_ONE_SURVIVOR = Mutation(
+#: sha256(b"<=") and sha256(b">="), hand-computed (A-067).
+_SHA_LTE = "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
+_SHA_GTE = "92a00d7d91da9f0f06c3f218c49c9b98323469962b291365b85d3c16b6b7f95f"
+
+
+def _outcome(lineno: int, start: int, sha: str, description: str) -> MutantOutcome:
+    return MutantOutcome(
+        path="pkg/a.py",
+        lineno=lineno,
+        start_byte=start,
+        end_byte=start + 1,
+        replacement_sha256=sha,
+        operator="compare-swap",
+        description=description,
+    )
+
+
+_KILLED_EVERYTHING = Mutation(
+    candidate_count=2,
     total=2,
-    killed=1,
-    survived=(
-        MutantOutcome(
-            path="pkg/a.py",
-            lineno=3,
-            operator="invert-comparison",
-            description="a < b -> a >= b",
-        ),
+    killed=(
+        _outcome(1, 10, _SHA_LTE, "Lt->LtE"),
+        _outcome(2, 20, _SHA_LTE, "Lt->LtE"),
     ),
+)
+_ONE_SURVIVOR = Mutation(
+    candidate_count=2,
+    total=2,
+    killed=(_outcome(1, 10, _SHA_LTE, "Lt->LtE"),),
+    # P21/A-180: `operator` is closed against the catalogue in the model
+    # now, so the old placeholder "invert-comparison" -- a name no adapter
+    # can produce -- is no longer constructible. That closure is the point
+    # of work item 2: an artifact naming an unknown operator used to be
+    # model-valid while the shipped schema's own enum rejected it.
+    survived=(_outcome(3, 30, _SHA_GTE, "a < b -> a >= b"),),
 )
 
 
@@ -66,7 +89,9 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
         claims=(runner.build_r0_claim(result),),
         assay_version="0.1.0",
         mutation_claim=mutation_claim,
-        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
+        judgment=Judgment(
+            r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))
+        ),
     )
 
     assert verdict.outcome is Outcome.PASS
@@ -92,7 +117,9 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
         claims=(runner.build_r0_claim(result),),
         assay_version="0.1.0",
         mutation_claim=mutation_claim,
-        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("invert-comparison",))),
+        judgment=Judgment(
+            r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))
+        ),
     )
 
     assert verdict.outcome is Outcome.FAIL

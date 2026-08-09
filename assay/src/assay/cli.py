@@ -55,6 +55,7 @@ from .adapters.base import LanguageAdapter
 from .adapters.python import PythonAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
 from .errors import AssayError, Outcome
+from .output import VerdictOutput, reserve_verdict_output
 from .verdict import Verdict
 from .verify import build_verify_parser, cmd_verify
 
@@ -254,6 +255,40 @@ def _cmd_run(
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
+    # P21 work item 8 / A-181. The order is the contract:
+    #
+    #   lane config -> OUTPUT RESERVATION -> HEAD -> adapter -> command
+    #
+    # Lane-config failure stays earliest (a lane that will not load has no
+    # destination to reserve). Everything AFTER the reservation is consumer
+    # work, and a requested artifact that physically cannot exist must not be
+    # discovered only once the lane's command has already run -- which is
+    # what `--verdict-json <unwritable>` did before this package: a bare
+    # `OSError` and exit 1, i.e. a tooling failure a consumer reads as FAIL,
+    # with the side effects already committed (A-O14).
+    #
+    # `None` is A-028's deliberate no-artifact mode and reserves nothing:
+    # the exit code alone still gates correctly, so a caller that never asked
+    # for a file is never refused on account of one.
+    destination: VerdictOutput | None = None
+    if args.verdict_json is not None:
+        destination = reserve_verdict_output(args.verdict_json, stdout=out)
+    try:
+        return _run_reserved(args, lane, lane_file, appended, destination, out, err)
+    finally:
+        if destination is not None:
+            destination.close()
+
+
+def _run_reserved(
+    args: argparse.Namespace,
+    lane: Lane,
+    lane_file: LaneFile,
+    appended: list[str],
+    destination: "VerdictOutput | None",
+    out: TextIO,
+    err: TextIO,
+) -> int:
     commit = git.head_rev(lane_file.project_root)
     try:
         adapter = _resolve_declared_adapters(lane)
@@ -282,8 +317,11 @@ def _cmd_run(
             assay_version=__version__,
             argv_append=appended,
         )
-    if args.verdict_json is not None:
-        runner.write_verdict(verdict, args.verdict_json, stdout=out)
+    if destination is not None:
+        # Exactly once, and the summary is printed only after it succeeded:
+        # a run that could not deliver the artifact it was asked for must not
+        # also print a line that reads like a completed run (A-181).
+        runner.write_verdict(verdict, destination)
     if args.verdict_json != "-":
         _print_run_summary(verdict, out)
     return verdict.exit_code

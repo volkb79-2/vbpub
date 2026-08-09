@@ -104,6 +104,7 @@ def build(outcome: str) -> Verdict:
                         changed_executable=12,
                         pct=100.0,
                         considered=4,
+                        exclusion_capability="reported",
                         missing_lines={},
                         files_missing_coverage=(),
                     ),
@@ -151,6 +152,7 @@ def build(outcome: str) -> Verdict:
                         changed_executable=3,
                         pct=100.0 * 2 / 3,
                         considered=1,
+                        exclusion_capability="reported",
                         missing_lines={"src/assay/verdict.py": frozenset({42})},
                         files_missing_coverage=(),
                     ),
@@ -273,7 +275,7 @@ def build_inconclusive() -> Verdict:
         env_effective={},
         scope="S1",
         enforcement="gate",
-        judgment=Judgment(r2=JudgmentR2(jobs=1, operators=("compare-swap",))),
+        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))),
         claims=(
             Claim(
                 rigor="R0",
@@ -287,7 +289,7 @@ def build_inconclusive() -> Verdict:
                 status=Outcome.INCONCLUSIVE,
                 verified_by_assay=True,
                 reason_code=ReasonCode.NO_MUTANTS,
-                mutation=Mutation(total=0, killed=0),
+                mutation=Mutation(candidate_count=0, total=0),
             ),
         ),
     )

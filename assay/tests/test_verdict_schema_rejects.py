@@ -23,17 +23,36 @@ from conftest import verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import REASON_CODES, Outcome, ReasonCode
-from assay.verdict import CanaryResult, Claim, Coverage, Mutation
+from assay.verdict import CanaryResult, Claim, Coverage, MutantOutcome, Mutation
 
 #: The payload each level's own producer attaches to a PASS (P16 review),
 #: so a "the honest form builds" control is honest at every rigor level
 #: rather than only at R0.
 _PASSING_PAYLOAD = {
     "R0": {},
-    "R2": {"mutation": Mutation(total=1, killed=1)},
+    "R2": {
+        "mutation": Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(
+                MutantOutcome(
+                    path="pkg/mod.py",
+                    lineno=3,
+                    start_byte=40,
+                    end_byte=41,
+                    replacement_sha256=(
+                        "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
+                    ),
+                    operator="compare-swap",
+                    description="Lt->LtE",
+                ),
+            ),
+        )
+    },
     "R3": {
         "canary": CanaryResult(
             mechanism="uncovered-line",
+            target="pkg/mod.py",
             description="appended a never-called function",
             control_outcome=Outcome.PASS,
             transformed_outcome=Outcome.FAIL,
@@ -50,6 +69,7 @@ ZEROED_COVERAGE = {
     "changed_executable": 0,
     "pct": 100.0,
     "considered": 0,
+    "exclusion_capability": "reported",
     "missing_lines": {},
     "files_missing_coverage": [],
     "unclassified_lines": {},
@@ -241,6 +261,7 @@ def test_the_model_refuses_a_no_measurement_claim_with_coverage():
                 changed_executable=0,
                 pct=100.0,
                 considered=0,
+                exclusion_capability="reported",
                 missing_lines={},
                 files_missing_coverage=(),
             ),
@@ -265,6 +286,7 @@ def test_the_model_refuses_a_coverage_payload_on_a_non_r1_claim(rigor: str):
                 changed_executable=1,
                 pct=100.0,
                 considered=1,
+                exclusion_capability="reported",
                 missing_lines={},
                 files_missing_coverage=(),
             ),
@@ -311,6 +333,7 @@ def test_the_coverage_payload_refuses_an_impossible_measurement(kwargs, match):
         "changed_executable": 3,
         "pct": 100.0,
         "considered": 1,
+        "exclusion_capability": "reported",
         "missing_lines": {},
         "files_missing_coverage": (),
     }

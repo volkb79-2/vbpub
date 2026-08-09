@@ -78,6 +78,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
 from .adapters.base import LanguageAdapter, StatementSpan
+from .coverage import derive_exclusion_capability
 from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
@@ -194,6 +195,13 @@ class CoverageEvaluation:
     #: "always present, possibly empty, sorted" discipline
     #: :attr:`files_with_unclassified_lines` already established.
     files_with_excluded_lines: tuple[str, ...]
+    #: (P21/A-183) whether the coverage FORMAT could report exclusions at
+    #: all — derived from the parsed profile by
+    #: :func:`assay.coverage.derive_exclusion_capability` BEFORE any
+    #: evaluation, so it describes the artifact rather than this
+    #: evaluation's own outcome. Carried through to
+    #: :attr:`assay.verdict.Coverage.exclusion_capability` unchanged.
+    exclusion_capability: str
     #: PASS or FAIL — never any other :class:`~assay.errors.Outcome`. The
     #: three NO_MEASUREMENT causes are guarded before this function is ever
     #: called (A-090) and are not this module's concern.
@@ -285,6 +293,11 @@ def evaluate_coverage(
             )
         raw_key_by_repo_path[repo_path] = raw_key
         cov_by_repo_path[repo_path] = file_cov
+
+    # P21/A-183: derived from the PARSED PROFILE, before any per-file
+    # evaluation, so it is a property of the artifact rather than of what
+    # this diff happened to touch. A mixed profile refuses here.
+    exclusion_capability = derive_exclusion_capability(profile)
 
     total_changed_exec = 0
     total_covered = 0
@@ -414,6 +427,7 @@ def evaluate_coverage(
         files_with_unclassified_lines=tuple(sorted(unclassified_lines)),
         excluded_lines=MappingProxyType(dict(excluded_lines)),
         files_with_excluded_lines=tuple(sorted(excluded_lines)),
+        exclusion_capability=exclusion_capability,
         outcome=outcome,
         reason_code=reason_code,
     )

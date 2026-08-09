@@ -272,6 +272,7 @@ def run_python_canary(
     if applied is None:
         return CanaryResult(
             mechanism=mechanism,
+            target=target_path,
             description=(
                 f"{mechanism!r} is not a known canary mechanism -- expected "
                 f"one of {sorted(_EXPECTED_REASON_BY_MECHANISM)}; nothing to "
@@ -284,6 +285,7 @@ def run_python_canary(
     if transformed_text == original_text:
         return CanaryResult(
             mechanism=mechanism,
+            target=target_path,
             description=(
                 f"{mechanism} produced no change to {target_path} -- "
                 f"nothing to judge"
@@ -307,6 +309,7 @@ def run_python_canary(
     )
     return CanaryResult(
         mechanism=mechanism,
+        target=target_path,
         description=description,
         control_outcome=control_outcome,
         transformed_outcome=transformed_outcome,
@@ -567,6 +570,7 @@ def run_go_canary(
     if mechanism not in _GO_R1_MECHANISMS:
         return CanaryResult(
             mechanism=mechanism,
+            target=target_path,
             description=(
                 f"{mechanism!r} is not provable by an R1-only Go canary "
                 f"(A-107) -- only {sorted(_GO_R1_MECHANISMS)} changes "
@@ -579,6 +583,7 @@ def run_go_canary(
     if transformed_source == control_source:
         return CanaryResult(
             mechanism=mechanism,
+            target=target_path,
             description=(
                 f"{mechanism} produced no change to {target_path} -- "
                 f"nothing to judge"
@@ -599,6 +604,7 @@ def run_go_canary(
     )
     return CanaryResult(
         mechanism=mechanism,
+        target=target_path,
         description=description,
         control_outcome=control_outcome,
         transformed_outcome=transformed_outcome,

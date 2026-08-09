@@ -67,6 +67,7 @@ __all__ = [
     "FileCoverage",
     "FormatSpec",
     "check_empty_coverage",
+    "derive_exclusion_capability",
     "load_coverage_profile",
     "parse_coverage_artifact",
     "read_coverage_artifact",
@@ -199,6 +200,41 @@ def read_coverage_artifact(
     """
     raw = safeio.read_bounded_file(project_root, artifact, limit=MAX_COVERAGE_ARTIFACT_BYTES)
     return parse_coverage_artifact(raw, declared_format=declared_format)
+
+
+def derive_exclusion_capability(profile: CoverageProfile) -> str:
+    """Whether *profile*'s FORMAT could report exclusions at all (P21/A-183).
+
+    ``"unavailable"`` when every measured record says ``excluded is None``
+    (A-008's "the format cannot express exclusions"); ``"reported"`` when
+    every record carries a real set, empty or not. Derived from unanimous
+    parser evidence, never from a format NAME (a registry key is a
+    declaration; the parsed records are the fact) and never from whether the
+    exclusion mapping happens to be empty -- inferring "unavailable" from an
+    empty mapping is precisely the collapse that made a clean Python lane
+    indistinguishable from a blind Go one (A-O16).
+
+    A MIXED profile is ``ERROR``/``UNREADABLE_ARTIFACT``, not a majority
+    vote and not a default. One artifact describes one tool's output; records
+    disagreeing about whether that tool tracks exclusions at all means the
+    artifact cannot be read without inventing a precedence rule the lane
+    never declared -- the same refusal :func:`assay.evaluate.evaluate_coverage`
+    already makes for two raw keys normalising onto one repository path.
+
+    An empty profile never reaches here: :func:`check_empty_coverage` runs
+    first and refuses it with its own truthful terminal.
+    """
+    capabilities = {record.excluded is None for record in profile.files.values()}
+    if len(capabilities) > 1:
+        raise AssayError(
+            "coverage artifact mixes files that report exclusions with files "
+            "that cannot report them at all; one artifact is one tool's "
+            "output, so this cannot be read without inventing a precedence "
+            "rule the lane never declared",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    return "unavailable" if capabilities == {True} else "reported"
 
 
 def check_empty_coverage(profile: CoverageProfile) -> None:

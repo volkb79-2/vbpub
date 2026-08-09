@@ -775,9 +775,12 @@ def test_run_lane_refuses_when_the_command_moves_head_even_though_the_tree_is_cl
     lane rendered ``PASS`` at 100.0% while the artifact still recorded the
     pre-run commit, where the honest verdict at that commit is
     ``FAIL``/``UNCOVERED_LINES`` at 50.0% (proved by the control below).
-    Work item 6 asks for a comparison against the RESOLVED PRE-RUN COMMIT;
-    A-175's existing ``DIRTY_TREE`` terminal and its R0/higher precedence
-    carry it, with no new reason code and no schema change.
+    P20 carried this on A-175's existing ``DIRTY_TREE`` terminal because
+    schema v3 had nothing better. **P21 work item 10 / A-178 corrects the
+    diagnosis**: the tree is NOT dirty here, so ``DIRTY_TREE`` was a false
+    name for the fact. The refusal and its R0/higher precedence are
+    unchanged; only the reason is now truthful, and the dirty case below
+    proves dirt still takes precedence when both are true.
     """
     repo = git_repo
     repo.write(".gitignore", "cov.json\n")
@@ -800,13 +803,13 @@ def test_run_lane_refuses_when_the_command_moves_head_even_though_the_tree_is_cl
     assert git_module.dirty_paths(repo.path) == (), "and must leave a clean tree"
 
     assert verdict.outcome is Outcome.NO_MEASUREMENT
-    assert verdict.reason_code is ReasonCode.DIRTY_TREE
+    assert verdict.reason_code is ReasonCode.HEAD_CHANGED
     assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
     # A-175 precedence: the command's own real R0 claim survives...
     assert verdict.claims[0].status is Outcome.PASS
     # ...and every higher declared claim is refused without being started.
     assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
-    assert verdict.claims[1].reason_code is ReasonCode.DIRTY_TREE
+    assert verdict.claims[1].reason_code is ReasonCode.HEAD_CHANGED
     assert verdict.claims[1].coverage is None
     assert verdict.judgment is None
     # The artifact still names the commit assay actually resolved before the

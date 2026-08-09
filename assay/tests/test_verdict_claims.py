@@ -34,10 +34,14 @@ from assay.verdict import (
     Judgment,
     JudgmentR1,
     JudgmentR2,
+    MutantOutcome,
     Mutation,
     Verdict,
     rollup,
 )
+
+#: sha256(b"<="), hand-computed rather than read back from the code (A-067).
+_SHA_LTE = "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
 
 BASE = {
     "lane": "package",
@@ -87,11 +91,26 @@ def passing(rigor: str, source: str = "computed") -> Claim:
             changed_executable=1,
             pct=100.0,
             considered=1,
+            exclusion_capability="reported",
             missing_lines={},
             files_missing_coverage=(),
         )
     elif rigor == "R2":
-        payload["mutation"] = Mutation(total=1, killed=1)
+        payload["mutation"] = Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(
+                MutantOutcome(
+                    path="pkg/mod.py",
+                    lineno=3,
+                    start_byte=40,
+                    end_byte=41,
+                    replacement_sha256=_SHA_LTE,
+                    operator="compare-swap",
+                    description="Lt->LtE",
+                ),
+            ),
+        )
     return Claim(
         rigor=rigor,
         source=source,
@@ -185,6 +204,7 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
         "changed_executable": 1,
         "pct": 100.0,
         "considered": 1,
+        "exclusion_capability": "reported",
         "missing_lines": {},
         "files_missing_coverage": [],
         "unclassified_lines": {},
@@ -304,7 +324,7 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
         declared_rigor=("R0", "R1", "R2"),
         claims=(passing("R0"), passing("R1"), passing("R2")),
         judgment=Judgment(
-            r1=R1_JUDGMENT.r1, r2=JudgmentR2(jobs=1, operators=("compare-swap",))
+            r1=R1_JUDGMENT.r1, r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))
         ),
     )
     assert [claim.rigor for claim in verdict.claims] == ["R0", "R1", "R2"]
@@ -708,6 +728,7 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
                 changed_executable=2,
                 pct=50.0,
                 considered=1,
+                exclusion_capability="reported",
                 missing_lines={"src/assay/verdict.py": frozenset({7})},
                 files_missing_coverage=(),
             ),

@@ -268,6 +268,7 @@ base = "{base_rev}"
 
 [lanes.package.judge.mutation]
 jobs = 1
+max_mutants = 50
 operators = ["compare-swap"]
 """
     path = git_repo.write("assay.toml", lane)
@@ -281,15 +282,35 @@ operators = ["compare-swap"]
     assert [c["rigor"] for c in document["claims"]] == ["R0", "R2"]
     r2_claim = document["claims"][1]
     assert r2_claim["status"] == "PASS"
-    assert r2_claim["mutation"] == {
-        "total": 1,
-        "killed": 1,
-        "survived": [],
-        "crashed": [],
-        "budget_exceeded": [],
+    # P21/A-180: `killed` is an identity list through the REAL installed
+    # pipeline, so the end-to-end artifact -- not just a hand-built model --
+    # carries the byte span and replacement hash of the site the suite
+    # caught. The span is read off the emitted document rather than
+    # hardcoded here (the fixture's own source is built in this test), but
+    # its SHAPE is pinned exactly.
+    mutation = r2_claim["mutation"]
+    assert mutation["candidate_count"] == 1
+    assert mutation["total"] == 1
+    assert mutation["survived"] == []
+    assert mutation["crashed"] == []
+    assert mutation["budget_exceeded"] == []
+    assert len(mutation["killed"]) == 1
+    killed = mutation["killed"][0]
+    assert set(killed) == {
+        "path",
+        "lineno",
+        "start_byte",
+        "end_byte",
+        "replacement_sha256",
+        "operator",
+        "description",
     }
+    assert killed["operator"] == "compare-swap"
+    assert killed["start_byte"] < killed["end_byte"]
+    assert len(killed["replacement_sha256"]) == 64
     assert document["judgment"]["r2"] == {
         "jobs": 1,
+        "max_mutants": 50,
         "operators": ["compare-swap"],
     }
 

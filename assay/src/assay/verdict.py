@@ -58,18 +58,21 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from .config import ENFORCEMENTS, RIGOR_LEVELS, SCOPES
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
+from .vocabulary import MUTATION_OPERATORS
 
 __all__ = [
     "CLAIM_SOURCES",
     "EVIDENCE_SOURCES",
+    "EXCLUSION_CAPABILITIES",
     "EXIT_CODES",
+    "MUTATION_OPERATORS",
     "LANE_RESOLVED_FIELDS",
     "REASON_CODES",
     "ROLLUP_PRECEDENCE",
@@ -103,7 +106,26 @@ __all__ = [
 #: coercion of a v2 artifact -- `Verdict.schema_version` still refuses
 #: anything but the current value, so an old artifact is rejected with a
 #: named diagnostic rather than silently upgraded.
-VERDICT_SCHEMA_VERSION = 3
+#:
+#: Bumped 3 -> 4 (P21): the ONE pre-adoption migration (A-157/A-170), batching
+#: every already-known gap so no external consumer ever sees a second bump --
+#: killed mutants carry byte-site identities, `candidate_count` bounds them,
+#: `judgment.r2.max_mutants` records the declared cap, `canary.target` makes
+#: `judgment.r3.target` witnessable (closing A-152/A-O18), and
+#: `coverage.exclusion_capability` restores A-008's `None`-versus-empty
+#: distinction (closing A-O16). Only ONE schema is active in a released build
+#: (A-170): producers emit v4 only, and `assay verify` rejects v1-v3 with a
+#: single version diagnostic rather than negotiating or upgrading.
+VERDICT_SCHEMA_VERSION = 4
+
+#: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
+#: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
+#: cannot express exclusions at all (`FileCoverage.excluded is None`);
+#: `"reported"` means it can, and truthfully reported some or none. Without
+#: this, a Go lane's structural silence and a Python lane's genuinely empty
+#: exclusion set serialised identically, so a reader could not tell a clean
+#: lane from a blind format (A-O16).
+EXCLUSION_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
 
 #: Where the shipped schema lives inside the installed package. Declared as
 #: package data in `pyproject.toml`; without that it exists in the source tree
@@ -242,6 +264,80 @@ def _check_reason_code(
         )
 
 
+#: (P21/A-182) the lowercase-hex SHA-256 spelling every mutant identity's
+#: `replacement_sha256` must use. Uppercase is refused rather than folded:
+#: the hash is an IDENTITY component, and two spellings of one hash would
+#: make two records of the same site look like two different sites.
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: The hard product ceiling on candidate discovery (A-163). `max_mutants` is
+#: declared in `1..10_000`, so a bounded observation is at most `max + 1`.
+#: This is a defence against a malicious declared cap, not a policy knob.
+MAX_CANDIDATE_CEILING = 10_001
+
+
+def _check_wire_path(value: Any, what: str) -> None:
+    """The normalized forward-slash path grammar every WIRE path in a v4
+    artifact obeys (A-182): `MutantOutcome.path`, `CanaryResult.target` and
+    `JudgmentR3.target`.
+
+    Forward-slash components, none of them empty, `.`, or `..`; no leading or
+    trailing slash; no backslash; no NUL. A path that still carries `..` is
+    not an identity — `src/../p.py` and `p.py` name one file with two
+    spellings, so an equality check between a payload target and its policy
+    (O3) could be satisfied by two records that merely agree on a
+    non-normalized spelling. Refusing the spelling at construction is what
+    makes that equality mean what it says.
+
+    Deliberately NOT applied to `judgment.r1.source_roots`: a source root is
+    a declared DIRECTORY spelling, and `"."` is both legal and common there
+    (a Go module rooted at its own repository top declares exactly that).
+    Widening this grammar to cover it would reject a truthful policy record.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{what} must be a non-empty string, got {value!r}")
+    if "\\" in value:
+        raise ValueError(
+            f"{what} {value!r} contains a backslash; wire paths are "
+            f"forward-slash separated regardless of the producing platform"
+        )
+    if "\x00" in value:
+        raise ValueError(f"{what} {value!r} contains a NUL byte")
+    if value.startswith("/") or value.endswith("/"):
+        raise ValueError(
+            f"{what} {value!r} must be relative and must not end in a "
+            f"separator"
+        )
+    for part in value.split("/"):
+        if not part or part in (".", ".."):
+            raise ValueError(
+                f"{what} {value!r} is not normalized: component {part!r} is "
+                f"empty, '.', or '..'"
+            )
+
+
+def _instant(value: str, what: str) -> datetime:
+    """*value* as a real, offset-aware instant (A-182).
+
+    The two timestamps are compared as INSTANTS, never as strings. The
+    canonical combined document is the worked counter-example: it starts at
+    `12:00+01:00` and ends at `11:01+00:00`, so lexical order says the
+    interval runs backwards while UTC order says it is a valid 1-minute
+    window. A string comparison would reject a correct artifact.
+
+    The regex that guards the spelling one level up cannot catch an
+    impossible CALENDAR value (month 13, day 32) -- it only checks digit
+    shape -- so parsing is what closes that gap.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{what} {value!r} is not a real timestamp: {exc}") from exc
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ValueError(f"{what} {value!r} carries no usable UTC offset")
+    return parsed
+
+
 def _check_line_location_mapping(value: Any, what: str) -> None:
     """The shape ``missing_lines`` and (P07) ``unclassified_lines`` both
     share: ``Mapping[str, frozenset[int]]``, non-empty-string keys, always a
@@ -324,6 +420,15 @@ class Coverage:
     pct: float
     #: changed files under the source roots that were considered at all
     considered: int
+    #: (P21/A-183) whether the coverage FORMAT could report exclusions at
+    #: all -- `"reported"` or `"unavailable"`, never inferred from whether
+    #: :attr:`excluded_lines` happens to be empty. Required, with no
+    #: default: it is a fact derived from the parsed profile (every measured
+    #: record agreeing on `excluded is None`), and a default here would be
+    #: exactly the shadowing default AGENTS.md 4.2a forbids -- it would
+    #: silently re-collapse A-008's distinction the moment a producer forgot
+    #: to pass it.
+    exclusion_capability: str
     #: changed, executable, non-excluded lines that were not executed, keyed
     #: by path — same shape as :attr:`assay.diff.AddedLines.by_file`: a file
     #: contributing none is ABSENT, never present with an empty frozenset.
@@ -376,6 +481,12 @@ class Coverage:
                 f"coverage.covered ({self.covered}) exceeds changed_executable "
                 f"({self.changed_executable})"
             )
+        if self.exclusion_capability not in EXCLUSION_CAPABILITIES:
+            raise ValueError(
+                f"coverage.exclusion_capability must be one of "
+                f"{list(EXCLUSION_CAPABILITIES)}, got "
+                f"{self.exclusion_capability!r}"
+            )
         _check_line_location_mapping(self.missing_lines, "coverage.missing_lines")
         _check_file_tuple(self.files_missing_coverage, "coverage.files_missing_coverage")
         _check_line_location_mapping(
@@ -417,6 +528,28 @@ class Coverage:
             )
         self._check_buckets_pairwise_disjoint()
         self._check_summaries_name_their_own_detail()
+        self._check_capability_agrees_with_detail()
+
+    def _check_capability_agrees_with_detail(self) -> None:
+        """(P21/A-183) `"unavailable"` carries NO exclusion detail.
+
+        A format that structurally cannot report exclusions cannot also have
+        reported some, so an artifact claiming both is self-contradictory
+        rather than merely odd. The converse is deliberately NOT a rule:
+        `"reported"` with an empty mapping is the truthful record of a
+        capable format that found nothing to exclude, and forbidding it
+        would re-collapse exactly the distinction A-008 exists to keep.
+        """
+        if self.exclusion_capability != "unavailable":
+            return
+        if self.excluded_lines or self.files_with_excluded_lines:
+            raise ValueError(
+                f"coverage.exclusion_capability is 'unavailable' but the "
+                f"payload names excluded lines "
+                f"{sorted(self.excluded_lines)}/"
+                f"{list(self.files_with_excluded_lines)}; a format that "
+                f"cannot report exclusions cannot have reported any"
+            )
 
     def _check_summaries_name_their_own_detail(self) -> None:
         """Each ``files_*`` summary agrees with the line-level mapping it
@@ -507,6 +640,7 @@ class Coverage:
             "changed_executable": self.changed_executable,
             "pct": float(self.pct),
             "considered": self.considered,
+            "exclusion_capability": self.exclusion_capability,
             "missing_lines": {
                 path: sorted(lines)
                 for path, lines in sorted(self.missing_lines.items())
@@ -553,6 +687,20 @@ class CanaryResult:
     #: be representable (O3's own "malformed transform" case names the
     #: mechanism it could not resolve).
     mechanism: str
+    #: (P21/A-152/A-O18) the project-relative file the transform was applied
+    #: to, in the normalized wire-path grammar. Its whole reason to exist is
+    #: to make ``judgment.r3.target`` independently witnessable:
+    #: :meth:`Verdict._check_judgment_matches_claims` requires the two to be
+    #: EQUAL, so a policy naming one file while the canary ran against
+    #: another is now unconstructible. Under schema v3 nothing in the
+    #: artifact could witness ``target`` at all, which A-152 recorded as an
+    #: accepted gap explicitly waiting for this migration.
+    #:
+    #: :attr:`description` remains prose and is never a parseable identity
+    #: channel -- inferring the target by scraping it out of the description
+    #: is the "a rule that looks like verification and is not" shape A-152
+    #: already rejected.
+    target: str
     #: Human-readable account of the concrete transform attempted, or of WHY
     #: nothing could be built (a malformed mechanism, or a no-op) — from the
     #: adapter's own ``inject_*``'s ``(text, description)`` return, never
@@ -578,6 +726,7 @@ class CanaryResult:
                 f"canary.mechanism must be a non-empty string, got "
                 f"{self.mechanism!r}"
             )
+        _check_wire_path(self.target, "canary.target")
         if not isinstance(self.description, str) or not self.description:
             raise ValueError(
                 f"canary.description must be a non-empty string, got "
@@ -632,6 +781,7 @@ class CanaryResult:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "mechanism": self.mechanism,
+            "target": self.target,
             "description": self.description,
             "control_outcome": self.control_outcome.value,
         }
@@ -650,48 +800,79 @@ class MutantOutcome:
     """One mutant's identity, projected for the R2 artifact (A-116): the
     lightweight subset of :class:`~assay.mutation.Mutant`'s own identity a
     reader needs to find and fix a surviving/crashed/budget-stopped site,
-    plus the external *path* context :class:`~assay.mutation.Mutant` itself
-    has no field for (one ``generate_mutants`` call is scoped to a single
-    file; a verdict spans possibly many).
+    plus the external *path* context a :class:`~assay.mutation.MutationSite`
+    itself has no field for (one ``generate_mutation_sites`` call is scoped
+    to a single file; a verdict spans possibly many).
 
     Deliberately WITHOUT ``mutated_text`` — a verdict carrying many
     survivors would otherwise embed a full replacement file per entry,
     which bloats the artifact for no diagnostic gain :attr:`operator` +
     :attr:`description` + :attr:`lineno` do not already provide.
 
-    :attr:`operator` is a plain non-empty ``str`` here, NOT validated
-    against :data:`~assay.mutation.MUTATION_OPERATORS` — the identical
-    choice :class:`CanaryResult`'s own ``mechanism`` field already makes
-    (A-108), and for the same two reasons: this module must stay importable
-    without importing :mod:`assay.mutation`'s own execution orchestration
-    (which imports :class:`Mutation`/:class:`MutantOutcome` FROM here — a
-    closed-set import the other direction would be circular), and in
-    practice this field is always built from an already-validated
-    :attr:`assay.mutation.Mutant.operator`, so re-closing the vocabulary
-    here would only be able to catch a bug that :class:`~assay.mutation.
-    Mutant`'s own construction already prevents.
+    **P21/A-180 replaces the identity.** Through v3 this was
+    ``(path, lineno, operator, description)``, and killed mutants had no
+    entry at all -- only a count. Both were wrong for the same reason: a
+    line number and a prose description are DIAGNOSTICS, not identity. Two
+    ``and`` tokens on one line (A-115's boolean chain) project onto the
+    identical v3 tuple, so two genuinely distinct experiments collapsed into
+    one record. The identity is now the SYNTAX SITE itself:
+    ``(path, start_byte, end_byte, replacement_sha256, operator)``.
+
+    Byte offsets are zero-based, half-open, UTF-8 byte offsets into the
+    exact source file at the recorded commit. :attr:`replacement_sha256` is
+    the lowercase SHA-256 of the REPLACEMENT BYTES ONLY, constructed
+    directly from the validated :class:`~assay.mutation.MutationSite` -- it
+    is never derived by diffing two full texts, which does not recover a
+    syntax site at all (A-180: ``<`` -> ``<=`` collapses to a zero-width
+    insertion, ``True`` -> ``False`` to ``Tru`` -> ``Fals``).
+
+    :attr:`operator` IS now closed against :data:`~assay.vocabulary.
+    MUTATION_OPERATORS`. The v3 reasoning for leaving it open -- that
+    closing it here would need an import of :mod:`assay.mutation`, which
+    imports this module -- was a real cycle, and :mod:`assay.vocabulary`
+    (P21 work item 2) is the leaf that removes it. An artifact naming an
+    operator no adapter can produce is no longer model-valid.
     """
 
     path: str
     lineno: int
+    start_byte: int
+    end_byte: int
+    replacement_sha256: str
     operator: str
     description: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.path, str) or not self.path:
-            raise ValueError(
-                f"MutantOutcome.path must be a non-empty string, got {self.path!r}"
-            )
-        if isinstance(self.lineno, bool) or not isinstance(self.lineno, int):
-            raise ValueError(
-                f"MutantOutcome.lineno must be an integer, got {self.lineno!r}"
-            )
+        _check_wire_path(self.path, "MutantOutcome.path")
+        for name in ("lineno", "start_byte", "end_byte"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(
+                    f"MutantOutcome.{name} must be an integer, got {value!r}"
+                )
         if self.lineno < 1:
             raise ValueError(f"MutantOutcome.lineno must be >= 1, got {self.lineno}")
-        if not isinstance(self.operator, str) or not self.operator:
+        if self.start_byte < 0:
             raise ValueError(
-                f"MutantOutcome.operator must be a non-empty string, got "
-                f"{self.operator!r}"
+                f"MutantOutcome.start_byte must be >= 0, got {self.start_byte}"
+            )
+        if self.end_byte <= self.start_byte:
+            raise ValueError(
+                f"MutantOutcome byte span [{self.start_byte}, {self.end_byte}) is "
+                f"empty or reversed; a mutation site always replaces at least "
+                f"one byte"
+            )
+        if not isinstance(self.replacement_sha256, str) or not _SHA256_RE.fullmatch(
+            self.replacement_sha256
+        ):
+            raise ValueError(
+                f"MutantOutcome.replacement_sha256 must be 64 lowercase hex "
+                f"characters, got {self.replacement_sha256!r}"
+            )
+        if self.operator not in MUTATION_OPERATORS:
+            raise ValueError(
+                f"MutantOutcome.operator must be one of "
+                f"{list(MUTATION_OPERATORS)}, got {self.operator!r}"
             )
         if not isinstance(self.description, str) or not self.description:
             raise ValueError(
@@ -699,37 +880,55 @@ class MutantOutcome:
                 f"{self.description!r}"
             )
 
+    @property
+    def identity(self) -> tuple[str, int, int, str, str]:
+        """The exact v4 wire identity (A-180). ``lineno``/``description`` are
+        deliberately absent: they diagnose, they do not distinguish."""
+        return (
+            self.path,
+            self.start_byte,
+            self.end_byte,
+            self.replacement_sha256,
+            self.operator,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "path": self.path,
             "lineno": self.lineno,
+            "start_byte": self.start_byte,
+            "end_byte": self.end_byte,
+            "replacement_sha256": self.replacement_sha256,
             "operator": self.operator,
             "description": self.description,
         }
 
 
-def _mutant_outcome_sort_key(item: MutantOutcome) -> tuple[str, int, str, str]:
-    return (item.path, item.lineno, item.operator, item.description)
-
-
 def _check_mutant_outcome_tuple(value: Any, what: str) -> None:
-    """Every one of :class:`Mutation`'s three non-killed buckets shares this
-    shape: a tuple of :class:`MutantOutcome`, sorted by stable identity
-    (``path``, ``lineno``, ``operator``, ``description``) — never by
-    whichever mutant's subprocess happened to finish first (O3). Ties are
-    legal (a 3+-operand boolean chain, A-115, can project two distinct
-    mutants onto the identical ``MutantOutcome``), so this checks sortedness
-    under that key, not uniqueness.
+    """Every one of :class:`Mutation`'s FOUR buckets shares this shape: a
+    tuple of :class:`MutantOutcome` sorted by :attr:`MutantOutcome.identity`
+    — never by whichever mutant's subprocess happened to finish first (O3).
+
+    Unlike v3 this also forbids ties: under the site identity two entries
+    that compare equal ARE the same experiment recorded twice, so
+    within-bucket uniqueness is checked here and cross-bucket uniqueness one
+    level up in :meth:`Mutation._check_identities_are_unique`.
     """
     if not isinstance(value, tuple):
         raise ValueError(f"{what} must be a tuple, got {value!r}")
     for item in value:
         if not isinstance(item, MutantOutcome):
             raise ValueError(f"{what} entries must be MutantOutcome, got {item!r}")
-    if list(value) != sorted(value, key=_mutant_outcome_sort_key):
+    identities = [item.identity for item in value]
+    if identities != sorted(identities):
         raise ValueError(
-            f"{what} must be sorted by (path, lineno, operator, description); "
-            f"got {[_mutant_outcome_sort_key(item) for item in value]}"
+            f"{what} must be sorted by (path, start_byte, end_byte, "
+            f"replacement_sha256, operator); got {identities}"
+        )
+    if len(set(identities)) != len(identities):
+        raise ValueError(
+            f"{what} records the same mutant identity twice: "
+            f"{sorted({item for item in identities if identities.count(item) > 1})}"
         )
 
 
@@ -744,42 +943,115 @@ class Mutation:
     own ``MutationResult`` collapses crashed and budget-exceeded into
     "killed" (confirmed reading ``mutation_gate.py`` directly, A-122), which
     is exactly the ambiguity this project's own oracles exist to catch, so
-    it is not ported. ``killed`` is a bare count (a killed mutant needs no
-    further diagnosis — the suite already caught it); the other three carry
-    the actual :class:`MutantOutcome` identities, because THOSE are what a
-    reader needs to act on.
+    it is not ported.
+
+    **P21/A-180: ``killed`` is an identity list, not a count.** v3's bare
+    count meant the one bucket a reader most needs to audit — *which* sites
+    the suite actually caught — could not be checked against the declared
+    operator policy at all, so a killed mutant produced by an operator the
+    lane never selected was unobservable. Every attempted mutant now carries
+    its site identity, and every identity is unique across ALL FOUR buckets.
+
+    **``candidate_count`` is a BOUNDED OBSERVATION, not a hidden total.**
+    Normally it equals :attr:`total` and the buckets sum to both. At the
+    limit terminal it is exactly ``max_mutants + 1``, :attr:`total` is zero
+    and all four buckets are empty: assay observed that many candidates and
+    deliberately STOPPED, so all it honestly knows is "at least this many
+    exist". That sentinel is the independent evidence for the refusal —
+    the alternative, a silently truncated list, is indistinguishable from a
+    complete small run (A-163).
     """
 
+    #: The number of candidate site descriptors discovery actually observed,
+    #: bounded by construction at ``max_mutants + 1``.
+    candidate_count: int
     total: int
-    killed: int
+    killed: tuple[MutantOutcome, ...] = ()
     survived: tuple[MutantOutcome, ...] = ()
     crashed: tuple[MutantOutcome, ...] = ()
     budget_exceeded: tuple[MutantOutcome, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("total", "killed"):
+        for name in ("candidate_count", "total"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"mutation.{name} must be an integer, got {value!r}")
             if value < 0:
                 raise ValueError(f"mutation.{name} must not be negative, got {value}")
-        _check_mutant_outcome_tuple(self.survived, "mutation.survived")
-        _check_mutant_outcome_tuple(self.crashed, "mutation.crashed")
-        _check_mutant_outcome_tuple(self.budget_exceeded, "mutation.budget_exceeded")
-        expected_total = (
-            self.killed + len(self.survived) + len(self.crashed) + len(self.budget_exceeded)
-        )
-        if self.total != expected_total:
+        if self.candidate_count > MAX_CANDIDATE_CEILING:
             raise ValueError(
-                f"mutation.total ({self.total}) must equal killed + "
-                f"len(survived) + len(crashed) + len(budget_exceeded) "
-                f"({expected_total})"
+                f"mutation.candidate_count ({self.candidate_count}) exceeds the "
+                f"product ceiling {MAX_CANDIDATE_CEILING}; discovery stops at "
+                f"max_mutants + 1 and max_mutants is bounded at 10,000"
             )
+        for name in ("killed", "survived", "crashed", "budget_exceeded"):
+            _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
+        self._check_identities_are_unique()
+        self._check_arithmetic()
+
+    def _check_identities_are_unique(self) -> None:
+        """One mutant is in exactly one bucket (A-182).
+
+        Cross-bucket duplication would let a single experiment be counted as
+        both killed and survived, which is not a shape any producer can
+        reach and is precisely the contradiction a hand-forged artifact
+        would use to claim a better result than it earned.
+        """
+        seen: dict[tuple[str, int, int, str, str], str] = {}
+        for name in ("killed", "survived", "crashed", "budget_exceeded"):
+            for item in getattr(self, name):
+                previous = seen.get(item.identity)
+                if previous is not None:
+                    raise ValueError(
+                        f"mutation identity {item.identity} appears in both "
+                        f"{previous!r} and {name!r}; one mutant has exactly "
+                        f"one outcome"
+                    )
+                seen[item.identity] = name
+
+    def _check_arithmetic(self) -> None:
+        """Exactly two legal shapes (A-163), and nothing between them."""
+        attempted = (
+            len(self.killed)
+            + len(self.survived)
+            + len(self.crashed)
+            + len(self.budget_exceeded)
+        )
+        if self.total != attempted:
+            raise ValueError(
+                f"mutation.total ({self.total}) must equal the number of "
+                f"recorded identities across all four buckets ({attempted})"
+            )
+        if self.total == self.candidate_count:
+            return
+        # The only other legal shape is the pre-submission limit sentinel:
+        # candidates were observed, nothing was attempted.
+        if self.total == 0 and 1 <= self.candidate_count <= MAX_CANDIDATE_CEILING:
+            return
+        raise ValueError(
+            f"mutation records {self.candidate_count} candidate(s) but "
+            f"{self.total} attempted mutant(s); a payload is either normal "
+            f"(candidate_count == total == sum of the four buckets) or the "
+            f"pre-submission limit sentinel (total 0, four empty buckets, "
+            f"candidate_count in 1..{MAX_CANDIDATE_CEILING})"
+        )
+
+    @property
+    def is_limit_sentinel(self) -> bool:
+        """True for the pre-submission ``max_mutants + 1`` refusal shape.
+
+        A zero/zero payload is NOT a sentinel: it is a supported analysis
+        that genuinely observed no candidates (``NO_MUTANTS``). The two are
+        distinguished by ``candidate_count`` alone, which is why the field
+        is required rather than derived.
+        """
+        return self.total == 0 and self.candidate_count > 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "candidate_count": self.candidate_count,
             "total": self.total,
-            "killed": self.killed,
+            "killed": [item.to_dict() for item in self.killed],
             "survived": [item.to_dict() for item in self.survived],
             "crashed": [item.to_dict() for item in self.crashed],
             "budget_exceeded": [item.to_dict() for item in self.budget_exceeded],
@@ -871,6 +1143,12 @@ class JudgmentR2:
     """
 
     jobs: int
+    #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``. Recorded
+    #: because the limit terminal's whole evidence is arithmetic against it:
+    #: ``candidate_count == max_mutants + 1``. Without the cap in the
+    #: artifact a consumer cannot tell a legitimate refusal from a forged
+    #: one, so this is required rather than optional.
+    max_mutants: int
     operators: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -878,13 +1156,34 @@ class JudgmentR2:
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
             raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
+        if isinstance(self.max_mutants, bool) or not isinstance(self.max_mutants, int):
+            raise ValueError(
+                f"judgment.r2.max_mutants must be an integer, got "
+                f"{self.max_mutants!r}"
+            )
+        if not 1 <= self.max_mutants <= 10_000:
+            raise ValueError(
+                f"judgment.r2.max_mutants must be in 1..10,000, got "
+                f"{self.max_mutants}"
+            )
         if not isinstance(self.operators, tuple) or not self.operators:
             raise ValueError(
                 f"judgment.r2.operators must be a non-empty tuple, got "
                 f"{self.operators!r}"
             )
-        for operator in self.operators:
-            _check_nonempty(operator, "judgment.r2.operators entry")
+        # P21 work item 2: closed here as well as in config and the schema.
+        # v3 accepted any non-empty string, so a policy naming an operator no
+        # adapter implements was model-valid while the shipped schema's own
+        # enum rejected it -- the exact model/schema/verifier mismatch this
+        # package deletes rather than maintains.
+        unknown = [
+            operator for operator in self.operators if operator not in MUTATION_OPERATORS
+        ]
+        if unknown:
+            raise ValueError(
+                f"judgment.r2.operators names unknown operator(s) {unknown}; "
+                f"the catalogue is closed: {list(MUTATION_OPERATORS)}"
+            )
         if len(set(self.operators)) != len(self.operators):
             raise ValueError(
                 f"judgment.r2.operators contains a duplicate: "
@@ -892,7 +1191,11 @@ class JudgmentR2:
             )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"jobs": self.jobs, "operators": list(self.operators)}
+        return {
+            "jobs": self.jobs,
+            "max_mutants": self.max_mutants,
+            "operators": list(self.operators),
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -918,7 +1221,11 @@ class JudgmentR3:
 
     def __post_init__(self) -> None:
         _check_nonempty(self.mechanism, "judgment.r3.mechanism")
-        _check_nonempty(self.target, "judgment.r3.target")
+        # P21: the same normalized wire grammar `CanaryResult.target` obeys.
+        # Both ends of the equality A-152 was waiting for must speak one
+        # spelling, or the equality can be satisfied by two records that
+        # merely agree on a non-normalized path.
+        _check_wire_path(self.target, "judgment.r3.target")
 
     def to_dict(self) -> dict[str, Any]:
         return {"mechanism": self.mechanism, "target": self.target}
@@ -1051,6 +1358,69 @@ class Claim:
                 )
 
         self._check_a_judged_status_carries_its_own_payload()
+        self._check_mutation_terminal_correspondence()
+
+    def _check_mutation_terminal_correspondence(self) -> None:
+        """(P21/A-163/A-183) the three R2 terminals that are ABOUT a payload
+        must agree with whether one is present, and with its exact shape.
+
+        Four rules, each closing a forgery that v3 could not see:
+
+        * ``MUTATION_UNSUPPORTED`` is payload-free. It says the adapter never
+          analysed anything; attaching a zero/zero :class:`Mutation` would
+          make capability absence indistinguishable from a supported
+          analysis that observed nothing — the precise collapse A-183 exists
+          to prevent.
+        * ``MUTATION_DISCOVERY_FAILED`` is payload-free for the same reason
+          one level over: a boundary that failed produced no candidate set.
+        * A limit SENTINEL payload is legal only under
+          ``BUDGET_EXCEEDED``/``MUTANT_LIMIT_EXCEEDED``. Otherwise a claim
+          could report ``PASS`` while its payload says nothing ran.
+        * ``MUTANT_LIMIT_EXCEEDED`` conversely REQUIRES that exact sentinel,
+          so the reason cannot be worn by an ordinary payload.
+        """
+        payload_free = {
+            ReasonCode.MUTATION_UNSUPPORTED,
+            ReasonCode.MUTATION_DISCOVERY_FAILED,
+        }
+        if self.reason_code in payload_free:
+            if self.rigor != "R2":
+                raise ValueError(
+                    f"claim[{self.rigor}]: {self.reason_code.value} describes "
+                    f"mutation discovery and belongs to the R2 claim"
+                )
+            if self.mutation is not None:
+                raise ValueError(
+                    f"claim[R2]: {self.reason_code.value} carries a mutation "
+                    f"payload -- no candidate analysis produced it, so an "
+                    f"attached payload would assert a measurement that never "
+                    f"happened"
+                )
+        if self.mutation is not None and self.mutation.is_limit_sentinel:
+            if (self.status, self.reason_code) != (
+                Outcome.BUDGET_EXCEEDED,
+                ReasonCode.MUTANT_LIMIT_EXCEEDED,
+            ):
+                raise ValueError(
+                    f"claim[{self.rigor}]: a pre-submission limit sentinel "
+                    f"(candidate_count "
+                    f"{self.mutation.candidate_count}, zero attempted) is only "
+                    f"legal as BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED, got "
+                    f"{self.status.value}/"
+                    f"{None if self.reason_code is None else self.reason_code.value}"
+                )
+        if self.reason_code is ReasonCode.MUTANT_LIMIT_EXCEEDED:
+            if self.rigor != "R2":
+                raise ValueError(
+                    f"claim[{self.rigor}]: MUTANT_LIMIT_EXCEEDED describes "
+                    f"mutation discovery and belongs to the R2 claim"
+                )
+            if self.mutation is None or not self.mutation.is_limit_sentinel:
+                raise ValueError(
+                    "claim[R2]: MUTANT_LIMIT_EXCEEDED requires the exact "
+                    "pre-submission sentinel payload (total 0, four empty "
+                    "buckets, a positive candidate_count) as its evidence"
+                )
 
     def _check_a_judged_status_carries_its_own_payload(self) -> None:
         """The converse of the three ``NO_MEASUREMENT`` rules above (P16
@@ -1327,6 +1697,7 @@ class Verdict:
             )
 
         _check_reason_code(self.outcome, self.reason_code, "verdict")
+        self._check_interval_is_ordered()
         self._check_lane_resolved_group()
         self._check_claims_cover_declared_rigor()
         self._check_evidence_covers_declarations()
@@ -1334,6 +1705,27 @@ class Verdict:
         self._check_judgment_matches_claims()
 
     # --- the rules the schema cannot express ---------------------------------
+
+    def _check_interval_is_ordered(self) -> None:
+        """(P21/A-182, work item 7) ``ended >= started`` as INSTANTS.
+
+        Draft 2020-12 has no ``$data``, so it cannot compare two fields; this
+        rule and its differently-worded twin in :mod:`assay.verify` are the
+        only two places it exists, and the schema is deliberately not
+        credited with it. The comparison is on parsed offset-aware instants,
+        never on the strings: the canonical combined artifact starts at
+        ``12:00+01:00`` and ends at ``11:01+00:00``, which is a valid
+        one-minute window whose lexical order runs backwards.
+        """
+        started = _instant(self.started, "started")
+        ended = _instant(self.ended, "ended")
+        if ended < started:
+            raise ValueError(
+                f"ended {self.ended!r} is before started {self.started!r} "
+                f"({ended.astimezone(timezone.utc).isoformat()} < "
+                f"{started.astimezone(timezone.utc).isoformat()} in UTC); a "
+                f"verdict's interval cannot run backwards"
+            )
 
     def _check_lane_resolved_group(self) -> None:
         """All present or all absent — absent means the lane never resolved."""
@@ -1496,24 +1888,42 @@ class Verdict:
             )
 
         r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
+        # P21/A-183: R2 policy is recorded whenever R2 was actually ATTEMPTED,
+        # which is one case wider than "rendered a payload". A lane whose
+        # adapter has no mutation engine resolved and applied jobs/max_mutants/
+        # operators before discovery returned UNSUPPORTED, so dropping the
+        # policy there would hide the cap a consumer needs to interpret the
+        # refusal. A baseline that never passed is NOT attempted: R2's claim
+        # then just propagates R0's own outcome and records no policy.
         r2_judged = r2_claim is not None and r2_claim.mutation is not None
+        r2_attempted = r2_judged or (
+            r2_claim is not None
+            and r2_claim.reason_code is ReasonCode.MUTATION_UNSUPPORTED
+        )
         judgment_r2 = None if self.judgment is None else self.judgment.r2
-        if judgment_r2 is not None and not r2_judged:
+        if judgment_r2 is not None and not r2_attempted:
             raise ValueError(
                 "judgment.r2 is present but no R2 claim rendered a mutation "
-                "payload -- a policy is recorded for a judgment that never "
-                "happened"
+                "payload or an unsupported-capability terminal -- a policy is "
+                "recorded for a judgment that never happened"
             )
-        if judgment_r2 is None and r2_judged:
+        if judgment_r2 is None and r2_attempted:
             raise ValueError(
-                "the R2 claim rendered a mutation payload but judgment.r2 "
-                "is absent -- an independent consumer cannot re-derive R2's "
-                "status without the policy that decided it"
+                "the R2 claim rendered a mutation payload or an "
+                "unsupported-capability terminal but judgment.r2 is absent -- "
+                "an independent consumer cannot re-derive R2's status without "
+                "the policy that decided it"
             )
         if r2_judged and judgment_r2 is not None:
+            # P21/A-180: `killed` is now in this sweep. Under v3 it was a bare
+            # count, so a killed mutant produced by an operator the lane never
+            # selected was structurally unobservable -- the single largest
+            # bucket was exempt from the only check that binds a payload to
+            # its policy.
             observed_operators = {
                 outcome.operator
                 for bucket in (
+                    r2_claim.mutation.killed,
                     r2_claim.mutation.survived,
                     r2_claim.mutation.crashed,
                     r2_claim.mutation.budget_exceeded,
@@ -1528,6 +1938,7 @@ class Verdict:
                     f"{list(judgment_r2.operators)} -- a mutant this policy "
                     f"never selected cannot have been submitted"
                 )
+            self._check_mutation_cardinality(r2_claim.mutation, judgment_r2)
 
         r3_claim = next((claim for claim in self.claims if claim.rigor == "R3"), None)
         r3_judged = r3_claim is not None and r3_claim.canary is not None
@@ -1552,6 +1963,45 @@ class Verdict:
                     f"records the policy as {judgment_r3.mechanism!r} -- the "
                     f"two must name the same mechanism"
                 )
+            # P21/A-152/A-O18: the half schema v3 could not witness at all.
+            if r3_claim.canary.target != judgment_r3.target:
+                raise ValueError(
+                    f"claim[R3].canary ran against target "
+                    f"{r3_claim.canary.target!r}, but judgment.r3 records the "
+                    f"policy target as {judgment_r3.target!r} -- a canary that "
+                    f"answers for a different file than the one declared is "
+                    f"evidence about nothing the lane asked for"
+                )
+
+    def _check_mutation_cardinality(
+        self, mutation: Mutation, policy: JudgmentR2
+    ) -> None:
+        """(P21/A-163) bind the payload's cardinality to the declared cap.
+
+        Two directions, and both matter. A limit sentinel must record
+        EXACTLY ``max_mutants + 1`` — any other count is either a forged
+        refusal or a bound that was never actually reached. And a normal
+        payload may not exceed the cap it was run under, which is the
+        arithmetic that makes ``max_mutants`` a real bound rather than a
+        decorative record of one.
+        """
+        if mutation.is_limit_sentinel:
+            expected = policy.max_mutants + 1
+            if mutation.candidate_count != expected:
+                raise ValueError(
+                    f"claim[R2].mutation is a limit sentinel recording "
+                    f"{mutation.candidate_count} candidate(s), but "
+                    f"judgment.r2.max_mutants is {policy.max_mutants}, so the "
+                    f"only honest sentinel count is {expected} -- discovery "
+                    f"stops at the cap plus one and reports what it observed"
+                )
+            return
+        if mutation.total > policy.max_mutants:
+            raise ValueError(
+                f"claim[R2].mutation attempted {mutation.total} mutant(s), "
+                f"exceeding judgment.r2.max_mutants {policy.max_mutants} -- a "
+                f"cap that a completed run can exceed bounds nothing"
+            )
 
     # --- serialisation --------------------------------------------------------
 

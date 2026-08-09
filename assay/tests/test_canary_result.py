@@ -26,6 +26,7 @@ from assay.verdict import CanaryResult, Claim
 def make(
     *,
     mechanism: str = "uncovered-line",
+    target: str = "src/mod.py",
     description: str = "appended a never-called function",
     control_outcome: Outcome = Outcome.PASS,
     transformed_outcome: Outcome | None = Outcome.FAIL,
@@ -34,6 +35,7 @@ def make(
 ) -> CanaryResult:
     return CanaryResult(
         mechanism=mechanism,
+        target=target,
         description=description,
         control_outcome=control_outcome,
         transformed_outcome=transformed_outcome,
@@ -54,26 +56,34 @@ def test_the_honest_form_builds():
 def test_an_empty_mechanism_is_refused():
     with pytest.raises(ValueError, match="mechanism must be a non-empty string"):
         CanaryResult(
-            mechanism="", description="x", control_outcome=Outcome.PASS
+            mechanism="", target="src/mod.py", description="x",
+            control_outcome=Outcome.PASS
         )
 
 
 def test_an_empty_description_is_refused():
     with pytest.raises(ValueError, match="description must be a non-empty string"):
         CanaryResult(
-            mechanism="uncovered-line", description="", control_outcome=Outcome.PASS
+            mechanism="uncovered-line", target="src/mod.py", description="",
+            control_outcome=Outcome.PASS
         )
 
 
 def test_a_non_outcome_control_outcome_is_refused():
     with pytest.raises(ValueError, match="control_outcome must be an Outcome"):
-        CanaryResult(mechanism="uncovered-line", description="x", control_outcome="PASS")
+        CanaryResult(
+            mechanism="uncovered-line",
+            target="src/mod.py",
+            description="x",
+            control_outcome="PASS",
+        )
 
 
 def test_a_non_outcome_transformed_outcome_is_refused():
     with pytest.raises(ValueError, match="transformed_outcome must be an Outcome or None"):
         CanaryResult(
             mechanism="uncovered-line",
+            target="src/mod.py",
             description="x",
             control_outcome=Outcome.PASS,
             transformed_outcome="FAIL",
@@ -87,6 +97,7 @@ def test_expected_reason_code_must_be_a_fail_reason():
     with pytest.raises(ValueError, match="must be a FAIL reason code"):
         CanaryResult(
             mechanism="uncovered-line",
+            target="src/mod.py",
             description="x",
             control_outcome=Outcome.PASS,
             expected_reason_code=ReasonCode.DIRTY_TREE,
@@ -97,6 +108,7 @@ def test_observed_reason_code_without_a_transformed_outcome_is_refused():
     with pytest.raises(ValueError, match="observed_reason_code requires a transformed_outcome"):
         CanaryResult(
             mechanism="uncovered-line",
+            target="src/mod.py",
             description="x",
             control_outcome=Outcome.PASS,
             transformed_outcome=None,
@@ -108,6 +120,7 @@ def test_a_pass_transformed_outcome_cannot_carry_a_reason_code():
     with pytest.raises(ValueError, match="omitted when transformed_outcome is PASS"):
         CanaryResult(
             mechanism="uncovered-line",
+            target="src/mod.py",
             description="x",
             control_outcome=Outcome.PASS,
             transformed_outcome=Outcome.PASS,
@@ -119,6 +132,7 @@ def test_a_non_pass_transformed_outcome_requires_a_reason_code():
     with pytest.raises(ValueError, match="observed_reason_code is required"):
         CanaryResult(
             mechanism="uncovered-line",
+            target="src/mod.py",
             description="x",
             control_outcome=Outcome.PASS,
             transformed_outcome=Outcome.FAIL,
@@ -134,6 +148,7 @@ def test_observed_reason_code_must_pair_with_its_own_transformed_outcome():
     with pytest.raises(ValueError, match="is not valid for transformed_outcome"):
         CanaryResult(
             mechanism="uncovered-line",
+            target="src/mod.py",
             description="x",
             control_outcome=Outcome.PASS,
             transformed_outcome=Outcome.FAIL,
@@ -156,6 +171,9 @@ def test_to_dict_carries_every_present_field():
 
     assert payload == {
         "mechanism": "uncovered-line",
+        # P21/A-152: the field that finally makes `judgment.r3.target`
+        # witnessable -- v3 could record the policy but nothing could check it.
+        "target": "src/mod.py",
         "description": "appended a never-called function",
         "control_outcome": "PASS",
         "transformed_outcome": "FAIL",

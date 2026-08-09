@@ -20,6 +20,8 @@ BASE = {
     "changed_executable": 2,
     "pct": 50.0,
     "considered": 1,
+    # P21: required, never defaulted -- see `Coverage.exclusion_capability`.
+    "exclusion_capability": "reported",
     "missing_lines": {"src/mod.py": frozenset({3})},
     # A file with NO coverage-artifact entry has every changed line recorded
     # as missing, so this summary is a subset of `missing_lines`' own keys

@@ -91,6 +91,27 @@ def a_verdict_with(outcome: str, code: str | None) -> dict:
     return document
 
 
+#: (P21) reason codes the schema binds to the R2 claim specifically.
+_R2_ONLY_CODES = frozenset(
+    {
+        "NO_MUTANTS",
+        "MUTATION_UNSUPPORTED",
+        "MUTATION_DISCOVERY_FAILED",
+        "MUTANT_LIMIT_EXCEEDED",
+    }
+)
+
+#: (P21) the payload each of those codes requires, or must NOT carry.
+#: `NO_MUTANTS` is the SUPPORTED empty analysis, so it records its
+#: zero/zero result; `MUTANT_LIMIT_EXCEEDED` records the pre-submission
+#: sentinel; the two capability/boundary terminals carry nothing at all.
+_EMPTY_BUCKETS = {"killed": [], "survived": [], "crashed": [], "budget_exceeded": []}
+_MUTATION_PAYLOAD_FOR: dict[str | None, dict | None] = {
+    "NO_MUTANTS": {"candidate_count": 0, "total": 0, **_EMPTY_BUCKETS},
+    "MUTANT_LIMIT_EXCEEDED": {"candidate_count": 3, "total": 0, **_EMPTY_BUCKETS},
+}
+
+
 def a_claim_with(status: str, code: str | None) -> dict:
     """The same, one level down: one R0 claim carrying exactly *code*.
 
@@ -104,14 +125,25 @@ def a_claim_with(status: str, code: str | None) -> dict:
     document["exit_code"] = 0
     document.pop("reason_code", None)
 
+    # P21: four reason codes are now bound BY THE SCHEMA to the R2 claim and
+    # to the presence/shape of a mutation payload (A-163/A-183), because
+    # "which rigor level can even produce this cause" is a local, expressible
+    # fact the schema was previously silent about. The claim this helper
+    # builds therefore has to be honest about rigor and payload -- otherwise
+    # every row below would be asserting that the schema accepts a claim no
+    # producer can emit.
+    rigor = "R2" if code in _R2_ONLY_CODES else "R0"
     claim = {
-        "rigor": "R0",
+        "rigor": rigor,
         "source": "computed",
         "status": status,
         "verified_by_assay": True,
     }
     if code is not None:
         claim["reason_code"] = code
+    payload = _MUTATION_PAYLOAD_FOR.get(code)
+    if payload is not None:
+        claim["mutation"] = payload
     document["claims"] = [claim]
     return document
 
@@ -160,7 +192,12 @@ def test_each_declared_pair_validates(
 def test_every_declared_code_is_exercised_by_the_accept_half():
     """Guard the guard: an unexercised code proves nothing about itself."""
     assert {code for _, code in VALID_PAIRS} == {code.value for code in ReasonCode}
-    assert len(VALID_PAIRS) == len(ReasonCode) == 19
+    # 19 in v3; P21 adds seven named, reachable-or-reserved terminals
+    # (OUTPUT_WRITE_FAILED, MUTATION_DISCOVERY_FAILED, HEAD_CHANGED,
+    # MISSING_EXTERNAL_TOOL, MUTANT_LIMIT_EXCEEDED, SNAPSHOT_LIMIT_EXCEEDED,
+    # MUTATION_UNSUPPORTED). The literal is kept rather than derived: it is
+    # the thing that makes an accidental vocabulary addition a red test.
+    assert len(VALID_PAIRS) == len(ReasonCode) == 26
 
 
 # --- a code valid for a DIFFERENT outcome is rejected -------------------------
@@ -181,7 +218,7 @@ def test_a_code_belonging_to_another_outcome_is_rejected(
 
 def test_the_cross_matrix_is_not_empty():
     assert len(CROSS_PAIRS) == len(NON_PASS) * len(ReasonCode) - len(VALID_PAIRS)
-    assert len(CROSS_PAIRS) == 76
+    assert len(CROSS_PAIRS) == 5 * 26 - 26
 
 
 @pytest.mark.parametrize("outcome", [o.value for o in NON_PASS])

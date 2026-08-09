@@ -75,13 +75,14 @@ def test_a_real_pytest_run_produces_a_genuine_killed_and_a_genuine_survived_muta
         targets=targets,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=("compare-swap",),
     )
 
     assert baseline.outcome is Outcome.PASS, baseline
     assert mutation is not None
     assert mutation.total == 2
-    assert mutation.killed == 1
+    assert len(mutation.killed) == 1
     assert len(mutation.survived) == 1
     assert mutation.crashed == ()
     assert mutation.budget_exceeded == ()
@@ -140,6 +141,7 @@ def test_a_real_broken_baseline_stops_before_any_real_mutant_run(tmp_path: Path)
         targets=targets,
         adapter=PythonAdapter(),
         jobs=2,
+        max_mutants=50,
         operators=("compare-swap",),
     )
 

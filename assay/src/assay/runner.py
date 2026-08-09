@@ -84,6 +84,7 @@ from .config import Lane
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
+from .output import VerdictOutput
 from .verdict import (
     Claim,
     Coverage,
@@ -535,6 +536,7 @@ def evaluate_r1(
             changed_executable=result.changed_executable,
             pct=result.pct,
             considered=result.considered,
+            exclusion_capability=result.exclusion_capability,
             missing_lines=result.missing_lines,
             files_missing_coverage=result.files_missing_coverage,
             unclassified_lines=result.unclassified_lines,
@@ -1079,7 +1081,23 @@ def run_lane(
     # still naming the commit that was never measured. Both halves now share
     # A-175's single existing DIRTY_TREE terminal and its exact R0/higher
     # precedence -- no new reason code, no schema change.
-    if git.dirty_paths(repo) or git.head_rev(repo) != pre_run_head:
+    #
+    # P21 work item 10 / A-178 replaces P20's single collapsed terminal. The
+    # observation order is now exactly one `dirty_paths` call, and `head_rev`
+    # ONLY on the clean branch -- both because a second Git observation of the
+    # same fact can disagree with the first, and because precedence must be
+    # decided by the rule rather than by whichever call an `or` evaluated
+    # first. Dirt keeps precedence: a command that both committed and left
+    # unrelated dirt has an unusable tree, which is the stronger statement.
+    # A clean tree whose HEAD moved is NOT dirty, and calling it DIRTY_TREE
+    # was a false diagnosis for exactly the case P20 reproduced (a command
+    # that commits away its own uncovered line).
+    post_run_reason: ReasonCode | None = None
+    if git.dirty_paths(repo):
+        post_run_reason = ReasonCode.DIRTY_TREE
+    elif git.head_rev(repo) != pre_run_head:
+        post_run_reason = ReasonCode.HEAD_CHANGED
+    if post_run_reason is not None:
         if reservation is not None:
             reservation.close()
         ended = iso_utc(clock())
@@ -1091,7 +1109,7 @@ def run_lane(
                     source="computed",
                     status=Outcome.NO_MEASUREMENT,
                     verified_by_assay=True,
-                    reason_code=ReasonCode.DIRTY_TREE,
+                    reason_code=post_run_reason,
                 ),
             )
         else:
@@ -1103,7 +1121,7 @@ def run_lane(
                     source="computed",
                     status=Outcome.NO_MEASUREMENT,
                     verified_by_assay=True,
-                    reason_code=ReasonCode.DIRTY_TREE,
+                    reason_code=post_run_reason,
                 )
                 for level in rigor_levels
             )
@@ -1234,37 +1252,62 @@ def run_lane(
                     )
                     ended = iso_utc(clock())
                 else:
-                    with tempfile.TemporaryDirectory(prefix="assay-r2-") as scratch:
-                        mutation_result = mutation.run_mutation(
-                            lane,
-                            baseline=result,
-                            project_root=project_root,
-                            repo_top=repo_top,
-                            scratch_root=Path(scratch),
-                            targets=targets,
-                            adapter=adapter,
-                            jobs=judge.mutation.jobs,
-                            operators=judge.mutation.operators,
-                            process_runner=process_runner,
-                            clock=clock,
+                    try:
+                        with tempfile.TemporaryDirectory(prefix="assay-r2-") as scratch:
+                            mutation_result = mutation.run_mutation(
+                                lane,
+                                baseline=result,
+                                project_root=project_root,
+                                repo_top=repo_top,
+                                scratch_root=Path(scratch),
+                                targets=targets,
+                                adapter=adapter,
+                                jobs=judge.mutation.jobs,
+                                max_mutants=judge.mutation.max_mutants,
+                                operators=judge.mutation.operators,
+                                process_runner=process_runner,
+                                clock=clock,
+                            )
+                    except AssayError as exc:
+                        # P21/A-171: a FAILED discovery boundary (invalid
+                        # Python source here; a helper protocol from P29) is a
+                        # complete, payload-free R2 claim, never an uncaught
+                        # crash out of `run_lane` after the command already
+                        # ran -- A-139's own rule, applied to the one new
+                        # terminal this package makes reachable.
+                        claims += (
+                            Claim(
+                                rigor="R2",
+                                source="computed",
+                                status=exc.outcome,
+                                verified_by_assay=True,
+                                reason_code=exc.reason_code,
+                            ),
                         )
-                    # `mutation_result` is NEVER `None` here: this branch is
-                    # only reached when `result.outcome is Outcome.PASS`, and
-                    # `run_mutation` returns `None` for exactly ONE reason --
-                    # `baseline.outcome is not Outcome.PASS` -- which cannot be
-                    # true for `baseline=result` in this branch. So
-                    # `r2_claim.mutation` (literally `mutation_result`,
-                    # unconditionally) is unconditionally present too, and
-                    # `judgment_r2` is built the same "iff a payload rendered"
-                    # way `judgment_r1` is, without a branch that could never
-                    # take the other arm (AUTHORING.md §3b.D).
-                    r2_claim = mutation.build_mutation_claim(result, mutation_result)
-                    claims += (r2_claim,)
-                    ended = iso_utc(clock())
-                    judgment_r2 = JudgmentR2(
-                        jobs=judge.mutation.jobs,
-                        operators=judge.mutation.operators,
-                    )
+                        ended = iso_utc(clock())
+                    else:
+                        # `mutation_result` is NEVER `None` here: this branch
+                        # is only reached when `result.outcome is
+                        # Outcome.PASS`, and `run_mutation` returns `None` for
+                        # exactly ONE reason -- a non-PASS baseline -- which
+                        # cannot be true for `baseline=result` here. It IS
+                        # possibly the `"UNSUPPORTED"` marker (A-183), which
+                        # `build_mutation_claim` renders payload-free.
+                        r2_claim = mutation.build_mutation_claim(
+                            result, mutation_result
+                        )
+                        claims += (r2_claim,)
+                        ended = iso_utc(clock())
+                        # Recorded for BOTH shapes: a payload-bearing claim
+                        # and the unsupported-capability terminal. The policy
+                        # was resolved and applied either way, and the cap is
+                        # what a consumer needs to interpret the result --
+                        # `Verdict` enforces exactly this correspondence.
+                        judgment_r2 = JudgmentR2(
+                            jobs=judge.mutation.jobs,
+                            max_mutants=judge.mutation.max_mutants,
+                            operators=judge.mutation.operators,
+                        )
 
     if r3_declared:
         judge = lane.judge
@@ -1321,31 +1364,20 @@ def run_lane(
     )
 
 
-def write_verdict(
-    verdict: Verdict,
-    target: str,
-    *,
-    stdout: TextIO,
-    replace: Callable[[str, str], None] = os.replace,
-) -> None:
-    """Emit *verdict* to *target* (A-028): a path, written atomically, or
-    ``"-"`` for *stdout*.
+def write_verdict(verdict: Verdict, destination: VerdictOutput) -> None:
+    """Emit *verdict* through an ALREADY-RESERVED destination (P21/A-181).
 
-    The atomic write is: serialise to a sibling temp file in the SAME
-    directory, then ``replace`` it onto the real path in one step. *replace*
-    is injectable so a test can prove the failure mode without corrupting a
-    real filesystem: when it raises, the temp file is removed and the
-    exception propagates -- the target path, if it already held a prior
-    artifact, is untouched, because the failing step never wrote to it.
+    This function no longer interprets a path, chooses a temp name, or
+    decides what an ``OSError`` means. All of that moved to
+    :mod:`assay.output`, which owns the descriptor-held parent, the observed
+    destination identity, and the single ``RESERVED -> EMITTED`` transition
+    -- because those decisions have to be made BEFORE the lane's command
+    runs, and this function is called after it.
+
+    What remains here is the one thing this module owns: serialising the
+    verdict. The reservation was taken by :mod:`assay.cli` before any HEAD,
+    adapter, or consumer work, so by the time this is reached the only
+    remaining question is whether the destination is still what was
+    reserved -- and :meth:`assay.output.VerdictOutput.emit` answers it.
     """
-    if target == "-":
-        stdout.write(verdict.to_json())
-        return
-    path = Path(target)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(verdict.to_json(), encoding="utf-8")
-    try:
-        replace(str(tmp_path), str(path))
-    except OSError:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    destination.emit(verdict.to_json())

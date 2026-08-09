@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "dddddddddddddddddddddddddddddddddddddddd",
@@ -60,6 +60,7 @@
         "changed_executable": 2,
         "pct": 0.0,
         "considered": 1,
+        "exclusion_capability": "reported",
         "missing_lines": {
           "pkg/mod.py": [
             2,

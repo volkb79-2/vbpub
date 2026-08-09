@@ -10,7 +10,7 @@ import dataclasses
 
 import pytest
 
-from assay.mutation import MutantJob, Mutant, MutationTarget
+from assay.mutation import MutantJob, MutationSite, MutationTarget
 
 
 def _target(**overrides) -> MutationTarget:
@@ -66,19 +66,31 @@ def test_rejects_a_non_positive_or_boolean_line_number(bad_line):
 # --- MutantJob: a dataclass pairing, no independent validation needed -------
 
 
-def test_a_mutant_job_pairs_a_path_with_a_mutant():
-    mutant = Mutant(
-        lineno=1, operator="compare-swap", description="Lt->LtE", mutated_text="x = 1\n"
+def _site() -> MutationSite:
+    return MutationSite(
+        start_byte=4,
+        end_byte=5,
+        replacement=b"<=",
+        lineno=1,
+        operator="compare-swap",
+        description="Lt->LtE",
     )
-    job = MutantJob(path="pkg/mod.py", mutant=mutant)
+
+
+def test_a_mutant_job_pairs_a_path_with_a_site_and_its_shared_source():
+    """P21/A-180: a job holds a REFERENCE to the target's text, never a
+    per-site copy -- that is what makes at most `jobs` full replacement
+    files exist at once instead of one per candidate."""
+    text = "x = 1\n"
+    site = _site()
+    job = MutantJob(path="pkg/mod.py", original_text=text, site=site)
+
     assert job.path == "pkg/mod.py"
-    assert job.mutant is mutant
+    assert job.site is site
+    assert job.original_text is text
 
 
 def test_a_mutant_job_is_frozen():
-    mutant = Mutant(
-        lineno=1, operator="compare-swap", description="Lt->LtE", mutated_text="x = 1\n"
-    )
-    job = MutantJob(path="pkg/mod.py", mutant=mutant)
+    job = MutantJob(path="pkg/mod.py", original_text="x = 1\n", site=_site())
     with pytest.raises(dataclasses.FrozenInstanceError):
         job.path = "other.py"  # type: ignore[misc]

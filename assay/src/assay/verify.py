@@ -30,7 +30,7 @@ Two things this module refuses to be, on purpose:
 
 Three stages:
 
-1. Checks the packaged schema v3 (`load_schema()` is not called here — schema
+1. Checks the packaged schema v4 (`load_schema()` is not called here — schema
    *conformance* is the RECONSTRUCTION below; loading the raw schema document
    would only be useful to a real JSON-Schema evaluator, which this module
    deliberately is not) cannot skip: reconstructing ``claims``/``evidence``
@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, TextIO
 
@@ -325,15 +326,25 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         None,
     )
     r2_judged = r2_claim is not None and "mutation" in r2_claim
+    # P21/A-183: the unsupported-capability terminal ALSO resolved and applied
+    # the policy, so it records one. Worded from the raw document rather than
+    # reusing the model's own phrasing, for the reason this function's
+    # docstring already gives.
+    r2_attempted = r2_judged or (
+        r2_claim is not None
+        and r2_claim.get("reason_code") == "MUTATION_UNSUPPORTED"
+    )
     judgment_r2 = judgment.get("r2") if isinstance(judgment, dict) else None
     judgment_r2_present = isinstance(judgment, dict) and "r2" in judgment
-    if judgment_r2_present and not r2_judged:
+    if judgment_r2_present and not r2_attempted:
         failures.append(
-            "judgment.r2 is declared without a corresponding R2 mutation claim"
+            "judgment.r2 is declared without a corresponding R2 mutation claim "
+            "or unsupported-capability terminal"
         )
-    if r2_judged and not judgment_r2_present:
+    if r2_attempted and not judgment_r2_present:
         failures.append(
-            "an R2 mutation claim is declared without a corresponding judgment.r2"
+            "an R2 mutation claim or unsupported-capability terminal is "
+            "declared without a corresponding judgment.r2"
         )
     if r2_judged and judgment_r2_present and isinstance(judgment_r2, dict):
         mutation = r2_claim.get("mutation")
@@ -381,6 +392,174 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
                     f"{observed_mechanism!r} does not match "
                     f"judgment.r3.mechanism {declared_mechanism!r}"
                 )
+            # P21/A-152/A-O18: the half schema v3 could not witness at all,
+            # which is why this migration exists. Both sides are normalized
+            # by their own grammar, so this equality is over one spelling.
+            observed_target = canary.get("target")
+            declared_target = judgment_r3.get("target")
+            if observed_target != declared_target:
+                failures.append(
+                    f"the R3 canary payload ran against {observed_target!r} "
+                    f"while judgment.r3.target declares {declared_target!r}; "
+                    f"the recorded canary answers for a different file than "
+                    f"the policy asked about"
+                )
+
+
+def _check_interval_is_ordered(document: dict, failures: list[str]) -> None:
+    """(P21/A-182, work item 7) ``ended >= started`` on the RAW document.
+
+    Parsed as offset-aware INSTANTS, never compared as strings: the
+    canonical combined artifact runs ``12:00+01:00`` -> ``11:01+00:00``,
+    which is a valid one-minute window whose lexical order is backwards, so
+    a string comparison would reject a correct artifact. Draft 2020-12 has
+    no ``$data`` and therefore cannot express this at all -- the schema is
+    deliberately not credited with it, and this check plus the model's own
+    are the only two places it exists.
+    """
+    started_raw = document.get("started")
+    ended_raw = document.get("ended")
+    if not isinstance(started_raw, str) or not isinstance(ended_raw, str):
+        return
+    moments: dict[str, datetime] = {}
+    for name, value in (("started", started_raw), ("ended", ended_raw)):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            failures.append(f"{name} {value!r} is not a parseable timestamp")
+            continue
+        if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+            failures.append(f"{name} {value!r} has no UTC offset to place it on a timeline")
+            continue
+        moments[name] = parsed
+    if len(moments) == 2 and moments["ended"] < moments["started"]:
+        failures.append(
+            f"the recorded interval runs backwards: ended {ended_raw!r} is an "
+            f"earlier instant than started {started_raw!r} once both offsets "
+            f"are applied"
+        )
+
+
+def _mutation_of(claim: Any) -> Any:
+    return claim.get("mutation") if isinstance(claim, dict) else None
+
+
+def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
+    """(P21/A-163/A-183) the R2 terminal-versus-payload rules, re-derived on
+    the RAW document and worded differently from the model's own messages.
+
+    Same reasoning P16 recorded for the ``judgment.r1`` correspondence: a
+    mutation test proved that identical wording makes the raw check's own
+    failure indistinguishable from reconstruction catching the same defect,
+    which would leave "is this raw branch even reached" untestable by
+    message content alone.
+
+    Four rules, matching :meth:`assay.verdict.Claim.
+    _check_mutation_terminal_correspondence` and
+    :meth:`assay.verdict.Verdict._check_mutation_cardinality` in substance
+    and in nothing else.
+    """
+    claims = document.get("claims")
+    if not isinstance(claims, list):
+        return
+    claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
+        None,
+    )
+    if claim is None:
+        return
+    reason = claim.get("reason_code")
+    mutation = _mutation_of(claim)
+
+    if reason in ("MUTATION_UNSUPPORTED", "MUTATION_DISCOVERY_FAILED") and mutation is not None:
+        failures.append(
+            f"the R2 claim reports {reason} yet still attaches a mutation "
+            f"payload; that terminal means no candidate set was ever produced"
+        )
+    if reason == "NO_MUTANTS" and mutation is None:
+        failures.append(
+            "the R2 claim reports NO_MUTANTS with no mutation payload; a "
+            "supported analysis that observed nothing still records its "
+            "zero/zero result, and omitting it is indistinguishable from an "
+            "adapter that cannot analyse the language at all"
+        )
+    if not isinstance(mutation, dict):
+        return
+
+    total = mutation.get("total")
+    candidate_count = mutation.get("candidate_count")
+    buckets = ("killed", "survived", "crashed", "budget_exceeded")
+    sizes = [
+        len(mutation[name]) for name in buckets if isinstance(mutation.get(name), list)
+    ]
+    if len(sizes) == len(buckets) and isinstance(total, int) and not isinstance(total, bool):
+        if total != sum(sizes):
+            failures.append(
+                f"the R2 mutation payload says {total} attempted mutant(s) but "
+                f"lists {sum(sizes)} identity/identities across its four buckets"
+            )
+    _check_identities_are_unique(mutation, buckets, failures)
+
+    policy = document.get("judgment")
+    policy_r2 = policy.get("r2") if isinstance(policy, dict) else None
+    max_mutants = policy_r2.get("max_mutants") if isinstance(policy_r2, dict) else None
+    if not isinstance(candidate_count, int) or isinstance(candidate_count, bool):
+        return
+    if not isinstance(max_mutants, int) or isinstance(max_mutants, bool):
+        return
+    if total == 0 and candidate_count > 0:
+        if candidate_count != max_mutants + 1:
+            failures.append(
+                f"the R2 payload refuses before submission after seeing "
+                f"{candidate_count} candidate(s), which is not one more than "
+                f"the declared ceiling of {max_mutants}; a refusal that does "
+                f"not sit exactly at the cap proves nothing about the cap"
+            )
+        if reason != "MUTANT_LIMIT_EXCEEDED":
+            failures.append(
+                f"the R2 payload has the pre-submission refusal shape but the "
+                f"claim reports {reason!r} rather than MUTANT_LIMIT_EXCEEDED"
+            )
+    elif isinstance(total, int) and not isinstance(total, bool) and total > max_mutants:
+        failures.append(
+            f"the R2 payload attempted {total} mutant(s) against a declared "
+            f"ceiling of {max_mutants}; a completed run above the cap means "
+            f"the cap bounded nothing"
+        )
+
+
+def _check_identities_are_unique(
+    mutation: dict, buckets: tuple[str, ...], failures: list[str]
+) -> None:
+    """One mutant, one bucket (A-182) -- read off the raw identity tuples."""
+    seen: dict[tuple, str] = {}
+    for name in buckets:
+        entries = mutation.get(name)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            identity = (
+                entry.get("path"),
+                entry.get("start_byte"),
+                entry.get("end_byte"),
+                entry.get("replacement_sha256"),
+                entry.get("operator"),
+            )
+            start, end = entry.get("start_byte"), entry.get("end_byte")
+            if isinstance(start, int) and isinstance(end, int) and end <= start:
+                failures.append(
+                    f"mutant identity {identity} spans no bytes: end_byte "
+                    f"{end} does not follow start_byte {start}"
+                )
+            previous = seen.get(identity)
+            if previous is not None:
+                failures.append(
+                    f"mutant identity {identity} is recorded in both "
+                    f"{previous!r} and {name!r}; a mutant has one outcome"
+                )
+            seen[identity] = name
 
 
 def _reject_unknown_keys(raw: dict, built: dict, what: str) -> None:
@@ -395,6 +574,7 @@ def _reconstruct_coverage(raw: dict) -> Coverage:
         changed_executable=raw["changed_executable"],
         pct=raw["pct"],
         considered=raw["considered"],
+        exclusion_capability=raw["exclusion_capability"],
         missing_lines={key: frozenset(value) for key, value in raw["missing_lines"].items()},
         files_missing_coverage=tuple(raw["files_missing_coverage"]),
         unclassified_lines={
@@ -425,7 +605,11 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
 
 
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
-    r2 = JudgmentR2(jobs=raw["jobs"], operators=tuple(raw["operators"]))
+    r2 = JudgmentR2(
+        jobs=raw["jobs"],
+        max_mutants=raw["max_mutants"],
+        operators=tuple(raw["operators"]),
+    )
     _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
     return r2
 
@@ -452,6 +636,7 @@ def _reconstruct_canary(raw: dict) -> CanaryResult:
     observed_rc = raw.get("observed_reason_code")
     canary = CanaryResult(
         mechanism=raw["mechanism"],
+        target=raw["target"],
         description=raw["description"],
         control_outcome=Outcome(raw["control_outcome"]),
         transformed_outcome=Outcome(transformed) if transformed is not None else None,
@@ -466,6 +651,9 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
     item = MutantOutcome(
         path=raw["path"],
         lineno=raw["lineno"],
+        start_byte=raw["start_byte"],
+        end_byte=raw["end_byte"],
+        replacement_sha256=raw["replacement_sha256"],
         operator=raw["operator"],
         description=raw["description"],
     )
@@ -475,8 +663,9 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
 
 def _reconstruct_mutation(raw: dict) -> Mutation:
     mutation = Mutation(
+        candidate_count=raw["candidate_count"],
         total=raw["total"],
-        killed=raw["killed"],
+        killed=tuple(_reconstruct_mutant_outcome(item) for item in raw["killed"]),
         survived=tuple(_reconstruct_mutant_outcome(item) for item in raw["survived"]),
         crashed=tuple(_reconstruct_mutant_outcome(item) for item in raw["crashed"]),
         budget_exceeded=tuple(
@@ -669,6 +858,21 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
     claim = next((item for item in verdict.claims if item.rigor == "R2"), None)
     if claim is None:
         return
+    if claim.reason_code is ReasonCode.MUTATION_UNSUPPORTED:
+        # P21/A-183: capability absence is not derivable from a baseline --
+        # the producer reaches it from the adapter's own marker, so the
+        # honest re-derivation feeds that marker through the SAME shared
+        # mapping. This is not tautological: it binds the recorded STATUS to
+        # the recorded reason, so a forged `FAIL`/`MUTATION_UNSUPPORTED` (or
+        # any other pairing) is caught here rather than only by the model.
+        expected = judge_mutation(_BASELINE_NEVER_READ, "UNSUPPORTED")
+        if (claim.status, claim.reason_code) != expected:
+            failures.append(
+                f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
+                f"disagrees with the re-derived judgment for an adapter with "
+                f"no mutation implementation {_fmt(*expected)}"
+            )
+        return
     if claim.mutation is None:
         r0_claim = next((item for item in verdict.claims if item.rigor == "R0"), None)
         if r0_claim is None:
@@ -722,22 +926,11 @@ def verify_document(document: Any) -> list[str]:
 
     failures: list[str] = []
 
-    required = (
-        "schema_version",
-        "assay_version",
-        "lane",
-        "commit",
-        "outcome",
-        "exit_code",
-        "started",
-        "ended",
-        "claims",
-        "evidence",
-    )
-    missing_required = [key for key in required if key not in document]
-    if missing_required:
-        failures.append(f"missing required field(s): {missing_required}")
-
+    # P21/A-182: the version is checked FIRST, immediately after the
+    # top-level object check and BEFORE required-field or foreign-shape
+    # inspection. A sparse v2 artifact otherwise reports its missing v4
+    # fields alongside the version, burying the one actionable sentence
+    # under a pile of consequences of it.
     version = document.get("schema_version")
     if "schema_version" in document and version != VERDICT_SCHEMA_VERSION:
         # P16 work item 7: a foreign version is reported AS a version
@@ -755,13 +948,31 @@ def verify_document(document: Any) -> list[str]:
             f"VERDICT_SCHEMA_VERSION is {VERDICT_SCHEMA_VERSION}"
         ]
 
+    required = (
+        "schema_version",
+        "assay_version",
+        "lane",
+        "commit",
+        "outcome",
+        "exit_code",
+        "started",
+        "ended",
+        "claims",
+        "evidence",
+    )
+    missing_required = [key for key in required if key not in document]
+    if missing_required:
+        failures.append(f"missing required field(s): {missing_required}")
+
     outcome = _check_outcome_and_reason_code(document, failures)
     _check_exit_code(document, outcome, failures)
+    _check_interval_is_ordered(document, failures)
     _check_lane_resolved_group(document, failures)
     _check_claims_cover_declared_rigor(document, failures)
     _check_evidence_covers_declared_evidence(document, failures)
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
+    _check_mutation_payload_shapes(document, failures)
 
     try:
         verdict = _reconstruct_verdict(document)

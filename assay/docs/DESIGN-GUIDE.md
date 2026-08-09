@@ -366,18 +366,33 @@ question — what the policy record adds is which policy produced it, and a
 recorded fact tied to nothing is exactly the "take it on trust" gap this
 schema exists to close. **One field remains untied and deliberately so:
 `judgment.r3.target` (A-152).** `CanaryResult` carries no target, so no
-rule inside v3 can witness it being wrong; closing it needs a `canary.target`
-field and therefore a v4 migration, which A-138 makes a consumer's decision
-rather than a producer's.
+rule inside v3 could witness it being wrong; closing it needed a
+`canary.target` field and therefore a v4 migration, which A-138 makes a
+consumer's decision rather than a producer's. **P21 landed it: `canary.target`
+exists, and `Verdict` plus the raw verifier now require it to EQUAL
+`judgment.r3.target`.** A-152/A-O18 are closed.
 
-**The post-P19 adversarial review makes v4 the next pre-adoption contract
-(A-157).** P21 adds that canary target; all killed-mutant identities (a count
-cannot prove which sites/operators were killed); a required recorded
-`max_mutants`; an explicit `reported`/`unavailable` exclusion capability; and
-model/schema/raw-verifier parity for the closed operator vocabulary and time
-interval. It also names output-write and mutation-limit terminals. These are
-batched into one migration before an external consumer exists; v3 remains the
-current implementation until P21 lands and is never upgraded in place.
+**v4 IS the current contract (A-157/A-170), landed by P21 as the one
+pre-adoption migration.** It adds that canary target; all killed-mutant
+identities (a count cannot prove which sites or operators were killed); a
+required recorded `max_mutants` plus the `candidate_count` that makes a
+pre-submission refusal provable; an explicit `reported`/`unavailable`
+exclusion capability; and model/raw-verifier parity for the closed operator
+vocabulary and the time interval. It also names the output-write,
+mutation-limit, mutation-discovery, capability-absence, head-moved,
+snapshot-limit and missing-tool terminals. Exactly one schema is active in a
+released build: producers emit v4 only, and v1-v3 are rejected with a single
+version diagnostic rather than upgraded in place.
+
+**Layer ownership is explicit, and no layer is credited with a relation it
+cannot express (A-182).** The shipped JSON Schema owns every LOCALLY
+expressible rule -- enums, ranges, requiredness, string grammar, and
+reason/payload conditionals inside one object. It does NOT own cross-object
+arithmetic (`candidate_count` against `judgment.r2.max_mutants`), cross-object
+equality (`canary.target` against `judgment.r3.target`), or temporal ordering
+(`ended >= started`): Draft 2020-12 has no `$data`, so saying "all three
+layers reject" would be another hollow contract. Those live in the Python
+model AND, independently worded, in `assay.verify`'s raw-document checks.
 
 **The cap owns its discovery seam (A-180).** P21 cannot truthfully record
 `max_mutants` while an adapter first materializes an unbounded tuple containing
@@ -415,7 +430,7 @@ claims knowledge must say what it knows it from.
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version: 3` (an integer, bumped on any breaking shape change) and
+carries `schema_version: 4` (an integer, bumped on any breaking shape change) and
 `assay_version`.
 
 **A version bump is a migration for the consumer, never an upgrade by the
@@ -424,9 +439,11 @@ single diagnostic naming the version and nothing else — it does not read the
 rest of a foreign artifact, because every later complaint would be a
 consequence of the version rather than an independent defect (a v2 artifact
 otherwise reports a bare `KeyError` on a v3 field its producer had never
-heard of). It never coerces, defaults, or in-place upgrades a stale
-artifact: an artifact records what one run of one assay judged, so the only
-honest way to obtain a v3 verdict is to produce one.
+heard of, and a v3 artifact would report four missing v4 fields). The version
+check therefore runs BEFORE required-field or foreign-shape inspection. It
+never coerces, defaults, or in-place upgrades a stale artifact: an artifact
+records what one run of one assay judged, so the only honest way to obtain a
+v4 verdict is to produce one.
 
 nyxloom's existing `GateResult` is a strict subset: six REQUIRED fields
 (`gate_id`, `phase`, `commit`, `exit_code`, `started`, `ended`) plus an

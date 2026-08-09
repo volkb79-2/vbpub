@@ -748,14 +748,15 @@ def test_verify_rejects_an_r2_mutation_claim_without_judgment_r2():
     del document["judgment"]
     failures = verify_document(document)
     assert any(
-        "an R2 mutation claim is declared without a corresponding judgment.r2" in f
-        for f in failures
-    )
+        "declared without a corresponding judgment.r2" in f for f in failures
+    ), failures
 
 
 def test_verify_rejects_judgment_r2_present_without_an_r2_mutation_claim():
     document = _load("r0_pass.json")
-    document["judgment"] = {"r2": {"jobs": 1, "operators": ["compare-swap"]}}
+    document["judgment"] = {
+        "r2": {"jobs": 1, "max_mutants": 50, "operators": ["compare-swap"]}
+    }
     failures = verify_document(document)
     assert any(
         "judgment.r2 is declared without a corresponding R2 mutation claim" in f
@@ -838,11 +839,22 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
     # only ever saw the ONE shape assay's own producer emits would not be
     # an independent check of the closed shape.
     document = _load("r2_pass.json")
-    document["judgment"] = {"r2": {"jobs": 4, "operators": ["compare-swap", "boolop-swap"]}}
+    document["judgment"] = {
+        "r2": {
+            "jobs": 4,
+            "max_mutants": 50,
+            "operators": ["compare-swap", "boolop-swap"],
+        }
+    }
     assert verify_document(document) == []
 
     document2 = _load("r3_pass.json")
-    document2["judgment"] = {"r3": {"mechanism": "uncovered-line", "target": "pkg/mod.py"}}
+    # P21/A-152: `target` must EQUAL the canary payload's own, so a
+    # synthesised policy can vary `mechanism`'s neighbours but no longer the
+    # target -- that equality is precisely what this migration added.
+    document2["judgment"] = {
+        "r3": {"mechanism": "uncovered-line", "target": "pkg/greet.py"}
+    }
     assert verify_document(document2) == []
 
 
@@ -861,7 +873,11 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
     r2_claim = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
 
     assert document["judgment"] == {
-        "r2": {"jobs": 2, "operators": ["compare-swap", "bool-const-flip"]}
+        "r2": {
+            "jobs": 2,
+            "max_mutants": 50,
+            "operators": ["compare-swap", "bool-const-flip"],
+        }
     }
     assert r2_claim["mutation"]["total"] == 2
 
@@ -987,7 +1003,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-        "schema_version": 3,
+        "schema_version": 4,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1098,10 +1114,28 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 3: a verdict "
+        "schema_version 2 is not this verifier's version 4: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 3"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 4"
     ]
+
+
+def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
+    """P21/A-170/A-182: v3 is now a foreign version too, and the check runs
+    BEFORE required-field or foreign-shape inspection. A v3 artifact is
+    missing several v4 fields (`exclusion_capability`, `candidate_count`,
+    `canary.target`, `judgment.r2.max_mutants`); reporting those alongside
+    the version would bury the one actionable sentence under a pile of
+    consequences of it."""
+    document = _load("r1_pass.json")
+    document["schema_version"] = 3
+    for claim in document["claims"]:
+        claim.get("coverage", {}).pop("exclusion_capability", None)
+
+    failures = verify_document(document)
+
+    assert len(failures) == 1
+    assert "schema_version 3 is not this verifier's version 4" in failures[0]
 
 
 # ============================================================================
@@ -1118,6 +1152,12 @@ def _a_survivor() -> dict:
     return {
         "path": "pkg/a.py",
         "lineno": 3,
+        # P21/A-180: the wire identity is the syntax site. sha256(b">=").
+        "start_byte": 400,
+        "end_byte": 401,
+        "replacement_sha256": (
+            "92a00d7d91da9f0f06c3f218c49c9b98323469962b291365b85d3c16b6b7f95f"
+        ),
         "operator": "compare-swap",
         "description": "a < b -> a >= b",
     }
@@ -1154,6 +1194,10 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
     claim = next(c for c in document["claims"] if c["rigor"] == "R2")
     claim["mutation"][bucket] = [_a_survivor()]
     claim["mutation"]["total"] += 1
+    # P21: `candidate_count` moves with `total`, or the payload is neither of
+    # the two legal arithmetic shapes and the schema rejects it before this
+    # test's own re-derivation claim is ever reached.
+    claim["mutation"]["candidate_count"] += 1
     claim["status"] = status
     claim["reason_code"] = reason_code
     # The R0 sibling passes in both fixtures, so the rollup is the R2 status

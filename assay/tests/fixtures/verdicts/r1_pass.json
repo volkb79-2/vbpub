@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "6666666666666666666666666666666666666666",
@@ -58,6 +58,7 @@
         "changed_executable": 4,
         "pct": 100.0,
         "considered": 1,
+        "exclusion_capability": "reported",
         "missing_lines": {},
         "files_missing_coverage": [],
         "unclassified_lines": {},
