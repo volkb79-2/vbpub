@@ -41,7 +41,12 @@ run_inner() {
   echo 'ASSAY_GATE_PHASE=wheel-installed'
 
   export PATH="$scratch/venv/bin:$PATH"
-  assay run tester-unified --verdict-json "$scratch/verdict.json"
+  if ! assay run tester-unified --verdict-json "$scratch/verdict.json"; then
+    echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics' >&2
+    python -m pytest tests -q --ignore=tests/test_self_hosting.py \
+      --override-ini=pythonpath= || true
+    return 1
+  fi
   echo 'ASSAY_GATE_PHASE=self-hosted-lane-passed'
 
   PYTHONPATH="$venv_site" ASSAY_SELF_HOSTING_VERDICT="$scratch/verdict.json" \

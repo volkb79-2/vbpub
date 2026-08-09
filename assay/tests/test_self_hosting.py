@@ -71,6 +71,7 @@ from assay.verdict import VERDICT_SCHEMA_VERSION
 
 ENV_VAR = "ASSAY_SELF_HOSTING_VERDICT"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
+GATE_DRIVER = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
 
 #: The exact argv `assay.toml`'s `[lanes.tester-unified]` declares (A-130),
 #: transcribed BY HAND rather than re-read from that file -- if either
@@ -454,9 +455,18 @@ def test_the_cgroup_helper_wiring_is_present_in_the_restructured_gate_script():
     # test_nyxloom_gate_uses_verified_value_without_a_literal_slice already
     # covers this from the pre-existing suite; restated here so it is also
     # visible from inside the module that did the restructuring.
-    argv = " ".join(
-        tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"]["tester-unified"]["argv"]
-    )
-    assert "tools/cgroup-parent.sh" in argv
-    assert '--cgroup-parent="$cgroup_parent"' in argv
-    assert "dev-background.slice" not in argv
+    argv = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"][
+        "tester-unified"
+    ]["argv"]
+    driver = GATE_DRIVER.read_text(encoding="utf-8")
+    assert argv[1] == "{worktree}/assay/tools/tester-unified-gate.sh"
+    assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
+    assert '--cgroup-parent="$cgroup_parent"' in driver
+    assert "dev-background.slice" not in driver
+    for marker in (
+        "ASSAY_GATE_PHASE=wheel-installed",
+        "ASSAY_GATE_PHASE=self-hosted-lane-passed",
+        "ASSAY_GATE_PHASE=independent-self-hosting-passed",
+        "ASSAY_REGISTERED_GATE_COMPLETE=1",
+    ):
+        assert marker in driver

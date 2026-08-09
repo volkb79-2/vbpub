@@ -10,6 +10,7 @@ from pathlib import Path
 from conftest import PROJECT_ROOT
 
 SCRIPT = PROJECT_ROOT / "tools" / "cgroup-parent.sh"
+GATE_DRIVER = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
 NYXLOOM_TOML = PROJECT_ROOT / "nyxloom-trove" / "nyxloom.toml"
 
 
@@ -79,9 +80,17 @@ def test_non_slice_name_is_refused_before_docker(tmp_path: Path):
 
 def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     document = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))
-    argv = " ".join(document["gates"]["tester-unified"]["argv"])
+    argv = document["gates"]["tester-unified"]["argv"]
+    driver = GATE_DRIVER.read_text(encoding="utf-8")
 
-    assert "tools/cgroup-parent.sh" in argv
-    assert '--cgroup-parent="$cgroup_parent"' in argv
-    assert "nyxloom-gates.slice" not in argv
-    assert "dev-background.slice" not in argv
+    assert argv == [
+        "bash",
+        "{worktree}/assay/tools/tester-unified-gate.sh",
+        "{worktree}",
+    ]
+    assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
+    assert '--cgroup-parent="$cgroup_parent"' in driver
+    assert "nyxloom-gates.slice" not in driver
+    assert "dev-background.slice" not in driver
+    assert "ASSAY_GATE_HOST_REPO_ROOT" in driver
+    assert '--mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub"' in driver
