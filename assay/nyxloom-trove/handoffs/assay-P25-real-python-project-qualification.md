@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P24-versioned-wheel-contract]
 session: fresh
 scope:
-  touch: ["gate/python/**", "nyxloom-trove/nyxloom.toml", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
+  touch: ["gate/python/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
   forbid: ["src/assay", "pyproject.toml"]
 oracles:
   - id: O1
@@ -71,7 +71,12 @@ on branch `feat/assay-P25-real-python-project-qualification`.
 
 ## Environment setup
 
-Use Assay's registered `tester-unified` gate only. Extend its existing command inside the same verified, uid-complete container after the installed-wheel/self-hosting step. Do not invoke Topos's outer Docker command and do not start an unplaced container. All Python wheels/dependencies come from the already-pinned offline image/closure.
+Use Assay's registered `tester-unified` gate only. Extend
+`tools/tester-unified-gate.sh`'s inner mode inside the same verified,
+uid-complete container after the installed-wheel/self-hosting step; preserve
+all existing phase/final receipt markers. Do not invoke Topos's outer Docker
+command and do not start an unplaced container. All Python wheels/dependencies
+come from the already-pinned offline image/closure.
 
 ## Implementation packet (normative)
 

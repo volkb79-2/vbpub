@@ -19,6 +19,12 @@ and copies any generally useful cases into the ordinary `tests/` suite. It must
 not edit this directory. The controller runs this locked suite separately,
 followed by the registered `tester-unified` gate.
 
+The locked acceptance suite also distinguishes the two ignore-policy sources:
+a clean committed per-directory `.gitignore` remains repository policy, while
+`.git/info/exclude` and configured excludes cannot hide otherwise-visible
+untracked dirt. A separate fixed-stderr negative proves an oversized diagnostic
+stream terminates the child rather than being drained without a work bound.
+
 `probe_git_boundary.py` is a tracer bullet, not production code. It executes the
 proposed exact Git environment/argv against two real repositories and hostile
 ambient selectors, local `core.worktree`, a replace ref, external diff, and a

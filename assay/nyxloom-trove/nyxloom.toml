@@ -118,7 +118,13 @@ series       = "nyxloom-trove/handoffs/README.md"
 # recursive.
 #
 # Code otherwise still reaches the container through the BOUND worktree, never
-# a baked copy, exactly as the other four Python projects do.
+# a baked copy, exactly as the other four Python projects do. The registered
+# argv delegates to `tools/tester-unified-gate.sh`: it derives the host bind
+# source from this devcontainer's Docker mount (or reads the explicit
+# ASSAY_GATE_HOST_REPO_ROOT override), uses fail-loud `--mount` rather than
+# Docker's directory-inventing `-v`, and emits three inner phase markers plus a
+# final host-side marker only after Docker itself returns zero. The controller
+# preserves that log/digest; the disposable `--rm` container is not evidence.
 #
 # `tools/cgroup-parent.sh` reads CGROUP_PARENT_DEV_BACKGROUND and verifies the
 # named unit against the host cgroup tree before Docker sees it. An unset
@@ -128,7 +134,7 @@ series       = "nyxloom-trove/handoffs/README.md"
 # this script (O4).
 
 [gates.tester-unified]
-argv = ["bash", "-c", "set -euo pipefail && cgroup_parent=\"$({worktree}/assay/tools/cgroup-parent.sh)\" && docker run --rm --cgroup-parent=\"$cgroup_parent\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/assay && scratch=$(mktemp -d) && base_prefix=$(/opt/tester-venv/bin/python -c \"import sys; print(sys.base_prefix)\") && $base_prefix/bin/python3 -m venv $scratch/venv && tester_site=$(/opt/tester-venv/bin/python -c \"import sysconfig; print(sysconfig.get_paths()[\\\"purelib\\\"])\") && venv_site=$($scratch/venv/bin/python -c \"import sysconfig; print(sysconfig.get_paths()[\\\"purelib\\\"])\") && echo \"$tester_site\" > \"$venv_site/tester_unified_site.pth\" && setuptools_home=$(/opt/tester-venv/bin/python -c \"import setuptools, pathlib; print(pathlib.Path(setuptools.__file__).parent.parent)\" 2>/dev/null) || setuptools_home=$($base_prefix/bin/python3 -c \"import setuptools, pathlib; print(pathlib.Path(setuptools.__file__).parent.parent)\") && PYTHONPATH=$setuptools_home $scratch/venv/bin/python -m pip wheel --no-build-isolation --no-deps --wheel-dir $scratch/wheels . && wheel=$(ls $scratch/wheels/assay-*.whl) && $scratch/venv/bin/python -m pip install --no-index $wheel && export PATH=$scratch/venv/bin:$PATH && assay run tester-unified --verdict-json $scratch/verdict.json && PYTHONPATH=$venv_site ASSAY_SELF_HOSTING_VERDICT=$scratch/verdict.json /opt/tester-venv/bin/python -m pytest tests/test_self_hosting.py -q --override-ini=pythonpath='"]
+argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 1800

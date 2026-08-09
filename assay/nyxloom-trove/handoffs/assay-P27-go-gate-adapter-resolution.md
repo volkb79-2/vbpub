@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P26-attested-evidence-cli-hardening]
 session: resume:assay-go
 scope:
-  touch: ["gate/go/**", "nyxloom-trove/nyxloom.toml", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/config.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
+  touch: ["gate/go/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/config.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
   forbid: ["src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters/python.py"]
 oracles:
   - id: O1

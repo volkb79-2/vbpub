@@ -297,6 +297,30 @@ items:
   component: control
   context_estimate: medium
   folds_into: F010
+- id: B36
+  title: 'controller-owned gate receipts: execute the authoritative gate only
+    after the reviewed commit is final; persist exact argv/commit/start/end,
+    outer exit, raw combined log and digest; support required phase markers and
+    a host-side final marker so a disposable --rm container is fully evidenced.
+    Exit zero without the final marker is typed incomplete evidence, not PASS.
+    Remove duplicate implementer/reviewer ship-signal runs; their focused checks
+    remain diagnostics. Design: docs/frozen-orientation-fork-workflow.md.'
+  type: feature
+  component: gate
+  context_estimate: medium
+  folds_into: F010
+- id: B37
+  title: 'bounded adversarial review harness: predeclare controlled mutation,
+    narrow owning test, expected red, process-group failsafe, output cap and
+    restoration oracle; kill the whole group on expiry and record
+    PROBE_INCONCLUSIVE_HUNG rather than PASS/failure. Add per-package probe and
+    total-wall budgets plus trace telemetry so a dark review cannot wait
+    indefinitely on a mutated suite. Design:
+    docs/frozen-orientation-fork-workflow.md.'
+  type: feature
+  component: review
+  context_estimate: medium
+  folds_into: F005
 ---
 
 # nyxloom — backlog

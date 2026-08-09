@@ -29,6 +29,10 @@ oracles:
     observable: "Verdict intervals satisfy ended >= started and an unavailable verdict destination is detected before the lane command, exits ERROR with OUTPUT_WRITE_FAILED, and causes no consumer-side effects"
     negative: "A reversed interval validates, or an unwritable output path runs the command before failing with a traceback/generic exit"
     gate: tester-unified
+  - id: O5
+    observable: "A command that moves HEAD but leaves a clean tree produces HEAD_CHANGED, while any remaining staged, unstaged, or nonignored untracked dirt retains DIRTY_TREE precedence"
+    negative: "A clean commit is mislabeled DIRTY_TREE or higher-rigor evaluation runs against the moved HEAD"
+    gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "one of the named facts cannot be represented without a second schema bump"
@@ -151,8 +155,11 @@ Add exactly these closed reasons in `errors.py`, Schema, model, and verifier:
 `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, and
 `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` (reserved here for P22's reachable
 snapshot refusal), plus `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL` (reserved here
-for P27's first real external-tool preflight). No generic fallback reason is
-permitted. P29/P30 use `MUTATION_DISCOVERY_FAILED` for invalid source, invalid
+for P27's first real external-tool preflight), and
+`NO_MEASUREMENT/HEAD_CHANGED`. `HEAD_CHANGED` is used only when the post-command
+index/worktree is clean and resolved HEAD differs from the pre-run full OID;
+any dirt takes `DIRTY_TREE` precedence. No generic fallback reason is permitted.
+P29/P30 use `MUTATION_DISCOVERY_FAILED` for invalid source, invalid
 helper request/response, helper nonzero, or an otherwise failed syntax-aware
 candidate boundary; valid discovery with zero sites remains
 `INCONCLUSIVE/NO_MUTANTS`.
@@ -174,6 +181,8 @@ candidate boundary; valid discovery with zero sites remains
 | mutation discovery/helper protocol fails | `ERROR/MUTATION_DISCOVERY_FAILED` | complete R2 claim; zero mutant submissions |
 | candidates = max+1 | `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` | sentinel mutation payload; zero submissions |
 | snapshot exceeds P22 bound | `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` | complete artifact; zero command for that snapshot |
+| command leaves dirt, whether or not HEAD moved | `NO_MEASUREMENT/DIRTY_TREE` | actual R0 preserved for higher rigor; no higher-rigor work |
+| command moves HEAD and leaves clean tree | `NO_MEASUREMENT/HEAD_CHANGED` | actual R0 preserved for higher rigor; no higher-rigor work |
 | old schema | verify failure | exactly one version diagnostic |
 
 ### Traceability and degrees of freedom
@@ -204,6 +213,11 @@ order, and independent raw re-derivation may not.
 7. Add construction/schema/raw-verifier checks that `ended >= started`. Use injected/fixed clocks in tests and exact timestamp values; no elapsed-time assertion.
 8. Close A-O14 with `ERROR/OUTPUT_WRITE_FAILED`. Validate and reserve the declared output destination before the command executes; a bad/missing/unwritable parent must not allow the lane to run. Do not redirect to an invented fallback path. If a destination becomes unusable after reservation, emit the stable error to stderr, clean internal temporary state where safe, and never claim the requested file was written.
 9. Hand-author valid and adversarial v4 artifacts for all levels. Break killed identity, operator vocabulary, max-mutant enforcement, canary target, exclusion capability, interval ordering, version handling, and output preflight independently; record exact A-067 failure counts.
+10. Replace P20's schema-v3-compatible collapse of a clean post-command HEAD
+    move into `DIRTY_TREE` with `NO_MEASUREMENT/HEAD_CHANGED`. Resolve HEAD once
+    before execution and once immediately after; check dirt first. Prove the
+    clean-commit, dirty-only, and commit-plus-dirt cases independently and prove
+    no R1/R2/R3 work begins after either refusal.
 
 ## Test constraints copied from AUTHORING.md §3b
 

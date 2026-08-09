@@ -10,7 +10,7 @@ Write one JSON object per provider request to
 `.worktrees/_control/assay-P20-P32/invocations.jsonl`. Minimum fields:
 
 ```json
-{"schema_version":1,"run":"P20","leg":"implement","condition":"warm-fork","provider":"anthropic","model":"sonnet","effort":"xhigh","base":"I-sonnet-0","session_id":"...","orientation_oid":"<40hex>","head_oid":"<40hex>","request_started_at":"<RFC3339>","elapsed_ms":0,"time_to_first_edit_ms":null,"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation_ttl":{},"output_tokens":0,"keepalive":false,"gate":"not-run","review_defects":null,"rework_turns":0,"stale_context_stop":false}
+{"schema_version":1,"run":"P20","leg":"implement","condition":"warm-fork","provider":"anthropic","model":"sonnet","effort":"xhigh","base":"I-sonnet-0","session_id":"...","orientation_oid":"<40hex>","head_oid":"<40hex>","request_started_at":"<RFC3339>","elapsed_ms":0,"time_to_first_edit_ms":null,"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation_ttl":{},"output_tokens":0,"keepalive":false,"gate":"not-run","gate_outer_exit":null,"gate_log_sha256":null,"gate_phase_markers":[],"probe_count":0,"probe_timeouts":0,"probe_restoration":"not-applicable","review_defects":null,"rework_turns":0,"stale_context_stop":false}
 ```
 
 Do not rewrite this log. `bases.yaml` is the atomically replaced current-state
@@ -47,6 +47,12 @@ The pilot needs at least one observation in each condition:
 3. cold fork after verified TTL expiry; and
 4. historical broad orientation, using the existing P00-P19 rows rather than
    buying another only for symmetry if comparison is too confounded.
+
+The controller's gate row, not an agent narrative, carries the authoritative
+receipt: exact argv/commit, outer exit, raw combined-log path and digest, and
+all phase/final markers. Controlled reviewer probes record mutation id, focused
+command, expected red, failsafe, actual result, and restoration. A killed
+failsafe is `PROBE_INCONCLUSIVE_HUNG`, not a successful mutation kill.
 
 Record keepalives as their own requests and charge their tokens/quota to the
 next useful fork. Record a hit only when provider telemetry has nonzero cache

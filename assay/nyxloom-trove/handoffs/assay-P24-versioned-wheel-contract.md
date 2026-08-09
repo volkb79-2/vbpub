@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P23-exact-reexecution-integration]
 session: resume:assay-v11-distribution
 scope:
-  touch: ["pyproject.toml", "src/assay/__init__.py", "assay.toml", "gate/distribution/**", "nyxloom-trove/nyxloom.toml", "tests/test_standalone.py", "tests/test_self_hosting.py", "tests/test_distribution.py", "README.md"]
+  touch: ["pyproject.toml", "src/assay/__init__.py", "assay.toml", "gate/distribution/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "tests/test_standalone.py", "tests/test_self_hosting.py", "tests/test_distribution.py", "README.md"]
   forbid: ["src/assay/cli.py", "src/assay/runner.py", "src/assay/verdict.py", "src/assay/schemas"]
 oracles:
   - id: O1
@@ -60,7 +60,10 @@ on branch `feat/assay-P24-versioned-wheel-contract`.
 1. `docs/DESIGN-GUIDE.md` §§5, 6, 9, and 10; decisions A-005, A-029, A-040–A-041, A-057, A-067, A-069–A-070, A-123–A-127, A-130–A-131.
 2. `pyproject.toml` build-system and `tool.setuptools_scm` sections, `src/assay/__init__.py`, and `tests/test_dependency_purity.py`.
 3. `tests/test_standalone.py` and `tests/test_self_hosting.py`; identify every assertion/comment that deliberately accepted `0.0.0` under P13/P14 and replace it with a real backend exercise, not a different literal shortcut.
-4. `nyxloom-trove/nyxloom.toml`'s full `tester-unified` command and comments. Preserve its installed-wheel isolation, independent second witness, verified cgroup helper, uid identity, and offline behavior exactly.
+4. `nyxloom-trove/nyxloom.toml`'s `tester-unified` declaration and
+   `tools/tester-unified-gate.sh` in full. Preserve installed-wheel isolation,
+   the independent second witness, derived fail-loud host bind, phase/final
+   receipt markers, verified cgroup helper, uid identity, and offline behavior.
 5. `/workspaces/vbpub/ciu/pyproject.toml`, `/workspaces/vbpub/cmru/pyproject.toml`, `/workspaces/vbpub/topos/pyproject.toml`, and their release-wheel conventions for estate-local prior art.
 6. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` finding 10 and distribution recommendation.
 

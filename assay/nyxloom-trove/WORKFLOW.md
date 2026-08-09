@@ -27,6 +27,10 @@ Sol promotes lasting facts and returns only a bounded one-hop remainder.
 This preserves the original useful principle—implementation contexts are
 disposable—without making a controller's remembered prose the design database.
 Git, handoffs, decisions, proof assets, and gate evidence are authoritative.
+Implementer/reviewer children run bounded focused diagnostics; the Luna
+controller alone runs and receipts the authoritative registered gate at the
+final reviewed commit. Controlled-break harness timeouts are inconclusive
+findings, never verdicts.
 
 ---
 

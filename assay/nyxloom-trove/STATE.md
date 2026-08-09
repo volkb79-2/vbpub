@@ -562,8 +562,12 @@ review it.
   `--system-site-packages`, building via a fresh blank scratch venv's own
   pip) are documented there and are easy to silently break while editing
   the surrounding bash.
-- The gate runs in Docker and its bind mount uses the **host** path
-  (`/home/vb/volkb79-2/vbpub`), not the container path.
+- The gate runs through `tools/tester-unified-gate.sh`. Its bind source is a
+  **host** path, never the container path, but it is no longer hardcoded: the
+  driver derives it from this devcontainer's `/workspaces/vbpub` Docker mount
+  or reads explicit `ASSAY_GATE_HOST_REPO_ROOT`, then uses Docker `--mount` so
+  absence fails rather than creating an empty directory. The final outer
+  receipt marker is mandatory evidence in addition to exit zero.
 - `/opt/tester-venv` exists only inside the container; there is no
   `setuptools_scm` in it, so built wheels version as `0.0.0` (A-069) —
   this is now load-bearing, not incidental: `assay verify`/the self-hosting

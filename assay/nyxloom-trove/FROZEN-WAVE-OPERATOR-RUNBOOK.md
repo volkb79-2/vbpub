@@ -51,11 +51,14 @@ affected dispatch.
    HEAD and carver report. Do not create execution children for `NOT_READY`.
 4. Luna creates any missing package-neutral bases, then forks exactly one fresh
    implementer child in `.worktrees/Pxx` from the assigned base.
-5. Luna verifies implementation Git/gate evidence and forks one fresh Opus
+5. Luna verifies implementation Git/locked diagnostic evidence and forks one fresh Opus
    reviewer child. The reviewer performs blind findings before seeing the
    implementer narrative, then reconciles/fixes in the same child.
-6. Luna runs the registered gate independently and serially merges `--no-ff`
-   only on acceptance. It records exact OIDs and request usage.
+6. Luna alone runs the registered gate at the final reviewed commit and serially
+   merges `--no-ff` only on acceptance. It preserves the outer exit, raw log and
+   digest, and requires every Assay phase marker plus the final host-side
+   completion marker. Implementer/reviewer runs are diagnostics, not duplicate
+   ship signals.
 7. The reviewer adjudicates successor candidates. Luna expires/discards
    mechanical dispositions and writes the next `carver/Pyy.md`; Sol promotes or
    compresses the rest during the next JIT carve.
@@ -120,6 +123,12 @@ If the CLI cannot actually fork from an immutable top-level session, or Luna
 cannot obtain/cache-account its real provider session id, stop the pilot and
 record `NOT_READY_WORKFLOW`; do not silently substitute a fresh full-orientation
 implementation and call it the warm-fork condition.
+
+If a reviewer runs controlled source mutations, Luna requires the bounded probe
+record from the controller prompt. A hung probe is killed as a process group and
+recorded `PROBE_INCONCLUSIVE_HUNG`; it does not block the normal locked and
+registered gates once the clean-tree restoration oracle passes, but it remains a
+review finding for the next JIT carve.
 
 ## Cache and experiment discipline
 
