@@ -154,7 +154,7 @@ the detailed rows live in each handoff.
 | package | disposition | why |
 |---|---|---|
 | P20 | **MERGED** | landed as `618b6f15` after locked acceptance and controller-owned gate |
-| P21 | **READY — IMPLEMENT NEXT** | exact JIT review at `618b6f15`; full migration/site/output goldens, skeleton, and 24 controlled reds committed |
+| P21 | **READY — IMPLEMENT NEXT** | exact JIT review at `618b6f15`; first-dispatch Go contradiction corrected by A-183; full migration/site/output goldens, skeleton, and 28 controlled reds committed |
 | P22 | **NOT READY — PROVISIONAL** | depends on P21/P20 landed boundaries; security fixtures absent |
 | P23 | **NOT READY — PROVISIONAL** | depends on P22 signatures; process-ledger/snapshot integration assets absent; P21 already owns site parity |
 | P24 | **NOT READY — PROVISIONAL** | positive offline build/release inputs absent |

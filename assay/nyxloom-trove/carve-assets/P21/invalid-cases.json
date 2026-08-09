@@ -106,5 +106,31 @@
       "/judgment/r3/target": "src/../p.py",
       "/claims/3/canary/target": "src/../p.py"
     }
+  },
+  {
+    "id": "mutation-unsupported-spelled-no-mutants",
+    "shape": "mutation-unsupported",
+    "base": "r2-unsupported-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {
+      "/reason_code": "NO_MUTANTS",
+      "/claims/1/reason_code": "NO_MUTANTS"
+    }
+  },
+  {
+    "id": "mutation-unsupported-carries-fake-empty-payload",
+    "shape": "mutation-unsupported",
+    "base": "r2-unsupported-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {
+      "/claims/1/mutation": {
+        "candidate_count": 0,
+        "total": 0,
+        "killed": [],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": []
+      }
+    }
   }
 ]

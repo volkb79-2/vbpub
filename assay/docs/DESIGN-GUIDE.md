@@ -206,9 +206,11 @@ diagnosis; it never changes the outcome.
 | 4 | `BUDGET_EXCEEDED` | lane ran, exceeded its declared budget | `gate_runner`'s 124 sentinel |
 | 5 | `INCONCLUSIVE` | ran; instrument rendered no judgement | `gate_canary.inconclusive`, `INCONCLUSIVE_NO_MUTANTS` |
 
-None is invented — each already existed as a concept somewhere in the estate.
-**2–5 are all not-a-pass and all block a merge**; the split drives diagnosis and
-retry policy (a CI system may retry 4; it must never retry 3).
+The six outcome categories were not invented—each already existed as a concept
+somewhere in the estate. V4 adds reason names only where a now-reachable fact
+would otherwise collapse into a different category. **2–5 are all not-a-pass
+and all block a merge**; the split drives diagnosis and retry policy (a CI
+system may retry 4; it must never retry 3).
 
 A required `reason_code` names the cause without proliferating exit codes. The
 enumeration is **closed** — an implementer that needs a code not listed here
@@ -218,14 +220,15 @@ must stop and ask, never invent one:
 |---|---|
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
 | `FAIL` | `UNCOVERED_LINES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED` |
-| `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `MISSING_ATTESTATION`, `STALE_ATTESTATION` |
-| `BUDGET_EXCEEDED` | `LANE_TIMEOUT` |
-| `INCONCLUSIVE` | `NO_MUTANTS`, `CANARY_INCONCLUSIVE` |
+| `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL` |
+| `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
+| `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE` |
 
-A single-member enum (`BUDGET_EXCEEDED`) is deliberate rather than a smell: the
-field is required on every non-PASS outcome, so a consumer switching on
-`reason_code` never has to special-case an outcome that lacks one.
+The outcome set stays fixed while the reason vocabulary grows only for named,
+reachable terminals. The field is required on every non-PASS outcome, so a
+consumer switching on `reason_code` never has to special-case an outcome that
+lacks one.
 
 ### Nailing NO MEASUREMENT — the guard is what is *absent*
 
@@ -587,13 +590,17 @@ name, source_globs, excluded_dir_names, requires_span_attribution, external_tool
 is_test_path(rel)                      has_executable_code(rel, text)
 normalize_coverage_key(key)            statement_spans(text) -> spans | None
 inject_import_break(text)              inject_uncovered_line(text)
-generate_mutants(text, lines) -> mutants | UNSUPPORTED
+generate_mutation_sites(text, lines, operators, limit) -> sites | UNSUPPORTED
 ```
 
-`UNSUPPORTED` must render as **`INCONCLUSIVE_NO_MUTANTS`, never green** —
-TESTING-METHODOLOGY already names that outcome for zero selected mutants, so an
-adapter that cannot mutate inherits an established third outcome rather than
-inventing one.
+`UNSUPPORTED` is adapter-wide capability absence, never invalid source or an
+unrecognised individual construct. It renders as payload-free
+**`INCONCLUSIVE/MUTATION_UNSUPPORTED`**, never green; a supported analysis that
+finds zero sites instead renders `INCONCLUSIVE/NO_MUTANTS` with an exact
+zero/zero mutation payload (A-183). This absent-versus-empty distinction keeps
+“we cannot analyse this language” from masquerading as measured evidence that
+nothing was mutable. Python raises the typed discovery failure for invalid
+syntax; Go returns `UNSUPPORTED` until P29 lands its helper.
 
 Adapters **may** shell out (Go's `has_executable_code` genuinely needs to parse
 Go), but must declare it in `external_tools` so a lane's prerequisites are

@@ -13,9 +13,10 @@
 
 ## Result first
 
-P21 is READY, but the provisional handoff was not. Applying the exact hostile
-review against landed P20 found four defects capable of producing a false sense
-of completion and five unspecified construction seams:
+P21 is READY, but both the provisional handoff and its first frozen revision
+were not. Applying the exact hostile review against landed P20, then honoring
+the first Opus implementer's mechanical BLOCKED exit, found ten concrete
+contract defects or unspecified construction seams:
 
 1. P21 promised `max_mutants+1` discovery while the only adapter API returned
    the complete tuple of full mutated source files. The cap could stop commands
@@ -48,16 +49,24 @@ of completion and five unspecified construction seams:
    argv/env/description strings remain outside this package's declared bounds.
    The claim is now precise: complete checkable evidence plus bounded mutation
    cardinality.
+10. The first freeze deleted `Mutant` while forbidding `adapters/go.py`, which
+    imported it unconditionally, and the tuple-only replacement omitted Go's
+    truthful pre-P29 capability-absent terminal. The implementer stopped before
+    product edits rather than inventing whether `UNSUPPORTED` meant empty,
+    error, or missing tool.
 
 The freeze resolves these rather than routing them into Opus as “private
 choices.” P21 now owns the already-designed bounded common/Python
 `MutationSite` seam (A-180); P23 consumes it. The output boundary has one
 descriptor-owned state machine with no persistent pre-run temp (A-181). V4 has
 explicit validation-layer ownership and exact arithmetic/path/time rules
-(A-182). The packet carries three complete handwritten v4 artifacts, fourteen
-deterministic invalid complete documents, a UTF-8 site manifest, a compiling
-output skeleton, and 24 locked acceptance cases. All 24 are controlled red on
-the exact anchor with no collection/setup failure.
+(A-182). The routed correction adds A-183: adapter-wide `UNSUPPORTED` survives
+the bounded seam and becomes payload-free
+`INCONCLUSIVE/MUTATION_UNSUPPORTED`, while supported zero discovery keeps a
+zero/zero `NO_MUTANTS` payload. The packet carries four complete handwritten
+v4 artifacts, sixteen deterministic invalid complete documents, a UTF-8 site
+manifest, a compiling output skeleton, and 28 locked acceptance cases. All 28
+are controlled red on the exact anchor with no collection/setup failure.
 
 ## Exact review prompt used
 
@@ -85,6 +94,12 @@ named by its context section:
 
 The required six-part result follows.
 
+The same quoted prompt was rerun verbatim after reading blocked commit
+`71b1b9616c4fb5e2867d2e4f713f1e99d2bfb96e`, its LOG, the actual Go/base/
+Python imports and signatures, and the A-183 amendment. The six sections below
+include that delta; they are not the stale pre-dispatch result merely relabeled
+READY.
+
 ## 1. Blocking ambiguities
 
 All blocking ambiguities found by the review are resolved in the handoff:
@@ -95,6 +110,7 @@ All blocking ambiguities found by the review are resolved in the handoff:
 | site identity derived from full-text diff | insertion/shared-suffix identities do not name the syntax token | site supplies exact UTF-8 byte span and replacement; wire hash is derived from replacement bytes only |
 | site order/uniqueness omitted | completion order or descriptions become identity | exact key `(path,start,end,replacement_sha256,operator)`; line/description diagnostic; uniqueness across all buckets |
 | invalid syntax versus zero sites | inability to parse can become honest “nothing mutable” | invalid source raises `MutationDiscoveryError`; valid zero is `NO_MUTANTS` |
+| unsupported adapter versus valid zero | Go capability absence can become a fake empty measurement or generic discovery error | common union retains adapter-wide `UNSUPPORTED`; v4 maps it to payload-free `MUTATION_UNSUPPORTED`; supported zero requires a zero/zero payload |
 | candidate count meaning | a total may require unbounded discovery, or a sentinel may lie about exact total | bounded observed count; max+1 means “at least max+1,” and discovery intentionally stops |
 | max+1 cross-field owner | sentinel can appear under PASS or with wrong max | local `Mutation` admits only normal/prospective-sentinel shapes; Verdict/Claim and raw verifier bind exact reason and `judgment.r2.max_mutants+1` |
 | output target namespace | relative file can land under project root or caller cwd depending on implementer | CLI-process cwd/root namespace fixed; never project-relative |
@@ -119,6 +135,7 @@ bound, refusal, or proof source remains for the implementer to invent.
 | O2 | generate every full mutated file, slice to max+1, then claim bounded discovery | UTF-8 site manifest plus fake max+1 adapter; executor is forbidden and no full-text candidate API remains |
 | O2 | find a minimal string diff to populate span/hash | manifest pins whole `<` and `True` token spans, defeating zero-width/shared-suffix collapse |
 | O2 | keep killed as a count while adding identities only to failures | complete combined artifact and `mutation-killed-is-count` require a killed identity array |
+| O2 | delete the old Go method/import without defining capability absence, or return empty | locked Go seam calls `run_mutation`, forbids executor creation, and requires payload-free `MUTATION_UNSUPPORTED`; the complete artifact and two invalid variants close model/Schema/raw parity |
 | O3 | infer unavailable whenever excluded detail is empty | two complete valid R1 artifacts distinguish reported-empty from unavailable-empty; unavailable-with-detail fails |
 | O3 | check only canary mechanism or change both targets to `src/../p.py` | target mismatch and agreeing-nonnormal target are separate complete documents |
 | O4 | compare timestamp strings | valid offset-crossing canonical object plus actually reversed instant |
@@ -135,6 +152,8 @@ The JIT freeze added:
 - exact ordered mutation vocabulary and its owner;
 - exact `MutationSite`, `MutationDiscoveryError`, adapter, collection, job, and
   `run_mutation(max_mutants=...)` signatures;
+- exact adapter-wide `UNSUPPORTED` propagation, Go's forced import/signature
+  migration, and payload-free `MUTATION_UNSUPPORTED` correspondence;
 - byte-boundary, replacement, line, operator, limit, order, uniqueness, and
   invalid-source rules;
 - bounded Python selection and cross-file stop pseudocode;
@@ -147,7 +166,7 @@ The JIT freeze added:
 - exact output namespace, state machine, identity checks, side-effect order,
   error translation, CLI precedence, and no-fallback behavior;
 - exact HEAD_CHANGED/dirty observation order;
-- three complete valid artifacts, fourteen complete invalid documents defined
+- four complete valid artifacts, sixteen complete invalid documents defined
   by base plus exact pointer replacements, and the layer each can express;
 - a compiling output skeleton, handwritten UTF-8 candidate manifest, locked
   acceptance command, traceability, and explicit degrees of freedom.
@@ -155,8 +174,10 @@ The JIT freeze added:
 ## 4. Scope and dependency defects
 
 - The provisional P21 forbade `adapters/python.py` while requiring a bound its
-  return contract made impossible. P21 now touches `base.py`/`python.py`; the Go
-  adapter remains forbidden and unregistered for R2.
+  return contract made impossible. The first freeze corrected that but still
+  forbade `go.py` while deleting its imported `Mutant`. P21 now touches
+  `base.py`/`python.py` plus only Go's forced import/signature/unsupported
+  migration; Go remains unregistered for R2.
 - P23 formerly duplicated ownership of the common site seam. Its frontmatter,
   packet, work, and forbids now consume P21's landed interface and prohibit all
   adapter edits.
@@ -180,9 +201,10 @@ solution and proof are transferred up front to avoid implementer inference.
 
 | requirement | owner | oracle | independent observable | controlled break |
 |---|---|---|---|---|
-| current-only v4 and closed vocabulary | vocabulary/model/schema/raw verifier | O1 | three valid docs; fourteen named invalid docs; one old-version diagnostic | agreeing policy+payload unknown operator; v3 complete artifact |
+| current-only v4 and closed vocabulary | vocabulary/model/schema/raw verifier | O1 | four valid docs; sixteen named invalid docs; one old-version diagnostic | agreeing policy+payload unknown operator; v3 complete artifact |
 | killed and all attempted identities | verdict/mutation/verify | O2 | combined artifact names killed site; identity arrays exact/sorted/unique | killed integer; reversed span; uppercase hash; duplicate/cross-bucket identity |
 | bounded discovery and cap | base/python/mutation/config | O2 | UTF-8 manifest at limit 4 and 3; max+1 sentinel; forbidden executor | full-text tuple, append-all then slice, missing/0/10001 max |
+| unsupported mutation capability | base/go/mutation/verdict/verify | O2 | unconditional Go marker; payload-free complete artifact; zero executor | fake supported-empty payload, generic discovery error, missing-tool substitution |
 | canary target witness | config/canary/verdict/verify | O3 | payload target exactly equals policy | change one target; change both to nonnormal spelling |
 | exclusion capability | coverage/evaluate/verdict/verify | O3 | reported-empty and unavailable-empty both valid and distinct | infer from empty detail; unavailable plus detail; mixed profile |
 | temporal interval | verdict/verify | O4 | valid lexically reversed offset pair | actual end instant before start |
@@ -198,6 +220,7 @@ solution and proof are transferred up front to avoid implementer inference.
 | UTF-8 prefix | byte offset | manifest offsets address actual encoded token bytes |
 | insertion/shared suffix | syntax token | identity remains whole site, not minimal text diff |
 | max_mutants | candidates | max-1/max normal; max+1 sentinel and zero submissions |
+| adapter capability | discovery result/payload | unsupported has its own payload-free reason; supported empty has a zero/zero payload |
 | earlier target file | later target file | collection passes remaining capacity and never calls later file after sentinel |
 | reported/unavailable | empty/populated exclusions | reported-empty and unavailable-empty distinct; unavailable-populated refused |
 | canary policy | payload target | exact normalized equality in model and raw verifier |
@@ -221,6 +244,9 @@ solution and proof are transferred up front to avoid implementer inference.
 7. command moves HEAD and then either leaves clean or creates unrelated dirt,
    with higher-rigor callbacks forbidden;
 8. offset-crossing valid timestamps beside an actually reversed instant.
+9. Go `UNSUPPORTED` + nonempty source/selected operator + jobs greater than one
+   + executor that fails if constructed, beside supported Python empty
+   discovery.
 
 ## 6. Disposition
 
@@ -228,7 +254,7 @@ solution and proof are transferred up front to avoid implementer inference.
 
 - all externally visible choices are fixed;
 - the output skeleton applies and compiles at the exact anchor;
-- all 24 locked acceptance cases are controlled red at the anchor for named
+- all 28 locked acceptance cases are controlled red at the anchor for named
   absent v4/site/output/HEAD behavior, with no collection/setup failure;
 - complete valid and invalid inputs are carver-authored and forbidden to the
   implementer;
@@ -270,17 +296,20 @@ In a disposable detached worktree at the exact anchor:
 ```text
 git apply .../carve-assets/P21/skeleton.patch       PASS
 python -m py_compile assay/src/assay/output.py      PASS
-locked pytest collection                            24 tests
-locked pytest result                                24 failed in 0.85s
+corrected locked pytest collection                  28 tests
+corrected locked pytest result                      28 failed in 0.50s
 ```
 
-Observed failure classes were the intended current defects: 18 v4 contract
-cases stopped at current `VERDICT_SCHEMA_VERSION == 3`; Python has no bounded
-site method/type; config accepts missing `max_mutants`; HEAD_CHANGED is absent;
-the old CLI executed before an invalid output failed with bare
-`FileNotFoundError`; and the skeleton's reservation TODO remained red. There
-was no import, fixture, collection, timeout, or ambient setup failure. The
-temporary worktree was then removed; no product file or Git worktree remained.
+The original freeze witnessed 24 red cases in 0.85s. After Opus's correct
+BLOCKED exit, the A-183 correction expanded the same controlled-red run to 28:
+21 v4 contract cases stop at current `VERDICT_SCHEMA_VERSION == 3`; the new Go
+case stops on the absent bounded-signature/unsupported propagation; Python has
+no bounded site method/type; config accepts missing `max_mutants`;
+HEAD_CHANGED is absent; the old CLI executed before an invalid output failed
+with bare `FileNotFoundError`; and the skeleton's reservation TODO remained
+red. There was no import, fixture, collection, timeout, or ambient setup
+failure. The temporary worktree was then removed; no product file or Git
+worktree remained.
 
 The v4 assertion intentionally gates each invalid-document test: at the anchor
 the migration itself is absent, while after the implementer bumps the version
@@ -291,21 +320,27 @@ that v4 rejects the particular malformed field.
 ### Locked asset hashes
 
 ```text
-f90b88a37a4f1ac69f0e4fcef7643f09e88cb9ff7c1a6dbef9ec1e7480268256  README.md
+20b1431e51ec2c26f2aba6119ade10e75ba2643e4ea8e50a2c121f9b4092784d  README.md
 8ef705b0485a4f3c4e06484c32262237293e00ae6999d99269e23056e7dd9de9  skeleton.patch
-996793659253cbec59939bc8567a4fa41121565603dac131db99915d68c78d9d  test_acceptance.py
+7615e0f60e04fe44cb0eb92d8a9c5901c48b790407264537e9c9463778eb29d4  test_acceptance.py
 24657889af5ba504b337ebd8aacff56b21a0070d12f1da896f25fb719035c6b8  python-site-manifest.json
-5798883ce02dafec74abd9cff587c869608f2720993920b7379b0d8569842506  invalid-cases.json
+d272518a8d7a0a069f274abd00bdb73bab360c45180b14b8b98099c4e817591d  invalid-cases.json
 e01b40c5412eff66a881dc27356d0ff55d302acdff3aa7d04ee579ed4778d054  expected/combined-pass-v4.json
 c671da8e4f0e50c1372d014903491040295f4fab8a4635a300e5fd41607d5957  expected/r1-unavailable-v4.json
 41439fe0e78a542cfbbe495e8a1d37c4fa011e324566615d3312f2f6f60b9622  expected/r2-limit-v4.json
+1b44e6a3d4a9d8a161f534257d0bafea8a62b9488752a7bc5d49b626463ce5f0  expected/r2-unsupported-v4.json
 ```
 
 ### Mechanical controller action
 
-Create exactly one fresh worktree and branch from the committed P21 JIT-freeze
-OID, apply the locked skeleton, dispatch one fresh **Opus xhigh implementer**
-with the frozen-orientation diff instructions and one-hop brief, run the locked
-suite, then dispatch one fresh **Opus xhigh reviewer**. Only the Luna controller
-runs/hashes the registered gate and merges after both locked and ordinary proof
-are green. No product decision or mechanical BLOCKED trigger remains.
+Keep the existing clean P21 worktree/branch and its blocked-log commit. Merge
+the committed A-183 correction from main into that branch without rewriting
+history, then resume the same **Opus xhigh implementer child** with only the
+contract/proof delta. It reapplies the locked skeleton, witnesses the corrected
+28-red baseline, implements, self-reviews, commits, and replaces the current
+LOG contents with its final evidence. Then fork the already-created
+`R-opus-1` base into one fresh **Opus xhigh reviewer**. Only the Luna controller
+runs/hashes the registered gate and merges after locked and ordinary proof are
+green. Do not rotate the new Opus bases: A-183 is a bounded correction within
+their current epoch and the exact frozen-orientation diff makes it visible. No
+product decision or mechanical BLOCKED trigger remains.
