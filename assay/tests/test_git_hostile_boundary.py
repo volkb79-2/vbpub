@@ -32,6 +32,7 @@ correct.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -177,6 +178,22 @@ def test_a_repository_local_core_excludes_file_cannot_hide_untracked_dirt(
     assert git_module.dirty_paths(git_repo.path) == ("leftover.bin",)
 
 
+def test_git_info_exclude_cannot_hide_untracked_dirt(
+    git_repo: GitRepo,
+):
+    """A clean committed .gitignore is policy; .git/info/exclude is not."""
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("keep.txt", "x\n")
+    git_repo.commit_all("base")
+    (git_repo.path / ".git" / "info" / "exclude").write_text(
+        "*\n", encoding="utf-8"
+    )
+    (git_repo.path / "cov.json").write_text("{}", encoding="utf-8")
+    (git_repo.path / "leftover.bin").write_text("junk", encoding="utf-8")
+
+    assert git_module.dirty_paths(git_repo.path) == ("leftover.bin",)
+
+
 def test_git_output_is_bounded_by_a_fixed_byte_ceiling(
     two_repos, monkeypatch: pytest.MonkeyPatch
 ):
@@ -202,3 +219,17 @@ def test_a_bounded_git_read_still_returns_output_that_fits(two_repos):
     assert "alpha-HEAD" in git_module.run(
         repo_a, "diff", "--unified=0", base_a, head_a
     )
+
+
+def test_git_stderr_overflow_kills_the_child_instead_of_only_capping_memory(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(git_module, "_MAX_GIT_STDERR_BYTES", 4)
+
+    with pytest.raises(AssayError) as caught:
+        git_module._run_bounded(
+            [sys.executable, "-c", "import os; os.write(2, b'x' * 5)"]
+        )
+
+    assert caught.value.reason_code is ReasonCode.GIT_FAILED
+    assert "standard error" in str(caught.value)

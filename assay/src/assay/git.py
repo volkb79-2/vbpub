@@ -184,8 +184,10 @@ def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
     what keeps a large stderr from deadlocking against a large stdout; once
     stdout passes :data:`MAX_GIT_OUTPUT_BYTES` the child is killed and the
     remaining bytes are discarded rather than retained, so the work stays
-    finite instead of merely un-retained. Overflow is reported to the caller
-    as a third element the caller turns into ``ERROR``/``GIT_FAILED``.
+    finite instead of merely un-retained. The same rule applies to stderr:
+    retaining only its prefix while continuing to drain an arbitrary producer
+    would cap memory but not work. Either overflow kills the child and becomes
+    ``ERROR``/``GIT_FAILED``.
     """
     with subprocess.Popen(
         argv,
@@ -198,9 +200,9 @@ def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
         out = bytearray()
         err = bytearray()
-        overflowed = False
+        overflowed: tuple[str, int] | None = None
         try:
-            while selector.get_map() and not overflowed:
+            while selector.get_map() and overflowed is None:
                 for key, _ in selector.select():
                     chunk = key.fileobj.read1(65536)
                     if not chunk:
@@ -212,20 +214,26 @@ def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
                             # Stop reading, stop retaining, and stop the
                             # child: draining an oversized stream would keep
                             # the WORK unbounded even once the MEMORY is not.
-                            overflowed = True
+                            overflowed = ("standard output", MAX_GIT_OUTPUT_BYTES)
                             del out[:]
                             proc.kill()
                             break
                     else:
-                        err += chunk[: _MAX_GIT_STDERR_BYTES - len(err)]
+                        remaining = _MAX_GIT_STDERR_BYTES - len(err)
+                        err += chunk[:remaining]
+                        if len(chunk) > remaining:
+                            overflowed = ("standard error", _MAX_GIT_STDERR_BYTES)
+                            proc.kill()
+                            break
         finally:
             selector.close()
         returncode = proc.wait()
-    if overflowed:
+    if overflowed is not None:
+        stream, limit = overflowed
         raise _git_failed(
-            f"git {' '.join(argv[-3:])} produced more than "
-            f"{MAX_GIT_OUTPUT_BYTES} bytes of output; refusing to buffer an "
-            f"unbounded amount of repository data"
+            f"git {' '.join(argv[-3:])} produced more than {limit} bytes on "
+            f"{stream}; refusing to process an unbounded amount of repository "
+            f"data from the child"
         )
     return returncode, bytes(out), bytes(err)
 
@@ -503,21 +511,15 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
     filesystem path rather than by string, and is where the distinction
     actually needs to be correct.
 
-    **Known, deliberately un-worked-around residual (reviewer, P20).** What
-    counts as "untracked" is decided by git's ignore machinery, and one input
-    to it is out of reach of everything above: a repository's own
-    ``.git/info/exclude``. System/global excludes are neutralised by
-    :data:`_REPLACEMENT_ENV`, and a repository-LOCAL ``core.excludesFile`` by
-    :data:`_FIXED_CONFIG`'s ``core.excludesFile=`` — but ``.git/info/exclude``
-    is repository CONTENT, not configuration, and no command-line option
-    disables it (verified empirically: with ``.git/info/exclude`` set to
-    ``*``, an untracked file stays invisible to ``status`` even under the
-    full boundary above). Reporting ignored paths instead
-    (``--ignored=matching``) is NOT a drop-in repair: the declared coverage
-    artifact is REQUIRED to be git-ignored (P20 work item 6 / A-140), so a
-    correct version must decide which ignored paths are legitimately exempt
-    — a policy question this function cannot answer and must not invent
-    (AGENTS.md 4.2a). Routed to the carver rather than guessed.
+    **P20 routed-review correction (A-177).** Porcelain status still consults
+    ``.git/info/exclude``. Union it with ``ls-files --others`` configured with
+    ONLY ``--exclude-per-directory=.gitignore``. A clean committed
+    ``.gitignore`` is repository policy and may exempt the declared coverage
+    artifact; info/global/system/configured excludes are not. A dirty or
+    untracked ``.gitignore`` is itself returned by one of these queries. Do not
+    use ``--exclude-standard`` (it re-enables the hostile sources), and do not
+    report every ignored path then subtract one artifact (that discards the
+    repository's committed ignore policy).
     """
     raw = _run_bytes(repo, "status", "--porcelain=v1", "-z")
     # ``-z`` NUL-TERMINATES every record rather than separating them, so real
@@ -542,4 +544,19 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
             # field — it no longer exists in the tree, so it is consumed
             # here and discarded rather than reported.
             index += 1
+
+    untracked = _run_bytes(
+        repo,
+        "ls-files",
+        "--others",
+        "--exclude-per-directory=.gitignore",
+        "-z",
+        "--",
+    )
+    for path in untracked.split(b"\x00")[:-1]:
+        paths.add(
+            _decode_or_reject(
+                path, "an untracked path reported by git ls-files -z"
+            )
+        )
     return tuple(sorted(paths))
