@@ -31,6 +31,21 @@ measured files is a different fact from a well-formed artifact whose files
 each report zero executed lines, and only the first is vacuous
 (DESIGN-GUIDE §6's "Nailing NO MEASUREMENT" table, its third and previously
 unguarded row).
+
+**P20 (A-174): "artifact absent" is explicit and bounded.**
+:func:`read_coverage_artifact` no longer opens a path with ``Path.read_text``
+— it reads through :func:`assay.safeio.read_bounded_file` (a nonblocking,
+regular-file-only, no-follow, 16 MiB-bounded descriptor-relative read) and
+hands the resulting ``bytes | None`` to :func:`parse_coverage_artifact`, the
+new pure byte-level parsing seam. A genuinely MISSING artifact — the lane's
+command never produced one — is ``NO_MEASUREMENT``/``EMPTY_COVERAGE``, the
+same truthful "nothing to measure" as a well-formed profile reporting zero
+files (:func:`check_empty_coverage`); it is not an unreadable artifact and is
+never satisfied by a stale prior file, which :mod:`assay.runner`'s reservation
+discipline guarantees by construction. An object that exists but is unsafe
+(a symlink, FIFO, device, oversized file, or a race the reservation itself
+detects) is a genuine ``ERROR``/``UNREADABLE_ARTIFACT`` — a different fact
+from "there was nothing to read".
 """
 
 from __future__ import annotations
@@ -40,19 +55,26 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
 
+from . import safeio
 from .coverage_parsers import cobertura, coverage_py_json, go_cover, lcov
 from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 
 __all__ = [
-    "CoverageProfile",
     "FORMAT_REGISTRY",
+    "MAX_COVERAGE_ARTIFACT_BYTES",
+    "CoverageProfile",
     "FileCoverage",
     "FormatSpec",
     "check_empty_coverage",
     "load_coverage_profile",
+    "parse_coverage_artifact",
     "read_coverage_artifact",
 ]
+
+#: The fixed byte bound every coverage artifact read obeys (O4: a fixed
+#: bound, never an ambient or elapsed-time guess). DESIGN-GUIDE §6/A-174.
+MAX_COVERAGE_ARTIFACT_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -120,45 +142,63 @@ def load_coverage_profile(text: str, *, declared_format: str) -> CoverageProfile
     return spec.parse(text)
 
 
-def read_coverage_artifact(path: Path, *, declared_format: str) -> CoverageProfile:
-    """Read *path* and parse it as *declared_format* (see
-    :func:`load_coverage_profile`).
+def parse_coverage_artifact(raw: bytes | None, *, declared_format: str) -> CoverageProfile:
+    """Parse *raw* coverage-artifact bytes as *declared_format* (see
+    :func:`load_coverage_profile`), or render the artifact's ABSENCE.
 
-    The thin I/O boundary around the pure text parser, mirroring
-    :mod:`assay.git`'s split from :mod:`assay.diff`: an unreadable or
-    undecodable file is ``ERROR``/``UNREADABLE_ARTIFACT`` — the artifact
-    could not be READ, which is the same class of failure as an artifact that
-    reads fine but does not parse, just caught one step earlier.
+    *raw* is ``None`` exactly when nothing was read — a lane's command that
+    never produced its declared artifact at all (P20/A-174). That is
+    ``NO_MEASUREMENT``/``EMPTY_COVERAGE``, the identical truthful cause a
+    well-formed-but-empty profile already renders via
+    :func:`check_empty_coverage`: in both cases there is no measurement to
+    judge, only the STAGE at which that becomes apparent differs. It is
+    deliberately NOT ``ERROR``/``UNREADABLE_ARTIFACT`` — that code is reserved
+    for an object that exists but cannot be trusted (wrong type, undecodable,
+    oversized, or a race the caller's own reservation already detected).
 
-    A symlink at *path* is refused the same way (P17): ``read_text`` would
-    otherwise follow it silently, letting a coverage artifact this run
-    never produced (potentially outside the declared project entirely)
-    stand in for a real measurement. Checked here, at the one I/O boundary
-    every format passes through, rather than by every caller separately.
+    Invalid UTF-8 is ``ERROR``/``UNREADABLE_ARTIFACT``; a declared-format
+    sniff mismatch or malformed record raises whatever
+    :func:`load_coverage_profile` raises.
     """
-    if Path(path).is_symlink():
+    if raw is None:
         raise AssayError(
-            f"coverage artifact {path}: is a symlink, refused -- a "
-            f"measurement must read what this run itself produced, not "
-            f"whatever the link happens to point at",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            "no coverage artifact was produced by this run -- the lane's "
+            "command exited without writing the declared artifact at all. "
+            "This is distinct from an unreadable/malformed artifact: there "
+            "is nothing here to have failed to read.",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.EMPTY_COVERAGE,
         )
     try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise AssayError(
-            f"coverage artifact {path}: cannot be read: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise AssayError(
-            f"coverage artifact {path}: not valid UTF-8: {exc}",
+            f"coverage artifact is not valid UTF-8: {exc}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         ) from exc
     return load_coverage_profile(text, declared_format=declared_format)
+
+
+def read_coverage_artifact(
+    project_root: Path, artifact: str, *, declared_format: str
+) -> CoverageProfile:
+    """Read the project-relative *artifact* and parse it as *declared_format*
+    (see :func:`parse_coverage_artifact`).
+
+    The thin I/O boundary around the pure byte-level parser: reads through
+    :func:`assay.safeio.read_bounded_file` (nonblocking, no-follow,
+    regular-file-only, bounded to :data:`MAX_COVERAGE_ARTIFACT_BYTES`) and
+    calls the byte parser exactly once. No coverage owner calls
+    ``Path.read_text`` (P20/A-174) -- a symlink, FIFO, device, or oversized
+    object is refused by the safe read itself, never silently followed.
+
+    This is the path a direct or canary caller uses when it has not already
+    consumed the artifact through :mod:`assay.runner`'s own single-owner
+    reservation (:func:`assay.runner.evaluate_r1`'s ``profile=None`` default).
+    """
+    raw = safeio.read_bounded_file(project_root, artifact, limit=MAX_COVERAGE_ARTIFACT_BYTES)
+    return parse_coverage_artifact(raw, declared_format=declared_format)
 
 
 def check_empty_coverage(profile: CoverageProfile) -> None:

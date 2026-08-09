@@ -18,6 +18,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from conftest import GitRepo, fixed_clock, make_lane, make_r1_judge, make_r2_judge
 
 from assay import git as git_module
@@ -40,7 +41,15 @@ def _seed_compare_swap_site(repo: GitRepo) -> tuple[str, str]:
     """A real two-commit diff introducing ONE ``compare-swap`` site:
     ``x > 0`` has exactly one swap target (``>=``) in the adapter's own
     closed catalogue, so this fixture always generates exactly one
-    mutant."""
+    mutant.
+
+    ``.gitignore`` for ``cov.json`` rides along in the base commit (A-140,
+    matching ``test_runner_run_lane.py``'s own ``_seed_two_commits``):
+    unrelated to ``src/mod.py``'s own diff, so it cannot change what R1/R2
+    measure, but P20's post-command dirty check (A-175) now refuses the
+    whole run if a real lane command writes an un-ignored ``cov.json``.
+    """
+    repo.write(".gitignore", "cov.json\n")
     repo.write("src/mod.py", "def f(x):\n    return 0\n")
     base_rev = repo.commit_all("add mod.py")
     repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
@@ -430,11 +439,12 @@ def test_r1_and_r2_together_reuse_the_same_resolved_diff_not_a_second_one(
 def test_r1_declared_but_its_own_coverage_guard_trips_still_lets_r2_resolve(
     git_repo: GitRepo,
 ):
-    """R1's own artifact-reading guard fires (a declared coverage artifact
-    that was never written at all) before ``evaluate_r1`` ever reaches the
-    diff -- proving R2 does not silently inherit R1's own failure to
-    resolve ``added``, and instead runs its own independent, SEPARATE
-    resolution (the ``added_holder`` empty path) to a genuine PASS."""
+    """R1's own artifact consume/parse renders the P20/A-174 truthful
+    absence (a declared coverage artifact that was never written at all)
+    before ``evaluate_r1`` is even called -- proving R2 does not silently
+    inherit R1's own failure to resolve ``added``, and instead runs its own
+    independent, SEPARATE resolution (the ``added_holder`` empty path) to a
+    genuine PASS."""
     base_rev, _ = _seed_compare_swap_site(git_repo)
     r1_judge = make_r1_judge(
         source_root_paths=(git_repo.path / "src",),
@@ -458,8 +468,8 @@ def test_r1_declared_but_its_own_coverage_guard_trips_still_lets_r2_resolve(
     )
 
     r1_claim, r2_claim = verdict.claims[1], verdict.claims[2]
-    assert r1_claim.status is Outcome.ERROR
-    assert r1_claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert r1_claim.status is Outcome.NO_MEASUREMENT
+    assert r1_claim.reason_code is ReasonCode.EMPTY_COVERAGE
     assert r1_claim.coverage is None
     assert r2_claim.status is Outcome.PASS
     assert r2_claim.mutation.total == 1
@@ -498,3 +508,52 @@ def test_ended_covers_r2s_own_completion_not_only_r0s(git_repo: GitRepo):
     # already applies one rigor level over.
     assert verdict.started == "2026-08-08T10:00:00+00:00", "R0's own start, unchanged"
     assert verdict.ended == "2026-08-08T10:00:04+00:00", "covers the mutant's own completion"
+
+
+# --- P20 work item 5: a mutation-target source-read failure is a complete claim
+
+
+def test_run_lane_r2_renders_a_complete_claim_when_a_target_source_read_fails(
+    monkeypatch: pytest.MonkeyPatch, git_repo: GitRepo
+):
+    """``resolve_mutation_targets`` calls the injected ``read_source_text``
+    once per considered file; an expected filesystem/Unicode failure there
+    must land inside a complete R2 claim, never propagate past `run_lane`
+    uncaught (the same class of gap P20 closes for R1's own source reads).
+    Driven by a REAL committed file exceeding the REAL fixed
+    :data:`assay.runner.MAX_SOURCE_FILE_BYTES` ceiling (only the ceiling's
+    magnitude is injected) -- the identical reviewer repair
+    ``test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure``
+    documents, so R2's source-read boundary is proven by the bound itself
+    rather than by the mechanism that implements it."""
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.write("src/broken.py", "def g(y):\n    return y\n")
+    git_repo.commit_all("add a file that will fail to read")
+
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    # 8 bytes: smaller than either committed source file, so the first real
+    # target read really does exceed the real ceiling.
+    monkeypatch.setattr(runner, "MAX_SOURCE_FILE_BYTES", 8)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="1" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[0].status is Outcome.PASS  # R0 itself is unaffected
+    r2_claim = verdict.claims[1]
+    assert r2_claim.status is Outcome.ERROR
+    assert r2_claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert r2_claim.mutation is None
+    assert verdict.outcome is Outcome.ERROR

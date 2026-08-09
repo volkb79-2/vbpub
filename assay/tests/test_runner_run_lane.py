@@ -20,10 +20,12 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
 
-from assay import runner
-from assay.errors import Outcome, ReasonCode
+from assay import git as git_module
+from assay import runner, safeio
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Judgment
 
 ADAPTER = FakeAdapter()
@@ -177,7 +179,13 @@ def test_run_lane_removes_a_stale_artifact_before_running_never_reuses_it(
 ):
     """The pre-existing artifact reports a PASS-shaped 100%; the REAL run's
     command exits 0 without rewriting it. If removal did not happen, R1
-    would wrongly render the stale PASS -- O3's own negative."""
+    would wrongly render the stale PASS -- O3's own negative.
+
+    P20/A-174: a coverage artifact the command never rewrote is genuinely
+    ABSENT by the time the reservation is consumed -- the same truthful
+    NO_MEASUREMENT/EMPTY_COVERAGE cause a well-formed-but-empty artifact
+    already renders, not an unreadable/malformed one (there is nothing left
+    to have failed to read)."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     git_repo.write("cov.json", _cov_json({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}))
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
@@ -194,8 +202,8 @@ def test_run_lane_removes_a_stale_artifact_before_running_never_reuses_it(
     )
 
     assert not (git_repo.path / "cov.json").exists(), "removed before the command ran"
-    assert verdict.claims[1].status is Outcome.ERROR
-    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
     assert verdict.claims[1].coverage is None
     assert verdict.judgment is None
 
@@ -314,6 +322,10 @@ def test_run_lane_dirtiness_outside_source_roots_still_refuses_the_r1_lane(
 
 
 def test_run_lane_refuses_a_symlinked_artifact_path(git_repo: GitRepo, tmp_path: Path):
+    """P20: the reservation itself (`safeio.reserve_output`) refuses a
+    symlinked destination at construction time, before any other refusal --
+    so this now renders the reservation's own vocabulary,
+    ERROR/UNREADABLE_ARTIFACT, rather than a bespoke BAD_LANE_CONFIG."""
     marker = tmp_path / "RAN"
     base_rev, head_rev = _seed_two_commits(git_repo)
     outside_target = tmp_path / "outside.json"
@@ -333,7 +345,7 @@ def test_run_lane_refuses_a_symlinked_artifact_path(git_repo: GitRepo, tmp_path:
     )
 
     assert verdict.outcome is Outcome.ERROR
-    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert verdict.claims[0].status is Outcome.ERROR
     assert verdict.claims[1].status is Outcome.ERROR
     assert not marker.exists(), "the command must never have started"
@@ -373,6 +385,8 @@ def test_run_lane_refuses_a_tracked_artifact_path(git_repo: GitRepo, tmp_path: P
 
 
 def test_run_lane_refuses_a_directory_at_the_artifact_path(git_repo: GitRepo, tmp_path: Path):
+    """P20: same reservation-owned vocabulary as the symlink case above --
+    a pre-existing non-regular object is ERROR/UNREADABLE_ARTIFACT."""
     marker = tmp_path / "RAN"
     base_rev, head_rev = _seed_two_commits(git_repo)
     (git_repo.path / "cov.json").mkdir()
@@ -390,7 +404,7 @@ def test_run_lane_refuses_a_directory_at_the_artifact_path(git_repo: GitRepo, tm
     )
 
     assert verdict.outcome is Outcome.ERROR
-    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert not marker.exists()
 
 
@@ -425,10 +439,11 @@ def test_run_lane_r1_still_judges_coverage_when_r0_fails(git_repo: GitRepo):
     assert isinstance(verdict.judgment, Judgment), "R1 really was judged, so its policy is recorded"
 
 
-def test_run_lane_r1_renders_unreadable_artifact_when_r0_never_starts(git_repo: GitRepo):
+def test_run_lane_r1_renders_empty_coverage_when_r0_never_starts(git_repo: GitRepo):
     """An unpermitted argv append means the process never launches at all
-    (A-095) -- the pre-removed artifact is never recreated, so R1 renders
-    UNREADABLE_ARTIFACT rather than being silently skipped."""
+    (A-095) -- the pre-armed reservation is never recreated, so R1 renders
+    the P20/A-174 truthful absence (NO_MEASUREMENT/EMPTY_COVERAGE) rather
+    than being silently skipped."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
     lane = make_lane(
@@ -451,21 +466,22 @@ def test_run_lane_r1_renders_unreadable_artifact_when_r0_never_starts(git_repo: 
 
     assert verdict.claims[0].status is Outcome.ERROR
     assert verdict.claims[0].reason_code is ReasonCode.EXEC_FAILED
-    assert verdict.claims[1].status is Outcome.ERROR
-    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert verdict.outcome is Outcome.ERROR
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
+    assert verdict.outcome is Outcome.ERROR, "rollup: ERROR (R0) still outranks NO_MEASUREMENT (R1)"
 
 
 def _raise_timeout(argv, *, env, cwd, timeout):
     raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
 
 
-def test_run_lane_r1_renders_unreadable_artifact_when_r0_budget_expires(
+def test_run_lane_r1_renders_empty_coverage_when_r0_budget_expires(
     git_repo: GitRepo,
 ):
     """The same shape as EXEC_FAILED (no real wall-clock wait -- the fake
-    raises immediately, AUTHORING.md §3b.A): the artifact was pre-removed
-    and the process never completed, so it was never rewritten either."""
+    raises immediately, AUTHORING.md §3b.A): the reservation was armed but
+    the process never completed, so it was never rewritten either -- P20's
+    truthful NO_MEASUREMENT/EMPTY_COVERAGE, not an unreadable artifact."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
     lane = make_lane(rigor=("R0", "R1"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
@@ -483,9 +499,9 @@ def test_run_lane_r1_renders_unreadable_artifact_when_r0_budget_expires(
 
     assert verdict.claims[0].status is Outcome.BUDGET_EXCEEDED
     assert verdict.claims[0].reason_code is ReasonCode.LANE_TIMEOUT
-    assert verdict.claims[1].status is Outcome.ERROR
-    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert verdict.outcome is Outcome.ERROR, "rollup: ERROR outranks BUDGET_EXCEEDED"
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
+    assert verdict.outcome is Outcome.NO_MEASUREMENT, "rollup: NO_MEASUREMENT (R1) outranks BUDGET_EXCEEDED (R0)"
 
 
 # --- malformed coverage renders a complete claim, never propagates ------------
@@ -595,7 +611,8 @@ def test_run_lane_a_missing_executable_renders_a_complete_artifact(
     assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
     assert verdict.claims[0].status is Outcome.ERROR
     assert verdict.claims[0].reason_code is ReasonCode.EXEC_FAILED
-    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
     assert verdict.claims[1].coverage is None
     assert verdict.judgment is None
     assert verdict.outcome is Outcome.ERROR
@@ -641,3 +658,243 @@ def test_run_lane_uncovered_changed_lines_fail_and_still_record_the_policy(
     assert verdict.judgment.r1.allow_excluded == judge.allow_excluded
     assert verdict.judgment.r1.coverage_format == judge.coverage.format
     assert verdict.judgment.r1.coverage_artifact == judge.coverage.artifact
+
+
+# --- P20/A-175: post-command dirt on an R0-only lane ---------------------------
+
+
+def test_run_lane_post_command_dirt_on_an_r0_only_lane_renders_r0_itself_dirty_tree(
+    git_repo: GitRepo,
+):
+    """No higher rigor is declared to preserve a real claim alongside --
+    R0 ITSELF carries NO_MEASUREMENT/DIRTY_TREE instead of its real PASS,
+    per the handoff's own decision matrix ("For an R0-only lane, R0 itself
+    is NO_MEASUREMENT/DIRTY_TREE")."""
+    git_repo.write("support.txt", "clean\n")
+    git_repo.commit_all("seed support")
+    lane = make_lane(
+        rigor=("R0",), judge=None, argv=("/bin/sh", "-c", "printf dirty >> support.txt")
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit="c" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.reason_code is ReasonCode.DIRTY_TREE
+    assert [c.rigor for c in verdict.claims] == ["R0"]
+    assert verdict.claims[0].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[0].reason_code is ReasonCode.DIRTY_TREE
+    assert verdict.ended == "2026-08-08T09:00:02+00:00", "the post-dirty-check clock reading"
+    assert "dirty" in (git_repo.path / "support.txt").read_text(encoding="utf-8")
+
+
+# --- P20: a detected swap at arm() refuses the whole invocation ---------------
+
+
+def test_run_lane_refuses_the_whole_invocation_when_the_reservation_detects_a_swap_at_arm(
+    monkeypatch: pytest.MonkeyPatch, git_repo: GitRepo, tmp_path: Path
+):
+    """``OutputReservation.arm`` rechecks the reserved object immediately
+    before removing it (safeio's own contract, proven directly in
+    ``test_safeio.py``); this proves `run_lane` WIRES that failure into a
+    real refusal rather than letting it escape uncaught. The detection
+    itself is injected (real reservation objects have nothing left to swap
+    within one single-threaded invocation) -- see the module docstring's
+    own reasoning for why this is the appropriate boundary to mock."""
+    marker = tmp_path / "RAN"
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(rigor=("R0", "R1"), judge=judge, argv=("/bin/sh", "-c", f"touch {marker}"))
+
+    def raising_arm(self: safeio.OutputReservation) -> None:
+        raise AssayError(
+            "simulated swap detected at arm time",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+
+    monkeypatch.setattr(safeio.OutputReservation, "arm", raising_arm)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
+    assert verdict.claims[0].status is Outcome.ERROR
+    assert verdict.claims[1].status is Outcome.ERROR
+    assert not marker.exists(), "the command must never have started"
+
+
+# --- Reviewer (P20 work item 6): the post-command comparison is against the
+# --- RESOLVED PRE-RUN COMMIT, not merely against dirt --------------------------
+
+
+def _lane_committing_away_its_uncovered_line(repo: GitRepo, base_rev: str):
+    """A lane whose command writes real coverage AND commits away the one
+    changed line that coverage reports as missing."""
+    payload = _cov_json({"pkg/mod.zzz": {"executed_lines": [2], "missing_lines": [3]}})
+    command = (
+        f"printf '%s' '{payload}' > cov.json && "
+        f"printf 'BASE\\nLINE2\\n' > pkg/mod.zzz && "
+        f"git add -A && "
+        f"git -c user.name=cmd -c user.email=cmd@example.invalid "
+        f"commit -q -m 'the command committed'"
+    )
+    judge = make_r1_judge(source_root_paths=(repo.path / "pkg",), base=base_rev)
+    return make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", command),
+        env_passthrough=("PATH",),
+    )
+
+
+def test_run_lane_refuses_when_the_command_moves_head_even_though_the_tree_is_clean(
+    git_repo: GitRepo,
+):
+    """A command that COMMITS leaves a perfectly clean tree, so a dirt-only
+    post-command check passes -- while ``evaluate_r1`` re-reads HEAD live and
+    would measure a commit the artifact does not name.
+
+    This is the combined-axis attack the blind review reproduced: the same
+    lane rendered ``PASS`` at 100.0% while the artifact still recorded the
+    pre-run commit, where the honest verdict at that commit is
+    ``FAIL``/``UNCOVERED_LINES`` at 50.0% (proved by the control below).
+    Work item 6 asks for a comparison against the RESOLVED PRE-RUN COMMIT;
+    A-175's existing ``DIRTY_TREE`` terminal and its R0/higher precedence
+    carry it, with no new reason code and no schema change.
+    """
+    repo = git_repo
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\n")
+    recorded_head = repo.commit_all("add pkg head")
+
+    verdict = runner.run_lane(
+        _lane_committing_away_its_uncovered_line(repo, base_rev),
+        commit=recorded_head,
+        repo=repo.path,
+        project_root=repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert repo.head() != recorded_head, "the attack must really move HEAD"
+    assert git_module.dirty_paths(repo.path) == (), "and must leave a clean tree"
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.reason_code is ReasonCode.DIRTY_TREE
+    assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
+    # A-175 precedence: the command's own real R0 claim survives...
+    assert verdict.claims[0].status is Outcome.PASS
+    # ...and every higher declared claim is refused without being started.
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.DIRTY_TREE
+    assert verdict.claims[1].coverage is None
+    assert verdict.judgment is None
+    # The artifact still names the commit assay actually resolved before the
+    # command, and assay did not clean up after the consumer.
+    assert json.loads(verdict.to_json())["commit"] == recorded_head
+    assert (repo.path / "pkg" / "mod.zzz").read_text(encoding="utf-8") == "BASE\nLINE2\n"
+
+
+def test_the_same_lane_without_the_commit_is_a_real_uncovered_lines_fail(
+    git_repo: GitRepo,
+):
+    """The control that makes the test above an oracle rather than an
+    assertion: identical inputs, command minus the ``git commit``, must
+    still reach a genuine judged R1 FAIL. Without this, refusing everything
+    unconditionally would pass the attack test."""
+    repo = git_repo
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\n")
+    recorded_head = repo.commit_all("add pkg head")
+
+    payload = _cov_json({"pkg/mod.zzz": {"executed_lines": [2], "missing_lines": [3]}})
+    judge = make_r1_judge(source_root_paths=(repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"printf '%s' '{payload}' > cov.json"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=recorded_head,
+        repo=repo.path,
+        project_root=repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert repo.head() == recorded_head
+    assert verdict.claims[1].status is Outcome.FAIL
+    assert verdict.claims[1].reason_code is ReasonCode.UNCOVERED_LINES
+    assert verdict.claims[1].coverage.pct == 50.0
+
+
+def test_run_lane_omits_judgment_when_evaluate_r1_renders_a_payload_free_claim(
+    git_repo: GitRepo,
+):
+    """P16's `judgment.r1`-iff-`coverage` invariant, exercised through the
+    branch where the artifact PARSES fine but `evaluate_r1`'s own guard
+    sequence still declines to judge (here: the declared base resolves to
+    HEAD, so there is no delta to measure).
+
+    Distinct from the consume/parse failure path, which never calls
+    `evaluate_r1` at all: this proves the invariant holds for a claim
+    `evaluate_r1` itself returned. Before this test the gated suite never
+    took that arm, so building `judgment.r1` unconditionally there -- a
+    verdict the schema's own correspondence check would then reject -- was
+    invisible to it.
+    """
+    repo = git_repo
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = repo.commit_all("add pkg head")
+
+    payload = _cov_json({"pkg/mod.zzz": {"executed_lines": [2]}})
+    # base == HEAD: a real, judged NO_MEASUREMENT from evaluate_r1 itself.
+    judge = make_r1_judge(source_root_paths=(repo.path / "pkg",), base=head_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"printf '%s' '{payload}' > cov.json"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=repo.path,
+        project_root=repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.BASE_IS_HEAD
+    assert verdict.claims[1].coverage is None
+    assert verdict.judgment is None

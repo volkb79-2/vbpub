@@ -39,32 +39,33 @@ def test_unrecognised_declared_format_raises_lane_config_error():
 
 
 def test_read_coverage_artifact_parses_a_real_file(tmp_path: Path):
-    artifact = tmp_path / "cov.json"
-    artifact.write_text(
+    (tmp_path / "cov.json").write_text(
         '{"files": {"a.py": {"executed_lines": [1], "missing_lines": []}}}',
         encoding="utf-8",
     )
-    profile = read_coverage_artifact(artifact, declared_format="coverage-py-json")
+    profile = read_coverage_artifact(tmp_path, "cov.json", declared_format="coverage-py-json")
     assert set(profile.files) == {"a.py"}
 
 
-def test_read_coverage_artifact_raises_unreadable_artifact_for_a_missing_file(
+def test_read_coverage_artifact_renders_empty_coverage_for_a_missing_file(
     tmp_path: Path,
 ):
-    missing = tmp_path / "does-not-exist.json"
+    # P20/A-174: a coverage artifact that was simply never produced is a
+    # truthful NO_MEASUREMENT, the same cause a well-formed-but-empty
+    # profile already renders -- not an unreadable/malformed artifact, which
+    # is reserved for an object that EXISTS but cannot be trusted.
     with pytest.raises(AssayError) as excinfo:
-        read_coverage_artifact(missing, declared_format="coverage-py-json")
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+        read_coverage_artifact(tmp_path, "does-not-exist.json", declared_format="coverage-py-json")
+    assert excinfo.value.outcome is Outcome.NO_MEASUREMENT
+    assert excinfo.value.reason_code is ReasonCode.EMPTY_COVERAGE
 
 
 def test_read_coverage_artifact_raises_unreadable_artifact_for_undecodable_bytes(
     tmp_path: Path,
 ):
-    artifact = tmp_path / "cov.json"
-    artifact.write_bytes(b"\xff\xfe\x00not utf-8 at all")
+    (tmp_path / "cov.json").write_bytes(b"\xff\xfe\x00not utf-8 at all")
     with pytest.raises(AssayError) as excinfo:
-        read_coverage_artifact(artifact, declared_format="coverage-py-json")
+        read_coverage_artifact(tmp_path, "cov.json", declared_format="coverage-py-json")
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
@@ -72,17 +73,17 @@ def test_read_coverage_artifact_still_cross_checks_the_signature(tmp_path: Path)
     # The file-I/O boundary must not skip the sniff cross-check just because
     # it added an extra step — a file's CONTENT, not its own path/extension,
     # is what the artifact is read from disk to inspect.
-    artifact = tmp_path / "cov.json"  # a .json name, but lcov content inside
-    artifact.write_text("SF:a.c\nDA:1,1\nend_of_record\n", encoding="utf-8")
+    # a .json name, but lcov content inside
+    (tmp_path / "cov.json").write_text("SF:a.c\nDA:1,1\nend_of_record\n", encoding="utf-8")
     with pytest.raises(AssayError) as excinfo:
-        read_coverage_artifact(artifact, declared_format="coverage-py-json")
+        read_coverage_artifact(tmp_path, "cov.json", declared_format="coverage-py-json")
     assert excinfo.value.reason_code is ReasonCode.FORMAT_MISMATCH
 
 
 def test_read_coverage_artifact_refuses_a_symlink_even_to_a_valid_file(
     tmp_path: Path,
 ):
-    # P17: read_text() would otherwise follow the link silently, letting a
+    # P17/P20: a safe read must not follow the link silently, letting a
     # coverage artifact this run never produced (potentially outside the
     # declared project entirely) stand in for a real measurement.
     real = tmp_path / "real.json"
@@ -90,9 +91,8 @@ def test_read_coverage_artifact_refuses_a_symlink_even_to_a_valid_file(
         '{"files": {"a.py": {"executed_lines": [1], "missing_lines": []}}}',
         encoding="utf-8",
     )
-    link = tmp_path / "cov.json"
-    link.symlink_to(real)
+    (tmp_path / "cov.json").symlink_to(real)
     with pytest.raises(AssayError) as excinfo:
-        read_coverage_artifact(link, declared_format="coverage-py-json")
+        read_coverage_artifact(tmp_path, "cov.json", declared_format="coverage-py-json")
     assert excinfo.value.outcome is Outcome.ERROR
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT

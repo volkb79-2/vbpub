@@ -209,6 +209,10 @@ def test_a_real_python_fixture_passes_through_the_installed_wheel(
     scratch venv, which deliberately has nothing but assay itself)."""
     shutil.copytree(PYTHON_FIXTURE_DIR / "pkg", git_repo.path / "pkg")
     shutil.copytree(PYTHON_FIXTURE_DIR / "tests", git_repo.path / "tests")
+    # P20/A-175: a real pytest run leaves __pycache__/.pytest_cache behind --
+    # untracked, non-ignored droppings the post-command dirty check correctly
+    # refuses (unrelated to what this test measures).
+    git_repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
     lane_file = _write_lane_file(
         git_repo.path,
         _r0_lane_toml([sys.executable, "-m", "pytest", "tests", "-q"]),
@@ -256,6 +260,11 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     """
     shutil.copytree(PYTHON_FIXTURE_DIR / "pkg", git_repo.path / "pkg")
     shutil.copytree(PYTHON_FIXTURE_DIR / "tests", git_repo.path / "tests")
+    # P20/A-175: a real pytest+coverage run leaves __pycache__/.pytest_cache/
+    # .coverage behind, and this lane's own cov.json is genuine output -- all
+    # must be git-ignored or the post-command dirty check correctly refuses
+    # the run.
+    git_repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n.coverage\ncov.json\n")
     git_repo.commit_all("add control fixture")
     base_rev = git_repo.head()
     subprocess.run(

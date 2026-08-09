@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from conftest import GitRepo, fixed_clock, make_lane, make_r3_judge
 
 from assay import runner
@@ -315,11 +316,20 @@ def test_r3_refuses_a_test_path_target_as_a_payload_free_claim(git_repo: GitRepo
 def test_r3_refuses_on_a_dirty_tree_the_commands_own_side_effects_created(
     git_repo: GitRepo,
 ):
-    """The identical shape R2's own review already established one rigor
-    level over (``test_r2_without_r1_refuses_on_dirty_tree_the_command_
-    itself_created``): R0's own command runs BEFORE R3's own guard, so an
-    untracked file it leaves behind under a declared source root is what
-    trips this -- not anything present before the run started."""
+    """R0's own command runs before any R3 work, so an untracked file it
+    leaves behind is what trips this -- not anything present before the run
+    started.
+
+    Reviewer note (P20/A-175): the guard that now answers this is
+    ``run_lane``'s own post-command WHOLE-REPOSITORY check, which refuses
+    before ``run_isolated_canary`` is ever entered; previously the same
+    assertions were satisfied one layer down, by the canary's own dirty-tree
+    refusal. The observable contract asserted here is unchanged, but it is no
+    longer an oracle for that inner guard -- which is why
+    ``test_run_isolated_canary_refuses_a_dirty_repository_directly`` below
+    now covers it directly. Left in place because the outer refusal is a real
+    contract in its own right: dirt anywhere, not merely under a source root,
+    must stop R3 before it starts."""
     git_repo.write("pkg/__init__.py", "")
     git_repo.write("pkg/mod.py", "def f():\n    return 1\n")
     git_repo.commit_all("add pkg")
@@ -490,3 +500,48 @@ def test_r1_r2_and_r3_together_each_render_their_own_independent_claim(
     assert verdict.judgment.r1 is not None
     assert verdict.judgment.r2 is not None
     assert verdict.judgment.r3 is not None
+
+
+# --- Reviewer (P20): the canary's OWN dirty-tree guard needs its own oracle ---
+
+
+def test_run_isolated_canary_refuses_a_dirty_repository_directly(git_repo: GitRepo):
+    """``run_isolated_canary`` copies the current tree to stand in for the
+    known-good control, so it owns a cleanliness precondition of its own --
+    independent of whatever `run_lane` checked earlier.
+
+    It needs a direct oracle because P20 added a post-command whole-repository
+    check to `run_lane` that now refuses first: measured, not assumed, the
+    only test that used to reach this refusal
+    (``test_r3_refuses_on_a_dirty_tree_the_commands_own_side_effects_created``)
+    stopped doing so, leaving `canary.py`'s guard uncovered by the gated
+    suite. `canary.py` is forbidden to this package, so this is a test-only
+    repair of the audit, never a change to the guard.
+    """
+    from assay.canary import run_isolated_canary
+    from assay.errors import AssayError
+
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def f():\n    return 1\n")
+    git_repo.commit_all("add pkg")
+    judge = make_r3_judge(
+        source_root_paths=(git_repo.path / "pkg",),
+        canary=CanaryConfig(mechanism="import-break", target="pkg/mod.py"),
+    )
+    lane = make_lane(rigor=("R0", "R3"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    # Dirt the outer pipeline never saw, introduced after any earlier check.
+    (git_repo.path / "pkg" / "leftover.pyc").write_text("x", encoding="utf-8")
+
+    with pytest.raises(AssayError) as excinfo:
+        run_isolated_canary(
+            lane,
+            repo=git_repo.path,
+            project_root=git_repo.path,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            adapter=PythonAdapter(),
+        )
+
+    assert excinfo.value.outcome is Outcome.NO_MEASUREMENT
+    assert excinfo.value.reason_code is ReasonCode.DIRTY_TREE
