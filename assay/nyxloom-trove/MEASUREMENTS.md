@@ -1,8 +1,67 @@
-# Measurement protocol — the controller/implementer loop
+# Measurement protocol — frozen-orientation Assay wave
 
-> Started 2026-08-06, during the assay series. `WORKFLOW.md` describes the loop;
-> this file records what it actually costs and what it actually catches. Both
-> halves matter: a loop that is cheap and catches nothing is not a bargain.
+> **CURRENT FOR P20-P32 (2026-08-09).** The snapshot/restore results later in
+> this file are historical evidence only. Current runs use supported provider
+> session forks and the state layout in `FROZEN-WAVE-OPERATOR-RUNBOOK.md`.
+
+## Current pilot record
+
+Write one JSON object per provider request to
+`.worktrees/_control/assay-P20-P32/invocations.jsonl`. Minimum fields:
+
+```json
+{"schema_version":1,"run":"P20","leg":"implement","condition":"warm-fork","provider":"anthropic","model":"sonnet","effort":"xhigh","base":"I-sonnet-0","session_id":"...","orientation_oid":"<40hex>","head_oid":"<40hex>","request_started_at":"<RFC3339>","elapsed_ms":0,"time_to_first_edit_ms":null,"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation_ttl":{},"output_tokens":0,"keepalive":false,"gate":"not-run","review_defects":null,"rework_turns":0,"stale_context_stop":false}
+```
+
+Do not rewrite this log. `bases.yaml` is the atomically replaced current-state
+projection; `briefs/Pxx.yaml` is reviewed package evidence. Dedupe Claude usage
+by `message.id`, because usage repeats for content blocks:
+
+```sh
+jq -s '[.[] | select(.message.usage) |
+  {id: .message.id, ts: .timestamp, u: .message.usage}] | unique_by(.id) |
+  {requests: length,
+   cache_read:  (map(.u.cache_read_input_tokens // 0) | add),
+   cache_write: (map(.u.cache_creation_input_tokens // 0) | add),
+   uncached_in: (map(.u.input_tokens // 0) | add),
+   out:         (map(.u.output_tokens // 0) | add),
+   ttl_classes: (map(.u.cache_creation // {}) | unique)}' SESSION.jsonl
+```
+
+Also retain individual rows with timestamps so a collapsed cache read is
+visible. The TTL clock begins at request start and slides on a hit; generation
+time counts against it. Record the observed TTL class. Do not infer the
+top-level one-hour class for internal subagents; local observations have shown
+five-minute internal entries and one-hour top-level entries.
+
+For every package measure total implementation + review + JIT-carve + controller
+tokens and latency, not just the implementer. Quality fields are: independent
+review defects by severity, false-PASS shapes, handoff deviations, rework turns,
+stale-context stops, gate failures, and post-merge escapes. The primary outcome
+is cost per accepted package with no escaped-defect increase.
+
+The pilot needs at least one observation in each condition:
+
+1. compact warm fork from the role's frozen base;
+2. fresh narrow session at the same model/effort;
+3. cold fork after verified TTL expiry; and
+4. historical broad orientation, using the existing P00-P19 rows rather than
+   buying another only for symmetry if comparison is too confounded.
+
+Record keepalives as their own requests and charge their tokens/quota to the
+next useful fork. Record a hit only when provider telemetry has nonzero cache
+read tokens. Compute both raw token totals and a clearly-labelled simulated API
+equivalent; a subscription quota has no per-request dollar charge to recover
+from the CLI transcript.
+
+---
+
+## Historical P00-P19 measurement record
+
+> Started 2026-08-06, during the original assay series. `WORKFLOW.md` described
+> the loop; this file records what it actually costs and what it actually
+> catches. Both halves matter: a loop that is cheap and catches nothing is not a
+> bargain.
 
 ## Why measure at all
 

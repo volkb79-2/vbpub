@@ -1,4 +1,36 @@
-# The implementation loop — a controller that holds the design, a stream of implementers that hold one package each
+# The implementation loop — evolving design authority, frozen execution bases, disposable package children
+
+> **CURRENT FOR P20-P32 (2026-08-09).** The normative pilot is
+> `nyxloom/docs/frozen-orientation-fork-workflow.md`; start it through
+> `FROZEN-WAVE-OPERATOR-RUNBOOK.md` and
+> `FROZEN-WAVE-CONTROLLER-PROMPT.md`. The P00-P19 narrative below is retained as
+> historical evidence, not current controller authority.
+
+The current split has four roles:
+
+1. an evolving Sol xhigh carver thread owns design continuity and JIT-freezes
+   only the immediate next handoff after its predecessor merge;
+2. a small Luna high controller performs mechanical state checks, fork routing,
+   evidence capture, gate execution, and serial merge;
+3. immutable package-neutral Sonnet/Opus implementer bases fork a disposable
+   child for exactly one handoff; and
+4. an immutable Opus reviewer base forks a fresh blind-first reviewer child for
+   every handoff.
+
+The frozen base records an orientation commit, not timeless repository truth.
+Every child reads the exact anchor-to-HEAD diff and the complete current version
+of relevant changed files before relying on inherited knowledge. Durable
+decisions land immediately; base rebuilding is batched at epoch boundaries.
+Reviewer-adjudicated briefs flow into the immediate successor's JIT carve, where
+Sol promotes lasting facts and returns only a bounded one-hop remainder.
+
+This preserves the original useful principle—implementation contexts are
+disposable—without making a controller's remembered prose the design database.
+Git, handoffs, decisions, proof assets, and gate evidence are authoritative.
+
+---
+
+## Historical P00-P19 process
 
 > Written 2026-08-06, before the first dispatch, from a pattern the owner
 > described. It is recorded here because the *reasons* are what make it work;
@@ -6,12 +38,12 @@
 
 ## The shape
 
-One long-lived **controller** (this session) holds the whole design: eleven
-packages of rationale, every decision and its reason, and the running state of
-what has landed. A stream of short-lived **implementers** each hold exactly one
-package and then die.
+One long-lived **controller** (the historical session) held the whole design:
+eleven packages of rationale, every decision and its reason, and the running
+state of what had landed. A stream of short-lived **implementers** each held
+exactly one package and then died.
 
-Three invariants, each doing real work:
+Three historical invariants, each doing real work:
 
 **1. Design authority never leaves the controller.**
 An implementer receives a handoff and a pointer to the specification. It may

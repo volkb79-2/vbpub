@@ -237,8 +237,12 @@ items:
 - id: B31
   title: 'frozen-orientation fork policy: add role/model/effort/epoch base records,
     full orientation anchors and manifests, supported CLI child-fork templates,
-    scoped anchor-to-HEAD reconciliation, typed stale-base refusal, and epoch
-    rotation. Pilot manually before changing today''s growing resume behavior.
+    scoped anchor-to-HEAD reconciliation that deliberately exposes progression
+    from the frozen OID, typed stale-base refusal, and epoch rotation. Distinguish
+    immutable implementer/reviewer parents from an evolving carver continuation;
+    disk changes do not mutate the serialized base prefix, so land truth now and
+    batch base rebuilds rather than decisions. Pilot manually before changing
+    today''s growing resume behavior.
     Design: docs/frozen-orientation-fork-workflow.md.'
   type: feature
   component: dispatch
@@ -248,8 +252,11 @@ items:
   title: 'structured successor-brief lifecycle: implementer candidates, blind-first
     reviewer adjudication, carver promotion to durable contract/epoch/decision,
     and controller-only target routing plus one-hop expiry. Surface every
-    disposition in the per-handoff processing trace; never let the controller
-    invent semantic truth. Design: docs/frozen-orientation-fork-workflow.md.'
+    disposition in the per-handoff processing trace; route reviewed candidates
+    through the immediate successor JIT carve so lasting facts are promoted and
+    the one-hop remainder is compressed by design authority. Never let the
+    controller invent semantic truth. Design:
+    docs/frozen-orientation-fork-workflow.md.'
   type: feature
   component: review
   context_estimate: medium
@@ -265,15 +272,31 @@ items:
   folds_into: F009
 - id: B34
   title: 'prompt-cache experiment and observability: compare fresh, warm compact
-    fork, cold fork, and historical broad orientation; persist cache-read/write
-    tokens, latency, time-to-first-edit, reviewer defects, and rework. Trial
-    opt-in disposable-child keepalives around the measured TTL; never report a
-    warm cache without provider telemetry. Design:
+    fork, cold fork, and historical broad orientation; persist per-request
+    cache-read/write/TTL-class tokens, request-start time, latency,
+    time-to-first-edit, reviewer defects, and rework in an append-only trace.
+    Fingerprint model/effort/CLI/system/tools because the cache key begins before
+    user messages. Trial opt-in disposable-child keepalives from the last
+    request start around the measured TTL; never report a warm cache without
+    provider telemetry. Design:
     docs/frozen-orientation-fork-workflow.md.'
   type: feature
   component: routing
   context_estimate: medium
   folds_into: F009
+- id: B35
+  title: 'JIT-carver continuation and pilot state schemas: model the immediate
+    post-merge/pre-dispatch carve as a typed leg; persist route-to-carver and
+    external compaction checkpoints carrying acknowledged OID, predecessor
+    range, reviewed brief dispositions, unresolved decisions, and open probes.
+    Add versioned/validated atomic writers for bases.yaml and brief YAML plus an
+    append-only invocations.jsonl writer. The evolving Sol carver validates every
+    checkpoint against Git; Luna may prepare/route it but never promote product
+    truth. Design: docs/frozen-orientation-fork-workflow.md.'
+  type: feature
+  component: control
+  context_estimate: medium
+  folds_into: F010
 ---
 
 # nyxloom — backlog

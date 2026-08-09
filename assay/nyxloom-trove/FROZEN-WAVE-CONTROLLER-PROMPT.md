@@ -19,6 +19,8 @@ INPUTS FOR THIS RUN
 - immediate successor file: <assay/nyxloom-trove/handoffs/assay-P21-...md>
 - expected main HEAD at start: <FULL_40_HEX_OID>
 - epoch: <0>
+- evolving carver identity: <C-sol-0, operator-managed current Codex thread>
+- carver last acknowledged main OID: <FULL_40_HEX_OID or UNKNOWN>
 - implementer base for the assigned model: <I-sonnet-0 or I-opus-0 session id or MISSING>
 - reviewer base: <R-opus-0 session id or MISSING>
 - prior adjudicated implementer brief: <absolute path or NONE>
@@ -37,6 +39,9 @@ You may create/remove only the named package worktree/branch and controller
 state files, run the declared gate, and perform the authorized serial merge.
 On semantic drift, failed readiness, conflicting evidence, or an unresolved
 promotion, stop with ROUTE_TO_SOL or ROUTE_TO_OPUS and exact evidence.
+You cannot invoke or impersonate the operator-managed Codex carver thread. For
+ROUTE_TO_SOL, write a complete packet under <state-dir>/carver/Pyy.md and return
+the exact resume message the operator must send to C-sol-0.
 
 READ FIRST
 1. /workspaces/vbpub/AGENTS.md.
@@ -57,8 +62,12 @@ STARTUP SAFETY
    merged, and `input_revision` is an ancestor of current main.
 4. Run `nyxloom lint` for the Assay trove. Lint-green is syntax only, never
    dispatch readiness.
-5. Read `## Dispatch contract`. If it says JIT-FREEZE REQUIRED, dispatch the
-   named Sol/Opus carver first. Require AUTHORING's exact pre-dispatch
+5. Read `## Dispatch contract`. If it says JIT-FREEZE REQUIRED, route to the
+   named Sol/Opus carver first. The packet must contain C-sol-0's last
+   acknowledged OID, current HEAD, predecessor merge range and name-status/
+   scoped diffs, current handoff, immediate roadmap horizon,
+   reviewer-adjudicated incoming brief, unresolved decisions, and required
+   proof assets. Require AUTHORING's exact pre-dispatch
    adversarial-specification prompt to return READY and require every named
    carver-owned skeleton/golden/hostile fixture to exist and have a witnessed
    failing pre-implementation negative. If any is absent, stop NOT_READY. Never
@@ -85,14 +94,21 @@ If R-opus-0 is MISSING, create the equivalent Opus xhigh reviewer base with revi
 and adversarial-review concerns, also package-neutral. Use
 `--exclude-dynamic-system-prompt-sections` for both bases. Save provider session
 ids, names, role/model/effort, full orientation commit, manifest/blob OIDs,
-created time, assumed cache TTL, and observed cache-read tokens in
-<state-dir>/bases.yaml. A friendly session name is not an id.
+created time, observed cache TTL, and cache-read/write tokens in
+<state-dir>/bases.yaml. A friendly session name is not an id. Use schema version
+2 from `nyxloom/docs/frozen-orientation-fork-workflow.md`; include CLI version,
+system/tool fingerprint, TTL source/verification, last request-start touch,
+expected cache-read floor, and health. Generate a complete temporary sibling,
+validate it, fsync, and atomically replace `bases.yaml`; never regex-edit
+generated YAML.
 
 For Claude Code the shape is:
   claude --model <model> --effort xhigh --name <I-sonnet-0-or-I-opus-0-or-R-opus-0> \
     --exclude-dynamic-system-prompt-sections --output-format json -p '<prompt>'
 
-Do not use transcript JSONL backup/restore. Do not resume a base in place.
+Do not use transcript JSONL backup/restore. Do not resume a base in place. Do
+not create a frozen base from a Claude internal subagent transcript: require the
+external top-level CLI session id and that session's own provider usage.
 
 PACKAGE WORKTREE
 Create `.worktrees/<handoff-id>` from the verified current main on the exact
@@ -183,6 +199,10 @@ semantic dispositions; you enforce them mechanically:
 Never concatenate old briefs. After target consumption, expire one-hop items.
 If an item has multiple future targets or no objective invalidation condition,
 route it to the carver instead of turning it into controller folklore.
+After the predecessor merge, create the immediate successor's carver packet.
+The evolving Sol thread verifies, promotes, discards, or returns a smaller
+one-hop remainder during JIT carve. Do not perform that semantic compression in
+Luna.
 
 GATE AND MERGE
 The reviewer commits fixes in the isolated worktree. Independently run the exact
@@ -208,14 +228,33 @@ unreliable session/cache state, or the documented drift backstop. Never delay a
 correctness update to preserve cache.
 
 CACHE OBSERVATION / OPTIONAL KEEPALIVE
-Record input, cache creation/read, output, elapsed, and time-to-first-edit for
-every base/fork. Nonzero provider cache-read telemetry is the only CACHE_HIT.
-For the operator-reported one-hour Claude cache, if a useful next fork is
-expected, launch one tiny disposable `--fork-session` child around 45–50 minutes:
+Append one schema-version-1 JSON object per provider request to
+<state-dir>/invocations.jsonl. Record run/leg/condition, provider/model/effort,
+base/session ids, orientation/current OIDs, request-start time, input, uncached
+input, cache creation/read including TTL class, output, elapsed,
+time-to-first-edit, keepalive flag, gate state, reviewer defects, rework turns,
+and stale-context stop. Dedupe Claude transcript usage by message.id because
+usage repeats for content blocks; retain individual request timestamps as well
+as aggregates. Nonzero provider cache-read telemetry is the only CACHE_HIT.
+
+The TTL window starts at request start and slides on every hit; generation time
+counts against it. Read `usage.cache_creation` to verify whether this exact
+top-level base uses `ephemeral_1h_input_tokens` or another class. Never infer a
+TTL merely from provider/model naming. If a useful next fork is expected and
+the observed class is one hour, launch one tiny disposable `--fork-session`
+child around 45–50 minutes from the previous request start:
   Return only CACHE_WARMED
 A second at 90–100 minutes is allowed only if another useful dispatch is still
 expected. Never resume the frozen parent, run a perpetual heartbeat, or call a
 model response proof of warmth. Record quota cost.
+
+EXPERIMENT ALLOCATION
+Tag every execution as warm-fork, fresh-narrow, cold-fork, or historical-broad.
+Across the wave obtain at least one comparable fresh-narrow and one verified
+cold-fork observation at the same model/effort as a warm fork. Do not switch a
+package's assigned model merely to complete the experiment. Report total
+carve+implement+review+controller cost and quality, not implementer savings in
+isolation.
 
 FINAL CONTROLLER OUTPUT FOR THIS PACKAGE
 Return:
@@ -241,8 +280,12 @@ Git/config/provider output can supply it. DERIVE, READ, or FAIL.
   controller state for the next package; frozen implementer/reviewer parents
   remain separate provider sessions.
 - The implementer and reviewer models are Claude in this prompt because the
-  current cache experiment assumes Claude's operator-reported one-hour cache and
-  supported `--fork-session`. If routes change, preserve the invariants rather
-  than transliterating unsupported flags.
+  current cache experiment uses Claude's supported `--fork-session`. Verify the
+  actual TTL class from each top-level session's provider usage. If routes
+  change, preserve the invariants rather than transliterating unsupported flags.
 - Do not place the current handoff or briefs in the frozen base merely to grow a
   cache prefix. They are volatile and belong at the end of a child prompt.
+- Continue the current Sol xhigh carver thread while it can reconcile its last
+  acknowledged OID against Git. Luna prepares external checkpoint/route packets;
+  only Sol validates and promotes them. Automatic model compaction never changes
+  the repository's authority.

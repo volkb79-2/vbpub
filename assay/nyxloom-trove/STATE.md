@@ -477,9 +477,10 @@ Three rules with scar tissue behind them:
 1. **A ruling delivered only in an agent message is not applied** (A-072). It
    reaches one agent and nowhere else. Land it in `decisions.md` and in the
    handoff files before the next dispatch.
-2. **Ratifications batch** — `decisions.md` is read inside the orientation
-   snapshot, so editing it invalidates the snapshot. Accumulate rulings, apply
-   them at a deliberate rebuild point.
+2. **Base rebuilds batch; truth does not** — editing `decisions.md` does not
+   mutate an already-frozen provider transcript. Land required rulings in Git
+   immediately, force each child to reconcile the frozen OID-to-HEAD diff, and
+   rebuild affected bases once at a deliberate epoch boundary.
 3. **Run nyxloom's linter as part of review** (A-089). A defect lived through
    two implementations and two reviews because nobody ran it.
 
