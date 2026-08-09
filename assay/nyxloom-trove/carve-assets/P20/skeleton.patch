@@ -1,0 +1,95 @@
+diff --git a/assay/src/assay/safeio.py b/assay/src/assay/safeio.py
+new file mode 100644
+--- /dev/null
++++ b/assay/src/assay/safeio.py
+@@ -0,0 +1,90 @@
++"""Bounded descriptor-relative input and single-use output reservations.
++
++P20 freezes this module's public seam.  Reservation metadata is immutable to
++callers, while the owned directory descriptor follows one explicit state
++machine: RESERVED -> ARMED -> CONSUMED/CLOSED.  That mutable ownership state is
++necessary: treating a closed integer file descriptor as an immutable reusable
++value can target an unrelated descriptor after the number is reused.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++from types import TracebackType
++from typing import Self
++
++__all__ = ["OutputReservation", "read_bounded_file", "reserve_output"]
++
++
++class OutputReservation:
++    """A single-owner reservation for one project-relative output.
++
++    ``arm`` is the only operation allowed to unlink the pre-run regular file;
++    ``consume`` opens exactly the held parent/basename and consumes the
++    reservation once.  Unsafe filesystem objects raise
++    ``AssayError(ERROR, UNREADABLE_ARTIFACT)``.  Missing output returns ``None``.
++    Invalid state transitions are programmer defects and raise ``RuntimeError``.
++    ``close`` is idempotent and never mutates the artifact path.
++    """
++
++    @property
++    def artifact(self) -> str:
++        raise NotImplementedError("P20 TODO: expose the declared spelling")
++
++    @property
++    def limit(self) -> int:
++        raise NotImplementedError("P20 TODO: expose the fixed caller limit")
++
++    def arm(self) -> None:
++        """Verify the reserved object is unchanged, then remove it if regular."""
++        raise NotImplementedError("P20 TODO: RESERVED -> ARMED")
++
++    def consume(self) -> bytes | None:
++        """Read at most ``limit + 1`` bytes and consume/close this handle."""
++        raise NotImplementedError("P20 TODO: ARMED -> CONSUMED")
++
++    def close(self) -> None:
++        """Close the owned descriptor without unlinking; safe more than once."""
++        raise NotImplementedError("P20 TODO: RESERVED/ARMED -> CLOSED")
++
++    def __enter__(self) -> Self:
++        return self
++
++    def __exit__(
++        self,
++        exc_type: type[BaseException] | None,
++        exc: BaseException | None,
++        traceback: TracebackType | None,
++    ) -> None:
++        self.close()
++
++
++def reserve_output(
++    project_root: Path,
++    artifact: str,
++    *,
++    limit: int,
++) -> OutputReservation:
++    """Reserve a lexical project-relative output without mutating it.
++
++    Open ``project_root`` and every existing parent with directory-relative
++    ``O_DIRECTORY|O_NOFOLLOW`` operations.  Reject absolute/empty/dot/dotdot
++    spellings, missing/symlinked parents, symlink/special destinations, and a
++    non-positive limit.  Hold only the final parent descriptor on success.
++    """
++    raise NotImplementedError("P20 TODO: construct RESERVED handle")
++
++
++def read_bounded_file(
++    project_root: Path,
++    artifact: str,
++    *,
++    limit: int,
++) -> bytes | None:
++    """Read an existing project-relative regular file safely, or return None.
++
++    This is the no-unlink sibling used for inputs not produced by the current
++    command.  It applies the same no-symlink traversal, ``O_NONBLOCK`` open,
++    regular-file ``fstat``, and ``limit + 1`` read ceiling as ``consume``.
++    """
++    raise NotImplementedError("P20 TODO: bounded descriptor-relative read")

@@ -1,7 +1,8 @@
 # Assay P20–P32 pre-dispatch adversarial specification review
 
-> **Review date:** 2026-08-08
+> **Review date:** 2026-08-08; P20 JIT disposition updated 2026-08-09
 > **Roadmap input anchor:** `2f2167f5928e5deacd93f1e9565238aef8acfe32`
+> **P20 JIT anchor:** `8aad3dc3b190915bb27881a0f3004b339aeef9c2`
 > **Authoring doctrine:** `nyxloom/reference/AUTHORING.md` revision
 > `2026-08-08-r5`
 > **Scope:** every outstanding handoff P20–P32 after the A-167 recarve
@@ -13,12 +14,13 @@
 
 ## Result first
 
-All thirteen frontmatter packages pass `nyxloom lint`. **None is READY for
-implementation today.** This is expected and is now stated in every handoff:
-P20 is next but requires its carver-owned proof freeze; P21–P32 are provisional
-until their predecessor merges. Lint proves machine shape only. It does not
-create the skeletons, goldens, pinned external inputs, or controlled failing
-negatives that AUTHORING requires.
+All thirteen frontmatter packages pass `nyxloom lint`. **P20 is now READY;
+P21–P32 are not.** P20's carver-owned proof freeze is complete at its JIT
+anchor; the exact rerun and six-part disposition live in
+`assay-P20-JIT-CARVE.md`. The successors remain provisional until their
+predecessor merges. Lint proves machine shape only; it does not create the
+skeletons, goldens, pinned external inputs, or controlled failing negatives
+that AUTHORING requires.
 
 This audit was not ceremonial. It found and corrected seven contract defects in
 the recarve before reaching the dispositions below:
@@ -46,9 +48,9 @@ the recarve before reaching the dispositions below:
 
 | package | remaining blocker before ACTIVE | authority that resolves it |
 |---|---|---|
-| P20 | exact safe-I/O skeleton and hostile Git/artifact fixtures are absent; `C.UTF-8` and the fixed Git argv/environment have not been witnessed in the real gate | Sol xhigh JIT carve/probe |
-| P21 | P20's landed terminal API is unknown; the packet intentionally abbreviates unchanged v4 fields and has no complete valid/invalid model/schema/raw-verifier goldens yet | Sol xhigh after P20; Opus implementation |
-| P22 | P20 Git and P21 terminal signatures are not landed; private-object-pack, malformed-tree, symlink and limit skeleton/assets are absent | Sol xhigh after P21; Opus implementation |
+| P20 | **closed:** compiling safe-I/O skeleton, locked acceptance, handwritten artifact, hostile Git tracer, `C.UTF-8`, explicit Git-dir/work-tree anchoring and real-gate witness are committed | `assay-P20-JIT-CARVE.md` / A-173–A-176 |
+| P21 | P20's terminal mapping/API is now frozen but not landed; the packet intentionally abbreviates unchanged v4 fields and has no complete valid/invalid model/schema/raw-verifier goldens yet | Sol xhigh after P20 merge; Opus implementation |
+| P22 | P20 Git is frozen but not landed and P21 terminal signatures are not landed; private-object-pack, malformed-tree, symlink and limit skeleton/assets are absent | Sol xhigh after P21; Opus implementation |
 | P23 | P22's real public signatures are unknown; Python site-parity manifests, process ledger and injected-budget fixtures are absent | post-P22 JIT freeze; Sonnet implementation |
 | P24 | no positive offline wheelhouse/build manifest or actual positive release-manifest golden is committed | post-P23 pre-dispatch freeze |
 | P25 | exact Topos/vbpub commit, literal patch, manifest, expected v4 artifact, wheel hash and independent command are not pinned | post-P24 pre-dispatch freeze |
@@ -86,8 +88,9 @@ handoff names the missing proof and returns NOT READY until it exists.
 The normative solution structures are present, but the following material is
 deliberately not yet present and therefore prevents READY:
 
-- P20/P21/P22/P29 lack the mandatory compiling skeletons and witnessed failing
-  acceptance negatives assigned to Sol.
+- P21/P22/P29 lack the mandatory compiling skeletons and witnessed failing
+  acceptance negatives assigned to Sol. P20's are now frozen under
+  `nyxloom-trove/carve-assets/P20/`.
 - P21 lacks a complete canonical v4 document and two complete invalid documents
   per new public shape. Its excerpt is useful design, not a migration fixture.
 - P23 lacks a locked Python pre/post `MutationSite` parity corpus and a process-
@@ -149,7 +152,7 @@ the detailed rows live in each handoff.
 
 | package | disposition | why |
 |---|---|---|
-| P20 | **NOT READY — NEXT/JIT FREEZE** | contract corrected; mandatory skeleton/probes/assets absent |
+| P20 | **READY — IMPLEMENT NEXT** | exact review rerun; contract corrected; locked skeleton/probes/artifact witnessed; real gate green |
 | P21 | **NOT READY — PROVISIONAL** | depends on P20; full migration goldens absent |
 | P22 | **NOT READY — PROVISIONAL** | depends on P21/P20 landed boundaries; security fixtures absent |
 | P23 | **NOT READY — PROVISIONAL** | depends on P22 signatures; common-site parity/ledger assets absent |
@@ -163,7 +166,6 @@ the detailed rows live in each handoff.
 | P31 | **NOT READY — PROVISIONAL** | cause-sensitive real fixtures/artifacts absent |
 | P32 | **NOT READY — PROVISIONAL** | pinned producer closure and parser/source goldens absent |
 
-The intended next action is not to recarve all thirteen again. JIT-freeze P20,
-rerun this exact review against its current context until READY, implement/review/
-merge it, then update only the successor horizon affected by what actually
-landed.
+The intended next action is not to recarve all thirteen again. Implement,
+independently review, and merge READY P20, then update only the successor
+horizon affected by what actually landed and JIT-freeze P21.

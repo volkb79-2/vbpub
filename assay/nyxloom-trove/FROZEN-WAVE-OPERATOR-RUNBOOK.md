@@ -62,6 +62,65 @@ affected dispatch.
 8. End the package run. Reuse Luna and the immutable bases for the next package;
    never reuse an implementation/review child.
 
+## Exact P20 pilot start after the JIT-freeze commit
+
+P20's Sol JIT step is already complete. Its READY evidence is
+`reports/assay-P20-JIT-CARVE.md`; do not route it back to Sol unless the main
+diff after this commit changes a P20 contract, asset, source owner, or gate.
+
+1. In `/workspaces/vbpub`, require a clean shared checkout and record current
+   truth:
+
+   ```sh
+   git status --short
+   git branch --show-current
+   git rev-parse HEAD
+   ```
+
+   Stop if status is nonempty or the branch is not `main`. Call the resulting
+   full OID `P20_WAVE_HEAD`; it is the commit containing the P20 JIT freeze, not
+   P20's earlier `input_revision` anchor.
+2. Start one **fresh Luna high** session. Paste the entire
+   `FROZEN-WAVE-CONTROLLER-PROMPT.md`, then append this filled run block with
+   the literal `P20_WAVE_HEAD` value:
+
+   ```text
+   RUN INPUT — BEGIN
+   current handoff: P20
+   current handoff file: assay/nyxloom-trove/handoffs/assay-P20-repository-artifact-boundary-integrity.md
+   immediate successor file: assay/nyxloom-trove/handoffs/assay-P21-verdict-v4-evidence-contract.md
+   expected current main HEAD: <P20_WAVE_HEAD>
+   epoch: 0
+   evolving carver identity: C-sol-0 (this existing Sol thread; P20 JIT is already READY)
+   carver last acknowledged main OID: <P20_WAVE_HEAD>
+   implementer base for the assigned model: MISSING
+   reviewer base: MISSING
+   prior adjudicated implementer brief: NONE
+   prior adjudicated reviewer brief: NONE
+   controller state directory: /workspaces/vbpub/.worktrees/_control/assay-P20-P32
+   experiment condition: warm-fork
+   RUN INPUT — END
+   ```
+
+3. Luna must first return its preflight facts: observed full HEAD, P20 READY
+   report/asset hashes, selected route `Sonnet xhigh -> fresh Opus xhigh`, state
+   directory, and whether `I-sonnet-0`/`R-opus-0` were created. Do not accept a
+   worktree or implementation child before those facts agree with Git.
+4. When Luna asks to create the immutable bases, allow exactly two top-level
+   fresh Claude sessions: Sonnet xhigh implementer orientation and Opus xhigh
+   reviewer orientation. Each must end at `READY_TO_FORK`, be recorded in
+   schema-v2 `bases.yaml`, and remain unmodified. P20 then runs only in forked
+   children.
+5. Keep this Sol thread available as `C-sol-0`; it has no ordinary P20 turn.
+   After Opus accepts/repairs and Luna merges P20, Luna writes the adjudicated
+   P20 brief and `carver/P21.md`. Bring that packet plus the exact pre-merge to
+   post-merge OID range back here for P21 JIT carving.
+
+If the CLI cannot actually fork from an immutable top-level session, or Luna
+cannot obtain/cache-account its real provider session id, stop the pilot and
+record `NOT_READY_WORKFLOW`; do not silently substitute a fresh full-orientation
+implementation and call it the warm-fork condition.
+
 ## Cache and experiment discipline
 
 - Record provider usage per request, not only totals. Cache-read tokens are the

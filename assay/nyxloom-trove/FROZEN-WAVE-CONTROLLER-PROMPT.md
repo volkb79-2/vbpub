@@ -60,8 +60,10 @@ STARTUP SAFETY
    processing this handoff. Do not race another dispatcher or shared-main merge.
 3. Confirm the handoff filename equals its frontmatter id, its dependency is
    merged, and `input_revision` is an ancestor of current main.
-4. Run `nyxloom lint` for the Assay trove. Lint-green is syntax only, never
-   dispatch readiness.
+4. Run `nyxloom lint` for the current handoff and outstanding P20–P32 packets.
+   Record the known historical P00/P01 full-trove lint debt separately; it is
+   not a new P20 regression. Lint-green is syntax only, never dispatch
+   readiness.
 5. Read `## Dispatch contract`. If it says JIT-FREEZE REQUIRED, route to the
    named Sol/Opus carver first. The packet must contain C-sol-0's last
    acknowledged OID, current HEAD, predecessor merge range and name-status/
@@ -72,6 +74,12 @@ STARTUP SAFETY
    carver-owned skeleton/golden/hostile fixture to exist and have a witnessed
    failing pre-implementation negative. If any is absent, stop NOT_READY. Never
    let the implementer author its own independent acceptance oracle.
+6. If `## Dispatch contract` already says READY, verify the cited carver report,
+   every locked asset/hash and controlled-red witness, and that its readiness
+   commit is an ancestor of current main. Inspect every later commit touching
+   the handoff, assets, named source owners, decisions, doctrine, or gate. Any
+   unexplained semantic drift routes to Sol; READY prose is evidence to check,
+   not a durable bypass around JIT review.
 
 FROZEN BASE POLICY
 A base is keyed by repo, role, provider, model, effort, and epoch. It is read-only

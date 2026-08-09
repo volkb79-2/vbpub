@@ -8,10 +8,11 @@
 > adversarial pass reproduced false-PASS/integrity failures in exact command
 > reuse, monorepo mutation isolation, stale canary coverage, commit binding,
 > and ambient Git repository selection. The cost-aware recarve is a serial
-> **P20 → … → P32** queue; P20 is next (A-167). Three original bundles were
+> **P20 → … → P32** queue; P20 is next and JIT-READY against anchor `8aad3dc3`
+> with locked carver assets and an exact adversarial review (A-176). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
-> microtasks. Every outstanding packet is provisional until its predecessor
-> merges and its named JIT proof assets pass the exact pre-dispatch review.
+> microtasks. P21–P32 remain provisional until their predecessor merges and
+> their named JIT proof assets pass the exact pre-dispatch review.
 >
 > **Reachable does not mean proven safe.** Sol finding 1 was about
 > reachability, and R3's own reachability is what P19 delivered — the
@@ -302,7 +303,10 @@ consumer's trove after Assay's wheel contract is real; it is not an Assay
 handoff with authority to edit another project.
 
 **Implementation status of that series: P15 through P19 are MERGED. P20
-is next.** The execution order is:
+is READY for Sonnet xhigh implementation; it is not implemented.** Its frozen
+packet is `handoffs/assay-P20-repository-artifact-boundary-integrity.md`, its
+locked acceptance material is `carve-assets/P20/`, and its JIT disposition is
+`reports/assay-P20-JIT-CARVE.md`. The execution order is:
 
 `P20 repository/artifact boundary → P21 verdict v4 → P22 committed snapshot →
 P23 exact reexecution integration → P24 wheel → P25 real Python qualification →

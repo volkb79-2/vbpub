@@ -257,6 +257,28 @@ numbers, plus srdm's `considered` count so it explains itself — *"3 changed
 file(s) under the roots, none contributing executable non-test lines (0/0)"*.
 Identical strings for the two cases is what started all of this.
 
+**P20 makes “artifact absent” explicit and binds output to one invocation
+(A-174).** A clean command that produces no declared coverage file is
+`NO_MEASUREMENT/EMPTY_COVERAGE`, the same truthful absence as a well-formed
+profile containing zero files. It is not an unreadable artifact and may not be
+replaced by a stale pre-run file. The runner reserves the project-relative
+output before execution, unlinks an unchanged prior regular file only after all
+refusals pass, and consumes the new output exactly once through its held parent
+descriptor. Reads are nonblocking, regular-file-only, no-follow, and bounded to
+16 MiB before UTF-8 decoding. A path precheck followed by `read_text` is not
+equivalent: it can reopen a swapped parent/object and has no work bound.
+
+**Post-command dirt precedes every higher-rigor judgment (A-175).** The initial
+clean-tree guard proves what existed before the command; it says nothing about
+what the command left behind. Immediately after the command, before consuming
+coverage or starting R1/R2/R3, Assay checks the whole Git-visible repository.
+If it is dirty, the real R0 command claim remains when higher rigors exist and
+all declared higher claims become `NO_MEASUREMENT/DIRTY_TREE`; an R0-only lane
+uses that terminal on R0 itself. Assay never cleans the consumer tree to make a
+claim true. P23 moves baseline/repeated execution into committed snapshots,
+which is the later boundary that also removes ignored/untracked inputs from
+those executions.
+
 ### Rollup precedence
 
 `ERROR > NO_MEASUREMENT > BUDGET_EXCEEDED > FAIL > INCONCLUSIVE`, and `PASS`
@@ -300,6 +322,18 @@ and both canary halves. Re-reading `Lane` inside a scratch directory loses
 caller appends and resolved passthrough values, producing a judgment about a
 different command than the artifact records. Relocation changes only the
 snapshot root beneath the plan's project-relative working-directory identity.
+
+**Git itself is a controlled input (A-173).** Assay resolves one absolute Git
+executable from the caller's declared `PATH`, supplies a replacement environment
+with no ambient repository/config/object selectors, ignores replacement refs,
+and anchors substantive commands with explicit resolved `--git-dir` and
+`--work-tree` values. `-C` alone is not an identity boundary: a repository-local
+`core.worktree` can redirect topology, and a replace ref can rewrite the object
+graph without changing the displayed ref spelling. Diff additionally disables
+external diff and textconv execution; commit disables configured signing in
+addition to all hooks. All output remains raw bytes until the
+single UTF-8 decoder, so locale and universal-newline behavior cannot silently
+change path or patch identity.
 
 ### Binding the effective judge policy (v3)
 

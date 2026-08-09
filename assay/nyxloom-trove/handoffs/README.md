@@ -14,7 +14,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 
 | # | Claim boundary | class | JIT carve | implement | independent review |
 |---|---|---|---|---|---|
-| P20 | repository/artifact integrity | 2c | Sol xhigh required | Sonnet xhigh | fresh Opus xhigh |
+| P20 | repository/artifact integrity | 2c | **complete against `8aad3dc3` (A-176; proof commit contains report)** | Sonnet xhigh | fresh Opus xhigh |
 | P21 | verdict v4 evidence contract | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
 | P22 | committed-object snapshot substrate | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
 | P23 | exact reexecution integration | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
@@ -28,11 +28,13 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-Every package currently says `PROVISIONAL` or `JIT-FREEZE REQUIRED`. That is
-intentional, not missing ceremony. Before ACTIVE, its named proof assets are
-committed and AUTHORING's exact pre-dispatch adversarial specification review
-must return READY at the actual post-predecessor HEAD. P20 is next; no later
-package should be dispatched merely because `nyxloom lint` accepts its header.
+P20 is **READY**: its JIT proof assets and exact pre-dispatch adversarial
+specification review are committed under `nyxloom-trove/carve-assets/P20/` and
+`nyxloom-trove/reports/assay-P20-JIT-CARVE.md`. P21–P32 remain
+`PROVISIONAL`/`JIT-FREEZE REQUIRED`. Before any of them becomes ACTIVE, its
+named proof assets are committed and the same review must return READY at the
+actual post-predecessor HEAD. No later package should be dispatched merely
+because `nyxloom lint` accepts its header.
 
 The dependency chain is exactly:
 

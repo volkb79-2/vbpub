@@ -1,0 +1,37 @@
+{
+  "schema_version": 3,
+  "assay_version": "p20-acceptance",
+  "lane": "package",
+  "commit": "<HEAD>",
+  "outcome": "NO_MEASUREMENT",
+  "exit_code": 3,
+  "started": "2026-08-09T10:00:00+00:00",
+  "ended": "2026-08-09T10:00:02+00:00",
+  "reason_code": "DIRTY_TREE",
+  "declared_rigor": ["R0", "R1"],
+  "declared_evidence": [],
+  "argv_declared": ["/bin/sh", "-c", "<COMMAND>"],
+  "argv_appended": [],
+  "argv_effective": ["/bin/sh", "-c", "<COMMAND>"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "DIRTY_TREE"
+    }
+  ],
+  "evidence": []
+}
