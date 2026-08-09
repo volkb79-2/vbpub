@@ -82,6 +82,7 @@ package's ``scope.touch``).
 from __future__ import annotations
 
 import os
+import selectors
 import shutil
 import stat as stat_module
 import subprocess
@@ -126,16 +127,107 @@ _REPLACEMENT_ENV: Mapping[str, str] = MappingProxyType(
 #: Applied to every substantive command (bootstrap and real alike): disables
 #: hooks, fsmonitor, and commit signing, and turns off the half of git's path
 #: quoting this project can (P15/A-134's own docstring, below).
+#:
+#: ``core.excludesFile=`` (empty) is the REVIEW repair of an inconsistency in
+#: the original set: :data:`_REPLACEMENT_ENV` already neutralises a SYSTEM or
+#: GLOBAL excludes file (``GIT_CONFIG_NOSYSTEM``/``GIT_CONFIG_GLOBAL``, plus
+#: the absent ``HOME``/``XDG_*`` that git's built-in default would resolve
+#: through), but a repository-LOCAL ``core.excludesFile`` in ``.git/config``
+#: survived all of it -- so the same untracked file was reported or hidden
+#: depending only on WHICH config file named the excludes list. Verified
+#: empirically against a real git binary: with a local
+#: ``core.excludesFile`` naming a file containing ``*``, an untracked
+#: ``leftover.bin`` vanished from ``status --porcelain -z``; with this
+#: override it is reported again, while a path ignored by the repository's
+#: own TRACKED ``.gitignore`` (the mechanism the declared coverage artifact's
+#: exemption actually relies on -- P20 work item 6) stays correctly hidden.
+#: This closes the config half of the dirty-set attack; the ``.git/info/
+#: exclude`` half is repository CONTENT that no config option can reach and
+#: is deliberately NOT worked around here (see this module's own
+#: ``dirty_paths`` note).
 _FIXED_CONFIG: tuple[str, ...] = (
     "-c", "core.quotePath=false",
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=",
     "-c", "commit.gpgSign=false",
+    "-c", "core.excludesFile=",
 )
+
+#: The fixed ceiling on how many bytes of a git child's stdout this process
+#: will retain (O4: a FIXED byte bound, never an ambient or elapsed-time
+#: guess). ``subprocess.run(capture_output=True)`` buffers whatever the child
+#: writes, so before this bound a hostile or merely enormous repository could
+#: make a single ``diff``/``status`` allocate without limit. Deliberately
+#: GENEROUS rather than tight: like AUTHORING.md 3b.A's failsafe timeout, it
+#: must never be the thing that decides a verdict on a legitimate repository
+#: -- it exists to make the work finite, not to judge a diff's size.
+MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024
+
+#: stderr is only ever used to build an error message (truncated to 200
+#: characters at every call site), so it needs far less headroom than stdout.
+_MAX_GIT_STDERR_BYTES = 64 * 1024
 
 
 def _git_failed(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED)
+
+
+def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
+    """Run *argv* with the sanitized environment and return
+    ``(returncode, stdout, stderr)`` with BOTH streams bounded.
+
+    ``subprocess.run(capture_output=True)`` -- what every call site here used
+    before this review repair -- accumulates the child's whole output in
+    memory, so the size of a ``diff`` or ``status`` was decided by the
+    repository rather than by assay (O4's "fixed byte/path/work bounds").
+    Both pipes are drained concurrently through :mod:`selectors`, which is
+    what keeps a large stderr from deadlocking against a large stdout; once
+    stdout passes :data:`MAX_GIT_OUTPUT_BYTES` the child is killed and the
+    remaining bytes are discarded rather than retained, so the work stays
+    finite instead of merely un-retained. Overflow is reported to the caller
+    as a third element the caller turns into ``ERROR``/``GIT_FAILED``.
+    """
+    with subprocess.Popen(
+        argv,
+        env=dict(_REPLACEMENT_ENV),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as proc:
+        selector = selectors.DefaultSelector()
+        selector.register(proc.stdout, selectors.EVENT_READ, "out")
+        selector.register(proc.stderr, selectors.EVENT_READ, "err")
+        out = bytearray()
+        err = bytearray()
+        overflowed = False
+        try:
+            while selector.get_map() and not overflowed:
+                for key, _ in selector.select():
+                    chunk = key.fileobj.read1(65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if key.data == "out":
+                        out += chunk
+                        if len(out) > MAX_GIT_OUTPUT_BYTES:
+                            # Stop reading, stop retaining, and stop the
+                            # child: draining an oversized stream would keep
+                            # the WORK unbounded even once the MEMORY is not.
+                            overflowed = True
+                            del out[:]
+                            proc.kill()
+                            break
+                    else:
+                        err += chunk[: _MAX_GIT_STDERR_BYTES - len(err)]
+        finally:
+            selector.close()
+        returncode = proc.wait()
+    if overflowed:
+        raise _git_failed(
+            f"git {' '.join(argv[-3:])} produced more than "
+            f"{MAX_GIT_OUTPUT_BYTES} bytes of output; refusing to buffer an "
+            f"unbounded amount of repository data"
+        )
+    return returncode, bytes(out), bytes(err)
 
 
 def _resolve_git_executable() -> Path:
@@ -221,13 +313,13 @@ def _resolve_repo(repo: Path, git_executable: Path) -> _ResolvedRepo:
         "rev-parse",
         "--absolute-git-dir",
     ]
-    proc = subprocess.run(argv, env=dict(_REPLACEMENT_ENV), capture_output=True)
-    if proc.returncode != 0:
+    returncode, stdout, stderr = _run_bounded(argv)
+    if returncode != 0:
         raise _git_failed(
             f"git rev-parse --absolute-git-dir failed resolving {repo_top} "
-            f"({proc.returncode}): {proc.stderr.decode('utf-8', errors='replace').strip()[:200]}"
+            f"({returncode}): {stderr.decode('utf-8', errors='replace').strip()[:200]}"
         )
-    git_dir_text = _decode_or_reject(proc.stdout, "the resolved git directory").strip()
+    git_dir_text = _decode_or_reject(stdout, "the resolved git directory").strip()
     git_dir = Path(git_dir_text)
     if not git_dir.is_absolute() or not git_dir.is_dir():
         raise _git_failed(
@@ -295,15 +387,15 @@ def _run_bytes(repo: Path, *args: str) -> bytes:
         str(resolved.repo_top),
         *_prepare_subcommand_args(args),
     ]
-    proc = subprocess.run(argv, env=dict(_REPLACEMENT_ENV), capture_output=True)
-    if proc.returncode != 0:
+    returncode, stdout, stderr = _run_bounded(argv)
+    if returncode != 0:
         raise AssayError(
-            f"git {' '.join(args)} failed ({proc.returncode}): "
-            f"{proc.stderr.decode('utf-8', errors='replace').strip()[:200]}",
+            f"git {' '.join(args)} failed ({returncode}): "
+            f"{stderr.decode('utf-8', errors='replace').strip()[:200]}",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.GIT_FAILED,
         )
-    return proc.stdout
+    return stdout
 
 
 def _decode_or_reject(raw: bytes, what: str) -> str:
@@ -410,6 +502,22 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
     ``measurability.check_dirty_tree``, which does that matching by resolved
     filesystem path rather than by string, and is where the distinction
     actually needs to be correct.
+
+    **Known, deliberately un-worked-around residual (reviewer, P20).** What
+    counts as "untracked" is decided by git's ignore machinery, and one input
+    to it is out of reach of everything above: a repository's own
+    ``.git/info/exclude``. System/global excludes are neutralised by
+    :data:`_REPLACEMENT_ENV`, and a repository-LOCAL ``core.excludesFile`` by
+    :data:`_FIXED_CONFIG`'s ``core.excludesFile=`` — but ``.git/info/exclude``
+    is repository CONTENT, not configuration, and no command-line option
+    disables it (verified empirically: with ``.git/info/exclude`` set to
+    ``*``, an untracked file stays invisible to ``status`` even under the
+    full boundary above). Reporting ignored paths instead
+    (``--ignored=matching``) is NOT a drop-in repair: the declared coverage
+    artifact is REQUIRED to be git-ignored (P20 work item 6 / A-140), so a
+    correct version must decide which ignored paths are legitimately exempt
+    — a policy question this function cannot answer and must not invent
+    (AGENTS.md 4.2a). Routed to the carver rather than guessed.
     """
     raw = _run_bytes(repo, "status", "--porcelain=v1", "-z")
     # ``-z`` NUL-TERMINATES every record rather than separating them, so real

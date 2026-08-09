@@ -221,3 +221,72 @@ def test_arm_refuses_an_object_that_appeared_after_reservation_but_before_arming
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert (tmp_path / "cov.json").read_bytes() == b"unexpected"
     reserved.close()
+
+
+# --- Reviewer (P20): the "headline attacks" also need a GATED oracle ----------
+#
+# This module's own docstring above defers swap-before-arm, the relinked prior
+# inode, and the consumed-handle transition to the locked acceptance suite.
+# That suite is real evidence, but the controller runs it SEPARATELY: the
+# registered gate's argv is `python -m pytest tests -q ...`, so nothing under
+# `nyxloom-trove/carve-assets/` is collected by the project's ship signal.
+# Measured, not assumed: before these tests, `safeio.py` lines 186/208/273 --
+# each of them one of those attacks' refusal -- were uncovered by the gated
+# suite, so deleting any one of the three guards would have kept it green.
+
+
+def test_arm_refuses_when_the_reserved_object_was_swapped(tmp_path: Path):
+    """Gated equivalent of the locked swap-before-arm attack: the object the
+    reservation captured is gone, so `arm` must NOT unlink whatever now sits
+    at that name -- removing it could destroy unrelated content."""
+    path = tmp_path / "cov.json"
+    path.write_bytes(b"first")
+    reserved = safeio.reserve_output(tmp_path, "cov.json", limit=LIMIT)
+    path.unlink()
+    path.write_bytes(b"replacement")
+
+    with pytest.raises(AssayError) as excinfo:
+        reserved.arm()
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert path.read_bytes() == b"replacement", "the swapped-in file was destroyed"
+    reserved.close()
+
+
+def test_consume_twice_raises_rather_than_reusing_a_released_descriptor(
+    tmp_path: Path,
+):
+    """The state machine's whole reason for being mutable: a consumed handle
+    has released its integer descriptor, and the OS may already have reassigned
+    that number to something unrelated. A second consume is a programmer defect,
+    never a second read."""
+    reserved = safeio.reserve_output(tmp_path, "cov.json", limit=LIMIT)
+    reserved.arm()
+    assert reserved.consume() is None
+
+    with pytest.raises(RuntimeError):
+        reserved.consume()
+
+
+def test_consume_refuses_output_reachable_through_a_second_hard_link(
+    tmp_path: Path,
+):
+    """Gated equivalent of the locked relinked-prior-inode attack: `arm`
+    unlinked the stale artifact, but a second link kept its content alive and
+    recreated the name. A single-owner output this run produced has exactly one
+    name, so a link count above one means the bytes were not produced here."""
+    prior = tmp_path / "cov.json"
+    held = tmp_path / "held-link"
+    prior.write_bytes(b"stale")
+    os.link(prior, held)
+
+    reserved = safeio.reserve_output(tmp_path, "cov.json", limit=LIMIT)
+    reserved.arm()
+    os.link(held, prior)
+
+    with pytest.raises(AssayError) as excinfo:
+        reserved.consume()
+
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    reserved.close()

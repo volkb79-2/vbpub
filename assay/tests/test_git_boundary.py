@@ -158,14 +158,14 @@ def test_a_resolved_git_dir_that_is_not_an_existing_absolute_directory_is_refuse
     project.mkdir()
     (project / ".git").mkdir()
 
-    real_run = subprocess.run
+    real_bounded = git_module._run_bounded
 
-    def fake_run(argv, **kwargs):
+    def fake_bounded(argv):
         if "--absolute-git-dir" in argv:
-            return subprocess.CompletedProcess(argv, 0, stdout=b"relative/not/absolute\n", stderr=b"")
-        return real_run(argv, **kwargs)
+            return 0, b"relative/not/absolute\n", b""
+        return real_bounded(argv)
 
-    monkeypatch.setattr(git_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_module, "_run_bounded", fake_bounded)
     git_executable = git_module._resolve_git_executable()
     with pytest.raises(AssayError) as excinfo:
         git_module._resolve_repo(project, git_executable)

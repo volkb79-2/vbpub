@@ -352,6 +352,63 @@ def build_r0_claim(result: CommandResult) -> Claim:
     )
 
 
+#: The fixed ceiling on one source file read for coverage classification or
+#: mutation-target resolution (O4: a FIXED byte bound, never an ambient
+#: guess). Reviewer repair: both call sites previously used
+#: ``Path.read_text``, which the project's own DESIGN-GUIDE 6 already names
+#: as not equivalent to the safe seam -- "it can reopen a swapped
+#: parent/object and has no work bound" -- while
+#: :func:`assay.safeio.read_bounded_file` had been built for exactly this and
+#: left unused here. Reproduced before repair: a 24 MiB tracked source file
+#: was read whole, 8 MiB past this module's own coverage-artifact ceiling.
+#: Sized well above any plausible hand-written source file so it can never
+#: decide a verdict on a legitimate repository, only make the work finite.
+MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
+
+
+def _read_bounded_source_text(repo_top: Path, path: str, *, why: str) -> str:
+    """Read one repo-top-relative source file through the fixed bounded
+    safe-open seam, or refuse with ``ERROR``/``UNREADABLE_ARTIFACT``.
+
+    Routes through :func:`assay.safeio.read_bounded_file`, so the same
+    no-follow ``dir_fd`` traversal, ``O_NONBLOCK`` open, regular-file
+    ``fstat`` and ``limit + 1`` ceiling that already guard the coverage
+    artifact now also guard every source read (P20 work item 5's "bounded
+    source reads", O4). Three previously-unguarded shapes become the exact
+    terminal the packet's own translation table already reserves for them --
+    a non-regular file (a FIFO or device could BLOCK the whole judgment under
+    ``read_text``), a symlink (silently followed before, potentially right
+    out of the repository), and an oversized file. A file the diff names but
+    that is absent on disk keeps its previous meaning: ``read_text`` raised
+    ``FileNotFoundError`` -> ``OSError`` -> ``UNREADABLE_ARTIFACT``, and
+    ``None`` from the bounded read renders the identical pair here.
+    """
+    try:
+        raw = safeio.read_bounded_file(repo_top, path, limit=MAX_SOURCE_FILE_BYTES)
+    except AssayError as exc:
+        raise AssayError(
+            f"source file {path!r} could not be read for {why}: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+    if raw is None:
+        raise AssayError(
+            f"source file {path!r} is named by the diff but is absent from "
+            f"the work tree; it could not be read for {why}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AssayError(
+            f"source file {path!r} is not valid UTF-8 and could not be read "
+            f"for {why}: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+
+
 def evaluate_r1(
     lane: Lane,
     *,
@@ -446,15 +503,7 @@ def evaluate_r1(
             on_added_resolved(added)
 
         def read_source_text(path: str) -> str:
-            try:
-                return (repo_top / path).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                raise AssayError(
-                    f"source file {path!r} could not be read for coverage "
-                    f"classification: {exc}",
-                    outcome=Outcome.ERROR,
-                    reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-                ) from exc
+            return _read_bounded_source_text(repo_top, path, why="coverage classification")
 
         result = evaluate_coverage(
             added=added,
@@ -816,13 +865,28 @@ def run_lane(
     (AGENTS.md 4.2a) asks for over silently deleting to make the tree
     look clean.
 
-    **P20 (A-175): post-command dirt precedes every higher-rigor
-    judgment.** Immediately after the command returns -- before the
-    reservation is consumed and before any of R1/R2/R3 runs -- the whole
-    Git-visible repository is checked again. The pre-run guard (step 2)
+    **P20 (A-175): the post-command repository check precedes every
+    higher-rigor judgment.** Immediately after the command returns -- before
+    the reservation is consumed and before any of R1/R2/R3 runs -- the whole
+    Git-visible repository is compared against the commit this function
+    itself resolved before the command ran. The pre-run guard (step 2)
     proves what existed BEFORE the command; it says nothing about what the
     command itself left behind (a tracked test/support file it happened to
-    modify, for instance). If the tree is dirty now, the REAL R0 claim is
+    modify, for instance).
+
+    That comparison is TWO facts, not one (reviewer repair): the tree must
+    still be clean, AND ``HEAD`` must still be the resolved pre-run commit.
+    Dirt alone is not sufficient, because a command that COMMITS leaves a
+    perfectly clean tree -- and ``evaluate_r1`` re-reads ``HEAD`` live
+    through :func:`assay.measurability.check_base_is_head`, so it would then
+    measure a commit the artifact does not name. Reproduced end to end
+    before the repair: a lane whose command committed away its own uncovered
+    line turned a real ``FAIL``/``UNCOVERED_LINES`` at 50.0% into ``PASS``
+    at 100.0%, with the verdict still recording the pre-run commit. The
+    pre-run ``HEAD`` is read here from git rather than taken from the
+    caller's *commit* argument, which is an identity assay is asked to
+    RECORD rather than one it has verified. If either fact fails, the REAL
+    R0 claim is
     preserved when a higher rigor is also declared and every OTHER declared
     claim renders ``NO_MEASUREMENT``/``DIRTY_TREE`` without running; for an
     R0-only lane, R0 itself carries that terminal instead of its real
@@ -953,6 +1017,13 @@ def run_lane(
                 clock=clock,
             )
 
+    # A-175 / work item 6: the post-command comparison is against the RESOLVED
+    # pre-run commit, so that commit is read HERE, from git, at the same point
+    # the pre-run cleanliness guard reads the tree -- never taken from the
+    # caller's own `commit` label, which is an identity assay is asked to
+    # record rather than a fact it has verified.
+    pre_run_head = git.head_rev(repo)
+
     if git.dirty_paths(repo):
         if reservation is not None:
             reservation.close()
@@ -996,7 +1067,19 @@ def run_lane(
     # A-175: post-command dirt precedes every higher-rigor judgment. The
     # pre-run guard above proves what existed BEFORE the command; it says
     # nothing about what the command left behind.
-    if git.dirty_paths(repo):
+    #
+    # Reviewer repair (work item 6, "compare the whole Git-visible repository
+    # against the RESOLVED PRE-RUN COMMIT"): dirt alone is not that
+    # comparison. A command that COMMITS leaves a perfectly clean tree, so a
+    # dirt-only check passes -- while `evaluate_r1` re-reads HEAD live
+    # (`measurability.check_base_is_head`) and measures the NEW commit, and
+    # `assemble_verdict` records the pre-run one. Reproduced end to end: a
+    # lane whose command committed away its own uncovered line turned a real
+    # FAIL/UNCOVERED_LINES at 50.0% into PASS at 100.0%, with the artifact
+    # still naming the commit that was never measured. Both halves now share
+    # A-175's single existing DIRTY_TREE terminal and its exact R0/higher
+    # precedence -- no new reason code, no schema change.
+    if git.dirty_paths(repo) or git.head_rev(repo) != pre_run_head:
         if reservation is not None:
             reservation.close()
         ended = iso_utc(clock())
@@ -1127,15 +1210,9 @@ def run_lane(
                     # P20 work item 5: an expected filesystem/Unicode
                     # failure here must still land inside a complete R2
                     # claim, not propagate past `run_lane` uncaught.
-                    try:
-                        return (repo_top / path).read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError) as exc:
-                        raise AssayError(
-                            f"source file {path!r} could not be read for "
-                            f"mutation target resolution: {exc}",
-                            outcome=Outcome.ERROR,
-                            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-                        ) from exc
+                    return _read_bounded_source_text(
+                        repo_top, path, why="mutation target resolution"
+                    )
 
                 try:
                     targets = mutation.resolve_mutation_targets(

@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
 
+from assay import git as git_module
 from assay import runner, safeio
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Judgment
@@ -737,3 +738,163 @@ def test_run_lane_refuses_the_whole_invocation_when_the_reservation_detects_a_sw
     assert verdict.claims[0].status is Outcome.ERROR
     assert verdict.claims[1].status is Outcome.ERROR
     assert not marker.exists(), "the command must never have started"
+
+
+# --- Reviewer (P20 work item 6): the post-command comparison is against the
+# --- RESOLVED PRE-RUN COMMIT, not merely against dirt --------------------------
+
+
+def _lane_committing_away_its_uncovered_line(repo: GitRepo, base_rev: str):
+    """A lane whose command writes real coverage AND commits away the one
+    changed line that coverage reports as missing."""
+    payload = _cov_json({"pkg/mod.zzz": {"executed_lines": [2], "missing_lines": [3]}})
+    command = (
+        f"printf '%s' '{payload}' > cov.json && "
+        f"printf 'BASE\\nLINE2\\n' > pkg/mod.zzz && "
+        f"git add -A && "
+        f"git -c user.name=cmd -c user.email=cmd@example.invalid "
+        f"commit -q -m 'the command committed'"
+    )
+    judge = make_r1_judge(source_root_paths=(repo.path / "pkg",), base=base_rev)
+    return make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", command),
+        env_passthrough=("PATH",),
+    )
+
+
+def test_run_lane_refuses_when_the_command_moves_head_even_though_the_tree_is_clean(
+    git_repo: GitRepo,
+):
+    """A command that COMMITS leaves a perfectly clean tree, so a dirt-only
+    post-command check passes -- while ``evaluate_r1`` re-reads HEAD live and
+    would measure a commit the artifact does not name.
+
+    This is the combined-axis attack the blind review reproduced: the same
+    lane rendered ``PASS`` at 100.0% while the artifact still recorded the
+    pre-run commit, where the honest verdict at that commit is
+    ``FAIL``/``UNCOVERED_LINES`` at 50.0% (proved by the control below).
+    Work item 6 asks for a comparison against the RESOLVED PRE-RUN COMMIT;
+    A-175's existing ``DIRTY_TREE`` terminal and its R0/higher precedence
+    carry it, with no new reason code and no schema change.
+    """
+    repo = git_repo
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\n")
+    recorded_head = repo.commit_all("add pkg head")
+
+    verdict = runner.run_lane(
+        _lane_committing_away_its_uncovered_line(repo, base_rev),
+        commit=recorded_head,
+        repo=repo.path,
+        project_root=repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert repo.head() != recorded_head, "the attack must really move HEAD"
+    assert git_module.dirty_paths(repo.path) == (), "and must leave a clean tree"
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.reason_code is ReasonCode.DIRTY_TREE
+    assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
+    # A-175 precedence: the command's own real R0 claim survives...
+    assert verdict.claims[0].status is Outcome.PASS
+    # ...and every higher declared claim is refused without being started.
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.DIRTY_TREE
+    assert verdict.claims[1].coverage is None
+    assert verdict.judgment is None
+    # The artifact still names the commit assay actually resolved before the
+    # command, and assay did not clean up after the consumer.
+    assert json.loads(verdict.to_json())["commit"] == recorded_head
+    assert (repo.path / "pkg" / "mod.zzz").read_text(encoding="utf-8") == "BASE\nLINE2\n"
+
+
+def test_the_same_lane_without_the_commit_is_a_real_uncovered_lines_fail(
+    git_repo: GitRepo,
+):
+    """The control that makes the test above an oracle rather than an
+    assertion: identical inputs, command minus the ``git commit``, must
+    still reach a genuine judged R1 FAIL. Without this, refusing everything
+    unconditionally would pass the attack test."""
+    repo = git_repo
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\n")
+    recorded_head = repo.commit_all("add pkg head")
+
+    payload = _cov_json({"pkg/mod.zzz": {"executed_lines": [2], "missing_lines": [3]}})
+    judge = make_r1_judge(source_root_paths=(repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"printf '%s' '{payload}' > cov.json"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=recorded_head,
+        repo=repo.path,
+        project_root=repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert repo.head() == recorded_head
+    assert verdict.claims[1].status is Outcome.FAIL
+    assert verdict.claims[1].reason_code is ReasonCode.UNCOVERED_LINES
+    assert verdict.claims[1].coverage.pct == 50.0
+
+
+def test_run_lane_omits_judgment_when_evaluate_r1_renders_a_payload_free_claim(
+    git_repo: GitRepo,
+):
+    """P16's `judgment.r1`-iff-`coverage` invariant, exercised through the
+    branch where the artifact PARSES fine but `evaluate_r1`'s own guard
+    sequence still declines to judge (here: the declared base resolves to
+    HEAD, so there is no delta to measure).
+
+    Distinct from the consume/parse failure path, which never calls
+    `evaluate_r1` at all: this proves the invariant holds for a claim
+    `evaluate_r1` itself returned. Before this test the gated suite never
+    took that arm, so building `judgment.r1` unconditionally there -- a
+    verdict the schema's own correspondence check would then reject -- was
+    invisible to it.
+    """
+    repo = git_repo
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = repo.commit_all("add pkg head")
+
+    payload = _cov_json({"pkg/mod.zzz": {"executed_lines": [2]}})
+    # base == HEAD: a real, judged NO_MEASUREMENT from evaluate_r1 itself.
+    judge = make_r1_judge(source_root_paths=(repo.path / "pkg",), base=head_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"printf '%s' '{payload}' > cov.json"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=repo.path,
+        project_root=repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
+    assert verdict.claims[1].reason_code is ReasonCode.BASE_IS_HEAD
+    assert verdict.claims[1].coverage is None
+    assert verdict.judgment is None

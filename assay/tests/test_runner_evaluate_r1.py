@@ -681,17 +681,18 @@ def test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure(
     land inside a complete R1 claim (``ERROR``/``UNREADABLE_ARTIFACT``),
     never propagate past ``evaluate_r1`` uncaught.
 
-    The failure is injected at the filesystem boundary (AUTHORING.md §3b.E)
-    rather than reproduced with a real broken file: making the committed
-    content itself undecodable would make ``git diff`` fail first (a
-    different, already-covered branch, since git's own diff output embeds
-    that content), and a permission-revoking chmod turned out to dirty
-    ``git status`` itself (verified directly against a real git binary --
-    revoking read access changes the file's ctime, which git's own
-    quick-comparison heuristic treats as a potential modification). Neither
-    reproduces "the file is fine as far as git is concerned, but this
-    process cannot read it right now" in isolation, so the boundary is
-    mocked instead, scoped to exactly the one path under test.
+    Driven by a REAL file through the REAL bounded seam. This test used to
+    monkeypatch ``Path.read_text``, because no constructible input then
+    reproduced "git is perfectly happy with this file, but assay must refuse
+    to read it": undecodable content makes ``git diff`` fail first, and a
+    permission-revoking chmod dirties ``git status`` via ctime. The reviewer
+    repair for O4 supplies exactly that input -- a committed, ordinary,
+    status-clean file that exceeds the fixed
+    :data:`assay.runner.MAX_SOURCE_FILE_BYTES` ceiling. Only the ceiling's
+    MAGNITUDE is injected (so the fixture stays bytes rather than megabytes);
+    the file, the read, and the refusal are all real, which is what makes
+    this an oracle for the bound instead of for the mechanism that
+    implements it.
     """
     git_repo.write("pkg/mod.zzz", "BASE\n")
     base_rev = git_repo.commit_all("add pkg base")
@@ -702,15 +703,9 @@ def test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure(
     # to answer has_executable_code for it.
     write_coverage_json(git_repo.path / "cov.json", {"pkg/mod.zzz": {}})
 
-    real_read_text = Path.read_text
-    target = (git_repo.path / "pkg" / "unreadable.zzz").resolve()
-
-    def flaky_read_text(self: Path, *args, **kwargs):
-        if self.resolve() == target:
-            raise PermissionError(13, "Permission denied", str(self))
-        return real_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    # 8 bytes: smaller than "def real(): return 1\n", so the real read of a
+    # real committed file really does exceed the real ceiling.
+    monkeypatch.setattr(runner, "MAX_SOURCE_FILE_BYTES", 8)
 
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
     lane = make_lane(rigor=("R0", "R1"), judge=judge)
@@ -726,3 +721,121 @@ def test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure(
     assert claim.status is Outcome.ERROR
     assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert claim.coverage is None
+
+
+# --- Reviewer (P20 O4): the source-read seam's own type/size/decode guards ----
+
+
+def test_a_symlinked_source_file_is_refused_never_followed(tmp_path: Path):
+    """``Path.read_text`` followed a symlink silently -- potentially right out
+    of the repository being measured. The bounded seam refuses it, which is
+    the "type guard" half of O4's negative."""
+    (tmp_path / "real.zzz").write_text("def f(): return 1\n", encoding="utf-8")
+    (tmp_path / "link.zzz").symlink_to(tmp_path / "real.zzz")
+
+    with pytest.raises(AssayError) as caught:
+        runner._read_bounded_source_text(tmp_path, "link.zzz", why="a test")
+
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_directory_standing_at_a_source_path_is_refused(tmp_path: Path):
+    """The deterministic half of the type guard: a non-regular object at a
+    source path is refused by ``fstat``, never read."""
+    (tmp_path / "adir.zzz").mkdir()
+
+    with pytest.raises(AssayError) as caught:
+        runner._read_bounded_source_text(tmp_path, "adir.zzz", why="a test")
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_fifo_source_file_is_refused_instead_of_blocking_the_judgment(
+    tmp_path: Path,
+):
+    """A FIFO with no writer BLOCKS ``read_text`` forever, hanging the whole
+    judgment -- exactly O2's "can hang beyond the lane process timeout".
+    Verified against the pre-repair code: reverting this seam to
+    ``Path.read_text`` did not make this case fail, it made the suite HANG.
+
+    The refusal itself is the oracle; the 60s join is only AUTHORING.md
+    §3b.A's permitted failsafe, so a future regression FAILS loudly instead
+    of wedging the gate forever. Shrinking it could never flip a passing
+    verdict -- the correct implementation returns without blocking at all.
+    """
+    import os
+    import threading
+
+    os.mkfifo(tmp_path / "pipe.zzz")
+    outcome: list[object] = []
+
+    def attempt() -> None:
+        try:
+            runner._read_bounded_source_text(tmp_path, "pipe.zzz", why="a test")
+        except BaseException as exc:  # recorded, then asserted on the main thread
+            outcome.append(exc)
+        else:
+            outcome.append(None)
+
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(timeout=60)
+
+    assert not worker.is_alive(), (
+        "reading a FIFO blocked instead of being refused -- the nonblocking, "
+        "regular-file-only guard has regressed"
+    )
+    assert isinstance(outcome[0], AssayError)
+    assert outcome[0].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_an_oversized_source_file_is_refused_at_the_fixed_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """O4's negative verbatim: an unbounded input must not reach the read.
+    Reproduced against the pre-repair code with a real 24 MiB tracked file,
+    8 MiB past this module's own coverage ceiling."""
+    (tmp_path / "big.zzz").write_text("x" * 64, encoding="utf-8")
+    monkeypatch.setattr(runner, "MAX_SOURCE_FILE_BYTES", 16)
+
+    with pytest.raises(AssayError) as caught:
+        runner._read_bounded_source_text(tmp_path, "big.zzz", why="a test")
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_source_file_at_exactly_the_bound_is_still_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The off-by-one control: the bound is a ceiling the largest legal file
+    still passes, so the refusal above is an oracle for oversize rather than
+    for any read at all."""
+    (tmp_path / "exact.zzz").write_text("x" * 16, encoding="utf-8")
+    monkeypatch.setattr(runner, "MAX_SOURCE_FILE_BYTES", 16)
+
+    assert runner._read_bounded_source_text(tmp_path, "exact.zzz", why="a test") == "x" * 16
+
+
+def test_a_source_file_named_by_the_diff_but_absent_is_unreadable_artifact(
+    tmp_path: Path,
+):
+    """``read_text`` raised ``FileNotFoundError`` -> ``OSError`` ->
+    ``UNREADABLE_ARTIFACT``; the bounded seam returns ``None`` for missing, so
+    the identical pair must still be rendered rather than the absence being
+    mistaken for empty content."""
+    with pytest.raises(AssayError) as caught:
+        runner._read_bounded_source_text(tmp_path, "gone.zzz", why="a test")
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_undecodable_source_bytes_are_unreadable_artifact(tmp_path: Path):
+    """The decode half stays where it was: invalid UTF-8 is a typed refusal,
+    never a bare ``UnicodeDecodeError`` escaping the claim."""
+    (tmp_path / "bad.zzz").write_bytes(b"\xff\xfe not utf-8\n")
+
+    with pytest.raises(AssayError) as caught:
+        runner._read_bounded_source_text(tmp_path, "bad.zzz", why="a test")
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT

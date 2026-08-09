@@ -520,10 +520,12 @@ def test_run_lane_r2_renders_a_complete_claim_when_a_target_source_read_fails(
     once per considered file; an expected filesystem/Unicode failure there
     must land inside a complete R2 claim, never propagate past `run_lane`
     uncaught (the same class of gap P20 closes for R1's own source reads).
-    The failure is injected at the filesystem boundary (AUTHORING.md
-    §3b.E) -- the identical reasoning
+    Driven by a REAL committed file exceeding the REAL fixed
+    :data:`assay.runner.MAX_SOURCE_FILE_BYTES` ceiling (only the ceiling's
+    magnitude is injected) -- the identical reviewer repair
     ``test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure``
-    gives for why a real broken file cannot reproduce this in isolation."""
+    documents, so R2's source-read boundary is proven by the bound itself
+    rather than by the mechanism that implements it."""
     git_repo.write(".gitignore", "cov.json\n")
     git_repo.write("src/mod.py", "def f(x):\n    return 0\n")
     base_rev = git_repo.commit_all("add mod.py")
@@ -535,15 +537,9 @@ def test_run_lane_r2_renders_a_complete_claim_when_a_target_source_read_fails(
     )
     lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
 
-    real_read_text = Path.read_text
-    target = (git_repo.path / "src" / "broken.py").resolve()
-
-    def flaky_read_text(self: Path, *args, **kwargs):
-        if self.resolve() == target:
-            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "simulated failure")
-        return real_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    # 8 bytes: smaller than either committed source file, so the first real
+    # target read really does exceed the real ceiling.
+    monkeypatch.setattr(runner, "MAX_SOURCE_FILE_BYTES", 8)
 
     verdict = runner.run_lane(
         lane,
