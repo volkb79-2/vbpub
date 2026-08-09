@@ -2,7 +2,7 @@
 
 ## Current pre-adoption queue: P20–P32
 
-P00–P19 are merged. P20–P32 are the only active implementation queue,
+P00–P20 are merged. P21–P32 are the remaining active implementation queue,
 recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
 revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
 contracts are JIT-frozen after the predecessor merges, so a future packet does
@@ -14,10 +14,10 @@ mandatory for this semi-manual wave, not permanent product routing:
 
 | # | Claim boundary | class | JIT carve | implement | independent review |
 |---|---|---|---|---|---|
-| P20 | repository/artifact integrity | 2c | **complete against `8aad3dc3` (A-176; proof commit contains report)** | Sonnet xhigh | fresh Opus xhigh |
-| P21 | verdict v4 evidence contract | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
+| P20 | repository/artifact integrity | 2c | **merged as `618b6f15`** | Sonnet xhigh | fresh Opus xhigh |
+| P21 | verdict v4 + bounded Python site contract | 2b | **complete against `618b6f15` (A-180–A-182)** | Opus xhigh | fresh Opus xhigh |
 | P22 | committed-object snapshot substrate | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
-| P23 | exact reexecution integration | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P23 | exact reexecution integration over landed sites | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P24 | versioned wheel contract | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P25 | external Python/Topos qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P26 | attested-evidence CLI hardening | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
@@ -28,9 +28,10 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-P20 is **READY**: its JIT proof assets and exact pre-dispatch adversarial
-specification review are committed under `nyxloom-trove/carve-assets/P20/` and
-`nyxloom-trove/reports/assay-P20-JIT-CARVE.md`. P21–P32 remain
+P20 is **MERGED**. P21 is **READY**: its JIT proof assets and exact pre-dispatch
+adversarial specification review are committed under
+`nyxloom-trove/carve-assets/P21/` and
+`nyxloom-trove/reports/assay-P21-JIT-CARVE.md`. P22–P32 remain
 `PROVISIONAL`/`JIT-FREEZE REQUIRED`. Before any of them becomes ACTIVE, its
 named proof assets are committed and the same review must return READY at the
 actual post-predecessor HEAD. No later package should be dispatched merely
@@ -49,6 +50,12 @@ and Go helper/real R2. These are the points where one side has an independent
 failure oracle and materially different model requirement. The remaining
 packages stay intentionally large and solution-bearing to amortize orientation,
 gate, review, and merge overhead.
+
+P21's JIT review moved the already-designed common/Python `MutationSite` seam
+forward from P23 into P21. This is not a new package: a cap cannot truthfully be
+claimed while the adapter still materializes an unbounded tuple of full source
+copies. P23 now consumes that seam and owns only exact snapshot reexecution,
+plan reuse, and the total lane budget (A-180).
 
 Luna may run the frozen-orientation/fork workflow mechanically from
 `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,

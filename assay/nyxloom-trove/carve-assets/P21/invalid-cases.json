@@ -1,0 +1,110 @@
+[
+  {
+    "id": "verdict-old-version",
+    "shape": "verdict",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/schema_version": 3}
+  },
+  {
+    "id": "verdict-reversed-interval",
+    "shape": "verdict",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "raw"],
+    "replace": {"/ended": "2026-08-09T10:59:59+00:00"}
+  },
+  {
+    "id": "coverage-unknown-capability",
+    "shape": "coverage",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/claims/1/coverage/exclusion_capability": "invented"}
+  },
+  {
+    "id": "coverage-unavailable-with-detail",
+    "shape": "coverage",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {
+      "/claims/1/coverage/exclusion_capability": "unavailable",
+      "/claims/1/coverage/excluded_lines": {"src/p.py": [7]},
+      "/claims/1/coverage/files_with_excluded_lines": ["src/p.py"]
+    }
+  },
+  {
+    "id": "mutation-killed-is-count",
+    "shape": "mutation",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/claims/2/mutation/killed": 1}
+  },
+  {
+    "id": "mutation-agreeing-unknown-operator",
+    "shape": "mutation",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {
+      "/judgment/r2/operators/0": "invented-swap",
+      "/claims/2/mutation/killed/0/operator": "invented-swap"
+    }
+  },
+  {
+    "id": "mutant-reversed-byte-span",
+    "shape": "mutant-outcome",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "raw"],
+    "replace": {"/claims/2/mutation/killed/0/end_byte": 83}
+  },
+  {
+    "id": "mutant-uppercase-replacement-hash",
+    "shape": "mutant-outcome",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/claims/2/mutation/killed/0/replacement_sha256": "B60080DC8B8982D2A2BFF6F8F3715C1939614DC553CD223EF21832B88C815866"}
+  },
+  {
+    "id": "judgment-r2-zero-max-mutants",
+    "shape": "judgment-r2",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/judgment/r2/max_mutants": 0}
+  },
+  {
+    "id": "judgment-r2-oversize-max-mutants",
+    "shape": "judgment-r2",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/judgment/r2/max_mutants": 10001}
+  },
+  {
+    "id": "mutation-limit-sentinel-not-max-plus-one",
+    "shape": "mutation-limit",
+    "base": "r2-limit-v4.json",
+    "reject_layers": ["model", "raw"],
+    "replace": {"/claims/1/mutation/candidate_count": 2}
+  },
+  {
+    "id": "mutation-limit-has-attempt",
+    "shape": "mutation-limit",
+    "base": "r2-limit-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {"/claims/1/mutation/total": 1}
+  },
+  {
+    "id": "canary-target-mismatch",
+    "shape": "canary",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "raw"],
+    "replace": {"/claims/3/canary/target": "src/other.py"}
+  },
+  {
+    "id": "canary-agreeing-nonnormal-target",
+    "shape": "canary",
+    "base": "combined-pass-v4.json",
+    "reject_layers": ["model", "schema", "raw"],
+    "replace": {
+      "/judgment/r3/target": "src/../p.py",
+      "/claims/3/canary/target": "src/../p.py"
+    }
+  }
+]

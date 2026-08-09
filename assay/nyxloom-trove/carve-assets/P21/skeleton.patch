@@ -1,0 +1,70 @@
+diff --git a/assay/src/assay/output.py b/assay/src/assay/output.py
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/assay/src/assay/output.py
+@@ -0,0 +1,64 @@
++"""Reserved, atomic verdict output.
++
++P21 owns this boundary. A caller reserves before any lane command and emits
++exactly once afterward. File targets are interpreted in the CLI process
++namespace, never relative to the lane's project root.
++"""
++
++from __future__ import annotations
++
++from typing import TextIO
++
++__all__ = ["VerdictOutput", "reserve_verdict_output"]
++
++
++class VerdictOutput:
++    """One ``RESERVED -> EMITTED|CLOSED`` verdict destination.
++
++    ``emit`` writes UTF-8 text atomically for a file target, or writes the
++    complete text to the supplied stdout for ``-``. A file reservation holds
++    its already-opened parent and the destination's observed identity. It
++    never holds a persistent sibling temp across consumer execution.
++    ``close`` is idempotent and never changes the destination.
++    """
++
++    def __init__(self, *, target: str, stdout: TextIO) -> None:
++        self._target = target
++        self._stdout = stdout
++
++    @property
++    def target(self) -> str:
++        return self._target
++
++    def emit(self, text: str) -> None:
++        """Emit once or raise ``AssayError(ERROR, OUTPUT_WRITE_FAILED)``.
++
++        File mode revalidates the destination observed at reservation, creates
++        a same-parent exclusive temporary file, writes all UTF-8 bytes, and
++        replaces relative to the held parent descriptor. It preserves any
++        destination that appeared or changed after reservation.
++        """
++        raise NotImplementedError("P21 TODO: atomic reserved emission")
++
++    def close(self) -> None:
++        """Release owned state without touching the destination; idempotent."""
++        return None
++
++    def __enter__(self) -> "VerdictOutput":
++        return self
++
++    def __exit__(self, exc_type, exc, traceback) -> None:
++        self.close()
++
++
++def reserve_verdict_output(target: str, *, stdout: TextIO) -> VerdictOutput:
++    """Preflight and reserve *target* before consumer execution.
++
++    ``-`` checks the supplied stream without closing it. A file spelling is
++    anchored to the CLI process cwd (or filesystem root when absolute), walks
++    real directory components without following symlinks, accepts only an
++    absent or regular non-symlink destination, and proves parent write access
++    by creating and removing an exclusive sibling probe. No probe survives
++    this call. Every expected I/O refusal is the typed P21 output terminal.
++    """
++    raise NotImplementedError("P21 TODO: destination reservation")

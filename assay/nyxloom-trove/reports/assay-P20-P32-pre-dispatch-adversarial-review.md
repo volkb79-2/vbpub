@@ -1,8 +1,9 @@
 # Assay P20–P32 pre-dispatch adversarial specification review
 
-> **Review date:** 2026-08-08; P20 JIT disposition updated 2026-08-09
+> **Review date:** 2026-08-08; P20/P21 JIT dispositions updated 2026-08-09
 > **Roadmap input anchor:** `2f2167f5928e5deacd93f1e9565238aef8acfe32`
 > **P20 JIT anchor:** `8aad3dc3b190915bb27881a0f3004b339aeef9c2`
+> **P21 JIT anchor:** `618b6f15451ec5f45b5900dc496d794241180467`
 > **Authoring doctrine:** `nyxloom/reference/AUTHORING.md` revision
 > `2026-08-08-r5`
 > **Scope:** every outstanding handoff P20–P32 after the A-167 recarve
@@ -14,10 +15,10 @@
 
 ## Result first
 
-All thirteen frontmatter packages pass `nyxloom lint`. **P20 is now READY;
-P21–P32 are not.** P20's carver-owned proof freeze is complete at its JIT
-anchor; the exact rerun and six-part disposition live in
-`assay-P20-JIT-CARVE.md`. The successors remain provisional until their
+All thirteen frontmatter packages pass `nyxloom lint` (P21 has the intentional
+size warning). **P20 is merged; P21 is now READY; P22–P32 are not.** P21's
+carver-owned proof freeze is complete at the P20 merge anchor; the exact rerun
+and six-part disposition live in `assay-P21-JIT-CARVE.md`. The successors remain provisional until their
 predecessor merges. Lint proves machine shape only; it does not create the
 skeletons, goldens, pinned external inputs, or controlled failing negatives
 that AUTHORING requires.
@@ -31,8 +32,9 @@ the recarve before reaching the dispositions below:
    P21 now reserves `ERROR/MUTATION_DISCOVERY_FAILED` and distinguishes a valid
    zero-site result.
 3. P21/P23's `max_mutants` was a false bound because the old adapter constructed
-   the full tuple before the caller counted it; P23 now freezes bounded common
-   `MutationSite` discovery before external Python qualification.
+   the full tuple before the caller counted it; the P21 JIT pass moved bounded
+   common/Python `MutationSite` discovery into P21 itself so the v4 cap is true
+   when introduced (A-180). P23 consumes it.
 4. the old Go packet's legal `64 MiB × 10,001 mutated_text` shape implied
    hundreds of GiB; P29's wire contains small site descriptors only.
 5. attestation allowed symbolic commit identity and a path-check/open race; P26
@@ -78,23 +80,21 @@ handoff names the missing proof and returns NOT READY until it exists.
 | P26 | resolves `HEAD` at verification time; `resolve()` then opens path; splits Git display names; exact-membership treats reviewed directory as file | full old OID + directory descendant change + newline/pathspec-magic name + parent/symlink swap + oversize sibling, with later identity still processed |
 | P27 | hardcodes module prefix; trusts ambient Go; uses inclusive block lines; uses committed profile | renamed deep module + nested project + real generated profile ending at column 1 + ambient Go poison + normalized-key collision |
 | P28 | Assay and covergate construct each other's expectation; extracts module to repo root; compares only final exit | preserved real prefix + multi-package patch + three independent line sets + exclusion asymmetry + shared checkout hash/status |
-| P29 | regexes source; uses character offsets; emits full mutated files; treats error frame as empty success; collects all then truncates | Unicode-before-token + same-line sites + max+1 + malformed/oversize response in one fixture; assert response bytes and unchanged P23 Python manifests |
+| P29 | regexes source; uses character offsets; emits full mutated files; treats error frame as empty success; collects all then truncates | Unicode-before-token + same-line sites + max+1 + malformed/oversize response in one fixture; assert response bytes and unchanged P21 Python manifests |
 | P30 | submits before knowing max+1; parses `go test` text; shares snapshot/cache; forces a fake crashed result | reordered concurrent completion + appended argv/env + max+1 + compile rejection + valid zero-site + helper failure, asserting boundary-only buckets and zero source writes |
 | P31 | accepts any transformed non-PASS; reuses control profile; “unused” package still runs under `./...`; omits R1 for uncovered-line | positive cause pairs plus package-scoped unused-target wrong-cause lane, no-output transform, malformed/no-op and broken control with exact fresh-profile ledger |
 | P32 | commits generated reports; last record wins; any-hit wins same-line Istanbul; reports unavailable exclusions as empty | same real run emits both formats; reverse/split repeated lcov records; mixed Istanbul counts; ignored/type-only/multiline/JSX plus stale report and source manifest |
 
 ## 3. Missing implementation-packet material
 
-The normative solution structures are present, but the following material is
-deliberately not yet present and therefore prevents READY:
+P21 now has its complete proof packet. The following successor material is
+deliberately not yet present and therefore prevents P22–P32 from being READY:
 
-- P21/P22/P29 lack the mandatory compiling skeletons and witnessed failing
-  acceptance negatives assigned to Sol. P20's are now frozen under
-  `nyxloom-trove/carve-assets/P20/`.
-- P21 lacks a complete canonical v4 document and two complete invalid documents
-  per new public shape. Its excerpt is useful design, not a migration fixture.
-- P23 lacks a locked Python pre/post `MutationSite` parity corpus and a process-
-  ledger spy at the actual landed signatures.
+- P22/P29 lack the mandatory compiling skeletons and witnessed failing
+  acceptance negatives assigned to Sol. P20/P21 are frozen under their
+  respective `nyxloom-trove/carve-assets/` directories.
+- P23 lacks a process-ledger spy at P22's eventual landed signatures. P21 now
+  owns and locks the Python `MutationSite` parity corpus.
 - P24 lacks the positive wheelhouse and release-manifest artifact.
 - P25/P28 lack exact external commit/patch/command/image/wheel manifests.
 - P26 lacks descriptor-race and full-OID goldens.
@@ -112,8 +112,9 @@ The frontmatter chain is now a valid strict serial P19→P32 graph and all files
 lint clean. The audit corrected these scope/dependency issues:
 
 - P22 is substrate-only; P23 owns runner/mutation/canary integration.
-- P23, not P29, owns the common Python/core site-contract conversion, because
-  P21's v4 cap must be real before P25 external Python qualification.
+- P21, not P23/P29, owns the common Python/core site-contract conversion,
+  because its own v4 cap must be real when introduced. P23 consumes it and P29
+  implements it for Go.
 - P27 is tiny real Go adapter/gate only; P28 owns external srdm R1.
 - P29 is helper/Go-adapter discovery only; P30 owns R2 execution/capability.
 - P30 records the real crashed-bucket reachability limit instead of demanding an
@@ -152,10 +153,10 @@ the detailed rows live in each handoff.
 
 | package | disposition | why |
 |---|---|---|
-| P20 | **READY — IMPLEMENT NEXT** | exact review rerun; contract corrected; locked skeleton/probes/artifact witnessed; real gate green |
-| P21 | **NOT READY — PROVISIONAL** | depends on P20; full migration goldens absent |
+| P20 | **MERGED** | landed as `618b6f15` after locked acceptance and controller-owned gate |
+| P21 | **READY — IMPLEMENT NEXT** | exact JIT review at `618b6f15`; full migration/site/output goldens, skeleton, and 24 controlled reds committed |
 | P22 | **NOT READY — PROVISIONAL** | depends on P21/P20 landed boundaries; security fixtures absent |
-| P23 | **NOT READY — PROVISIONAL** | depends on P22 signatures; common-site parity/ledger assets absent |
+| P23 | **NOT READY — PROVISIONAL** | depends on P22 signatures; process-ledger/snapshot integration assets absent; P21 already owns site parity |
 | P24 | **NOT READY — PROVISIONAL** | positive offline build/release inputs absent |
 | P25 | **NOT READY — PROVISIONAL** | external commit/patch/manifest not pinned |
 | P26 | **NOT READY — PROVISIONAL** | final v4 evidence shape and hostile safe-I/O fixtures absent |

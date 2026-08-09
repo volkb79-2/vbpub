@@ -1,0 +1,107 @@
+{
+  "schema_version": 4,
+  "assay_version": "0.2.0",
+  "lane": "package",
+  "commit": "4444444444444444444444444444444444444444",
+  "outcome": "PASS",
+  "exit_code": 0,
+  "started": "2026-08-09T12:00:00+01:00",
+  "ended": "2026-08-09T11:01:00+00:00",
+  "declared_rigor": ["R0", "R1", "R2", "R3"],
+  "declared_evidence": [],
+  "argv_declared": ["python", "-m", "pytest", "tests", "-q"],
+  "argv_appended": [],
+  "argv_effective": ["python", "-m", "pytest", "tests", "-q"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {"PATH": "/tool/bin"},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r1": {
+      "language": "python",
+      "source_roots": ["src"],
+      "coverage_format": "coverage-py-json",
+      "coverage_artifact": "build/coverage.json",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "base": "1111111111111111111111111111111111111111"
+    },
+    "r2": {
+      "jobs": 2,
+      "max_mutants": 50,
+      "operators": ["compare-swap"]
+    },
+    "r3": {
+      "mechanism": "uncovered-line",
+      "target": "src/p.py"
+    }
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true,
+      "coverage": {
+        "covered": 1,
+        "changed_executable": 1,
+        "pct": 100.0,
+        "considered": 1,
+        "exclusion_capability": "reported",
+        "missing_lines": {},
+        "files_missing_coverage": [],
+        "unclassified_lines": {},
+        "files_with_unclassified_lines": [],
+        "excluded_lines": {},
+        "files_with_excluded_lines": []
+      }
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true,
+      "mutation": {
+        "candidate_count": 1,
+        "total": 1,
+        "killed": [
+          {
+            "path": "src/p.py",
+            "lineno": 7,
+            "start_byte": 83,
+            "end_byte": 84,
+            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+            "operator": "compare-swap",
+            "description": "Lt->LtE"
+          }
+        ],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": []
+      }
+    },
+    {
+      "rigor": "R3",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true,
+      "canary": {
+        "mechanism": "uncovered-line",
+        "target": "src/p.py",
+        "description": "appended one never-called function",
+        "control_outcome": "PASS",
+        "transformed_outcome": "FAIL",
+        "expected_reason_code": "UNCOVERED_LINES",
+        "observed_reason_code": "UNCOVERED_LINES"
+      }
+    }
+  ],
+  "evidence": []
+}

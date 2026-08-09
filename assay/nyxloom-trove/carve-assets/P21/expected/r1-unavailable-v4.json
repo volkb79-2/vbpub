@@ -1,0 +1,54 @@
+{
+  "schema_version": 4,
+  "assay_version": "0.2.0",
+  "lane": "package",
+  "commit": "5555555555555555555555555555555555555555",
+  "outcome": "PASS",
+  "exit_code": 0,
+  "started": "2026-08-09T11:00:00+00:00",
+  "ended": "2026-08-09T11:00:01+00:00",
+  "declared_rigor": ["R0", "R1"],
+  "declared_evidence": [],
+  "argv_declared": ["go", "test", "./..."],
+  "argv_appended": [],
+  "argv_effective": ["go", "test", "./..."],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {"PATH": "/tool/bin"},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r1": {
+      "language": "go",
+      "source_roots": ["."],
+      "coverage_format": "go-cover",
+      "coverage_artifact": "build/cover.out",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "base": "1111111111111111111111111111111111111111"
+    }
+  },
+  "claims": [
+    {"rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": true},
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true,
+      "coverage": {
+        "covered": 0,
+        "changed_executable": 0,
+        "pct": 100.0,
+        "considered": 1,
+        "exclusion_capability": "unavailable",
+        "missing_lines": {},
+        "files_missing_coverage": [],
+        "unclassified_lines": {},
+        "files_with_unclassified_lines": [],
+        "excluded_lines": {},
+        "files_with_excluded_lines": []
+      }
+    }
+  ],
+  "evidence": []
+}

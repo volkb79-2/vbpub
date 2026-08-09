@@ -10,8 +10,8 @@ stack: none
 depends_on: [assay-P22-committed-object-snapshot-substrate]
 session: fresh
 scope:
-  touch: ["src/assay/config.py", "src/assay/runner.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters/base.py", "src/assay/adapters/python.py", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
-  forbid: ["src/assay/git.py", "src/assay/schemas", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/attestation.py", "src/assay/adapters/go.py"]
+  touch: ["src/assay/config.py", "src/assay/runner.py", "src/assay/mutation.py", "src/assay/canary.py", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
+  forbid: ["src/assay/git.py", "src/assay/schemas", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/attestation.py", "src/assay/adapters"]
 oracles:
   - id: O1
     observable: "One immutable effective command plan, including appended argv and captured passthrough values, is recorded and used byte-for-byte for snapshot R0, every R2 mutant, and both R3 halves; only snapshot root and remaining budget vary"
@@ -67,8 +67,9 @@ on branch `feat/assay-P23-exact-reexecution-integration`.
 3. `runner.py::{CommandPlan,CommandResult,execute_command,run_lane}`,
    `mutation.py::{resolve_mutation_targets,run_mutation,_run_one_mutant}`, and
    `canary.py::{run_isolated_canary,_run_pipeline}` with direct tests.
-4. P20's artifact reservation and P21's v4 terminal/max-mutant contract. Consume
-   them without changing schemas, models, verifier, safe I/O, or Git.
+4. P20's artifact reservation and P21's landed v4 terminal, max-mutant, and
+   bounded `MutationSite` contract. Consume them without changing adapters,
+   schemas, models, verifier, safe I/O, or Git.
 5. `config.py` rigor and mutation/canary validation; `DESIGN-GUIDE.md` §§5, 6,
    9, 11, 12 and A-036/A-061/A-119–A-122/A-137/A-145/A-149–A-161.
 
@@ -99,44 +100,15 @@ Every process ledger records `effective_argv`, the effective environment subset,
 and the same project prefix. Relocation computes only
 `snapshot.root / project_prefix`; it does not rebuild any other field.
 
-### Bounded common mutation-site contract
+### Landed bounded mutation-site contract
 
-P21's `max_mutants` cannot be enforced after an adapter has already built an
-unbounded tuple of full mutated files. Replace that shape now, before v4 is
-qualified externally. `mutation.py` owns this exact cycle-safe descriptor and
-`adapters/base.py` owns the corresponding method:
-
-```python
-@dataclass(frozen=True, kw_only=True)
-class MutationSite:
-    start_byte: int
-    end_byte: int
-    replacement: bytes
-    lineno: int
-    operator: str
-    description: str
-
-def generate_mutation_sites(
-    self, text: str, lines: set[int], *,
-    operators: tuple[str, ...], limit: int
-) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]: ...
-```
-
-`limit` is the remaining lane-wide sentinel capacity, always in `1..10_001`.
-Validate a sorted unique order of
-`(start_byte,end_byte,operator,replacement,description)`, UTF-8 half-open byte
-boundaries, nonempty replacement, matching `lineno`, selected operator, and at
-most `limit` entries. `collect_mutation_sites` visits target paths in sorted
-order, passes only the remaining capacity, and stops at `max_mutants+1`; it
-never asks a later file for candidates after the sentinel is known.
-
-Port Python's already-proved private `_Site` construction into this shape.
-Locked before/after manifests must show the same candidates, ordering,
-descriptions, and exact one-span replacements as P11/P18. Discovery stores only
-sites, not `mutated_text`; when a job is actually submitted, form one replacement
-file from original bytes and its site. At most `jobs` full replacement files may
-be live. P29 makes Go implement this already-frozen contract; it does not redesign
-it.
+P21 already replaces full-text candidates with the exact selected-operator,
+remaining-capacity `MutationSite` protocol, validates UTF-8 byte spans and
+replacement hashes, stops at `max_mutants+1`, and makes Python match its locked
+candidate manifest. P23 may change only where/how a landed site is materialized:
+one exact byte replacement in a fresh P22 snapshot. It must not edit the
+descriptor, ordering, adapter method, collection bound, v4 identity, error
+translation, or manifest. P29 later makes Go implement P21's same protocol.
 
 ### Fixed state machine
 
@@ -153,8 +125,8 @@ it.
    granularity, removes that residual identity ambiguity.
 4. If baseline/prerequisite fails, emit its complete v4 artifact and start no
    mutation/canary work.
-5. For R2, resolve targets from the already-resolved diff and collect bounded
-   common mutation sites through the interface above. Read at most
+5. For R2, resolve targets from the already-resolved diff and call P21's bounded
+   common mutation-site interface unchanged. Retain at most
    `max_mutants + 1`; if the sentinel exists, emit P21's limit terminal with zero
    submissions. Otherwise each submitted site receives a fresh base snapshot,
    uses P22's exact-byte replacement, and runs the same plan with remaining
@@ -182,8 +154,8 @@ it.
 
 ### Prepared proof and traceability
 
-The JIT carve commits Python candidate-parity manifests, an execution-ledger
-spy, injected clock, and two-commit
+P21's locked Python candidate-parity manifest remains authoritative. The P23
+JIT carve commits an execution-ledger spy, injected clock, and two-commit
 nested repository with `apps/p` reading `shared/input`; nonempty appended argv;
 present/absent passthrough values; stale ignored coverage; command-created
 tracked/support files; max-1/max/max+1 candidates; and a canary whose control
@@ -194,21 +166,19 @@ writes coverage while transform does not. Expected v4 artifacts are handwritten.
 | plan capture/reuse | `runner.py` | O1 | re-resolve lane inside R2/R3 |
 | snapshot orchestration | runner/mutation/canary | O2 | reuse baseline tree/profile |
 | rigor prerequisites | `config.py` | O3 | accept R2-only or missing R1 |
-| common sites/deadline/cap | base/python/mutation | O4 | create full candidate tuple, over-discover, per-process timeout, or truncate |
+| landed sites/deadline/cap | runner/mutation | O4 | bypass P21 collection, per-process timeout, or truncate |
 
 ## Work
 
 1. Extend and resolve the effective command plan exactly once.
 2. Add load-time rigor prerequisites with complete diagnostics/tests.
-3. Replace Python/full-text candidate discovery with the exact bounded common
-   site contract and locked candidate parity.
-4. Run baseline inside P22's committed snapshot and carry its plan/result forward.
-5. Convert R2 and R3 to fresh-snapshot-per-unit execution without a second
+3. Run baseline inside P22's committed snapshot and carry its plan/result forward.
+4. Convert R2 and R3 to fresh-snapshot-per-unit execution without a second
    command-resolution path or copied coverage artifact.
-6. Apply one lane deadline and P21's max-mutant sentinel before submissions.
-7. Add the prepared fixtures plus reviewer-created combined-axis attacks; compare
+5. Apply one lane deadline and P21's max-mutant sentinel before submissions.
+6. Add the prepared fixtures plus reviewer-created combined-axis attacks; compare
    exact ledgers, complete v4 artifacts, and consumer repository hashes.
-8. Run `tester-unified`; record controlled-break counts in the LOG/report.
+7. Run `tester-unified`; record controlled-break counts in the LOG/report.
 
 ## Test constraints copied from AUTHORING.md §3b
 

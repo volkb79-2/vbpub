@@ -4,22 +4,22 @@ id: assay-P21-verdict-v4-evidence-contract
 project: assay
 title: "Verdict v4 carries enough bounded evidence to verify every judgment"
 tier: implement-2
-input_revision: "2f2167f5928e5deacd93f1e9565238aef8acfe32"
+input_revision: "618b6f15451ec5f45b5900dc496d794241180467"
 source: {kind: product-goal, ref: "nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md"}
 stack: none
 depends_on: [assay-P20-repository-artifact-boundary-integrity]
 session: fresh
 scope:
-  touch: ["src/assay/errors.py", "src/assay/vocabulary.py", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/config.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/runner.py", "src/assay/cli.py", "src/assay/schemas/**", "tests/**", "README.md", "docs/DESIGN-GUIDE.md", "assay.toml"]
-  forbid: ["src/assay/adapters/python.py", "src/assay/adapters/go.py", "pyproject.toml"]
+  touch: ["src/assay/errors.py", "src/assay/vocabulary.py", "src/assay/output.py", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/config.py", "src/assay/coverage.py", "src/assay/evaluate.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/runner.py", "src/assay/cli.py", "src/assay/adapters/base.py", "src/assay/adapters/python.py", "src/assay/schemas/**", "tests/**", "README.md", "docs/DESIGN-GUIDE.md", "assay.toml"]
+  forbid: ["src/assay/adapters/go.py", "pyproject.toml", "nyxloom-trove/carve-assets/P21/README.md", "nyxloom-trove/carve-assets/P21/skeleton.patch", "nyxloom-trove/carve-assets/P21/test_acceptance.py", "nyxloom-trove/carve-assets/P21/python-site-manifest.json", "nyxloom-trove/carve-assets/P21/invalid-cases.json", "nyxloom-trove/carve-assets/P21/expected/combined-pass-v4.json", "nyxloom-trove/carve-assets/P21/expected/r1-unavailable-v4.json", "nyxloom-trove/carve-assets/P21/expected/r2-limit-v4.json"]
 oracles:
   - id: O1
     observable: "Model construction, shipped JSON Schema, and independent raw-document verification accept the same closed v4 vocabulary and reject every v1-v3 artifact with one version-only diagnostic"
     negative: "An unknown mutant operator passes assay verify, or a v3 artifact is coerced/defaulted into v4"
     gate: tester-unified
   - id: O2
-    observable: "Every attempted mutant, including killed mutants, carries a stable identity and is bound to the declared operator policy; a required positive max_mutants is recorded and excess candidates stop before any mutant command"
-    negative: "Changing a killed identity/operator remains schema-valid and verify-clean, or max_mutants+1 submissions run as a silently truncated sample"
+    observable: "Every attempted mutant, including killed mutants, carries a stable byte-site identity and is bound to the declared operator policy; Python discovery retains at most max_mutants+1 small site descriptors and excess candidates stop before any mutant command"
+    negative: "Changing both a killed operator and its policy to an unknown name remains verify-clean, full mutated files are retained per candidate, or max_mutants+1 submissions run as a silently truncated sample"
     gate: tester-unified
   - id: O3
     observable: "A canary payload records the exact project-relative target and coverage records whether exclusion data was reported or unavailable; both correspond to the resolved judgment policy"
@@ -42,7 +42,9 @@ mutexes: []
 
 # P21 — verdict v4 evidence contract
 
-The claim to attack: **every fact needed to reproduce Assay's judgment is present, bounded, and independently checkable in one v4 artifact.**
+The claim to attack: **every fact needed to reproduce Assay's judgment is
+present and independently checkable in one v4 artifact, while enumerated
+mutation evidence has an explicit, truthful cardinality bound.**
 
 ## Dispatch contract
 
@@ -51,10 +53,12 @@ The claim to attack: **every fact needed to reproduce Assay's judgment is presen
 - Required roles: **Sol xhigh carver/prober → Opus xhigh implementer → a fresh
   Opus xhigh independent reviewer session**. Do not let one Opus context author
   and adjudicate the migration.
-- Readiness: **PROVISIONAL until P20 merges, then JIT-FREEZE REQUIRED.** Sol must
-  replace every abbreviated object below with a complete canonical v4 example,
-  two invalid examples per public shape, and carver-authored model/schema/raw-
-  verifier acceptance inputs before dispatch.
+- Readiness: **READY at `618b6f15451ec5f45b5900dc496d794241180467`.**
+  The complete canonical documents, two invalid inputs per changed public
+  shape, Python site manifest, compiling output skeleton, and locked three-
+  layer acceptance are under `nyxloom-trove/carve-assets/P21/`. The exact
+  AUTHORING adversarial review and witnessed controlled-red counts are in
+  `nyxloom-trove/reports/assay-P21-JIT-CARVE.md`.
 - Implementer freedom: private construction only. Names, types, requiredness,
   operator/reason vocabularies, migration behavior, and cross-field invariants
   are fixed.
@@ -66,25 +70,158 @@ on branch `feat/assay-P21-verdict-v4-evidence-contract`.
 
 ## Context to read first
 
-1. `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`, findings F08–F12 and the schema-v4 recommendation; reproduce the unknown-operator verifier acceptance before implementation.
-2. `docs/DESIGN-GUIDE.md` §6 in full; decisions A-008, A-027–A-029, A-041, A-050, A-067, A-116–A-117, A-135–A-138, A-148, A-152 and A-157–A-158.
+1. `nyxloom-trove/reports/assay-P21-JIT-CARVE.md` in full, then the locked
+   packet `nyxloom-trove/carve-assets/P21/README.md`. Apply its skeleton and
+   run its acceptance command before editing production code.
+2. `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`, findings
+   F08–F15, and `docs/DESIGN-GUIDE.md` §6 in full; decisions A-008,
+   A-027–A-029, A-041, A-050, A-067, A-116–A-117, A-135–A-138, A-148,
+   A-152, A-157–A-158, A-163, A-168, A-170–A-171, A-178, and A-180–A-182.
 3. `src/assay/verdict.py`, `src/assay/schemas/verdict.schema.json`, and `src/assay/verify.py` side by side. List each cross-field invariant and prove which of the three layers owns it before editing.
-4. `src/assay/mutation.py::{MutantOutcome,run_mutation,judge_mutation}`, `src/assay/canary.py`, `src/assay/evaluate.py`, and their complete-artifact fixtures. Preserve A-158: a normally-started nonzero mutant command is killed; crashed means the command boundary could not execute.
+4. `src/assay/mutation.py::{Mutant,collect_mutants,run_mutation,judge_mutation}`,
+   `src/assay/adapters/{base,python}.py`, `src/assay/canary.py`,
+   `src/assay/evaluate.py`, and their complete-artifact fixtures. The old
+   full-text candidate seam is deliberately replaced here because it cannot
+   enforce P21's bound. Preserve A-158: a normally-started nonzero mutant
+   command is killed; crashed means the command boundary could not execute.
 5. `src/assay/config.py`'s closed `MutationConfig` parsing and `JudgeConfig.as_declared`. No runtime consumer may invent a missing cap.
-6. P16's migration/conformance tests and P19's model/raw-verifier correspondence tests. Extend both independent layers; do not make `assay verify` import the producer model as its oracle.
+6. P16's migration/conformance tests and P19's model/raw-verifier
+   correspondence tests. Extend both independent layers; `verify.py` may
+   reconstruct the model as its final shape check, but every cross-field rule
+   also has a differently worded raw-document check before reconstruction.
 
 ## Implementation packet (normative)
 
+### Owned interfaces
+
+`src/assay/vocabulary.py` is a new stdlib-only leaf. Its public value is the
+ordered tuple below; every producer/model/config check imports it rather than
+copying a set. The shipped schema remains hand-readable and a conformance test
+requires exact set equality and this order in canonical output:
+
+```python
+MUTATION_OPERATORS: tuple[str, ...] = (
+    "compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap",
+)
+```
+
+P21, not P23, replaces the unbounded full-file candidate seam. The provisional
+queue put this in P23, but that would make P21's own cap false for two packages.
+`mutation.py` owns these exact descriptors and error boundary; `base.py` owns
+the adapter method; `python.py` is the first real implementation:
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class MutationSite:
+    start_byte: int
+    end_byte: int
+    replacement: bytes
+    lineno: int
+    operator: str
+    description: str
+
+class MutationDiscoveryError(AssayError):
+    # always ERROR / MUTATION_DISCOVERY_FAILED
+    ...
+
+def generate_mutation_sites(
+    self, text: str, lines: set[int], *,
+    operators: tuple[str, ...], limit: int,
+) -> tuple[MutationSite, ...]: ...
+
+@dataclass(frozen=True, kw_only=True)
+class MutantJob:
+    path: str
+    original_text: str       # shared reference, never a copy per site
+    site: MutationSite
+
+def collect_mutation_sites(
+    targets: Iterable[MutationTarget], *, adapter: LanguageAdapter,
+    operators: tuple[str, ...], limit: int,
+) -> tuple[MutantJob, ...]: ...
+
+def run_mutation(
+    lane: Lane, *, baseline: CommandResult, project_root: Path,
+    repo_top: Path, scratch_root: Path, targets: Iterable[MutationTarget],
+    adapter: LanguageAdapter, jobs: int, max_mutants: int,
+    operators: tuple[str, ...], process_runner: ProcessRunner | None = None,
+    clock: Clock | None = None,
+    executor_factory: ExecutorFactory = _default_executor_factory,
+) -> Mutation | None: ...
+```
+
+Each site requires non-boolean integers with
+`0 <= start_byte < end_byte <= len(text.encode("utf-8"))`; start/end are UTF-8
+code-point boundaries; `replacement` is nonempty valid UTF-8; applying it must
+change the named span and leave the result valid UTF-8; `lineno` equals
+`line_for_offset(source_bytes, start_byte)`; `operator` belongs to both the
+closed product vocabulary and the selected ordered policy; and `description`
+is nonempty. Per-file order and uniqueness use
+`(start_byte,end_byte,sha256(replacement).hexdigest(),operator)`; description
+and line are diagnostics and cannot distinguish identities. Python retains the
+smallest `limit` keys while walking—use a bounded selection/heap or equivalent,
+not an append-all-then-slice list. Parsing/scanning the already 16-MiB-bounded
+source is permitted; retaining more than `limit` descriptors or any full
+mutated file is not. Invalid Python syntax raises `MutationDiscoveryError`;
+valid syntax with zero sites returns `()`.
+
+`collect_mutation_sites` validates `limit in 1..10_001`, an ordered unique
+nonempty operator subset, every adapter result, and the fixed order. It visits
+targets by path, passes only remaining capacity, stops calling later files once
+the sentinel is full, and stores one reference to each target's original text.
+One replacement file is materialized only inside a submitted worker from
+`original_bytes[:start] + replacement + original_bytes[end:]`. The old
+`Mutant`, `generate_mutants`, `collect_mutants`, and full-text identity are
+deleted, not retained as compatibility surfaces. Go R2 is not registered;
+`go.py` remains untouched until P29 implements this already-landed protocol.
+
+The locked `python-site-manifest.json` is the before/after candidate oracle. In
+particular, deriving a “minimal diff” from old/full mutated strings is
+forbidden: `<` → `<=` collapses to a zero-width insertion and `True` → `False`
+collapses to `Tru` → `Fals`, neither of which is the syntax site's identity.
+
+`src/assay/output.py` is created by the locked compiling skeleton and owns:
+
+```python
+def reserve_verdict_output(target: str, *, stdout: TextIO) -> VerdictOutput: ...
+class VerdictOutput:
+    @property
+    def target(self) -> str: ...
+    def emit(self, text: str) -> None: ...
+    def close(self) -> None: ...
+```
+
+For `target == "-"`, reservation checks the supplied stream is writable with a
+zero-length write and never closes it. A file target is interpreted exactly in
+the CLI process namespace: relative to its captured current working directory,
+or from filesystem root if absolute—never relative to `project_root`. Normalize
+`.`/`..` lexically once, then descriptor-walk the absolute parent without
+following symlinks. The destination must be absent or the same ordinary
+non-symlink regular file through emission. Reservation holds the parent and
+observed destination identity, proves write access by creating and removing an
+exclusive same-parent probe, and leaves no temp file across lane execution.
+Emission revalidates the destination, creates a new exclusive sibling temp,
+writes all UTF-8 bytes, and `os.replace`s relative to the held parent. Any
+expected open/write/flush/replace/race failure is
+`AssayError(ERROR, OUTPUT_WRITE_FAILED)`; it cleans only its own temp and never
+overwrites an object that appeared or changed. State is
+`RESERVED -> EMITTED|CLOSED`; emit twice is `RuntimeError`; close is idempotent.
+
+`cli._cmd_run` loads the lane, then reserves any explicit output before HEAD,
+adapter, or lane command work. `None` means A-028's deliberate no-artifact mode
+and creates no reservation. It runs the pipeline, calls
+`runner.write_verdict(verdict, destination)` exactly once, and prints no success
+summary if emission fails. Preflight or late loss prints one stable
+`ERROR/OUTPUT_WRITE_FAILED` diagnostic to stderr and exits 2. No fallback file
+or stdout artifact is invented. Lane-config failure precedes output preflight;
+after a lane loads, output refusal precedes repository/consumer work.
+
 ### v4 grammar and owners
 
-`src/assay/vocabulary.py` is a new stdlib-only leaf owning
-`MUTATION_OPERATORS`. Config, mutant construction, verdict models, JSON Schema,
-and the raw verifier use that one ordered tuple; the Schema enum may be emitted
-from the same reviewed literal at authoring time but the shipped schema remains
-hand-readable and its conformance test compares the two sets.
-
-The following excerpt fixes the new serialized shapes (unchanged v3 fields are
-omitted here, not optional in the real document):
+The following excerpt highlights the new serialized keys. It is not the
+canonical document: the three complete documents under
+`carve-assets/P21/expected/` are normative and contain every unchanged required
+v3 field as well.
 
 ```json
 {
@@ -118,8 +255,10 @@ omitted here, not optional in the real document):
 }
 ```
 
-`Mutation.candidate_count` is the bounded number discovered. Normally it
-equals `total`, and `total` equals the lengths of all four identity arrays. On
+`Mutation.candidate_count` is the bounded number of descriptors observed. It
+is not an unbounded total disguised as a count: once the sentinel is full,
+Assay knows only that at least that many exist and intentionally stops.
+Normally it equals `total`, and `total` equals the lengths of all four identity arrays. On
 the pre-submission limit terminal it is exactly `max_mutants + 1`, `total` is
 zero, all four arrays are empty, and the R2 claim is
 `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`; no mutant command ran. This sentinel
@@ -133,21 +272,26 @@ Every `MutantOutcome` identity is exactly
 `description` remain diagnosis, not uniqueness. Byte offsets are zero-based
 half-open UTF-8 byte offsets into the exact source file at the recorded commit;
 `0 <= start_byte < end_byte`; `replacement_sha256` is lowercase SHA-256 of the
-replacement bytes only. P21 derives the unique minimal changed byte span from
-the existing original/mutated-text pair when constructing the outcome; if a
-candidate has no change or cannot be represented as one contiguous replacement,
-it is refused before execution. This gives P29's site protocol its final wire
-identity without forcing v5 and prevents two same-line/same-description mutants
-from collapsing.
+replacement bytes only. It is constructed directly from the validated
+`MutationSite`; never derive it by diffing two full texts. All four arrays are
+individually identity-sorted, no identity may occur twice within or across
+buckets, and every identity path is normalized repo-top-relative. This gives
+P29 its final wire identity without forcing v5 and prevents two
+same-line/same-description mutants from collapsing.
 
 `Coverage.exclusion_capability` is exactly `"reported"` or `"unavailable"`.
 `unavailable` requires both exclusion detail fields empty; `reported` permits
-empty or populated detail. `CanaryResult.target` is the normalized declared
-project-relative string and must equal `judgment.r3.target`. Invalid v4 examples
-that all three validation layers must reject: `"killed": 1`; operator
-`"unknown"`; `unavailable` with a nonempty excluded line; reversed timestamps;
-or different canary/policy targets. V1–v3 fail before any of these fields are
-visited with one version-only diagnostic.
+empty or populated detail. Derive it from the parsed profile before evaluation:
+all measured file records must agree on `excluded is None`; mixed capability is
+`ERROR/UNREADABLE_ARTIFACT`, never majority/default. `CanaryResult.target` is
+the normalized declared project-relative string and must equal
+`judgment.r3.target`. Project-relative and repo-relative wire paths use
+forward-slash components, with no empty, `.`, `..`, leading slash, trailing
+slash, backslash, or NUL component. Schema enforces local grammar; model and raw
+verifier enforce cross-field rules. The exact fourteen invalid complete inputs and
+their applicable layers are `carve-assets/P21/invalid-cases.json`. V1–v3 fail
+before required-field or foreign-shape inspection with exactly one version-only
+diagnostic.
 
 Add exactly these closed reasons in `errors.py`, Schema, model, and verifier:
 `ERROR/OUTPUT_WRITE_FAILED`,
@@ -156,29 +300,52 @@ Add exactly these closed reasons in `errors.py`, Schema, model, and verifier:
 `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` (reserved here for P22's reachable
 snapshot refusal), plus `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL` (reserved here
 for P27's first real external-tool preflight), and
-`NO_MEASUREMENT/HEAD_CHANGED`. `HEAD_CHANGED` is used only when the post-command
-index/worktree is clean and resolved HEAD differs from the pre-run full OID;
-any dirt takes `DIRTY_TREE` precedence. No generic fallback reason is permitted.
-P29/P30 use `MUTATION_DISCOVERY_FAILED` for invalid source, invalid
-helper request/response, helper nonzero, or an otherwise failed syntax-aware
-candidate boundary; valid discovery with zero sites remains
+`NO_MEASUREMENT/HEAD_CHANGED`. After the command, call `dirty_paths` once. If
+it is nonempty, use `DIRTY_TREE` and do not resolve post-HEAD. Only a clean
+result calls `head_rev` once and may use `HEAD_CHANGED`; this fixes precedence
+without duplicate Git observations. No generic fallback reason is permitted.
+P21 makes `MUTATION_DISCOVERY_FAILED` reachable for invalid Python source; P29
+uses it for invalid helper request/response, helper nonzero, or another failed
+syntax-aware candidate boundary. Valid discovery with zero sites remains
 `INCONCLUSIVE/NO_MUTANTS`.
+
+`Mutation` construction permits exactly two arithmetic shapes: normal
+`candidate_count == total == sum(bucket lengths)`; or a prospective sentinel
+with `candidate_count in 1..10_001`, `total == 0`, and four empty arrays.
+`Claim`/`Verdict` then make the latter legal only as
+`BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with
+`candidate_count == judgment.r2.max_mutants + 1`. Conversely that reason
+requires that exact sentinel. A zero/zero normal payload is
+`INCONCLUSIVE/NO_MUTANTS`. `JudgmentR2.max_mutants` is required in `1..10_000`;
+normal totals cannot exceed it. The model and raw verifier perform these
+relations independently; JSON Schema performs every locally expressible enum,
+range, requiredness, and reason/shape conditional but is not misrepresented as
+supporting cross-object arithmetic or timestamp comparison.
+
+Timestamp order compares parsed offset-aware instants, not strings and not
+wall-clock duration. The canonical combined document deliberately starts at
+`12:00+01:00` and ends at `11:01+00:00`: lexical order points the wrong way,
+while UTC order is valid. A malformed calendar value or a parsed end instant
+before start is rejected by the model and independently by the raw verifier.
 
 ### Required flow and decision table
 
 1. Load and validate the complete lane, including bounded `max_mutants`.
-2. Resolve HEAD and policy. Preflight/reserve the verdict destination before
-   any consumer command; reservation never redirects or invents a path.
-3. Construct only v4 producer models. Serialize atomically to the reserved
-   sibling temporary file and replace the destination.
-4. `verify.py` first checks the raw top-level version, then JSON Schema, then
-   re-derives cross-field rules without trusting producer constructors.
+2. If an output was requested, reserve it before HEAD/adapter/consumer work;
+   reservation never redirects or invents a path and leaves no persistent
+   probe temp across execution.
+3. Resolve HEAD/policy, execute, and construct only v4 producer models. Emit
+   once through the reservation's fresh sibling temporary and atomic replace.
+4. `verify.py` first checks the raw top-level version, then performs its own
+   raw shape and cross-field derivation before producer-model reconstruction.
+   The separate test-only Draft 2020-12 suite validates the shipped schema;
+   runtime verification stays zero-dependency and never imports jsonschema.
 
 | State | Outcome/reason | Payload/side effect |
 |---|---|---|
 | bad output parent/type/permission before run | `ERROR/OUTPUT_WRITE_FAILED` | no lane command; stable stderr because requested artifact cannot exist |
-| destination lost after run | `ERROR/OUTPUT_WRITE_FAILED` | no PASS claim and no fallback file |
-| mutation discovery/helper protocol fails | `ERROR/MUTATION_DISCOVERY_FAILED` | complete R2 claim; zero mutant submissions |
+| destination lost after run | process `ERROR/OUTPUT_WRITE_FAILED` | lane result is not reported as process PASS; no requested artifact and no fallback file |
+| mutation discovery/helper protocol fails | `ERROR/MUTATION_DISCOVERY_FAILED` | complete payload-free R2 claim; zero mutant submissions |
 | candidates = max+1 | `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` | sentinel mutation payload; zero submissions |
 | snapshot exceeds P22 bound | `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` | complete artifact; zero command for that snapshot |
 | command leaves dirt, whether or not HEAD moved | `NO_MEASUREMENT/DIRTY_TREE` | actual R0 preserved for higher rigor; no higher-rigor work |
@@ -187,35 +354,39 @@ candidate boundary; valid discovery with zero sites remains
 
 ### Traceability and degrees of freedom
 
-Work 1–3 -> vocabulary/model/schema/verifier -> O1/O2 -> hand-authored v4 plus
-unknown/killed/same-line-identity/limit mutations; work 5–7 -> canary/coverage/time correspondence
+Work 1–4 -> vocabulary/model/schema/verifier/config/site seam -> O1/O2 ->
+complete v4 documents, agreeing-unknown operator, UTF-8 site manifest, and
+max+1 zero-executor sentinel; work 5–7 -> canary/coverage/time correspondence
 -> O3/O4 -> exact field mutations; work 8 -> output reservation -> O4 -> a
-sentinel command proving zero calls. The REPORT repeats this mapping with real
-tests and controlled-break counts. Private helper names and dataclass field
-order may vary; serialized keys, ranges, sentinel shape, reasons, validation
-order, and independent raw re-derivation may not.
+real CLI marker proving zero consumer calls; work 10 -> O5 -> real clean-commit
+and commit-plus-dirt repositories. The REPORT repeats this mapping with actual
+ordinary tests and A-067 controlled-break counts. Private helper names, heap
+choice, temp nonce source, and equivalent decomposition may vary; serialized
+keys, public signatures, path grammars, ranges, state/side-effect order,
+sentinel shape, reasons, and independent raw re-derivation may not.
 
 ## Work
 
 1. Bump the verdict artifact to schema v4 in one atomic migration. Convert every hand-written expected artifact and installed-wheel witness deliberately. `assay verify` must return one version-only diagnostic for v1–v3 before reading foreign fields; it never upgrades, defaults, or rewrites them.
-2. Put the mutation-operator vocabulary in one cycle-safe module imported by config, mutation construction, verdict model, and raw verifier. Close both `MutationOutcome.operator` and `judgment.r2.operators` in the model and schema. Delete the current model/schema/verifier mismatch rather than maintaining parallel literal sets.
+2. Put the mutation-operator vocabulary in one cycle-safe module imported by config, mutation construction, verdict model, and raw verifier. Close both `MutantOutcome.operator` and `judgment.r2.operators` in the model and schema. Delete the current model/schema/verifier mismatch rather than maintaining parallel literal sets.
 3. Replace killed's count-only representation with ordered `MutantOutcome`
    identities, matching survived/crashed/budget-exceeded, and add the packet's
    `candidate_count`. Identity includes the packet's UTF-8 byte span and
-   replacement hash; derive it from the original/mutated pair and reject a
-   no-op or non-contiguous edit before execution. Verify normal and limit-
+   replacement hash; construct it from the packet's validated `MutationSite`
+   and delete the old full-text candidate surface. Verify normal and limit-
    sentinel arithmetic exactly and require every payload operator to belong to
    the recorded policy. Sorting uses the identity tuple, never description or
    completion order.
-4. Make `judge.mutation.max_mutants` a required integer in `1..10,000`, record it in `judgment.r2`, and enforce it after bounded candidate discovery but before any mutant command is submitted. Discover at most `max_mutants + 1` and never more than 10,001; excess renders the packet's `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` sentinel, with no partial sample and no credit. `jobs` remains only a concurrency bound and is never derived from machine capacity.
+4. Make `judge.mutation.max_mutants` a required integer in `1..10,000`, record it in `judgment.r2`, implement the exact bounded `MutationSite`/Python adapter seam, and enforce it before any mutant command is submitted. Retain at most `max_mutants + 1` descriptors and never more than 10,001; excess renders the packet's `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` sentinel, with no partial sample and no credit. Invalid Python syntax renders the payload-free discovery terminal; valid zero sites remain `NO_MUTANTS`. `jobs` remains only a concurrency bound and is never derived from machine capacity.
 5. Add the project-relative canary target to `CanaryResult` and bind it exactly to `judgment.r3.target` in both construction and raw verification. The description remains explanation, never a parseable identity channel.
 6. Preserve A-008 in the artifact with a closed R1 exclusion-capability field (`reported` versus `unavailable`). `unavailable` may not carry excluded lines; `reported` may truthfully carry an empty mapping. Re-derive the same rule in `verify.py`; do not infer capability from a particular format name.
 7. Add construction/schema/raw-verifier checks that `ended >= started`. Use injected/fixed clocks in tests and exact timestamp values; no elapsed-time assertion.
-8. Close A-O14 with `ERROR/OUTPUT_WRITE_FAILED`. Validate and reserve the declared output destination before the command executes; a bad/missing/unwritable parent must not allow the lane to run. Do not redirect to an invented fallback path. If a destination becomes unusable after reservation, emit the stable error to stderr, clean internal temporary state where safe, and never claim the requested file was written.
+8. Apply the locked `output.py` skeleton and close A-O14 with `ERROR/OUTPUT_WRITE_FAILED`. Wire its exact reservation before HEAD/adapter/command work; a bad/missing/unwritable parent must not allow the lane to run. Do not redirect to an invented fallback path. If a destination becomes unusable after reservation, preserve the changed object, emit the stable error to stderr, clean only internal temporary state, and never claim the requested file was written.
 9. Hand-author valid and adversarial v4 artifacts for all levels. Break killed identity, operator vocabulary, max-mutant enforcement, canary target, exclusion capability, interval ordering, version handling, and output preflight independently; record exact A-067 failure counts.
 10. Replace P20's schema-v3-compatible collapse of a clean post-command HEAD
     move into `DIRTY_TREE` with `NO_MEASUREMENT/HEAD_CHANGED`. Resolve HEAD once
-    before execution and once immediately after; check dirt first. Prove the
+    before execution; after execution check dirt once, then resolve HEAD once
+    only on the clean branch. Prove the
     clean-commit, dirty-only, and commit-plus-dirt cases independently and prove
     no R1/R2/R3 work begins after either refusal.
 
@@ -291,10 +462,12 @@ it is not an oracle yet.
 
 ## Scope / forbid
 
-This package is the one pre-adoption v4 migration. It must not add Go/TypeScript
-behavior, change distribution identity, or redesign isolation. P22 consumes the
-snapshot terminal; P23 and later R2/R3 packages consume the cap and evidence
-fields to make repeated execution faithful.
+This package is the one pre-adoption v4 migration and the bounded common/Python
+site seam required to make its cap true immediately. It must not add Go or
+TypeScript behavior, change distribution identity, or redesign isolation.
+`adapters/go.py` remains forbidden and Python's candidate set must match the
+locked manifest. P22 consumes the snapshot terminal; P23 consumes the already-
+landed site/cap interface while making repeated R0/R2/R3 execution faithful.
 
 ## BLOCKED rule
 

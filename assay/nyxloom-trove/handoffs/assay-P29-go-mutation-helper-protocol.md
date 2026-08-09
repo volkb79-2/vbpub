@@ -22,7 +22,7 @@ oracles:
     negative: "Regex matching mutates a comment/string, character offsets corrupt UTF-8, or whole-file gofmt changes unrelated bytes"
     gate: tester-unified
   - id: O3
-    observable: "Go implements P23's already-frozen selected-operator/max+1 MutationSite contract exactly, without a private API or any change to Python/core behavior"
+    observable: "Go implements P21's already-frozen selected-operator/max+1 MutationSite contract exactly, without a private API or any change to Python/core behavior"
     negative: "Go gets a parallel unbounded shape, filters only after full discovery, or edits the frozen Python/core contract to fit the helper"
     gate: tester-unified
   - id: O4
@@ -32,7 +32,7 @@ oracles:
 gates: [tester-unified]
 escalate_if:
   - "a valid Go operator span cannot be obtained from go/parser plus go/token without text guessing"
-  - "P23's common MutationSite contract cannot express a syntax-derived Go site without revision"
+  - "P21's common MutationSite contract cannot express a syntax-derived Go site without revision"
 mutexes: []
 ---
 
@@ -52,7 +52,7 @@ the candidate ceiling in memory.**
   land the compiling Go helper/adapter skeleton, protocol goldens, UTF-8 span fixtures,
   and the bounded-memory controlled attack before implementation.
 - Implementer freedom: private Go visitor and buffering decomposition only.
-  P23's common site type/method, framing, codes, bounds, sort key, byte
+  P21's common site type/method, framing, codes, bounds, sort key, byte
   units, operators, and no-full-mutants discovery rule are fixed.
 
 ## Worktree and branch
@@ -65,7 +65,7 @@ on branch `feat/assay-P29-go-mutation-helper-protocol`.
 1. P21's final `MutantOutcome` byte-span/replacement-hash identity and cap.
 2. P23's mutation collection/execution seam and P27's effective-PATH Go adapter
    construction/image. P30, not this package, enables Go R2 or runs mutants.
-3. P23's final `MutationSite`, `generate_mutation_sites`, collection bounds,
+3. P21's final `MutationSite`, `generate_mutation_sites`, collection bounds,
    Python parity manifests, and direct tests; plus Go's current `UNSUPPORTED`.
 4. Go `parser`, `ast`, `token`, and `format` from P27's pinned toolchain.
 5. Decisions A-112–A-115/A-157–A-160 and the post-series review's warning that
@@ -73,12 +73,12 @@ on branch `feat/assay-P29-go-mutation-helper-protocol`.
 
 ## Implementation packet (normative)
 
-### Frozen in-process contract consumed from P23
+### Frozen in-process contract consumed from P21
 
-Implement exactly P23's landed `generate_mutation_sites(text, lines, *,
+Implement exactly P21's landed `generate_mutation_sites(text, lines, *,
 operators, limit)` and `MutationSite` shape. Do not edit `adapters/base.py`,
 `adapters/python.py`, or `mutation.py`. Go returns at most `limit` descriptors,
-already unique and sorted by P23's byte-based key. It applies the selected
+already unique and sorted by P21's byte-based key. It applies the selected
 operator set during AST traversal, not after producing an unbounded catalogue.
 No `mutated_text` appears on the wire or in discovery. P30 applies one site to
 one fresh P22 snapshot only when the candidate is submitted.
@@ -150,7 +150,7 @@ fixed global sort order and return the max+1 sentinel honestly.
 The JIT carve commits valid/error wire goldens; two same-line operators; a
 continuation-line token; multibyte text before the token; comment/string
 lookalikes; generated/test/invalid sources; every limit boundary; a 64 MiB sparse
-source with 10,001 sites; and P23's unchanged Python candidate manifests. Memory is
+source with 10,001 sites; and P21's unchanged Python candidate manifests. Memory is
 proved structurally (response contains only bounded descriptors and collection
 holds sites). Peak-memory may be recorded as non-gating diagnostic evidence;
 no machine-dependent RSS threshold decides the test.
@@ -173,7 +173,7 @@ no machine-dependent RSS threshold decides the test.
    only R1 in the registry; P30 advances capability.
 4. Add all prepared fixtures and controlled breaks, including combined UTF-8 +
    same-line + max+1 and malformed-frame + oversized-source attacks.
-5. Prove P23's Python/core files and candidate manifests remain unchanged.
+5. Prove P21's Python/core files and candidate manifests remain unchanged.
 6. Run the real gate and record wire examples, binary hash, candidate manifests,
    optional non-gating peak-memory evidence, and controlled-break counts.
 

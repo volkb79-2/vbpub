@@ -1,0 +1,24 @@
+{
+  "text": "π = 1\ndef f(a, b, c):\n    return a < b < c and True\n",
+  "lines": [3],
+  "operators": ["compare-swap", "boolop-swap", "bool-const-flip"],
+  "cases": [
+    {
+      "limit": 4,
+      "sites": [
+        {"start_byte": 36, "end_byte": 37, "replacement": "<=", "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866", "lineno": 3, "operator": "compare-swap", "description": "Lt->LtE"},
+        {"start_byte": 40, "end_byte": 41, "replacement": "<=", "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866", "lineno": 3, "operator": "compare-swap", "description": "Lt->LtE"},
+        {"start_byte": 44, "end_byte": 47, "replacement": "or", "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6", "lineno": 3, "operator": "boolop-swap", "description": "And->Or"},
+        {"start_byte": 48, "end_byte": 52, "replacement": "False", "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe", "lineno": 3, "operator": "bool-const-flip", "description": "True->False"}
+      ]
+    },
+    {
+      "limit": 3,
+      "sites": [
+        {"start_byte": 36, "end_byte": 37, "replacement": "<=", "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866", "lineno": 3, "operator": "compare-swap", "description": "Lt->LtE"},
+        {"start_byte": 40, "end_byte": 41, "replacement": "<=", "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866", "lineno": 3, "operator": "compare-swap", "description": "Lt->LtE"},
+        {"start_byte": 44, "end_byte": 47, "replacement": "or", "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6", "lineno": 3, "operator": "boolop-swap", "description": "And->Or"}
+      ]
+    }
+  ]
+}

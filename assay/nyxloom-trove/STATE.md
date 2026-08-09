@@ -1,6 +1,6 @@
 # assay — state of play
 
-> **P00–P19 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> **P00–P20 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
 > The current review is
 > `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`;
 > read it before the older v1 review or this accumulated state. P15–P19 made
@@ -8,10 +8,11 @@
 > adversarial pass reproduced false-PASS/integrity failures in exact command
 > reuse, monorepo mutation isolation, stale canary coverage, commit binding,
 > and ambient Git repository selection. The cost-aware recarve is a serial
-> **P20 → … → P32** queue; P20 is next and JIT-READY against anchor `8aad3dc3`
-> with locked carver assets and an exact adversarial review (A-176). Three original bundles were
+> **P20 → … → P32** queue; P20 merged as `618b6f15`. P21 is next and
+> JIT-READY against that merge with locked carver assets and an exact
+> adversarial review (A-180–A-182). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
-> microtasks. P21–P32 remain provisional until their predecessor merges and
+> microtasks. P22–P32 remain provisional until their predecessor merges and
 > their named JIT proof assets pass the exact pre-dispatch review.
 >
 > **Reachable does not mean proven safe.** Sol finding 1 was about
@@ -302,11 +303,11 @@ carved.** Adoption belongs in the selected
 consumer's trove after Assay's wheel contract is real; it is not an Assay
 handoff with authority to edit another project.
 
-**Implementation status of that series: P15 through P19 are MERGED. P20
-is READY for Sonnet xhigh implementation; it is not implemented.** Its frozen
-packet is `handoffs/assay-P20-repository-artifact-boundary-integrity.md`, its
-locked acceptance material is `carve-assets/P20/`, and its JIT disposition is
-`reports/assay-P20-JIT-CARVE.md`. The execution order is:
+**Implementation status of that series: P15 through P20 are MERGED. P21 is
+READY for Opus xhigh implementation at `618b6f15`.** Its frozen packet is
+`handoffs/assay-P21-verdict-v4-evidence-contract.md`, its locked acceptance
+material is `carve-assets/P21/`, and its JIT disposition is
+`reports/assay-P21-JIT-CARVE.md`. The execution order is:
 
 `P20 repository/artifact boundary → P21 verdict v4 → P22 committed snapshot →
 P23 exact reexecution integration → P24 wheel → P25 real Python qualification →
@@ -329,6 +330,14 @@ no exclusion channel).
 The v2 review supersedes the stale parts of those briefs: P21 closes
 A-O16/A-O18 in v4, P20 closes A-O17, P22/P23 replace working-tree copy
 isolation, and P27–P31 add real disposable-srdm validation.
+
+P21's JIT pass also supersedes A-168's package ownership: the cap cannot be
+true while the Python adapter returns an unbounded tuple of full mutated files,
+and deriving byte identity from old/full text pairs produces false spans for
+insertions and shared suffixes. P21 therefore lands the already-designed
+bounded common/Python `MutationSite` seam; P23 consumes it without editing
+adapters (A-180). P21 also freezes the descriptor-owned verdict output boundary
+and honest Schema/model/raw-verifier ownership (A-181/A-182).
 
 For historical clarity, the next paragraph uses the handoff ids that existed
 when Sol carved them; A-153 and then A-167 record both renumbering steps. Sol was given write access (scoped by prompt, not sandbox, to new files

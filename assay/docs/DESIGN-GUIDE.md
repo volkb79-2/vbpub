@@ -376,6 +376,26 @@ interval. It also names output-write and mutation-limit terminals. These are
 batched into one migration before an external consumer exists; v3 remains the
 current implementation until P21 lands and is never upgraded in place.
 
+**The cap owns its discovery seam (A-180).** P21 cannot truthfully record
+`max_mutants` while an adapter first materializes an unbounded tuple containing
+one full mutated source file per candidate. The v4 migration therefore also
+lands the common/Python `MutationSite` protocol: selected operators plus a
+remaining `max+1` capacity in, a bounded ordered tuple of UTF-8 byte-span and
+replacement descriptors out. Full replacement text is materialized only for a
+submitted unit. Outcome identity is built directly from that syntax site; a
+minimal diff of original and replacement files is not equivalent (`<` to `<=`
+looks like a zero-width insertion, and shared suffixes shrink token spans).
+P23 consumes this seam for snapshot execution; P29 implements it for Go.
+
+**Validation layers claim only what they can express (A-182).** Schema, model,
+and raw verifier independently close local v4 grammar and vocabulary. The model
+and raw verifier independently enforce target equality, max+1 arithmetic,
+cross-bucket identity uniqueness, and parsed timestamp order; Draft 2020-12 has
+no `$data` relation with which to pretend those cross-object comparisons are in
+the schema. Timestamp order compares offset-aware instants, never serialized
+strings. A foreign v1-v3 document is rejected with one version-only diagnostic
+before any current-shape check.
+
 **A judged status carries the payload it judged.** Re-derivation only bites
 where there is something to re-derive, so the cheapest evasion of it is not
 a contradictory payload but no payload: a `PASS` claim with its `coverage` /
@@ -422,6 +442,13 @@ The physical output channel is the one exception nobody can wish away: if the
 declared destination cannot be reserved, Assay cannot put an artifact there.
 P21 detects that before running the lane, emits a stable
 `OUTPUT_WRITE_FAILED` diagnostic/exit, and never invents a fallback path.
+The reservation is descriptor-owned and leaves no persistent sibling temp
+across consumer execution (A-181): it proves parent write access with a
+create/remove probe, holds the observed absent-or-regular destination identity,
+then revalidates and atomically replaces from a fresh temp after the lane. A
+relative verdict path belongs to the CLI process cwd, not to the measured
+project. An object that appears or changes after reservation is preserved and
+the process exits ERROR; it is never overwritten to make emission succeed.
 
 ## 7. What assay must never become
 
