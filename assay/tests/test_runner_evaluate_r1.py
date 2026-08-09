@@ -499,10 +499,14 @@ def test_evaluate_r1_renders_format_mismatch_as_a_complete_claim(git_repo: GitRe
     assert claim.coverage is None
 
 
-def test_evaluate_r1_renders_unreadable_artifact_as_a_complete_claim(git_repo: GitRepo):
+def test_evaluate_r1_renders_empty_coverage_as_a_complete_claim_when_the_artifact_is_missing(
+    git_repo: GitRepo,
+):
     """No coverage artifact at the declared path at all -- work item 4's
-    "a command that writes nothing" -- is UNREADABLE_ARTIFACT, ALSO now a
-    judged terminal path, not a propagating exception."""
+    "a command that writes nothing" -- is P20/A-174's truthful
+    NO_MEASUREMENT/EMPTY_COVERAGE (the same cause a well-formed-but-empty
+    artifact already renders, since in both cases there is nothing to
+    measure), ALSO a judged terminal path, not a propagating exception."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     # No cov.json written at all.
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
@@ -515,8 +519,8 @@ def test_evaluate_r1_renders_unreadable_artifact_as_a_complete_claim(git_repo: G
         base=base_rev,
         adapter=ADAPTER,
     )
-    assert claim.status is Outcome.ERROR
-    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.status is Outcome.NO_MEASUREMENT
+    assert claim.reason_code is ReasonCode.EMPTY_COVERAGE
     assert claim.coverage is None
 
 
@@ -664,3 +668,61 @@ def test_evaluate_r1_wires_unclassified_lines_through_to_the_real_coverage_paylo
     assert r1_claim.reason_code is ReasonCode.UNCLASSIFIED_LINES
     assert r1_claim.coverage.unclassified_lines == {"pkg/mod.zzz": frozenset({3})}
     assert r1_claim.coverage.files_with_unclassified_lines == ("pkg/mod.zzz",)
+
+
+# --- P20 work item 5: an expected source-read failure is a complete claim -----
+
+
+def test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """A changed, considered file with NO coverage-artifact entry is read
+    from disk to answer ``has_executable_code`` -- an ``OSError`` there must
+    land inside a complete R1 claim (``ERROR``/``UNREADABLE_ARTIFACT``),
+    never propagate past ``evaluate_r1`` uncaught.
+
+    The failure is injected at the filesystem boundary (AUTHORING.md §3b.E)
+    rather than reproduced with a real broken file: making the committed
+    content itself undecodable would make ``git diff`` fail first (a
+    different, already-covered branch, since git's own diff output embeds
+    that content), and a permission-revoking chmod turned out to dirty
+    ``git status`` itself (verified directly against a real git binary --
+    revoking read access changes the file's ctime, which git's own
+    quick-comparison heuristic treats as a potential modification). Neither
+    reproduces "the file is fine as far as git is concerned, but this
+    process cannot read it right now" in isolation, so the boundary is
+    mocked instead, scoped to exactly the one path under test.
+    """
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/unreadable.zzz", "def real(): return 1\n")
+    head_rev = git_repo.commit_all("add a file that will fail to read")
+    # A dummy entry keeps the artifact non-empty (clearing check_empty_coverage)
+    # without naming "pkg/unreadable.zzz" -- read_source_text must be reached
+    # to answer has_executable_code for it.
+    write_coverage_json(git_repo.path / "cov.json", {"pkg/mod.zzz": {}})
+
+    real_read_text = Path.read_text
+    target = (git_repo.path / "pkg" / "unreadable.zzz").resolve()
+
+    def flaky_read_text(self: Path, *args, **kwargs):
+        if self.resolve() == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=base_rev,
+        adapter=ADAPTER,
+    )
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.coverage is None

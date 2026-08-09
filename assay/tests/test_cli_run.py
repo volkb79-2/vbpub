@@ -437,6 +437,11 @@ def test_run_evaluates_a_real_r1_pass_end_to_end(git_repo: GitRepo, tmp_path: Pa
     test_standalone.py) coverage-py-json artifact, and a real
     ``git merge-base`` resolving ``judge.base``."""
     (git_repo.path / "src").mkdir()
+    # A-140/P20-A-175: the lane's own command writes cov.json for real below,
+    # so it must be git-ignored or the post-command dirty check refuses the
+    # run -- unrelated to src/mod.py's own diff, so this cannot change what
+    # R1 measures.
+    git_repo.write(".gitignore", "cov.json\n")
     git_repo.write("src/mod.py", "def f():\n    return 1\n")
     base_rev = git_repo.commit_all("add mod.py")
     git_repo.write(

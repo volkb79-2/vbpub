@@ -78,9 +78,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, Sequence, TextIO
 
-from . import coverage, diff, git, measurability, mutation
+from . import coverage, diff, git, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
 from .config import Lane
+from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
 from .verdict import (
@@ -351,15 +352,6 @@ def build_r0_claim(result: CommandResult) -> Claim:
     )
 
 
-def _resolve_artifact_path(artifact: str, project_root: Path) -> Path:
-    """*artifact* resolves against *project_root* -- the same directory the
-    lane's own argv ran in (:func:`execute_command` is always called with
-    ``cwd=project_root``), so a relative ``--cov-report=json:cov.json``
-    names the same file here that the lane's own command just wrote."""
-    candidate = Path(artifact)
-    return candidate if candidate.is_absolute() else project_root / candidate
-
-
 def evaluate_r1(
     lane: Lane,
     *,
@@ -369,6 +361,7 @@ def evaluate_r1(
     adapter: LanguageAdapter,
     on_base_resolved: Callable[[str], None] | None = None,
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
+    profile: CoverageProfile | None = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -378,14 +371,18 @@ def evaluate_r1(
     JUDGED outcome. Every :class:`~assay.errors.AssayError` this function's
     own guard sequence can raise -- P02's two measurability guards, P03's
     ``EMPTY_COVERAGE`` guard, a broken coverage artifact
-    (``FORMAT_MISMATCH``, ``UNREADABLE_ARTIFACT``), or a git failure
-    resolving the base or diffing it (``GIT_FAILED``) -- is caught and
+    (``FORMAT_MISMATCH``, ``UNREADABLE_ARTIFACT``), a git failure resolving
+    the base or diffing it (``GIT_FAILED``), an ``evaluate_coverage``
+    normalized-key collision, or an expected filesystem/Unicode failure
+    reading a source file's text (``UNREADABLE_ARTIFACT``) -- is caught and
     returned as a complete R1 :class:`~assay.verdict.Claim` carrying that
     exact status and reason_code (P17 work item 6, closing three of sol's
-    "permanently unreachable" pairs, A-O15/STATE.md). NO ``coverage``
+    "permanently unreachable" pairs, A-O15/STATE.md; P20 work item 5 widens
+    this to every EXPECTED failure after HEAD is known, not only the ones
+    upstream of :func:`~assay.evaluate.evaluate_coverage`). NO ``coverage``
     payload accompanies any of them -- omitted, not zeroed (A-025 for the
-    three ``NO_MEASUREMENT`` causes; A-136 for the three ``ERROR`` ones,
-    which are payload-free by construction regardless of cause. Only a
+    three ``NO_MEASUREMENT`` causes; A-136 for the ``ERROR`` ones, which are
+    payload-free by construction regardless of cause). Only a
     non-:class:`AssayError` exception (a genuine programmer error) still
     propagates uncaught -- this function never invents a generic PASS/ERROR
     fallback for one.
@@ -396,6 +393,13 @@ def evaluate_r1(
     rigor, which is the only way a caller should reach this function.
     *base* is the declared comparison ref, exactly as ``judge.base``
     declares it (a caller resolves nothing before passing it in).
+
+    *profile* (P20): when given, it is the artifact :func:`run_lane` already
+    consumed and parsed through its own single-owner reservation -- used
+    directly and NEVER reread. ``None`` (the default; :mod:`assay.canary`'s
+    existing call site relies on this) makes this function read it itself
+    via :func:`assay.coverage.read_coverage_artifact` under the SAME bounded
+    safe-I/O discipline, exactly as before.
 
     *on_base_resolved* (P17), if given, is called EXACTLY ONCE with the
     resolved full base commit (:attr:`~assay.measurability.ResolvedBase.
@@ -428,14 +432,39 @@ def evaluate_r1(
         resolved = measurability.check_base_is_head(repo, base)
         if on_base_resolved is not None:
             on_base_resolved(resolved.base_rev)
-        artifact_path = _resolve_artifact_path(judge.coverage.artifact, project_root)
-        profile = coverage.read_coverage_artifact(
-            artifact_path, declared_format=judge.coverage.format
-        )
+        if profile is None:
+            profile = coverage.read_coverage_artifact(
+                project_root, judge.coverage.artifact, declared_format=judge.coverage.format
+            )
         coverage.check_empty_coverage(profile)
         repo_top = git.repo_top(repo)
         diff_text = git.run(
             repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev
+        )
+        added = diff.parse_added_lines(diff_text)
+        if on_added_resolved is not None:
+            on_added_resolved(added)
+
+        def read_source_text(path: str) -> str:
+            try:
+                return (repo_top / path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise AssayError(
+                    f"source file {path!r} could not be read for coverage "
+                    f"classification: {exc}",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+                ) from exc
+
+        result = evaluate_coverage(
+            added=added,
+            profile=profile,
+            adapter=adapter,
+            repo_top=repo_top,
+            source_root_paths=judge.source_root_paths,
+            fail_under=judge.fail_under,
+            allow_excluded=judge.allow_excluded,
+            read_source_text=read_source_text,
         )
     except AssayError as exc:
         return Claim(
@@ -446,23 +475,6 @@ def evaluate_r1(
             reason_code=exc.reason_code,
         )
 
-    added = diff.parse_added_lines(diff_text)
-    if on_added_resolved is not None:
-        on_added_resolved(added)
-
-    def read_source_text(path: str) -> str:
-        return (repo_top / path).read_text(encoding="utf-8")
-
-    result = evaluate_coverage(
-        added=added,
-        profile=profile,
-        adapter=adapter,
-        repo_top=repo_top,
-        source_root_paths=judge.source_root_paths,
-        fail_under=judge.fail_under,
-        allow_excluded=judge.allow_excluded,
-        read_source_text=read_source_text,
-    )
     return Claim(
         rigor="R1",
         source="computed",
@@ -652,42 +664,21 @@ def assemble_verdict(
     )
 
 
-def _is_unsafe_coverage_artifact(repo: Path, artifact_path: Path) -> bool:
-    """True when *artifact_path* -- the resolved ``judge.coverage.artifact``
-    a lane is about to write to and read back -- must be refused outright
-    (P17 work item 3, closing sol finding 6's coverage-artifact half): a
-    symlink (could point anywhere, read silently by
-    :func:`assay.coverage.read_coverage_artifact`'s own ``read_text``), an
-    existing path that is not a regular file (a directory left where a
-    file belongs), or a path already tracked by git (measurement output
-    has no business being committed, and this run is about to overwrite
-    it). Checked BEFORE the command runs, so a bad declaration is refused
-    before anything executes rather than discovered after -- ``is_symlink``
-    is checked first because it never raises for a non-existent path,
-    unlike a naive existence check that follows the link first.
+def _coverage_artifact_is_tracked(repo: Path, project_root: Path, artifact: str) -> bool:
+    """True when the project-relative *artifact* is already tracked by git
+    (P17 work item 3, closing sol finding 6's coverage-artifact half):
+    measurement output has no business being committed, and this run is
+    about to overwrite it (A-140's own consequence: the declared artifact
+    must be git-ignored or absent).
+
+    The symlink/non-regular-destination half of the OLD check is now owned
+    by :func:`assay.safeio.reserve_output` itself (P20) -- constructing the
+    reservation already refuses those before this function is even called,
+    so this is the one remaining fact only git can answer.
     """
-    if artifact_path.is_symlink():
-        return True
-    if artifact_path.exists() and not artifact_path.is_file():
-        return True
+    artifact_path = project_root / artifact
     tracked = git.run(repo, "ls-files", "--", str(artifact_path))
     return bool(tracked.strip())
-
-
-def _remove_stale_coverage_artifact(artifact_path: Path) -> None:
-    """Remove an existing coverage artifact before the lane's command runs
-    (work item 4): a command that exits 0 without rewriting it must not let
-    a PRIOR run's output stand in for this one's measurement. Only reached
-    once :func:`_is_unsafe_coverage_artifact` has already cleared the path
-    AND the whole worktree has been found clean (A-140), so this is always
-    a plain, untracked, git-IGNORED, non-symlinked regular file -- or
-    nothing at all, which is a no-op. Both of those facts are what make
-    this the only ``unlink`` in the module that cannot destroy something a
-    consumer still wanted: anything else at that path would have refused
-    the run one step earlier, with the file still there.
-    """
-    if artifact_path.exists():
-        artifact_path.unlink()
 
 
 def refuse_lane(
@@ -790,24 +781,28 @@ def run_lane(
     otherwise.
 
     Ordering (work items 2-7), all before the command runs, and in exactly
-    the handoff's own order -- 3 (refuse) strictly before 4 (mutate):
+    the handoff's own topology -- ``reserve -> pre-run refusals -> arm ->
+    execute -> post-command dirty check -> consume/parse -> evaluate``:
 
-    1. If R1 is declared, the coverage artifact path is VALIDATED
-       (:func:`_is_unsafe_coverage_artifact`) -- a pure check that reads
-       the filesystem and git's index and writes nothing.
+    1. If R1 is declared, the coverage output path is RESERVED
+       (:func:`assay.safeio.reserve_output`) before any refusal -- a
+       side-effect-free construction that already refuses an unsafe
+       declared spelling or destination (P20) -- and separately checked
+       against git's index (:func:`_coverage_artifact_is_tracked`):
+       measurement output has no business being committed.
     2. The WHOLE git worktree/index -- not merely the declared source
        roots -- must be clean (sol finding 6, live in the R0 path before
        this package: "every assay run invocation records HEAD and runs the
        live tree regardless of rigor level"). Either failure refuses the
        ENTIRE invocation via :func:`refuse_lane` before
        :func:`execute_command` is ever called.
-    3. ONLY THEN is an existing coverage artifact removed
-       (:func:`_remove_stale_coverage_artifact`) -- work item 4's "cannot
-       consume prior output" made true by construction: whatever exists at
-       that path once the command finishes was newly written BY this run,
-       because nothing else could still be there.
+    3. ONLY THEN is the reservation ARMED (:meth:`~assay.safeio.
+       OutputReservation.arm`) -- work item 4's "cannot consume prior
+       output" made true by construction: whatever exists at that path once
+       the command finishes was newly written BY this run, because nothing
+       else could still be there.
 
-    **Step 3 comes last on purpose (A-140).** Removing first made the
+    **Step 3 comes last on purpose (A-140).** Arming first made the
     cleanliness guard at step 2 judge a tree this function had itself
     just modified, and made a run that refuses to do anything nonetheless
     DELETE a file -- reproduced against the installed console script: a
@@ -821,22 +816,39 @@ def run_lane(
     (AGENTS.md 4.2a) asks for over silently deleting to make the tree
     look clean.
 
-    Then the command runs exactly once, R0's claim is built, and -- if R1
-    is declared -- :func:`evaluate_r1` runs UNCONDITIONALLY afterward,
-    regardless of R0's own outcome: a coverage artifact a real test command
-    wrote is a fact about what executed, not about whether its own
-    assertions passed, so an R0 FAIL does not itself make R1 vacuous (and
-    an R0 EXEC_FAILED/BUDGET_EXCEEDED still lets R1 render honestly too --
-    work item 4's own pre-run removal means an artifact that was never
-    rewritten is simply absent, and :func:`assay.coverage.
-    read_coverage_artifact` renders that ``ERROR``/``UNREADABLE_ARTIFACT``
-    on its own; no special-casing "did R0 pass" is needed here at all).
-    ``judgment.r1`` is built if and only if the rendered R1 claim carries a
-    ``coverage`` payload (P16's own invariant, :meth:`~assay.verdict.
-    Verdict._check_judgment_matches_claims`) -- using the base
-    :func:`evaluate_r1` itself already resolved, surfaced through
-    *on_base_resolved* rather than re-resolved a second time (O2: "the
-    comparison base resolves once"). Final ``ended`` covers R1's own
+    **P20 (A-175): post-command dirt precedes every higher-rigor
+    judgment.** Immediately after the command returns -- before the
+    reservation is consumed and before any of R1/R2/R3 runs -- the whole
+    Git-visible repository is checked again. The pre-run guard (step 2)
+    proves what existed BEFORE the command; it says nothing about what the
+    command itself left behind (a tracked test/support file it happened to
+    modify, for instance). If the tree is dirty now, the REAL R0 claim is
+    preserved when a higher rigor is also declared and every OTHER declared
+    claim renders ``NO_MEASUREMENT``/``DIRTY_TREE`` without running; for an
+    R0-only lane, R0 itself carries that terminal instead of its real
+    outcome. Assay never cleans the consumer's tree to make a claim true,
+    and no schema-v3 return-code field is invented for it (the ignored
+    coverage artifact itself is exempt by construction: a properly
+    git-ignored path never appears in ``git status`` at all).
+
+    Only once the tree is confirmed still clean does R1 -- if declared --
+    consume and parse the reservation EXACTLY ONCE
+    (:meth:`~assay.safeio.OutputReservation.consume`,
+    :func:`assay.coverage.parse_coverage_artifact`) and inject the result
+    into :func:`evaluate_r1` as *profile*, which never rereads it. If that
+    consume/parse itself raises a typed :class:`~assay.errors.AssayError`
+    (including the new, truthful ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` for
+    an artifact the command simply never produced, P20/A-174), the R1 claim
+    is built directly from that exact pair and :func:`evaluate_r1` is never
+    called at all -- a coverage artifact a real test command wrote is a
+    fact about what executed, not about whether its own assertions passed,
+    so an R0 FAIL does not itself make R1 vacuous, and this still renders
+    honestly regardless of R0's own outcome. ``judgment.r1`` is built if and
+    only if the rendered R1 claim carries a ``coverage`` payload (P16's own
+    invariant, :meth:`~assay.verdict.Verdict._check_judgment_matches_claims`)
+    -- using the base :func:`evaluate_r1` itself already resolved, surfaced
+    through *on_base_resolved* rather than re-resolved a second time (O2:
+    "the comparison base resolves once"). Final ``ended`` covers R1's own
     completion, not merely R0's own (O2: "verdict timing encloses command
     plus R1 judgment").
 
@@ -906,12 +918,30 @@ def run_lane(
     cover R3's own completion.
     """
     r1_declared = "R1" in lane.rigor
-    artifact_path: Path | None = None
+    r2_declared = "R2" in lane.rigor
+    r3_declared = "R3" in lane.rigor
+    reservation: safeio.OutputReservation | None = None
+
     if r1_declared:
-        artifact_path = _resolve_artifact_path(
-            lane.judge.coverage.artifact, project_root
-        )
-        if _is_unsafe_coverage_artifact(repo, artifact_path):
+        try:
+            reservation = safeio.reserve_output(
+                project_root,
+                lane.judge.coverage.artifact,
+                limit=coverage.MAX_COVERAGE_ARTIFACT_BYTES,
+            )
+        except AssayError as exc:
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                assay_version=assay_version,
+                clock=clock,
+            )
+        if _coverage_artifact_is_tracked(repo, project_root, lane.judge.coverage.artifact):
+            reservation.close()
             return refuse_lane(
                 lane,
                 commit=commit,
@@ -924,6 +954,8 @@ def run_lane(
             )
 
     if git.dirty_paths(repo):
+        if reservation is not None:
+            reservation.close()
         return refuse_lane(
             lane,
             commit=commit,
@@ -935,11 +967,21 @@ def run_lane(
             clock=clock,
         )
 
-    if artifact_path is not None:
-        _remove_stale_coverage_artifact(artifact_path)
-
-    r2_declared = "R2" in lane.rigor
-    r3_declared = "R3" in lane.rigor
+    if reservation is not None:
+        try:
+            reservation.arm()
+        except AssayError as exc:
+            reservation.close()
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                assay_version=assay_version,
+                clock=clock,
+            )
 
     result = execute_command(
         lane,
@@ -950,6 +992,47 @@ def run_lane(
         clock=clock,
     )
     r0_claim = build_r0_claim(result)
+
+    # A-175: post-command dirt precedes every higher-rigor judgment. The
+    # pre-run guard above proves what existed BEFORE the command; it says
+    # nothing about what the command left behind.
+    if git.dirty_paths(repo):
+        if reservation is not None:
+            reservation.close()
+        ended = iso_utc(clock())
+        rigor_levels = tuple(lane.rigor)
+        if rigor_levels == ("R0",):
+            dirty_claims: tuple[Claim, ...] = (
+                Claim(
+                    rigor="R0",
+                    source="computed",
+                    status=Outcome.NO_MEASUREMENT,
+                    verified_by_assay=True,
+                    reason_code=ReasonCode.DIRTY_TREE,
+                ),
+            )
+        else:
+            dirty_claims = tuple(
+                r0_claim
+                if level == "R0"
+                else Claim(
+                    rigor=level,
+                    source="computed",
+                    status=Outcome.NO_MEASUREMENT,
+                    verified_by_assay=True,
+                    reason_code=ReasonCode.DIRTY_TREE,
+                )
+                for level in rigor_levels
+            )
+        return assemble_verdict(
+            lane=lane,
+            commit=commit,
+            result=result,
+            claims=dirty_claims,
+            assay_version=assay_version,
+            ended=ended,
+        )
+
     claims: tuple[Claim, ...] = (r0_claim,)
     judgment_r1: JudgmentR1 | None = None
     judgment_r2: JudgmentR2 | None = None
@@ -958,29 +1041,46 @@ def run_lane(
     added_holder: list[diff.AddedLines] = []
 
     if r1_declared:
+        assert reservation is not None
         judge = lane.judge
-        resolved_base: list[str] = []
-        r1_claim = evaluate_r1(
-            lane,
-            repo=repo,
-            project_root=project_root,
-            base=judge.base,
-            adapter=adapter,
-            on_base_resolved=resolved_base.append,
-            on_added_resolved=added_holder.append,
-        )
-        claims += (r1_claim,)
-        ended = iso_utc(clock())
-        if r1_claim.coverage is not None:
-            judgment_r1 = JudgmentR1(
-                language=judge.language,
-                source_roots=judge.source_roots,
-                coverage_format=judge.coverage.format,
-                coverage_artifact=judge.coverage.artifact,
-                fail_under=judge.fail_under,
-                allow_excluded=judge.allow_excluded,
-                base=resolved_base[0],
+        try:
+            raw = reservation.consume()
+            profile = coverage.parse_coverage_artifact(raw, declared_format=judge.coverage.format)
+        except AssayError as exc:
+            claims += (
+                Claim(
+                    rigor="R1",
+                    source="computed",
+                    status=exc.outcome,
+                    verified_by_assay=True,
+                    reason_code=exc.reason_code,
+                ),
             )
+            ended = iso_utc(clock())
+        else:
+            resolved_base: list[str] = []
+            r1_claim = evaluate_r1(
+                lane,
+                repo=repo,
+                project_root=project_root,
+                base=judge.base,
+                adapter=adapter,
+                on_base_resolved=resolved_base.append,
+                on_added_resolved=added_holder.append,
+                profile=profile,
+            )
+            claims += (r1_claim,)
+            ended = iso_utc(clock())
+            if r1_claim.coverage is not None:
+                judgment_r1 = JudgmentR1(
+                    language=judge.language,
+                    source_roots=judge.source_roots,
+                    coverage_format=judge.coverage.format,
+                    coverage_artifact=judge.coverage.artifact,
+                    fail_under=judge.fail_under,
+                    allow_excluded=judge.allow_excluded,
+                    base=resolved_base[0],
+                )
 
     if r2_declared:
         judge = lane.judge
@@ -1024,46 +1124,70 @@ def run_lane(
                 repo_top = git.repo_top(repo)
 
                 def _read_source_text(path: str) -> str:
-                    return (repo_top / path).read_text(encoding="utf-8")
+                    # P20 work item 5: an expected filesystem/Unicode
+                    # failure here must still land inside a complete R2
+                    # claim, not propagate past `run_lane` uncaught.
+                    try:
+                        return (repo_top / path).read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as exc:
+                        raise AssayError(
+                            f"source file {path!r} could not be read for "
+                            f"mutation target resolution: {exc}",
+                            outcome=Outcome.ERROR,
+                            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+                        ) from exc
 
-                targets = mutation.resolve_mutation_targets(
-                    added,
-                    repo_top=repo_top,
-                    source_root_paths=judge.source_root_paths,
-                    adapter=adapter,
-                    read_source_text=_read_source_text,
-                )
-                with tempfile.TemporaryDirectory(prefix="assay-r2-") as scratch:
-                    mutation_result = mutation.run_mutation(
-                        lane,
-                        baseline=result,
-                        project_root=project_root,
+                try:
+                    targets = mutation.resolve_mutation_targets(
+                        added,
                         repo_top=repo_top,
-                        scratch_root=Path(scratch),
-                        targets=targets,
+                        source_root_paths=judge.source_root_paths,
                         adapter=adapter,
+                        read_source_text=_read_source_text,
+                    )
+                except AssayError as exc:
+                    claims += (
+                        Claim(
+                            rigor="R2",
+                            source="computed",
+                            status=exc.outcome,
+                            verified_by_assay=True,
+                            reason_code=exc.reason_code,
+                        ),
+                    )
+                    ended = iso_utc(clock())
+                else:
+                    with tempfile.TemporaryDirectory(prefix="assay-r2-") as scratch:
+                        mutation_result = mutation.run_mutation(
+                            lane,
+                            baseline=result,
+                            project_root=project_root,
+                            repo_top=repo_top,
+                            scratch_root=Path(scratch),
+                            targets=targets,
+                            adapter=adapter,
+                            jobs=judge.mutation.jobs,
+                            operators=judge.mutation.operators,
+                            process_runner=process_runner,
+                            clock=clock,
+                        )
+                    # `mutation_result` is NEVER `None` here: this branch is
+                    # only reached when `result.outcome is Outcome.PASS`, and
+                    # `run_mutation` returns `None` for exactly ONE reason --
+                    # `baseline.outcome is not Outcome.PASS` -- which cannot be
+                    # true for `baseline=result` in this branch. So
+                    # `r2_claim.mutation` (literally `mutation_result`,
+                    # unconditionally) is unconditionally present too, and
+                    # `judgment_r2` is built the same "iff a payload rendered"
+                    # way `judgment_r1` is, without a branch that could never
+                    # take the other arm (AUTHORING.md §3b.D).
+                    r2_claim = mutation.build_mutation_claim(result, mutation_result)
+                    claims += (r2_claim,)
+                    ended = iso_utc(clock())
+                    judgment_r2 = JudgmentR2(
                         jobs=judge.mutation.jobs,
                         operators=judge.mutation.operators,
-                        process_runner=process_runner,
-                        clock=clock,
                     )
-                # `mutation_result` is NEVER `None` here: this branch is
-                # only reached when `result.outcome is Outcome.PASS`, and
-                # `run_mutation` returns `None` for exactly ONE reason --
-                # `baseline.outcome is not Outcome.PASS` -- which cannot be
-                # true for `baseline=result` in this branch. So
-                # `r2_claim.mutation` (literally `mutation_result`,
-                # unconditionally) is unconditionally present too, and
-                # `judgment_r2` is built the same "iff a payload rendered"
-                # way `judgment_r1` is, without a branch that could never
-                # take the other arm (AUTHORING.md §3b.D).
-                r2_claim = mutation.build_mutation_claim(result, mutation_result)
-                claims += (r2_claim,)
-                ended = iso_utc(clock())
-                judgment_r2 = JudgmentR2(
-                    jobs=judge.mutation.jobs,
-                    operators=judge.mutation.operators,
-                )
 
     if r3_declared:
         judge = lane.judge
