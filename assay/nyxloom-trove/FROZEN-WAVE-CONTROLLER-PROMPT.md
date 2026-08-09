@@ -139,8 +139,10 @@ at the very end of the prompt. The delta must say, verbatim in substance:
   full and PRIOR_IMPLEMENTER_BRIEF if supplied. The brief is advisory evidence;
   Git, current handoff, and current contract sources are authoritative. Implement
   exactly this one handoff, self-review the final diff against every work item
-  and oracle, run its real gate in the declared dedicated container, commit, and
-  report Git evidence. Do not edit or implement the successor. After self-review,
+  and oracle, run only bounded foreground diagnostics plus the locked/targeted
+  acceptance named by the packet, commit, and report Git evidence. The controller
+  alone runs the authoritative registered gate. Do not edit or implement the
+  successor. After self-review,
   read only the successor's title, claim, Dispatch contract, context list, and
   scope so your brief may anticipate a real immediate trap.
 
@@ -152,7 +154,7 @@ Fork shape:
 Require the implementer result to contain:
 - actual branch HEAD/full commit and clean/dirty status;
 - files changed and work-item -> oracle -> test mapping;
-- exact gate command/result and controlled-break counts;
+- exact diagnostic/locked-test command/results and controlled-break counts;
 - self-review findings/fixes; and
 - `successor_candidates` in this exact shape:
 
@@ -169,9 +171,9 @@ has no evidence, has no named target, or claims durable truth without promotion.
 Do not decide its final disposition yourself.
 
 VERIFY IMPLEMENTER STATE
-Independently inspect worktree Git HEAD/status/diff and gate evidence. A report is
+Independently inspect worktree Git HEAD/status/diff and diagnostic evidence. A report is
 not truth. If the branch is missing work, out of scope, uncommitted unexpectedly,
-or gate evidence is absent, stop or send one bounded correction to the same child;
+or required locked/targeted evidence is absent, stop or send one bounded correction to the same child;
 never contaminate the assigned implementer base. Do not expose the implementer's narrative to blind review.
 
 REVIEWER FORK: PHASE 1 BLIND
@@ -188,12 +190,26 @@ successor candidates, or prior reviewer brief yet. Require:
 REVIEWER FORK: PHASE 2 RECONCILE/FIX
 Resume only that reviewer child, not R-opus-0. Append the implementer report,
 implementer candidates, and prior adjudicated reviewer brief. Ask it to verify
-claims against Git, fix/enhance only within existing handoff scope, run the real
-gate, commit reviewer changes, and adjudicate every successor candidate as
+claims against Git, fix/enhance only within existing handoff scope, run the
+locked and targeted diagnostics in the foreground, commit reviewer changes, and
+adjudicate every successor candidate as
 promote-contract, promote-epoch, one-hop, decision, or discard with reason.
 It may add its own candidates. If a fix needs changed product semantics, expanded
 scope, or a missing prepared oracle, disposition is RECARVE/ROUTE_TO_SOL—not an
 improvised repair.
+
+ADVERSARIAL HARNESS
+Before any deliberate source mutation, record a probe id, exact temporary edit,
+narrow owning test, expected red, process-group failsafe, output cap, and clean
+restoration check. Run the narrowest test first. A timeout is
+PROBE_INCONCLUSIVE_HUNG, never PASS or an expected red: terminate the whole
+temporary process group, verify repository restoration, and continue only when
+the normal frozen/repaired suite remains healthy. For this pilot, allow at most
+8 controlled probes and 20 minutes total harness wall time per package; a single
+targeted probe gets a 180-second failsafe. A mutated full suite is exceptional
+and may use the registered gate's timeout, but only when no focused test can
+discriminate the guard. Record every timeout as a reviewer finding and in
+invocations.jsonl; do not let a silent wait consume the review leg indefinitely.
 
 BRIEF ROUTING
 Save phase-2 adjudication under <state-dir>/briefs/Pxx.yaml. The reviewer makes
@@ -218,7 +234,13 @@ registered Assay gate from `nyxloom-trove/nyxloom.toml`, in its dedicated gate
 container—not this devcontainer—and place every spawned container under the
 validated `$CGROUP_PARENT_DEV_BACKGROUND`. Never hardcode/fallback a cgroup.
 Require genuine foreground completion and record output/digest. If red, do not
-merge.
+merge. The controller-owned receipt records exact argv and commit, request start
+and completion, outer exit, raw combined log, and SHA-256. For Assay, require
+`ASSAY_GATE_PHASE=wheel-installed`,
+`ASSAY_GATE_PHASE=self-hosted-lane-passed`,
+`ASSAY_GATE_PHASE=independent-self-hosting-passed`, and the host-side final
+`ASSAY_REGISTERED_GATE_COMPLETE=1`. Exit zero without the final marker is
+INCOMPLETE_GATE_EVIDENCE, not PASS; the removed `--rm` container is not needed.
 
 Recheck main HEAD. If it moved, inspect intervening commits and rebase nothing;
 stop for serial reconciliation. If unchanged and review is ACCEPT, merge with
@@ -241,7 +263,8 @@ Append one schema-version-1 JSON object per provider request to
 base/session ids, orientation/current OIDs, request-start time, input, uncached
 input, cache creation/read including TTL class, output, elapsed,
 time-to-first-edit, keepalive flag, gate state, reviewer defects, rework turns,
-and stale-context stop. Dedupe Claude transcript usage by message.id because
+gate outer exit/log digest/phase markers, probe count/timeouts/restoration, and
+stale-context stop. Dedupe Claude transcript usage by message.id because
 usage repeats for content blocks; retain individual request timestamps as well
 as aggregates. Nonzero provider cache-read telemetry is the only CACHE_HIT.
 

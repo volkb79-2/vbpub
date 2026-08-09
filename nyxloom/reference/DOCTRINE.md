@@ -43,6 +43,15 @@ not carry the application's real dependency closure. "Green in my shell" is not 
 ship signal; only the project's declared gate environment is. Every project must
 declare its real gate in `nyxloom.toml` — never its cockpit.
 
+**The controller owns the authoritative gate receipt, not only the exit code.**
+A disposable `--rm` container is normal; preserving the container is not the
+evidence. Preserve the exact gate argv, target commit, start/end, outer process
+exit, raw combined log, and log digest. Multi-phase gates must emit a stable
+marker after each load-bearing phase and one final marker outside the container
+after Docker itself returns zero. Exit zero without the final outer marker is
+incomplete evidence, not PASS. A marker witnesses orchestration; it never
+substitutes for the tests and artifact assertions inside the phase.
+
 ## 2. Agents and evidence
 
 **Trust git state. Never trust a receipt.**
@@ -59,6 +68,16 @@ recurs with *every* agent that is given a long-running command.
 **Therefore: implementation agents implement, commit, and stop.** The controller
 runs the authoritative gate itself, serially (§1). Give agents only fast,
 foreground sanity checks.
+
+**Adversarial probes get failsafe bounds and an inconclusive state.**
+A reviewer may deliberately break a guard and run the narrow test that should
+fail. Such a temporary probe must declare its exact mutation, expected red,
+process-group timeout, output bound, and restoration check before launch. The
+timeout is only a hang failsafe: expiry means `PROBE_INCONCLUSIVE_HUNG`, never a
+PASS or the expected red. Kill the whole temporary process group, verify the
+worktree was restored, and route a persistent hang as a finding. Run the
+narrowest owning test first; do not spend a full-suite mutation merely to prove
+a guard that one focused test discriminates.
 
 **Report failure honestly, including your own.**
 An agent that cannot run a check must say so rather than imply success. A report

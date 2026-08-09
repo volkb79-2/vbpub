@@ -14,7 +14,7 @@ scope:
   forbid: ["src/assay/schemas", "src/assay/verdict.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters", "nyxloom-trove/carve-assets/P20/README.md", "nyxloom-trove/carve-assets/P20/skeleton.patch", "nyxloom-trove/carve-assets/P20/probe_git_boundary.py", "nyxloom-trove/carve-assets/P20/test_acceptance.py", "nyxloom-trove/carve-assets/P20/expected/post-dirty-v3.json"]
 oracles:
   - id: O1
-    observable: "Every Git query is anchored to the supplied repository under a sanitized Git environment; hostile GIT_DIR/GIT_WORK_TREE/config, hooks, external diff, textconv, or another repository cannot change the resolved HEAD, diff, or dirty set"
+    observable: "Every Git query is anchored to the supplied repository under a sanitized Git environment; hostile GIT_DIR/GIT_WORK_TREE/config, .git/info/exclude, hooks, external diff, textconv, or another repository cannot change the resolved HEAD, diff, or dirty set beyond a clean committed .gitignore policy"
     negative: "Pointing GIT_DIR at a second seeded repository changes Assay's recorded commit or path set"
     gate: tester-unified
   - id: O2
@@ -48,7 +48,8 @@ The claim to attack: **the repository and evidence Assay records are the ones it
   xhigh independent reviewer**.
 - Readiness: **READY against input/JIT anchor
   `8aad3dc3b190915bb27881a0f3004b339aeef9c2`; the readiness commit is the
-  commit containing this updated packet and report.** Sol ran AUTHORING's exact
+  commit containing this updated packet and report, as amended by
+  `reports/assay-P20-JIT-CARVE-REVIEW-AMENDMENT.md`.** Sol ran AUTHORING's exact
   pre-dispatch adversarial specification review, corrected the packet, and
   committed the locked skeleton, hostile inputs, handwritten artifact, probes,
   and review disposition under `nyxloom-trove/carve-assets/P20/` and
@@ -127,7 +128,7 @@ on branch `feat/assay-P20-repository-artifact-boundary-integrity`.
   <absolute-git> --no-pager --no-optional-locks --literal-pathspecs
     --git-dir=<resolved-git-dir> --work-tree=<resolved-repo-top>
     -c core.quotePath=false -c core.hooksPath=/dev/null -c core.fsmonitor=
-    -c commit.gpgSign=false
+    -c commit.gpgSign=false -c core.excludesFile=
     -C <resolved-repo-top> <fixed-subcommand> ...
   ```
 
@@ -140,6 +141,26 @@ on branch `feat/assay-P20-repository-artifact-boundary-integrity`.
   program. User-controlled revisions are first
   validated/resolved to full OIDs; paths follow `--` under
   `--literal-pathspecs`.
+
+  `dirty_paths` unions the NUL-safe porcelain status records with this exact
+  second query:
+
+  ```text
+  git ls-files --others --exclude-per-directory=.gitignore -z --
+  ```
+
+  The second query deliberately does **not** use `--exclude-standard`: only
+  clean per-directory `.gitignore` files are repository policy. A modified or
+  untracked `.gitignore` is itself dirty; a committed clean `.gitignore` may
+  exempt the declared coverage artifact. Global/system/configured excludes are
+  neutralized, and `.git/info/exclude` cannot hide an otherwise untracked path.
+  Do not enumerate all ignored paths and subtract the artifact: that would
+  replace the repository's committed ignore policy with an Assay-specific
+  exception list.
+
+  Both Git output streams are fixed work bounds. Exceeding either bound kills
+  the child and produces `ERROR/GIT_FAILED`; truncating retained stderr while
+  continuing to drain it is not bounded work.
 - `src/assay/safeio.py` owns bounded nonblocking regular-file opening so P26
   can reuse the same descriptor/inode/limit discipline for attestations. Apply
   the committed skeleton before implementation; these signatures are public
@@ -300,7 +321,7 @@ assets, and topology above may not.
 
 ## Work
 
-1. Make `git.py` the only Git process boundary. Resolve the executable explicitly, start from a minimal controlled environment, remove all ambient repository/config selectors, disable system/global config and executable diff/textconv/fsmonitor behavior, pass end-of-options-safe operands, and anchor every command to the exact supplied repository. Missing/unusable Git remains a typed terminal, never another repository or a local configuration fallback.
+1. Make `git.py` the only Git process boundary. Resolve the executable explicitly, start from a minimal controlled environment, remove all ambient repository/config selectors, disable system/global/configured excludes and executable diff/textconv/fsmonitor behavior, pass end-of-options-safe operands, and anchor every command to the exact supplied repository. Form the dirty set from NUL-safe status plus the packet's `.gitignore`-only untracked query, so `.git/info/exclude` cannot add policy. Kill the child when either output stream crosses its fixed bound. Missing/unusable Git remains a typed terminal, never another repository or a local configuration fallback.
 2. Add real two-repository attacks for `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_*`, local `core.worktree`, replace refs, external diff/textconv, fsmonitor, aliases, and hooks where relevant. A test proves exact repo top, HEAD, diff, and path bytes, not merely that Git returned zero.
 3. Replace path-based `read_text` coverage ingestion with a bounded safe-open sequence: reject symlinks and non-regular files, bind the opened descriptor to the checked inode, enforce a documented maximum byte count before decoding/parsing, and reject replacement races. Never open a FIFO/device in a way that can block judgment.
 4. Bind `run_lane` coverage freshness to its execution. Remove or fingerprint the prior ordinary artifact only after all pre-run refusal checks; after execution require a newly produced file for this invocation. Preserve A-140: a refused run does not delete anything. P22/P23—not this forbidden scope—replace repeated R2/R3 working-tree copies so their controls/transforms cannot inherit a baseline artifact.

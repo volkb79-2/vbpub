@@ -145,9 +145,12 @@ it.
    Refuse before Git, output reservation, snapshot, or command activity.
 2. Resolve full repository/commit/project prefix through P20, reserve the verdict
    destination, resolve one plan, and create one injected monotonic deadline.
-3. Create a P22 snapshot for the resolved commit; ensure the declared coverage
-   artifact is absent; execute baseline from `snapshot.project_root` with only
-   the remaining budget; read only that invocation's fresh bounded artifact.
+3. Create a uniquely owned P22 snapshot for the resolved commit before making
+   the P20 output reservation; ensure the declared coverage artifact is absent;
+   execute baseline from `snapshot.project_root` with only the remaining budget;
+   read only that invocation's fresh bounded artifact. No shared live-tree
+   writer may race reservation/arming: private snapshot ownership, not ctime
+   granularity, removes that residual identity ambiguity.
 4. If baseline/prerequisite fails, emit its complete v4 artifact and start no
    mutation/canary work.
 5. For R2, resolve targets from the already-resolved diff and collect bounded
@@ -173,6 +176,7 @@ it.
 | max_mutants+1 discovered | mutant-limit terminal, `candidate_count=max+1`, zero attempts |
 | budget ends between units | lane-budget terminal; no next snapshot/process |
 | ignored stale coverage + no-output transform | no-measurement, never canary PASS |
+| shared live tree contains/races an ignored artifact | never used for execution; uniquely owned snapshot starts artifact-absent |
 | R2-only or uncovered-line without R1 | load-time bad configuration, no side effect |
 | consumer command writes tracked/untracked snapshot files | disposable only; source repository hash/status unchanged |
 

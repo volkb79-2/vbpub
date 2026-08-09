@@ -211,6 +211,33 @@ The controller verifies the branch, gate result, and review disposition before
 the serial `--no-ff` merge. Reports are evidence to verify, never the source of
 Git truth.
 
+Implementer and reviewer children run only bounded foreground diagnostics and
+the package's locked/targeted acceptance checks. They do not own the ship
+signal. After the reviewed commit is final, the controller runs the registered
+gate once, from the exact commit that may merge. This follows canonical
+DOCTRINE and removes duplicated expensive container gates from each package.
+
+### Controller-owned gate receipt
+
+For a disposable container gate, persist the exact argv, commit, request start,
+completion, outer exit code, combined log bytes, and SHA-256. A multi-phase gate
+emits stable phase markers and a final marker from the outer host wrapper after
+Docker returns zero. Require both outer exit zero and the final marker. Keeping
+the stopped container is unnecessary and `--rm` is not evidence loss when the
+receipt is complete.
+
+### Bounded adversarial harness
+
+Reviewer controlled breaks are supplementary proof, not an unbounded second
+gate. Before each temporary mutation, record: mutation id, changed path/hunk,
+narrow owning test, expected red, process-group failsafe, output cap, and the
+clean-tree/restoration oracle. Run the narrow test first and run a mutated full
+suite only when the narrow result cannot distinguish the contract. A timeout
+kills the process group and records `PROBE_INCONCLUSIVE_HUNG`; it never counts
+as a killed mutant, a pass, or a review rejection by itself. Cap both probes per
+package and total harness wall budget in controller policy. Persistent hangs
+route as findings instead of silently consuming the review leg.
+
 ## Successor-brief lifecycle
 
 A one-hop brief is intentionally allowed to anticipate the immediate successor.
@@ -407,7 +434,11 @@ Likely product work, subject to redesign:
 9. an evolving JIT-carver continuation with typed checkpoint/route-to-carver
    artifacts, explicitly distinct from frozen execution parents; and
 10. versioned schemas and atomic writers for `bases.yaml`, brief YAML, and the
-    append-only invocation JSONL.
+    append-only invocation JSONL;
+11. controller-owned gate receipts with outer/phase markers, raw-log digests,
+    commit binding, and explicit incomplete-evidence states; and
+12. a bounded adversarial-probe runner with process-group termination,
+    restoration verification, and `PROBE_INCONCLUSIVE_HUNG` telemetry.
 
 Until these exist, a Luna-class controller may run the procedure semi-manually,
 but only with the mechanical prompt and stop conditions stored in the project

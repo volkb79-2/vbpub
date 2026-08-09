@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P31-real-go-canary-r3]
 session: resume:assay-react-formats
 scope:
-  touch: ["gate/node/**", "nyxloom-trove/nyxloom.toml", "src/assay/coverage_parsers/lcov.py", "src/assay/coverage_parsers/istanbul.py", "src/assay/coverage_parsers/__init__.py", "src/assay/coverage.py", "tests/fixtures/coverage/**", "tests/**", "README.md"]
+  touch: ["gate/node/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "src/assay/coverage_parsers/lcov.py", "src/assay/coverage_parsers/istanbul.py", "src/assay/coverage_parsers/__init__.py", "src/assay/coverage.py", "tests/fixtures/coverage/**", "tests/**", "README.md"]
   forbid: ["src/assay/adapters", "src/assay/cli.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/verdict.py", "src/assay/schemas"]
 oracles:
   - id: O1

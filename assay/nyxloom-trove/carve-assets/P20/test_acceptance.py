@@ -212,6 +212,35 @@ def test_git_absence_from_declared_path_fails_without_os_default_search(tmp_path
     assert proc.stdout.strip() == "ERROR GIT_FAILED"
 
 
+def test_git_info_exclude_cannot_hide_nonignored_untracked_dirt(tmp_path: Path):
+    """A repository-local exclude file is not committed policy.
+
+    The tracked ``.gitignore`` created by ``_seed_repo`` legitimately exempts
+    the declared coverage artifact.  ``.git/info/exclude`` must not be able to
+    extend that exemption to an unrelated untracked file.
+    """
+    repo = tmp_path / "repo"
+    _seed_repo(repo)
+    (repo / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
+    (repo / "cov.json").write_text("{}", encoding="utf-8")
+    (repo / "leftover.bin").write_text("not committed policy", encoding="utf-8")
+
+    assert git.dirty_paths(repo) == ("leftover.bin",)
+
+
+def test_git_stderr_overflow_terminates_instead_of_draining_forever(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Both captured streams are work bounds, not only memory bounds."""
+    monkeypatch.setattr(git, "_MAX_GIT_STDERR_BYTES", 4)
+    with pytest.raises(AssayError) as caught:
+        git._run_bounded(
+            [sys.executable, "-c", "import os; os.write(2, b'x' * 5)"]
+        )
+    assert caught.value.reason_code is ReasonCode.GIT_FAILED
+    assert "standard error" in str(caught.value)
+
+
 def test_reservation_does_not_unlink_until_armed_and_missing_is_explicit(tmp_path: Path):
     safeio = _safeio()
     old = tmp_path / "cov.json"
