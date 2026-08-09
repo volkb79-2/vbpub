@@ -20,9 +20,17 @@ description of the code, never of the design: P17's work item 6 widened
 ``evaluate_r1`` to render every ``AssayError`` its own guard sequence can
 raise as a complete R1 claim, so all three are now ordinary producer
 terminals — reproduced against the installed console script, not inferred.
-``EXCLUDED_ENTIRELY`` is therefore empty, and it stays a named constant
+``EXCLUDED_ENTIRELY`` was therefore empty, and it stays a named constant
 rather than being deleted so that re-narrowing the audit is a visible,
 argued edit rather than a silent one.
+
+**P21 takes the vocabulary to 26 pairs**, and the audit moves with the
+capability rather than after it (A-141). Four of the seven new reasons are
+producer-reachable and fixtured here; the three that no code in this build
+can render into an artifact are listed in ``EXCLUDED_ENTIRELY`` with the
+argument for each. The size cross-check against ``tests/test_errors.py`` is
+now a set comparison rather than a literal — the literal is exactly what
+went stale when the vocabulary grew.
 
 The audit is LEVEL-AWARE, because "this pair appears somewhere" is a weaker
 claim than either package actually made: ``ERROR``/``UNREADABLE_ARTIFACT``
@@ -92,29 +100,74 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "FORMAT_MISMATCH",
         "BAD_LANE_CONFIG",
         "EXEC_FAILED",
+        # P21/A-O14/A-181: assay cannot write its OWN requested output.
+        "OUTPUT_WRITE_FAILED",
+        # P21/A-171: a syntax-aware discovery BOUNDARY failed.
+        "MUTATION_DISCOVERY_FAILED",
     ),
     "NO_MEASUREMENT": (
         "DIRTY_TREE",
+        # P21/A-178: a clean tree whose HEAD moved is not dirty.
+        "HEAD_CHANGED",
         "BASE_IS_HEAD",
         "EMPTY_COVERAGE",
         "MISSING_ATTESTATION",
         "STALE_ATTESTATION",
+        # P21/A-163, reserved here for P27's first real external-tool preflight.
+        "MISSING_EXTERNAL_TOOL",
     ),
-    "BUDGET_EXCEEDED": ("LANE_TIMEOUT",),
-    "INCONCLUSIVE": ("NO_MUTANTS", "CANARY_INCONCLUSIVE"),
+    "BUDGET_EXCEEDED": (
+        "LANE_TIMEOUT",
+        # P21/A-163: a refusal BEFORE any mutant is submitted, and P22's
+        # snapshot bound reserved by the same migration.
+        "MUTANT_LIMIT_EXCEEDED",
+        "SNAPSHOT_LIMIT_EXCEEDED",
+    ),
+    "INCONCLUSIVE": (
+        "NO_MUTANTS",
+        # P21/A-183: the adapter has no mutation engine at all. Payload-free,
+        # and deliberately NOT NO_MUTANTS, which asserts a supported analysis
+        # ran and observed nothing.
+        "MUTATION_UNSUPPORTED",
+        "CANARY_INCONCLUSIVE",
+    ),
 }
 
 ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
     (outcome, code) for outcome, codes in VOCABULARY.items() for code in codes
 )
 
-#: EMPTY since P17 (A-141). Every pair in the closed vocabulary is now
-#: reachable as a COMPLETE Verdict artifact and is fixtured below. Kept as
-#: a named constant, rather than deleted, so that any future re-narrowing
-#: of this audit has to be written down here and argued — a shrinking
-#: REQUIRED set is precisely the change that would quietly weaken the whole
-#: conformance claim.
-EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset()
+#: Empty from P17 (A-141) until P21, which added seven reasons at once — four
+#: of them producer-reachable and now fixtured below, three genuinely NOT
+#: renderable into any artifact this build can emit. Re-narrowing this audit
+#: stays a visible, argued edit: each entry states WHY no complete artifact
+#: exists, so "unreachable" carries the burden of proof A-151 put on it
+#: rather than being asserted from the code's shape.
+#:
+#: * ``ERROR``/``OUTPUT_WRITE_FAILED`` — structurally artifact-less. It means
+#:   assay could not write the verdict it was asked for, so the only honest
+#:   channel left is stderr plus exit 2 (A-181: "no fallback artifact is
+#:   invented"). Fixturing it would assert an artifact whose own existence
+#:   the reason denies. Proven instead by the locked CLI marker test and
+#:   ``tests/test_output_reservation.py``.
+#: * ``BUDGET_EXCEEDED``/``SNAPSHOT_LIMIT_EXCEEDED`` — reserved by A-163 for
+#:   P22's snapshot refusal. No P21 producer path reaches it; a fixture now
+#:   would be a hand-authored artifact for a terminal no code emits, which is
+#:   AUTHORING §3b.C's hollow-fixture defect one layer up.
+#: * ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` — reserved by A-163 for
+#:   P27's first real external-tool preflight. Both adapters this build ships
+#:   declare ``external_tools = ()`` (A-087/A-142), so nothing can render it.
+#:
+#: The two reserved pairs are P22's and P27's own obligation to close: when
+#: either makes its terminal reachable, it removes its line here and adds the
+#: complete fixture, and this audit turns red until it does.
+EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("ERROR", "OUTPUT_WRITE_FAILED"),
+        ("BUDGET_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED"),
+        ("NO_MEASUREMENT", "MISSING_EXTERNAL_TOOL"),
+    }
+)
 
 REQUIRED_PAIRS: frozenset[tuple[str, str]] = ALL_PAIRS - EXCLUDED_ENTIRELY
 
@@ -157,14 +210,34 @@ def _pairs_in(document: dict) -> set[tuple[str, str]]:
     return pairs | _claim_pairs_in(document) | _evidence_pairs_in(document)
 
 
-def test_the_transcribed_manifest_matches_the_closed_vocabularys_known_size():
-    # Pins the audit's OWN transcription against the count `tests/test_errors.py`
-    # independently proves `assay.errors.REASON_CODES` also has — two
-    # independent transcriptions of the same design-guide table, expected to
-    # agree in SIZE without either importing the other's source of truth.
-    assert len(ALL_PAIRS) == 19
-    assert len(EXCLUDED_ENTIRELY) == 0, "A-141: nothing is unreachable any more"
-    assert len(REQUIRED_PAIRS) == 19
+def test_the_transcribed_manifest_agrees_with_its_sibling_transcription():
+    # MECHANICAL, not a literal count. This used to assert `len(ALL_PAIRS) ==
+    # 19` while claiming it "pins the audit's OWN transcription against the
+    # count tests/test_errors.py independently proves" — a cross-check that
+    # was never mechanical at all, only two humans keeping two numbers in
+    # step. P21 added seven reasons, `test_errors.py`'s hand table was
+    # updated and this one was not, and the literal 19 kept passing while the
+    # product had 26: the audit that decides which terminals need a complete
+    # artifact silently stopped requiring five of them (A-141's own shape,
+    # one layer up).
+    #
+    # The comparison is against `test_errors.EXPECTED_REASON_CODES`, the
+    # SIBLING hand transcription of the same DESIGN-GUIDE §6 table — never
+    # `assay.errors.REASON_CODES`. That preserves this module's whole
+    # independence argument (auditing fixtures against the enum they exist to
+    # check would only prove the fixtures agree with the code), while making
+    # drift between the two transcriptions impossible to miss in either
+    # direction.
+    from test_errors import EXPECTED_REASON_CODES
+
+    sibling = frozenset(
+        (outcome, code)
+        for outcome, codes in EXPECTED_REASON_CODES.items()
+        for code in codes
+    )
+    assert ALL_PAIRS == sibling
+    assert EXCLUDED_ENTIRELY < ALL_PAIRS, "an excluded pair must be a real pair"
+    assert REQUIRED_PAIRS == ALL_PAIRS - EXCLUDED_ENTIRELY
 
 
 def test_every_required_vocabulary_pair_has_a_covering_fixture():
@@ -177,7 +250,7 @@ def test_every_required_vocabulary_pair_has_a_covering_fixture():
     assert missing == [], f"vocabulary pairs with no covering fixture: {missing}"
 
     # The inverse direction matters too: a fixture using a pair OUTSIDE the
-    # closed 19-pair vocabulary would prove nothing about a real vocabulary.
+    # closed vocabulary would prove nothing about a real vocabulary.
     unexpected = sorted(set(covered.keys()) - ALL_PAIRS)
     assert unexpected == [], f"fixture(s) use a pair outside the closed vocabulary: {unexpected}"
 

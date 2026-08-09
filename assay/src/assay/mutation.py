@@ -794,15 +794,17 @@ def run_mutation(
     :func:`project_prefix`.
 
     Only when the baseline PASSES: collects every candidate site across
-    *targets*, retains only the ones whose operator is in *operators*
-    (work item 3 — the lane's own declared, closed selection; a
-    :class:`Mutant` may name any of :data:`MUTATION_OPERATORS`, but only
-    the DECLARED subset is ever actually submitted; *operators* itself is
-    trusted here, not re-validated against the closed vocabulary — that
-    check is :mod:`assay.config`'s, at load time, and an unknown or empty
-    *operators* passed directly still degrades honestly, matching nothing
-    and collapsing into the same ``total == 0`` path below), then fans the
-    resulting job list out over ``executor_factory(jobs)`` — called with
+    *targets*, passing *operators* — the lane's own declared, closed,
+    order-preserving selection — INTO each adapter call, so a candidate the
+    lane never selected is never built in the first place (P21 moved this
+    from a post-hoc filter over already-collected jobs; filtering afterwards
+    meant the cap counted work that could never run). *operators* is
+    re-validated by :func:`collect_mutation_sites` itself, not merely at
+    :mod:`assay.config` load time: it is a public surface a caller may
+    invoke directly, and an empty, duplicated, or unknown selection raises
+    ``ValueError`` there rather than silently becoming the bound handed to
+    every adapter. Then fans the resulting job list out over
+    ``executor_factory(jobs)`` — called with
     EXACTLY *jobs*, never a derived or machine-sourced value (A-082/
     A-122) — isolating each mutant into its own fresh scratch copy under
     *scratch_root* (A-120). Results are collected POSITION-ALIGNED with

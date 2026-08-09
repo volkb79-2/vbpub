@@ -351,7 +351,16 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         operators = judgment_r2.get("operators")
         if isinstance(mutation, dict) and isinstance(operators, list):
             observed: set = set()
-            for bucket_name in ("survived", "crashed", "budget_exceeded"):
+            # (P21 phase-2 review) `killed` belongs in this sweep exactly as
+            # it does in the model's own (A-180): under v3 it was a bare
+            # count, so a killed mutant produced by an operator the lane
+            # never selected was structurally unobservable, and closing that
+            # is this package's own work item 3. Omitting it here left the
+            # single largest bucket with only ONE witness -- the producer
+            # model reached through reconstruction -- which is precisely the
+            # independence A-182 assigns to model AND raw verifier
+            # separately.
+            for bucket_name in ("killed", "survived", "crashed", "budget_exceeded"):
                 bucket = mutation.get(bucket_name)
                 if not isinstance(bucket, list):
                     continue
@@ -783,6 +792,64 @@ def _reconstruct_verdict(document: dict) -> Verdict:
 #: silently wrong re-derivation against a fabricated outcome.
 _BASELINE_NEVER_READ = object()
 
+#: (P21 phase-2 review) The payload-free R2 terminals a producer reaches for
+#: R2's OWN reason, independently of whether the baseline passed.
+#:
+#: ``judge_mutation``'s ``mutation is None`` branch propagates the baseline's
+#: own ``(outcome, reason_code)`` verbatim, which is correct for exactly one
+#: cause: mutation testing never began because the lane's command did not
+#: PASS (A-116). But ``run_lane`` renders SIX other payload-free R2 claims
+#: from a caught :class:`~assay.errors.AssayError` while R0 passed, and each
+#: was being compared against that passing baseline and rejected -- so
+#: ``assay run`` emitted artifacts its own ``assay verify`` refused. The one
+#: this package itself makes reachable is the discovery boundary; the rest
+#: predate it on the same branch:
+#:
+#: * ``MUTATION_DISCOVERY_FAILED`` -- ``run_mutation``'s discovery boundary
+#:   (P21 work item 4 / A-171), reachable today for unparseable Python.
+#: * ``DIRTY_TREE`` / ``HEAD_CHANGED`` -- the post-command refusal preserves
+#:   the real R0 claim and marks each higher declared claim (A-175/A-178).
+#: * ``DIRTY_TREE`` / ``BASE_IS_HEAD`` -- R2's own measurability guards.
+#: * ``GIT_FAILED`` -- the diff R2 resolves its targets from.
+#: * ``UNREADABLE_ARTIFACT`` -- the bounded source read during target
+#:   resolution (P20 work item 5).
+#:
+#: This is NOT a licence to accept any pairing: the STATUS is re-derived from
+#: the closed vocabulary below rather than taken from the artifact, so a
+#: forged ``FAIL``/``DIRTY_TREE`` or ``PASS``/``BASE_IS_HEAD`` is still
+#: rejected. ``PASS`` additionally cannot reach here at all -- a payload-free
+#: R2 ``PASS`` is unconstructible (``Claim.
+#: _check_a_judged_status_carries_its_own_payload``).
+#:
+#: ``refuse_lane``'s ``BAD_LANE_CONFIG`` is deliberately absent: it renders
+#: the IDENTICAL pair on every declared level including R0, so the ordinary
+#: baseline comparison below already re-derives it correctly.
+_INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
+    {
+        ReasonCode.MUTATION_DISCOVERY_FAILED,
+        ReasonCode.DIRTY_TREE,
+        ReasonCode.HEAD_CHANGED,
+        ReasonCode.BASE_IS_HEAD,
+        ReasonCode.GIT_FAILED,
+        ReasonCode.UNREADABLE_ARTIFACT,
+    }
+)
+
+
+def _outcome_owning(reason_code: ReasonCode) -> Outcome | None:
+    """The single :class:`Outcome` the closed vocabulary binds *reason_code*
+    to, or ``None`` if it is claimed by none.
+
+    DERIVED from ``REASON_CODES`` rather than transcribed: every reason code
+    belongs to exactly one outcome (``tests/test_errors.py`` proves the
+    partition), so re-deriving the status is a fact lookup, not a second
+    hand-maintained table that could drift from the vocabulary it checks.
+    """
+    for outcome, codes in REASON_CODES.items():
+        if reason_code in codes:
+            return outcome
+    return None
+
 
 def _fmt(outcome: Outcome, reason_code: ReasonCode | None) -> str:
     return f"({outcome.value}, {reason_code.value if reason_code is not None else None})"
@@ -871,6 +938,23 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
                 f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
                 f"disagrees with the re-derived judgment for an adapter with "
                 f"no mutation implementation {_fmt(*expected)}"
+            )
+        return
+    if claim.mutation is None and claim.reason_code in _INDEPENDENT_R2_TERMINALS:
+        # (P21 phase-2 review) R2 refused for its OWN reason while the lane's
+        # command may well have passed, so the baseline is not what decided
+        # this claim and comparing against it rejects a truthful artifact.
+        # The status is still re-derived -- from the closed vocabulary, not
+        # from the document -- so only the one pairing the product can
+        # actually emit is accepted.
+        expected_outcome = _outcome_owning(claim.reason_code)
+        if claim.status is not expected_outcome:
+            failures.append(
+                f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
+                f"pairs a refusal reason with an outcome the closed "
+                f"vocabulary does not bind it to; "
+                f"{claim.reason_code.value} is "
+                f"{'no outcome' if expected_outcome is None else expected_outcome.value}"
             )
         return
     if claim.mutation is None:

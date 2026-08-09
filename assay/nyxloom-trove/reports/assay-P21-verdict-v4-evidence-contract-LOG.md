@@ -342,3 +342,123 @@ assay may not generate its own expected artifacts.
 
 **No registered `tester-unified` gate run was performed** — the controller
 owns that, and this LOG claims nothing about it.
+
+---
+
+# Leg 3 — independent review (R-opus-1), phases 1 and 2
+
+Appended, never rewritten (DOCTRINE §6): legs 1 and 2 above are the
+implementer's own record and stay exactly as written.
+
+Reviewer: fresh Opus xhigh child forked from the package-neutral frozen
+reviewer base `R-opus-1`, oriented at
+`20beeda152a08114692fb846aee6dc0118f1e86a`. Phase 1 was blind — the
+implementation report, transcript, and controller receipts were not read
+until Phase 1 was closed.
+
+## Phase 1 — blind findings (disposition FIX)
+
+Reviewed at implementation HEAD `5bf87de225932bb4b35df84d9ab82ff9ffd93e43`,
+worktree clean, all nine locked hashes verified by the reviewer, `go.py`
+confirmed limited to A-183's forced import/signature migration, and the
+BLOCKED leg confirmed intact.
+
+| # | Severity | Finding |
+|---|---|---|
+| 1 | HIGH | `assay run` emits a payload-free `ERROR/MUTATION_DISCOVERY_FAILED` R2 artifact that its own `assay verify` REJECTS. The model declares the shape legal (`Claim._check_mutation_terminal_correspondence`); `verify._check_r2_rederivation` compared it against the PASSing R0 baseline and disagreed. Five further payload-free R2 terminals were equally affected. |
+| 2 | MEDIUM | The conformance vocabulary audit did not move with the capability (A-141's own shape). P21 took the closed vocabulary to 26 pairs; `test_verdict_conformance.py` still transcribed 19 and asserted the literal `len(ALL_PAIRS) == 19`, so five newly-reachable terminals were silently exempt from the fixture requirement. This is the root cause of finding 1. |
+| 3 | MEDIUM | The raw operator-policy sweep in `verify._check_judgment_matches_claims` visited `survived`/`crashed`/`budget_exceeded` but not `killed` — the one bucket work item 3 exists to bind (A-180). Caught only by model reconstruction, so the independent second witness A-182 assigns to the raw layer was absent. |
+| 4 | MEDIUM | No complete-artifact witness existed for four reachable new terminals. |
+| 5 | LOW | `run_mutation`'s docstring still claimed `operators` is "not re-validated" and "degrades honestly, matching nothing"; `collect_mutation_sites` raises `ValueError`. |
+
+Why a green suite could not see findings 1 and 3: the locked negatives assert
+`bool(verify.verify_document(document))`, and that list merges raw failures
+with model-reconstruction failures — "the raw layer caught it" and "only the
+model did" are indistinguishable to every locked case.
+
+Phase 1 combined-axis attacks that PASSED and are recorded as evidence the
+contract holds: clean post-command HEAD move with the verdict reserved inside
+the consumer repository (artifact names the pre-run commit, verify-clean, zero
+probe residue); relative `--verdict-json` resolving in the CLI process cwd and
+not `project_root`; cross-file identical byte-sites staying distinct and
+path-ordered; mixed-capability adapter behaviour.
+
+## Phase 2 — repairs applied by the reviewer
+
+Every finding was independently reproduced against the real tree before any
+edit. Repairs are bounded to files already in P21's `scope.touch`.
+
+1. **`src/assay/verify.py::_check_r2_rederivation`** — new
+   `_INDEPENDENT_R2_TERMINALS` names the six reasons `run_lane` renders as a
+   payload-free R2 claim for R2's OWN cause (`MUTATION_DISCOVERY_FAILED`,
+   `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `GIT_FAILED`,
+   `UNREADABLE_ARTIFACT`). For those the STATUS is re-derived from the closed
+   vocabulary via `_outcome_owning` — DERIVED from `REASON_CODES`, not a
+   second hand-maintained table — so this is not a blanket accept: a forged
+   `FAIL/DIRTY_TREE` or `ERROR/BASE_IS_HEAD` is still rejected. The
+   `MUTATION_UNSUPPORTED` mapping and the baseline-propagation path for every
+   other reason are preserved unchanged. `refuse_lane`'s `BAD_LANE_CONFIG` is
+   deliberately excluded: it renders the identical pair on every level
+   including R0, so the existing baseline comparison already re-derives it.
+2. **`src/assay/verify.py`** — `killed` added to the raw operator-policy sweep.
+3. **`tests/test_verdict_conformance.py`** — `VOCABULARY` taken to the actual
+   26 pairs; the stale literal replaced by a MECHANICAL set comparison against
+   `test_errors.EXPECTED_REASON_CODES`, the sibling HAND transcription of the
+   same DESIGN-GUIDE §6 table (never `assay.errors.REASON_CODES`, preserving
+   the module's independence argument). `EXCLUDED_ENTIRELY` now carries three
+   pairs with a written argument each — `OUTPUT_WRITE_FAILED` (structurally
+   artifact-less: it means the artifact could not be written), and P22's
+   `SNAPSHOT_LIMIT_EXCEEDED` and P27's `MISSING_EXTERNAL_TOOL` (reserved by
+   A-163, unreachable in this build). Each names the package that must remove
+   its line and add the fixture.
+4. **Four hand-authored complete fixtures** under `tests/fixtures/verdicts/`:
+   `r2_error_mutation_discovery_failed`, `r2_inconclusive_mutation_unsupported`,
+   `r2_budget_exceeded_mutant_limit_exceeded`, `r2_no_measurement_head_changed`.
+5. **`tests/test_verify_layer_independence.py`** (new) — raw-layer-only tests
+   calling `verify._check_judgment_matches_claims` DIRECTLY (because
+   `verify_document` cannot witness layer independence), the six payload-free
+   terminals, their foreign-outcome negatives, the preserved
+   baseline-propagation path, and the producer-to-verify round trip through
+   the real CLI for the discovery terminal.
+6. **`src/assay/mutation.py`** — the stale `run_mutation` operator-policy
+   docstring corrected.
+
+## Phase 2 evidence
+
+```text
+$ PYTHONPATH=assay/src python -m pytest --override-ini=pythonpath= \
+    assay/nyxloom-trove/carve-assets/P21/test_acceptance.py -q
+28 passed in 0.50s
+
+$ PYTHONPATH=src python -m pytest --override-ini=pythonpath= tests -q
+2129 passed, 1 skipped in 88.77s
+```
+
+2098 -> 2129 is exactly the 31 tests this leg adds. The single skip is the
+documented `ASSAY_SELF_HOSTING_VERDICT` case.
+
+A-067 controlled breaks — each applied to the real tree, measured, reverted,
+and the revert verified (`git status` shows no break residue):
+
+```text
+break 1  killed removed from the raw sweep .................. 2 red
+break 2  payload-free terminal branch disabled .............. 9 red
+         (incl. the producer->verify round trip and two fixture round-trips)
+break 3  one new reason dropped from the transcribed table ... 2 red
+         (the old literal `== 19` stayed GREEN under this exact break)
+break 4  an artifact-less pair un-excluded .................. 1 red
+break 5  a required fixture removed ......................... 1 red
+```
+
+Break 3 is the informative one: it is the precise drift that shipped, and the
+mechanical comparison now catches it where the literal could not.
+
+Locked assets re-verified after repair: all nine SHA-256 unchanged. No
+carve asset, handoff, `pyproject.toml`, gate script, `assay.toml`,
+`nyxloom.toml`, `conftest.py`, or P22 file was touched.
+
+**No registered `tester-unified` gate run was performed in either phase.** The
+controller owns that, and this leg claims nothing about it. Both suites above
+are devcontainer runs and are diagnostic only.
+
+**Disposition: PASS after reviewer repair.** Findings 1-5 fixed and witnessed.
