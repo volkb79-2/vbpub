@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "Hand-authored from the literal bytes tests/test_isolation.py commits.",
+    "Every sha256 is of the file CONTENT (for a symlink, of its target bytes),",
+    "computed independently of assay with hashlib. Nothing here is produced by",
+    "calling the implementation under test.",
+    "This fixture deliberately differs from the locked carve-asset manifest on",
+    "the axes that one does not exercise: project_prefix is the repository root,",
+    "there is a zero-byte blob, and the symlink descends into a subdirectory",
+    "instead of ascending out of one."
+  ],
+  "project_prefix": ".",
+  "entries": {
+    "bin/tool.sh": {
+      "mode": "100755",
+      "size": 18,
+      "sha256": "299001868fb8c02fd431c336c6d058f5558c5dff5b5af5e6fe04b870a6a9cbba"
+    },
+    "empty.txt": {
+      "mode": "100644",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "lib/data.bin": {
+      "mode": "100644",
+      "size": 10,
+      "sha256": "4d5452dbf8c22633445517e19223385fdd92427bc54cef6f9cbfa3f0954bc6a3"
+    },
+    "link-to-data": {
+      "mode": "120000",
+      "size": 12,
+      "sha256": "bf8932e5a2bfd0b209243655b7d9f04439e6be301f28ba9ebed0086b54d4ee18",
+      "target": "lib/data.bin"
+    },
+    "náme.txt": {
+      "mode": "100644",
+      "size": 13,
+      "sha256": "f682a5ef26796a5f98678d3a028d07c8853e6c5fc01005b55bd95852d00fc917"
+    }
+  }
+}
