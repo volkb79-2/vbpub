@@ -470,6 +470,81 @@ def test_universal_pass_mutation_is_rejected_by_the_whole_document_comparator(
     module._check_universal_pass_mutation(result)
 
 
+def test_a_scenario_that_must_compare_with_topos_refuses_a_missing_witness(
+    installed_assay: Path, tmp_path: Path
+) -> None:
+    """A `compare_with_topos=True` scenario may not silently degrade to one
+    witness (A-208).
+
+    `missing-line` declares `expected_exit=1`, so a guard keyed only on
+    `expected_exit == 0` never fires for it. A wrapper regression that still
+    runs the real pytest+coverage — leaving Assay's own in-snapshot verdict
+    truthfully `FAIL/UNCOVERED_LINES` — but never exports the witness would
+    then drop the independent Topos comparison entirely and still be recorded
+    as qualified. The wrapper is a locked byte-exact fixture today, so this is
+    defence in depth against a future change to it; the guard must still
+    discriminate.
+    """
+    module = _load_harness()
+    non_copying_wrapper = '''"""P25 regression wrapper: real coverage, no witness export."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ARTIFACT = Path(".assay/topos-coverage.json")
+
+
+def main() -> int:
+    with Path(os.environ["ASSAY_P25_LOG"]).open("wb") as stream:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                *sys.argv[1:],
+                "--cov=topos/src/topos",
+                "--cov-branch",
+                f"--cov-report=json:{ARTIFACT}",
+            ],
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+    def materialize_without_exporting_the_witness(*, source_repo, scratch, spec):
+        return module._materialize_negative(
+            source_repo,
+            scratch,
+            spec.name,
+            probe_fixture=spec.probe_fixture,
+            test_fixture=spec.test_fixture,
+            argv_tail=spec.argv_tail,
+            allow_excluded=spec.allow_excluded,
+            wrapper_fixture=None,
+            wrapper_text=non_copying_wrapper,
+            source_target=spec.source_target,
+        )
+
+    module.materialize_scenario = materialize_without_exporting_the_witness
+    assert module.MISSING.expected_exit != 0 and module.MISSING.compare_with_topos
+    with pytest.raises(module.QualificationError, match="expected a coverage witness"):
+        module.run_scenario(
+            source_repo=REPO_ROOT,
+            scratch=tmp_path,
+            assay_executable=installed_assay,
+            assay_version=_assay_version(installed_assay),
+            spec=module.MISSING,
+        )
+    assert not (tmp_path / module.MISSING.name / "witness.json").exists()
+
+
 def test_a_scenario_that_measured_nothing_is_refused(
     installed_assay: Path, tmp_path: Path
 ) -> None:
