@@ -820,11 +820,18 @@ report that mechanism as having survived and never as having been caught.
 but naming it is precisely what made dstdns's gap visible, so it is required and
 honest about being a claim.
 
-**Every lane declares R0 (A-154).** R2 and R3 execute variants of the declared
-command and therefore have no honest meaning without its baseline identity;
-making that baseline implicit would omit a claim Assay actually ran. R1/R2/R3
-remain independently selectable after R0. An `uncovered-line` R3 lane also
-declares R1 because only R1 can produce its expected `UNCOVERED_LINES` cause.
+**Every lane declares R0 (A-154), in canonical order (A-192).** R2 and R3
+execute variants of the declared command and therefore have no honest meaning
+without its baseline identity; making that baseline implicit would omit a claim
+Assay actually ran. R1/R2/R3 remain independently selectable after R0 — but
+`rigor` is an *ordered subsequence* of `R0,R1,R2,R3`, refused at load time
+otherwise. `R0,R2` and `R0,R1,R3` load; `R2`, `R1,R0` and `R0,R3,R2` do not.
+"R0 is present and first" alone would leave a declaration order different from
+the fixed order the runner executes and constructs claims in, which is either
+an artifact-order mismatch or an implementer's choice about which of the two
+wins. An `uncovered-line` R3 lane also declares R1 because only R1 can produce
+its expected `UNCOVERED_LINES` cause — that prerequisite is checked at load
+too, not discovered at run time.
 
 **One budget covers the lane (A-160).** The singular `budget` spans snapshot
 construction, baseline, evaluation, every mutant, and both canary halves; it is
@@ -845,7 +852,7 @@ rather than a global CLI flag* — it does not mean "at the lane's top level".
 | Field | Values |
 |---|---|
 | `scope` | `S0` `S1` `S2` `S3` `S4` (TESTING-METHODOLOGY §Axis 1) |
-| `rigor` | list of `R0` `R1` `R2` `R3` (§Axis 2) |
+| `rigor` | an R0-led ordered subsequence of `R0` `R1` `R2` `R3` (§Axis 2, A-192) — never an arbitrary list |
 | `enforcement` | `gate` `advisory` |
 | `judge.coverage.format` | a key the parser registry knows (§11) |
 | `budget` | a duration string, **parsed at load**, not merely present — a malformed budget discovered at run time is a failure the config layer could have caught |

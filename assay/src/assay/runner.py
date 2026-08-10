@@ -826,6 +826,7 @@ def refuse_lane(
     reason_code: ReasonCode,
     argv_append: Sequence[str] = (),
     passthrough_source: Mapping[str, str] | None = None,
+    project_prefix: PurePosixPath | None = None,
     assay_version: str,
     clock: Clock = _utc_now,
 ) -> Verdict:
@@ -853,9 +854,19 @@ def refuse_lane(
     :mod:`assay.cli` is the caller that owns the registry-capability
     refusals (work item 2) and must render them as artifacts here rather
     than re-deriving the shape itself.
+
+    *project_prefix* (A-193) is the refusing caller's own repo-relative
+    project identity, when it HAS one -- :func:`run_lane`'s direct pre-run
+    dirty-tree refusal does, and passes it. It stays ``None`` by default
+    precisely for :mod:`assay.cli`'s pre-adapter refusal, which happens
+    before repository identity has entered that API at all: an honest
+    absence, never an invented ``.``.
     """
     plan = resolve_command_plan(
-        lane, argv_append=argv_append, passthrough_source=passthrough_source
+        lane,
+        argv_append=argv_append,
+        passthrough_source=passthrough_source,
+        project_prefix=project_prefix,
     )
     return _refuse_lane_with_plan(
         lane,
@@ -922,6 +933,37 @@ def _refuse_lane_with_plan(
 # delegating R2 to mutation.py and R3 to canary.py -- both of which consume
 # the ONE shared unit engine, :func:`_execute_snapshot_unit`, below.
 # ---------------------------------------------------------------------------
+
+
+def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPath:
+    """*project_root*'s own normalized, repo-top-relative POSIX location --
+    the ONE conversion the namespace map allows (``.`` at the repository
+    root), written once and shared by BOTH dispatch states.
+
+    Reviewer repair: the direct R0-only path resolved its plan without a
+    prefix, so its :attr:`CommandPlan.project_prefix` read ``None`` -- the
+    spelling A-193 reserves for "repository identity does not exist yet"
+    (a pre-adapter :mod:`assay.cli` refusal, or a standalone helper). Direct
+    :func:`run_lane` already knows both facts by the time it executes, so
+    ``None`` there was a shadowing default in the exact sense AGENTS.md names:
+    a literal standing in for a value with an authoritative source. Refusing
+    a *project_root* outside its own repository is likewise a real check
+    rather than an invented ``.``, and is the same containment the
+    higher-rigor state machine's own step 1.2 already applies.
+    """
+    try:
+        relative = project_root.resolve().relative_to(repo_top)
+    except ValueError as exc:
+        raise AssayError(
+            f"the project root {project_root} is not contained by its own "
+            f"repository top {repo_top}; a lane's command has no repo-relative "
+            f"identity there",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        ) from exc
+    return (
+        PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
+    )
 
 
 def _relocate_source_roots(
@@ -1316,6 +1358,19 @@ def _run_prepared_lane(
     # directly, each materialising its own independent snapshot.
 
     judgment_r2: JudgmentR2 | None = None
+    #: Reviewer repair: an :class:`~assay.errors.AssayError` ESCAPING
+    #: :func:`~assay.mutation.run_mutation` is an ORCHESTRATION fault -- a P22
+    #: worker failure, or a mutant that left its own snapshot dirty/moved
+    #: (A-195) -- not a judged R2 outcome. The handoff's terminal table stops
+    #: the lane on both ("P22 worker failure ... no R3"; "unit writes
+    #: Git-visible support state ... no later unit"), so the pair is carried
+    #: forward to every declared LATER level rather than letting R3 start two
+    #: more snapshot units and render a judged canary verdict beside an R2
+    #: claim that says the lane could not be measured. A judged R2 FAIL
+    #: (MUTANTS_SURVIVED), an INCONCLUSIVE, a discovered-deadline
+    #: LANE_TIMEOUT payload, or the max+1 sentinel are NOT such faults: they
+    #: are real measurements and R3 still runs after them.
+    r2_orchestration_fault: AssayError | None = None
     if r2_declared:
         if result.outcome is not Outcome.PASS:
             claims += (mutation.build_mutation_claim(result, None),)
@@ -1338,6 +1393,7 @@ def _run_prepared_lane(
                     clock=clock,
                 )
             except AssayError as exc:
+                r2_orchestration_fault = exc
                 claims += (
                     Claim(
                         rigor="R2",
@@ -1359,7 +1415,19 @@ def _run_prepared_lane(
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None
-    if r3_declared:
+    if r3_declared and r2_orchestration_fault is not None:
+        # No canary unit is started at all: the lane already stopped.
+        claims += (
+            Claim(
+                rigor="R3",
+                source="computed",
+                status=r2_orchestration_fault.outcome,
+                verified_by_assay=True,
+                reason_code=r2_orchestration_fault.reason_code,
+            ),
+        )
+        ended = iso_utc(clock())
+    elif r3_declared:
         # Deferred: `assay.canary` imports several names from THIS module at
         # its own module level, so a module-level import here would close a
         # genuine cycle -- the identical reasoning `assay.mutation`'s own
@@ -1496,10 +1564,7 @@ def _run_higher_rigor_lane(
     :mod:`assay.isolation` (P22) owns all Git-object isolation and refusal.
     """
     repo_top = git.repo_top(repo)
-    relative = project_root.resolve().relative_to(repo_top)
-    project_prefix = (
-        PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
-    )
+    project_prefix = _resolved_project_prefix(repo_top, project_root)
     plan = resolve_command_plan(
         lane,
         argv_append=argv_append,
@@ -1689,6 +1754,12 @@ def run_lane(
     # caller's own `commit` label, which is an identity assay is asked to
     # record rather than a fact it has verified.
     pre_run_head = git.head_rev(repo)
+    # A-193 (reviewer repair): "Direct `run_lane` already has repo/project
+    # identity and must pass its exact prefix; only a pre-repository refusal
+    # or standalone helper may honestly retain `None`." Read here, beside the
+    # other two pre-run Git facts, so this path's own plan states the same
+    # truth the higher-rigor path's does.
+    direct_prefix = _resolved_project_prefix(git.repo_top(repo), project_root)
 
     if git.dirty_paths(repo):
         return refuse_lane(
@@ -1698,6 +1769,7 @@ def run_lane(
             reason_code=ReasonCode.DIRTY_TREE,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
             assay_version=assay_version,
             clock=clock,
         )
@@ -1707,6 +1779,7 @@ def run_lane(
         argv_append=argv_append,
         cwd=project_root,
         passthrough_source=passthrough_source,
+        project_prefix=direct_prefix,
         process_runner=process_runner,
         clock=clock,
     )
