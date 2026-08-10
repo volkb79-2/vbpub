@@ -30,6 +30,7 @@ import resource
 import shutil
 import stat
 import subprocess
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -39,6 +40,7 @@ from assay import isolation
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.isolation import (
     DEFAULT_SNAPSHOT_LIMITS,
+    SnapshotLimits,
     SnapshotSpec,
     prepare_snapshot,
 )
@@ -1351,3 +1353,166 @@ def test_reviewer_materialization_holds_a_bounded_descriptor_count(
                 )
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+# --------------------------------------------------------------------------
+# Independent review, phase 2 — cleanup contract and three axes neither the
+# locked suite nor the production suite reaches.
+# --------------------------------------------------------------------------
+
+
+def test_reviewer_a_cleanup_failure_on_a_normal_exit_is_reported_not_swallowed(
+    tmp_path: Path,
+) -> None:
+    """The terminal table: an expected cleanup failure is reported.
+
+    ``shutil.rmtree(..., ignore_errors=True)`` is right only while an
+    exception is already in flight. On a NORMAL exit it turns "assay could
+    not clean up after itself" into silence and leaves the tree inside the
+    caller's scratch namespace -- which P23 reuses for the whole lane, so the
+    next unit inherits it. Driven by making the scratch root unwritable, not
+    by patching the removal, so the real branch runs.
+    """
+    if os.geteuid() == 0:  # pragma: no cover - the gate runs as a real uid
+        pytest.skip("a root process is not stopped by directory permissions")
+    repo, commit = _root_repo(tmp_path)
+    scratch = _scratch(tmp_path)
+    snapshot_root: Path | None = None
+    with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+        try:
+            with pytest.raises(AssayError) as caught:
+                with prepared.materialize(timeout=TIMEOUT) as snapshot:
+                    snapshot_root = snapshot.root
+                    os.chmod(scratch, 0o500)
+            assert caught.value.outcome is Outcome.ERROR
+            assert caught.value.reason_code is ReasonCode.GIT_FAILED
+            assert "caller-owned scratch" in str(caught.value)
+        finally:
+            os.chmod(scratch, 0o700)
+    assert snapshot_root is not None
+
+
+def test_reviewer_a_replacement_may_target_a_newline_and_backslash_path(
+    tmp_path: Path,
+) -> None:
+    """The odd-path axis is only ever read, never REPLACED, anywhere else.
+
+    The replacement writes its index entry through ``update-index
+    --cacheinfo <mode>,<oid>,<path>``, whose path field runs to the end of one
+    argv element -- so a literal newline in the name is carried by the
+    argument vector rather than by a line-oriented grammar. That is worth an
+    oracle rather than an assumption.
+    """
+    odd = "od\N{LATIN SMALL LETTER E WITH ACUTE}\nline\\slash.txt"
+    repo = tmp_path / "consumer"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / odd).write_bytes(b"odd path\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "odd path only")
+    commit = _git(repo, "rev-parse", "HEAD")
+    scratch = _scratch(tmp_path)
+
+    with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+        assert (
+            prepared.read_regular_file(PurePosixPath(odd), timeout=TIMEOUT)
+            == b"odd path\n"
+        )
+        with prepared.materialize_replacement(
+            path=PurePosixPath(odd),
+            expected=b"odd path\n",
+            replacement=b"mutated odd path\n",
+            timeout=TIMEOUT,
+        ) as child:
+            assert (child.root / odd).read_bytes() == b"mutated odd path\n"
+            assert _git(child.root, "status", "--porcelain=v1") == ""
+            assert (
+                _git(child.root, "rev-list", "--parents", "-n", "1", child.commit)
+                == f"{child.commit} {commit}"
+            )
+
+
+def test_reviewer_the_child_closure_is_bounded_not_only_the_base(
+    tmp_path: Path,
+) -> None:
+    """A replacement adds a blob, trees and a commit to the closure.
+
+    Bounding only the prepared seed would make every declared ceiling true of
+    the seed and false of the repository actually handed to a consumer
+    command. The limit is set so the BASE fits exactly, which is what forces
+    the refusal to come from the child's own re-enumeration.
+    """
+    repo, commit = _root_repo(tmp_path)
+    scratch = _scratch(tmp_path)
+    base_objects = len(
+        _git(repo, "rev-list", "--objects", "--no-object-names", commit).split()
+    )
+    limits = SnapshotLimits(
+        **{**asdict(DEFAULT_SNAPSHOT_LIMITS), "max_objects": base_objects}
+    )
+    with prepare_snapshot(
+        _spec(repo, scratch, commit, limits=limits), timeout=TIMEOUT
+    ) as prepared:
+        # the base itself fits and yields
+        with prepared.materialize(timeout=TIMEOUT) as base:
+            assert base.commit == commit
+        with pytest.raises(AssayError) as caught:
+            with prepared.materialize_replacement(
+                path=PurePosixPath("lib/data.bin"),
+                expected=LITERALS["lib/data.bin"],
+                replacement=b"mutant\n",
+                timeout=TIMEOUT,
+            ):
+                pytest.fail("a child over the object ceiling must not yield")
+        assert caught.value.outcome is Outcome.BUDGET_EXCEEDED
+        assert caught.value.reason_code is ReasonCode.SNAPSHOT_LIMIT_EXCEEDED
+        # the refused child left nothing behind; only the live seed remains
+        assert [item.name for item in scratch.iterdir()] == [
+            item.name for item in scratch.iterdir() if item.name.startswith("assay-p22-seed-")
+        ]
+
+
+def test_reviewer_a_committed_empty_subtree_materializes_nothing(
+    tmp_path: Path,
+) -> None:
+    """An empty tree is a directory git itself cannot check out.
+
+    ``mktree`` can commit one even though ordinary porcelain cannot, so a
+    hostile or generated repository can contain it. Assay matches git: the
+    directory is simply absent, and -- the part worth asserting -- the
+    snapshot is still CLEAN, because an absent empty directory is not a
+    missing tracked path.
+    """
+    repo, base = _root_repo(tmp_path)
+    empty_tree = _git(repo, "hash-object", "-t", "tree", "--stdin")
+    listing = subprocess.run(
+        [shutil.which("git") or "git", "-C", str(repo), "ls-tree", f"{base}^{{tree}}"],
+        stdout=subprocess.PIPE,
+        check=True,
+        env={"PATH": os.environ["PATH"], "LC_ALL": "C.UTF-8"},
+    ).stdout
+    made = subprocess.run(
+        [shutil.which("git") or "git", "-C", str(repo), "mktree"],
+        input=listing + f"040000 tree {empty_tree}\tempty_dir\n".encode(),
+        stdout=subprocess.PIPE,
+        check=True,
+        env={"PATH": os.environ["PATH"], "LC_ALL": "C.UTF-8"},
+    ).stdout.decode().strip()
+    commit = _write_object(
+        repo,
+        "commit",
+        (
+            f"tree {made}\n"
+            "author Assay Fixture <fixture@assay.invalid> 946684800 +0000\n"
+            "committer Assay Fixture <fixture@assay.invalid> 946684800 +0000\n\n"
+            "empty subtree\n"
+        ).encode("utf-8"),
+    )
+    scratch = _scratch(tmp_path)
+    with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as snapshot:
+            assert not (snapshot.root / "empty_dir").exists()
+            assert _git(snapshot.root, "status", "--porcelain=v1") == ""
+            assert (snapshot.root / "bin" / "tool.sh").read_bytes() == LITERALS[
+                "bin/tool.sh"
+            ]

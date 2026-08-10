@@ -422,10 +422,17 @@ class SnapshotRepository:
                 commit=commit,
             )
             yield snapshot
-        finally:
+        except BaseException:
+            # An exception is already in flight. Discard best-effort so a
+            # cleanup failure cannot replace the real terminal with a less
+            # informative one.
             if root is not None:
-                shutil.rmtree(root, ignore_errors=True)
                 self._untrack(root)
+                shutil.rmtree(root, ignore_errors=True)
+            raise
+        else:
+            self._untrack(root)
+            _remove_owned_tree(root)
 
     def _check_replacement_site(
         self,
@@ -604,9 +611,33 @@ class SnapshotRepository:
                 f"directory in {commit}"
             )
 
-    def _close(self) -> None:
-        with self._lock:
-            self._closed = True
+def _close_repository(repository: "SnapshotRepository | None") -> set[Path]:
+    """Close *repository* and return the snapshot roots still live at closure."""
+    if repository is None:
+        return set()
+    with repository._lock:
+        live = set(repository._live)
+        repository._live.clear()
+        repository._closed = True
+    return live
+
+
+def _remove_owned_tree(path: Path) -> None:
+    """Remove one assay-owned scratch child, REPORTING failure.
+
+    ``ignore_errors=True`` is correct only while an exception is already in
+    flight. On a normal exit it converts "assay could not clean up after
+    itself" into silence and leaves the tree in the CALLER's scratch
+    namespace, which is the silent state leak the terminal table forbids --
+    and which P23, reusing that scratch root per lane, would inherit.
+    """
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        raise _git_failed(
+            f"the private tree at {path} could not be removed: {exc}; refusing "
+            f"to leave state behind in caller-owned scratch"
+        ) from exc
 
 
 def _check_timeout(timeout: float) -> None:
@@ -972,7 +1003,14 @@ def _build_manifest(
                     # Traversal is instead bounded by ``max_entries`` above,
                     # which is a real ceiling rather than an uncoverable one.
                     # Repeated subtree OIDs at DIFFERENT paths are an ordinary
-                    # DAG (identical directories) and are traversed normally.
+                    # DAG (identical directories) and are traversed normally --
+                    # but only because ``_batch_objects`` deduplicates the
+                    # object names it requests. Without that, one level's read
+                    # concatenates such a tree with itself and every record in
+                    # it is parsed twice, which the duplicate-path check below
+                    # then reports as a collision in the CONSUMER's repository.
+                    # This sentence was asserted before it was true; see
+                    # ``test_reviewer_identical_sibling_directories_are_not_a_duplicate_path``.
                     if declared is not None and declared[0] != "tree":
                         raise _git_failed(
                             f"{child_oid} at {path!s} is declared {declared[0]}, not a tree"
@@ -1263,20 +1301,23 @@ def prepare_snapshot(
             manifest=manifest,
         )
         yield repository
-    finally:
-        live: set[Path] = set()
-        if repository is not None:
-            with repository._lock:
-                live = set(repository._live)
-                repository._live.clear()
-                repository._closed = True
+    except BaseException:
+        # Already failing: close and discard best-effort. Neither a cleanup
+        # failure nor the live-child programmer error may mask the terminal
+        # the caller is actually about to see.
+        for leaked in _close_repository(repository):
+            shutil.rmtree(leaked, ignore_errors=True)
+        shutil.rmtree(child, ignore_errors=True)
+        raise
+    else:
+        live = _close_repository(repository)
         # Refusing loudly is right, but a refusal that ABANDONS a snapshot
         # directory inside caller-owned scratch would be the silent state
         # leak the terminal table forbids -- so the misused children are
         # removed first and the programmer error is still raised.
         for leaked in live:
             shutil.rmtree(leaked, ignore_errors=True)
-        shutil.rmtree(child, ignore_errors=True)
+        _remove_owned_tree(child)
         if live:
             raise RuntimeError(
                 f"prepare_snapshot's context closed with {len(live)} live "

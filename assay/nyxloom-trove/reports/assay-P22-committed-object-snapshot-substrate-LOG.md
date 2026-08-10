@@ -429,3 +429,69 @@ identical after the adversarial harness), `src/assay/schemas/**`,
 `tools/**`, and `nyxloom-trove/nyxloom.toml`. No lane wiring, verdict, schema,
 adapter, mutation, canary or runner behaviour changed. P23 was neither
 implemented nor dispatched.
+
+---
+
+## Reviewer addendum (independent review, phases 1 and 2)
+
+Appended by the independent Opus xhigh reviewer, **not** edited into the
+implementer's entries above (canonical DOCTRINE §6: append the outcome, keep
+the record of what actually happened). Everything above is left exactly as
+written. Full findings, evidence and dispositions:
+`.worktrees/_control/assay-P20-P32/review-P22-phase1.md`.
+
+**Every verifiable claim above was checked and held**, including the locked
+asset hashes, `20 passed`, `2196 passed, 1 skipped`, `170 passed`, the 95%/93%
+coverage figures, the `40000` raw tree mode, the zero-hook empty template, and
+break B5 (re-run independently as B5r: red). Nothing was found overstated, and
+§2, §7's B7a note and §6's withdrawn row are recorded more honestly than the
+review required.
+
+**Six defects were found and repaired inside the package's own scope**
+(commits `b96cba90` and the phase-2 review commit). All are false REFUSALS of
+ordinary repositories rather than false PASSes:
+
+1. Identical sibling directories at one depth are one tree object at two paths;
+   the batch read concatenated it with itself and the walker reported a
+   "duplicate or colliding path" that does not exist. **Live vbpub HEAD failed
+   in 1.9 s.** Fixed by deduplicating object names in `_batch_objects`.
+2. Mode was derived per blob rather than per tree ENTRY, so one blob committed
+   `100755` and `100644` at two paths made `_verify` refuse the snapshot.
+3. Peak open descriptors equalled the tracked-file count; under an ordinary
+   `RLIMIT_NOFILE` of 1024 a 1500-file commit raised a bare `OSError` outside
+   the terminal table. Fixed by releasing each object's sink when its bytes
+   complete.
+4. Only a file's direct parent got the fixed `0755`/`946684800`; intermediate
+   directories kept the ambient umask and the wall clock. `_Manifest.directories`
+   already held the right list and was unused.
+5. A cleanup failure on a NORMAL exit was swallowed by
+   `rmtree(ignore_errors=True)`, leaking state into caller-owned scratch — the
+   opposite of the terminal table's requirement. Also, the live-child
+   `RuntimeError` could mask an exception already in flight. Both fixed.
+6. `SnapshotRepository._close` was dead code; removed.
+
+**One claim in §4 above is false as written.** "Repeated subtree OIDs at
+different paths are an ordinary DAG and still traverse normally" is exactly
+what defect 1 disproved, and the same sentence sat as a comment in
+`_build_manifest` with no test behind it. It is true *now*, as a result of the
+repair, and the code comment has been amended to say why. Recorded because the
+reasoning defect — asserting a traversal property without exercising it, one
+package after A-151 ruled on precisely that — should reach P29, which adds the
+second `MutationSite` producer over the same walker.
+
+**Nine reviewer tests** were added to `tests/test_isolation.py`, including the
+mandated combined-axis attack (a linked-worktree source whose entire main
+repository is removed after preparation, over a hostile tree, with a
+repo-relative replacement outside `project_prefix`). Four further probes
+(B9, B10, B11, B5r) each turned their narrow owning test red and restored
+cleanly; **8 probes total for the package, the controller's exact cap.**
+
+Final evidence: locked acceptance `20 passed`; `assay/tests` plus locked
+acceptance **`2225 passed, 1 skipped`, exit 0**; `isolation.py` 95% and
+`git.py` 93% branch coverage. The registered `tester-unified` gate was **not**
+run by the implementer or the reviewer; the controller owns it.
+
+`SB-P22-06` (this LOG's own routed consequence) and the reviewer's `SB-P22-R1`
+— vbpub commits three absolute symlinks, so the estate's own monorepo cannot be
+snapshotted under A-186 — both remain open decisions for Sol. Neither blocks
+this package.
