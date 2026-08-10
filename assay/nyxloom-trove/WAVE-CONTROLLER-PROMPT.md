@@ -373,21 +373,23 @@ Return:
 
 ## RUN INPUT for the first run (P27)
 
-Append this verbatim after the prompt above. It is filled for the current state
-of `main`; re-verify the HEAD before starting, because vbpub has a concurrent
-committer.
+Append this verbatim after the prompt above, filling the two OID fields from Git
+at the moment you start. They are deliberately **not** hardcoded: this file's own
+commit advanced `main`, so any literal OID written here would be stale on arrival,
+and vbpub has a concurrent committer besides. Fill them with
+`git rev-parse HEAD`, which must be `ac9919ba` (this contract) or a later commit.
 
 ```text
 RUN INPUT — BEGIN
 current handoff: P27
 current handoff file: assay/nyxloom-trove/handoffs/assay-P27-go-gate-adapter-resolution.md
 immediate successor file: assay/nyxloom-trove/handoffs/assay-P28-real-go-r1-srdm-qualification.md
-expected current main HEAD: 9b167ba2366842b4581c184a41b7f75f84628f58
+expected current main HEAD: <fill from `git rev-parse HEAD`; must be ac9919ba or a descendant>
 implementer model for this package: sonnet xhigh (handoffs/README.md model table)
 reviewer: fresh opus xhigh
 carve reviewer base: CR-opus-0 (MISSING — create it once at current main)
 carver identity: C-sol-1 (Opus xhigh Claude Code session)
-carver last acknowledged main OID: 9b167ba2366842b4581c184a41b7f75f84628f58
+carver last acknowledged main OID: <same value; C-sol-1 authored ac9919ba and acknowledges through it>
 carver session ref: <ListAgents name/ref of the C-sol-1 session, or NONE>
 existing carver packet: .worktrees/_control/assay-P20-P32/carver/P27.md
 packet status: STOP: ROUTE_TO_SOL — P27 JIT carve not yet performed
@@ -412,8 +414,13 @@ Therefore this run does NOT dispatch P27. Do exactly this and stop:
    without touching any existing row. Doing this now removes it from the critical
    path once the carve lands.
 4. Refresh .worktrees/_control/assay-P20-P32/carver/P27.md with the current main
-   OID, the 9b167ba2 documentation commit that advanced main after Luna's P26
-   merge, and the exact unmet readiness clauses from P27's Dispatch contract.
+   OID and the exact unmet readiness clauses from P27's Dispatch contract. Note
+   that main legitimately advanced past the packet's 8f121be3 anchor twice after
+   Luna's P26 merge, by two carver documentation commits: 9b167ba2 (A-215, the
+   B001 SQL checkpoint) and ac9919ba (A-216, this contract). Both are C-sol-1
+   design-authority commits touching only assay/nyxloom-trove/**; neither is
+   unexplained drift, and neither touches a P27 contract, asset, source owner, or
+   gate. Verify that scope yourself rather than taking this sentence for it.
 5. Notify C-sol-1 per CARVER HANDOFF, then STOP: ROUTE_TO_SOL.
 
 Do not create the P27 worktree or branch. Do not start an implementer or code
