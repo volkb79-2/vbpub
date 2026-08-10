@@ -53,9 +53,32 @@ P21" section, the traceability matrix row 6, and JIT report §4 all require them
 "verdict, verify" — which the handoff spells as `src/assay/verdict.py` and
 `src/assay/verify.py`, both of which stay untouched.
 
-Resolution: the handoff's declared `scope.touch` governs, as the dispatch itself
-directs. `src/assay/schemas/**`, `verdict.py`, and `verify.py` are NOT touched.
-This is recorded rather than silently assumed.
+Resolution AS IMPLEMENTED in `487deaf1`: the handoff's declared `scope.touch`
+was followed, and the reconciliation was recorded here rather than silently
+assumed.
+
+### CONTROLLER RULING, applied in the correction commit
+
+**The controller audited `487deaf1` and ruled both paths FORBIDDEN by the
+locked P22 packet.** That ruling supersedes the resolution above. The
+correction commit restores
+`tests/test_verdict_conformance.py` to its `d82e9c02` version (blob
+`ba9128b3a2ac71001965071137c64b281b17cb1a`) and deletes
+`tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json`,
+which did not exist at the starting commit. `487deaf1` itself is untouched --
+no reset, rebase, squash or amend -- and the correction is an ordinary
+successor commit.
+
+**Consequence the controller should route:** P21 reviewer disposition
+`SB-P21-R2` is therefore **NOT closed by P22**.
+`("BUDGET_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED")` is back in
+`EXCLUDED_ENTIRELY`, where its adjacent comment still reads "reserved by A-163
+for P22's snapshot refusal. No P21 producer path reaches it". That comment is
+now understated rather than wrong: after this branch the terminal IS reachable
+through `assay.isolation` (seven limit axes prove it), but no artifact fixture
+witnesses it and the audit does not require one. Closing it needs an owner --
+a follow-up package, or P23 -- and that is a carve decision, not something this
+package may re-take after an explicit ruling. Recorded as `SB-P22-06` below.
 
 ## 3. Witnessed controlled baseline (before production edits)
 
@@ -139,10 +162,9 @@ production code, and says so; `isolation.py` implements the raw grammar.
   child, and fail-closed cleanup.
 - `tests/test_isolation.py` + `tests/fixtures/isolation/**` — ordinary
   production tests and two hand-authored literal fixtures.
-- `tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json` —
-  the locked v4 document, copied byte-for-byte (SHA-256
-  `5b7f3cfc039b01c6d68e2169575b4580f3fd141cefa468fbc19f1088c91056a2`, verified
-  by `cmp`), with the pair removed from `EXCLUDED_ENTIRELY`.
+- ~~`tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json`
+  and the `EXCLUDED_ENTIRELY` edit~~ — **REVERTED by the controller-required
+  scope correction (§2). Not part of this branch.**
 - `docs/DESIGN-GUIDE.md` — one new §6 subsection for the substrate that landed,
   plus a correction to a now-stale forward reference that still said P23 would
   introduce committed snapshots.
@@ -165,12 +187,17 @@ Both were written defensively and then proven unreachable, which AUTHORING
 
 ## 5. Results
 
+Counts below are **after the scope correction**; the figures `487deaf1` itself
+recorded were 2198 / 2218, the two-test difference being the conformance cases
+for the reverted pair.
+
 | suite | command | result |
 |---|---|---|
 | locked acceptance (unmodified) | `PYTHONPATH=assay/src pytest --override-ini=pythonpath= nyxloom-trove/carve-assets/P22/test_acceptance.py -q` | **20 passed** |
-| project suite | `PYTHONPATH=src pytest --override-ini=pythonpath= tests -q` | **2198 passed, 1 skipped** |
-| both together | as above, combined | **2218 passed, 1 skipped** |
-| P20 Git boundary regression | `tests/test_git_*.py tests/test_errors.py tests/test_verdict_conformance.py` | 209 passed |
+| project suite | `PYTHONPATH=src pytest --override-ini=pythonpath= tests -q` | **2196 passed, 1 skipped** |
+| both together | as above, combined | **2216 passed, 1 skipped** |
+| conformance + errors after the revert | `tests/test_verdict_conformance.py tests/test_errors.py` | 170 passed |
+| P20 Git boundary regression | `tests/test_git_*.py tests/test_errors.py` | green (unchanged by the correction) |
 
 Baseline for comparison: P21's recorded cockpit suite was `2129 passed, 1
 skipped`. The registered container gate was **not** run — the controller owns
@@ -206,7 +233,7 @@ package.
 | fixed child / both | O4 | `test_replacement_identity_is_stable_across_independent_preparations`, `test_replacing_an_executable_preserves_its_mode_in_the_child`, `test_a_replacement_never_writes_to_the_prepared_seed`, `test_an_absent_replacement_path_is_a_stale_mutation_site`, `test_a_replacement_naming_a_symlink_is_a_stale_mutation_site` | `test_replacement_is_repo_relative_exact_deterministic_and_non_mutating` |
 | pre-yield verification / `isolation.py` | O2 | `test_the_pre_yield_verification_catches_a_damaged_snapshot` (head, dirty, alternates, hooks, config) | — |
 | lane budget / both | O3/O4 | `test_an_injected_budget_expiry_is_a_lane_timeout` | invalid-timeout grammar case |
-| v4 reachability / tests only | O3 | `tests/test_verdict_conformance.py` with the exclusion removed | `test_snapshot_limit_complete_artifact_is_independently_valid` |
+| v4 reachability / tests only | O3 | **withdrawn by the controller ruling (§2)** — no production test on this branch | `test_snapshot_limit_complete_artifact_is_independently_valid` still passes unchanged, since the locked asset validates the document in place |
 
 ## 7. Controlled breaks (bounded adversarial harness)
 
@@ -227,7 +254,7 @@ probe hung; every mutation restored cleanly.
 | B7b | fixed child identity: `GIT_AUTHOR_DATE` → `now` | `test_replacement_is_repo_relative_exact_deterministic_and_non_mutating` | **1 failed** |
 | B7c | fixed child identity: `identity=True` → `False` | `test_replacement_is_repo_relative_exact_deterministic_and_non_mutating` | **1 failed** |
 | B7a | environment closure: merge `os.environ` into the child env | `test_ambient_git_environment_never_crosses_the_p22_boundary` | **1 failed** |
-| B8 | delete the new v4 snapshot-limit fixture | `tests/test_verdict_conformance.py` | **1 failed**, 160 passed |
+| B8 | delete the new v4 snapshot-limit fixture | `tests/test_verdict_conformance.py` | **1 failed**, 160 passed — probe valid when run, but the work it discriminated was **reverted by the controller ruling (§2)** and is no longer on this branch |
 
 ### The probe that did NOT discriminate, and what it exposed
 
@@ -365,26 +392,36 @@ should be read as a gate verdict.
   invalid_if: "a qualification target is found that legitimately tracks such a path"
 
 - id: SB-P22-06
-  text: "SB-P21-R2 is CLOSED here: BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED is a
-    real producer terminal with the locked complete artifact copied byte-for-byte
-    into tests/fixtures/verdicts/. EXCLUDED_ENTIRELY now holds two pairs;
-    NO_MEASUREMENT/MISSING_EXTERNAL_TOOL remains P27's obligation and
-    ERROR/OUTPUT_WRITE_FAILED remains argued-unfixturable by A-181."
-  evidence_ref: "tests/test_verdict_conformance.py EXCLUDED_ENTIRELY; controlled break B8 turns the audit red when the fixture is removed"
-  audience: controller
-  applies_to: [P27]
-  proposed_disposition: promote-contract
-  invalid_if: "P27 closes its own pair, leaving one entry"
+  text: "SB-P21-R2 is NOT closed and now has no owner. The controller ruled the
+    conformance file and its verdict fixture forbidden to P22, so
+    BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED stays in EXCLUDED_ENTIRELY while
+    its adjacent comment still says 'No P21 producer path reaches it'. After
+    this branch that terminal IS reachable through assay.isolation (seven limit
+    axes prove it), so the audit now understates the build's real capability --
+    the exact 'capability landed, the audit that measures it did not move'
+    shape A-141 was written about. The locked complete artifact already exists
+    unchanged at carve-assets/P22/expected/r0-snapshot-limit-v4.json, so
+    closing it is a copy plus a one-line exclusion edit; it needs a package
+    that is ALLOWED to make it."
+  evidence_ref: "controller scope audit of 487deaf1; correction commit reverting both paths; tests/test_isolation.py + locked test_each_limit_plus_one_is_a_typed_non_yielding_refusal prove reachability"
+  audience: carver
+  applies_to: [P23, P27]
+  proposed_disposition: decision
+  invalid_if: "a later packet grants the conformance file to a named owner, or the pair is argued unreachable on the merged branch"
 ```
 
 ## 11. Scope
 
-Touched exactly: `src/assay/git.py`, `src/assay/isolation.py`,
-`tests/test_isolation.py`, `tests/fixtures/isolation/**`,
-`tests/test_verdict_conformance.py`,
-`tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json`,
-`docs/DESIGN-GUIDE.md`, and this LOG — all inside the handoff's declared
-`scope.touch`. Every forbidden path is untouched, including
+Touched by the branch **after the controller-required correction**:
+`src/assay/git.py`, `src/assay/isolation.py`, `tests/test_isolation.py`,
+`tests/fixtures/isolation/**`, `docs/DESIGN-GUIDE.md`, and this LOG.
+
+`tests/test_verdict_conformance.py` and
+`tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json` were
+touched by `487deaf1` and are **reverted** by the correction commit: the former
+back to its `d82e9c02` blob `ba9128b3a2ac71001965071137c64b281b17cb1a`, the
+latter deleted (it did not exist at the starting commit). Every forbidden path
+is untouched, including
 `nyxloom-trove/carve-assets/P22/**` (all six SHA-256 values re-verified
 identical after the adversarial harness), `src/assay/schemas/**`,
 `verdict.py`, `verify.py`, `config.py`, `runner.py`, `mutation.py`,
