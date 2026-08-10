@@ -21,9 +21,11 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -271,3 +273,89 @@ def test_pip_require_hashes_rechecks_bytes_mutated_after_a_successful_verify(
     )
     assert refused.returncode != 0
     assert "THESE PACKAGES DO NOT MATCH THE HASHES" in refused.stderr
+
+
+# --- reviewer combined-axis attack: correct hash x undecodable METADATA -------
+#
+# The mutations below corrupt only the METADATA member's STORAGE (its
+# compression method, encryption flag, or compressed payload), never the
+# wheel's identity as a byte string -- the manifest is then written for the
+# mutated file, so the sha256 check PASSES and the ZIP decode is the only
+# thing left to refuse. A verifier that reaches the decoder without
+# translating its failures returns 1 with a traceback instead of the
+# contract's `2` + `release-wheel: REFUSED:`, which is a crash wearing a
+# refusal's clothes: a consumer that branches on the exit status cannot tell
+# "this wheel is bad" from "the verifier broke".
+
+
+def _find_member_headers(raw: bytearray, member: bytes) -> tuple[int, int]:
+    """Return (central-directory offset, local-header offset) for *member*."""
+    cursor = 0
+    while True:
+        cursor = raw.find(b"PK\x01\x02", cursor)
+        assert cursor >= 0, f"no central-directory entry for {member!r}"
+        name_length = struct.unpack_from("<H", raw, cursor + 28)[0]
+        if bytes(raw[cursor + 46 : cursor + 46 + name_length]) == member:
+            local = struct.unpack_from("<I", raw, cursor + 42)[0]
+            assert raw[local : local + 4] == b"PK\x03\x04", "bad local header"
+            return cursor, local
+        cursor += 4
+
+
+def _wheel_with_undecodable_metadata(source: Path, target: Path, mutation: str) -> None:
+    with zipfile.ZipFile(source) as archive:
+        member = next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
+        members = [(info, archive.read(info)) for info in archive.infolist()]
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as outgoing:
+        for info, data in members:
+            outgoing.writestr(info, data)
+
+    raw = bytearray(target.read_bytes())
+    central, local = _find_member_headers(raw, member.encode())
+    if mutation == "unsupported-compression":
+        struct.pack_into("<H", raw, central + 10, 99)
+        struct.pack_into("<H", raw, local + 8, 99)
+    elif mutation == "encrypted":
+        for offset, flag_at in ((central, 8), (local, 6)):
+            flags = struct.unpack_from("<H", raw, offset + flag_at)[0]
+            struct.pack_into("<H", raw, offset + flag_at, flags | 0x1)
+    else:  # corrupt-payload: keep a real deflate prefix, destroy the remainder
+        # Zeroing the TAIL (rather than substituting a whole new stream) makes
+        # the decompressor itself fail on an invalid code, which is a distinct
+        # failure class from the CRC mismatch a wholesale replacement produces.
+        compressed_size = struct.unpack_from("<I", raw, local + 18)[0]
+        name_length = struct.unpack_from("<H", raw, local + 26)[0]
+        extra_length = struct.unpack_from("<H", raw, local + 28)[0]
+        start = local + 30 + name_length + extra_length
+        keep = min(10, compressed_size)
+        raw[start + keep : start + compressed_size] = b"\x00" * (compressed_size - keep)
+    target.write_bytes(bytes(raw))
+
+
+@pytest.mark.parametrize(
+    "mutation", ["unsupported-compression", "encrypted", "corrupt-payload"]
+)
+def test_verify_refuses_an_undecodable_metadata_member_after_a_correct_hash(
+    tmp_path: Path, mutation: str
+) -> None:
+    target = tmp_path / FIXTURE_WHEEL.name
+    _wheel_with_undecodable_metadata(FIXTURE_WHEEL, target, mutation)
+
+    # The hash is computed over the MUTATED file: the manifest is satisfied and
+    # only the METADATA decode can refuse.
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    manifest = write_manifest(tmp_path / "manifest.json", manifest_document(sha256=digest))
+
+    assert_refused(run_helper("verify", "--wheel", str(target), "--manifest", str(manifest)))
+    # `manifest` reads the same member, so it must refuse on the same input.
+    assert_refused(
+        run_helper(
+            "manifest",
+            "--wheel",
+            str(target),
+            "--version",
+            "1.2.3",
+            "--output",
+            str(tmp_path / "out.json"),
+        )
+    )

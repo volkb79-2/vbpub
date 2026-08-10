@@ -175,7 +175,19 @@ def _wheel_name_and_version(stream: BinaryIO, expected_version: str) -> tuple[st
             _refuse(f"METADATA member must be exactly {expected_name!r}")
         if info.file_size > MAX_METADATA_BYTES:
             _refuse(f"METADATA declares more than {MAX_METADATA_BYTES} bytes")
-        data = archive.read(info)
+        try:
+            data = archive.read(info)
+        except Exception as exc:  # noqa: BLE001 - a bad ZIP is a refusal, not a crash
+            # `read` decodes attacker-controlled storage, and each decoder
+            # signals failure with whatever class fits it: an unsupported
+            # compression method, an encrypted member, and a corrupt or short
+            # payload all raise DIFFERENT classes, none of them in main()'s
+            # refusal tuple. Letting any escape turns a hostile wheel into
+            # exit 1 plus a traceback instead of the contracted exit 2, so the
+            # whole family is translated here rather than enumerated. Catching
+            # at this one call cannot mask a refusal raised by the checks
+            # above, which run before it.
+            _refuse(f"METADATA member cannot be decoded: {exc}")
     document = BytesParser().parsebytes(data)
     names = document.get_all("Name") or []
     versions = document.get_all("Version") or []
