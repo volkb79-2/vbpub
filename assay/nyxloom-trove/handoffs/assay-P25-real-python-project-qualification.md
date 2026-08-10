@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P24-versioned-wheel-contract]
 session: fresh
 scope:
-  touch: ["gate/python/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "tests/test_python_qualification.py", "nyxloom-trove/reports/assay-P25-real-python-project-qualification-LOG.md", "docs/DESIGN-GUIDE.md"]
+  touch: ["assay.toml", "gate/python/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "tests/test_python_qualification.py", "nyxloom-trove/reports/assay-P25-real-python-project-qualification-LOG.md", "docs/DESIGN-GUIDE.md"]
   forbid: ["src/assay", "pyproject.toml", "nyxloom-trove/carve-assets/P20", "nyxloom-trove/carve-assets/P21", "nyxloom-trove/carve-assets/P22", "nyxloom-trove/carve-assets/P23", "nyxloom-trove/carve-assets/P24", "nyxloom-trove/carve-assets/P25"]
 oracles:
   - id: O1
@@ -76,8 +76,10 @@ Read exactly these, in order:
    complete artifact shapes. Do not edit any P25 asset.
 3. `nyxloom-trove/reports/assay-P25-JIT-CARVE.md` §§Result, Resolved blockers,
    Frozen implementation packet, and Adversarial review.
-4. `gate/distribution/release_wheel.py` and the build/install functions in
-   `tools/tester-unified-gate.sh` — landed P24 helper, current wheel/run venv,
+4. `gate/distribution/release_wheel.py`, `assay.toml`,
+   `tests/test_self_lane.py::test_lane_budget_agrees_with_the_gate_timeout`,
+   and the build/install functions in `tools/tester-unified-gate.sh` — landed
+   P24 helper, the coupled lane/registered-gate budget, current wheel/run venv,
    tester-site `.pth`, outer Docker/cgroup/network, and marker ownership.
 5. At pinned revision `9f522a72d37b9cb5beb1939ceca1978c9fc4ef23` only:
    `.gitignore`, `topos/pyproject.toml`, `topos/tests/conftest.py`,
@@ -101,6 +103,13 @@ The live proof runs only when `tools/tester-unified-gate.sh` is already inside
 the same uid-complete, validated-background-cgroup, `--network=none`
 `tester-unified:local` container P24 established. P25 starts no Docker process
 and never invokes Topos's stale outer gate argv.
+
+P25's additional full Topos phase widens the registered gate's declared
+`timeout_seconds` from 1,800 to exactly 3,600. `assay.toml` is a coupled
+configuration owner: change its existing R0 self-lane `budget` from `30m` to
+exactly `60m`. Do not weaken or bypass
+`test_lane_budget_agrees_with_the_gate_timeout`; it is the anti-drift oracle
+that requires those two independently loaded declarations to agree (A-207).
 
 ## Implementation packet (normative)
 
@@ -279,6 +288,12 @@ was observed exactly once. Preserve P24's three existing phase markers and the
 outer `ASSAY_REGISTERED_GATE_COMPLETE=1`; the controller receipt now requires
 all four phases plus the final marker and outer exit zero.
 
+Set `[gates.tester-unified].timeout_seconds = 3600` in
+`nyxloom-trove/nyxloom.toml` and the coupled `[lanes.tester-unified].budget =
+"60m"` in `assay.toml`. These are one declared operational budget expressed in
+the two schemas, not two values to choose independently. The existing
+cross-file test remains unchanged and must pass.
+
 ### 8. Traceability and controlled breaks
 
 | work | owner | oracle | fixture | controlled break |
@@ -286,7 +301,7 @@ all four phases plus the final marker and outer exit zero.
 | pin/export/index | qualification harness | O1/O3 | input manifest/full suite | ordinary add; wrong tree; retained absolute link |
 | current installed proof | P24 run venv + harness | O1/O4 | full PASS template | source exposure; targeted-only substitution |
 | release install | P24 verifier + release venv | O2 | 1.2.5 wheel/manifest | post-verify byte change; alternate glob |
-| common parity | harness + Topos evaluator | O1/O2 | pass/missing/comment | wrong root; universal PASS |
+| common parity | harness + Topos evaluator | O1/O2 | pass/missing/comment | wrong root; universal PASS; boolean-only 0/0 vacuity |
 | exclusion asymmetry | harness + hand manifest | O2 | line 11 | erase exclusion or demand impossible Topos terminal |
 | integrity terminals | current Assay | O3/O4 | dirt/base/profile/HEAD matrix | stale output, post-command mutation |
 | registered receipt | gate script/controller | O3 | four phases + final | marker missing, Docker red, wrong order |
@@ -308,8 +323,9 @@ attack; rerunning a named break is not the independent review obligation.
 5. Implement the PASS/missing/excluded/comment common matrix and the integrity
    terminal matrix exactly as tabled.
 6. Wire the harness into the registered gate and add only the new P25 phase
-   marker; preserve outer cgroup, host-bind derivation, network disablement,
-   identities, prior phases, and final receipt.
+   marker; set the exact coupled 3,600-second/`60m` gate and lane declarations;
+   preserve outer cgroup, host-bind derivation, network disablement, identities,
+   prior phases, the cross-file anti-drift test, and final receipt.
 7. Add focused production tests and documentation that says qualification,
    not adoption, and names the three-symlink Topos adoption precondition.
 8. Run the quick locked suite and focused tests foreground; do not run or
@@ -345,11 +361,12 @@ or another order?* If yes, it is not an oracle.
 
 ## Scope / forbid
 
-P25 adds validation/gate code only. It does not modify Assay runtime code,
-packaging, schemas, P20–P25 locked assets, or real Topos. It does not claim
-Topos has adopted Assay. A future Topos-owned adoption must resolve the exact
-three absolute symlinks (prefer runtime construction in `tmp_path`) and then
-run its old/new gates side by side.
+P25 adds validation/gate code and synchronizes the existing Assay self-lane's
+declared budget with the widened registered-gate timeout. It does not modify
+Assay runtime code, packaging, schemas, P20–P25 locked assets, or real Topos.
+It does not claim Topos has adopted Assay. A future Topos-owned adoption must
+resolve the exact three absolute symlinks (prefer runtime construction in
+`tmp_path`) and then run its old/new gates side by side.
 
 ## BLOCKED rule
 
