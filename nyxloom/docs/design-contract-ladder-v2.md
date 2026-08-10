@@ -472,33 +472,58 @@ required and no cross-slice negotiation.
 it must exist: five individually-green packages hid four critical cross-package
 false-PASS defects. Wq is also where every `C3`/`C4` obligation is discharged.
 
-### 6.1a W0 splits along its own A axis — and that is what makes it deployable
+### 6.1a Who commits the contract: the carve does, bounded to what it probed
 
-Refinement found while piloting this against dstdns CW2. The contract package
-contains two different kinds of work, and they sit at opposite ends of the
-contract axis:
+The obvious decomposition of W0 is to split it at its own A boundary —
+*decide + probe* is `A1` frontier work, *land the frozen contract* is `A4`
+mechanical work, so give them to different lanes and keep the usual "carvers
+don't write product code" separation intact.
 
-| phase | work | axis | role |
-|---|---|---|---|
-| **decide + probe** | choose and *prove* the schema, signatures, cursor codec, config vocabulary, error constants, decision table | `A1` — frontier, **no committed product code** | the existing carve authority |
-| **land** | write exactly what the frozen contract dictates: DDL, stubs, config keys, gate declarations, red conformance suite | `A4` — mechanical against a locked contract | the existing implementer lane |
+**That decomposition is wrong, and the reason is correctness rather than cost.**
 
-This matters more than it first appears. Treating W0 as one frontier package
-that both decides *and* writes code breaks the role separation most controller
-loops already depend on — dstdns's, for instance, states plainly that the
-review/carve authority does not write product code and the implementer does not
-decide architecture. Splitting W0 at its own A boundary means **the wave needs
-no new role and no new lane**: "decide + probe" is simply what the carve step
-produces this cycle (a contract document plus a probe log, committed with the
-successor handoff), and "land" is an ordinary implementation package.
+A contract can only be frozen honestly by **running** it: creating the tables
+against a real fresh init, violating each constraint on purpose, executing the
+query whose plan the design depends on. This guide already demands exactly that
+(the tracer bullet, the hostile case, "an unprobed code sketch merely gives a
+bad assumption more authority"). So **a probed contract has already been
+written.** Handing those verified artifacts to a second session to retype them
+breaks the evidence chain: the probe's evidence attaches to the artifact that
+was probed, and a transcription is a different artifact. The gap is silent —
+the retyped schema can differ in exactly the constraint the probe was the only
+thing checking.
 
-It is also cheaper. The frontier session spends its budget on decisions instead
-of on typing DDL, which is precisely the substitution §4.5's inequality is
-about.
+The rule that follows:
 
-**Corollary for the axes:** a package whose A value is not uniform across its
-own work is a split signal, exactly like a package extreme on two axes. Ask
-where inside the package A changes, and cut there.
+> **The carve may commit product artifacts it has itself probed, and only
+> those.** Schema, wire and protocol signatures, config declarations and their
+> validation, error constants, gate declarations — each accompanied in the same
+> change by the command and *actual output* that exercised it. Behaviour is not
+> a contract artifact: stubs raise `NotImplementedError` and the slices fill
+> them.
+
+Three bounds keep this from becoming "the carver implements the feature":
+
+1. **Probed or not committed.** Anything the carve did not run belongs to a
+   slice.
+2. **The probe log records failures and discarded candidates.** A log showing
+   only successes is not evidence that the hostile cases were run.
+3. **Independence moves, it does not disappear.** The contract commit gets its
+   own independent review *before* any slice dispatches — a review of the
+   contract, not a re-implementation. A carver reviewing its own contract is
+   the real failure mode here, and retyping never addressed it; only a
+   different reviewer does.
+
+Note this **narrows** the carve lane rather than widening it. Before the rule,
+"architectural interpretation" was unbounded prose and a carver could freeze an
+unprobed schema in a handoff and call it a contract. Now it must run what it
+freezes, or not freeze it.
+
+**Corollary for the axes, which survives the correction:** a package whose A
+value is not uniform across its own work is a split signal, exactly like a
+package extreme on two axes. Ask where inside the package A changes. Here the
+answer turned out to be *nowhere useful* — the `A1` and `A4` halves are the
+same artifact seen twice, so the cut is between **probed contract** and
+**unprobed behaviour**, not between deciding and typing.
 
 ### 6.2 What may and may not be deferred
 
