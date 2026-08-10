@@ -2,7 +2,7 @@
 
 ## Current pre-adoption queue: P20–P32
 
-P00–P24 are merged. P25–P32 are the remaining active implementation queue,
+P00–P25 are merged. P26–P32 are the remaining active implementation queue,
 recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
 revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
 contracts are JIT-frozen after the predecessor merges, so a future packet does
@@ -19,8 +19,8 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P22 | committed-object snapshot substrate | 2b | **merged as `9d30b25b` (A-184–A-187)** | Opus xhigh | fresh Opus xhigh |
 | P23 | exact reexecution integration over landed sites | 2c | **merged as `a7f49bb4`; fixture epoch `7c52ecc2` (A-188–A-197)** | Sonnet xhigh | fresh Opus xhigh |
 | P24 | versioned wheel contract | 2d | **merged as `9f522a72` (A-198–A-201)** | Sonnet xhigh | fresh Opus xhigh |
-| P25 | external Python/Topos qualification | 2d | **reviewed; resume after A-207/A-208 scope/oracle amendment** | Sonnet xhigh | fresh Opus xhigh |
-| P26 | attested-evidence CLI hardening | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P25 | external Python/Topos qualification | 2d | **merged as `233926ce` (A-202–A-208)** | Sonnet xhigh | fresh Opus xhigh |
+| P26 | attested-evidence CLI hardening | 2c | **READY (A-209–A-214; locked packet)** | Sonnet xhigh | fresh Opus xhigh |
 | P27 | Go gate and adapter resolution | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P28 | real srdm R1 qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P29 | Go mutation-helper/site protocol | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
@@ -28,19 +28,24 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-P20 through P24 are **MERGED**. P25 is **IMPLEMENTED AND PHASE-1 REVIEWED**;
-its bounded A-207 scope amendment is ready for phase-2 reconciliation and the
-controller-owned gate. Its implementation-shaped
-contract, pinned 966-entry Topos manifest, explicit three-symlink prospective
-adoption patch, clean-tagged 1.2.5 wheel/manifest, full v4 templates, literal
-line fixtures, compiling harness skeleton, quick acceptance, and real
-network-disabled 2,923-test differential probe are under
+P20 through P25 are **MERGED**. P25's implementation-shaped contract, pinned
+966-entry Topos manifest, explicit three-symlink prospective adoption patch,
+clean-tagged 1.2.5 wheel/manifest, full v4 templates, literal line fixtures,
+compiling harness skeleton, quick acceptance, and real network-disabled
+2,923-test differential probe are under
 `nyxloom-trove/carve-assets/P25/` and
-`nyxloom-trove/reports/assay-P25-JIT-CARVE.md`. P26–P32 remain
-`PROVISIONAL`/`JIT-FREEZE REQUIRED`. Before any later package becomes ACTIVE, its
-named proof assets are committed and the same review must return READY at the
-actual post-predecessor HEAD. No later package should be dispatched merely
-because `nyxloom lint` accepts its header.
+`nyxloom-trove/reports/assay-P25-JIT-CARVE.md`.
+
+P26 is now **READY** against merged P25 input `233926ce`. Its exact config/
+safe-I/O/Git/deadline APIs, four complete v4 templates, premise probe,
+skeleton, and controlled-red 41-test acceptance packet are under
+`nyxloom-trove/carve-assets/P26/`; A-209–A-214 resolve the R0/external-evidence
+grammar, atomic aggregate bound, literal Git semantics, CLI-started deadline,
+and refused-artifact lifecycle. P27–P32 remain `PROVISIONAL`/`JIT-FREEZE
+REQUIRED`. Before any later package becomes ACTIVE, its named proof assets are
+committed and the same review must return READY at the actual post-predecessor
+HEAD. No package should be dispatched merely because `nyxloom lint` accepts
+its header.
 
 The dependency chain is exactly:
 
@@ -119,6 +124,18 @@ vacuous 0/0 run. Opus's repair binds the complete shared tuple to the literal
 hand manifest, and A-208 carries that requirement into P28's Go qualification.
 This is a genuine carver/oracle miss, not implementer discretion hidden as a
 review enhancement.
+
+P26's JIT probe reproduces the two historical attestation false PASSes and a
+third process-boundary defect: directory descendant changes evade exact-name
+membership, `../` keys read a seeded record outside the declared directory,
+and generic Git leaves a forked pipe-holder outside its ownership. The freeze
+also resolves several provisional-contract defects before dispatch. Tier-3
+evidence is independent of rigor, so R0 may carry only the exact attestation
+judge pair; and A-160's lane budget starts before CLI HEAD/evidence work rather
+than only after higher-rigor scratch creation. The locked packet fixes the
+safe missing-parent distinction, `2 * paths <= 4096` query bound, four narrow
+Git calls, atomic timeout artifacts, and canary/mutation deadline forwarding
+without altering their computed semantics (A-209–A-214).
 
 Luna may run the frozen-orientation/fork workflow mechanically from
 `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,

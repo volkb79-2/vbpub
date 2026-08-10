@@ -1,0 +1,11 @@
+{
+  "current_directory_descendant_change_false_pass": true,
+  "current_git_boundary_leaves_descendant_after_pid_only_kill": true,
+  "current_missing_parent_maps_unreadable_not_missing": true,
+  "current_parent_key_escape_false_pass": true,
+  "literal_directory_diff_reports_changed": true,
+  "literal_directory_ls_tree_is_exact_tree": true,
+  "literal_hostile_name_diff_reports_changed": true,
+  "literal_hostile_name_ls_tree_is_exact_blob": true,
+  "status": "PASS"
+}

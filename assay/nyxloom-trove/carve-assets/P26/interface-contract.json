@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "input_revision": "233926cedd26a6e34512806e267b7141377913b2",
+  "constants": {
+    "MAX_EVIDENCE_DECLARATIONS": 64,
+    "MAX_ATTESTATION_BYTES": 1048576,
+    "MAX_ATTESTATION_DIR_BYTES": 4096,
+    "MAX_ATTESTATION_DIR_COMPONENTS": 128,
+    "MAX_PRODUCER_BYTES": 256,
+    "MAX_REVIEWED_PATHS": 1000,
+    "MAX_REVIEWED_PATH_BYTES": 4096,
+    "MAX_GIT_PATH_QUERIES": 4096
+  },
+  "config": {
+    "declaration_type": "assay.config.EvidenceConfig",
+    "fields": ["source", "key"],
+    "judge_fields": ["attestation_dir", "evidence"],
+    "pair_rule": "both absent or both present; evidence contains 1..64 entries",
+    "attestation_dir_control_set": "reject U+0000..U+001F and U+007F; backslash is a literal POSIX filename character",
+    "r0_rule": "an R0-only judge table is legal only for the attestation pair"
+  },
+  "safe_io": {
+    "call": "safeio.read_bounded_input(project_root, relative_path, limit=limit)",
+    "missing": "ENOENT at any path component returns None",
+    "unsafe": "symlink, non-directory parent, non-regular final object, permission failure, or limit overflow raises ERROR/UNREADABLE_ARTIFACT"
+  },
+  "git": {
+    "remaining_type": "Callable[[], float]",
+    "generic_keyword": "remaining",
+    "literal_pathspec_owner": "the existing _run_bytes global --literal-pathspecs option remains mandatory; attestation helpers do not bypass the generic boundary",
+    "abnormal_group_cleanup": "deadline, stdout/stderr overflow, pump failure, and caller exception terminate the owned process group; deadline re-raises its original exception",
+    "attestation_calls": [
+      "verify_exact_commit(repo, oid, remaining=remaining)",
+      "is_ancestor(repo, ancestor, descendant, remaining=remaining)",
+      "tree_entry_kind(repo, commit, path, remaining=remaining)",
+      "path_is_current(repo, before, after, path, remaining=remaining)"
+    ]
+  },
+  "attestation": {
+    "load_call": "load_attested_evidence(repo, head=head, declared=declared, project_root=project_root, attestation_dir=attestation_dir, remaining=remaining)",
+    "public_boundary_validation": "repeat directory/source/key/duplicate grammar and fail BAD_LANE_CONFIG before safe I/O",
+    "record_keys": ["producer", "attested_commit", "reviewed_paths"],
+    "json_member_rule": "duplicate member names and strings that cannot be encoded as UTF-8 are unreadable",
+    "deadline_sampling": "at batch entry, after every bounded read/parse, before every Git wait through its helper, and immediately before return including all-missing batches",
+    "key_regex": "[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+    "oid_regex": "[0-9a-f]{40}",
+    "query_cost_per_reviewed_path": 2
+  },
+  "runner": {
+    "batch_keyword_inputs": ["evidence", "declared_evidence"],
+    "source_of_truth": "derive exact ordered declarations from lane.judge.evidence",
+    "default_rule": "run_lane/refuse_lane reject mismatch before Git, plan, adapter, or command work; assemble_verdict repeats the binding at the final public sink; empty defaults are legal only when the derived lane declaration is empty"
+  },
+  "lifecycle": [
+    "load lane and reserve verdict destination",
+    "start one LaneDeadline",
+    "resolve HEAD through git with LaneDeadline.remaining",
+    "read all declared attestation files and preflight every structural and aggregate bound",
+    "resolve attestation Git facts in declaration order with the same LaneDeadline.remaining",
+    "resolve the computed adapter",
+    "run direct R0 or committed-snapshot rigor with the same LaneDeadline",
+    "assemble exactly covering computed claims and sibling evidence",
+    "emit once"
+  ]
+}

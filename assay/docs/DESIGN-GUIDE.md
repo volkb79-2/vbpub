@@ -104,6 +104,13 @@ What makes an attestation more than a rubber stamp — all of it mechanical:
 - the evidence entry always carries `verified_by_assay: false`. assay never upgrades an
   attestation.
 
+The lane declares Tier-3 input under HOW, not as another rigor level (A-209):
+`judge.attestation_dir` names one contained project-relative input directory
+and `judge.evidence` is the ordered closed list of `(source,key)` identities.
+The two fields are both present or both absent and no location is derived. This
+pair is legal even on R0-only because external evidence and computed rigor are
+separate axes; it does not make R0 consume coverage/mutation/canary policy.
+
 Asynchronous `PENDING` evidence is deferred until claim-level enforcement is
 designed. It is not a seventh outcome hidden inside an evidence entry.
 
@@ -795,6 +802,8 @@ allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
 mutation = { jobs = 4, max_mutants = 200, operators = ["compare-swap","boolop-swap","bool-const-flip","falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
+attestation_dir = ".assay/attestations"
+evidence = [{source = "attested", key = "adversarial-review"}]
 
 [lanes.package.where]
 service = "test-runner"; instance = "worktree"
@@ -833,19 +842,27 @@ wins. An `uncovered-line` R3 lane also declares R1 because only R1 can produce
 its expected `UNCOVERED_LINES` cause — that prerequisite is checked at load
 too, not discovered at run time.
 
-**One budget covers the lane (A-160).** The singular `budget` spans snapshot
-construction, baseline, evaluation, every mutant, and both canary halves; it is
-not reset per subprocess. `max_mutants` is the independent deterministic work
-cardinality ceiling. Repeated executions start from the resolved commit's
+**One budget covers the lane (A-160/A-212).** CLI starts its singular monotonic
+deadline before resolving HEAD. It spans attestation reads/Git checks,
+repository bootstrap and cleanliness, snapshot construction, baseline,
+evaluation, every mutant, and both canary halves; it is not reset per
+subprocess or per Git command. `max_mutants` is the independent deterministic
+work-cardinality ceiling. Repeated executions start from the resolved commit's
 tracked Git objects with the complete repository topology and project prefix
 (A-161), never a working-tree copy containing ignored stale evidence. Ignored
-or untracked files are not implicit inputs.
+or untracked files are not implicit command inputs; a declared ignored
+attestation record is separately consumed once through its bounded safe-input
+boundary before execution.
 
-Note the consequence, because it is easy to get backwards: an **R0-only lane has
-no `[judge]` table at all**, and therefore declares no `source_roots`,
-`fail_under` or `allow_excluded`. Those five are conditionally required, not
-unconditionally required. A-018's "required per-lane field" means *per-lane
-rather than a global CLI flag* — it does not mean "at the lane's top level".
+Note the consequence, because it is easy to get backwards: an **R0-only lane
+without external evidence has no `[judge]` table at all**, and therefore
+declares no `source_roots`, `fail_under` or `allow_excluded`. An R0-only lane may
+instead carry exactly the both-present `attestation_dir`/`evidence` pair
+(A-209), because those fields consume Tier-3 evidence rather than claiming a
+computed rigor. Every computed judge field remains inert and forbidden on R0.
+The five R1 fields are conditionally required, not unconditionally required.
+A-018's "required per-lane field" means *per-lane rather than a global CLI
+flag* — it does not mean "at the lane's top level".
 
 **Closed vocabularies**, so a loader can reject rather than guess:
 

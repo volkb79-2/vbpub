@@ -1,0 +1,38 @@
+{
+  "schema_version": 4,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "attested",
+  "commit": "@HEAD_OID@",
+  "outcome": "NO_MEASUREMENT",
+  "exit_code": 3,
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "reason_code": "STALE_ATTESTATION",
+  "declared_rigor": ["R0"],
+  "declared_evidence": [
+    {"source": "attested", "key": "security-review"}
+  ],
+  "argv_declared": ["/bin/true"],
+  "argv_appended": [],
+  "argv_effective": ["/bin/true"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {"rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": true}
+  ],
+  "evidence": [
+    {
+      "source": "attested",
+      "key": "security-review",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": false,
+      "reason_code": "STALE_ATTESTATION",
+      "producer": "human:alice",
+      "attested_commit": "@ATTESTED_OID@",
+      "reviewed_paths": ["src/reviewed"]
+    }
+  ]
+}

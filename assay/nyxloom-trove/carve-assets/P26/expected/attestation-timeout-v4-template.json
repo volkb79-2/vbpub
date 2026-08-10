@@ -1,0 +1,49 @@
+{
+  "schema_version": 4,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "attested",
+  "commit": "@HEAD_OID@",
+  "outcome": "BUDGET_EXCEEDED",
+  "exit_code": 4,
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "reason_code": "LANE_TIMEOUT",
+  "declared_rigor": ["R0"],
+  "declared_evidence": [
+    {"source": "attested", "key": "slow"},
+    {"source": "attested", "key": "later"}
+  ],
+  "argv_declared": ["/bin/false"],
+  "argv_appended": [],
+  "argv_effective": ["/bin/false"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "BUDGET_EXCEEDED",
+      "verified_by_assay": true,
+      "reason_code": "LANE_TIMEOUT"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "attested",
+      "key": "slow",
+      "status": "BUDGET_EXCEEDED",
+      "verified_by_assay": false,
+      "reason_code": "LANE_TIMEOUT"
+    },
+    {
+      "source": "attested",
+      "key": "later",
+      "status": "BUDGET_EXCEEDED",
+      "verified_by_assay": false,
+      "reason_code": "LANE_TIMEOUT"
+    }
+  ]
+}

@@ -1,0 +1,185 @@
+diff --git a/assay/src/assay/config.py b/assay/src/assay/config.py
+--- a/assay/src/assay/config.py
++++ b/assay/src/assay/config.py
+@@
++@dataclass(frozen=True)
++class EvidenceConfig:
++    source: str
++    key: str
++
++    def as_declared(self) -> dict[str, str]:
++        return {"source": self.source, "key": self.key}
+@@ class JudgeConfig:
++    # Both absent, or both present.  No default location is invented.
++    attestation_dir: str | None = None
++    evidence: tuple[EvidenceConfig, ...] | None = None
+
+diff --git a/assay/src/assay/safeio.py b/assay/src/assay/safeio.py
+--- a/assay/src/assay/safeio.py
++++ b/assay/src/assay/safeio.py
+@@
++def read_bounded_input(
++    project_root: Path, relative_path: str, *, limit: int
++) -> bytes | None:
++    """Descriptor-walk one input; ENOENT anywhere is None, never a guess."""
++    # TODO: reuse the existing O_DIRECTORY/O_NOFOLLOW/O_NONBLOCK/fstat/read
++    # machinery.  Do not preflight by pathname and reopen it.
++    raise NotImplementedError
+
+diff --git a/assay/src/assay/git.py b/assay/src/assay/git.py
+--- a/assay/src/assay/git.py
++++ b/assay/src/assay/git.py
+@@
++Remaining = Callable[[], float]
++
++def _run_bounded(
++    argv: list[str], *, remaining: Remaining | None = None
++) -> tuple[int, bytes, bytes]:
++    # TODO: sample before Popen and each selector wait, start_new_session,
++    # killpg/drain/reap on the ORIGINAL remaining() exception, never reset;
++    # killpg even if the boundary child exited while a descendant holds pipes.
++    raise NotImplementedError
++
++def run(repo: Path, *args: str, remaining: Remaining | None = None) -> str: ...
++def repo_top(repo: Path, *, remaining: Remaining | None = None) -> Path: ...
++def head_rev(repo: Path, *, remaining: Remaining | None = None) -> str: ...
++def resolve_base(repo: Path, base: str, *, remaining: Remaining | None = None) -> str: ...
++def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str, ...]: ...
++
++def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:
++    """Require rev-parse --verify --end-of-options <oid>^{commit} == oid."""
++    raise NotImplementedError
++
++def is_ancestor(
++    repo: Path, ancestor: str, descendant: str, *, remaining: Remaining
++) -> bool:
++    """Interpret only merge-base --is-ancestor exit 0/1."""
++    raise NotImplementedError
++
++def tree_entry_kind(
++    repo: Path, commit: str, path: str, *, remaining: Remaining
++) -> str | None:
++    """Parse one exact raw ls-tree -z identity; return blob/tree or None."""
++    raise NotImplementedError
++
++def path_is_current(
++    repo: Path, before: str, after: str, path: str, *, remaining: Remaining
++) -> bool:
++    """Interpret only literal diff --quiet --exit-code exit 0/1."""
++    raise NotImplementedError
+
+diff --git a/assay/src/assay/attestation.py b/assay/src/assay/attestation.py
+--- a/assay/src/assay/attestation.py
++++ b/assay/src/assay/attestation.py
+@@
++MAX_EVIDENCE_DECLARATIONS = 64
++MAX_ATTESTATION_BYTES = 1024 * 1024
++MAX_ATTESTATION_DIR_BYTES = 4096
++MAX_ATTESTATION_DIR_COMPONENTS = 128
++MAX_PRODUCER_BYTES = 256
++MAX_REVIEWED_PATHS = 1000
++MAX_REVIEWED_PATH_BYTES = 4096
++MAX_GIT_PATH_QUERIES = 4096
++
++def load_attestation_file(
++    project_root: Path, *, attestation_dir: str, key: str
++) -> AttestationRecord | None:
++    """Read <attestation_dir>/<key>.json once through safeio."""
++    raise NotImplementedError
++
++def evaluate_attestation(
++    repo: Path,
++    *,
++    key: str,
++    head: str,
++    record: AttestationRecord | None,
++    remaining: git.Remaining,
++) -> Evidence:
++    raise NotImplementedError
++
++def load_attested_evidence(
++    repo: Path,
++    *,
++    head: str,
++    declared: Sequence[EvidenceDeclaration],
++    project_root: Path,
++    attestation_dir: str,
++    remaining: git.Remaining,
++) -> tuple[Evidence, ...]:
++    # Sample remaining at entry, after every bounded safe read/parse, and
++    # immediately before returning (including an all-missing batch).  Stage
++    # every safe read/parse first.  Enforce 2 * total reviewed paths <=
++    # MAX_GIT_PATH_QUERIES before the first Git call.  Then resolve every
++    # valid identity in declaration order.  LANE_TIMEOUT propagates intact.
++    raise NotImplementedError
+
+diff --git a/assay/src/assay/runner.py b/assay/src/assay/runner.py
+--- a/assay/src/assay/runner.py
++++ b/assay/src/assay/runner.py
+@@
++# One private binding helper derives exact ordered declarations from the lane.
++# Call it at run_lane/refuse_lane entry AND in assemble_verdict before output.
++# The sink-level check protects direct public assemble_verdict callers; the
++# entry checks refuse omissions before any lane side effect.
++
+def run_lane(
+     lane: Lane,
+     *,
+     commit: str,
+     repo: Path,
+     project_root: Path,
+     adapter: LanguageAdapter | None,
+     assay_version: str,
++    evidence: tuple[Evidence, ...] = (),
++    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
++    deadline: LaneDeadline | None = None,
+     ...
+) -> Verdict:
++    # Derive the authoritative declarations from lane.judge.evidence and
++    # require exact ordered identity equality with BOTH supplied tuples
++    # before Git/plan/command work.  Empty defaults are legal only when that
++    # derived source is empty; they never substitute for known declarations.
++    # None is a derived library convenience: start from lane.budget_seconds
++    # immediately.  CLI always passes the instance it started before HEAD.
++    if deadline is None:
++        deadline = LaneDeadline.start(
++            budget_seconds=lane.budget_seconds, monotonic=monotonic
++        )
++    # TODO: pass deadline.remaining to every lane-reachable generic Git call;
++    # direct R0 executes the already-resolved plan with deadline.remaining().
+@@
+def refuse_lane(
+    ...,
++    evidence: tuple[Evidence, ...] = (),
++    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
+) -> Verdict: ...
+
+diff --git a/assay/src/assay/cli.py b/assay/src/assay/cli.py
+--- a/assay/src/assay/cli.py
++++ b/assay/src/assay/cli.py
+@@
+ def _run_reserved(...):
++    deadline = runner.LaneDeadline.start(
++        budget_seconds=lane.budget_seconds, monotonic=time.monotonic
++    )
++    commit = git.head_rev(
++        lane_file.project_root, remaining=deadline.remaining
++    )
++    declared_evidence = tuple(
++        EvidenceDeclaration(source=item.source, key=item.key)
++        for item in (() if lane.judge is None else lane.judge.evidence or ())
++    )
++    # No declaration means no loader call.  Otherwise attestation_dir exists
++    # by config invariant; the loader reads live project-contained input and
++    # compares exact committed Git objects before adapter/command work.
++    evidence = attestation.load_attested_evidence(
++        lane_file.project_root,
++        head=commit,
++        declared=declared_evidence,
++        project_root=lane_file.project_root,
++        attestation_dir=lane.judge.attestation_dir,
++        remaining=deadline.remaining,
++    ) if declared_evidence else ()
++    # TODO: pass evidence/declarations to both refuse_lane and run_lane; pass
++    # this exact deadline to run_lane.  On attestation LANE_TIMEOUT, launch no
++    # adapter/command and emit a complete lane refusal for every declared axis.

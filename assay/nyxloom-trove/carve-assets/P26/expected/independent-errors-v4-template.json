@@ -1,0 +1,53 @@
+{
+  "schema_version": 4,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "attested",
+  "commit": "@HEAD_OID@",
+  "outcome": "ERROR",
+  "exit_code": 2,
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "reason_code": "UNREADABLE_ARTIFACT",
+  "declared_rigor": ["R0"],
+  "declared_evidence": [
+    {"source": "attested", "key": "broken"},
+    {"source": "attested", "key": "absent"},
+    {"source": "attested", "key": "good"}
+  ],
+  "argv_declared": ["/bin/true"],
+  "argv_appended": [],
+  "argv_effective": ["/bin/true"],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {"rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": true}
+  ],
+  "evidence": [
+    {
+      "source": "attested",
+      "key": "broken",
+      "status": "ERROR",
+      "verified_by_assay": false,
+      "reason_code": "UNREADABLE_ARTIFACT"
+    },
+    {
+      "source": "attested",
+      "key": "absent",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": false,
+      "reason_code": "MISSING_ATTESTATION"
+    },
+    {
+      "source": "attested",
+      "key": "good",
+      "status": "PASS",
+      "verified_by_assay": false,
+      "producer": "human:alice",
+      "attested_commit": "@HEAD_OID@",
+      "reviewed_paths": ["src/reviewed"]
+    }
+  ]
+}

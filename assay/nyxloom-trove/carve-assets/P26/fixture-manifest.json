@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "files": {
+    "README.md": "d587eff7e52a2543f854b7f5a9b515a3edb19f390bde36fa808265e84407d860",
+    "expected/attestation-timeout-v4-template.json": "94f321bd74f4002f0c80b459821886d805a247bd4c0ac8af2dbf7d99abd54ec5",
+    "expected/current-v4-template.json": "7f4c6d64444d8ecd18e23959634fc6545c4feb2e28f3c28a90613616df6c1510",
+    "expected/independent-errors-v4-template.json": "6867020ef28385cf535ac74ef10d0d163e2c132c9f29f9e8c98b9819fe4d3357",
+    "expected/stale-directory-v4-template.json": "2ae06b3a08da98199d683a45fff31a2585eaef1269dffa257a7a9112949931a1",
+    "git_boundary_skeleton.py": "f27e4d23db1b75e0ce52957bbed5644afd06a4afb4216640fe38f4e2fe867253",
+    "interface-contract.json": "7ee7379745b8659afbe33478435492b9b278a01b5d9bf0658034144cb56ee874",
+    "probe-results.json": "84f6dad227d36875f02e6d6e805e640f8c3d67f1d6e6c585658d8e4ff1ac716b",
+    "probe_current_failures.py": "2b0439890c042aa01897e6c155104a272c31b855e788af3706e4c748872e935f",
+    "skeleton.patch": "c9e1d6e87bdb56f50f928b0c38fe840e17a9639e149870bd01980d21a9a0065c",
+    "test_acceptance.py": "05a93162b90981e3c82a3931f3b898b5fb3032e4611ae8e701e07c8739cde2a2"
+  }
+}
