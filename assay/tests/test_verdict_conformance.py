@@ -150,27 +150,21 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #:   invented"). Fixturing it would assert an artifact whose own existence
 #:   the reason denies. Proven instead by the locked CLI marker test and
 #:   ``tests/test_output_reservation.py``.
+#: * ``BUDGET_EXCEEDED``/``SNAPSHOT_LIMIT_EXCEEDED`` — reserved by A-163 for
+#:   P22's snapshot refusal. No P21 producer path reaches it; a fixture now
+#:   would be a hand-authored artifact for a terminal no code emits, which is
+#:   AUTHORING §3b.C's hollow-fixture defect one layer up.
 #: * ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` — reserved by A-163 for
 #:   P27's first real external-tool preflight. Both adapters this build ships
 #:   declare ``external_tools = ()`` (A-087/A-142), so nothing can render it.
 #:
-#: ``BUDGET_EXCEEDED``/``SNAPSHOT_LIMIT_EXCEEDED`` was the third entry here
-#: and is **CLOSED by P22**, which makes it a real producer terminal: every
-#: fixed snapshot ceiling (objects, entries, per-path bytes, total path
-#: bytes, blob bytes, total object bytes, pack bytes) refuses its own
-#: limit+1 with exactly that pair, proven against a real git binary by
-#: seven independent axes in ``tests/test_isolation.py``. Its complete
-#: hand-authored artifact is ``r0_budget_exceeded_snapshot_limit_exceeded
-#: .json``. The document is deliberately R0-only: snapshot preparation
-#: happens BEFORE the lane's baseline runs, so the whole invocation is
-#: refused and there is no ``judgment`` or mutation payload to record.
-#:
-#: The one remaining reserved pair is P27's own obligation to close: when it
-#: makes that terminal reachable, it removes its line here and adds the
+#: The two reserved pairs are P22's and P27's own obligation to close: when
+#: either makes its terminal reachable, it removes its line here and adds the
 #: complete fixture, and this audit turns red until it does.
 EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
+        ("BUDGET_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED"),
         ("NO_MEASUREMENT", "MISSING_EXTERNAL_TOOL"),
     }
 )
