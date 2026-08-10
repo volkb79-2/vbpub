@@ -10,7 +10,7 @@ stack: none
 depends_on: [assay-P25-real-python-project-qualification]
 session: resume:assay-v11-attestation
 scope:
-  touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/attestation.py", "src/assay/safeio.py", "tests/**", "README.md"]
+  touch: ["src/assay/cli.py", "src/assay/config.py", "src/assay/runner.py", "src/assay/measurability.py", "src/assay/git.py", "src/assay/attestation.py", "src/assay/safeio.py", "tests/**", "README.md"]
   forbid: ["src/assay/verdict.py", "src/assay/schemas", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters"]
 oracles:
   - id: O1
@@ -25,10 +25,15 @@ oracles:
     observable: "Files and directories reviewed at an ancestor are current only when Git reports no changes beneath each reviewed path"
     negative: "Changing a child of a reviewed directory while exact-membership logic remains returns PASS"
     gate: tester-unified
+  - id: O4
+    observable: "P23's one lane-wide deadline reaches every higher-rigor measurability and attestation Git child, including repository bootstrap; expiry kills the complete Git process group and returns the existing LANE_TIMEOUT terminal without launching a successor command"
+    negative: "A Git child hangs after writing bounded output, each Git command receives a fresh lane budget, or a forked descendant survives expiry"
+    gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "safe bounded parsing requires a runtime dependency"
   - "directory staleness cannot be expressed with Git path semantics"
+  - "the landed P23 deadline cannot reach git.py without a circular import or an optional higher-rigor fallback"
 mutexes: []
 ---
 
@@ -45,7 +50,8 @@ The claim to attack: **every declared attestation is resolved exactly once from 
   symbolic attested commits with full object IDs and commit the hostile directory,
   newline, traversal, symlink-swap, and oversize fixtures.
 - Implementer freedom: private safe-I/O and loop decomposition only. Declaration
-  grammar, identity, bounds, per-path Git query, and terminal mapping are fixed.
+  grammar, identity, bounds, per-path Git query, lane-deadline propagation, and
+  terminal mapping are fixed.
 
 ## Worktree and branch
 
@@ -54,7 +60,7 @@ on branch `feat/assay-P26-attested-evidence-cli-hardening`.
 
 ## Context to read first
 
-1. `docs/DESIGN-GUIDE.md` §§3, 6, 7, and 12; decisions A-024, A-033–A-034, A-041, A-067, A-074–A-078, A-085, A-110–A-111, A-134 and A-153–A-161.
+1. `docs/DESIGN-GUIDE.md` §§3, 6, 7, and 12; decisions A-024, A-033–A-034, A-041, A-067, A-074–A-078, A-085, A-110–A-111, A-134, A-153–A-161, and A-201.
 2. `src/assay/attestation.py` and every `tests/test_attestation_*` file. Reproduce finding 7's reviewed-directory false PASS and finding 8's `../` key escape before implementation.
 3. P15's lossless Git path boundary, P16's unchanged sibling evidence shape, and P17's commit-bound CLI assembly. Reuse them rather than adding a second Git/parser/verdict mechanism.
 4. `src/assay/config.py` and `JudgeConfig.as_declared`; there is currently no lane declaration source for evidence. Add one closed shape rather than another opaque table.
@@ -141,6 +147,37 @@ record, and the aggregate comparison bound before resolving any evidence.
 5. Resolve all declared identities independently and emit one ordered sibling
    `evidence[]` entry per declaration with `verified_by_assay=false`.
 
+### One lane deadline through Git (P23 F8 / A-201)
+
+P23 landed one `LaneDeadline` for snapshot preparation and Assay-managed test
+processes, but `evaluate_r1`/`measurability` still reach byte-bounded
+`git._run_bounded` with no wall-clock deadline. P26 owns that residual gap
+because it already extends the sanitized Git boundary before adoption.
+
+Avoid a `git.py -> runner.py` circular import. Define a lower-layer callable
+protocol for “return the same lane's positive remaining seconds or raise the
+existing `BUDGET_EXCEEDED/LANE_TIMEOUT` `AssayError`.” Higher-rigor runner and
+attestation/measurability paths receive `LaneDeadline.remaining` explicitly and
+thread that same callable through every public Git wrapper and both the
+repository-bootstrap and substantive `_run_bounded` calls. Absence is allowed
+only for a call site that genuinely has no active lane deadline; a higher-rigor
+call may not silently use that default.
+
+`_run_bounded` starts the Git child in its own process group. Before spawn and
+before every selector wait it samples the same remaining callable; selector
+waits use that observed remainder. Expiry kills the whole group, closes/drains
+bounded pipes, waits/reaps, and re-raises the original lane-timeout terminal.
+Frequent output must not reset the budget. A bootstrap `rev-parse`, resolution,
+status, merge-base, diff, and each attestation path query all consume the same
+absolute lane deadline; no command gets `lane.budget_seconds` afresh.
+
+The JIT freeze must pin the exact callable/type signatures against landed P25
+and add deterministic fixtures: a synchronized fake Git child writes one byte
+then leaves a descendant holding the pipe while the injected remaining
+callable expires; the test proves the descendant is gone, the typed terminal
+survives, and no later Git argv was launched. Wall-clock duration is a hang
+failsafe only, never the oracle.
+
 | State | Evidence result |
 |---|---|
 | file absent | `MISSING_ATTESTATION` |
@@ -151,7 +188,8 @@ record, and the aggregate comparison bound before resolving any evidence.
 
 Traceability: work 1–2 -> config containment -> O1/O2; work 3–5 -> safe
 record/path loader -> O2; work 6 -> Git path comparison -> O3; work 7–8 -> CLI
-ordering/artifacts -> O1 and all negatives. The REPORT gives actual tests and
+ordering/artifacts -> O1 and all negatives; work 9 -> one deadline/process
+group -> O4. The REPORT gives actual tests and
 break counts. Private parser/helper names may vary; grammar, bounds, safe-open,
 Git commands/exit meanings, ordering, and sibling evidence placement may not.
 
@@ -170,6 +208,11 @@ Git commands/exit meanings, ordering, and sibling evidence placement may not.
 6. Replace flat changed-name membership with the packet's one bounded, literal-pathspec `git diff --quiet --exit-code` comparison per reviewed path. Interpret only its exit status through P20's sanitized Git boundary; do not request or decode a changed-name list. A reviewed directory is stale when any descendant changed; a file is stale only when that file changed, even when its name contains pathspec metacharacters.
 7. Wire declarations through `assay run` into exactly matching `declared_evidence[]`/`evidence[]` entries. Preserve order, `verified_by_assay=false`, and independent resolution of later identities after one malformed record.
 8. Add installed-wheel complete artifacts for current, stale file, stale directory, absent, malformed, unrelated/descendant commit, and limit violation. Break containment, bounds-before-Git, OID resolution, path staleness, sibling placement, and identity coverage separately; record exact A-067 failure counts.
+9. Close P23 F8 exactly as above: thread the same lane remaining callable
+   through higher-rigor measurability/attestation and every nested Git process,
+   enforce expiry on the complete process group, and prove no per-command reset
+   or post-expiry successor launch. Do not move the byte bounds, sanitized argv,
+   or replacement environment into runner code.
 
 ## Carried in from the P15–P19 post-series review
 

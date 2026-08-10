@@ -78,6 +78,12 @@ on branch `feat/assay-P30-real-go-mutation-r2-integration`.
    `assay-go-helper` from the plan's effective PATH; the adapter receives the
    absolute helper path. Missing/unexecutable helper uses P21's
    `NO_MEASUREMENT/MISSING_EXTERNAL_TOOL` before baseline.
+   Resolve symbolic `judge.base` only through Assay's sanitized
+   consumer-repository `git.resolve_base` semantics: a normal feature HEAD uses
+   the full merge-base/fork point after first resolving the named ref to a full
+   commit; a merge HEAD uses its first parent. Never use bare `rev-parse` as the
+   comparison base, never resolve inside a helper/snapshot namespace, and pass
+   the resulting full OIDs/changed lines forward once (SB-P23-02).
 2. Advance only the existing Go registry entry from `R1` to `R1,R2`. Python and
    other languages are unchanged. R0 remains command capability, not an adapter
    level.
@@ -124,6 +130,10 @@ one source site and its independently reproduced real outcome; it need not cover
 every operator. Other locked inputs combine nested project, appended argv,
 passthrough env, max boundaries, reordered completion, missing/malformed helper,
 and injected deadline. Every expected artifact is handwritten from manifests.
+One locked repository advances the symbolic base branch after the feature fork
+and another uses a merge HEAD; both require the same full comparison OIDs and
+changed-site set that an independent real `git merge-base`/first-parent witness
+derives. A bare-ref implementation must select a different delta and fail.
 
 | work | owner | oracle | controlled break |
 |---|---|---|---|
@@ -143,6 +153,11 @@ and injected deadline. Every expected artifact is handwritten from manifests.
 5. Add tiny real Go and pinned disposable srdm cases, exact artifacts, ledgers,
    source hashes, and reviewer-created combined attacks.
 6. Run the real gate; record helper/image/wheel hashes and controlled-break counts.
+7. After enabling the real Go route, perform the SB-P23-03 reachability and
+   coverage sweep across CLI preflight, registry dispatch, common collection,
+   helper errors, snapshot refusal, and result assembly. Every early return and
+   formerly unsupported branch is deleted as dead or retained with an exact
+   behavioral fixture; no unexplained excluded terminal remains.
 
 ## Test constraints copied from AUTHORING.md §3b
 

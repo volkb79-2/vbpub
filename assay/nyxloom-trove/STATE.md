@@ -1,6 +1,6 @@
 # assay — state of play
 
-> **P00–P22 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> **P00–P23 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
 > The current review is
 > `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`;
 > read it before the older v1 review or this accumulated state. P15–P19 made
@@ -9,12 +9,14 @@
 > reuse, monorepo mutation isolation, stale canary coverage, commit binding,
 > and ambient Git repository selection. The cost-aware recarve is a serial
 > **P20 → … → P32** queue; P20 merged as `618b6f15`, P21 as
-> `678104ad`, and P22 as `9d30b25b`. P23 is next and JIT-READY against that
-> exact merge with an implementation-shaped contract, compiling skeleton,
-> locked 19-case acceptance, a tester-unified P22-composition tracer, and an
-> exact adversarial review (A-188–A-196). Three original bundles were
+> `678104ad`, P22 as `9d30b25b`, and P23 as `a7f49bb4`; P23's carver-owned
+> fixture correction is `7c52ecc2` (A-197, locked acceptance 19/19). P24 is
+> next and JIT-READY against that exact source anchor with a five-wheel locked
+> offline closure, release wheel/manifest, compiling two-TODO helper skeleton,
+> 24-case acceptance, real tester-unified distribution probes, and the exact
+> adversarial review in `reports/assay-P24-JIT-CARVE.md` (A-198–A-201). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
-> microtasks. P24–P32 remain provisional until their predecessor merges and
+> microtasks. P25–P32 remain provisional until their predecessor merges and
 > their named JIT proof assets pass the exact pre-dispatch review.
 >
 > **Reachable does not mean proven safe.** Sol finding 1 was about
@@ -32,8 +34,8 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P22** — the complete P00–P14 series, the
-five-package P15–P19 repair/validation series, and P20–P22 of the pre-adoption
+**Merged on `main`, P00 through P23** — the complete P00–P14 series, the
+five-package P15–P19 repair/validation series, and P20–P23 of the pre-adoption
 integrity queue. The historical gate count below is the P19-era receipt;
 P20–P22 have their own controller-owned receipts and larger suites. Gate green at
 **1831 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
@@ -317,11 +319,12 @@ carved.** Adoption belongs in the selected
 consumer's trove after Assay's wheel contract is real; it is not an Assay
 handoff with authority to edit another project.
 
-**Implementation status of that series: P15 through P22 are MERGED. P23 is
-READY for Sonnet xhigh implementation at `9d30b25b`.** Its frozen packet is
-`handoffs/assay-P23-exact-reexecution-integration.md`, its locked acceptance
-material is `carve-assets/P23/`, and its JIT disposition is
-`reports/assay-P23-JIT-CARVE.md`. The execution order is:
+**Implementation status of that series: P15 through P23 are MERGED. P24 is
+READY for Sonnet xhigh implementation at the controller's exact Sol freeze
+commit after source anchor `7c52ecc2`.** Its frozen packet is
+`handoffs/assay-P24-versioned-wheel-contract.md`, its locked acceptance/build
+closure is `carve-assets/P24/`, and its JIT disposition is
+`reports/assay-P24-JIT-CARVE.md`. The execution order is:
 
 `P20 repository/artifact boundary → P21 verdict v4 → P22 committed snapshot →
 P23 exact reexecution integration → P24 wheel → P25 real Python qualification →

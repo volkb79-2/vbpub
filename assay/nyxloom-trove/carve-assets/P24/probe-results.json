@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "gate_image": "tester-unified:local",
+  "python": "3.14",
+  "network": "none",
+  "cgroup_parent": "dev-background.slice",
+  "source_anchor": "7c52ecc2f9f500991d2ba74689458ae1e6644a18",
+  "synthetic_release_oid": "0cf526260856b24fdd3afaf386a97e5a51763c22",
+  "tag": "assay-v1.2.3",
+  "source_date_epoch": 946684800,
+  "clean": {
+    "filename": "assay-1.2.3-py3-none-any.whl",
+    "sha256_first": "fdec65b2c944de61cfbfb0e0672f96136becc2c42db88c131d70ea19383a7578",
+    "sha256_second": "fdec65b2c944de61cfbfb0e0672f96136becc2c42db88c131d70ea19383a7578",
+    "byte_identical": true
+  },
+  "dirty": {
+    "filename": "assay-1.2.4.dev0+g0cf5262.d20000101-py3-none-any.whl",
+    "sha256": "c9d95d6e0658693e8e7535958f9e2550f3764697e084d47822f9af924be306b3"
+  },
+  "no_vcs": {
+    "filename": "assay-0.1.0-py3-none-any.whl",
+    "sha256": "aed198a74b8df4876bde3d10c826c83563f0519beed3432b2bb4ba53e092d440"
+  },
+  "current_monorepo": {
+    "filename": "assay-0.1.1.dev3007+g7c52ecc2f-py3-none-any.whl",
+    "sha256": "210f292a0cf062a7f047ac0a39757db328c4e71d1c494877975741ea401783c9"
+  }
+}

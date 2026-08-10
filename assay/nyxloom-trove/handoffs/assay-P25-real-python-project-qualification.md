@@ -11,7 +11,7 @@ depends_on: [assay-P24-versioned-wheel-contract]
 session: fresh
 scope:
   touch: ["gate/python/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "tests/**", "README.md", "docs/DESIGN-GUIDE.md"]
-  forbid: ["src/assay", "pyproject.toml"]
+  forbid: ["src/assay", "pyproject.toml", "nyxloom-trove/carve-assets/P24"]
 oracles:
   - id: O1
     observable: "The versioned installed Assay wheel runs real pytest with coverage.py in an R0+R1 lane over a disposable two-commit Topos tree and emits an exact independently constructed v4 artifact"
@@ -46,7 +46,9 @@ The claim to attack: **a real existing Python project can replace its changed-li
 - Required roles: **Sonnet xhigh implementer → Opus xhigh independent reviewer**.
 - Readiness: **PROVISIONAL until P24 merges.** Before dispatch, the controller
   resolves and records the exact Topos commit and Sol/Opus freezes the disposable
-  patch, hand manifest, expected v4 artifact, and independent Topos command.
+  patch, hand manifest, expected v4 artifact, independent Topos command, and a
+  clean tagged qualification wheel/manifest built from the P25 input with
+  P24's exact tracked-source and hash-bound recipe.
 - Implementer freedom: fixture plumbing and equivalent test decomposition only;
   the external project, commits, comparison semantics, and no-adoption boundary
   are fixed.
@@ -77,6 +79,14 @@ uid-complete container after the installed-wheel/self-hosting step; preserve
 all existing phase/final receipt markers. Do not invoke Topos's outer Docker
 command and do not start an unplaced container. All Python wheels/dependencies
 come from the already-pinned offline image/closure.
+
+The JIT carver, not the implementer, prepares the exact P25 qualification wheel
+and release manifest from only tracked Assay source at the post-P24 anchor,
+using P24's fixed tag/identity/epoch/toolchain recipe. The harness runs P24's
+standalone `verify`, captures its sole PEP 508/hash line, and installs only via
+offline pip `--require-hashes`. It may not copy/modify P24 assets, rebuild a
+different wheel at runtime, install the first glob match, or use ordinary
+`pip install <path>` after a separate hash check.
 
 ## Implementation packet (normative)
 
@@ -182,6 +192,10 @@ policy comparison, and no-real-Topos-write rule may not.
 5. Exercise PASS, `UNCOVERED_LINES`, allowed and forbidden exclusions under the packet's comparison rules, `EMPTY_COVERAGE`, dirty tree, base-is-HEAD, stale/missing output, and command-created repository mutation. Preserve Topos/shared-tree hashes across every terminal.
 6. Keep this a qualification, not a migration: add no `assay.toml` or dependency to real Topos, change no Topos gate, and make no claim that Topos consumes Assay. Record the exact wheel version/hash and the pinned Topos input revision used so a later Topos-owned adoption handoff can reproduce the comparison.
 7. Break the installed-wheel boundary, independent manifest, Topos comparator, source-root prefix, commit binding, profile freshness, and universal-PASS negative separately; run the real gate and record exact A-067 failure counts.
+8. After adding the qualification dispatch, sweep route reachability and
+   coverage: prove no hello-world shortcut, source import, stale profile,
+   alternate wheel-selection path, or producer-authored expected artifact is
+   reachable. Record every retained non-production fixture explicitly.
 
 ## Test constraints copied from AUTHORING.md §3b
 

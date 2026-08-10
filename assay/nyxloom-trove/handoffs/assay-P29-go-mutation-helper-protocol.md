@@ -107,6 +107,13 @@ it must never expose or use OID/bytes as the path identity. The JIT packet adds
 two changed paths sharing one committed blob and proves both survive discovery
 and P30 submission separately (A-196).
 
+The helper wire never accepts a Git revision, base name, merge-base, object ID,
+or repository path. It receives exact source bytes plus already-resolved
+changed line numbers for one caller-owned path. This deliberately prevents the
+helper from resolving `judge.base` with a convenient bare `rev-parse`; P30 keeps
+that ownership in Assay's sanitized consumer-repository Git path and freezes a
+moved symbolic-base/fork-point fixture before dispatch (SB-P23-02).
+
 ### Go helper wire grammar
 
 The offline `assay-go-helper` reads one bounded JSON object from stdin and writes
@@ -202,6 +209,11 @@ collector to emit `MUTATION_DISCOVERY_FAILED`; no production sort may hide it.
 5. Prove P21's Python/core files and candidate manifests remain unchanged.
 6. Run the real gate and record wire examples, binary hash, candidate manifests,
    optional non-gating peak-memory evidence, and controlled-break counts.
+7. Sweep the completed dispatch for dead/reachable branches: helper errors,
+   adapter-wide unsupported, empty success, max+1, malformed frames, and
+   duplicate/reversed sites must each have one unambiguous owner. Delete no
+   residual merely because the new early dispatch makes it hard to reach;
+   record and promote any real successor terminal (SB-P23-03).
 
 ## Test constraints copied from AUTHORING.md §3b
 
