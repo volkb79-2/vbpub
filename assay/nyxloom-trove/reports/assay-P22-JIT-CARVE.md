@@ -1,10 +1,10 @@
 # Assay P22 JIT carve and pre-dispatch adversarial specification review
 
-Date: 2026-08-09  
-Carver/reviewer: gpt-5.6-sol xhigh  
-Post-predecessor anchor: `678104ad32f26b9fbccdbb38b3298149a1d8f8e0`  
-AUTHORING revision: `2026-08-08-r5`  
-Disposition: **READY after correction**  
+Date: 2026-08-09
+Carver/reviewer: gpt-5.6-sol xhigh
+Post-predecessor anchor: `678104ad32f26b9fbccdbb38b3298149a1d8f8e0`
+AUTHORING revision: `2026-08-08-r5`
+Disposition: **READY after correction**
 Decisions: A-184–A-187
 
 ## Result first
