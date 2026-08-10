@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "files": {
+    "README.md": "3a87a6968ae8ca099e00e7bdd7b1c8128930e39e3a89af0f85632d4ecccfaac3",
+    "build_release_fixture.py": "ea971db09a1c34b8bb0a2bff2a7283cc6ec2bf0f55ac5ce43d8e6bc69cd2e32e",
+    "expected/missing-v4-template.json": "812c69679951dee20f2697e4c5e63b6b835d20c63747bd437f810e72dbf88a46",
+    "expected/pass-v4-template.json": "3e2c0b4692faa905e700beeb3ab91bc14eba2acf0e97414e1fb83c3ba5ebbfb5",
+    "fixtures/comment-only.py": "63dbcc43804431dedb5add3855afd00b74f5381f926230b16db489bedd563854",
+    "fixtures/coverage-witness.py": "6d0998196b31f1eccf88fb7ca067428fdac33372a19916188efa45fc3e564cc4",
+    "fixtures/probe-missing.py": "5537387b28f1754286cacd296d59a80882544b917cb8ebdd0e303d0f45818b97",
+    "fixtures/probe-pass.py": "ea5fae2a26c91983446aed80c932352a44ea470fb6234ed6c0e822ae5a2d9774",
+    "fixtures/test-comment-only.py": "3e02e01e88890ff45439e03e80b494c6c3f6fca8f9262baebbb6e46631f1c23e",
+    "fixtures/test-probe-missing.py": "ed0fe6de4dc4c85a63f8d8c453714281f2abccd0a6b13ef368b4284ddeb5c335",
+    "fixtures/test-probe-pass.py": "6366c7d2c9258877afe8180716e975273000c5b04a23a5764a7dacb9c7fb75fe",
+    "probe-results.json": "d4dabf77607a35c022572a754ae4a6d77646f260868e093625dd101815f68961",
+    "probe_topos_qualification.py": "e6a49f80fa477c359b30db79da38355564dd72b544b08111081e26f555c92b60",
+    "qualification-manifest.json": "3ed528dc0ada1d2ec852f7faa1ea60f5018ab0069b58a8a7e2332b74dde7191b",
+    "release/assay-1.2.5-py3-none-any.whl": "a0f8d28e4f6359e90616343badcf3c663eb7e2075c1a521bf9da8afd7002dc86",
+    "release/release-manifest.json": "a77574808803d2445553716d0b45dbe8b1d9b0261c0604701f96b752dc625e3e",
+    "skeleton/qualify_topos.py": "85658df5bb6349bfe46f25131e3dc258dcd7bc5b133b2a50902a5f80db0124b5",
+    "test_acceptance.py": "5b804cf7014f398d4326aa6c243025537eaa6027717fcb50e9b9a1824ab628f5",
+    "topos-input-manifest.json": "452f76b02350cdf1e5cfb620af7383b6c82c5aba8d2dd027a007ebb2b575b1bc"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "input_revision": "9f522a72d37b9cb5beb1939ceca1978c9fc4ef23",
+  "topos_tree_oid": "1bc8a51296b74e536bf60b534efb2fc938dcc389",
+  "topos_tracked_entries": 966,
+  "root_gitignore": {
+    "blob_oid": "b0a3fe4a8cabd6ebdebc4fc4aa4a4a8623bd8dbe",
+    "sha256": "630b36ce354df85ea22ab3cdf44ebb78996f1ca1aec96f2a7f3ae967b231b707"
+  },
+  "critical_files": {
+    "topos/pyproject.toml": {
+      "blob_oid": "148cd0b9d6ac7b7858d0db7c1f77c5bcada9d230",
+      "sha256": "f44821ce5e78cf48e5dc02eb3f9da70f73c9e2ad589287f17361bbd43653d7a8"
+    },
+    "topos/tests/conftest.py": {
+      "blob_oid": "01017c96e09f771d54ebdc3e9d89127a18d55341",
+      "sha256": "d985f0bfb435279164519b0740ee0cafa039adb1a2c34cb16465ea2c6991589f"
+    },
+    "topos/tools/coverage_gate.py": {
+      "blob_oid": "6b96e8711b6c0a2e20456e74626804cd502cf9b7",
+      "sha256": "64d7d3855abb8b822ff5e49a9a31e79c92bb3857bfb4b9d6fbd57168ff1472f5"
+    }
+  },
+  "absolute_symlink_adoption_precondition": {
+    "blob_oid": "3594e94c04db171e2767224db355f514b13715c5",
+    "target": "/etc/passwd",
+    "delete_from_disposable_baseline": [
+      "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+      "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+      "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"
+    ]
+  },
+  "contained_relative_symlinks_retained": 5,
+  "baseline_index_entries_after_patch": 965,
+  "ordinary_git_add_forbidden": "Use git add -f over the exact exported set; ordinary add silently drops four tracked Docker-log fixtures under the carried root .gitignore and makes 13 full-suite tests fail."
+}

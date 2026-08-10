@@ -1,0 +1,187 @@
+{
+  "assay_version": "1.2.5",
+  "compatibility_deletions": {
+    "topos/tests/fixtures/inspect_files/_danger/passwd_link": "/etc/passwd",
+    "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape": "/etc/passwd",
+    "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current": "/etc/passwd"
+  },
+  "full_suite": true,
+  "input_revision": "9f522a72d37b9cb5beb1939ceca1978c9fc4ef23",
+  "scenarios": [
+    {
+      "base": "12ac3a4abba87522e95cae3233d06d10f39650c5",
+      "clean_after": true,
+      "comparator": {
+        "changed_executable": 5,
+        "covered": 5,
+        "files_missing_coverage": [],
+        "passed": true,
+        "pct": 100.0,
+        "uncovered": {}
+      },
+      "exit_code": 0,
+      "head": "3c674ef351dcfe470f8417bf9a770a9aa06e403b",
+      "outcome": "PASS",
+      "r1": {
+        "coverage": {
+          "changed_executable": 5,
+          "considered": 1,
+          "covered": 5,
+          "excluded_lines": {
+            "topos/src/topos/_assay_probe.py": [
+              11
+            ]
+          },
+          "exclusion_capability": "reported",
+          "files_missing_coverage": [],
+          "files_with_excluded_lines": [
+            "topos/src/topos/_assay_probe.py"
+          ],
+          "files_with_unclassified_lines": [],
+          "missing_lines": {},
+          "pct": 100.0,
+          "unclassified_lines": {}
+        },
+        "rigor": "R1",
+        "source": "computed",
+        "status": "PASS",
+        "verified_by_assay": true
+      },
+      "reason_code": null,
+      "scenario": "pass"
+    },
+    {
+      "base": "12ac3a4abba87522e95cae3233d06d10f39650c5",
+      "clean_after": true,
+      "comparator": {
+        "changed_executable": 5,
+        "covered": 4,
+        "files_missing_coverage": [],
+        "passed": false,
+        "pct": 80.0,
+        "uncovered": {
+          "topos/src/topos/_assay_probe.py": [
+            7
+          ]
+        }
+      },
+      "exit_code": 1,
+      "head": "786ff7485a62ed4e30814ebdab8630ebf812e6e6",
+      "outcome": "FAIL",
+      "r1": {
+        "coverage": {
+          "changed_executable": 5,
+          "considered": 1,
+          "covered": 4,
+          "excluded_lines": {
+            "topos/src/topos/_assay_probe.py": [
+              11
+            ]
+          },
+          "exclusion_capability": "reported",
+          "files_missing_coverage": [],
+          "files_with_excluded_lines": [
+            "topos/src/topos/_assay_probe.py"
+          ],
+          "files_with_unclassified_lines": [],
+          "missing_lines": {
+            "topos/src/topos/_assay_probe.py": [
+              7
+            ]
+          },
+          "pct": 80.0,
+          "unclassified_lines": {}
+        },
+        "reason_code": "UNCOVERED_LINES",
+        "rigor": "R1",
+        "source": "computed",
+        "status": "FAIL",
+        "verified_by_assay": true
+      },
+      "reason_code": "UNCOVERED_LINES",
+      "scenario": "missing"
+    },
+    {
+      "base": "12ac3a4abba87522e95cae3233d06d10f39650c5",
+      "clean_after": true,
+      "comparator": {
+        "changed_executable": 5,
+        "covered": 5,
+        "files_missing_coverage": [],
+        "passed": true,
+        "pct": 100.0,
+        "uncovered": {}
+      },
+      "exit_code": 1,
+      "head": "536c09edcad4bfda14ca1e95a9d33393009f92d3",
+      "outcome": "FAIL",
+      "r1": {
+        "coverage": {
+          "changed_executable": 5,
+          "considered": 1,
+          "covered": 5,
+          "excluded_lines": {
+            "topos/src/topos/_assay_probe.py": [
+              11
+            ]
+          },
+          "exclusion_capability": "reported",
+          "files_missing_coverage": [],
+          "files_with_excluded_lines": [
+            "topos/src/topos/_assay_probe.py"
+          ],
+          "files_with_unclassified_lines": [],
+          "missing_lines": {},
+          "pct": 100.0,
+          "unclassified_lines": {}
+        },
+        "reason_code": "EXCLUDED_LINES",
+        "rigor": "R1",
+        "source": "computed",
+        "status": "FAIL",
+        "verified_by_assay": true
+      },
+      "reason_code": "EXCLUDED_LINES",
+      "scenario": "excluded-forbidden"
+    },
+    {
+      "base": "12ac3a4abba87522e95cae3233d06d10f39650c5",
+      "clean_after": true,
+      "comparator": {
+        "changed_executable": 0,
+        "covered": 0,
+        "files_missing_coverage": [],
+        "passed": true,
+        "pct": 100.0,
+        "uncovered": {}
+      },
+      "exit_code": 0,
+      "head": "60189bb65d11a6b34040e580deed69b11d10c834",
+      "outcome": "PASS",
+      "r1": {
+        "coverage": {
+          "changed_executable": 0,
+          "considered": 1,
+          "covered": 0,
+          "excluded_lines": {},
+          "exclusion_capability": "reported",
+          "files_missing_coverage": [],
+          "files_with_excluded_lines": [],
+          "files_with_unclassified_lines": [],
+          "missing_lines": {},
+          "pct": 100.0,
+          "unclassified_lines": {}
+        },
+        "rigor": "R1",
+        "source": "computed",
+        "status": "PASS",
+        "verified_by_assay": true
+      },
+      "reason_code": null,
+      "scenario": "comment-only"
+    }
+  ],
+  "schema_version": 1,
+  "topos_tree": "1bc8a51296b74e536bf60b534efb2fc938dcc389",
+  "wheel_sha256": "a0f8d28e4f6359e90616343badcf3c663eb7e2075c1a521bf9da8afd7002dc86"
+}

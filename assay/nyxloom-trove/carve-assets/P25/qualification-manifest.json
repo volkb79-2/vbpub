@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "1.2.5",
+    "source_revision": "9f522a72d37b9cb5beb1939ceca1978c9fc4ef23",
+    "assay_source_tree_oid": "e077f25171778bf2e2982996f4466ad9d1259d12",
+    "filename": "assay-1.2.5-py3-none-any.whl",
+    "size": 232650,
+    "sha256": "a0f8d28e4f6359e90616343badcf3c663eb7e2075c1a521bf9da8afd7002dc86",
+    "manifest_sha256": "a77574808803d2445553716d0b45dbe8b1d9b0261c0604701f96b752dc625e3e",
+    "repeated_builds_byte_identical": true
+  },
+  "pass_probe": {
+    "path": "topos/src/topos/_assay_probe.py",
+    "executed_lines": [4, 5, 6, 7, 10],
+    "missing_lines": [],
+    "excluded_lines": [11],
+    "comment_only_lines": [1, 13],
+    "changed_executable": 5,
+    "covered": 5
+  },
+  "missing_probe": {
+    "path": "topos/src/topos/_assay_probe.py",
+    "executed_lines": [4, 5, 6, 10],
+    "missing_lines": [7],
+    "excluded_lines": [11],
+    "comment_only_lines": [1, 13],
+    "changed_executable": 5,
+    "covered": 4
+  },
+  "comment_only_probe": {
+    "path": "topos/src/topos/_assay_comment.py",
+    "changed_executable": 0,
+    "covered": 0,
+    "terminal": "PASS"
+  },
+  "primary_suite": {
+    "argv_tail": ["topos/tests", "-q", "-n", "auto"],
+    "observed": "2923 passed",
+    "coverage_files": 94,
+    "timeout_seconds": 900,
+    "timeout_role": "hang failsafe only"
+  },
+  "targeted_suite": {
+    "argv_tail": ["topos/tests/test_config.py", "topos/tests/test_assay_probe.py", "-q", "-n", "2"]
+  },
+  "coverage_witness": "The copied comparator profile is the exact byte stream Assay consumed inside its ephemeral snapshot; the wrapper only copies after pytest returns zero and never interprets either artifact."
+}

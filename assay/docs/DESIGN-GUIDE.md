@@ -887,6 +887,26 @@ can obtain the same R1 answer, not a claim that Topos has adopted Assay. The
 real adoption package is carved later in Topos's own trove, after its active
 wave permits a stable input revision.
 
+**The qualification found a real adoption precondition rather than hiding it.**
+Pinned Topos commits three absolute `/etc/passwd` symlinks as security-test
+fixtures. Assay's A-186 committed-object boundary must refuse those paths for
+every higher-rigor lane; filtering them inside Assay would weaken the product's
+escape boundary. P25 therefore deletes exactly those three links only in its
+disposable prospective consumer baseline, retains all five contained relative
+links, and proves the full 2,923-test answer is unchanged. Actual adoption must
+make that Topos-owned change (prefer constructing the hostile links under
+`tmp_path`) before enabling Assay. Thus P25 proves Python/R1 and installed-wheel
+compatibility for the exact prospective state while explicitly proving that the
+unmodified current Topos tree is not directly adoptable (A-202).
+
+P25 also keeps two wheel roles separate (A-205): the gate's current P24-built
+run-venv wheel runs the full suite so later Assay changes remain externally
+qualified, while a reproducible clean-tagged `1.2.5` fixture exercises P24's
+release-manifest and pip hash path on a targeted smoke. The copied Topos
+evaluator receives the exact bounded coverage bytes Assay consumed inside its
+otherwise-ephemeral snapshot; it never consumes an expectation derived from
+Assay's verdict (A-204).
+
 | # | Consumer | Proves |
 |---|---|---|
 | 1 | **topos** | **faithful replacement, mechanically** — the only migration where old and new gate run side by side on the same commits and are required to agree. Its two unique behaviours must survive, so "did we take the union correctly?" stops being a review question |

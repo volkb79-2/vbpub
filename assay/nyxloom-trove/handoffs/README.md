@@ -2,7 +2,7 @@
 
 ## Current pre-adoption queue: P20–P32
 
-P00–P23 are merged. P24–P32 are the remaining active implementation queue,
+P00–P24 are merged. P25–P32 are the remaining active implementation queue,
 recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
 revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
 contracts are JIT-frozen after the predecessor merges, so a future packet does
@@ -18,8 +18,8 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P21 | verdict v4 + bounded Python site contract | 2b | **merged as `678104ad` (A-180–A-183)** | Opus xhigh | fresh Opus xhigh |
 | P22 | committed-object snapshot substrate | 2b | **merged as `9d30b25b` (A-184–A-187)** | Opus xhigh | fresh Opus xhigh |
 | P23 | exact reexecution integration over landed sites | 2c | **merged as `a7f49bb4`; fixture epoch `7c52ecc2` (A-188–A-197)** | Sonnet xhigh | fresh Opus xhigh |
-| P24 | versioned wheel contract | 2d | **READY after `7c52ecc2` (A-198–A-201)** | Sonnet xhigh | fresh Opus xhigh |
-| P25 | external Python/Topos qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P24 | versioned wheel contract | 2d | **merged as `9f522a72` (A-198–A-201)** | Sonnet xhigh | fresh Opus xhigh |
+| P25 | external Python/Topos qualification | 2d | **READY — locked A-202–A-206 packet** | Sonnet xhigh | fresh Opus xhigh |
 | P26 | attested-evidence CLI hardening | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P27 | Go gate and adapter resolution | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P28 | real srdm R1 qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
@@ -28,12 +28,13 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-P20 through P23 are **MERGED**. P24 is **READY**: its implementation-shaped
-contract, locked five-wheel build closure, release wheel/manifest, helper
-skeleton, 24-case acceptance suite, real network-disabled distribution probes,
-and exact pre-dispatch adversarial specification review are under
-`nyxloom-trove/carve-assets/P24/` and
-`nyxloom-trove/reports/assay-P24-JIT-CARVE.md`. P25–P32 remain
+P20 through P24 are **MERGED**. P25 is **READY**: its implementation-shaped
+contract, pinned 966-entry Topos manifest, explicit three-symlink prospective
+adoption patch, clean-tagged 1.2.5 wheel/manifest, full v4 templates, literal
+line fixtures, compiling harness skeleton, quick acceptance, and real
+network-disabled 2,923-test differential probe are under
+`nyxloom-trove/carve-assets/P25/` and
+`nyxloom-trove/reports/assay-P25-JIT-CARVE.md`. P26–P32 remain
 `PROVISIONAL`/`JIT-FREEZE REQUIRED`. Before any later package becomes ACTIVE, its
 named proof assets are committed and the same review must return READY at the
 actual post-predecessor HEAD. No later package should be dispatched merely
@@ -92,6 +93,18 @@ probe also caught a subtler false PASS: two byte-identical wheels can be
 reproducibly contaminated when a fixture commits ignored pycache/egg-info, so
 release inputs are now Git-tracked paths/private exact-OID clones (A-198–A-200).
 P23 F8's residual Git-process deadline is assigned to P26 (A-201).
+
+P25's JIT tracer found that unmodified Topos is not yet an Assay higher-rigor
+consumer: its security fixtures commit three absolute `/etc/passwd` symlinks
+that P22 correctly refuses. P25 therefore qualifies one exact prospective
+consumer patch deleting those links while retaining five contained symlinks,
+and requires the future Topos-owned adoption to resolve the same precondition.
+It also caught three targeted-green/full-red proof defects before dispatch:
+ordinary add dropped four tracked ignored fixtures (13 full-suite failures), a
+`PYTHONPATH`-only lane omitted required identity/PATH facts, and two pytest-cov
+JSON destinations left Assay's own reserved profile empty. A forced exact
+965-entry index, closed witnessed environment, and bounded byte-copy wrapper
+make the 2,923-test/full-v4/Topos-evaluator proof truthful (A-202–A-206).
 
 Luna may run the frozen-orientation/fork workflow mechanically from
 `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,
