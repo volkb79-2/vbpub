@@ -846,9 +846,16 @@ def _validate_attestation_dir(value: Any, where: str) -> str:
             f"spelling (no repeated slash, trailing slash, or '.' component)"
         )
     parts = value.split("/")
-    if ".." in parts:
+    if "." in parts or ".." in parts:
+        # A-210's "no `.`/`..`". The canonical-spelling check above catches
+        # every EMBEDDED dot component ("./a", "a/."), because PurePosixPath
+        # normalises those away -- but not a bare ".", which round-trips as
+        # itself and would otherwise be an accepted spelling for the project
+        # root. ".assay/attestations" is unaffected: a leading-dot FILENAME is
+        # not a "." component.
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} contains a '..' component"
+            f"{where}: 'judge.attestation_dir' {value!r} contains a "
+            f"'.' or '..' component"
         )
     if len(parts) > MAX_ATTESTATION_DIR_COMPONENTS:
         raise LaneConfigError(

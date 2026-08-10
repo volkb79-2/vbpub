@@ -233,3 +233,118 @@ def test_attestation_module_never_imports_config():
     assert "from .config" not in source
     assert "from assay.config" not in source
     assert "import config" not in source
+
+
+def test_a_lone_surrogate_reviewed_path_is_unreadable_and_never_aborts_the_batch(
+    git_repo, tmp_path: Path
+):
+    """A-210: "map any string that cannot be encoded as UTF-8 (including a
+    lone surrogate) to unreadable" covers EVERY string in the record, not just
+    ``producer``.
+
+    ``json.loads`` happily decodes ``\\ud800`` into a lone surrogate, so a
+    hostile producer can put one in ``reviewed_paths``. That string is valid
+    JSON and passes the byte/canonical-spelling checks' preconditions, but it
+    cannot be UTF-8 encoded. When that failure escaped as a bare ``ValueError``
+    instead of this identity's ``ERROR``/``UNREADABLE_ARTIFACT``, it aborted
+    the whole batch: the later, perfectly valid declaration was never
+    resolved and the run produced no v4 artifact at all — the exact opposite
+    of §3's "resolve later identities despite one malformed record" and of the
+    terminal table's "computed work runs / artifact complete" row.
+
+    The sibling `{ not json` fixture cannot reach this: it fails inside
+    ``json.loads``, which was already mapped.
+    """
+    git_repo.write("reviewed.py", "x = 1\n")
+    attested_commit = git_repo.commit_all("add reviewed.py")
+    attestations_dir = tmp_path / "attestations"
+    attestations_dir.mkdir()
+    (attestations_dir / "hostile.json").write_text(
+        f'{{"producer":"human:alice","attested_commit":"{attested_commit}",'
+        f'"reviewed_paths":["src/\\ud800.py"]}}',
+        encoding="utf-8",
+    )
+    _write_attestation(
+        attestations_dir,
+        "good",
+        attested_commit=attested_commit,
+        reviewed_paths=("reviewed.py",),
+    )
+
+    results = load_attested_evidence(
+        git_repo.path,
+        head=attested_commit,
+        declared=(
+            EvidenceDeclaration(source="attested", key="hostile"),
+            EvidenceDeclaration(source="attested", key="good"),
+        ),
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
+    )
+
+    by_key = {item.key: item for item in results}
+    assert by_key["hostile"].status is Outcome.ERROR
+    assert by_key["hostile"].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert by_key["hostile"].producer is None, "no attested payload when unreadable"
+    assert by_key["hostile"].attested_commit is None
+    assert by_key["hostile"].reviewed_paths is None
+    assert by_key["good"].status is Outcome.PASS, (
+        "a later declaration must still resolve; the hostile record must not "
+        "abort the batch"
+    )
+
+
+@pytest.mark.parametrize("directory", [".", "./nested", "nested/.", "..", "a/../b"])
+def test_no_dot_component_is_an_accepted_attestation_dir_spelling(
+    git_repo, tmp_path: Path, directory: str
+):
+    """A-210's closed ``attestation_dir`` grammar says "no ``.``/``..``", and
+    §3 requires this public boundary to repeat it without assuming the caller
+    came through ``config.py``.
+
+    ``PurePosixPath`` normalises every EMBEDDED dot component away, so the
+    canonical-spelling check catches ``./nested`` and ``nested/.`` on its own —
+    but a bare ``"."`` round-trips as itself and slipped through as an accepted
+    spelling for the project root. Each spelling here must be
+    ``ERROR``/``BAD_LANE_CONFIG``, refused before any descriptor walk.
+    """
+    with pytest.raises(AssayError) as caught:
+        load_attested_evidence(
+            git_repo.path,
+            head=git_repo.head(),
+            declared=(EvidenceDeclaration(source="attested", key="review"),),
+            project_root=tmp_path,
+            attestation_dir=directory,
+            remaining=_remaining,
+        )
+
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+def test_a_leading_dot_directory_name_is_still_a_legal_attestation_dir(
+    git_repo, tmp_path: Path
+):
+    """The positive control the guard above must not over-reject: the frozen
+    grammar's own canonical example is ``.assay/attestations``. A leading-dot
+    FILENAME is an ordinary POSIX name, never a ``.`` component."""
+    git_repo.write("reviewed.py", "x = 1\n")
+    attested_commit = git_repo.commit_all("add reviewed.py")
+    _write_attestation(
+        tmp_path / ".assay/attestations",
+        "review",
+        attested_commit=attested_commit,
+        reviewed_paths=("reviewed.py",),
+    )
+
+    results = load_attested_evidence(
+        git_repo.path,
+        head=attested_commit,
+        declared=(EvidenceDeclaration(source="attested", key="review"),),
+        project_root=tmp_path,
+        attestation_dir=".assay/attestations",
+        remaining=_remaining,
+    )
+
+    assert [item.status for item in results] == [Outcome.PASS]

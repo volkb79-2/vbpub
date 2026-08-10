@@ -668,11 +668,13 @@ def _snapshot_left_dirt(
     HERE, inside the worker, so a dirty/committing mutant is caught before
     its context closes and before any sibling is affected.
 
-    *remaining* (P26/A-212) is an optional hook for a caller that DOES want
-    this Git-owned check bounded by a shared budget; :func:`run_mutation`'s
-    own call site deliberately omits it (see that call site's own comment)
-    so an already-decided mutant result is never discarded merely because
-    this bookkeeping check ran after the shared deadline expired.
+    *remaining* (P26/A-212) bounds this check's own Git children by the one
+    lane deadline; :func:`run_mutation` passes ``deadline.remaining``, so a
+    hung ``status``/``rev-parse`` can never outlive the lane budget. Because
+    this check runs after a mutant is already decided, that call site absorbs
+    exactly ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` (see its own comment) so an
+    already-decisive result is never discarded for a partial sample; a
+    legacy/library caller may still omit *remaining*.
     """
     if git.dirty_paths(snapshot.root, remaining=remaining):
         return AssayError(
@@ -815,17 +817,35 @@ def run_mutation(
                 process_runner=process_runner,
                 clock=clock,
             )
-            # P26/A-212: deliberately NOT `remaining=deadline.remaining` here.
-            # This check runs AFTER the mutant's own process already produced
-            # a decisive result; forwarding the shared lane deadline would let
-            # an expiry discovered only at this bookkeeping step discard an
-            # already-completed identity's real result -- exactly the
-            # "completed identities remain evidence, never discarded for a
-            # partial sample" invariant `run_mutation`'s own docstring states.
-            # Budget enforcement for a NOT-YET-STARTED mutant already happens
-            # earlier, at `materialize_timeout`/`execute_plan`'s own
-            # `deadline.remaining()` samples.
-            dirt = _snapshot_left_dirt(job, snapshot)
+            try:
+                # P26/A-212: the ONE lane deadline IS forwarded here, so this
+                # check's own Git children are bounded by the same budget as
+                # every other lane-owned call. `remaining=None` would leave
+                # them genuinely unbounded -- `git._run_bounded` then waits in
+                # `selector.select(None)`/`proc.wait()` with no timeout -- so a
+                # single hung `status`/`rev-parse` could outlive the entire
+                # lane budget from inside a worker.
+                dirt = _snapshot_left_dirt(
+                    job, snapshot, remaining=deadline.remaining
+                )
+            except AssayError as exc:
+                # ...but this check runs AFTER the mutant's own process already
+                # produced a decisive result, so an expiry observed HERE must
+                # not retroactively reclassify a COMPLETED identity: this
+                # function's own bucket rule is "completed identities remain
+                # evidence, never discarded for a partial sample". Absorbing
+                # exactly that pair keeps the bucket semantics unchanged while
+                # still refusing to start an unbounded child. Every other
+                # AssayError -- a real Git failure, and A-195's own returned
+                # DIRTY_TREE/HEAD_CHANGED below -- still stops the whole claim.
+                # A NOT-YET-STARTED mutant is unaffected: it is budget-stopped
+                # earlier, at `materialize_timeout`/`execute_plan`'s samples.
+                if not (
+                    exc.outcome is Outcome.BUDGET_EXCEEDED
+                    and exc.reason_code is ReasonCode.LANE_TIMEOUT
+                ):
+                    raise
+                dirt = None
             if dirt is not None:
                 raise dirt
         return result

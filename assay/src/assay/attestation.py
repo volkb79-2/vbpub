@@ -195,7 +195,14 @@ def _validate_reviewed_path(path: object, source_name: str) -> str:
         raise _unreadable(
             f"{source_name}: a reviewed path must be a string, got {type(path).__name__}"
         )
-    encoded = _utf8_bytes(path, "a reviewed path")
+    try:
+        # A-210: exactly as 'producer' does. `_utf8_bytes` signals a lone
+        # surrogate with a bare ValueError; leaving it unmapped here let a
+        # hostile record escape this identity's UNREADABLE_ARTIFACT terminal
+        # and abort the whole batch (and the artifact) with an untyped error.
+        encoded = _utf8_bytes(path, "a reviewed path")
+    except ValueError as exc:
+        raise _unreadable(f"{source_name}: {exc}") from exc
     if not (1 <= len(encoded) <= MAX_REVIEWED_PATH_BYTES):
         raise _unreadable(
             f"{source_name}: reviewed path must be 1..{MAX_REVIEWED_PATH_BYTES} "
@@ -422,8 +429,14 @@ def _validate_attestation_dir(value: str) -> None:
     if PurePosixPath(value).as_posix() != value:
         raise _bad_lane_config(f"attestation_dir {value!r} is not canonical POSIX spelling")
     parts = value.split("/")
-    if ".." in parts:
-        raise _bad_lane_config(f"attestation_dir {value!r} contains a '..' component")
+    if "." in parts or ".." in parts:
+        # A-210's "no `.`/`..`", repeated at this public boundary exactly as
+        # `config.py` states it: `PurePosixPath` normalises away an EMBEDDED
+        # "." component but round-trips a bare ".", which would otherwise be an
+        # accepted spelling for the project root itself.
+        raise _bad_lane_config(
+            f"attestation_dir {value!r} contains a '.' or '..' component"
+        )
     if len(parts) > MAX_ATTESTATION_DIR_COMPONENTS:
         raise _bad_lane_config(
             f"attestation_dir {value!r} has more than {MAX_ATTESTATION_DIR_COMPONENTS} "
