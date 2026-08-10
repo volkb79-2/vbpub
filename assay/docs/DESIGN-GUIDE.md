@@ -755,6 +755,33 @@ inject_import_break(text)              inject_uncovered_line(text)
 generate_mutation_sites(text, lines, operators, limit) -> sites | UNSUPPORTED
 ```
 
+### Mutation is source-oriented
+
+An Assay mutation adapter describes a change to **tracked source bytes**; it
+does not mutate a running language environment. The adapter receives current
+file text, changed physical lines, the selected operator vocabulary, and a
+remaining candidate bound. It returns small byte-span `MutationSite`
+descriptors. The language-free core applies one descriptor to one immutable
+committed-object snapshot and runs the lane's one already-declared command plan
+against that snapshot.
+
+This boundary applies even when the language's tests need substantial external
+state. A future SQL/DDL adapter may learn SQL syntax through a parser/helper and
+replace a constraint or trigger declaration in tracked DDL; the project's
+declared command may then provision a fresh test database and apply that
+mutated schema. Assay and the adapter do not receive a DSN, connect to the
+database, choose an image, or manage rollback. Those facts remain project/
+environment-owned inputs to the declared command. A component that instead
+introspects and mutates a live database is a separate producer whose structured
+result may be consumed as Tier-2 adjudicated evidence; it is not a
+`LanguageAdapter` shortcut around the source/snapshot contract.
+
+Consequently, R2 judges the selected mutation catalogue over the changed
+tracked source in scope. It never silently upgrades itself into a whole-project
+or whole-deployed-schema audit. Language-specific operator catalogues and an
+R2-without-R1 adapter remain explicit product-design questions, not values an
+adapter may invent locally (A-215).
+
 `UNSUPPORTED` is adapter-wide capability absence, never invalid source or an
 unrecognised individual construct. It renders as payload-free
 **`INCONCLUSIVE/MUTATION_UNSUPPORTED`**, never green; a supported analysis that

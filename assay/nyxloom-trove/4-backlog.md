@@ -2,7 +2,7 @@
 kind: backlog
 schema_version: 1
 items:
-  - {id: B001, title: "SQL/DDL LanguageAdapter — R2/R3 for PostgreSQL schema. Proposed 2026-08-10 from dstdns CW2a; see the rationale below.", type: feature, component: adapters, context_estimate: medium}
+  - {id: B001, title: "SQL/DDL source-mutation adapter — design/probe checkpoint after P28 and before P29. Preferred path recorded; not yet carved.", type: feature, component: adapters, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -15,8 +15,56 @@ below, so a proposal cannot be adopted without the argument that produced it.
 ## B001 — a SQL/DDL adapter, and why PostgreSQL projects are the cheapest place to prove R2/R3
 
 **Proposed by:** dstdns, 2026-08-10, out of the CW2a corpus-schema wave.
-**Status:** proposal only. Nothing here has been discussed with assay's owner,
-and it is deliberately filed rather than built — assay is mid-wave.
+**Status:** accepted for a Sol design/probe checkpoint after P28 and before
+P29; not accepted for implementation yet. A-215 records the disposition.
+
+### Assay-owner disposition — authoritative over the original proposal below
+
+The preferred hypothesis is a **source-oriented SQL `LanguageAdapter`**, not a
+database-connected adapter:
+
+```text
+tracked DDL + changed lines
+  -> SQL parser/helper -> bounded MutationSite byte spans
+  -> Assay's immutable replacement snapshots
+  -> the unchanged project-declared argv
+  -> project-owned fresh test-database provisioning and schema tests
+```
+
+This fits Assay's existing Python/Go direction: the adapter learns syntax and
+constructs mutations; the language-free core owns bounds, isolation, execution,
+and verdicts. The project test command may already provision PostgreSQL, but
+Assay and its adapter receive no DSN, open no database connection, and mutate
+no shared database. Each mutant must be judged through a fresh or otherwise
+provably isolated project-owned database state.
+
+The original proposal's catalog-introspection argument is evidence for the
+value and possible operator catalogue, not yet the Assay interface. A live
+`pg_constraint`/`pg_trigger` row does not by itself identify a byte span in
+tracked changed DDL. Likewise, “complete” can initially mean complete for the
+selected operators over the changed tracked DDL Assay was asked to judge; it
+must not silently become a whole-schema audit.
+
+The post-P28 probe must settle before P29 freezes the second-language mutation
+contract:
+
+1. the SQL parser/helper and exact source-to-schema identity;
+2. language-qualified operator vocabulary versus today's global four-value v4
+   enum;
+3. whether the flat `LanguageAdapter` remains honest for an R2-without-R1
+   language or needs capability-specific protocol factoring;
+4. fresh-database isolation, cleanup, baseline, and false-kill defenses owned
+   by the project command;
+5. the truthful SQL R3 mechanism, if any—R3 is not accepted merely because R2
+   is promising; and
+6. exact dstdns source/gate evidence at a pinned revision.
+
+If source mutation cannot truthfully represent the deployed schema, the
+fallback is a reusable external PostgreSQL mutation auditor whose structured
+result Assay consumes as Tier-2 adjudicated evidence. That means more logic in
+a separate tool and less in Assay; it is a fallback, not the preferred first
+route. Ordering/idempotency (“apply from scratch twice in deterministic order”)
+remains project-owned R0 artifact conformance in either design.
 
 ### The claim
 
@@ -100,7 +148,8 @@ throwaway container on the app network, image DERIVED from the running stack so
 the lane runs on the engine the app runs on, grants applied by the real grant
 script, disposed via `trap` on every exit path). That belongs to the project or
 to ciu, and the lane file's `[…where]` stays data assay parses and never
-interprets. An adapter would receive a DSN, never make one.
+interprets. Under the preferred source-mutation design the project command,
+not the adapter, owns any DSN and database lifecycle.
 
 ### Why "SQL coverage" is the wrong frame — recorded so it is not re-proposed
 

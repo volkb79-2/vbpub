@@ -2,7 +2,7 @@
 
 ## Current pre-adoption queue: P20–P32
 
-P00–P25 are merged. P26–P32 are the remaining active implementation queue,
+P00–P26 are merged. P27–P32 are the remaining active implementation queue,
 recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
 revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
 contracts are JIT-frozen after the predecessor merges, so a future packet does
@@ -20,7 +20,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P23 | exact reexecution integration over landed sites | 2c | **merged as `a7f49bb4`; fixture epoch `7c52ecc2` (A-188–A-197)** | Sonnet xhigh | fresh Opus xhigh |
 | P24 | versioned wheel contract | 2d | **merged as `9f522a72` (A-198–A-201)** | Sonnet xhigh | fresh Opus xhigh |
 | P25 | external Python/Topos qualification | 2d | **merged as `233926ce` (A-202–A-208)** | Sonnet xhigh | fresh Opus xhigh |
-| P26 | attested-evidence CLI hardening | 2c | **READY (A-209–A-214; locked packet)** | Sonnet xhigh | fresh Opus xhigh |
+| P26 | attested-evidence CLI hardening | 2c | **merged as `8f121be3` (A-209–A-214)** | Sonnet xhigh | fresh Opus xhigh |
 | P27 | Go gate and adapter resolution | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P28 | real srdm R1 qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P29 | Go mutation-helper/site protocol | 2b | Sol xhigh required | Opus xhigh | fresh Opus xhigh |
@@ -28,7 +28,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-P20 through P25 are **MERGED**. P25's implementation-shaped contract, pinned
+P20 through P26 are **MERGED**. P25's implementation-shaped contract, pinned
 966-entry Topos manifest, explicit three-symlink prospective adoption patch,
 clean-tagged 1.2.5 wheel/manifest, full v4 templates, literal line fixtures,
 compiling harness skeleton, quick acceptance, and real network-disabled
@@ -36,12 +36,13 @@ compiling harness skeleton, quick acceptance, and real network-disabled
 `nyxloom-trove/carve-assets/P25/` and
 `nyxloom-trove/reports/assay-P25-JIT-CARVE.md`.
 
-P26 is now **READY** against merged P25 input `233926ce`. Its exact config/
+P26 merged as `8f121be3` after its exact config/
 safe-I/O/Git/deadline APIs, four complete v4 templates, premise probe,
-skeleton, and controlled-red 41-test acceptance packet are under
+skeleton, and controlled-red 41-test acceptance packet under
 `nyxloom-trove/carve-assets/P26/`; A-209–A-214 resolve the R0/external-evidence
 grammar, atomic aggregate bound, literal Git semantics, CLI-started deadline,
-and refused-artifact lifecycle. P27–P32 remain `PROVISIONAL`/`JIT-FREEZE
+and refused-artifact lifecycle. Its controller-owned retry gate and post-merge
+locked acceptance passed. P27–P32 remain `PROVISIONAL`/`JIT-FREEZE
 REQUIRED`. Before any later package becomes ACTIVE, its named proof assets are
 committed and the same review must return READY at the actual post-predecessor
 HEAD. No package should be dispatched merely because `nyxloom lint` accepts
@@ -51,8 +52,15 @@ The dependency chain is exactly:
 
 ```text
 P19 -> P20 -> P21 -> P22 -> P23 -> P24 -> P25 -> P26
-    -> P27 -> P28 -> P29 -> P30 -> P31 -> P32
+    -> P27 -> P28 -> [B001 SQL/DDL design/probe checkpoint]
+    -> P29 -> P30 -> P31 -> P32
 ```
+
+A-215 makes the bracketed checkpoint mandatory before P29's JIT freeze, but it
+is not yet an implementation handoff and does not renumber the queue. P27/P28
+first prove the current language abstraction against real Go and srdm. Sol then
+tests the preferred source-oriented SQL mutation design; only a truthful frozen
+contract earns a new handoff.
 
 The apparent expansion from ten to thirteen packages is three splits, not a
 microtask explosion: snapshot substrate/integration, Go adapter/real-srdm R1,

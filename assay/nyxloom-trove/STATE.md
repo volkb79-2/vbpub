@@ -1,6 +1,6 @@
 # assay — state of play
 
-> **P00–P25 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> **P00–P26 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
 > The current review is
 > `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`;
 > read it before the older v1 review or this accumulated state. P15–P19 made
@@ -10,10 +10,10 @@
 > and ambient Git repository selection. The cost-aware recarve is a serial
 > **P20 → … → P32** queue; P20 merged as `618b6f15`, P21 as
 > `678104ad`, P22 as `9d30b25b`, P23 as `a7f49bb4`, P24 as `9f522a72`, and
-> P25 as `233926ce`; P23's carver-owned fixture correction is `7c52ecc2`
-> (A-197). P26 is next and JIT-READY against merged P25 with exact config/
-> safe-I/O/Git/deadline interfaces, four complete v4 templates, a compiling
-> process-boundary skeleton, and controlled-red 41-test acceptance in
+> P25 as `233926ce`, and P26 as `8f121be3`; P23's carver-owned fixture
+> correction is `7c52ecc2` (A-197). P27 is next and requires its post-P26 JIT
+> freeze. P26's exact config/safe-I/O/Git/deadline interfaces, complete v4
+> templates, process-boundary proof, and 41-test acceptance are recorded in
 > `reports/assay-P26-JIT-CARVE.md` (A-209–A-214). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
 > microtasks. P27–P32 remain provisional until their predecessor merges and
@@ -34,9 +34,10 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P25** — the complete P00–P14 series, the
+**Merged on `main`, P00 through P26** — the complete P00–P14 series, the
 five-package P15–P19 repair/validation series, and P20–P23 of the pre-adoption
-integrity queue plus P24 distribution and P25 real-Python qualification. The
+integrity queue plus P24 distribution, P25 real-Python qualification, and P26
+attested-evidence/deadline hardening. The
 historical gate count below is the P19-era receipt; P20–P25 have their own
 controller-owned receipts and larger suites. Gate green at
 **1831 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
