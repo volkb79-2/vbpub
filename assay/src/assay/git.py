@@ -84,12 +84,14 @@ from __future__ import annotations
 import os
 import selectors
 import shutil
+import signal
 import stat as stat_module
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .errors import AssayError, Outcome, ReasonCode
 
@@ -560,3 +562,617 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
             )
         )
     return tuple(sorted(paths))
+
+
+# --------------------------------------------------------------------------
+# P22 — the private committed-object boundary
+# --------------------------------------------------------------------------
+#
+# :mod:`assay.isolation` owns the snapshot abstraction but launches no
+# process of its own: everything below is the extension of P20's single
+# sanitized Git owner that P22 needs, and nothing here takes a
+# caller-supplied environment or a caller-chosen executable. The additions
+# over the P20 surface are exactly:
+#
+# * an explicit git-dir/work-tree pair the CALLER already knows (a private
+#   seed or snapshot has no ``.git`` marker to discover, and asking git to
+#   discover one would reintroduce the ambient identity A-173 removed);
+# * bounded stdin, so an object-name list can be fed to plumbing without a
+#   temporary file the consumer could observe;
+# * a two-process streaming relay, so a pack crosses the boundary without
+#   ever being buffered whole and its compressed bytes are counted by assay
+#   rather than trusted from git;
+# * one monotonic deadline per public call, whose expiry kills the process
+#   group assay owns; and
+# * the fixed replacement identity, which is product policy rather than a
+#   parameter.
+
+#: Disabled for every P22 object read (A-185). Both accelerate object lookup
+#: by trusting a derived cache file; at this trust boundary the authoritative
+#: answer must come from the objects themselves.
+_P22_OBJECT_CONFIG: tuple[str, ...] = (
+    "-c", "core.commitGraph=false",
+    "-c", "core.multiPackIndex=false",
+)
+
+#: Added to :data:`_REPLACEMENT_ENV` for every P22 child (A-185). A partial
+#: clone would otherwise satisfy a read by *fetching* it, which would make
+#: the "complete reachable closure" claim depend on a network peer.
+_P22_ENV_EXTRA: Mapping[str, str] = MappingProxyType({"GIT_NO_LAZY_FETCH": "1"})
+
+#: The FIXED identity of every replacement child commit (A-186). Product
+#: policy, never a parameter and never the ambient environment: the same
+#: base/path/bytes must produce the same OID on any host, in any checkout,
+#: under any consumer's configured author. ``946684800`` is 2000-01-01Z.
+_P22_REPLACEMENT_IDENTITY: Mapping[str, str] = MappingProxyType(
+    {
+        "GIT_AUTHOR_NAME": "Assay",
+        "GIT_AUTHOR_EMAIL": "assay@invalid",
+        "GIT_COMMITTER_NAME": "Assay",
+        "GIT_COMMITTER_EMAIL": "assay@invalid",
+        "GIT_AUTHOR_DATE": "946684800 +0000",
+        "GIT_COMMITTER_DATE": "946684800 +0000",
+    }
+)
+
+#: The exact message bytes of every replacement child commit (A-186).
+_P22_REPLACEMENT_MESSAGE: bytes = b"assay snapshot replacement\n"
+
+#: How many relayed pack bytes may sit in this process at once. The pack is
+#: streamed producer -> assay -> consumer so its size can be COUNTED against
+#: a declared ceiling; holding the whole pack to do that would reintroduce
+#: exactly the unbounded buffering the ceiling exists to prevent.
+_P22_RELAY_CHUNK_BYTES = 1024 * 1024
+
+
+def _p22_timeout(what: str) -> AssayError:
+    return AssayError(
+        f"the remaining lane budget expired while {what}",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+
+def _p22_limit(message: str) -> AssayError:
+    return AssayError(
+        message,
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.SNAPSHOT_LIMIT_EXCEEDED,
+    )
+
+
+class _P22Deadline:
+    """One monotonic deadline per public P22 call.
+
+    The caller supplies *remaining lane seconds* (A-160: the budget belongs
+    to the whole lane, not to each subprocess). Converting it once, here,
+    is what stops a duration from being handed to child after child and
+    silently multiplying into N x the declared budget.
+    """
+
+    __slots__ = ("_expiry",)
+
+    def __init__(self, seconds: float) -> None:
+        self._expiry = time.monotonic() + seconds
+
+    def remaining(self, what: str) -> float:
+        left = self._expiry - time.monotonic()
+        if left <= 0:
+            raise _p22_timeout(what)
+        return left
+
+
+def _p22_env(*, identity: bool) -> dict[str, str]:
+    env = dict(_REPLACEMENT_ENV)
+    env.update(_P22_ENV_EXTRA)
+    if identity:
+        env.update(_P22_REPLACEMENT_IDENTITY)
+    return env
+
+
+def _p22_argv(
+    git_executable: Path,
+    *,
+    git_dir: Path,
+    work_tree: Path | None,
+    args: Sequence[str],
+) -> list[str]:
+    argv = [
+        str(git_executable),
+        "--no-pager",
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        f"--git-dir={git_dir}",
+    ]
+    if work_tree is not None:
+        argv.append(f"--work-tree={work_tree}")
+    argv.extend(_FIXED_CONFIG)
+    argv.extend(_P22_OBJECT_CONFIG)
+    argv.extend(_prepare_subcommand_args(args))
+    return argv
+
+
+def _p22_spawn(
+    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int
+) -> subprocess.Popen[bytes]:
+    """Launch one P22 child in its OWN process group.
+
+    ``start_new_session`` is what makes a deadline enforceable: git may fork
+    helpers of its own, and killing only the direct child would leave those
+    running with the pipe still open. Assay owns the whole group and kills
+    the group.
+    """
+    return subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        env=_p22_env(identity=identity),
+        stdin=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+def _p22_kill(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):  # pragma: no cover - race with exit
+        proc.kill()
+
+
+def _p22_pump(
+    procs: Sequence[subprocess.Popen[bytes]],
+    *,
+    deadline: _P22Deadline,
+    what: str,
+    writers: Mapping[int, bytes],
+    readers: Mapping[int, Callable[[bytes], None]],
+) -> None:
+    """Drive a set of P22 children to completion without deadlocking.
+
+    *writers* maps a stdin file descriptor the pump OWNS (the caller
+    duplicates it and closes the ``Popen`` wrapper, so closing it here to
+    signal EOF can never race a reused descriptor number) to the bytes
+    destined for it; *readers* maps a stdout/stderr descriptor to a sink.
+    Every pipe is non-blocking and driven from one :mod:`selectors` loop,
+    because any "write it all, then read it all" ordering deadlocks the
+    moment either side exceeds a pipe buffer -- which an object-name list
+    and a pack both do routinely.
+    """
+    pending = {fd: memoryview(data) for fd, data in writers.items()}
+    selector = selectors.DefaultSelector()
+    try:
+        for fd in pending:
+            os.set_blocking(fd, False)
+            selector.register(fd, selectors.EVENT_WRITE)
+        for fd in readers:
+            os.set_blocking(fd, False)
+            selector.register(fd, selectors.EVENT_READ)
+        while selector.get_map():
+            events = selector.select(timeout=deadline.remaining(what))
+            if not events:
+                raise _p22_timeout(what)
+            for key, mask in events:
+                fd = key.fd
+                if mask & selectors.EVENT_WRITE:
+                    buffer = pending[fd]
+                    try:
+                        written = os.write(fd, buffer[:_P22_RELAY_CHUNK_BYTES])
+                    except BlockingIOError:
+                        continue
+                    except BrokenPipeError:
+                        selector.unregister(fd)
+                        os.close(fd)
+                        del pending[fd]
+                        continue
+                    buffer = buffer[written:]
+                    if buffer:
+                        pending[fd] = buffer
+                    else:
+                        selector.unregister(fd)
+                        os.close(fd)
+                        del pending[fd]
+                else:
+                    chunk = os.read(fd, _P22_RELAY_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(fd)
+                        continue
+                    readers[fd](chunk)
+    finally:
+        selector.close()
+        for fd in pending:
+            try:
+                os.close(fd)
+            except OSError:  # pragma: no cover - already closed
+                pass
+    for proc in procs:
+        try:
+            proc.wait(timeout=deadline.remaining(what))
+        except subprocess.TimeoutExpired as exc:
+            _p22_kill(proc)
+            raise _p22_timeout(what) from exc
+
+
+def _p22_git(
+    git_executable: Path,
+    *,
+    git_dir: Path,
+    work_tree: Path | None,
+    args: Sequence[str],
+    deadline: _P22Deadline,
+    cwd: Path,
+    stdin_bytes: bytes = b"",
+    identity: bool = False,
+    on_stdout: Callable[[bytes], None] | None = None,
+    max_stdout: int = MAX_GIT_OUTPUT_BYTES,
+) -> bytes:
+    """Run one P22 plumbing command against an EXPLICIT repository.
+
+    Unlike :func:`_run_bytes` this never discovers a repository: a private
+    seed or snapshot is created by assay and its git-dir is already known,
+    so discovery could only reintroduce ambient identity. Output is either
+    accumulated under *max_stdout* or streamed to *on_stdout*.
+    """
+    argv = _p22_argv(
+        git_executable, git_dir=git_dir, work_tree=work_tree, args=args
+    )
+    what = f"running git {' '.join(args[:2])}"
+    out = bytearray()
+    err = bytearray()
+    overflow: list[str] = []
+
+    def take_stdout(chunk: bytes) -> None:
+        if on_stdout is not None:
+            on_stdout(chunk)
+            return
+        out.extend(chunk)
+        if len(out) > max_stdout:
+            overflow.append("standard output")
+            raise _git_failed(
+                f"git {' '.join(args[:2])} produced more than {max_stdout} "
+                f"bytes on standard output; refusing to process an unbounded "
+                f"amount of repository data from the child"
+            )
+
+    def take_stderr(chunk: bytes) -> None:
+        remaining = _MAX_GIT_STDERR_BYTES - len(err)
+        if remaining > 0:
+            err.extend(chunk[:remaining])
+
+    proc = _p22_spawn(
+        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    assert proc.stderr is not None
+    stdin_fd = os.dup(proc.stdin.fileno())
+    proc.stdin.close()
+    try:
+        _p22_pump(
+            [proc],
+            deadline=deadline,
+            what=what,
+            writers={stdin_fd: stdin_bytes},
+            readers={
+                proc.stdout.fileno(): take_stdout,
+                proc.stderr.fileno(): take_stderr,
+            },
+        )
+    except BaseException:
+        _p22_kill(proc)
+        proc.wait()
+        raise
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+    if overflow:  # pragma: no cover - take_stdout already raised
+        raise _git_failed(f"git {' '.join(args[:2])} overflowed {overflow[0]}")
+    if proc.returncode != 0:
+        raise _git_failed(
+            f"git {' '.join(args)} failed in {git_dir} ({proc.returncode}): "
+            f"{err.decode('utf-8', errors='replace').strip()[:200]}"
+        )
+    return bytes(out)
+
+
+def _p22_stream_pack(
+    git_executable: Path,
+    *,
+    source_git_dir: Path,
+    source_work_tree: Path,
+    source_cwd: Path,
+    seed_git_dir: Path,
+    oid_payload: bytes,
+    deadline: _P22Deadline,
+    max_pack_bytes: int,
+) -> int:
+    """Stream one exact pack from source ``pack-objects`` into private
+    ``index-pack``, counting its compressed bytes in transit.
+
+    ``pack-objects`` runs WITHOUT ``--revs`` (A-185): it packs exactly the
+    frozen object names on its stdin and performs no reachability
+    traversal of its own, so the transferred set cannot quietly differ from
+    the set assay inventoried and bounded. Assay relays the bytes rather
+    than connecting the two pipes directly, because a ceiling git enforces
+    is a ceiling assay has not verified.
+    """
+    producer_argv = _p22_argv(
+        git_executable,
+        git_dir=source_git_dir,
+        work_tree=source_work_tree,
+        args=("pack-objects", "--stdout"),
+    )
+    consumer_argv = _p22_argv(
+        git_executable,
+        git_dir=seed_git_dir,
+        work_tree=None,
+        args=("index-pack", "--stdin"),
+    )
+    producer = _p22_spawn(
+        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE
+    )
+    consumer: subprocess.Popen[bytes] | None = None
+    counted = 0
+    producer_err = bytearray()
+    consumer_err = bytearray()
+    try:
+        consumer = _p22_spawn(
+            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE
+        )
+        assert producer.stdin is not None and producer.stdout is not None
+        assert producer.stderr is not None
+        assert consumer.stdin is not None and consumer.stdout is not None
+        assert consumer.stderr is not None
+        producer_stdin = os.dup(producer.stdin.fileno())
+        producer.stdin.close()
+        consumer_stdin = consumer.stdin.fileno()
+
+        def relay(chunk: bytes) -> None:
+            nonlocal counted
+            counted += len(chunk)
+            if counted > max_pack_bytes:
+                raise _p22_limit(
+                    f"the transferred pack exceeded max_pack_bytes "
+                    f"({max_pack_bytes}); refusing a partial snapshot"
+                )
+            view = memoryview(chunk)
+            while view:
+                written = os.write(consumer_stdin, view[:_P22_RELAY_CHUNK_BYTES])
+                view = view[written:]
+
+        def take(sink: bytearray) -> Callable[[bytes], None]:
+            def take_chunk(chunk: bytes) -> None:
+                remaining = _MAX_GIT_STDERR_BYTES - len(sink)
+                if remaining > 0:
+                    sink.extend(chunk[:remaining])
+
+            return take_chunk
+
+        os.set_blocking(consumer_stdin, True)
+        _p22_pump(
+            [producer],
+            deadline=deadline,
+            what="transferring the committed-object pack",
+            writers={producer_stdin: oid_payload},
+            readers={
+                producer.stdout.fileno(): relay,
+                producer.stderr.fileno(): take(producer_err),
+            },
+        )
+        consumer.stdin.close()
+        _p22_pump(
+            [consumer],
+            deadline=deadline,
+            what="indexing the committed-object pack",
+            writers={},
+            readers={
+                consumer.stdout.fileno(): lambda _chunk: None,
+                consumer.stderr.fileno(): take(consumer_err),
+            },
+        )
+    except BaseException:
+        _p22_kill(producer)
+        _p22_kill(consumer)
+        producer.wait()
+        if consumer is not None:
+            consumer.wait()
+        raise
+    finally:
+        producer.stdout.close()
+        producer.stderr.close()
+        if consumer is not None:
+            if consumer.stdin is not None and not consumer.stdin.closed:
+                consumer.stdin.close()
+            consumer.stdout.close()
+            consumer.stderr.close()
+    if producer.returncode != 0:
+        raise _git_failed(
+            f"git pack-objects failed reading {source_git_dir} "
+            f"({producer.returncode}): "
+            f"{producer_err.decode('utf-8', errors='replace').strip()[:200]}"
+        )
+    if consumer.returncode != 0:
+        raise _git_failed(
+            f"git index-pack failed writing {seed_git_dir} "
+            f"({consumer.returncode}): "
+            f"{consumer_err.decode('utf-8', errors='replace').strip()[:200]}"
+        )
+    return counted
+
+
+def _p22_init_private(
+    git_executable: Path,
+    *,
+    path: Path,
+    template: Path,
+    bare: bool,
+    deadline: _P22Deadline,
+) -> None:
+    """Create one private repository with an EMPTY template.
+
+    git's stock template installs sample hooks. They are inert, but a
+    snapshot that ships executable files assay never chose is not the
+    "no consumer-controlled program" claim O2 makes, so the template is
+    replaced by an empty directory rather than cleaned up afterwards.
+    """
+    args = ["init", "-q", f"--template={template}"]
+    if bare:
+        args.append("--bare")
+    args.append(str(path))
+    argv = [
+        str(git_executable),
+        "--no-pager",
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        *_FIXED_CONFIG,
+        *_P22_OBJECT_CONFIG,
+        *args,
+    ]
+    proc = _p22_spawn(
+        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    err = bytearray()
+    try:
+        _p22_pump(
+            [proc],
+            deadline=deadline,
+            what="initializing a private repository",
+            writers={},
+            readers={
+                proc.stdout.fileno(): lambda _chunk: None,
+                proc.stderr.fileno(): err.extend,
+            },
+        )
+    except BaseException:
+        _p22_kill(proc)
+        proc.wait()
+        raise
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+    if proc.returncode != 0:
+        raise _git_failed(
+            f"git init failed for {path} ({proc.returncode}): "
+            f"{err.decode('utf-8', errors='replace').strip()[:200]}"
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class _P22Source:
+    """A consumer repository proven safe to read objects from.
+
+    ``git_dir`` is what P20 anchors commands to; ``common_dir`` is where the
+    OBJECTS actually live. For a linked worktree the two differ (the former
+    is ``<main>/.git/worktrees/<name>``), and every topology question below
+    is a property of the common directory -- checking the per-worktree one
+    would inspect a directory that holds no object store at all.
+    """
+
+    git_executable: Path
+    repo_top: Path
+    git_dir: Path
+    common_dir: Path
+
+
+def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) -> None:
+    """Refuse every source topology whose bytes are not fully local (A-185).
+
+    Clearing ambient ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` -- which
+    :data:`_REPLACEMENT_ENV` already does -- is NOT sufficient: a local
+    ``objects/info/alternates`` file is repository CONTENT and still
+    participates, so a "complete" closure could be assembled from bytes that
+    live outside the recorded source identity. Shallow, grafted, and
+    partial/promisor repositories each redefine what "reachable" means, and a
+    non-SHA-1 store cannot satisfy the raw 20-byte tree grammar at all.
+    """
+    common = source.common_dir
+    alternates = common / "objects" / "info" / "alternates"
+    try:
+        marker = alternates.lstat()
+    except OSError:
+        marker = None
+    if marker is not None:
+        if stat_module.S_ISLNK(marker.st_mode) or not stat_module.S_ISREG(marker.st_mode):
+            raise _git_failed(
+                f"{alternates} is not a regular file; refusing to read objects "
+                f"through an external store"
+            )
+        if alternates.read_bytes().strip():
+            raise _git_failed(
+                f"{alternates} names an external object store; refusing a "
+                f"source closure whose bytes are not fully local"
+            )
+    for name in ("info/grafts", "shallow"):
+        if (common / name).exists():
+            raise _git_failed(
+                f"{common / name} exists; refusing a grafted or shallow "
+                f"source whose reachable history is redefined"
+            )
+    object_format = _p22_git(
+        source.git_executable,
+        git_dir=source.git_dir,
+        work_tree=source.repo_top,
+        args=("rev-parse", "--show-object-format"),
+        deadline=deadline,
+        cwd=source.repo_top,
+    )
+    if _decode_or_reject(object_format, "the source object format").strip() != "sha1":
+        raise _git_failed(
+            "the source repository does not use the SHA-1 object format; "
+            "P22's raw tree grammar and 20-byte object names do not apply"
+        )
+    config = _p22_git(
+        source.git_executable,
+        git_dir=source.git_dir,
+        work_tree=source.repo_top,
+        args=("config", "--list", "-z"),
+        deadline=deadline,
+        cwd=source.repo_top,
+    )
+    for record in config.split(b"\x00"):
+        if not record:
+            continue
+        key, _, value = record.partition(b"\n")
+        name = _decode_or_reject(key, "a source config key").lower()
+        if name.startswith("extensions.partialclone"):
+            raise _git_failed(
+                "the source repository declares extensions.partialClone; "
+                "refusing a partial clone whose objects may be fetched on read"
+            )
+        if name.startswith("remote.") and name.endswith(".promisor"):
+            if _decode_or_reject(value, "a source config value").strip().lower() == "true":
+                raise _git_failed(
+                    f"the source repository declares a promisor remote ({name}); "
+                    f"refusing a partial clone whose objects may be fetched on read"
+                )
+
+
+def _p22_open_source(repo_top: Path, deadline: _P22Deadline) -> _P22Source:
+    """Resolve and validate the consumer repository P22 reads objects from."""
+    git_executable = _resolve_git_executable()
+    resolved = _resolve_repo(Path(repo_top), git_executable)
+    raw_common = _p22_git(
+        git_executable,
+        git_dir=resolved.git_dir,
+        work_tree=resolved.repo_top,
+        args=("rev-parse", "--path-format=absolute", "--git-common-dir"),
+        deadline=deadline,
+        cwd=resolved.repo_top,
+    )
+    common_text = _decode_or_reject(raw_common, "the resolved common git directory").strip()
+    common_dir = Path(common_text)
+    if not common_dir.is_absolute() or not common_dir.is_dir():
+        raise _git_failed(
+            f"resolved common git-dir {common_text!r} for {resolved.repo_top} "
+            f"is not an absolute, existing directory"
+        )
+    source = _P22Source(
+        git_executable=git_executable,
+        repo_top=resolved.repo_top,
+        git_dir=resolved.git_dir,
+        common_dir=common_dir,
+    )
+    _p22_reject_external_topology(source, deadline)
+    return source

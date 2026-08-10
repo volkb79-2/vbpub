@@ -278,9 +278,9 @@ coverage or starting R1/R2/R3, Assay checks the whole Git-visible repository.
 If it is dirty, the real R0 command claim remains when higher rigors exist and
 all declared higher claims become `NO_MEASUREMENT/DIRTY_TREE`; an R0-only lane
 uses that terminal on R0 itself. Assay never cleans the consumer tree to make a
-claim true. P23 moves baseline/repeated execution into committed snapshots,
-which is the later boundary that also removes ignored/untracked inputs from
-those executions.
+claim true. P22 lands the committed-object snapshot substrate those executions
+run on (below); P23 moves baseline/repeated execution onto it, which is the
+boundary that also removes ignored/untracked inputs from those executions.
 
 ### Rollup precedence
 
@@ -337,6 +337,86 @@ external diff and textconv execution; commit disables configured signing in
 addition to all hooks. All output remains raw bytes until the
 single UTF-8 decoder, so locale and universal-newline behavior cannot silently
 change path or patch identity.
+
+### Repeated execution runs on committed objects, not the working tree (A-161/A-184–A-187)
+
+P22 lands `assay.isolation`, the substrate R2/R3 repeated execution is built
+on. The claim it exists to make attackable: *assay can prepare one bounded,
+inert, byte-faithful repository seed from a full commit and use it concurrently
+for independent base and replacement repositories without ever returning to
+consumer-controlled Git state.*
+
+**Why the commit rather than the tree.** Copying the working tree carries
+whatever happens to be lying in it — a stale coverage artifact from a previous
+run, a build cache, a FIFO — and makes repeatability depend on facts the
+recorded commit does not contain. Copying only `project_root` is worse: a
+monorepo project whose tests read a tracked sibling passes in the real
+repository and fails in every mutant. The snapshot therefore reconstructs the
+**complete SHA-1 reachable closure of one full commit**, preserving repository
+topology and project prefix, and nothing that is merely present on disk.
+
+**Why a prepared seed rather than a snapshot function.** The obvious stateless
+`materialize_snapshot(spec)` shape leaves exactly two implementations once full
+history is required: re-pack the whole closure per repeated unit, or share the
+source through an alternate or hardlink. The first multiplies cost by the
+mutant count (the live vbpub closure measured 26,074 objects / 273,578,621
+uncompressed bytes at the P21 anchor, behind a ~22 MiB pack); the second
+destroys isolation. `prepare_snapshot` transfers once into an unexposed private
+seed; `SnapshotRepository` then serves concurrent independent contexts from it.
+Removing the source `.git` after preparation must change nothing — that is both
+the security boundary and the performance property.
+
+**Why raw objects rather than a checkout.** `git checkout` and `git archive`
+both execute a committed `filter` driver, and checkout additionally runs hooks.
+The carver's tracer witnessed exactly this: a real `git archive` executed the
+hostile filter and still produced no private repository, while raw object
+transfer executed nothing. Assay therefore parses raw tree objects itself
+(`<mode> SP <name> NUL <20-byte-oid>`) and writes blob bytes directly. Supported
+modes are exactly tree, regular, executable and symlink; a gitlink, any other
+mode, a `.git` component, a duplicate path, a non-UTF-8 name, or a symlink that
+does not resolve **lexically** inside the snapshot root is `ERROR/GIT_FAILED`
+before any seed is exposed. Symlink containment is decided lexically on purpose:
+`Path.resolve()` would answer about the host filesystem and would accept a link
+that only escapes once its target exists.
+
+**External and incomplete source topologies are refused, not worked around.**
+Clearing ambient `GIT_ALTERNATE_OBJECT_DIRECTORIES` is insufficient, because a
+repository-local `objects/info/alternates` file is repository *content* and
+still participates. P22 refuses a non-empty or non-regular alternates file,
+grafts, shallow, partial-clone/promisor, and non-SHA-1 stores, and adds
+`GIT_NO_LAZY_FETCH=1` plus disabled commit-graph/multi-pack-index for this trust
+boundary. An *empty* alternates file is ordinary and is not refused: the rule is
+about content, not existence.
+
+**Every bound is fixed and refuses its own limit+1** — objects, tree entries,
+per-path bytes, total path bytes, blob bytes, total object bytes, and
+transferred pack bytes — as `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED`, never a
+truncated or partially-runnable tree. Entry and total-path bounds are separate
+from the object bound because one blob may be referenced by arbitrarily many
+paths. The pack is relayed through assay so its compressed size is *counted*
+rather than trusted, and `pack-objects` runs without `--revs` so the transferred
+set cannot differ from the set assay inventoried.
+
+**Replacement is repo-top-relative, whole-blob, and deterministic.** A
+replacement path names a tracked regular blob in the prepared commit even when
+`project_prefix` is not `.` — re-interpreting it under the project root is the
+false-PASS this boundary is written against. `expected` is compared byte-for-byte
+with the committed blob first; a mismatch, absent path or non-regular target is
+`ERROR/MUTATION_DISCOVERY_FAILED`, because a frozen mutation site that no longer
+names the syntax it claimed is a discovery failure, not a snapshot failure. The
+child is written with `commit-tree` under a fixed `Assay <assay@invalid>`
+identity at 946684800 +0000 with fixed message bytes, so identical inputs give
+an identical OID on any host and under any consumer's ambient author. All
+materialized paths get fixed modes and a fixed mtime for the same reason: git
+records none of them, so anything taken from the clock would make two snapshots
+of one commit differ.
+
+**The lane budget stays singular (A-160).** Every P22 call takes the caller's
+current *remaining* lane seconds and converts them once into one internal
+monotonic deadline; there is no default or unbounded timeout, and expiry kills
+the process group assay owns and renders `BUDGET_EXCEEDED/LANE_TIMEOUT`. P23
+prepares once per lane and passes remaining seconds before every call, so
+neither package can silently reset the budget.
 
 ### Binding the effective judge policy (v3)
 

@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "Hand-authored raw SHA-1 tree-object records for assay.isolation._parse_tree.",
+    "Each 'body' is a list of hex byte-strings concatenated in order to form the",
+    "exact object payload; writing them as explicit bytes is the point, because",
+    "the grammar under test has no length prefix and no terminator, so every",
+    "malformed case below is only detectable by running off the end of the",
+    "buffer. 'oid20' is an arbitrary but well-formed 20-byte object name.",
+    "accepted[] entries name the (mode, name, oid) triples _parse_tree must",
+    "return; refused[] entries must each raise ERROR/GIT_FAILED."
+  ],
+  "oid20": "0102030405060708090a0b0c0d0e0f1011121314",
+  "accepted": [
+    {
+      "id": "regular-then-tree",
+      "body": [
+        "3130303634342066696c6500",
+        "0102030405060708090a0b0c0d0e0f1011121314",
+        "34303030302064697200",
+        "14131211100f0e0d0c0b0a090807060504030201"
+      ],
+      "expect": [
+        ["100644", "file", "0102030405060708090a0b0c0d0e0f1011121314"],
+        ["40000", "dir", "14131211100f0e0d0c0b0a090807060504030201"]
+      ]
+    }
+  ],
+  "refused": [
+    {
+      "id": "no-mode-separator",
+      "why": "no SP before the name, so the mode field never terminates",
+      "body": ["313030363434666f6f00", "0102030405060708090a0b0c0d0e0f1011121314"]
+    },
+    {
+      "id": "no-name-terminator",
+      "why": "no NUL after the name, so the object name has no start",
+      "body": ["31303036343420666f6f", "0102030405060708090a0b0c0d0e0f1011121314"]
+    },
+    {
+      "id": "truncated-object-name",
+      "why": "only 19 of the required 20 object-name bytes remain",
+      "body": ["3130303634342066696c6500", "0102030405060708090a0b0c0d0e0f10111213"]
+    },
+    {
+      "id": "empty-entry-name",
+      "why": "a zero-length name is not a legal path component",
+      "body": ["3130303634342000", "0102030405060708090a0b0c0d0e0f1011121314"]
+    }
+  ]
+}
