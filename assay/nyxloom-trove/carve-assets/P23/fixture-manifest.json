@@ -1,0 +1,24 @@
+{
+  "project_prefix": "apps/p",
+  "base_source": "def check(x):\n    return 0\n",
+  "head_source": "def check(x):\n    return x > 0\n",
+  "tracked_sibling": "tracked sibling\n",
+  "stale_coverage": "{\"stale\":true}\n",
+  "combined_axes": [
+    "nested project plus tracked sibling plus appended argv plus passthrough",
+    "ignored stale coverage plus transform no-output",
+    "max+1 plus exploding executor/snapshot/process boundaries",
+    "injected expiry after first mutant plus queued second identity",
+    "absolute committed symlink plus direct-R0/higher-rigor split",
+    "failed R0/R1 controls plus zero extra canary units",
+    "injected scratch-root entry plus exit failure terminals"
+  ],
+  "locked_sha256": {
+    "README.md": "bd2e1485727816cd4f57045cfb32c9774cbe5f87c49a81624c7031e666096b5f",
+    "skeleton.patch": "1e2cb8bd86139751b8f61818d474e42b013a736e20dad9cb02f842245ba1a3f7",
+    "test_acceptance.py": "5e6cd1133ded19526de045e0ed3941c2da5d933241569cb7d87ad896946a86ec",
+    "probe_reexecution_contract.py": "0ace77ff3dbfc501717fc7d5a90ffec0fbffda02c1b9a7f675e061527e35139d",
+    "expected/process-ledger.json": "5054c66eb4c76033fff7bc0ef019331e7ab88aa28944c025772664dd5199a566",
+    "expected/r0-snapshot-limit-v4.json": "5b7f3cfc039b01c6d68e2169575b4580f3fd141cefa468fbc19f1088c91056a2"
+  }
+}

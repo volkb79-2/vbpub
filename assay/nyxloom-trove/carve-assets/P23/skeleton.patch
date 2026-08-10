@@ -1,0 +1,327 @@
+diff --git a/assay/src/assay/config.py b/assay/src/assay/config.py
+index 489273f4..11111111 100644
+--- a/assay/src/assay/config.py
++++ b/assay/src/assay/config.py
+@@ -520,6 +520,13 @@ def _load_lane(
+             f"records one claim per declared level"
+         )
+ 
++    canonical = tuple(level for level in RIGOR_LEVELS if level in rigor)
++    if tuple(rigor) != canonical or rigor[0] != "R0":
++        raise LaneConfigError(
++            f"{where}: 'rigor' must be an R0-led ordered subsequence of "
++            f"{list(RIGOR_LEVELS)}, got {list(rigor)}"
++        )
++
+     enforcement = _as_str(table["enforcement"], where, "enforcement")
+     if enforcement not in ENFORCEMENTS:
+         raise LaneConfigError(
+@@ -577,6 +584,14 @@ def _load_lane(
+ 
+     judge = _load_judge(table.get("judge"), rigor, where, project_root)
+ 
++    if (
++        judge is not None
++        and judge.canary is not None
++        and judge.canary.mechanism == "uncovered-line"
++        and "R1" not in rigor
++    ):
++        raise LaneConfigError(f"{where}: uncovered-line R3 requires declared R1")
++
+     where_table = table.get("where")
+     if where_table is not None and not isinstance(where_table, dict):
+         raise LaneConfigError(
+diff --git a/assay/src/assay/runner.py b/assay/src/assay/runner.py
+index d79cd46b..22222222 100644
+--- a/assay/src/assay/runner.py
++++ b/assay/src/assay/runner.py
+@@ -68,14 +68,17 @@ package's ``scope.touch``).
+ """
+ 
+ from __future__ import annotations
+ 
++import math
+ import os
+ import subprocess
+ import tempfile
++import time
++from contextlib import contextmanager
+ from dataclasses import dataclass
+ from datetime import datetime, timezone
+-from pathlib import Path
++from pathlib import Path, PurePosixPath
+ from types import MappingProxyType
+-from typing import Callable, Mapping, Protocol, Sequence, TextIO
++from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequence, TextIO
+ 
+ from . import coverage, diff, git, measurability, mutation, safeio
+@@ -101,10 +104,15 @@ __all__ = [
+     "CommandPlan",
+     "CommandResult",
++    "LaneDeadline",
++    "MonotonicClock",
+     "ProcessRunner",
++    "ScratchRootFactory",
+     "assemble_verdict",
+     "build_r0_claim",
+     "default_process_runner",
+     "evaluate_r1",
++    "execute_plan",
+     "execute_command",
++    "default_scratch_root",
+     "refuse_lane",
+     "resolve_command_plan",
+@@ -137,4 +145,55 @@ class ProcessRunner(Protocol):
+ Clock = Callable[[], datetime]
+ 
++MonotonicClock = Callable[[], float]
++
++
++@dataclass(frozen=True, kw_only=True)
++class LaneDeadline:
++    """One lane-wide monotonic deadline; no lower layer chooses a clock."""
++
++    expires_at: float
++    monotonic: MonotonicClock
++
++    @classmethod
++    def start(
++        cls, *, budget_seconds: float, monotonic: MonotonicClock
++    ) -> "LaneDeadline":
++        if (
++            isinstance(budget_seconds, bool)
++            or not isinstance(budget_seconds, (int, float))
++            or not math.isfinite(budget_seconds)
++            or budget_seconds <= 0
++        ):
++            raise ValueError(
++                f"budget_seconds must be a positive finite number, got {budget_seconds!r}"
++            )
++        started = monotonic()
++        if (
++            isinstance(started, bool)
++            or not isinstance(started, (int, float))
++            or not math.isfinite(started)
++        ):
++            raise ValueError(f"monotonic clock returned invalid value {started!r}")
++        return cls(expires_at=started + float(budget_seconds), monotonic=monotonic)
++
++    def remaining(self) -> float:
++        remaining = self.expires_at - self.monotonic()
++        if not math.isfinite(remaining) or remaining <= 0:
++            raise AssayError(
++                "the lane-wide deadline expired",
++                outcome=Outcome.BUDGET_EXCEEDED,
++                reason_code=ReasonCode.LANE_TIMEOUT,
++            )
++        return remaining
++
++ScratchRootFactory = Callable[[], ContextManager[Path]]
++
++
++@contextmanager
++def default_scratch_root() -> Iterator[Path]:
++    """One caller-owned absolute scratch root for the whole higher-rigor lane."""
++    with tempfile.TemporaryDirectory(prefix="assay-p23-") as raw:
++        yield Path(raw).resolve()
++
+ 
+ def default_process_runner(
+@@ -172,5 +215,9 @@ class CommandPlan:
+     #: present in the passthrough source. Nothing else -- no ambient merge.
+     env_effective: Mapping[str, str]
++    env_passthrough: tuple[str, ...]
++    allow_argv_append: bool
++    budget_seconds: float
++    project_prefix: PurePosixPath | None
+ 
+ 
+ @dataclass(frozen=True, kw_only=True)
+@@ -214,6 +258,7 @@ def resolve_command_plan(
+     *,
+     argv_append: Sequence[str] = (),
+     passthrough_source: Mapping[str, str] | None = None,
++    project_prefix: PurePosixPath | None = None,
+ ) -> CommandPlan:
+     """Resolve what will run. Pure: never raises, never launches anything.
+ 
+@@ -242,7 +290,78 @@ def resolve_command_plan(
+         argv_effective=argv_declared + argv_appended,
+         env_declared=lane.env,
+         env_effective=MappingProxyType(env_effective),
++        env_passthrough=tuple(lane.env_passthrough),
++        allow_argv_append=lane.allow_argv_append,
++        budget_seconds=lane.budget_seconds,
++        project_prefix=project_prefix,
+     )
+ 
+ 
++def execute_plan(
++    plan: CommandPlan,
++    *,
++    cwd: Path,
++    timeout: float,
++    process_runner: ProcessRunner = default_process_runner,
++    clock: Clock = _utc_now,
++) -> CommandResult:
++    """Execute one already-frozen command plan with a required remainder."""
++    if (
++        isinstance(timeout, bool)
++        or not isinstance(timeout, (int, float))
++        or not math.isfinite(timeout)
++        or timeout <= 0
++    ):
++        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
++    started_at = clock()
++    if plan.argv_appended and not plan.allow_argv_append:
++        return CommandResult(
++            plan=plan,
++            outcome=Outcome.ERROR,
++            reason_code=ReasonCode.EXEC_FAILED,
++            returncode=None,
++            started=iso_utc(started_at),
++            ended=iso_utc(clock()),
++        )
++    try:
++        proc = process_runner(
++            plan.argv_effective,
++            env=plan.env_effective,
++            cwd=cwd,
++            timeout=timeout,
++        )
++    except subprocess.TimeoutExpired:
++        return CommandResult(
++            plan=plan,
++            outcome=Outcome.BUDGET_EXCEEDED,
++            reason_code=ReasonCode.LANE_TIMEOUT,
++            returncode=None,
++            started=iso_utc(started_at),
++            ended=iso_utc(clock()),
++        )
++    except OSError:
++        return CommandResult(
++            plan=plan,
++            outcome=Outcome.ERROR,
++            reason_code=ReasonCode.EXEC_FAILED,
++            returncode=None,
++            started=iso_utc(started_at),
++            ended=iso_utc(clock()),
++        )
++    ended = iso_utc(clock())
++    if proc.returncode == 0:
++        return CommandResult(
++            plan=plan, outcome=Outcome.PASS, reason_code=None,
++            returncode=0, started=iso_utc(started_at), ended=ended,
++        )
++    return CommandResult(
++        plan=plan,
++        outcome=Outcome.FAIL,
++        reason_code=ReasonCode.COMMAND_FAILED,
++        returncode=proc.returncode,
++        started=iso_utc(started_at),
++        ended=ended,
++    )
++
++
+ def execute_command(
+@@ -247,8 +368,9 @@ def execute_command(
+     lane: Lane,
+     *,
+     argv_append: Sequence[str] = (),
+     cwd: Path,
+     passthrough_source: Mapping[str, str] | None = None,
++    project_prefix: PurePosixPath | None = None,
+     process_runner: ProcessRunner = default_process_runner,
+     clock: Clock = _utc_now,
+ ) -> CommandResult:
+@@ -278,62 +400,11 @@ def execute_command(
+     plan = resolve_command_plan(
+-        lane, argv_append=argv_append, passthrough_source=passthrough_source
++        lane, argv_append=argv_append, passthrough_source=passthrough_source,
++        project_prefix=project_prefix,
+     )
+-    started_at = clock()
+-
+-    if plan.argv_appended and not lane.allow_argv_append:
+-        ended_at = clock()
+-        return CommandResult(
+-            plan=plan,
+-            outcome=Outcome.ERROR,
+-            reason_code=ReasonCode.EXEC_FAILED,
+-            returncode=None,
+-            started=iso_utc(started_at),
+-            ended=iso_utc(ended_at),
+-        )
+-
+-    try:
+-        proc = process_runner(
+-            plan.argv_effective,
+-            env=plan.env_effective,
+-            cwd=cwd,
+-            timeout=lane.budget_seconds,
+-        )
+-    except subprocess.TimeoutExpired:
+-        ended_at = clock()
+-        return CommandResult(
+-            plan=plan,
+-            outcome=Outcome.BUDGET_EXCEEDED,
+-            reason_code=ReasonCode.LANE_TIMEOUT,
+-            returncode=None,
+-            started=iso_utc(started_at),
+-            ended=iso_utc(ended_at),
+-        )
+-    except OSError:
+-        ended_at = clock()
+-        return CommandResult(
+-            plan=plan,
+-            outcome=Outcome.ERROR,
+-            reason_code=ReasonCode.EXEC_FAILED,
+-            returncode=None,
+-            started=iso_utc(started_at),
+-            ended=iso_utc(ended_at),
+-        )
+-
+-    ended_at = clock()
+-    if proc.returncode == 0:
+-        return CommandResult(
+-            plan=plan,
+-            outcome=Outcome.PASS,
+-            reason_code=None,
+-            returncode=proc.returncode,
+-            started=iso_utc(started_at),
+-            ended=iso_utc(ended_at),
+-        )
+-    return CommandResult(
+-        plan=plan,
+-        outcome=Outcome.FAIL,
+-        reason_code=ReasonCode.COMMAND_FAILED,
+-        returncode=proc.returncode,
+-        started=iso_utc(started_at),
+-        ended=iso_utc(ended_at),
++    return execute_plan(
++        plan,
++        cwd=cwd,
++        timeout=plan.budget_seconds,
++        process_runner=process_runner,
++        clock=clock,
+     )
+@@ -814,4 +869,6 @@ def run_lane(
+     passthrough_source: Mapping[str, str] | None = None,
+     process_runner: ProcessRunner = default_process_runner,
+     clock: Clock = _utc_now,
++    monotonic: MonotonicClock = time.monotonic,
++    scratch_root_factory: ScratchRootFactory = default_scratch_root,
+ ) -> Verdict:
+@@ -971,6 +1015,12 @@ def run_lane(
+     r3_declared = "R3" in lane.rigor
+     reservation: safeio.OutputReservation | None = None
+ 
++    if r1_declared or r2_declared or r3_declared:
++        # Mechanical API/config construction above is intentionally complete.
++        # The implementer replaces only this marker with the handoff's fixed
++        # prepared-seed state machine; no live-tree fallback is permitted.
++        raise NotImplementedError("P23 TODO: committed reexecution state machine")
++
+     if r1_declared:
+         try:
+             reservation = safeio.reserve_output(

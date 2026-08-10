@@ -98,6 +98,15 @@ sites/errors; it does not reinterpret capability absence as an empty success.
 P27's effective-PATH preflight owns a genuinely absent helper before this
 method is called, and P30 alone registers the completed Go R2 path.
 
+The call is path-scoped even though the wire carries source bytes. P22 proved
+that one blob OID may occur at multiple paths/modes: two repo-relative targets
+with byte-identical Go source remain two distinct target batches and later two
+distinct artifact identities. A helper may reuse byte-derived syntax work only
+if the adapter reapplies the returned sites independently to every caller path;
+it must never expose or use OID/bytes as the path identity. The JIT packet adds
+two changed paths sharing one committed blob and proves both survive discovery
+and P30 submission separately (A-196).
+
 ### Go helper wire grammar
 
 The offline `assay-go-helper` reads one bounded JSON object from stdin and writes

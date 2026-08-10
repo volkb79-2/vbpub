@@ -2,7 +2,7 @@
 
 ## Current pre-adoption queue: P20–P32
 
-P00–P21 are merged. P22–P32 are the remaining active implementation queue,
+P00–P22 are merged. P23–P32 are the remaining active implementation queue,
 recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
 revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
 contracts are JIT-frozen after the predecessor merges, so a future packet does
@@ -16,8 +16,8 @@ mandatory for this semi-manual wave, not permanent product routing:
 |---|---|---|---|---|---|
 | P20 | repository/artifact integrity | 2c | **merged as `618b6f15`** | Sonnet xhigh | fresh Opus xhigh |
 | P21 | verdict v4 + bounded Python site contract | 2b | **merged as `678104ad` (A-180–A-183)** | Opus xhigh | fresh Opus xhigh |
-| P22 | committed-object snapshot substrate | 2b | **READY against `678104ad` (A-184–A-187)** | Opus xhigh | fresh Opus xhigh |
-| P23 | exact reexecution integration over landed sites | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P22 | committed-object snapshot substrate | 2b | **merged as `9d30b25b` (A-184–A-187)** | Opus xhigh | fresh Opus xhigh |
+| P23 | exact reexecution integration over landed sites | 2c | **READY against `9d30b25b` (A-188–A-196)** | Sonnet xhigh | fresh Opus xhigh |
 | P24 | versioned wheel contract | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P25 | external Python/Topos qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P26 | attested-evidence CLI hardening | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
@@ -28,11 +28,12 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-P20 and P21 are **MERGED**. P22 is **READY**: its JIT proof assets and exact
-pre-dispatch adversarial specification review are committed under
-`nyxloom-trove/carve-assets/P22/` and
-`nyxloom-trove/reports/assay-P22-JIT-CARVE.md`. P23–P32 remain
-`PROVISIONAL`/`JIT-FREEZE REQUIRED`. Before any of them becomes ACTIVE, its
+P20 through P22 are **MERGED**. P23 is **READY**: its implementation-shaped
+contract, skeleton, locked acceptance assets, tester-unified P22-composition
+tracer, and exact pre-dispatch adversarial specification review are under
+`nyxloom-trove/carve-assets/P23/` and
+`nyxloom-trove/reports/assay-P23-JIT-CARVE.md`. P24–P32 remain
+`PROVISIONAL`/`JIT-FREEZE REQUIRED`. Before any later package becomes ACTIVE, its
 named proof assets are committed and the same review must return READY at the
 actual post-predecessor HEAD. No later package should be dispatched merely
 because `nyxloom lint` accepts its header.
@@ -67,8 +68,19 @@ unsafe source alternate/hardlink. The frozen API prepares one bounded private
 seed and makes concurrent independent snapshots from it, with explicit caller
 scratch and remaining-lane-time inputs. It also adds the missing entry/path-
 total bounds, refuses alternate/shallow/partial object topologies, fixes raw
-tree and child-commit grammar, and closes P21's reserved snapshot-limit fixture
-(A-184–A-187). P23 consumes that seed exactly once per lane.
+tree and child-commit grammar, and supplies the locked snapshot-limit artifact
+(A-184–A-187). P23 consumes that seed exactly once per lane and closes the
+artifact's ordinary conformance ownership (A-190).
+
+P23's JIT pass resolves live vbpub's deliberate absolute-symlink conflict by
+making exact R0-only execution an explicit direct path and requiring every
+higher-rigor lane to preserve P22's full refusal set—never a failure fallback.
+It freezes one immutable effective plan, one injected monotonic deadline,
+canonical R0-led rigor order, per-unit repository/output checks, exact
+mutation/canary seams, and bounded child lifecycle. Its skeleton witnesses
+`13 failed, 6 passed` before implementation; the real P22 composition tracer
+passes in tester-unified. P23 also owns the ordinary snapshot-limit conformance
+closure and promotes shared-blob/per-path identity into P29/P30 (A-188–A-196).
 
 Luna may run the frozen-orientation/fork workflow mechanically from
 `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,

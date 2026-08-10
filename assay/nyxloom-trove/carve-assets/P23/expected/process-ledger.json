@@ -1,0 +1,46 @@
+{
+  "records": [
+    {
+      "argv": ["assay-fixture", "--declared", "--focus", "changed"],
+      "env": {"FIXED": "declared", "TOKEN": "captured"},
+      "cwd_suffix": "apps/p",
+      "tracked_sibling": "tracked sibling\n",
+      "stale_coverage_present": false,
+      "unit": "baseline"
+    },
+    {
+      "argv": ["assay-fixture", "--declared", "--focus", "changed"],
+      "env": {"FIXED": "declared", "TOKEN": "captured"},
+      "cwd_suffix": "apps/p",
+      "tracked_sibling": "tracked sibling\n",
+      "stale_coverage_present": false,
+      "unit": "replacement"
+    }
+  ],
+  "canary_records": [
+    {
+      "argv": ["assay-fixture", "--declared", "--focus", "changed"],
+      "env": {"FIXED": "declared", "TOKEN": "captured"},
+      "cwd_suffix": "apps/p",
+      "tracked_sibling": "tracked sibling\n",
+      "stale_coverage_present": false,
+      "unit": "baseline"
+    },
+    {
+      "argv": ["assay-fixture", "--declared", "--focus", "changed"],
+      "env": {"FIXED": "declared", "TOKEN": "captured"},
+      "cwd_suffix": "apps/p",
+      "tracked_sibling": "tracked sibling\n",
+      "stale_coverage_present": false,
+      "unit": "control"
+    },
+    {
+      "argv": ["assay-fixture", "--declared", "--focus", "changed"],
+      "env": {"FIXED": "declared", "TOKEN": "captured"},
+      "cwd_suffix": "apps/p",
+      "tracked_sibling": "tracked sibling\n",
+      "stale_coverage_present": false,
+      "unit": "transform"
+    }
+  ]
+}

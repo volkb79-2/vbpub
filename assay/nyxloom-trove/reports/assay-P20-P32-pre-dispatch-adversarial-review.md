@@ -1,9 +1,11 @@
 # Assay P20–P32 pre-dispatch adversarial specification review
 
-> **Review date:** 2026-08-08; P20/P21 JIT dispositions updated 2026-08-09
+> **Review date:** 2026-08-08; P20–P23 JIT dispositions updated through 2026-08-10
 > **Roadmap input anchor:** `2f2167f5928e5deacd93f1e9565238aef8acfe32`
 > **P20 JIT anchor:** `8aad3dc3b190915bb27881a0f3004b339aeef9c2`
 > **P21 JIT anchor:** `618b6f15451ec5f45b5900dc496d794241180467`
+> **P22 JIT anchor:** `678104ad32f26b9fbccdbb38b3298149a1d8f8e0`
+> **P23 JIT anchor:** `9d30b25b96b8ffd8f952c02e8958b923bb8e1d13`
 > **Authoring doctrine:** `nyxloom/reference/AUTHORING.md` revision
 > `2026-08-08-r5`
 > **Scope:** every outstanding handoff P20–P32 after the A-167 recarve
@@ -15,10 +17,11 @@
 
 ## Result first
 
-All thirteen frontmatter packages pass `nyxloom lint` (P21 has the intentional
-size warning). **P20 is merged; P21 is now READY; P22–P32 are not.** P21's
-carver-owned proof freeze is complete at the P20 merge anchor; the exact rerun
-and six-part disposition live in `assay-P21-JIT-CARVE.md`. The successors remain provisional until their
+All thirteen frontmatter packages pass `nyxloom lint` (large solution-bearing
+packets carry intentional size warnings). **P20–P22 are merged; P23 is now
+READY; P24–P32 are not.** P23's carver-owned proof freeze is complete at the
+P22 merge anchor; the exact review and evidence live in
+`assay-P23-JIT-CARVE.md`. The successors remain provisional until their
 predecessor merges. Lint proves machine shape only; it does not create the
 skeletons, goldens, pinned external inputs, or controlled failing negatives
 that AUTHORING requires.
@@ -51,12 +54,12 @@ the recarve before reaching the dispositions below:
 | package | remaining blocker before ACTIVE | authority that resolves it |
 |---|---|---|
 | P20 | **closed:** compiling safe-I/O skeleton, locked acceptance, handwritten artifact, hostile Git tracer, `C.UTF-8`, explicit Git-dir/work-tree anchoring and real-gate witness are committed | `assay-P20-JIT-CARVE.md` / A-173–A-176 |
-| P21 | P20's terminal mapping/API is now frozen but not landed; the packet intentionally abbreviates unchanged v4 fields and has no complete valid/invalid model/schema/raw-verifier goldens yet | Sol xhigh after P20 merge; Opus implementation |
-| P22 | P20 Git is frozen but not landed and P21 terminal signatures are not landed; private-object-pack, malformed-tree, symlink and limit skeleton/assets are absent | Sol xhigh after P21; Opus implementation |
-| P23 | P22's real public signatures are unknown; Python site-parity manifests, process ledger and injected-budget fixtures are absent | post-P22 JIT freeze; Sonnet implementation |
+| P21 | **closed and merged:** v4 model/schema/raw verification, bounded Python sites, exact max sentinel, complete goldens, and capability terminal landed as `678104ad` | A-180–A-183 / `assay-P21-JIT-CARVE.md` |
+| P22 | **closed and merged:** prepared private seed, bounded raw-tree/pack substrate, hostile topology assets, snapshot-limit artifact, and real tracer landed as `9d30b25b` | A-184–A-187 / `assay-P22-JIT-CARVE.md` |
+| P23 | **closed for dispatch:** exact landed P22 signatures, immutable plan/deadline seams, R0-only self-host decision, process ledger, combined-axis fixtures, skeleton, and controlled red are frozen | A-188–A-196 / `assay-P23-JIT-CARVE.md`; Sonnet xhigh implementation |
 | P24 | no positive offline wheelhouse/build manifest or actual positive release-manifest golden is committed | post-P23 pre-dispatch freeze |
 | P25 | exact Topos/vbpub commit, literal patch, manifest, expected v4 artifact, wheel hash and independent command are not pinned | post-P24 pre-dispatch freeze |
-| P26 | P21's final evidence grammar is not landed; full-OID, dirfd/symlink-swap, path-byte and bound fixtures are absent | post-P25 pre-dispatch freeze |
+| P26 | v4 evidence grammar is landed; full-OID, dirfd/symlink-swap, path-byte and bound fixtures are absent | post-P25 pre-dispatch freeze |
 | P27 | image/toolchain digest and lock are not frozen; the half-open Go block-to-line rule is intentionally awaiting a real profile/source/manifest probe | post-P26 pre-dispatch freeze; Sol on contradiction |
 | P28 | base/child OIDs, exact srdm replacement, image ID, wheel hash, commands, line manifest and expected artifact are deliberately unbound | post-P27 pre-dispatch freeze |
 | P29 | P23's landed site API is unknown; compiling helper/adapter skeleton, protocol goldens and bounded-memory attack are absent | Sol xhigh after P28; Opus implementation |
@@ -87,14 +90,12 @@ handoff names the missing proof and returns NOT READY until it exists.
 
 ## 3. Missing implementation-packet material
 
-P21 now has its complete proof packet. The following successor material is
-deliberately not yet present and therefore prevents P22–P32 from being READY:
+P21–P23 now have complete proof packets. The following successor material is
+deliberately not yet present and therefore prevents P24–P32 from being READY:
 
-- P22/P29 lack the mandatory compiling skeletons and witnessed failing
-  acceptance negatives assigned to Sol. P20/P21 are frozen under their
+- P29 still lacks its mandatory Go-helper skeleton and witnessed failing
+  acceptance negatives assigned to Sol. P20–P23 are frozen under their
   respective `nyxloom-trove/carve-assets/` directories.
-- P23 lacks a process-ledger spy at P22's eventual landed signatures. P21 now
-  owns and locks the Python `MutationSite` parity corpus.
 - P24 lacks the positive wheelhouse and release-manifest artifact.
 - P25/P28 lack exact external commit/patch/command/image/wheel manifests.
 - P26 lacks descriptor-race and full-OID goldens.
@@ -155,11 +156,11 @@ the detailed rows live in each handoff.
 |---|---|---|
 | P20 | **MERGED** | landed as `618b6f15` after locked acceptance and controller-owned gate |
 | P21 | **MERGED** | landed as `678104ad` after A-183 correction, independent Opus repair, locked acceptance, and controller-owned gate |
-| P22 | **READY — IMPLEMENT NEXT** | exact JIT review at `678104ad`; prepared-seed API, bounded raw-tree/pack construction, timeout seam, literal manifest, hostile fixtures, skeleton, and tracer committed under A-184–A-187 |
-| P23 | **NOT READY — PROVISIONAL** | depends on P22 signatures; process-ledger/snapshot integration assets absent; P21 already owns site parity |
+| P22 | **MERGED** | landed as `9d30b25b` after independent Opus repair, locked acceptance, and controller-owned gate |
+| P23 | **READY — IMPLEMENT NEXT** | exact JIT review at `9d30b25b`; landed-P22 integration contract, plan/deadline grammar, self-host disposition, skeleton, locked ledger/fixtures, controlled red, and tracer frozen under A-188–A-196 |
 | P24 | **NOT READY — PROVISIONAL** | positive offline build/release inputs absent |
 | P25 | **NOT READY — PROVISIONAL** | external commit/patch/manifest not pinned |
-| P26 | **NOT READY — PROVISIONAL** | final v4 evidence shape and hostile safe-I/O fixtures absent |
+| P26 | **NOT READY — PROVISIONAL** | attestation full-OID and hostile safe-I/O proof assets absent |
 | P27 | **NOT READY — PROVISIONAL** | toolchain/image and block grammar not probed/frozen |
 | P28 | **NOT READY — PROVISIONAL** | real srdm case/witnesses not pinned |
 | P29 | **NOT READY — PROVISIONAL/JIT FREEZE** | depends on P23 API; helper skeleton/protocol assets absent |
@@ -168,5 +169,5 @@ the detailed rows live in each handoff.
 | P32 | **NOT READY — PROVISIONAL** | pinned producer closure and parser/source goldens absent |
 
 The intended next action remains serial. Implement, independently review, and
-merge READY P22, then update only the successor horizon affected by its landed
-API and JIT-freeze P23.
+merge READY P23, then update only the successor horizon affected by its landed
+API and JIT-freeze P24.
