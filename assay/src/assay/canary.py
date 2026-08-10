@@ -52,37 +52,36 @@ take *mechanism*/*target_path* as plain arguments and know nothing about
 orchestration is a NEW caller layered on top, not a rewrite of the
 mechanism underneath it.
 
-**P19's own addition: the installed CLI proves one declared canary without
-touching the consumer's repository.** :func:`run_isolated_canary` is
-the CLI-facing entry point :mod:`assay.runner`'s ``run_lane`` calls (a
-deferred import there, for the identical circular-import reason
-:mod:`assay.mutation`'s own module docstring already gives for resolving
-``execute_command`` from a function body: this module already imports
-``Lane`` from ``config.py`` and several names from ``runner.py`` at module
-level, so either of those importing THIS module back at their own module
-level would close a genuine cycle). It copies the CONSUMER's own repository
-(:func:`shutil.copytree`, never a ``git worktree`` — the same isolation
-discipline :mod:`assay.mutation`'s own per-mutant copy already uses, A-120)
-into independently-owned scratch state, and only THEN calls
-:func:`run_python_canary` against that copy — so the control commit already
-IS the consumer's own current, clean ``HEAD`` (copied verbatim, .git
-included, so a symbolic ``judge.base`` still resolves inside the copy
-exactly as it would have in the real repository) and no extra "build the
-control commit" step is needed. The consumer's real worktree is never
-staged, committed, or written to; :func:`~assay.git.dirty_paths` refuses the
-whole operation first if it is not already clean, matching
-:func:`~assay.runner.run_lane`'s own R1/R2 whole-tree guard applied
-directly (never through ``run_lane`` itself — see that function's own R3
-section for why).
+**P23's own addition: the installed CLI proves one declared canary from two
+independent P22 committed snapshots, never a live-tree copy.**
+:func:`run_isolated_canary` is the CLI-facing entry point
+:mod:`assay.runner`'s ``run_lane`` calls for a higher-rigor lane (a deferred
+import there, for the identical circular-import reason :mod:`assay.mutation`'s
+own module docstring already gives for resolving ``execute_plan`` from a
+function body: this module already imports ``Lane`` from ``config.py`` and
+several names from ``runner.py`` at module level, so either of those
+importing THIS module back at their own module level would close a genuine
+cycle). It materialises the CONTROL half as *prepared*'s own base snapshot
+(:meth:`~assay.isolation.SnapshotRepository.materialize`) — so the control
+commit already IS the exact commit the lane's baseline itself ran, no extra
+"build the control commit" step needed — and, only for a valid non-no-op
+transform, the TRANSFORMED half as an independent
+:meth:`~assay.isolation.SnapshotRepository.materialize_replacement` of the
+SAME prepared seed. Neither half shares an inode, a coverage reservation, or
+a Git object store with the other or with the consumer's real repository;
+:func:`~assay.runner._execute_snapshot_unit` is the ONE shared engine both
+halves and :mod:`assay.runner`'s own baseline run through (never a second,
+independently-written copy of the reserve/arm/execute/dirt-check/consume
+sequence). The consumer's real worktree is never staged, committed, read
+from, or written to by this module at all — every byte either half reads or
+runs against comes from *prepared*.
 """
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
@@ -100,6 +99,8 @@ from .runner import (
     default_process_runner,
     evaluate_r1,
     execute_command,
+    _execute_snapshot_unit,
+    _relocate_source_roots,
 )
 from .verdict import CanaryResult, Claim
 
@@ -318,126 +319,97 @@ def run_python_canary(
     )
 
 
-def _project_prefix(*, repo_top: Path, project_root: Path) -> str:
-    """*project_root*'s own location inside *repo_top*, as the forward-slash
-    prefix a scratch copy of *repo_top* needs before it can find
-    *project_root* inside it -- ``""`` when the two are the same directory,
-    ``"sub/"`` when the project is a SUBDIRECTORY of its repository
-    (A-145), which is assay's own layout inside ``vbpub``.
-
-    A second, independently written copy of :func:`assay.mutation.
-    project_prefix` — never an import from it. ``mutation.py`` is forbidden
-    to this package (``scope.forbid``), and the established discipline for
-    a needed piece of logic that lives in an out-of-scope module is to
-    duplicate it, not reach into it: :func:`assay.mutation.
-    resolve_mutation_targets`'s own docstring gives the identical reasoning
-    for its own separate copy of ``evaluate.py``'s containment check, one
-    package earlier.
+def _judge_unit(
+    lane: Lane,
+    unit: SnapshotUnitResult,
+    *,
+    repo: Path,
+    project_root: Path,
+    scratch_project_root: Path,
+    base: str | None,
+    adapter: LanguageAdapter,
+) -> tuple[Outcome, ReasonCode | None]:
+    """The R0-then-R1 judgement one already-EXECUTED snapshot unit renders --
+    the identical two-step :func:`_run_pipeline` performs for
+    :func:`run_python_canary`'s own halves, given *unit* (an
+    :class:`~assay.runner.SnapshotUnitResult`) instead of re-executing the
+    command a second time. *unit*'s own dirt/HEAD-drift ('post_reason') is
+    the caller's problem, not this function's -- checked before this is ever
+    called (O2's "fresh unit" attack: a unit that no longer names its own
+    commit is never silently judged as if it did).
     """
-    relative = project_root.resolve().relative_to(repo_top.resolve())
-    return "" if relative == Path(".") else f"{relative.as_posix()}/"
-
-
-def _relocate_source_roots(
-    lane: Lane, *, project_root: Path, scratch_project_root: Path
-) -> Lane:
-    """*lane* with :attr:`~assay.config.JudgeConfig.source_root_paths`
-    respelled against *scratch_project_root* instead of *project_root*
-    (A-149).
-
-    ``source_root_paths`` are RESOLVED, ABSOLUTE directories under the
-    CONSUMER's own project root (:func:`assay.config._resolve_source_root`,
-    which also guarantees the containment this function's
-    :meth:`~pathlib.Path.relative_to` relies on). Every judgement made
-    inside the scratch copy compares them against paths under the COPY --
-    :func:`assay.evaluate.evaluate_coverage`'s own source-root boundary and
-    :func:`assay.measurability.check_dirty_tree`'s scoping, both reached
-    through :func:`~assay.runner.evaluate_r1`. Handing the consumer's own
-    absolute roots to a run rooted somewhere else does not raise: every
-    changed file simply falls outside every root, ``considered`` is 0,
-    ``pct`` is a vacuous 100.0, and R1 PASSes having measured nothing.
-    That is the laundering-gate shape A-016/A-035 already names for a
-    typo'd source root, reached by relocation instead of by typo -- and it is
-    silent in exactly the direction that matters, since a canary reads a
-    vacuous transformed PASS as ``CANARY_SURVIVED``.
-
-    Only ``source_root_paths`` needs respelling: every other path-bearing
-    field the copy is judged through is already PROJECT-relative and
-    resolved against whichever project root it is handed
-    (``judge.coverage.artifact`` via :func:`~assay.runner.
-    _resolve_artifact_path`, ``judge.canary.target`` via
-    :func:`run_python_canary`), and ``judge.base`` is a revision, not a
-    path.
-    """
-    judge = lane.judge
-    relocated = tuple(
-        scratch_project_root / root.relative_to(project_root)
-        for root in judge.source_root_paths
+    r0_claim = build_r0_claim(unit.result)
+    if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
+        return r0_claim.status, r0_claim.reason_code
+    if unit.profile_error is not None:
+        return unit.profile_error.outcome, unit.profile_error.reason_code
+    relocated_lane = _relocate_source_roots(
+        lane, project_root=project_root.resolve(), scratch_project_root=scratch_project_root
     )
-    return replace(lane, judge=replace(judge, source_root_paths=relocated))
+    r1_claim = evaluate_r1(
+        relocated_lane,
+        repo=repo,
+        project_root=scratch_project_root,
+        base=base,
+        adapter=adapter,
+        profile=unit.profile,
+    )
+    return r1_claim.status, r1_claim.reason_code
 
 
 def run_isolated_canary(
     lane: Lane,
     *,
-    repo: Path,
+    prepared: SnapshotRepository,
+    plan: CommandPlan,
+    deadline: LaneDeadline,
     project_root: Path,
+    resolved_base: str | None,
     mechanism: str,
     target: str,
     adapter: LanguageAdapter,
-    process_runner: ProcessRunner = default_process_runner,
-    clock: Clock = _utc_now,
+    process_runner: ProcessRunner,
+    clock: Clock,
 ) -> CanaryResult:
-    """The installed CLI's own R3 entry point (P19, work items 1/3/5):
-    proves *mechanism* against *target* WITHOUT modifying *repo* — never a
-    fixture-only, already-committed-control assumption like
-    :func:`run_python_canary`'s own callers use today.
+    """The installed CLI's own R3 entry point (P23 exact reexecution): proves
+    *mechanism* against *target* from TWO INDEPENDENT P22 snapshots of
+    *prepared*'s own prepared seed -- never a live-tree copy, and never a
+    second config/lane read (A-O SB-P22-04: one normalized project-to-repo
+    target conversion, done once below).
 
-    Two prerequisite refusals BEFORE anything is copied, mirroring
-    :func:`~assay.runner.run_lane`'s own R1/R2 ordering (checked directly,
-    never by calling ``run_lane`` itself — see its own R3 section for why a
-    scratch copy needs a DIFFERENT answer to "which guard applies" than the
-    consumer's real worktree does):
+    One prerequisite refusal before anything is materialised: *target* must
+    not be a test path -- *adapter*'s own
+    :meth:`~assay.adapters.base.LanguageAdapter.is_test_path`, the one piece
+    of this table :mod:`assay.config`'s adapter-agnostic loader cannot check
+    itself. (The consumer-repository cleanliness/commit-identity prerequisite
+    that the old copy-based orchestration owned here is now checked ONCE, by
+    the caller, before any snapshot -- including this one -- is prepared.)
 
-    1. *target* must not be a test path — *adapter*'s own
-       :meth:`~assay.adapters.base.LanguageAdapter.is_test_path`, the one
-       piece of this table :mod:`assay.config`'s adapter-agnostic loader
-       cannot check itself (its own docstring explains why).
-    2. *repo* — the CONSUMER's real repository — must be entirely clean
-       (:func:`~assay.git.dirty_paths`): the copy this function is about to
-       take becomes the CONTROL, so a dirty tree would silently test
-       uncommitted state no commit actually names.
+    The CONTROL half is *prepared*'s own base snapshot
+    (:meth:`~assay.isolation.SnapshotRepository.materialize`) -- so the
+    control commit already IS the exact commit the lane's baseline itself
+    ran, byte-identical, never re-derived. *target*'s current bytes are read
+    ONCE from the prepared seed (:meth:`~assay.isolation.SnapshotRepository.
+    read_regular_file`), never from either materialized snapshot's own disk
+    copy. Only a VALID, non-no-op transform proceeds to materialise a second,
+    independent TRANSFORMED half
+    (:meth:`~assay.isolation.SnapshotRepository.materialize_replacement`) of
+    the identical seed -- a malformed mechanism or a no-op keeps the existing
+    ``CANARY_INCONCLUSIVE`` shape without ever entering it (O3). Both halves
+    run through the identical shared unit engine
+    (:func:`~assay.runner._execute_snapshot_unit`) the lane's own baseline
+    uses, each with its OWN fresh coverage reservation when ``"R1"`` is
+    declared (O2: no cross-unit profile reuse) -- the control's R1 diff
+    compares ``judge.base..seed commit``, while the transform's compares
+    ``seed commit..its own deterministic child commit``, mirroring exactly
+    what two real, sequential commits would mean in the old live-copy
+    orchestration.
 
-    Only then: *repo*'s top level is copied WHOLE (:func:`shutil.copytree`,
-    ``.git`` included) into a disposable scratch directory this function
-    owns end to end (:func:`tempfile.TemporaryDirectory`) — never a ``git
-    worktree`` (A-120's own isolation discipline, one claim tier over), and
-    never merely *project_root* the way :func:`~assay.mutation.
-    run_mutation`'s per-mutant copy is: R3 needs *judge.base* to resolve
-    exactly as it would in the real repository (a symbolic ref like
-    ``"main"``), which needs the WHOLE ``.git``, not only the project's own
-    working files. The one-time cost of copying the whole repository
-    (rather than one project directory) is the trade this package makes for
-    that correctness; a consumer whose repository is very large pays it
-    once per ``assay run`` invocation that declares R3, not once per
-    mutant. :func:`_project_prefix` locates *project_root* inside the copy
-    exactly the way :func:`assay.mutation.project_prefix` locates a mutant
-    target inside ITS OWN copy (A-145) — same reasoning, independently
-    reapplied, one claim tier over.
-
-    :func:`run_python_canary` then runs, with ``repo``/``project_root``
-    BOTH pointing at the copy's own project directory — the same "repo and
-    project_root are the same directory" shape :mod:`assay.cli` already
-    passes for the real, non-isolated R1/R2 pipeline — so the copy's own
-    current ``HEAD`` (byte-identical to the consumer's, since it was just
-    copied verbatim from an already-clean tree) IS the known-good control,
-    with no separate "commit the control" step needed. *lane.judge.base*
-    resolves the control's own R1 diff when R1 is declared alongside R3;
-    when it is not, :attr:`Lane.judge`'s own ``base`` is ``None`` (R3 alone
-    does not require it) and this function substitutes the copy's real
-    ``HEAD`` — a value :func:`run_python_canary`'s own ``_run_pipeline``
-    never reads on that branch (its own docstring), so any valid revision
-    satisfies the parameter without a special ``None`` case here.
+    Either half leaving Git-visible dirt or a moved ``HEAD`` behind is fatal
+    to the WHOLE R3 claim (A-195): raised here as the unchanged
+    ``NO_MEASUREMENT``/``DIRTY_TREE`` or ``HEAD_CHANGED`` pair, letting the
+    caller (:func:`~assay.runner.run_lane`) render it as a payload-free R3
+    claim the same way it already renders any other P22 structural failure.
     """
     if adapter.is_test_path(target):
         raise AssayError(
@@ -447,39 +419,127 @@ def run_isolated_canary(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
-    if git.dirty_paths(repo):
-        raise AssayError(
-            "the repository has uncommitted changes -- an isolated R3 "
-            "canary copies the current tree to stand in for the "
-            "known-good control, so it must already be clean and "
-            "committed. Commit or stash, then re-run.",
-            outcome=Outcome.NO_MEASUREMENT,
-            reason_code=ReasonCode.DIRTY_TREE,
-        )
 
-    repo_top = git.repo_top(repo)
-    prefix = _project_prefix(repo_top=repo_top, project_root=project_root)
-    base_for_control = lane.judge.base if lane.judge.base is not None else git.head_rev(repo)
+    prefix = prepared.spec.project_prefix
+    canary_repo_path = (
+        PurePosixPath(target) if str(prefix) == "." else prefix / PurePosixPath(target)
+    )
+    wants_coverage = "R1" in lane.rigor
+    coverage_artifact = lane.judge.coverage.artifact if wants_coverage else None
+    coverage_format = lane.judge.coverage.format if wants_coverage else None
 
-    with tempfile.TemporaryDirectory(prefix="assay-r3-") as scratch:
-        scratch_repo_top = Path(scratch) / "repo"
-        shutil.copytree(repo_top, scratch_repo_top)
-        scratch_project_root = (scratch_repo_top / prefix).resolve()
-        return run_python_canary(
-            _relocate_source_roots(
-                lane,
-                project_root=project_root.resolve(),
-                scratch_project_root=scratch_project_root,
-            ),
-            repo=scratch_project_root,
-            project_root=scratch_project_root,
-            base_commit=base_for_control,
-            target_path=target,
-            adapter=adapter,
-            mechanism=mechanism,
+    with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
+        control_unit = _execute_snapshot_unit(
+            plan=plan,
+            snapshot=control_snapshot,
+            deadline=deadline,
+            wants_coverage=wants_coverage,
+            coverage_artifact=coverage_artifact,
+            coverage_format=coverage_format,
             process_runner=process_runner,
             clock=clock,
         )
+        if control_unit.post_reason is not None:
+            raise AssayError(
+                "the canary control's own snapshot left Git-visible state "
+                "behind after the command ran; the result no longer "
+                "represents its own commit",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=control_unit.post_reason,
+            )
+        control_outcome, _ = _judge_unit(
+            lane,
+            control_unit,
+            repo=control_snapshot.root,
+            project_root=project_root,
+            scratch_project_root=control_snapshot.project_root,
+            base=resolved_base,
+            adapter=adapter,
+        )
+        original_bytes = prepared.read_regular_file(
+            canary_repo_path, timeout=deadline.remaining()
+        )
+
+    expected_reason = _EXPECTED_REASON_BY_MECHANISM.get(mechanism)
+    try:
+        original_text = original_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AssayError(
+            f"canary target {target!r} is not valid UTF-8: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+
+    applied = _apply_mechanism(adapter, mechanism, original_text)
+    if applied is None:
+        return CanaryResult(
+            mechanism=mechanism,
+            target=target,
+            description=(
+                f"{mechanism!r} is not a known canary mechanism -- expected "
+                f"one of {sorted(_EXPECTED_REASON_BY_MECHANISM)}; nothing to "
+                f"judge"
+            ),
+            control_outcome=control_outcome,
+        )
+
+    transformed_text, description = applied
+    if transformed_text == original_text:
+        return CanaryResult(
+            mechanism=mechanism,
+            target=target,
+            description=(
+                f"{mechanism} produced no change to {target} -- "
+                f"nothing to judge"
+            ),
+            control_outcome=control_outcome,
+            expected_reason_code=expected_reason,
+        )
+
+    replacement_bytes = transformed_text.encode("utf-8")
+    with prepared.materialize_replacement(
+        path=canary_repo_path,
+        expected=original_bytes,
+        replacement=replacement_bytes,
+        timeout=deadline.remaining(),
+    ) as transform_snapshot:
+        transform_unit = _execute_snapshot_unit(
+            plan=plan,
+            snapshot=transform_snapshot,
+            deadline=deadline,
+            wants_coverage=wants_coverage,
+            coverage_artifact=coverage_artifact,
+            coverage_format=coverage_format,
+            process_runner=process_runner,
+            clock=clock,
+        )
+        if transform_unit.post_reason is not None:
+            raise AssayError(
+                "the canary transform's own snapshot left Git-visible state "
+                "behind after the command ran; the result no longer "
+                "represents its own commit",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=transform_unit.post_reason,
+            )
+        transformed_outcome, observed_reason_code = _judge_unit(
+            lane,
+            transform_unit,
+            repo=transform_snapshot.root,
+            project_root=project_root,
+            scratch_project_root=transform_snapshot.project_root,
+            base=prepared.spec.commit,
+            adapter=adapter,
+        )
+
+    return CanaryResult(
+        mechanism=mechanism,
+        target=target,
+        description=description,
+        control_outcome=control_outcome,
+        transformed_outcome=transformed_outcome,
+        expected_reason_code=expected_reason,
+        observed_reason_code=observed_reason_code,
+    )
 
 
 def _evaluate_go(

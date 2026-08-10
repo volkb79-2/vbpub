@@ -50,10 +50,30 @@ def test_a_minimal_valid_canary_table_loads(project: Project):
 
 def test_every_declared_mechanism_is_accepted(project: Project):
     """Direction 1 of the closed-vocabulary pair: every member of
-    :data:`CANARY_MECHANISMS` loads on its own."""
+    :data:`CANARY_MECHANISMS` loads on its own.
+
+    P23/A-192: ``uncovered-line``'s expected cause is R1's own
+    ``UNCOVERED_LINES``, so its own load-time grammar now requires R1
+    declared alongside R3 -- exercised here with the full R1 judge table,
+    never the bare R3-only shape ``import-break`` still uses.
+    """
     project.file("src/mod.py", "x = 1\n")
     for mechanism in sorted(CANARY_MECHANISMS):
-        lane = _lane_with_canary(_canary_table(mechanism=mechanism))
+        if mechanism == "uncovered-line":
+            body = set_key(R0_LANE, "rigor", '["R0", "R1", "R3"]')
+            lane = (
+                body
+                + "\n[lanes.package.judge]\n"
+                + 'language = "python"\n'
+                + 'source_roots = ["src"]\n'
+                + "fail_under = 100.0\n"
+                + "allow_excluded = false\n"
+                + 'coverage = { format = "coverage-py-json", artifact = "cov.json" }\n'
+                + 'base = "main"\n'
+                + _canary_table(mechanism=mechanism)
+            )
+        else:
+            lane = _lane_with_canary(_canary_table(mechanism=mechanism))
         judge = load_lane_file(
             project.write(lane, name=f"{mechanism}.toml")
         ).lane("package").judge

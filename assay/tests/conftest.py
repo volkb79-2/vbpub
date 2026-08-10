@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Mapping
 
@@ -245,6 +245,78 @@ def git_repo(tmp_path: Path) -> GitRepo:
     repo.write("README.md", "seed\n")
     repo.commit_all("seed")
     return repo
+
+
+# --- P23: the shared real-P22 substrate every higher-rigor unit test needs --
+#
+# `assay.mutation.run_mutation`/`assay.canary.run_isolated_canary` now
+# materialise EVERY unit from a real `assay.isolation.SnapshotRepository`
+# (never a `shutil.copytree`), and `assay.runner._execute_snapshot_unit`'s own
+# post-run check runs REAL `git` commands against each materialized snapshot
+# -- so a unit test exercising either module needs a genuine committed `git`
+# repository underneath it, not a bare `tmp_path` of loose files. These three
+# helpers are the shared substrate: a real prepared seed, a real immutable
+# plan, and a real injected deadline, so no test file hand-rolls its own copy
+# of P22/P23's own construction rules.
+
+
+def prepared_snapshot(
+    repo: GitRepo,
+    *,
+    commit: str | None = None,
+    project_prefix: str = ".",
+    scratch_root: Path,
+    timeout: float = 60.0,
+):
+    """A real P22 :class:`~assay.isolation.SnapshotRepository` context,
+    prepared from *repo*'s own current committed state -- byte-for-byte the
+    same construction :func:`~assay.runner.run_lane`'s own higher-rigor path
+    uses, so a test exercising :mod:`assay.mutation`/:mod:`assay.canary`
+    through it proves the real substrate, not a hand-rolled stand-in.
+    """
+    from assay import isolation
+
+    spec = isolation.SnapshotSpec(
+        repo_top=repo.path.resolve(),
+        commit=repo.head() if commit is None else commit,
+        project_prefix=PurePosixPath(project_prefix),
+        scratch_root=scratch_root.resolve(),
+        limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
+    )
+    return isolation.prepare_snapshot(spec, timeout=timeout)
+
+
+def make_plan(
+    lane: Lane,
+    *,
+    project_prefix: str = ".",
+    argv_append: tuple[str, ...] = (),
+    passthrough_source: Mapping[str, str] | None = None,
+):
+    """One resolved :class:`~assay.runner.CommandPlan`, mirroring exactly
+    what a higher-rigor :func:`~assay.runner.run_lane` resolves once and
+    reuses for every unit."""
+    from assay.runner import resolve_command_plan
+
+    return resolve_command_plan(
+        lane,
+        argv_append=argv_append,
+        passthrough_source={} if passthrough_source is None else passthrough_source,
+        project_prefix=PurePosixPath(project_prefix),
+    )
+
+
+def make_deadline(*, budget_seconds: float = 60.0, monotonic=None):
+    """One :class:`~assay.runner.LaneDeadline`, real monotonic clock by
+    default -- a test proving injected-clock expiry supplies its own."""
+    import time as _time
+
+    from assay.runner import LaneDeadline
+
+    return LaneDeadline.start(
+        budget_seconds=budget_seconds,
+        monotonic=_time.monotonic if monotonic is None else monotonic,
+    )
 
 
 # --- the verdict artifact (P01b) ---------------------------------------------

@@ -57,16 +57,21 @@ def _seed_compare_swap_site(repo: GitRepo) -> tuple[str, str]:
     return base_rev, head_rev
 
 
-def _kill_on_mutation(project_root: Path):
+def _kill_on_mutation():
     """A REAL-shaped, injected ``process_runner``: PASS against the
-    unmodified *project_root* (the baseline), and against a mutant copy,
-    PASS iff the literal substring ``x > 0`` survived the splice -- so the
-    single generated mutant (``x >= 0``) is genuinely, mechanically
-    KILLED, never asserted by fiat."""
+    baseline's own unmodified content, and PASS iff the literal substring
+    ``x > 0`` survived the splice -- so the single generated mutant
+    (``x >= 0``) is genuinely, mechanically KILLED, never asserted by fiat.
+
+    Content-keyed rather than ``cwd``-keyed: P23 runs the baseline inside its
+    own independent P22 snapshot too, never at the consumer's own
+    ``project_root`` directly, so a decision keyed to path identity would
+    never match baseline's own call. The baseline's real, unmodified content
+    already contains ``x > 0``, so this single content check is correct for
+    BOTH baseline and mutant without a separate cwd-comparison branch.
+    """
 
     def decide(argv, *, env, cwd, timeout):
-        if Path(cwd) == project_root:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
         text = (Path(cwd) / "src" / "mod.py").read_text(encoding="utf-8")
         return subprocess.CompletedProcess(
             list(argv), returncode=0 if "x > 0" in text else 1, stdout="", stderr=""
@@ -79,7 +84,7 @@ def _kill_on_mutation(project_root: Path):
 
 
 def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
-    base_rev, _ = _seed_compare_swap_site(git_repo)
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
     )
@@ -87,12 +92,12 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
 
     verdict = runner.run_lane(
         lane,
-        commit="a" * 40,
+        commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=_kill_on_mutation(git_repo.path),
+        process_runner=_kill_on_mutation(),
     )
 
     assert verdict.outcome is Outcome.PASS
@@ -118,7 +123,7 @@ def test_r2_without_r1_refuses_on_base_is_head(git_repo: GitRepo):
 
     verdict = runner.run_lane(
         lane,
-        commit="b" * 40,
+        commit=head,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -145,7 +150,7 @@ def test_r2_without_r1_refuses_on_dirty_tree_the_command_itself_created(
     a real ``touch`` under the declared source root, left behind by R0's
     own argv, is what trips this -- not anything present before the run
     started."""
-    base_rev, _ = _seed_compare_swap_site(git_repo)
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
     )
@@ -157,7 +162,7 @@ def test_r2_without_r1_refuses_on_dirty_tree_the_command_itself_created(
 
     verdict = runner.run_lane(
         lane,
-        commit="c" * 40,
+        commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -185,7 +190,7 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
     one. Both must come back untouched: the record is the DECLARED policy,
     not a summary of what happened.
     """
-    base_rev, _ = _seed_compare_swap_site(git_repo)
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
     declared = MutationConfig(
         jobs=3, max_mutants=50, operators=("falsy-swap", "compare-swap")
     )
@@ -196,12 +201,12 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
 
     verdict = runner.run_lane(
         lane,
-        commit="6" * 40,
+        commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=_kill_on_mutation(git_repo.path),
+        process_runner=_kill_on_mutation(),
     )
 
     assert verdict.claims[1].mutation.total == 1, "only the compare-swap site exists"
@@ -219,24 +224,32 @@ def test_the_lanes_command_runs_exactly_once_against_the_unmodified_tree(
     is a property of the PIPELINE -- so it is counted here, where R0 and R2
     meet, against the real ``cwd`` each invocation receives.
 
-    One execution against *project_root* (R0's own, reused verbatim as R2's
-    baseline) and one per mutant, each in its own scratch copy.
+    P23: baseline and mutant each run inside their OWN independent P22
+    snapshot -- neither ever runs at the consumer's own ``project_root``
+    directly (a STRONGER isolation than the old "R0's own project_root,
+    reused verbatim" shape this test used to check by path identity), so
+    the "ran against the unmodified tree exactly once" claim is now proven
+    by CONTENT rather than by path equality.
     """
-    base_rev, _ = _seed_compare_swap_site(git_repo)
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
     )
     lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
-    decide = _kill_on_mutation(git_repo.path)
+    decide = _kill_on_mutation()
     cwds: list[Path] = []
+    contents: list[str] = []
 
     def counting(argv, *, env, cwd, timeout):
         cwds.append(Path(cwd))
+        # read WHILE the snapshot is still live -- it is discarded the
+        # moment this unit's context closes, before `run_lane` returns.
+        contents.append((Path(cwd) / "src" / "mod.py").read_text(encoding="utf-8"))
         return decide(argv, env=env, cwd=cwd, timeout=timeout)
 
     verdict = runner.run_lane(
         lane,
-        commit="7" * 40,
+        commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -245,11 +258,19 @@ def test_the_lanes_command_runs_exactly_once_against_the_unmodified_tree(
     )
 
     assert verdict.claims[1].mutation.total == 1
-    assert cwds.count(git_repo.path) == 1, (
-        "the lane's own command must run exactly ONCE against the "
-        "unmodified tree -- R0's result IS R2's baseline"
-    )
     assert len(cwds) == 2, "one baseline plus one mutant, and nothing else"
+    assert len(set(cwds)) == 2, (
+        "the baseline and the one mutant each run inside their own "
+        "independent P22 snapshot, never the same directory"
+    )
+    assert git_repo.path not in cwds, (
+        "the lane's own command never runs against the consumer's real "
+        "repository at all under the higher-rigor path"
+    )
+    assert contents.count("def f(x):\n    return x > 0\n") == 1, (
+        "the lane's own command must run exactly ONCE against the "
+        "unmodified baseline content -- R0's result IS R2's baseline"
+    )
 
 
 # --- the project is a SUBDIRECTORY of its repository (A-145) -----------------
@@ -287,7 +308,7 @@ def test_r2_mutates_a_project_that_lives_in_a_subdirectory_of_its_repo(
 
     verdict = runner.run_lane(
         lane,
-        commit="9" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=project_root,
         adapter=PythonAdapter(),
@@ -326,7 +347,7 @@ def test_a_surviving_mutant_in_a_subdirectory_project_keeps_its_repo_relative_pa
 
     verdict = runner.run_lane(
         lane,
-        commit="8" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=project_root,
         adapter=PythonAdapter(),
@@ -359,7 +380,7 @@ def test_a_failing_r0_baseline_is_reused_verbatim_and_r2s_own_guards_never_run(
 
     verdict = runner.run_lane(
         lane,
-        commit="d" * 40,
+        commit=head,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -420,7 +441,7 @@ def test_r1_and_r2_together_reuse_the_same_resolved_diff_not_a_second_one(
 
     verdict = runner.run_lane(
         lane,
-        commit="e" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -461,12 +482,12 @@ def test_r1_declared_but_its_own_coverage_guard_trips_still_lets_r2_resolve(
 
     verdict = runner.run_lane(
         lane,
-        commit="f" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=_kill_on_mutation(git_repo.path),
+        process_runner=_kill_on_mutation(),
     )
 
     r1_claim, r2_claim = verdict.claims[1], verdict.claims[2]
@@ -483,7 +504,7 @@ def test_r1_declared_but_its_own_coverage_guard_trips_still_lets_r2_resolve(
 
 
 def test_ended_covers_r2s_own_completion_not_only_r0s(git_repo: GitRepo):
-    base_rev, _ = _seed_compare_swap_site(git_repo)
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
     )
@@ -491,12 +512,12 @@ def test_ended_covers_r2s_own_completion_not_only_r0s(git_repo: GitRepo):
 
     verdict = runner.run_lane(
         lane,
-        commit="0" * 40,
+        commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=_kill_on_mutation(git_repo.path),
+        process_runner=_kill_on_mutation(),
         # R0 (started/ended) + the ONE generated mutant (started/ended) +
         # run_lane's own final `ended` read -- five clock() calls total.
         clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C, MOMENT_D, MOMENT_E),
@@ -545,7 +566,7 @@ def test_run_lane_r2_renders_a_complete_claim_when_a_target_source_read_fails(
 
     verdict = runner.run_lane(
         lane,
-        commit="1" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),

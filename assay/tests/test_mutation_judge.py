@@ -16,9 +16,10 @@ checked first" class of bug -- ``crashed`` must win even when
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 
-from conftest import make_lane
+from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome, ReasonCode
@@ -34,6 +35,10 @@ _PLAN = CommandPlan(
     argv_effective=("pytest", "-q"),
     env_declared={},
     env_effective={},
+    env_passthrough=(),
+    allow_argv_append=False,
+    budget_seconds=60.0,
+    project_prefix=PurePosixPath("."),
 )
 
 
@@ -197,27 +202,34 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
     tmp_path: Path,
 ):
     lane = make_lane(argv=("pytest", "-q"))
-    project_root = tmp_path / "proj"
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/flags.py", _TEXT)
+    repo.commit_all("add flags")
     scratch_root = tmp_path / "scratch"
-    (project_root / "pkg").mkdir(parents=True)
-    (project_root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
     scratch_root.mkdir()
-    decide = _decide(project_root)
+    decide = _decide(repo.path)
+    plan = make_plan(lane)
+    deadline = make_deadline()
 
-    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=2,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=decide,
-    )
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+        )
 
     assert baseline.outcome is Outcome.PASS
     assert mutation.total == 4

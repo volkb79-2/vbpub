@@ -150,21 +150,19 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #:   invented"). Fixturing it would assert an artifact whose own existence
 #:   the reason denies. Proven instead by the locked CLI marker test and
 #:   ``tests/test_output_reservation.py``.
-#: * ``BUDGET_EXCEEDED``/``SNAPSHOT_LIMIT_EXCEEDED`` — reserved by A-163 for
-#:   P22's snapshot refusal. No P21 producer path reaches it; a fixture now
-#:   would be a hand-authored artifact for a terminal no code emits, which is
-#:   AUTHORING §3b.C's hollow-fixture defect one layer up.
 #: * ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` — reserved by A-163 for
 #:   P27's first real external-tool preflight. Both adapters this build ships
 #:   declare ``external_tools = ()`` (A-087/A-142), so nothing can render it.
 #:
-#: The two reserved pairs are P22's and P27's own obligation to close: when
-#: either makes its terminal reachable, it removes its line here and adds the
-#: complete fixture, and this audit turns red until it does.
+#: P23 closes A-190: the snapshot-policy limit pair P22 reserved is now
+#: producer-reachable (a byte-identical copy of P22's own carver-owned
+#: artifact lives in the ordinary fixture set below) and is REMOVED from this
+#: set rather than left excluded. The one remaining pair is P27's own
+#: obligation to close: when it makes its terminal reachable, it removes its
+#: line here too, and this audit turns red until it does.
 EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
-        ("BUDGET_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED"),
         ("NO_MEASUREMENT", "MISSING_EXTERNAL_TOOL"),
     }
 )

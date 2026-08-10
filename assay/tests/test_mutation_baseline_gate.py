@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import fixed_clock, make_lane
+from conftest import GitRepo, fixed_clock, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome, ReasonCode
@@ -92,6 +92,15 @@ def _always_timeout(argv, *, env, cwd, timeout):
 # --- a red baseline stops before any mutant --------------------------------
 
 
+#: `run_mutation`'s own baseline-conditional presence rule (A-116) short-
+#: circuits BEFORE `prepared`/`plan`/`deadline` are ever touched -- a
+#: non-PASS baseline returns `None` before any P22/process boundary, so
+#: every test in this section passes `None` for all three and never builds
+#: a real snapshot: the point under test is that nothing beyond the
+#: baseline call happens at all, which a real prepared seed could not make
+#: more true.
+
+
 def test_a_failing_baseline_stops_before_any_mutant_and_renders_fail(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
     recorder = _RecordingProcessRunner(_always_fail)
@@ -100,16 +109,17 @@ def test_a_failing_baseline_stops_before_any_mutant_and_renders_fail(tmp_path: P
     )
 
     mutation = run_mutation(
-        lane,
         baseline=baseline,
-        project_root=tmp_path / "proj",
-        repo_top=tmp_path / "proj",
-        scratch_root=tmp_path / "scratch",
+        prepared=None,
+        plan=None,
+        deadline=None,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
         max_mutants=50,
         operators=_OPERATORS,
+        process_runner=recorder,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
     )
 
     assert baseline.outcome is Outcome.FAIL
@@ -126,16 +136,17 @@ def test_a_crashed_baseline_stops_before_any_mutant_and_renders_error(tmp_path: 
     )
 
     mutation = run_mutation(
-        lane,
         baseline=baseline,
-        project_root=tmp_path / "proj",
-        repo_top=tmp_path / "proj",
-        scratch_root=tmp_path / "scratch",
+        prepared=None,
+        plan=None,
+        deadline=None,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
         max_mutants=50,
         operators=_OPERATORS,
+        process_runner=recorder,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
     )
 
     assert baseline.outcome is Outcome.ERROR
@@ -154,16 +165,17 @@ def test_a_timed_out_baseline_stops_before_any_mutant_and_renders_budget_exceede
     )
 
     mutation = run_mutation(
-        lane,
         baseline=baseline,
-        project_root=tmp_path / "proj",
-        repo_top=tmp_path / "proj",
-        scratch_root=tmp_path / "scratch",
+        prepared=None,
+        plan=None,
+        deadline=None,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
         max_mutants=50,
         operators=_OPERATORS,
+        process_runner=recorder,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
     )
 
     assert baseline.outcome is Outcome.BUDGET_EXCEEDED
@@ -183,16 +195,17 @@ def test_no_scratch_directory_is_created_for_a_red_baseline(tmp_path: Path):
     )
 
     run_mutation(
-        lane,
         baseline=baseline,
-        project_root=tmp_path / "proj",
-        repo_top=tmp_path / "proj",
-        scratch_root=scratch_root,
+        prepared=None,
+        plan=None,
+        deadline=None,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=2,
         max_mutants=50,
         operators=_OPERATORS,
+        process_runner=_always_fail,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
     )
 
     assert list(scratch_root.iterdir()) == []
@@ -204,10 +217,13 @@ def test_no_scratch_directory_is_created_for_a_red_baseline(tmp_path: Path):
 def test_a_passing_baseline_proceeds_to_generating_and_running_mutants(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
     recorder = _RecordingProcessRunner(_always_pass)
-    project_root = tmp_path / "proj"
-    project_root.mkdir()
-    (project_root / "pkg").mkdir()
-    (project_root / "pkg" / "mod.py").write_text(_TARGETS[0].text, encoding="utf-8")
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/mod.py", _TARGETS[0].text)
+    repo.commit_all("add pkg")
     scratch_root = tmp_path / "scratch"
     scratch_root.mkdir()
 
@@ -215,20 +231,23 @@ def test_a_passing_baseline_proceeds_to_generating_and_running_mutants(tmp_path:
     # mutant, so it needs more than the two fixed moments `fixed_clock`
     # supplies elsewhere in this module -- and nothing here asserts on
     # timestamps, so the real clock is exactly as good an oracle.
-    baseline = _baseline(lane, project_root, recorder, None)
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=2,
-        max_mutants=50,
-        operators=_OPERATORS,
-        process_runner=recorder,
-    )
+    baseline = _baseline(lane, repo.path, recorder, None)
+    plan = make_plan(lane)
+    deadline = make_deadline()
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=50,
+            operators=_OPERATORS,
+            process_runner=recorder,
+            clock=lambda: datetime.now(timezone.utc),
+        )
 
     assert baseline.outcome is Outcome.PASS
     assert mutation is not None
@@ -256,16 +275,17 @@ def test_the_r2_claim_reuses_the_baselines_own_outcome_and_reason_code_verbatim(
         lane, tmp_path / "proj", decide, fixed_clock(MOMENT_A, MOMENT_B)
     )
     mutation = run_mutation(
-        lane,
         baseline=baseline,
-        project_root=tmp_path / "proj",
-        repo_top=tmp_path / "proj",
-        scratch_root=tmp_path / "scratch",
+        prepared=None,
+        plan=None,
+        deadline=None,
         targets=_TARGETS,
         adapter=PythonAdapter(),
         jobs=1,
         max_mutants=50,
         operators=_OPERATORS,
+        process_runner=decide,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
     )
     assert mutation is None
 

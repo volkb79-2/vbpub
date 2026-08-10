@@ -1062,20 +1062,26 @@ def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
 def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
     standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
 ):
-    """O1's own negative, made concrete: the KNOWN-GOOD control is not
+    """O1's own negative, made concrete: R0's own real command is not
     actually good (a real, genuine assertion failure) -- so nothing about
-    the transform's own cause can be concluded, and the R3 CLAIM itself is
-    INCONCLUSIVE, never a silent PASS. The transformed half still genuinely
-    runs (the real orchestration never short-circuits on a broken control
-    -- only a malformed/no-op transform does), and fails too, just not for
-    a reason this claim's own status depends on.
+    a transform's own cause can be concluded, and the R3 CLAIM itself is
+    INCONCLUSIVE, never a silent PASS.
 
-    The OVERALL verdict is FAIL, not INCONCLUSIVE: R3's own control is a
-    copy of the SAME committed state R0 itself runs against, so a broken
-    control means R0's own real execution against the real repository
-    fails too -- correctly dominating the rollup (FAIL outranks
-    INCONCLUSIVE), with R3's own finding still fully recorded underneath
-    it rather than replacing it.
+    P23/A-189: R3's canary is no longer an INDEPENDENT copy-and-run that
+    ignores R0's own outcome -- the handoff's own decision table ("If
+    baseline R0 is not PASS, start no R2/R3 unit") makes a non-PASS
+    baseline stop R3 BEFORE any canary snapshot is even prepared, using
+    R0's own real outcome as the failed control directly. No transform
+    unit ever runs (the real orchestration used to run one regardless; it
+    no longer does), so ``canary`` carries only ``control_outcome`` --
+    never ``transformed_outcome``/``expected_reason_code``/
+    ``observed_reason_code``, which A-025/A-051 omit rather than null when
+    the transformed half was never genuinely attempted.
+
+    The OVERALL verdict is FAIL, not INCONCLUSIVE: R0's own real command
+    against the real repository genuinely failed, correctly dominating the
+    rollup (FAIL outranks INCONCLUSIVE), with R3's own finding still fully
+    recorded underneath it rather than replacing it.
     """
     _seed_pkg(git_repo, test_body=_PKG_TEST_BROKEN)
     script = f"{sys.executable} -m pytest tests -q"
@@ -1119,11 +1125,12 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                     # P21/A-152: the field that finally makes
                     # `judgment.r3.target` witnessable end to end.
                     "target": "pkg/mod.py",
-                    "description": _IMPORT_BREAK_DESCRIPTION,
+                    "description": (
+                        "the lane's baseline command did not PASS -- a "
+                        "canary control cannot be a known-good half of a "
+                        "failing lane"
+                    ),
                     "control_outcome": "FAIL",
-                    "transformed_outcome": "FAIL",
-                    "expected_reason_code": "COMMAND_FAILED",
-                    "observed_reason_code": "COMMAND_FAILED",
                 },
             },
         ),
@@ -1136,14 +1143,24 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
     standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
 ):
     """O1's negative, the concrete case its own text names: an R3-only
-    lane's command never inspects changed-line coverage at all, so it
-    sails right past a valid, test-neutral, uncovered addition -- CANARY
-    survived via an unexpected PASS, never accepted as success."""
+    lane's command never inspects the target file at all, so it sails
+    right past a real, deliberately-broken transform -- CANARY survived
+    via an unexpected PASS, never accepted as success.
+
+    P23/A-192: ``uncovered-line`` now requires R1 declared alongside R3 at
+    LOAD time (a real ``assay.toml`` would refuse the old R3-only shape
+    outright), so this proof now uses ``import-break`` instead -- the
+    identical "the command never inspects the file, so nothing is ever
+    caught" property, for the ONE mechanism that genuinely does not
+    require R1. The command trivially exits 0 without even running the
+    fixture's own test suite (which imports the target and WOULD be
+    genuinely caught), matching the mechanism-agnostic point under test.
+    """
     _seed_pkg(git_repo)
-    script = f"{sys.executable} -m pytest tests -q"
+    script = "exit 0"
     lane_file = _write_lane_file(
         git_repo.path,
-        _r3_lane_toml(script=script, mechanism="uncovered-line", target="pkg/mod.py"),
+        _r3_lane_toml(script=script, mechanism="import-break", target="pkg/mod.py"),
     )
     git_repo.commit_all("add assay.toml")
     head_before = git_repo.head()
@@ -1158,7 +1175,7 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
         _expected_r3_artifact(
             git_repo=git_repo,
             script=script,
-            mechanism="uncovered-line",
+            mechanism="import-break",
             target="pkg/mod.py",
             outcome="FAIL",
             reason_code="CANARY_SURVIVED",
@@ -1170,12 +1187,12 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
                 "verified_by_assay": True,
                 "reason_code": "CANARY_SURVIVED",
                 "canary": {
-                    "mechanism": "uncovered-line",
+                    "mechanism": "import-break",
                     "target": "pkg/mod.py",
-                    "description": _UNCOVERED_LINE_DESCRIPTION,
+                    "description": _IMPORT_BREAK_DESCRIPTION,
                     "control_outcome": "PASS",
                     "transformed_outcome": "PASS",
-                    "expected_reason_code": "UNCOVERED_LINES",
+                    "expected_reason_code": "COMMAND_FAILED",
                 },
             },
         ),
