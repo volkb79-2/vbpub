@@ -153,7 +153,7 @@ series       = "nyxloom-trove/handoffs/README.md"
 # gate.sh`: it derives the host bind source from this devcontainer's Docker
 # mount (or reads the explicit ASSAY_GATE_HOST_REPO_ROOT override), uses
 # fail-loud `--mount` rather than Docker's directory-inventing `-v`, disables
-# the container's network entirely (`--network=none`), and emits three inner
+# the container's network entirely (`--network=none`), and emits four inner
 # phase markers plus a final host-side marker only after Docker itself returns
 # zero. The controller preserves that log/digest; the disposable `--rm`
 # container is not evidence.
@@ -164,12 +164,31 @@ series       = "nyxloom-trove/handoffs/README.md"
 # hardcoded fallback to Docker's unconfined default. Preserved EXACTLY as
 # before -- the single easiest thing to break while restructuring the rest of
 # this script (O4).
+#
+# P25 (A-202-A-206): between the self-hosted lane and the independent
+# witness, the gate now also runs `gate/python/qualify_topos.py` -- the
+# CURRENT run-venv wheel (the same one `run_self_hosted_lane` just proved)
+# against a disposable, pinned, prospective Topos tree, plus a separately
+# hash-installed clean-tagged 1.2.5 release wheel for a targeted release
+# smoke. This is qualification, not adoption: current Topos commits three
+# absolute `/etc/passwd` symlink fixtures A-186 correctly refuses for any R1+
+# lane, so the harness deletes exactly those three paths from its own
+# disposable baseline and proves the full 2,923-test answer is otherwise
+# unchanged (A-202/A-203). The harness never writes to the real Topos
+# checkout, never imports `assay` from source, and never launches Topos's own
+# outer Docker gate -- it prints `ASSAY_P25_TOPOS_QUALIFIED=1` exactly once on
+# success, and only then does the gate script print its own
+# `ASSAY_GATE_PHASE=topos-qualified` marker. `timeout_seconds` below widens
+# from 1800 to 3600 for exactly this addition: the primary scenario alone
+# runs the full 2,923-test Topos suite (a 900s hang failsafe per pytest
+# invocation, never the pass/fail oracle itself), on top of everything the
+# self-hosted lane and independent witness already do.
 
 [gates.tester-unified]
 argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
 phase = "implementation"
 asserts = ["tests-pass"]
-timeout_seconds = 1800
+timeout_seconds = 3600
 environment = "tester-unified"
 
 [mutexes.merge-lane]
