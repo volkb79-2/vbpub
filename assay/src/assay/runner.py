@@ -69,16 +69,19 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol, Sequence, TextIO
+from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequence, TextIO
 
-from . import coverage, diff, git, measurability, mutation, safeio
+from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
@@ -86,6 +89,7 @@ from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
 from .output import VerdictOutput
 from .verdict import (
+    CanaryResult,
     Claim,
     Coverage,
     Evidence,
@@ -102,12 +106,17 @@ from .verdict import (
 __all__ = [
     "CommandPlan",
     "CommandResult",
+    "LaneDeadline",
+    "MonotonicClock",
     "ProcessRunner",
+    "ScratchRootFactory",
     "assemble_verdict",
     "build_r0_claim",
     "default_process_runner",
     "evaluate_r1",
+    "execute_plan",
     "execute_command",
+    "default_scratch_root",
     "refuse_lane",
     "resolve_command_plan",
     "run_lane",
@@ -135,6 +144,57 @@ class ProcessRunner(Protocol):
 #: elapsed-time comparison, so a test can supply a fixed sequence of moments
 #: instead of waiting on a real one (AUTHORING.md §3b.A).
 Clock = Callable[[], datetime]
+
+MonotonicClock = Callable[[], float]
+
+
+@dataclass(frozen=True, kw_only=True)
+class LaneDeadline:
+    """One lane-wide monotonic deadline; no lower layer chooses a clock."""
+
+    expires_at: float
+    monotonic: MonotonicClock
+
+    @classmethod
+    def start(
+        cls, *, budget_seconds: float, monotonic: MonotonicClock
+    ) -> "LaneDeadline":
+        if (
+            isinstance(budget_seconds, bool)
+            or not isinstance(budget_seconds, (int, float))
+            or not math.isfinite(budget_seconds)
+            or budget_seconds <= 0
+        ):
+            raise ValueError(
+                f"budget_seconds must be a positive finite number, got {budget_seconds!r}"
+            )
+        started = monotonic()
+        if (
+            isinstance(started, bool)
+            or not isinstance(started, (int, float))
+            or not math.isfinite(started)
+        ):
+            raise ValueError(f"monotonic clock returned invalid value {started!r}")
+        return cls(expires_at=started + float(budget_seconds), monotonic=monotonic)
+
+    def remaining(self) -> float:
+        remaining = self.expires_at - self.monotonic()
+        if not math.isfinite(remaining) or remaining <= 0:
+            raise AssayError(
+                "the lane-wide deadline expired",
+                outcome=Outcome.BUDGET_EXCEEDED,
+                reason_code=ReasonCode.LANE_TIMEOUT,
+            )
+        return remaining
+
+ScratchRootFactory = Callable[[], ContextManager[Path]]
+
+
+@contextmanager
+def default_scratch_root() -> Iterator[Path]:
+    """One caller-owned absolute scratch root for the whole higher-rigor lane."""
+    with tempfile.TemporaryDirectory(prefix="assay-p23-") as raw:
+        yield Path(raw).resolve()
 
 
 def default_process_runner(
@@ -179,6 +239,10 @@ class CommandPlan:
     #: ``env_declared`` plus whichever ``env_passthrough`` names were actually
     #: present in the passthrough source. Nothing else -- no ambient merge.
     env_effective: Mapping[str, str]
+    env_passthrough: tuple[str, ...]
+    allow_argv_append: bool
+    budget_seconds: float
+    project_prefix: PurePosixPath | None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -216,6 +280,7 @@ def resolve_command_plan(
     *,
     argv_append: Sequence[str] = (),
     passthrough_source: Mapping[str, str] | None = None,
+    project_prefix: PurePosixPath | None = None,
 ) -> CommandPlan:
     """Resolve what will run. Pure: never raises, never launches anything.
 
@@ -240,6 +305,77 @@ def resolve_command_plan(
         argv_effective=argv_declared + argv_appended,
         env_declared=lane.env,
         env_effective=MappingProxyType(env_effective),
+        env_passthrough=tuple(lane.env_passthrough),
+        allow_argv_append=lane.allow_argv_append,
+        budget_seconds=lane.budget_seconds,
+        project_prefix=project_prefix,
+    )
+
+
+def execute_plan(
+    plan: CommandPlan,
+    *,
+    cwd: Path,
+    timeout: float,
+    process_runner: ProcessRunner = default_process_runner,
+    clock: Clock = _utc_now,
+) -> CommandResult:
+    """Execute one already-frozen command plan with a required remainder."""
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
+    started_at = clock()
+    if plan.argv_appended and not plan.allow_argv_append:
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            returncode=None,
+            started=iso_utc(started_at),
+            ended=iso_utc(clock()),
+        )
+    try:
+        proc = process_runner(
+            plan.argv_effective,
+            env=plan.env_effective,
+            cwd=cwd,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.BUDGET_EXCEEDED,
+            reason_code=ReasonCode.LANE_TIMEOUT,
+            returncode=None,
+            started=iso_utc(started_at),
+            ended=iso_utc(clock()),
+        )
+    except OSError:
+        return CommandResult(
+            plan=plan,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            returncode=None,
+            started=iso_utc(started_at),
+            ended=iso_utc(clock()),
+        )
+    ended = iso_utc(clock())
+    if proc.returncode == 0:
+        return CommandResult(
+            plan=plan, outcome=Outcome.PASS, reason_code=None,
+            returncode=0, started=iso_utc(started_at), ended=ended,
+        )
+    return CommandResult(
+        plan=plan,
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.COMMAND_FAILED,
+        returncode=proc.returncode,
+        started=iso_utc(started_at),
+        ended=ended,
     )
 
 
@@ -249,6 +385,7 @@ def execute_command(
     argv_append: Sequence[str] = (),
     cwd: Path,
     passthrough_source: Mapping[str, str] | None = None,
+    project_prefix: PurePosixPath | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> CommandResult:
@@ -274,66 +411,15 @@ def execute_command(
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
     """
     plan = resolve_command_plan(
-        lane, argv_append=argv_append, passthrough_source=passthrough_source
+        lane, argv_append=argv_append, passthrough_source=passthrough_source,
+        project_prefix=project_prefix,
     )
-    started_at = clock()
-
-    if plan.argv_appended and not lane.allow_argv_append:
-        ended_at = clock()
-        return CommandResult(
-            plan=plan,
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.EXEC_FAILED,
-            returncode=None,
-            started=iso_utc(started_at),
-            ended=iso_utc(ended_at),
-        )
-
-    try:
-        proc = process_runner(
-            plan.argv_effective,
-            env=plan.env_effective,
-            cwd=cwd,
-            timeout=lane.budget_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        ended_at = clock()
-        return CommandResult(
-            plan=plan,
-            outcome=Outcome.BUDGET_EXCEEDED,
-            reason_code=ReasonCode.LANE_TIMEOUT,
-            returncode=None,
-            started=iso_utc(started_at),
-            ended=iso_utc(ended_at),
-        )
-    except OSError:
-        ended_at = clock()
-        return CommandResult(
-            plan=plan,
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.EXEC_FAILED,
-            returncode=None,
-            started=iso_utc(started_at),
-            ended=iso_utc(ended_at),
-        )
-
-    ended_at = clock()
-    if proc.returncode == 0:
-        return CommandResult(
-            plan=plan,
-            outcome=Outcome.PASS,
-            reason_code=None,
-            returncode=proc.returncode,
-            started=iso_utc(started_at),
-            ended=iso_utc(ended_at),
-        )
-    return CommandResult(
-        plan=plan,
-        outcome=Outcome.FAIL,
-        reason_code=ReasonCode.COMMAND_FAILED,
-        returncode=proc.returncode,
-        started=iso_utc(started_at),
-        ended=iso_utc(ended_at),
+    return execute_plan(
+        plan,
+        cwd=cwd,
+        timeout=plan.budget_seconds,
+        process_runner=process_runner,
+        clock=clock,
     )
 
 
@@ -771,6 +857,33 @@ def refuse_lane(
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source
     )
+    return _refuse_lane_with_plan(
+        lane,
+        commit=commit,
+        plan=plan,
+        status=status,
+        reason_code=reason_code,
+        assay_version=assay_version,
+        clock=clock,
+    )
+
+
+def _refuse_lane_with_plan(
+    lane: Lane,
+    *,
+    commit: str,
+    plan: CommandPlan,
+    status: Outcome,
+    reason_code: ReasonCode,
+    assay_version: str,
+    clock: Clock = _utc_now,
+) -> Verdict:
+    """The identical shape :func:`refuse_lane` builds, given an
+    ALREADY-RESOLVED *plan* (P23/A-193): the higher-rigor path resolves its
+    one immutable plan before any dirt/HEAD/snapshot work, so a pre-baseline
+    refusal must record that exact plan rather than resolving a second one
+    (O1's "no repeated unit receives lane... as a source of command truth").
+    """
     started = clock()
     ended = clock()
     rigor_levels = tuple(lane.rigor)
@@ -801,6 +914,693 @@ def refuse_lane(
     )
 
 
+# ---------------------------------------------------------------------------
+# P23: exact reexecution integration -- the committed-snapshot state machine
+# every lane declaring R1, R2, or R3 uses instead of the direct path above
+# (A-189). isolation.py (P22) owns Git-object isolation/refusal; this module
+# owns the plan/deadline/scratch seams and R0/R1's own orchestration,
+# delegating R2 to mutation.py and R3 to canary.py -- both of which consume
+# the ONE shared unit engine, :func:`_execute_snapshot_unit`, below.
+# ---------------------------------------------------------------------------
+
+
+def _relocate_source_roots(
+    lane: Lane, *, project_root: Path, scratch_project_root: Path
+) -> Lane:
+    """*lane* with :attr:`~assay.config.JudgeConfig.source_root_paths`
+    respelled against *scratch_project_root* instead of *project_root*
+    (A-149) -- the ONE written copy of this respelling, shared by this
+    module's own baseline/R2-target-discovery use and by
+    :mod:`assay.canary`'s control/transform halves, rather than two
+    independently drifting copies.
+
+    ``source_root_paths`` are RESOLVED, ABSOLUTE directories under the
+    CONSUMER's own project root; every judgement made inside a snapshot
+    compares them against paths under THAT snapshot's own project root.
+    Only ``source_root_paths`` needs respelling: every other path-bearing
+    field a snapshot is judged through is already project-relative and
+    resolved against whichever project root it is handed, and ``judge.base``
+    is a revision, not a path.
+    """
+    judge = lane.judge
+    relocated = tuple(
+        scratch_project_root / root.relative_to(project_root)
+        for root in judge.source_root_paths
+    )
+    return replace(lane, judge=replace(judge, source_root_paths=relocated))
+
+
+@dataclass(frozen=True, kw_only=True)
+class SnapshotUnitResult:
+    """One executed higher-rigor unit (P23): the real :class:`CommandResult`,
+    the post-run Git-state verdict (``None`` when the snapshot is still
+    clean and still names its own commit), and -- only when coverage was
+    requested -- either the freshly parsed profile or the
+    :class:`~assay.errors.AssayError` its own reservation/consume/parse
+    raised.
+    """
+
+    result: CommandResult
+    post_reason: ReasonCode | None
+    profile: CoverageProfile | None
+    profile_error: AssayError | None
+
+
+def _execute_snapshot_unit(
+    *,
+    plan: CommandPlan,
+    snapshot: "isolation.Snapshot",
+    deadline: LaneDeadline,
+    wants_coverage: bool,
+    coverage_artifact: str | None,
+    coverage_format: str | None,
+    process_runner: ProcessRunner,
+    clock: Clock,
+) -> SnapshotUnitResult:
+    """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
+    baseline, :mod:`assay.canary`'s control/transform halves, and (with its
+    own copy of the post-run dirt/HEAD check, since a mutant additionally
+    needs P22's replacement seam mid-flight) :mod:`assay.mutation`'s own
+    workers all consume.
+
+    Mirrors the direct path's own ordering one level down: reserve -> arm ->
+    execute -> post-run dirt/HEAD check -> consume/parse. Reservation
+    construction or a tracked-artifact check are PREREQUISITE failures and
+    are RAISED -- the caller decides what "this unit could never even be
+    attempted" means for its own claim scope. A post-run Git-state violation
+    is reported via ``post_reason`` rather than raised, because only the
+    caller knows whether an already-produced REAL R0 result (the lane's own
+    baseline) must be preserved despite it (A-195, mirroring P20's own
+    direct-path claim precedence one level down).
+    """
+    reservation: safeio.OutputReservation | None = None
+    if wants_coverage:
+        assert coverage_artifact is not None and coverage_format is not None
+        reservation = safeio.reserve_output(
+            snapshot.project_root,
+            coverage_artifact,
+            limit=coverage.MAX_COVERAGE_ARTIFACT_BYTES,
+        )
+        if _coverage_artifact_is_tracked(
+            snapshot.root, snapshot.project_root, coverage_artifact
+        ):
+            reservation.close()
+            raise AssayError(
+                f"the declared coverage artifact {coverage_artifact!r} is "
+                f"tracked by git inside the prepared snapshot -- "
+                f"measurement output must not be committed",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        reservation.arm()
+
+    result = execute_plan(
+        plan,
+        cwd=snapshot.project_root,
+        timeout=deadline.remaining(),
+        process_runner=process_runner,
+        clock=clock,
+    )
+
+    post_reason: ReasonCode | None = None
+    if git.dirty_paths(snapshot.root):
+        post_reason = ReasonCode.DIRTY_TREE
+    elif git.head_rev(snapshot.root) != snapshot.commit:
+        post_reason = ReasonCode.HEAD_CHANGED
+
+    profile: CoverageProfile | None = None
+    profile_error: AssayError | None = None
+    if post_reason is None and wants_coverage:
+        assert reservation is not None
+        try:
+            raw = reservation.consume()
+            profile = coverage.parse_coverage_artifact(raw, declared_format=coverage_format)
+        except AssayError as exc:
+            profile_error = exc
+    if reservation is not None:
+        reservation.close()
+
+    return SnapshotUnitResult(
+        result=result,
+        post_reason=post_reason,
+        profile=profile,
+        profile_error=profile_error,
+    )
+
+
+def _read_prepared_source_text(
+    prepared: "isolation.SnapshotRepository", path: str, *, deadline: LaneDeadline
+) -> str:
+    """Read one repo-top-relative mutation-target source file through the
+    prepared P22 seed (never a consumer/snapshot disk path, per the
+    handoff's own "read source only through prepared.read_regular_file"),
+    applying the identical 8 MiB ceiling and strict UTF-8 decode
+    :func:`_read_bounded_source_text` already applies to the direct path.
+    """
+    raw = prepared.read_regular_file(PurePosixPath(path), timeout=deadline.remaining())
+    if len(raw) > MAX_SOURCE_FILE_BYTES:
+        raise AssayError(
+            f"source file {path!r} is {len(raw)} bytes, exceeding the "
+            f"{MAX_SOURCE_FILE_BYTES}-byte bound for mutation target resolution",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AssayError(
+            f"source file {path!r} is not valid UTF-8 and could not be read "
+            f"for mutation target resolution: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+
+
+def _mutation_targets_from_diff(
+    added: diff.AddedLines,
+    *,
+    prepared: "isolation.SnapshotRepository",
+    deadline: LaneDeadline,
+    snapshot_repo_top: Path,
+    source_root_paths: Sequence[Path],
+) -> tuple[mutation.MutationTarget, ...]:
+    """Build R2's own per-file candidate list directly from *added* when R1
+    did not already resolve one (P23's own "give text to the landed P21
+    resolver" -- :func:`~assay.mutation.collect_mutation_sites`, never a
+    second call into P18's own :func:`~assay.mutation.
+    resolve_mutation_targets`, which additionally applies an ADAPTER's own
+    excluded-directory/source-glob/test-path conventions -- R1's "which
+    files are considered for coverage" policy, not a fact this bounded
+    execution boundary depends on). Scoped by declared source root alone,
+    the identical containment test that function itself applies, so a
+    changed file outside every declared root is still never a candidate.
+
+    Every path is read ONCE through *prepared* (never a snapshot disk copy,
+    "never reopen a consumer path"); a file contributing no line that
+    survives containment is simply absent, matching
+    :func:`~assay.mutation.resolve_mutation_targets`'s own "no empty
+    MutationTarget" rule.
+    """
+    targets: list[mutation.MutationTarget] = []
+    for path in sorted(added.by_file):
+        lines = added.by_file[path]
+        abs_path = (snapshot_repo_top / path).resolve()
+        if not any(abs_path.is_relative_to(root) for root in source_root_paths):
+            continue
+        targets.append(
+            mutation.MutationTarget(
+                path=path,
+                text=_read_prepared_source_text(prepared, path, deadline=deadline),
+                lines=frozenset(lines),
+            )
+        )
+    return tuple(targets)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PreparedOutcome:
+    """The raw materials :func:`_run_higher_rigor_lane` needs to build the
+    final :class:`~assay.verdict.Verdict` -- kept separate from an actually
+    constructed ``Verdict`` so a cleanup-only failure AFTER an otherwise
+    normal result can still replace exactly the highest declared
+    higher-rigor claim/judgment tier (A-193/A-194's "outer scratch cleanup
+    alone fails" rule) without re-deriving anything from a serialized
+    artifact.
+    """
+
+    result: CommandResult
+    claims: tuple[Claim, ...]
+    judgment: Judgment | None
+    ended: str
+
+
+def _resolve_declared_base(repo: Path, base: str | None) -> str | None:
+    """*base* resolved all the way to its MERGE-BASE commit against the
+    CONSUMER's real repository (:func:`assay.git.resolve_base`), or ``None``
+    when the lane declares none.
+
+    A P22 snapshot carries only the reachable-commit CLOSURE of the resolved
+    lane commit, never a branch/tag REF and never a DIVERGED commit's own
+    unique history -- ``judge.base`` is commonly a symbolic name (a branch),
+    and that branch's own tip may not be an ancestor of the resolved commit
+    at all (a real fork-point comparison). Resolving all the way to the
+    merge-base HERE, once, against the consumer's own full repository, is
+    what makes the result an ANCESTOR of the resolved commit by construction
+    -- and therefore always present inside the snapshot's own closure.
+    :func:`~assay.measurability.check_base_is_head` still calls
+    :func:`~assay.git.resolve_base` again, inside the snapshot, but merge-base
+    is idempotent on an already-ancestor value, so that second call reproduces
+    the identical OID rather than re-deriving a different one.
+    """
+    if base is None:
+        return None
+    return git.resolve_base(repo, base)
+
+
+def _run_prepared_lane(
+    lane: Lane,
+    *,
+    plan: CommandPlan,
+    deadline: LaneDeadline,
+    prepared: "isolation.SnapshotRepository",
+    project_root: Path,
+    adapter: LanguageAdapter | None,
+    process_runner: ProcessRunner,
+    clock: Clock,
+    rigor_levels: tuple[str, ...],
+    r1_declared: bool,
+    r2_declared: bool,
+    r3_declared: bool,
+    resolved_base: str | None,
+) -> _PreparedOutcome:
+    """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
+    still-live seed. Never lets an :class:`~assay.errors.AssayError` escape
+    uncaught: every declared later claim is paid for one way or another
+    before this returns, so the caller's own try/except around the whole
+    ``prepared_snapshot``/scratch-root context exists only for a STRUCTURAL
+    failure in one of those two context managers, never for anything this
+    function does.
+    """
+    coverage_artifact = lane.judge.coverage.artifact if r1_declared else None
+    coverage_format = lane.judge.coverage.format if r1_declared else None
+
+    with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        unit = _execute_snapshot_unit(
+            plan=plan,
+            snapshot=baseline_snapshot,
+            deadline=deadline,
+            wants_coverage=r1_declared,
+            coverage_artifact=coverage_artifact,
+            coverage_format=coverage_format,
+            process_runner=process_runner,
+            clock=clock,
+        )
+        result = unit.result
+        r0_claim = build_r0_claim(result)
+
+        if unit.post_reason is not None:
+            # A-195, mirroring P20's own direct-path claim precedence: the
+            # REAL R0 claim stands; every OTHER declared level becomes the
+            # unchanged payload-free pair.
+            claims = tuple(
+                r0_claim
+                if level == "R0"
+                else Claim(
+                    rigor=level,
+                    source="computed",
+                    status=Outcome.NO_MEASUREMENT,
+                    verified_by_assay=True,
+                    reason_code=unit.post_reason,
+                )
+                for level in rigor_levels
+            )
+            return _PreparedOutcome(
+                result=result, claims=claims, judgment=None, ended=iso_utc(clock())
+            )
+
+        claims: tuple[Claim, ...] = (r0_claim,)
+        judgment_r1: JudgmentR1 | None = None
+        added: diff.AddedLines | None = None
+        targets: tuple[mutation.MutationTarget, ...] | None = None
+        r2_early_claim: Claim | None = None
+
+        if r1_declared:
+            if unit.profile_error is not None:
+                claims += (
+                    Claim(
+                        rigor="R1",
+                        source="computed",
+                        status=unit.profile_error.outcome,
+                        verified_by_assay=True,
+                        reason_code=unit.profile_error.reason_code,
+                    ),
+                )
+            else:
+                relocated_lane = _relocate_source_roots(
+                    lane,
+                    project_root=project_root,
+                    scratch_project_root=baseline_snapshot.project_root,
+                )
+                resolved_base_holder: list[str] = []
+                added_holder: list[diff.AddedLines] = []
+                r1_claim = evaluate_r1(
+                    relocated_lane,
+                    repo=baseline_snapshot.root,
+                    project_root=baseline_snapshot.project_root,
+                    base=resolved_base,
+                    adapter=adapter,
+                    profile=unit.profile,
+                    on_base_resolved=resolved_base_holder.append,
+                    on_added_resolved=added_holder.append,
+                )
+                claims += (r1_claim,)
+                if r1_claim.coverage is not None:
+                    judgment_r1 = JudgmentR1(
+                        language=lane.judge.language,
+                        source_roots=lane.judge.source_roots,
+                        coverage_format=lane.judge.coverage.format,
+                        coverage_artifact=lane.judge.coverage.artifact,
+                        fail_under=lane.judge.fail_under,
+                        allow_excluded=lane.judge.allow_excluded,
+                        base=resolved_base_holder[0],
+                    )
+                if added_holder:
+                    added = added_holder[0]
+            ended = iso_utc(clock())
+
+        if r2_declared and result.outcome is Outcome.PASS:
+            if added is None:
+                try:
+                    resolved = measurability.check_base_is_head(
+                        baseline_snapshot.root, resolved_base
+                    )
+                    diff_text = git.run(
+                        baseline_snapshot.root,
+                        "diff",
+                        "--unified=0",
+                        resolved.base_rev,
+                        resolved.head_rev,
+                    )
+                    added = diff.parse_added_lines(diff_text)
+                except AssayError as exc:
+                    r2_early_claim = Claim(
+                        rigor="R2",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                    )
+            if added is not None:
+                relocated_lane_r2 = _relocate_source_roots(
+                    lane,
+                    project_root=project_root,
+                    scratch_project_root=baseline_snapshot.project_root,
+                )
+                try:
+                    targets = _mutation_targets_from_diff(
+                        added,
+                        prepared=prepared,
+                        deadline=deadline,
+                        snapshot_repo_top=baseline_snapshot.root,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                    )
+                except AssayError as exc:
+                    r2_early_claim = Claim(
+                        rigor="R2",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                    )
+    # `baseline_snapshot` is closed from here on -- R2/R3 use `prepared`
+    # directly, each materialising its own independent snapshot.
+
+    judgment_r2: JudgmentR2 | None = None
+    if r2_declared:
+        if result.outcome is not Outcome.PASS:
+            claims += (mutation.build_mutation_claim(result, None),)
+        elif r2_early_claim is not None:
+            claims += (r2_early_claim,)
+        else:
+            assert targets is not None
+            try:
+                mutation_result = mutation.run_mutation(
+                    baseline=result,
+                    prepared=prepared,
+                    plan=plan,
+                    deadline=deadline,
+                    targets=targets,
+                    adapter=adapter,
+                    jobs=lane.judge.mutation.jobs,
+                    max_mutants=lane.judge.mutation.max_mutants,
+                    operators=lane.judge.mutation.operators,
+                    process_runner=process_runner,
+                    clock=clock,
+                )
+            except AssayError as exc:
+                claims += (
+                    Claim(
+                        rigor="R2",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                    ),
+                )
+            else:
+                r2_claim = mutation.build_mutation_claim(result, mutation_result)
+                claims += (r2_claim,)
+                if r2_claim.mutation is not None:
+                    judgment_r2 = JudgmentR2(
+                        jobs=lane.judge.mutation.jobs,
+                        max_mutants=lane.judge.mutation.max_mutants,
+                        operators=lane.judge.mutation.operators,
+                    )
+        ended = iso_utc(clock())
+
+    judgment_r3: JudgmentR3 | None = None
+    if r3_declared:
+        # Deferred: `assay.canary` imports several names from THIS module at
+        # its own module level, so a module-level import here would close a
+        # genuine cycle -- the identical reasoning `assay.mutation`'s own
+        # module docstring already gives for `execute_plan`.
+        from .canary import build_canary_claim, run_isolated_canary
+
+        canary_cfg = lane.judge.canary
+        if result.outcome is not Outcome.PASS:
+            canary_result = CanaryResult(
+                mechanism=canary_cfg.mechanism,
+                target=canary_cfg.target,
+                description=(
+                    "the lane's baseline command did not PASS -- a canary "
+                    "control cannot be a known-good half of a failing lane"
+                ),
+                control_outcome=result.outcome,
+            )
+            claims += (build_canary_claim(canary_result),)
+            judgment_r3 = JudgmentR3(mechanism=canary_cfg.mechanism, target=canary_cfg.target)
+        elif canary_cfg.mechanism == "uncovered-line" and next(
+            claim for claim in claims if claim.rigor == "R1"
+        ).status is not Outcome.PASS:
+            r1_status = next(claim for claim in claims if claim.rigor == "R1").status
+            canary_result = CanaryResult(
+                mechanism=canary_cfg.mechanism,
+                target=canary_cfg.target,
+                description=(
+                    "the lane's baseline R1 coverage measurement did not "
+                    "PASS -- an uncovered-line canary control has no "
+                    "known-good coverage baseline"
+                ),
+                control_outcome=r1_status,
+            )
+            claims += (build_canary_claim(canary_result),)
+            judgment_r3 = JudgmentR3(mechanism=canary_cfg.mechanism, target=canary_cfg.target)
+        else:
+            try:
+                canary_result = run_isolated_canary(
+                    lane,
+                    prepared=prepared,
+                    plan=plan,
+                    deadline=deadline,
+                    project_root=project_root,
+                    resolved_base=resolved_base,
+                    mechanism=canary_cfg.mechanism,
+                    target=canary_cfg.target,
+                    adapter=adapter,
+                    process_runner=process_runner,
+                    clock=clock,
+                )
+            except AssayError as exc:
+                claims += (
+                    Claim(
+                        rigor="R3",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                    ),
+                )
+            else:
+                claims += (build_canary_claim(canary_result),)
+                judgment_r3 = JudgmentR3(
+                    mechanism=canary_cfg.mechanism, target=canary_cfg.target
+                )
+        ended = iso_utc(clock())
+
+    judgment: Judgment | None = None
+    if judgment_r1 is not None or judgment_r2 is not None or judgment_r3 is not None:
+        judgment = Judgment(r1=judgment_r1, r2=judgment_r2, r3=judgment_r3)
+
+    return _PreparedOutcome(result=result, claims=claims, judgment=judgment, ended=ended)
+
+
+def _replace_highest_higher_rigor_claim_with_git_failed(
+    lane: Lane, outcome: _PreparedOutcome
+) -> _PreparedOutcome:
+    """A-193/A-194's "outer scratch cleanup alone fails" rule: replace the
+    HIGHEST declared higher-rigor claim (R3 if declared, else R2, else R1)
+    with the payload-free ``ERROR``/``GIT_FAILED`` pair and remove its
+    matching judgment tier; every lower completed claim (including R0)
+    remains exactly as it was.
+    """
+    target = next(level for level in ("R3", "R2", "R1") if level in lane.rigor)
+    new_claims = tuple(
+        Claim(
+            rigor=target,
+            source="computed",
+            status=Outcome.ERROR,
+            verified_by_assay=True,
+            reason_code=ReasonCode.GIT_FAILED,
+        )
+        if claim.rigor == target
+        else claim
+        for claim in outcome.claims
+    )
+    new_judgment = outcome.judgment
+    if new_judgment is not None:
+        remaining = {
+            "r1": new_judgment.r1,
+            "r2": new_judgment.r2,
+            "r3": new_judgment.r3,
+        }
+        remaining[target.lower()] = None
+        new_judgment = None if not any(remaining.values()) else replace(new_judgment, **remaining)
+    return _PreparedOutcome(
+        result=outcome.result, claims=new_claims, judgment=new_judgment, ended=outcome.ended
+    )
+
+
+def _run_higher_rigor_lane(
+    lane: Lane,
+    *,
+    commit: str,
+    repo: Path,
+    project_root: Path,
+    adapter: LanguageAdapter | None,
+    assay_version: str,
+    argv_append: Sequence[str],
+    passthrough_source: Mapping[str, str] | None,
+    process_runner: ProcessRunner,
+    clock: Clock,
+    monotonic: MonotonicClock,
+    scratch_root_factory: ScratchRootFactory,
+    r1_declared: bool,
+    r2_declared: bool,
+    r3_declared: bool,
+) -> Verdict:
+    """P23's committed-snapshot state machine (A-189): any lane declaring
+    R1, R2, or R3 reaches here instead of the direct live-tree path in
+    :func:`run_lane` below. One immutable :class:`CommandPlan` (with its
+    exact, non-``None`` repo-relative ``project_prefix``) and one injected
+    :class:`LaneDeadline` are resolved ONCE and shared across every unit;
+    :mod:`assay.isolation` (P22) owns all Git-object isolation and refusal.
+    """
+    repo_top = git.repo_top(repo)
+    relative = project_root.resolve().relative_to(repo_top)
+    project_prefix = (
+        PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
+    )
+    plan = resolve_command_plan(
+        lane,
+        argv_append=argv_append,
+        passthrough_source=passthrough_source,
+        project_prefix=project_prefix,
+    )
+    rigor_levels = tuple(lane.rigor)
+
+    def refuse_all(status: Outcome, reason_code: ReasonCode) -> Verdict:
+        return _refuse_lane_with_plan(
+            lane,
+            commit=commit,
+            plan=plan,
+            status=status,
+            reason_code=reason_code,
+            assay_version=assay_version,
+            clock=clock,
+        )
+
+    if git.dirty_paths(repo):
+        return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE)
+    if git.head_rev(repo) != commit:
+        return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.HEAD_CHANGED)
+
+    outcome_holder: list[_PreparedOutcome] = []
+    try:
+        # A P22 snapshot carries the resolved commit's full reachable OBJECT
+        # closure, never a branch/tag REF -- a symbolic `judge.base` (the
+        # common case) only the CONSUMER's own repository can resolve.
+        # Resolved once, here, before any snapshot exists.
+        resolved_base = _resolve_declared_base(
+            repo, lane.judge.base if lane.judge is not None else None
+        )
+        with scratch_root_factory() as scratch_root:
+            deadline = LaneDeadline.start(
+                budget_seconds=lane.budget_seconds, monotonic=monotonic
+            )
+            spec = isolation.SnapshotSpec(
+                repo_top=repo_top,
+                commit=commit,
+                project_prefix=project_prefix,
+                scratch_root=scratch_root,
+                limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
+            )
+            with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
+                outcome_holder.append(
+                    _run_prepared_lane(
+                        lane,
+                        plan=plan,
+                        deadline=deadline,
+                        prepared=prepared,
+                        project_root=project_root,
+                        adapter=adapter,
+                        process_runner=process_runner,
+                        clock=clock,
+                        rigor_levels=rigor_levels,
+                        r1_declared=r1_declared,
+                        r2_declared=r2_declared,
+                        r3_declared=r3_declared,
+                        resolved_base=resolved_base,
+                    )
+                )
+    except AssayError as exc:
+        if outcome_holder:
+            outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                lane, outcome_holder[0]
+            )
+        else:
+            return refuse_all(exc.outcome, exc.reason_code)
+    except OSError:
+        if outcome_holder:
+            outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                lane, outcome_holder[0]
+            )
+        else:
+            return refuse_all(Outcome.ERROR, ReasonCode.GIT_FAILED)
+    except RuntimeError:
+        # `prepare_snapshot`'s own programmer-error leak detection. Only a
+        # cleanup-time occurrence (after a normal result already exists) is
+        # this module's problem; anything else is a genuine bug and must
+        # propagate rather than be laundered into a claim.
+        if outcome_holder:
+            outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                lane, outcome_holder[0]
+            )
+        else:
+            raise
+    else:
+        outcome = outcome_holder[0]
+
+    return assemble_verdict(
+        lane=lane,
+        commit=commit,
+        result=outcome.result,
+        claims=outcome.claims,
+        assay_version=assay_version,
+        judgment=outcome.judgment,
+        ended=outcome.ended,
+    )
+
+
 def run_lane(
     lane: Lane,
     *,
@@ -813,211 +1613,75 @@ def run_lane(
     passthrough_source: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
+    monotonic: MonotonicClock = time.monotonic,
+    scratch_root_factory: ScratchRootFactory = default_scratch_root,
 ) -> Verdict:
-    """``assay run``'s real pipeline (P17, R2 wiring P18): resolve
-    prerequisites, run the lane's command AT MOST once, judge R1/R2 when
-    declared, and assemble ONE verdict that encloses all of it.
+    """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
+    dispatch on declared rigor, then either run the direct R0-only clean-tree
+    path below or delegate whole to :func:`_run_higher_rigor_lane`.
 
     *adapter* is the ALREADY-RESOLVED :class:`~assay.adapters.base.
     LanguageAdapter` for ``lane.judge.language`` at whichever of R1/R2 is
     declared -- this function knows nothing about a
-    :class:`~assay.registry.Registry`; resolving which adapter (or
-    refusing an unsupported language/rigor pairing outright, before
-    anything here runs at all) is :mod:`assay.cli`'s own job (work item
-    2). The SAME adapter object serves both R1's coverage evaluation and
-    R2's mutation generation (one adapter per language, not per rigor
-    level -- :class:`~assay.registry.RegistryEntry` already pairs them
-    this way). *adapter* is ``None`` exactly when NEITHER ``"R1"`` nor
-    ``"R2"`` is in ``lane.rigor`` -- this function never dereferences it
-    otherwise.
+    :class:`~assay.registry.Registry`; resolving which adapter (or refusing
+    an unsupported language/rigor pairing outright, before anything here runs
+    at all) is :mod:`assay.cli`'s own job (work item 2). *adapter* is
+    ``None`` exactly when NEITHER ``"R1"`` nor ``"R2"`` is in ``lane.rigor``.
 
-    Ordering (work items 2-7), all before the command runs, and in exactly
-    the handoff's own topology -- ``reserve -> pre-run refusals -> arm ->
-    execute -> post-command dirty check -> consume/parse -> evaluate``:
+    **The dispatch is a declared two-state policy, never a fallback
+    (A-189).** ``rigor == ("R0",)`` retains this module's original direct
+    live-tree execution below: no :mod:`assay.isolation` snapshot, no
+    :class:`CommandPlan`/:class:`LaneDeadline`. Any lane declaring R1, R2 or
+    R3 is instead handed whole to :func:`_run_higher_rigor_lane`, which owns
+    the committed-snapshot state machine end to end (one resolved
+    :class:`CommandPlan`, one :class:`LaneDeadline`, one prepared P22 seed,
+    independent fresh snapshots per unit) -- see its own docstring and
+    :mod:`assay.canary`/:mod:`assay.mutation` for R1/R2/R3's actual
+    evaluation. A P22 refusal on that path is final; this function never
+    catches it to retry against the live tree.
 
-    1. If R1 is declared, the coverage output path is RESERVED
-       (:func:`assay.safeio.reserve_output`) before any refusal -- a
-       side-effect-free construction that already refuses an unsafe
-       declared spelling or destination (P20) -- and separately checked
-       against git's index (:func:`_coverage_artifact_is_tracked`):
-       measurement output has no business being committed.
-    2. The WHOLE git worktree/index -- not merely the declared source
-       roots -- must be clean (sol finding 6, live in the R0 path before
-       this package: "every assay run invocation records HEAD and runs the
-       live tree regardless of rigor level"). Either failure refuses the
-       ENTIRE invocation via :func:`refuse_lane` before
-       :func:`execute_command` is ever called.
-    3. ONLY THEN is the reservation ARMED (:meth:`~assay.safeio.
-       OutputReservation.arm`) -- work item 4's "cannot consume prior
-       output" made true by construction: whatever exists at that path once
-       the command finishes was newly written BY this run, because nothing
-       else could still be there.
-
-    **Step 3 comes last on purpose (A-140).** Arming first made the
-    cleanliness guard at step 2 judge a tree this function had itself
-    just modified, and made a run that refuses to do anything nonetheless
-    DELETE a file -- reproduced against the installed console script: a
-    lane declaring any untracked regular file as its ``artifact`` had that
-    file destroyed before ``DIRTY_TREE`` was ever reported. The cost of
-    the correct order is a real requirement on the consumer, stated here
-    because nothing else states it: **the declared coverage artifact must
-    be git-ignored (or absent)**, otherwise it is itself untracked
-    worktree state and step 2 refuses -- loudly, and with the artifact
-    intact, which is the trade this project's own defaults policy
-    (AGENTS.md 4.2a) asks for over silently deleting to make the tree
-    look clean.
-
-    **P20 (A-175): the post-command repository check precedes every
-    higher-rigor judgment.** Immediately after the command returns -- before
-    the reservation is consumed and before any of R1/R2/R3 runs -- the whole
-    Git-visible repository is compared against the commit this function
-    itself resolved before the command ran. The pre-run guard (step 2)
-    proves what existed BEFORE the command; it says nothing about what the
-    command itself left behind (a tracked test/support file it happened to
-    modify, for instance).
+    **P20 (A-175): the post-command repository check precedes the claim.**
+    Immediately after the command returns, the whole Git-visible repository
+    is compared against the commit this function itself resolved before the
+    command ran -- never the caller's *commit* argument, which is an
+    identity assay is asked to RECORD rather than one it has verified. The
+    pre-run guard proves what existed BEFORE the command; this proves
+    nothing was left behind (a tracked test/support file the command
+    happened to modify, for instance).
 
     That comparison is TWO facts, not one (reviewer repair): the tree must
     still be clean, AND ``HEAD`` must still be the resolved pre-run commit.
     Dirt alone is not sufficient, because a command that COMMITS leaves a
-    perfectly clean tree -- and ``evaluate_r1`` re-reads ``HEAD`` live
-    through :func:`assay.measurability.check_base_is_head`, so it would then
-    measure a commit the artifact does not name. Reproduced end to end
-    before the repair: a lane whose command committed away its own uncovered
-    line turned a real ``FAIL``/``UNCOVERED_LINES`` at 50.0% into ``PASS``
-    at 100.0%, with the verdict still recording the pre-run commit. The
-    pre-run ``HEAD`` is read here from git rather than taken from the
-    caller's *commit* argument, which is an identity assay is asked to
-    RECORD rather than one it has verified. If either fact fails, the REAL
-    R0 claim is
-    preserved when a higher rigor is also declared and every OTHER declared
-    claim renders ``NO_MEASUREMENT``/``DIRTY_TREE`` without running; for an
-    R0-only lane, R0 itself carries that terminal instead of its real
-    outcome. Assay never cleans the consumer's tree to make a claim true,
-    and no schema-v3 return-code field is invented for it (the ignored
-    coverage artifact itself is exempt by construction: a properly
-    git-ignored path never appears in ``git status`` at all).
-
-    Only once the tree is confirmed still clean does R1 -- if declared --
-    consume and parse the reservation EXACTLY ONCE
-    (:meth:`~assay.safeio.OutputReservation.consume`,
-    :func:`assay.coverage.parse_coverage_artifact`) and inject the result
-    into :func:`evaluate_r1` as *profile*, which never rereads it. If that
-    consume/parse itself raises a typed :class:`~assay.errors.AssayError`
-    (including the new, truthful ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` for
-    an artifact the command simply never produced, P20/A-174), the R1 claim
-    is built directly from that exact pair and :func:`evaluate_r1` is never
-    called at all -- a coverage artifact a real test command wrote is a
-    fact about what executed, not about whether its own assertions passed,
-    so an R0 FAIL does not itself make R1 vacuous, and this still renders
-    honestly regardless of R0's own outcome. ``judgment.r1`` is built if and
-    only if the rendered R1 claim carries a ``coverage`` payload (P16's own
-    invariant, :meth:`~assay.verdict.Verdict._check_judgment_matches_claims`)
-    -- using the base :func:`evaluate_r1` itself already resolved, surfaced
-    through *on_base_resolved* rather than re-resolved a second time (O2:
-    "the comparison base resolves once"). Final ``ended`` covers R1's own
-    completion, not merely R0's own (O2: "verdict timing encloses command
-    plus R1 judgment").
-
-    **P18: if R2 is declared, mutation testing is attempted after R1** (and
-    regardless of whether R1 was even declared), using R0's OWN
-    :class:`CommandResult` (*result*) as :func:`assay.mutation.
-    run_mutation`'s mandatory *baseline* -- the lane's command still runs
-    only ONCE per invocation (sol finding 11). When *result* did not
-    ``PASS``, R2's own prerequisite chain is never even consulted: R2's
-    baseline gate is strictly stricter than R1's (a failed baseline makes
-    everything downstream of it moot), so the claim is built directly via
-    :func:`assay.mutation.build_mutation_claim(result, None)
-    <assay.mutation.build_mutation_claim>`, which propagates *result*'s own
-    ``(outcome, reason_code)`` verbatim -- the identical answer resolving
-    targets and calling :func:`~assay.mutation.run_mutation` anyway would
-    have produced, without the wasted diff/target work. When *result* DID
-    ``PASS``, R2 needs the same resolved diff R1 uses: if R1 was declared
-    and its own :func:`evaluate_r1` call reached the diff (surfaced via
-    ``on_added_resolved``, mirroring *on_base_resolved*), R2 reuses that
-    :class:`~assay.diff.AddedLines` rather than diffing ``base``..``HEAD``
-    a second time; otherwise (R1 not declared, or R1's own coverage-
-    specific guards tripped before reaching the diff) R2 resolves its own
-    prerequisite chain -- the identical ``check_dirty_tree``/
-    ``check_base_is_head`` guards R1 uses, since R1 and R2 read the exact
-    same ``judge.source_root_paths``/``judge.base`` -- and refuses
-    (``NO_MEASUREMENT``) on the SAME two causes R1 would if it hit them.
-    :func:`~assay.mutation.resolve_mutation_targets` then builds the
-    per-file candidate list, and mutation runs inside a fresh, self-
-    cleaning scratch directory (:func:`tempfile.TemporaryDirectory`) this
-    function owns end to end. ``repo_top`` is handed to
-    :func:`~assay.mutation.run_mutation` alongside *project_root* because
-    those two are NOT the same directory for a project living in a
-    subdirectory of its repository (A-145) — every target path is relative
-    to the former, while each mutant's scratch copy is a copy of the
-    latter. Reaching :func:`~assay.mutation.run_mutation`
-    at all in this branch already proves *result* PASSED, which is
-    `run_mutation`'s own only reason to return ``None`` for a caller-
-    supplied baseline (:func:`~assay.mutation.run_mutation`'s own
-    docstring) -- so the R2 claim built here always carries a ``mutation``
-    payload, and ``judgment.r2`` is populated unconditionally alongside it.
-    Final ``ended`` is extended again to cover R2's own completion too.
-
-    **P19: if R3 is declared, an isolated canary run is attempted AFTER R1
-    and R2, unconditionally** -- never gated on *result*'s own outcome the
-    way R2 is (R2 reuses *result* AS its baseline; R3 never reuses it at
-    all, so there is nothing of *result*'s to gate on). Delegated whole to
-    :func:`assay.canary.run_isolated_canary` (a deferred import --
-    see the call site's own comment for why), which owns its OWN
-    prerequisite refusals (a test-path target, a dirty *repo*) and its own
-    copy-and-run pipeline against *repo*/*project_root* -- never against a
-    tree this function has itself already validated clean for R1/R2's sake
-    only, since an isolated canary's cleanliness requirement (the copy IS
-    the control) is a genuinely different fact from R1/R2's "the diff being
-    measured is committed" one, even though both currently happen to
-    require the same clean-tree precondition. An :class:`~assay.errors.
-    AssayError` it raises (a config or prerequisite refusal) becomes a
-    payload-free R3 :class:`Claim` here, the identical shape R1/R2's own
-    guard sequences already use; otherwise :func:`assay.canary.
-    build_canary_claim` builds the real one and ``judgment.r3`` is
-    populated alongside it, unconditionally, the same "this function's own
-    discipline keeps the two in step" reasoning R2's ``judgment.r2``
-    already relies on (:class:`~assay.verdict.JudgmentR2`/:class:`~assay.
-    verdict.JudgmentR3` now ALSO carry their own construction-time
-    correspondence check against :class:`Claim` -- P19 work item 9/A-148 --
-    so this function's discipline and that check now agree rather than one
-    being the only witness). Final ``ended`` is extended a third time to
-    cover R3's own completion.
+    perfectly clean tree while moving what a higher-rigor lane would compare
+    against. Dirt keeps precedence over a moved ``HEAD``: a command that both
+    committed and left unrelated dirt has the stronger, unusable tree. Assay
+    never cleans the consumer's tree to make a claim true.
     """
     r1_declared = "R1" in lane.rigor
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor
-    reservation: safeio.OutputReservation | None = None
 
-    if r1_declared:
-        try:
-            reservation = safeio.reserve_output(
-                project_root,
-                lane.judge.coverage.artifact,
-                limit=coverage.MAX_COVERAGE_ARTIFACT_BYTES,
-            )
-        except AssayError as exc:
-            return refuse_lane(
-                lane,
-                commit=commit,
-                status=exc.outcome,
-                reason_code=exc.reason_code,
-                argv_append=argv_append,
-                passthrough_source=passthrough_source,
-                assay_version=assay_version,
-                clock=clock,
-            )
-        if _coverage_artifact_is_tracked(repo, project_root, lane.judge.coverage.artifact):
-            reservation.close()
-            return refuse_lane(
-                lane,
-                commit=commit,
-                status=Outcome.ERROR,
-                reason_code=ReasonCode.BAD_LANE_CONFIG,
-                argv_append=argv_append,
-                passthrough_source=passthrough_source,
-                assay_version=assay_version,
-                clock=clock,
-            )
+    if r1_declared or r2_declared or r3_declared:
+        # A-189: exact R0 alone stays on the direct live-tree path below;
+        # every higher-rigor lane uses P22's committed-snapshot state
+        # machine instead, with no live-tree fallback on its refusal.
+        return _run_higher_rigor_lane(
+            lane,
+            commit=commit,
+            repo=repo,
+            project_root=project_root,
+            adapter=adapter,
+            assay_version=assay_version,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            process_runner=process_runner,
+            clock=clock,
+            monotonic=monotonic,
+            scratch_root_factory=scratch_root_factory,
+            r1_declared=r1_declared,
+            r2_declared=r2_declared,
+            r3_declared=r3_declared,
+        )
 
     # A-175 / work item 6: the post-command comparison is against the RESOLVED
     # pre-run commit, so that commit is read HERE, from git, at the same point
@@ -1027,8 +1691,6 @@ def run_lane(
     pre_run_head = git.head_rev(repo)
 
     if git.dirty_paths(repo):
-        if reservation is not None:
-            reservation.close()
         return refuse_lane(
             lane,
             commit=commit,
@@ -1040,22 +1702,6 @@ def run_lane(
             clock=clock,
         )
 
-    if reservation is not None:
-        try:
-            reservation.arm()
-        except AssayError as exc:
-            reservation.close()
-            return refuse_lane(
-                lane,
-                commit=commit,
-                status=exc.outcome,
-                reason_code=exc.reason_code,
-                argv_append=argv_append,
-                passthrough_source=passthrough_source,
-                assay_version=assay_version,
-                clock=clock,
-            )
-
     result = execute_command(
         lane,
         argv_append=argv_append,
@@ -1066,24 +1712,25 @@ def run_lane(
     )
     r0_claim = build_r0_claim(result)
 
-    # A-175: post-command dirt precedes every higher-rigor judgment. The
-    # pre-run guard above proves what existed BEFORE the command; it says
-    # nothing about what the command left behind.
+    # A-175: post-command dirt precedes the final claim. The pre-run guard
+    # above proves what existed BEFORE the command; it says nothing about
+    # what the command left behind.
     #
     # Reviewer repair (work item 6, "compare the whole Git-visible repository
     # against the RESOLVED PRE-RUN COMMIT"): dirt alone is not that
     # comparison. A command that COMMITS leaves a perfectly clean tree, so a
-    # dirt-only check passes -- while `evaluate_r1` re-reads HEAD live
-    # (`measurability.check_base_is_head`) and measures the NEW commit, and
-    # `assemble_verdict` records the pre-run one. Reproduced end to end: a
-    # lane whose command committed away its own uncovered line turned a real
-    # FAIL/UNCOVERED_LINES at 50.0% into PASS at 100.0%, with the artifact
-    # still naming the commit that was never measured. Both halves now share
-    # A-175's single existing DIRTY_TREE terminal and its exact R0/higher
-    # precedence -- no new reason code, no schema change.
+    # dirt-only check passes -- while a higher-rigor lane's own base
+    # resolution re-reads HEAD live and would then measure the NEW commit,
+    # while the verdict records the pre-run one. Reproduced end to end
+    # before the repair: a lane whose command committed away its own
+    # uncovered line turned a real FAIL/UNCOVERED_LINES at 50.0% into PASS
+    # at 100.0%, with the artifact still naming the commit that was never
+    # measured. This is the same A-175 terminal `_execute_snapshot_unit`
+    # checks one level down for every higher-rigor unit -- no new reason
+    # code, no schema change.
     #
     # P21 work item 10 / A-178 replaces P20's single collapsed terminal. The
-    # observation order is now exactly one `dirty_paths` call, and `head_rev`
+    # observation order is exactly one `dirty_paths` call, and `head_rev`
     # ONLY on the clean branch -- both because a second Git observation of the
     # same fact can disagree with the first, and because precedence must be
     # decided by the rule rather than by whichever call an `or` evaluated
@@ -1098,12 +1745,11 @@ def run_lane(
     elif git.head_rev(repo) != pre_run_head:
         post_run_reason = ReasonCode.HEAD_CHANGED
     if post_run_reason is not None:
-        if reservation is not None:
-            reservation.close()
-        ended = iso_utc(clock())
-        rigor_levels = tuple(lane.rigor)
-        if rigor_levels == ("R0",):
-            dirty_claims: tuple[Claim, ...] = (
+        return assemble_verdict(
+            lane=lane,
+            commit=commit,
+            result=result,
+            claims=(
                 Claim(
                     rigor="R0",
                     source="computed",
@@ -1111,256 +1757,17 @@ def run_lane(
                     verified_by_assay=True,
                     reason_code=post_run_reason,
                 ),
-            )
-        else:
-            dirty_claims = tuple(
-                r0_claim
-                if level == "R0"
-                else Claim(
-                    rigor=level,
-                    source="computed",
-                    status=Outcome.NO_MEASUREMENT,
-                    verified_by_assay=True,
-                    reason_code=post_run_reason,
-                )
-                for level in rigor_levels
-            )
-        return assemble_verdict(
-            lane=lane,
-            commit=commit,
-            result=result,
-            claims=dirty_claims,
+            ),
             assay_version=assay_version,
-            ended=ended,
+            ended=iso_utc(clock()),
         )
-
-    claims: tuple[Claim, ...] = (r0_claim,)
-    judgment_r1: JudgmentR1 | None = None
-    judgment_r2: JudgmentR2 | None = None
-    judgment_r3: JudgmentR3 | None = None
-    ended: str | None = None
-    added_holder: list[diff.AddedLines] = []
-
-    if r1_declared:
-        assert reservation is not None
-        judge = lane.judge
-        try:
-            raw = reservation.consume()
-            profile = coverage.parse_coverage_artifact(raw, declared_format=judge.coverage.format)
-        except AssayError as exc:
-            claims += (
-                Claim(
-                    rigor="R1",
-                    source="computed",
-                    status=exc.outcome,
-                    verified_by_assay=True,
-                    reason_code=exc.reason_code,
-                ),
-            )
-            ended = iso_utc(clock())
-        else:
-            resolved_base: list[str] = []
-            r1_claim = evaluate_r1(
-                lane,
-                repo=repo,
-                project_root=project_root,
-                base=judge.base,
-                adapter=adapter,
-                on_base_resolved=resolved_base.append,
-                on_added_resolved=added_holder.append,
-                profile=profile,
-            )
-            claims += (r1_claim,)
-            ended = iso_utc(clock())
-            if r1_claim.coverage is not None:
-                judgment_r1 = JudgmentR1(
-                    language=judge.language,
-                    source_roots=judge.source_roots,
-                    coverage_format=judge.coverage.format,
-                    coverage_artifact=judge.coverage.artifact,
-                    fail_under=judge.fail_under,
-                    allow_excluded=judge.allow_excluded,
-                    base=resolved_base[0],
-                )
-
-    if r2_declared:
-        judge = lane.judge
-        if result.outcome is not Outcome.PASS:
-            # R2's baseline gate is strictly stricter than R1's -- a
-            # non-PASS R0 makes mutation testing moot regardless of what
-            # R2's own prerequisite chain would say, so that chain is
-            # never even consulted (module docstring).
-            r2_claim = mutation.build_mutation_claim(result, None)
-            claims += (r2_claim,)
-            ended = iso_utc(clock())
-        else:
-            if added_holder:
-                added = added_holder[0]
-            else:
-                try:
-                    measurability.check_dirty_tree(repo, judge.source_root_paths)
-                    resolved = measurability.check_base_is_head(repo, judge.base)
-                    diff_text = git.run(
-                        repo,
-                        "diff",
-                        "--unified=0",
-                        resolved.base_rev,
-                        resolved.head_rev,
-                    )
-                    added = diff.parse_added_lines(diff_text)
-                except AssayError as exc:
-                    claims += (
-                        Claim(
-                            rigor="R2",
-                            source="computed",
-                            status=exc.outcome,
-                            verified_by_assay=True,
-                            reason_code=exc.reason_code,
-                        ),
-                    )
-                    ended = iso_utc(clock())
-                    added = None
-
-            if added is not None:
-                repo_top = git.repo_top(repo)
-
-                def _read_source_text(path: str) -> str:
-                    # P20 work item 5: an expected filesystem/Unicode
-                    # failure here must still land inside a complete R2
-                    # claim, not propagate past `run_lane` uncaught.
-                    return _read_bounded_source_text(
-                        repo_top, path, why="mutation target resolution"
-                    )
-
-                try:
-                    targets = mutation.resolve_mutation_targets(
-                        added,
-                        repo_top=repo_top,
-                        source_root_paths=judge.source_root_paths,
-                        adapter=adapter,
-                        read_source_text=_read_source_text,
-                    )
-                except AssayError as exc:
-                    claims += (
-                        Claim(
-                            rigor="R2",
-                            source="computed",
-                            status=exc.outcome,
-                            verified_by_assay=True,
-                            reason_code=exc.reason_code,
-                        ),
-                    )
-                    ended = iso_utc(clock())
-                else:
-                    try:
-                        with tempfile.TemporaryDirectory(prefix="assay-r2-") as scratch:
-                            mutation_result = mutation.run_mutation(
-                                lane,
-                                baseline=result,
-                                project_root=project_root,
-                                repo_top=repo_top,
-                                scratch_root=Path(scratch),
-                                targets=targets,
-                                adapter=adapter,
-                                jobs=judge.mutation.jobs,
-                                max_mutants=judge.mutation.max_mutants,
-                                operators=judge.mutation.operators,
-                                process_runner=process_runner,
-                                clock=clock,
-                            )
-                    except AssayError as exc:
-                        # P21/A-171: a FAILED discovery boundary (invalid
-                        # Python source here; a helper protocol from P29) is a
-                        # complete, payload-free R2 claim, never an uncaught
-                        # crash out of `run_lane` after the command already
-                        # ran -- A-139's own rule, applied to the one new
-                        # terminal this package makes reachable.
-                        claims += (
-                            Claim(
-                                rigor="R2",
-                                source="computed",
-                                status=exc.outcome,
-                                verified_by_assay=True,
-                                reason_code=exc.reason_code,
-                            ),
-                        )
-                        ended = iso_utc(clock())
-                    else:
-                        # `mutation_result` is NEVER `None` here: this branch
-                        # is only reached when `result.outcome is
-                        # Outcome.PASS`, and `run_mutation` returns `None` for
-                        # exactly ONE reason -- a non-PASS baseline -- which
-                        # cannot be true for `baseline=result` here. It IS
-                        # possibly the `"UNSUPPORTED"` marker (A-183), which
-                        # `build_mutation_claim` renders payload-free.
-                        r2_claim = mutation.build_mutation_claim(
-                            result, mutation_result
-                        )
-                        claims += (r2_claim,)
-                        ended = iso_utc(clock())
-                        # Recorded for BOTH shapes: a payload-bearing claim
-                        # and the unsupported-capability terminal. The policy
-                        # was resolved and applied either way, and the cap is
-                        # what a consumer needs to interpret the result --
-                        # `Verdict` enforces exactly this correspondence.
-                        judgment_r2 = JudgmentR2(
-                            jobs=judge.mutation.jobs,
-                            max_mutants=judge.mutation.max_mutants,
-                            operators=judge.mutation.operators,
-                        )
-
-    if r3_declared:
-        judge = lane.judge
-        canary_cfg = judge.canary
-        # Deferred, not module-level: `assay.canary` already imports
-        # `evaluate_r1`/`execute_command`/... from THIS module at its own
-        # module level, so a module-level import here would close a
-        # genuine cycle (runner -> canary -> runner) -- the identical
-        # reasoning `assay.mutation`'s own module docstring gives for
-        # resolving `execute_command` from a function body one claim tier
-        # over.
-        from .canary import build_canary_claim, run_isolated_canary
-
-        try:
-            canary_result = run_isolated_canary(
-                lane,
-                repo=repo,
-                project_root=project_root,
-                mechanism=canary_cfg.mechanism,
-                target=canary_cfg.target,
-                adapter=adapter,
-                process_runner=process_runner,
-                clock=clock,
-            )
-        except AssayError as exc:
-            claims += (
-                Claim(
-                    rigor="R3",
-                    source="computed",
-                    status=exc.outcome,
-                    verified_by_assay=True,
-                    reason_code=exc.reason_code,
-                ),
-            )
-        else:
-            claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(
-                mechanism=canary_cfg.mechanism, target=canary_cfg.target
-            )
-        ended = iso_utc(clock())
-
-    judgment: Judgment | None = None
-    if judgment_r1 is not None or judgment_r2 is not None or judgment_r3 is not None:
-        judgment = Judgment(r1=judgment_r1, r2=judgment_r2, r3=judgment_r3)
 
     return assemble_verdict(
         lane=lane,
         commit=commit,
         result=result,
-        claims=claims,
+        claims=(r0_claim,),
         assay_version=assay_version,
-        judgment=judgment,
-        ended=ended,
     )
 
 

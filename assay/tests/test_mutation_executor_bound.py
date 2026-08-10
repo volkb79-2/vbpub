@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import make_lane
+from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
@@ -69,17 +70,22 @@ class _RecordingExecutor:
         return self._real.submit(fn, *args)
 
 
-def _materialize_project(root: Path) -> None:
-    (root / "pkg").mkdir(parents=True)
-    (root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+def _seed_repo(tmp_path: Path, name: str) -> GitRepo:
+    repo = GitRepo(path=tmp_path / name)
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/flags.py", _TEXT)
+    repo.commit_all("add flags")
+    return repo
 
 
 def _run_with_recording_factory(tmp_path: Path, jobs: int):
     lane = make_lane(argv=("pytest", "-q"))
     seen: list[_RecordingExecutor] = []
-    project_root = tmp_path / "proj"
+    repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
-    _materialize_project(project_root)
     scratch_root.mkdir()
 
     def factory(requested_jobs: int) -> _RecordingExecutor:
@@ -87,21 +93,24 @@ def _run_with_recording_factory(tmp_path: Path, jobs: int):
         seen.append(executor)
         return executor
 
-    baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=jobs,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=_always_pass,
-        executor_factory=factory,
-    )
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
+    plan = make_plan(lane)
+    deadline = make_deadline()
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=jobs,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=_always_pass,
+            clock=lambda: datetime.now(timezone.utc),
+            executor_factory=factory,
+        )
     assert baseline.outcome is Outcome.PASS
     assert mutation is not None
     return mutation, seen
@@ -141,30 +150,32 @@ def test_every_mutant_is_submitted_through_the_returned_executor(tmp_path: Path)
 def test_the_executor_is_never_constructed_when_there_are_no_mutants(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
     seen: list[int] = []
-    project_root = tmp_path / "proj"
+    repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
-    _materialize_project(project_root)
     scratch_root.mkdir()
 
     def factory(jobs: int):
         seen.append(jobs)
         raise AssertionError("the executor must never be constructed for zero mutants")
 
-    baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=(),  # nothing to mutate
-        adapter=PythonAdapter(),
-        jobs=3,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=_always_pass,
-        executor_factory=factory,
-    )
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
+    plan = make_plan(lane)
+    deadline = make_deadline()
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=(),  # nothing to mutate
+            adapter=PythonAdapter(),
+            jobs=3,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=_always_pass,
+            clock=lambda: datetime.now(timezone.utc),
+            executor_factory=factory,
+        )
 
     assert baseline.outcome is Outcome.PASS
     assert mutation is not None
@@ -182,24 +193,26 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
 
     def run(jobs: int):
-        project_root = tmp_path / f"proj-{jobs}"
+        repo = _seed_repo(tmp_path, f"repo-{jobs}")
         scratch_root = tmp_path / f"scratch-{jobs}"
-        _materialize_project(project_root)
         scratch_root.mkdir()
-        baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
-        mutation = run_mutation(
-            lane,
-            baseline=baseline,
-            project_root=project_root,
-        repo_top=project_root,
-            scratch_root=scratch_root,
-            targets=_TARGETS,
-            adapter=PythonAdapter(),
-            jobs=jobs,
-            max_mutants=50,
-        operators=("bool-const-flip",),
-            process_runner=_always_pass,
-        )
+        baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
+        plan = make_plan(lane)
+        deadline = make_deadline()
+        with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+            mutation = run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=plan,
+                deadline=deadline,
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=jobs,
+                max_mutants=50,
+                operators=("bool-const-flip",),
+                process_runner=_always_pass,
+                clock=lambda: datetime.now(timezone.utc),
+            )
         assert baseline.outcome is Outcome.PASS
         return mutation
 
@@ -221,16 +234,17 @@ def test_jobs_zero_is_rejected_before_the_executor_boundary(tmp_path: Path):
 
     with pytest.raises(ValueError, match="jobs must be >= 1"):
         run_mutation(
-            lane,
             baseline=baseline,
-            project_root=tmp_path,
-            repo_top=tmp_path,
-            scratch_root=tmp_path,
+            prepared=None,
+            plan=None,
+            deadline=None,
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=0,
             max_mutants=50,
-        operators=("bool-const-flip",),
+            operators=("bool-const-flip",),
+            process_runner=_always_pass,
+            clock=lambda: datetime.now(timezone.utc),
             executor_factory=factory,
         )
 
@@ -245,16 +259,17 @@ def test_a_non_integer_jobs_is_rejected(tmp_path: Path, bad_jobs):
 
     with pytest.raises(ValueError, match="jobs must be an integer"):
         run_mutation(
-            lane,
             baseline=baseline,
-            project_root=tmp_path,
-            repo_top=tmp_path,
-            scratch_root=tmp_path,
+            prepared=None,
+            plan=None,
+            deadline=None,
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=bad_jobs,
             max_mutants=50,
-        operators=("bool-const-flip",),
+            operators=("bool-const-flip",),
+            process_runner=_always_pass,
+            clock=lambda: datetime.now(timezone.utc),
         )
 
 
@@ -265,6 +280,7 @@ def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
     first."""
     from assay.errors import ReasonCode
     from assay.runner import CommandPlan, CommandResult
+    from pathlib import PurePosixPath
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = CommandResult(
@@ -274,6 +290,10 @@ def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
             argv_effective=("pytest", "-q"),
             env_declared={},
             env_effective={},
+            env_passthrough=(),
+            allow_argv_append=False,
+            budget_seconds=60.0,
+            project_prefix=PurePosixPath("."),
         ),
         outcome=Outcome.FAIL,
         reason_code=ReasonCode.COMMAND_FAILED,
@@ -284,14 +304,15 @@ def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
 
     with pytest.raises(ValueError, match="jobs must be >= 1"):
         run_mutation(
-            lane,
             baseline=baseline,
-            project_root=tmp_path,
-            repo_top=tmp_path,
-            scratch_root=tmp_path,
+            prepared=None,
+            plan=None,
+            deadline=None,
             targets=_TARGETS,
             adapter=PythonAdapter(),
             jobs=-1,
             max_mutants=50,
-        operators=("bool-const-flip",),
+            operators=("bool-const-flip",),
+            process_runner=_always_pass,
+            clock=lambda: datetime.now(timezone.utc),
         )

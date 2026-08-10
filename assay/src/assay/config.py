@@ -522,6 +522,13 @@ def _load_lane(
             f"records one claim per declared level"
         )
 
+    canonical = tuple(level for level in RIGOR_LEVELS if level in rigor)
+    if tuple(rigor) != canonical or rigor[0] != "R0":
+        raise LaneConfigError(
+            f"{where}: 'rigor' must be an R0-led ordered subsequence of "
+            f"{list(RIGOR_LEVELS)}, got {list(rigor)}"
+        )
+
     enforcement = _as_str(table["enforcement"], where, "enforcement")
     if enforcement not in ENFORCEMENTS:
         raise LaneConfigError(
@@ -575,6 +582,14 @@ def _load_lane(
     )
 
     judge = _load_judge(table.get("judge"), rigor, where, project_root)
+
+    if (
+        judge is not None
+        and judge.canary is not None
+        and judge.canary.mechanism == "uncovered-line"
+        and "R1" not in rigor
+    ):
+        raise LaneConfigError(f"{where}: uncovered-line R3 requires declared R1")
 
     where_table = table.get("where")
     if where_table is not None and not isinstance(where_table, dict):

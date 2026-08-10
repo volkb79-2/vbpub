@@ -1,26 +1,29 @@
-"""``runner.run_lane``'s R3 orchestration (P19): an isolated canary proof
-delegated whole to :func:`assay.canary.run_isolated_canary` -- the
-consumer's own repository is copied into independently-owned scratch state
-and never staged, committed, or written to.
+"""``runner.run_lane``'s R3 orchestration: an isolated canary proof
+delegated whole to :func:`assay.canary.run_isolated_canary` -- the consumer's
+own repository is never staged, committed, read from, or written to.
 
 Real git state materialised under ``tmp_path`` (the established P02/P17/P18
 pattern) and the REAL :class:`~assay.adapters.python.PythonAdapter` plus a
 genuine ``pytest`` subprocess. ``tests/test_canary_python_pipeline.py``
 already proves per-mechanism cause sensitivity against
 :func:`~assay.canary.run_python_canary` directly and in full; this module
-proves the NEW P19 orchestration layered on top of it: the scratch copy
-and its ``.git``, :func:`~assay.canary._project_prefix` respelling for a
-project in a subdirectory of its repo (A-145), the two prerequisite
-refusals, and ``run_lane``'s own claims/judgment/ended wiring.
+proves the orchestration layered on top of it.
+
+**P23**: the consumer's repository is no longer copied at all --
+``run_isolated_canary`` now materialises both the control and the
+transformed half from two INDEPENDENT P22 committed snapshots of the SAME
+prepared seed :func:`~assay.runner.run_lane`'s own baseline already used, so
+this module proves the real P22-composed orchestration: two independent
+snapshots, a project in a subdirectory of its repo (A-145) via
+``prepared.spec.project_prefix``, the one remaining prerequisite refusal, and
+``run_lane``'s own claims/judgment/ended wiring.
 """
 
 from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
-import pytest
 from conftest import GitRepo, fixed_clock, make_lane, make_r3_judge
 
 from assay import runner
@@ -102,11 +105,19 @@ def test_r3_reports_canary_survived_when_the_transform_is_never_actually_caught(
 ):
     """The command that decides pass/fail never inspects the target file at
     all, so BOTH halves genuinely PASS -- the transform is never caught,
-    which is exactly what CANARY_SURVIVED reports (never a silent PASS)."""
+    which is exactly what CANARY_SURVIVED reports (never a silent PASS).
+
+    P23/A-192: ``uncovered-line`` now requires R1 declared alongside R3 at
+    LOAD time (a real ``assay.toml`` would refuse the old ``rigor=("R0",
+    "R3")`` shape outright), so this proof now uses ``import-break``
+    instead -- the identical "the command never inspects the file, so
+    nothing is ever caught" property, for the ONE mechanism that genuinely
+    does not require R1.
+    """
     _seed_pytest_package(git_repo)
     judge = make_r3_judge(
         source_root_paths=(git_repo.path / "pkg",),
-        canary=CanaryConfig(mechanism="uncovered-line", target="pkg/mod.py"),
+        canary=CanaryConfig(mechanism="import-break", target="pkg/mod.py"),
     )
     lane = make_lane(
         rigor=("R0", "R3"), judge=judge, argv=("/bin/sh", "-c", "exit 0")
@@ -114,7 +125,7 @@ def test_r3_reports_canary_survived_when_the_transform_is_never_actually_caught(
 
     verdict = runner.run_lane(
         lane,
-        commit="a" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -128,7 +139,7 @@ def test_r3_reports_canary_survived_when_the_transform_is_never_actually_caught(
     assert r3_claim.canary.control_outcome is Outcome.PASS
     assert r3_claim.canary.transformed_outcome is Outcome.PASS
     assert verdict.judgment.r3 == runner.JudgmentR3(
-        mechanism="uncovered-line", target="pkg/mod.py"
+        mechanism="import-break", target="pkg/mod.py"
     )
 
 
@@ -295,7 +306,7 @@ def test_r3_refuses_a_test_path_target_as_a_payload_free_claim(git_repo: GitRepo
 
     verdict = runner.run_lane(
         lane,
-        commit="b" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -345,7 +356,7 @@ def test_r3_refuses_on_a_dirty_tree_the_commands_own_side_effects_created(
 
     verdict = runner.run_lane(
         lane,
-        commit="c" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -416,7 +427,7 @@ def test_ended_covers_r3s_own_completion_not_only_r0s(git_repo: GitRepo):
 
     verdict = runner.run_lane(
         lane,
-        commit="d" * 40,
+        commit=git_repo.head(),
         repo=git_repo.path,
         project_root=git_repo.path,
         adapter=PythonAdapter(),
@@ -500,48 +511,3 @@ def test_r1_r2_and_r3_together_each_render_their_own_independent_claim(
     assert verdict.judgment.r1 is not None
     assert verdict.judgment.r2 is not None
     assert verdict.judgment.r3 is not None
-
-
-# --- Reviewer (P20): the canary's OWN dirty-tree guard needs its own oracle ---
-
-
-def test_run_isolated_canary_refuses_a_dirty_repository_directly(git_repo: GitRepo):
-    """``run_isolated_canary`` copies the current tree to stand in for the
-    known-good control, so it owns a cleanliness precondition of its own --
-    independent of whatever `run_lane` checked earlier.
-
-    It needs a direct oracle because P20 added a post-command whole-repository
-    check to `run_lane` that now refuses first: measured, not assumed, the
-    only test that used to reach this refusal
-    (``test_r3_refuses_on_a_dirty_tree_the_commands_own_side_effects_created``)
-    stopped doing so, leaving `canary.py`'s guard uncovered by the gated
-    suite. `canary.py` is forbidden to this package, so this is a test-only
-    repair of the audit, never a change to the guard.
-    """
-    from assay.canary import run_isolated_canary
-    from assay.errors import AssayError
-
-    git_repo.write("pkg/__init__.py", "")
-    git_repo.write("pkg/mod.py", "def f():\n    return 1\n")
-    git_repo.commit_all("add pkg")
-    judge = make_r3_judge(
-        source_root_paths=(git_repo.path / "pkg",),
-        canary=CanaryConfig(mechanism="import-break", target="pkg/mod.py"),
-    )
-    lane = make_lane(rigor=("R0", "R3"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
-
-    # Dirt the outer pipeline never saw, introduced after any earlier check.
-    (git_repo.path / "pkg" / "leftover.pyc").write_text("x", encoding="utf-8")
-
-    with pytest.raises(AssayError) as excinfo:
-        run_isolated_canary(
-            lane,
-            repo=git_repo.path,
-            project_root=git_repo.path,
-            mechanism="import-break",
-            target="pkg/mod.py",
-            adapter=PythonAdapter(),
-        )
-
-    assert excinfo.value.outcome is Outcome.NO_MEASUREMENT
-    assert excinfo.value.reason_code is ReasonCode.DIRTY_TREE

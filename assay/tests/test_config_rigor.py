@@ -279,7 +279,7 @@ def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
     # invented. An R2 lane needs language + source_roots + mutation + base
     # and NOTHING else -- so R1's three coverage-floor fields must come back
     # None, not defaulted.
-    path = project.write(_lane_with(["R2"], R2_MINIMAL_JUDGE, MUTATION_TABLE))
+    path = project.write(_lane_with(["R0", "R2"], R2_MINIMAL_JUDGE, MUTATION_TABLE))
     lane = load_lane_file(path).lane("package")
 
     judge = lane.judge
@@ -333,7 +333,7 @@ def test_mutation_that_is_not_a_table_is_rejected(project: Project):
     # (A-062) is not what rejects it -- the type check is. Using an R0 lane
     # would pass this test for the wrong reason.
     path = project.write(
-        _lane_with(["R2"], R2_MINIMAL_JUDGE).rstrip("\n") + "\nmutation = 4\n"
+        _lane_with(["R0", "R2"], R2_MINIMAL_JUDGE).rstrip("\n") + "\nmutation = 4\n"
     )
     with pytest.raises(LaneConfigError, match="'judge.mutation' must be a table"):
         load_lane_file(path)
@@ -350,7 +350,7 @@ language = "python"
 source_roots = ["src"]
 """
     path = project.write(
-        _lane_with(["R3"], r3_judge).rstrip("\n") + "\ncanary = 4\n"
+        _lane_with(["R0", "R3"], r3_judge).rstrip("\n") + "\ncanary = 4\n"
     )
     with pytest.raises(LaneConfigError, match="'judge.canary' must be a table"):
         load_lane_file(path)

@@ -89,13 +89,20 @@ def test_every_declared_rigor_level_loads(level: str, project: Project):
     # Each level brings its own judge requirement, and A-062 refuses anything
     # beyond it, so the lane carries EXACTLY that level's table; the point
     # under test is that the LEVEL NAME is accepted.
+    #
+    # P23/A-192: rigor is now an R0-led ordered subsequence, so R1/R2/R3
+    # alone are load-time refusals (proven in test_config_rigor.py's own
+    # grammar tests) -- R0 joins every non-R0 level here without changing
+    # which judge fields are required (R0 itself contributes none).
     if level == "R3":
         # judge.canary.target must be a real file beneath a declared source
         # root (P19) -- the `project` fixture only creates the directories.
         project.file("src/canary_target.py", "x = 1\n")
-    text = set_key(R0_LANE, "rigor", f'["{level}"]') + judge_table_for(level)
+    rigor = (level,) if level == "R0" else ("R0", level)
+    declared = "[" + ", ".join(f'"{r}"' for r in rigor) + "]"
+    text = set_key(R0_LANE, "rigor", declared) + judge_table_for(level)
     lane = load_lane_file(project.write(text)).lane("package")
-    assert lane.rigor == (level,)
+    assert lane.rigor == rigor
 
 
 @pytest.mark.parametrize("level", ["R4", "r1", "R", "", "R0 "])

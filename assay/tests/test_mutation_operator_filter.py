@@ -16,6 +16,7 @@ satisfy a result-only assertion while doubling the lane's real work.
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ from assay.errors import Outcome
 from assay.mutation import MutationTarget, collect_mutation_sites, run_mutation
 from assay.runner import execute_command
 
-from conftest import make_lane
+from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 #: line 2 is a `compare-swap` site (`x > 0` -> `x >= 0`); line 3 is an
 #: UNRELATED `bool-const-flip` site (`True` -> `False`) -- two different
@@ -94,9 +95,15 @@ def test_run_mutation_never_submits_an_undeclared_operators_mutant(tmp_path: Pat
     site is never EXECUTED. A call-count check at the process boundary, so
     a filter that ran the mutant and discarded its result would still fail
     here."""
-    project_root = tmp_path / "proj"
-    (project_root / "pkg").mkdir(parents=True)
-    (project_root / "pkg" / "mod.py").write_text(_TEXT, encoding="utf-8")
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/mod.py", _TEXT)
+    repo.commit_all("add pkg")
+    scratch_root = tmp_path / "scratch"
+    scratch_root.mkdir()
     lane = make_lane(argv=("pytest", "-q"))
 
     submitted: list[str] = []
@@ -110,23 +117,27 @@ def test_run_mutation_never_submits_an_undeclared_operators_mutant(tmp_path: Pat
         )
         return _completed(1)  # the suite caught it -> killed
 
-    result = run_mutation(
+    baseline = execute_command(
         lane,
-        baseline=execute_command(
-            lane,
-            cwd=project_root,
-            process_runner=lambda *a, **k: _completed(0),
-        ),
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=tmp_path / "scratch",
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=1,
-        max_mutants=10,
-        operators=("compare-swap",),
-        process_runner=mutant_runner,
+        cwd=repo.path,
+        process_runner=lambda *a, **k: _completed(0),
     )
+    plan = make_plan(lane)
+    deadline = make_deadline()
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("compare-swap",),
+            process_runner=mutant_runner,
+            clock=lambda: datetime.now(timezone.utc),
+        )
 
     assert result.candidate_count == 1
     assert result.total == 1

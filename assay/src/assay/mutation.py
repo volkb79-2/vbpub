@@ -85,32 +85,32 @@ base -> mutation``), not merely a style preference — verified empirically
 while authoring this package: it breaks for whichever entry point happens
 to import ``assay.adapters.base`` (or ``assay.runner``) BEFORE
 ``assay.mutation`` finishes loading, which is common (most adapter tests
-trigger it). :func:`run_mutation` resolves ``execute_command`` /
-``default_process_runner`` with a DEFERRED (function-body-local) import
-instead — safe because by the time the function is actually CALLED, module
-loading for the whole program has long finished, regardless of which module
-was imported first. The ``ProcessRunner``/``CommandResult``/
-``LanguageAdapter`` type hints below reference their real homes (
-``assay.runner``, ``assay.adapters.base``) by bare name, never imported —
-safe under this module's own ``from __future__ import annotations``, which
-defers every annotation to a string never evaluated at runtime (verified
-empirically), and avoids re-opening the same cycle purely for a type hint.
+trigger it). :func:`run_mutation` resolves ``execute_plan`` with a DEFERRED
+(function-body-local) import instead — safe because by the time the
+function is actually CALLED, module loading for the whole program has long
+finished, regardless of which module was imported first. The
+``ProcessRunner``/``CommandResult``/``LanguageAdapter``/``CommandPlan``/
+``LaneDeadline`` type hints below reference their real home (
+``assay.runner``) and ``SnapshotRepository`` references its real home
+(``assay.isolation``), all by bare name, never imported — safe under this
+module's own ``from __future__ import annotations``, which defers every
+annotation to a string never evaluated at runtime (verified empirically),
+and avoids re-opening the same cycle purely for a type hint.
 """
 
 from __future__ import annotations
 
 import fnmatch
-import shutil
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Sequence
 
 import hashlib
 from typing import Literal
 
-from .config import Lane
+from . import git
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .verdict import MAX_CANDIDATE_CEILING, Claim, Mutation, MutantOutcome
@@ -130,7 +130,6 @@ __all__ = [
     "collect_mutation_sites",
     "judge_mutation",
     "line_for_offset",
-    "project_prefix",
     "resolve_mutation_targets",
     "run_mutation",
 ]
@@ -646,41 +645,6 @@ def _classify_mutant_result(result: CommandResult) -> str:
     return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
 
 
-def project_prefix(*, repo_top: Path, project_root: Path) -> str:
-    """*project_root*'s own location inside *repo_top*, as the forward-slash
-    prefix its repo-relative paths carry — ``""`` when the two are the same
-    directory, ``"assay/"`` when the project is a SUBDIRECTORY of its
-    repository (A-145).
-
-    That second case is not exotic: it is assay's own layout inside the
-    ``vbpub`` monorepo, and it is the difference between two spellings of
-    the same file that this module has to keep straight.
-    :class:`MutationTarget`'s ``path`` is repo-top-relative (its own
-    documented contract, and the spelling ``git diff`` and
-    :class:`~assay.verdict.Coverage`'s own keys already use, so the artifact
-    stays internally consistent), while the scratch tree each mutant runs in
-    is a copy of *project_root* — so a repo-relative path must have this
-    prefix removed before it names anything inside that copy.
-    """
-    relative = project_root.resolve().relative_to(repo_top.resolve())
-    return "" if relative == Path(".") else f"{relative.as_posix()}/"
-
-
-def _within_project(path: str, prefix: str) -> str:
-    """*path* (repo-relative) respelled relative to the project root, or a
-    refusal. A target outside the project root has no counterpart inside
-    the scratch copy at all, so writing it would either land outside the
-    copy or fail deep inside a worker thread with a bare
-    ``FileNotFoundError`` naming a path no caller ever supplied — checked
-    here, once, before anything is submitted."""
-    if not path.startswith(prefix):
-        raise ValueError(
-            f"mutation target {path!r} is outside the project root "
-            f"({prefix!r}) -- it has no location inside the per-mutant copy"
-        )
-    return path[len(prefix) :]
-
-
 def _outcome_of(job: MutantJob) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
@@ -700,126 +664,93 @@ def _outcome_of(job: MutantJob) -> MutantOutcome:
     )
 
 
-def _run_one_mutant(
-    lane: Lane,
-    *,
-    job: MutantJob,
-    write_path: str,
-    project_root: Path,
-    scratch_parent: Path,
-    index: int,
-    execute: Callable[..., CommandResult],
-    process_runner: ProcessRunner,
-    clock: Clock,
-) -> CommandResult:
-    """Isolate *job* into a FRESH ``shutil.copytree`` scratch directory
-    (A-120 — never in-place, never a ``git worktree``), write
-    the ONE full replacement file (spliced here, from the job's shared
-    original plus its site) over *write_path* INSIDE the copy, and run
-    the SAME ``execute_command`` (*execute*) the baseline used, varying
-    only ``cwd``. The scratch copy is discarded afterward; *project_root*
-    itself is never opened for writing here — that is what makes "the
-    shared source tree is provably unchanged" true BY CONSTRUCTION, not by
-    a write-then-restore round-trip (O3).
-
-    *write_path* is ``job.path`` respelled relative to *project_root* by
-    :func:`_within_project` (A-145) — the copy's own root is
-    *project_root*, not the repository top ``job.path`` is relative to, and
-    those differ for any project living in a subdirectory of its repo.
-
-    *index* names the scratch directory (``mutant-{index:06d}``) — unique
-    per submitted job with no shared counter or uuid needed, because the
-    job list's own length is already known up front before any job is
-    submitted (A-113's "deterministic submission order").
+def _snapshot_left_dirt(job: MutantJob, snapshot) -> AssayError | None:
+    """P23/A-195: a mutant's own snapshot must still name its own commit
+    after the command runs, exactly like every other snapshot unit. Checked
+    HERE, inside the worker, so a dirty/committing mutant is caught before
+    its context closes and before any sibling is affected.
     """
-    scratch_dir = scratch_parent / f"mutant-{index:06d}"
-    shutil.copytree(project_root, scratch_dir)
-    try:
-        # A-180: the ONE place a full replacement file exists. It is built
-        # here, inside the worker that is about to run it, from the shared
-        # original plus this site's own splice -- so at most `jobs` of them
-        # are alive at once, rather than one per candidate at discovery time.
-        (scratch_dir / write_path).write_bytes(
-            job.site.apply(job.original_text.encode("utf-8"))
+    if git.dirty_paths(snapshot.root):
+        return AssayError(
+            f"mutant {job.path}:{job.site.identity} left the snapshot's "
+            f"tracked/support state dirty; the result no longer represents "
+            f"its own commit",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
         )
-        return execute(lane, cwd=scratch_dir, process_runner=process_runner, clock=clock)
-    finally:
-        shutil.rmtree(scratch_dir, ignore_errors=True)
+    if git.head_rev(snapshot.root) != snapshot.commit:
+        return AssayError(
+            f"mutant {job.path}:{job.site.identity} committed inside its "
+            f"snapshot; the result no longer represents its own commit",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.HEAD_CHANGED,
+        )
+    return None
 
 
 def run_mutation(
-    lane: Lane,
     *,
     baseline: CommandResult,
-    project_root: Path,
-    repo_top: Path,
-    scratch_root: Path,
+    prepared: SnapshotRepository,
+    plan: CommandPlan,
+    deadline: LaneDeadline,
     targets: Iterable[MutationTarget],
     adapter: LanguageAdapter,
     jobs: int,
     max_mutants: int,
     operators: tuple[str, ...],
-    process_runner: ProcessRunner | None = None,
-    clock: Clock | None = None,
+    process_runner: ProcessRunner,
+    clock: Clock,
     executor_factory: ExecutorFactory = _default_executor_factory,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
-    """The R2 execution entry point (A-119/A-120; *baseline* refactored in
-    P18 work item 4). *baseline* is now a MANDATORY, ALREADY-OBTAINED
-    :class:`~assay.runner.CommandResult` — the exact R0 result
-    :func:`~assay.runner.run_lane` already produced for this same lane
-    against this same, still-unmodified *project_root* — never re-executed
-    here (sol finding 11: the old internal baseline doubled the command
-    ledger). A baseline that did not PASS stops HERE, before
-    :func:`collect_mutation_sites` is even called, let alone anything submitted
-    to an executor (O1's own negative: "submits mutant work... when the
-    original suite is already red") — and this function returns ``None``
-    (A-116's baseline-conditional presence rule: mutation testing never
-    started). :func:`judge_mutation`/:func:`build_mutation_claim` read the
-    caller's OWN *baseline* to propagate its exact ``(outcome,
-    reason_code)`` verbatim in that case, so a caller passes the identical
-    object to both this function and those.
+    """The R2 execution entry point (P23 exact reexecution): every mutant is
+    a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
+    *prepared* materialises baseline from — never a ``shutil.copytree`` of a
+    live project directory. *baseline* is the exact R0 result the caller's
+    own snapshot unit already produced against this same prepared seed
+    (never re-executed here, A-119/sol finding 11). A baseline that did not
+    PASS stops HERE, before :func:`collect_mutation_sites` is even called,
+    let alone anything submitted to an executor (A-116's baseline-
+    conditional presence rule) — this function returns ``None``.
 
     *jobs* is validated (a positive, non-boolean integer) BEFORE the
     executor boundary (work item 5): this function is a public surface a
-    caller may invoke directly — every test in this module's own suite
-    does — so :mod:`assay.config`'s load-time discipline for a real
-    ``assay.toml`` cannot be assumed to have already run here.
-
-    *repo_top* is the repository top every ``targets`` path is relative to
-    (A-145). It is REQUIRED, and deliberately not defaulted to
-    *project_root*: the two differ for any project living in a
-    subdirectory of its repository — assay's own layout — and a default
-    that silently assumes they are equal is exactly how a caller ends up
-    writing a mutant to a path that does not exist inside the copy. See
-    :func:`project_prefix`.
+    caller may invoke directly, so :mod:`assay.config`'s load-time
+    discipline for a real ``assay.toml`` cannot be assumed to have already
+    run here.
 
     Only when the baseline PASSES: collects every candidate site across
-    *targets*, passing *operators* — the lane's own declared, closed,
-    order-preserving selection — INTO each adapter call, so a candidate the
-    lane never selected is never built in the first place (P21 moved this
-    from a post-hoc filter over already-collected jobs; filtering afterwards
-    meant the cap counted work that could never run). *operators* is
-    re-validated by :func:`collect_mutation_sites` itself, not merely at
-    :mod:`assay.config` load time: it is a public surface a caller may
-    invoke directly, and an empty, duplicated, or unknown selection raises
-    ``ValueError`` there rather than silently becoming the bound handed to
-    every adapter. Then fans the resulting job list out over
-    ``executor_factory(jobs)`` — called with
-    EXACTLY *jobs*, never a derived or machine-sourced value (A-082/
-    A-122) — isolating each mutant into its own fresh scratch copy under
-    *scratch_root* (A-120). Results are collected POSITION-ALIGNED with
-    the submitted job list (each ``Future`` is awaited by its own index
-    via the returned futures list, never via ``as_completed`` or a dict
-    keyed by arrival order), and the three non-killed buckets are sorted
-    by stable identity before :class:`~assay.verdict.Mutation` is built —
-    so ``jobs=1`` and ``jobs=3`` render IDENTICAL records regardless of
-    which thread's subprocess happens to finish first (O2/O3).
+    *targets* at ``limit=max_mutants + 1`` (A-180) — the exact max+1
+    sentinel refuses BEFORE this function ever touches *prepared*,
+    *executor_factory*, or *process_runner* (O4). Each attempted mutant then
+    builds its ONE full replacement blob from its job's immutable original
+    bytes and site splice, and enters
+    ``prepared.materialize_replacement(path=PurePosixPath(job.path),
+    expected=..., replacement=..., timeout=deadline.remaining())`` — *path*
+    is ``job.path`` UNCHANGED, because P22's replacement path is already
+    repo-top-relative, the identical spelling a :class:`MutationTarget`
+    carries (never a project-relative respelling, A-145's old shape). The
+    frozen *plan* runs at the returned ``snapshot.project_root`` with a
+    FRESH ``deadline.remaining()`` (A-160/A-193); the snapshot is then
+    checked for dirt/HEAD drift before its context closes (A-195) — a
+    mutant that leaves Git-visible state stops the whole claim (payload-free
+    NO_MEASUREMENT/DIRTY_TREE or HEAD_CHANGED, no partial credit, no later
+    unit), never folded into ``crashed``.
 
-    *process_runner*/*clock* default to the real boundary
-    (``assay.runner.default_process_runner`` / a real UTC clock), resolved
-    with a DEFERRED import inside this function body rather than at module
-    level — this module's own docstring explains why (a genuine circular
-    import, not a style choice).
+    Submission proceeds in WAVES of at most *jobs* concurrent mutants
+    (``executor_factory(jobs)`` called with EXACTLY *jobs*, never a derived
+    value, A-082/A-122); each wave is fully joined — every submitted future
+    closes its own snapshot context — before the next wave is considered, so
+    a deadline expiry or a fatal dirt/HEAD result observed inside one wave
+    launches no mutant in a later wave. Expiry (``deadline.remaining()``
+    raising BUDGET_EXCEEDED/LANE_TIMEOUT from inside a worker, before that
+    worker's own snapshot or process exists) marks that identity and every
+    later, unsubmitted identity ``budget_exceeded`` — completed identities
+    remain evidence, never discarded for a partial sample. Results are
+    collected POSITION-ALIGNED with the submitted job list (each future
+    awaited by its own index), and the three non-killed buckets are
+    naturally identity-ordered already (never re-sorted, matching
+    :func:`collect_mutation_sites`'s own already-ordered batches).
     """
     if isinstance(jobs, bool) or not isinstance(jobs, int):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
@@ -843,9 +774,9 @@ def run_mutation(
     collected = collect_mutation_sites(
         targets, adapter=adapter, operators=operators, limit=max_mutants + 1
     )
-    # A-183: propagated BEFORE project-prefix arithmetic, scratch creation,
-    # executor construction, or submission. There is nothing to isolate and
-    # nothing to run when no analysis ever happened.
+    # A-183: propagated BEFORE any snapshot, executor construction, or
+    # submission. There is nothing to isolate and nothing to run when no
+    # analysis ever happened.
     if collected == UNSUPPORTED:
         return UNSUPPORTED
 
@@ -854,40 +785,67 @@ def run_mutation(
     if candidate_count > max_mutants:
         # The pre-submission refusal. No partial sample and no credit: the
         # sentinel records what was observed and that nothing was attempted.
+        # `prepared`/`executor_factory`/`process_runner` are never touched.
         return Mutation(candidate_count=candidate_count, total=0)
     total = candidate_count
     if total == 0:
         return Mutation(candidate_count=0, total=0)
 
-    prefix = project_prefix(repo_top=repo_top, project_root=project_root)
-    write_paths = tuple(_within_project(job.path, prefix) for job in job_list)
+    from .runner import execute_plan
 
-    from .runner import default_process_runner, execute_command
+    def _run_one(index: int) -> CommandResult:
+        job = job_list[index]
+        original_bytes = job.original_text.encode("utf-8")
+        replacement_bytes = job.site.apply(original_bytes)
+        materialize_timeout = deadline.remaining()
+        with prepared.materialize_replacement(
+            path=PurePosixPath(job.path),
+            expected=original_bytes,
+            replacement=replacement_bytes,
+            timeout=materialize_timeout,
+        ) as snapshot:
+            result = execute_plan(
+                plan,
+                cwd=snapshot.project_root,
+                timeout=deadline.remaining(),
+                process_runner=process_runner,
+                clock=clock,
+            )
+            dirt = _snapshot_left_dirt(job, snapshot)
+            if dirt is not None:
+                raise dirt
+        return result
 
-    resolved_process_runner = (
-        default_process_runner if process_runner is None else process_runner
-    )
-    resolved_clock = _utc_now if clock is None else clock
-
-    def _run(job: MutantJob, write_path: str, index: int) -> CommandResult:
-        return _run_one_mutant(
-            lane,
-            job=job,
-            write_path=write_path,
-            project_root=project_root,
-            scratch_parent=scratch_root,
-            index=index,
-            execute=execute_command,
-            process_runner=resolved_process_runner,
-            clock=resolved_clock,
-        )
+    results: list[CommandResult | None] = [None] * total
+    budget_exceeded_mask = [False] * total
+    fatal: AssayError | None = None
 
     with executor_factory(jobs) as pool:
-        futures = [
-            pool.submit(_run, job, write_path, index)
-            for index, (job, write_path) in enumerate(zip(job_list, write_paths))
-        ]
-        results = [future.result() for future in futures]
+        index = 0
+        while index < total and fatal is None:
+            wave = list(range(index, min(index + jobs, total)))
+            futures = {pool.submit(_run_one, position): position for position in wave}
+            wave_stopped = False
+            for future, position in futures.items():
+                try:
+                    results[position] = future.result()
+                except AssayError as exc:
+                    if exc.outcome is Outcome.BUDGET_EXCEEDED:
+                        budget_exceeded_mask[position] = True
+                        wave_stopped = True
+                    elif fatal is None:
+                        fatal = exc
+            index = wave[-1] + 1
+            if fatal is not None or wave_stopped:
+                for leftover in range(index, total):
+                    budget_exceeded_mask[leftover] = True
+                break
+
+    # A-195: a mutant that left Git-visible dirt/HEAD drift is never folded
+    # into `crashed` -- the whole R2 claim becomes the unchanged payload-free
+    # pair, exactly like a P22 structural failure elsewhere in the lane.
+    if fatal is not None:
+        raise fatal
 
     buckets: dict[str, list[MutantOutcome]] = {
         "killed": [],
@@ -895,26 +853,17 @@ def run_mutation(
         "crashed": [],
         "budget_exceeded": [],
     }
-    for job, result in zip(job_list, results):
-        # A-180: killed is an identity list now, so every attempted mutant --
-        # including the ones the suite caught -- is recorded and bindable to
-        # the declared operator policy.
-        #
-        # Results are consumed POSITION-ALIGNED with the submitted job list
-        # (each future awaited by its own index, never `as_completed`), and
-        # `collect_mutation_sites` guarantees that list is identity-ordered:
-        # per file by `_validate_sites`, across files by path order, and
-        # `MutantOutcome.identity` leads with `path`. Appending in that order
-        # therefore leaves every bucket identity-ordered already.
-        #
-        # P21 note: v3 sorted each bucket here afterwards. That sort is now
-        # unreachable -- no input `collect_mutation_sites` can produce would
-        # change under it -- and AUTHORING 3b.D asks for such a line to be
-        # restructured away rather than kept and never exercised. The
-        # invariant itself is not weakened: `Mutation` REFUSES to construct
-        # an out-of-order bucket, so a future change that broke the ordering
-        # would raise here rather than emit a scrambled artifact.
-        buckets[_classify_mutant_result(result)].append(_outcome_of(job))
+    for position, job in enumerate(job_list):
+        # Results are consumed POSITION-ALIGNED with the submitted job list,
+        # and `collect_mutation_sites` guarantees that list is
+        # identity-ordered already (per file by `_validate_sites`, across
+        # files by path order, and `MutantOutcome.identity` leads with
+        # `path`) -- appending in that order leaves every bucket
+        # identity-ordered without a second sort.
+        if budget_exceeded_mask[position]:
+            buckets["budget_exceeded"].append(_outcome_of(job))
+        else:
+            buckets[_classify_mutant_result(results[position])].append(_outcome_of(job))
 
     return Mutation(
         candidate_count=candidate_count,

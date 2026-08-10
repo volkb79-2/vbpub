@@ -17,6 +17,17 @@ non-deterministic thread scheduling) then proves the identical property
 holds under real concurrency too -- not asserted via elapsed time, but via
 the SAME per-mutant-content-keyed attribution check, which a completion-
 order bug would fail regardless of which thread happened to finish first.
+
+**P23**: isolation is now a real P22 committed-object snapshot per mutant
+(:func:`~assay.isolation.SnapshotRepository.materialize_replacement`),
+never a ``shutil.copytree`` of a live directory -- so every fixture here
+is a real, committed ``git`` repository (:class:`conftest.GitRepo`), and
+each ``run_mutation`` call is handed a real prepared seed
+(:func:`conftest.prepared_snapshot`), a real resolved plan
+(:func:`conftest.make_plan`), and a real injected deadline
+(:func:`conftest.make_deadline`) -- the identical three objects
+:func:`~assay.runner.run_lane`'s own higher-rigor path constructs once and
+shares across every unit.
 """
 
 from __future__ import annotations
@@ -24,20 +35,14 @@ from __future__ import annotations
 import subprocess
 from concurrent.futures import Future
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-from conftest import make_lane
+from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
 from assay.errors import Outcome
-from assay.mutation import (
-    MutationSite,
-    MutationTarget,
-    _within_project,
-    project_prefix,
-    run_mutation,
-)
+from assay.mutation import MutationSite, MutationTarget, run_mutation
 from assay.runner import execute_command
 
 #: Four independent bool-const sites -- one per bucket this test drives
@@ -58,9 +63,19 @@ _TARGETS = (
 )
 
 
-def _materialize_project(root: Path) -> None:
-    (root / "pkg").mkdir(parents=True)
-    (root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+def _clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _seed_repo(tmp_path: Path, name: str, *, text: str = _TEXT) -> GitRepo:
+    repo = GitRepo(path=tmp_path / name)
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/flags.py", text)
+    repo.commit_all("add flags")
+    return repo
 
 
 class _SynchronousExecutor:
@@ -92,17 +107,17 @@ class _SynchronousExecutor:
         return future
 
 
-def _make_decide_by_mutated_content(project_root: Path):
-    """Builds a fake ``process_runner`` bound to *project_root*: the
+def _make_decide_by_mutated_content(repo_path: Path):
+    """Builds a fake ``process_runner`` bound to *repo_path*: the
     BASELINE call always passes (unmutated content), and every MUTANT call
-    reads the ACTUAL mutated file inside its own *cwd* and decides the
-    outcome from what it finds there -- proves the right RESULT lands on
-    the right JOB even when completion order is scrambled, because the
-    decision is keyed to the real, isolated, per-mutant content rather
-    than to submission position."""
+    reads the ACTUAL mutated file inside its own *cwd* (a real, independent
+    P22 snapshot's own project root) and decides the outcome from what it
+    finds there -- proves the right RESULT lands on the right JOB even when
+    completion order is scrambled, because the decision is keyed to the
+    real, isolated, per-mutant content rather than to submission position."""
 
     def decide(argv, *, env, cwd, timeout):
-        if Path(cwd) == project_root:
+        if Path(cwd) == repo_path:
             return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
@@ -122,27 +137,29 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
     tmp_path: Path,
 ):
     lane = make_lane(argv=("pytest", "-q"))
-    project_root = tmp_path / "proj"
+    repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
-    _materialize_project(project_root)
     scratch_root.mkdir()
-    decide = _make_decide_by_mutated_content(project_root)
-    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
+    decide = _make_decide_by_mutated_content(repo.path)
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    plan = make_plan(lane)
+    deadline = make_deadline()
 
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=2,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=decide,
-        executor_factory=lambda jobs: _SynchronousExecutor(),
-    )
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=decide,
+            clock=_clock,
+            executor_factory=lambda jobs: _SynchronousExecutor(),
+        )
 
     assert baseline.outcome is Outcome.PASS
     assert mutation.total == 4
@@ -163,25 +180,27 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
     lane = make_lane(argv=("pytest", "-q"))
 
     def run(jobs: int):
-        project_root = tmp_path / f"proj-{jobs}"
+        repo = _seed_repo(tmp_path, f"repo-{jobs}")
         scratch_root = tmp_path / f"scratch-{jobs}"
-        _materialize_project(project_root)
         scratch_root.mkdir()
-        decide = _make_decide_by_mutated_content(project_root)
-        baseline = execute_command(lane, cwd=project_root, process_runner=decide)
-        mutation = run_mutation(
-            lane,
-            baseline=baseline,
-            project_root=project_root,
-        repo_top=project_root,
-            scratch_root=scratch_root,
-            targets=_TARGETS,
-            adapter=PythonAdapter(),
-            jobs=jobs,
-            max_mutants=50,
-        operators=("bool-const-flip",),
-            process_runner=decide,
-        )
+        decide = _make_decide_by_mutated_content(repo.path)
+        baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+        plan = make_plan(lane)
+        deadline = make_deadline()
+        with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+            mutation = run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=plan,
+                deadline=deadline,
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=jobs,
+                max_mutants=50,
+                operators=("bool-const-flip",),
+                process_runner=decide,
+                clock=_clock,
+            )
         assert baseline.outcome is Outcome.PASS
         return mutation
 
@@ -202,27 +221,29 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
     the shared source is untouched, without asserting anything about
     elapsed time."""
     lane = make_lane(argv=("pytest", "-q"))
-    project_root = tmp_path / "proj"
+    repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
-    _materialize_project(project_root)
     scratch_root.mkdir()
-    before = (project_root / "pkg" / "flags.py").read_bytes()
-    decide = _make_decide_by_mutated_content(project_root)
-    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
+    before = (repo.path / "pkg" / "flags.py").read_bytes()
+    decide = _make_decide_by_mutated_content(repo.path)
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    plan = make_plan(lane)
+    deadline = make_deadline()
 
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=2,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=decide,
-    )
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=decide,
+            clock=_clock,
+        )
 
     assert baseline.outcome is Outcome.PASS
     # all four buckets were genuinely reached by this same run, each
@@ -232,35 +253,42 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
     assert [o.lineno for o in mutation.crashed] == [4]
     assert [o.lineno for o in mutation.budget_exceeded] == [5]
 
-    after = (project_root / "pkg" / "flags.py").read_bytes()
+    after = (repo.path / "pkg" / "flags.py").read_bytes()
     assert after == before
+    assert repo.git("status", "--porcelain") == ""
 
 
 def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
     lane = make_lane(argv=("pytest", "-q"))
-    project_root = tmp_path / "proj"
+    repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
-    _materialize_project(project_root)
     scratch_root.mkdir()
-    decide = _make_decide_by_mutated_content(project_root)
-    baseline = execute_command(lane, cwd=project_root, process_runner=decide)
+    decide = _make_decide_by_mutated_content(repo.path)
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    plan = make_plan(lane)
+    deadline = make_deadline()
 
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=_TARGETS,
-        adapter=PythonAdapter(),
-        jobs=2,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=decide,
-    )
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=decide,
+            clock=_clock,
+        )
 
     assert baseline.outcome is Outcome.PASS
     assert mutation.total == 4
+    # The prepared seed itself is the only thing scratch_root still holds
+    # once every materialized child has closed -- P22's own contract, never
+    # asserted empty (the seed is legitimately still on disk here, since
+    # this whole block just closed the `with prepared_snapshot(...)` above).
     assert list(scratch_root.iterdir()) == []
 
 
@@ -336,33 +364,40 @@ def test_the_recorded_buckets_come_out_identity_ordered_across_files(
     each per-file batch is already identity-ordered, and results are
     consumed position-aligned with that job list."""
     lane = make_lane(argv=("pytest", "-q"))
-    project_root = tmp_path / "proj"
-    scratch_root = tmp_path / "scratch"
-    (project_root / "pkg").mkdir(parents=True)
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
     text = "def flags():\n" + "".join(f"    x{n} = True\n" for n in (2, 3, 4))
-    (project_root / "pkg" / "flags.py").write_text(text, encoding="utf-8")
-    (project_root / "pkg" / "aaa.py").write_text(text, encoding="utf-8")
+    repo.write("pkg/flags.py", text)
+    repo.write("pkg/aaa.py", text)
+    repo.commit_all("add pkg")
+    scratch_root = tmp_path / "scratch"
     scratch_root.mkdir()
     # Supplied z-then-a on purpose: path order is the collector's job.
     targets = (
         MutationTarget(path="pkg/flags.py", text=text, lines=frozenset({2, 3, 4})),
         MutationTarget(path="pkg/aaa.py", text=text, lines=frozenset({2, 3, 4})),
     )
-    baseline = execute_command(lane, cwd=project_root, process_runner=_always_pass)
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
+    plan = make_plan(lane)
+    deadline = make_deadline()
 
-    mutation = run_mutation(
-        lane,
-        baseline=baseline,
-        project_root=project_root,
-        repo_top=project_root,
-        scratch_root=scratch_root,
-        targets=targets,
-        adapter=_ReverseOrderAdapter(),
-        jobs=3,
-        max_mutants=50,
-        operators=("bool-const-flip",),
-        process_runner=_always_pass,
-    )
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=plan,
+            deadline=deadline,
+            targets=targets,
+            adapter=_ReverseOrderAdapter(),
+            jobs=3,
+            max_mutants=50,
+            operators=("bool-const-flip",),
+            process_runner=_always_pass,
+            clock=_clock,
+        )
 
     # everything survives (`_always_pass`), so all six identities land in the
     # one bucket and their ORDER is the whole observation.
@@ -375,44 +410,3 @@ def test_the_recorded_buckets_come_out_identity_ordered_across_files(
         ("pkg/flags.py", 3),
         ("pkg/flags.py", 4),
     ]
-
-
-# --- where the mutant is WRITTEN inside the copy (A-145) ---------------------
-#
-# A target's `path` is REPO-relative; the scratch tree is a copy of the
-# PROJECT root. Those are the same string only when the project IS the
-# repository top -- which is what every fixture above happens to be, and
-# exactly why the mismatch survived until a real subdirectory project ran.
-
-
-def test_project_prefix_is_empty_when_the_project_is_the_repository_top(
-    tmp_path: Path,
-):
-    assert project_prefix(repo_top=tmp_path, project_root=tmp_path) == ""
-
-
-def test_project_prefix_names_the_projects_own_subdirectory(tmp_path: Path):
-    (tmp_path / "assay").mkdir()
-
-    assert project_prefix(repo_top=tmp_path, project_root=tmp_path / "assay") == "assay/"
-
-
-def test_a_nested_project_prefix_uses_forward_slashes(tmp_path: Path):
-    (tmp_path / "libs" / "assay").mkdir(parents=True)
-
-    prefix = project_prefix(repo_top=tmp_path, project_root=tmp_path / "libs" / "assay")
-
-    assert prefix == "libs/assay/"
-
-
-def test_a_repo_relative_target_is_respelled_relative_to_the_project_root():
-    assert _within_project("assay/src/mod.py", "assay/") == "src/mod.py"
-
-
-def test_a_target_outside_the_project_root_is_refused_before_submission():
-    """The check earns its place: without it this path is written into the
-    copy anyway (or, more often, crashes deep in a worker thread with a
-    bare ``FileNotFoundError``), because the copy simply has no counterpart
-    for a file that lives outside the directory it was copied from."""
-    with pytest.raises(ValueError, match="outside the project root"):
-        _within_project("other/src/mod.py", "assay/")

@@ -418,6 +418,64 @@ the process group assay owns and renders `BUDGET_EXCEEDED/LANE_TIMEOUT`. P23
 prepares once per lane and passes remaining seconds before every call, so
 neither package can silently reset the budget.
 
+### Higher rigor consumes the prepared seed; it never re-derives it (A-188–A-196)
+
+P23 is the sole caller of `assay.isolation` for R1/R2/R3 lanes. `run_lane`
+resolves one `CommandPlan` and one `LaneDeadline` (A-193) before it opens
+`isolation.prepare_snapshot`, then materializes one baseline repository plus
+one independent repository per mutant and per canary half from that single
+prepared seed — direct R0-only lanes never touch P22 and keep the pre-P22
+live-tree path (A-189). There is no fallback in either direction: a lane that
+declares R1, R2 or R3 cannot silently run against the live tree just because a
+snapshot bound was tight, and a direct lane is never routed through P22 for
+"extra" rigor it did not declare.
+
+**Snapshot data is addressed by path, never by OID (A-191).** Mutation source
+bytes are read through `SnapshotRepository.read_regular_file` at the tracked
+repo-top-relative path, and whole expected/replacement blobs are handed to
+`materialize_replacement` the same way — never through a cache keyed by blob
+OID. Two paths that happen to share one blob remain two independent reads and
+two independent replacements; collapsing them by content would silently drop
+one path's mutant.
+
+**A disposable snapshot is not a license to leave dirt (A-195).** Every unit
+whose result is used — baseline, each executed mutant, and both canary
+halves — is checked once for uncommitted changes and, on a clean tree, for a
+moved `HEAD`, against that unit's own expected commit. `DIRTY_TREE` and
+`HEAD_CHANGED` stop further use of that unit's result; every live child closes
+before the prepared seed it came from, and a `AssayError` raised inside a unit
+is never papered over by a normal-exit `RuntimeError` from the surrounding
+cleanup — the first real error is the one the verdict remembers.
+
+**Scratch and pack-space cost is bounded by formula, not by a free-space
+probe (A-194).** A prepared seed is transferred exactly once per lane. For `U`
+attempted units (baseline plus every mutant plus both canary halves that
+actually run), total pack-write I/O across the lane is bounded by
+`(U + 1) * max_pack_bytes` — the one-time seed transfer plus one independent
+pack per unit. Peak simultaneous pack space is bounded by
+`(1 + max(1, jobs)) * max_pack_bytes` — the seed plus at most `jobs` live
+children at once, since P23 submits mutation work in waves of size `jobs` and
+awaits each wave before starting the next. The conservative bound on
+materialized tree size for one live child is `max_entries * max_blob_bytes`.
+Hardlinking a child to the seed to avoid this cost is forbidden — it would
+destroy the isolation P22 exists to provide. There is no preflight free-space
+check: querying available bytes ahead of a write cannot promise the write will
+still fit by the time it happens, so a real scratch I/O failure is left to
+surface as P22's own `ERROR/GIT_FAILED` rather than being predicted and
+pre-empted by a guess.
+
+**A symbolic `judge.base` is resolved before any snapshot exists.** P22 never
+preserves refs or branch names — only the reachable closure of one resolved
+commit. A lane's declared `judge.base` (a branch name, `HEAD~1`, or similar)
+is therefore resolved once, against the consumer's real repository, through
+the same merge-base computation `git.resolve_base` already performs for the
+direct path — never a bare `rev-parse` against the symbolic name. Resolving
+only the ref and not the merge-base would fail whenever the base branch has
+commits the prepared commit's history does not: the snapshot only ever
+contains one commit's closure, so a diverged base is unreachable inside it
+unless the *merge-base* (necessarily an ancestor of the prepared commit) is
+what gets baked into the snapshot's own diff and canary judgments.
+
 ### Binding the effective judge policy (v3)
 
 A percentage alone does not let an independent consumer re-derive a status:
