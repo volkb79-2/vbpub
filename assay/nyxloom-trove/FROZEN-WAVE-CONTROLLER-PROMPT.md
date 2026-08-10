@@ -1,5 +1,15 @@
 # Luna controller prompt — frozen orientation, forked Assay P20–P32 wave
 
+> **SUPERSEDED 2026-08-10 for P27–P32 + B001 by `WAVE-CONTROLLER-PROMPT.md`
+> (decision A-216).** Do not start a controller from this file. It is retained as
+> the historical record of what P20–P26 actually ran under, and every merged
+> packet in `.worktrees/_control/assay-P20-P32/` references it. Two premises it
+> depends on are gone: the operator-managed Codex carver thread `C-sol-0`, and
+> the frozen implementer/reviewer base experiment. The successor keeps this
+> file's gate, merge, brief-routing, and adversarial-harness discipline
+> essentially intact, drops base creation/rotation/keepalive and experiment
+> allocation, and adds a mandatory pre-dispatch carve review.
+
 Use this as the initial prompt for a **fresh Luna high** controller. Replace the
 angle-bracket inputs; do not append prior implementation transcripts. This is a
 semi-manual pilot of `nyxloom/docs/frozen-orientation-fork-workflow.md`, not a
