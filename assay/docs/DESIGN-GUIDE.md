@@ -1004,6 +1004,66 @@ venv's `sys.path`, so "zero runtime dependencies" is checked against the
 rather than merely asserted from the pinned `dependencies = []` in
 `pyproject.toml`.
 
+## 15. Real Python-project qualification harness (P25)
+
+§13 states the product claim (qualification, not adoption) and the exact
+three-symlink adoption precondition; this section is the mechanism that
+proves it. `gate/python/qualify_topos.py` runs inside the registered gate,
+between `run_self_hosted_lane` and `run_independent_witness`, against the
+CURRENT run-venv wheel `run_self_hosted_lane` already proved.
+
+**One disposable baseline, reconstructed per scenario, never the real
+checkout.** `git archive --format=tar` exports only the pinned commit's
+`.gitignore` and `topos/` tree into a fresh scratch directory; the exact
+three absolute `/etc/passwd` symlinks are verified present and deleted, the
+five relative contained symlinks are verified retained, and the exact
+966-minus-3 tracked set is `git add -f`'d (never ordinary `add`, which
+silently drops four tracked-but-ignored Docker fixtures under the carried
+root `.gitignore`) to a fixed-identity, fixed-date commit. That commit is
+`base`; the scenario's own probe/test/wrapper/`assay.toml` land in one more
+commit on top, which is `HEAD`. Same content plus the same fixed identity
+reproduces the identical baseline OID regardless of which scenario runs on
+top of it — a real, checked property, not an assumption.
+
+**Two Assay owners, never conflated.** The gate's own `current_assay`
+(`$scratch/run-venv/bin/assay`) runs the full 2,923-test suite plus every
+integrity negative, so future Assay changes stay externally qualified. A
+separate, hash-installed, clean-tagged `1.2.5` release venv — built the same
+way `install_locked_release` proves any consumer could — runs one targeted
+smoke. Neither route ever selects a wheel by glob, rebuilds one at runtime,
+or substitutes for the other.
+
+**Three independent witnesses per common-semantics scenario.** Installed
+Assay emits its own v4 verdict; a bounded, non-interpreting wrapper copies
+the exact coverage bytes Assay consumed inside its ephemeral snapshot to an
+external path *after* pytest exits zero (Assay's own snapshot is destroyed
+before an outside process could read it otherwise); and the unmodified,
+committed `topos/tools/coverage_gate.py` parses that same copy against the
+identical `base..HEAD` diff. That third witness is compared by its NUMBERS
+against the carver-owned hand manifest, never by its `passed` flag alone:
+Topos defines `pct = 100.0` whenever `changed_executable == 0`, so a scenario
+that measured nothing would "agree" with a truthful 5/5 run on the boolean —
+and the release smoke, which carries no complete-artifact template, is exactly
+where that would have gone unnoticed. `compare_complete_artifact` then does ONE
+whole-document equality check against a locked template, normalizing only
+the fields whose real value it already checked separately (version, commit,
+base, timestamps, the declared/effective environment, the witness/log
+paths) — never a status-only or field-by-field comparison a forged-but-
+self-consistent artifact could pass.
+
+**The integrity matrix runs for real, not as a checklist.** Each frozen
+terminal — a missing coverage profile, a dirty consumer, a symbolic base
+that resolves to HEAD, a lane command that leaves tracked dirt or commits
+inside its own snapshot, a wrong-but-existing source root, and a forged
+universal-PASS artifact — is exercised against the real pinned Topos tree
+and the real installed Assay, and each check is its own oracle: it raises
+unless the observed terminal (or comparator rejection) exactly matches the
+frozen expectation. One asymmetry is deliberately never treated as a
+mismatch: Topos cannot express exclusion provenance, so `allow_excluded =
+false` correctly produces Assay `FAIL/EXCLUDED_LINES` against a Topos
+`PASS` — recorded as the expected capability gap, not compared as a
+terminal.
+
 ---
 
 ## Appendix — arguments considered and rejected

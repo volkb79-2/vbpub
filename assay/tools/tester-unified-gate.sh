@@ -220,6 +220,29 @@ run_inner() {
   require_installed_purity "$scratch" "$version"
 
   run_self_hosted_lane "$worktree" "$scratch" "$version"
+
+  # P25: qualifies the CURRENT run-venv Assay (plus a separately
+  # hash-installed clean-tagged 1.2.5 release wheel) against a disposable,
+  # pinned, prospective Topos tree -- never the real Topos checkout, never a
+  # Docker launch of its own outer gate. `--source-repo` is $worktree itself
+  # (the repository top, where the pinned `topos/` tree actually lives, as a
+  # sibling of `assay/`), never the private clone `make_exact_oid_clone`
+  # made (that clone is sparse to `assay/` only). The harness's own success
+  # marker is required exactly once before the gate's own phase marker is
+  # printed -- a failing harness exits non-zero under `set -e` and this
+  # function never reaches either line.
+  local topos_marker
+  topos_marker="$(
+    "$scratch/run-venv/bin/python" "$worktree/assay/gate/python/qualify_topos.py" \
+      --source-repo "$worktree" \
+      --scratch "$scratch/p25-topos" \
+      --current-assay "$scratch/run-venv/bin/assay" \
+      --current-version "$version"
+  )"
+  [[ "$topos_marker" == "ASSAY_P25_TOPOS_QUALIFIED=1" ]] || \
+    die "P25 Topos qualification did not emit its success marker exactly once"
+  echo 'ASSAY_GATE_PHASE=topos-qualified'
+
   run_independent_witness "$scratch" "$run_venv_site"
 }
 
