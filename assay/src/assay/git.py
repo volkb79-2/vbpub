@@ -96,12 +96,22 @@ from typing import Callable, Mapping, Sequence
 from .errors import AssayError, Outcome, ReasonCode
 
 __all__ = [
+    "Remaining",
     "dirty_paths",
     "head_rev",
+    "is_ancestor",
+    "path_is_current",
     "repo_top",
     "resolve_base",
     "run",
+    "tree_entry_kind",
+    "verify_exact_commit",
 ]
+
+#: One lane's remaining budget, sampled fresh at every boundary (P26/A-212).
+#: ``None`` means "no lane deadline owns this call" -- legal only for a
+#: genuine non-lane/legacy caller; every lane-owned call passes a callable.
+Remaining = Callable[[], float]
 
 #: The CLOSED replacement environment every git child receives -- REPLACES
 #: the process environment entirely (never merged), so no ambient GIT_*,
@@ -174,7 +184,39 @@ def _git_failed(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED)
 
 
-def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
+def _sample_remaining(remaining: Remaining | None) -> float | None:
+    """Sample *remaining* once, or ``None`` when no lane deadline applies.
+
+    Whatever :func:`~assay.runner.LaneDeadline.remaining` raises on expiry
+    (``AssayError``/``BUDGET_EXCEEDED``/``LANE_TIMEOUT``) propagates
+    unmodified -- this is the ONE object every abnormal-cleanup path below
+    re-raises, never a fresh exception of assay's own.
+    """
+    if remaining is None:
+        return None
+    return remaining()
+
+
+def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
+    """Best-effort SIGKILL of the whole process group, regardless of whether
+    the direct child has already exited (P26/A-212).
+
+    A forked descendant can still hold stdout/stderr open after the direct
+    boundary child itself has exited -- ``proc.poll() is not None`` must
+    never be read as "nothing left to kill".
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tuple[int, bytes, bytes]:
     """Run *argv* with the sanitized environment and return
     ``(returncode, stdout, stderr)`` with BOTH streams bounded.
 
@@ -188,48 +230,92 @@ def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
     remaining bytes are discarded rather than retained, so the work stays
     finite instead of merely un-retained. The same rule applies to stderr:
     retaining only its prefix while continuing to drain an arbitrary producer
-    would cap memory but not work. Either overflow kills the child and becomes
+    would cap memory but not work. Either overflow becomes
     ``ERROR``/``GIT_FAILED``.
+
+    **P26/A-212's callable deadline.** With *remaining* supplied, the child
+    starts its own session (:data:`subprocess.Popen`'s ``start_new_session``)
+    so assay owns its whole process group, not merely its direct pid.
+    *remaining* is sampled before the child is ever started and again before
+    every pipe-selector/exit wait -- an expiry raised there propagates as the
+    SAME exception object, after this function SIGKILLs the owned group,
+    drains/closes within the existing byte bounds, and reaps the direct
+    child. No later bootstrap/substantive child is ever started once
+    *remaining* has raised.
     """
-    with subprocess.Popen(
-        argv,
-        env=dict(_REPLACEMENT_ENV),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    ) as proc:
-        selector = selectors.DefaultSelector()
+    _sample_remaining(remaining)
+    try:
+        proc = subprocess.Popen(
+            argv,
+            env=dict(_REPLACEMENT_ENV),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise _git_failed(f"could not start git: {exc}") from exc
+    assert proc.stdout is not None and proc.stderr is not None
+    selector = selectors.DefaultSelector()
+    out = bytearray()
+    err = bytearray()
+    overflowed: tuple[str, int] | None = None
+    completed = False
+    try:
         selector.register(proc.stdout, selectors.EVENT_READ, "out")
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
-        out = bytearray()
-        err = bytearray()
-        overflowed: tuple[str, int] | None = None
+        while selector.get_map() and overflowed is None:
+            timeout = _sample_remaining(remaining)
+            for key, _ in selector.select(timeout):
+                chunk = key.fileobj.read1(65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "out":
+                    out += chunk
+                    if len(out) > MAX_GIT_OUTPUT_BYTES:
+                        # Stop reading, stop retaining, and stop the child:
+                        # draining an oversized stream would keep the WORK
+                        # unbounded even once the MEMORY is not.
+                        overflowed = ("standard output", MAX_GIT_OUTPUT_BYTES)
+                        del out[:]
+                        break
+                else:
+                    room = _MAX_GIT_STDERR_BYTES - len(err)
+                    err += chunk[:room]
+                    if len(chunk) > room:
+                        overflowed = ("standard error", _MAX_GIT_STDERR_BYTES)
+                        break
+        while overflowed is None and proc.poll() is None:
+            timeout = _sample_remaining(remaining)
+            if timeout is None:
+                proc.wait()
+                break
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                # *remaining* alone owns expiry; a wait timeout only means
+                # the deadline must be sampled (and possibly raised) again.
+                continue
+        if overflowed is None:
+            completed = True
+    finally:
+        if not completed:
+            _kill_owned_group(proc)
+        for key in tuple(selector.get_map().values()):
+            try:
+                selector.unregister(key.fileobj)
+            except (KeyError, ValueError):  # pragma: no cover - defensive
+                pass
+        selector.close()
+        proc.stdout.close()
+        proc.stderr.close()
         try:
-            while selector.get_map() and overflowed is None:
-                for key, _ in selector.select():
-                    chunk = key.fileobj.read1(65536)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    if key.data == "out":
-                        out += chunk
-                        if len(out) > MAX_GIT_OUTPUT_BYTES:
-                            # Stop reading, stop retaining, and stop the
-                            # child: draining an oversized stream would keep
-                            # the WORK unbounded even once the MEMORY is not.
-                            overflowed = ("standard output", MAX_GIT_OUTPUT_BYTES)
-                            del out[:]
-                            proc.kill()
-                            break
-                    else:
-                        remaining = _MAX_GIT_STDERR_BYTES - len(err)
-                        err += chunk[:remaining]
-                        if len(chunk) > remaining:
-                            overflowed = ("standard error", _MAX_GIT_STDERR_BYTES)
-                            proc.kill()
-                            break
-        finally:
-            selector.close()
-        returncode = proc.wait()
+            proc.wait()
+        except (OSError, subprocess.SubprocessError):
+            # Never mask an active deadline/overflow exception with a reap
+            # failure; only surface this on an otherwise-normal completion.
+            if completed:
+                raise
     if overflowed is not None:
         stream, limit = overflowed
         raise _git_failed(
@@ -237,7 +323,7 @@ def _run_bounded(argv: list[str]) -> tuple[int, bytes, bytes]:
             f"{stream}; refusing to process an unbounded amount of repository "
             f"data from the child"
         )
-    return returncode, bytes(out), bytes(err)
+    return proc.returncode, bytes(out), bytes(err)
 
 
 def _resolve_git_executable() -> Path:
@@ -303,7 +389,9 @@ def _nearest_git_marker(start: Path) -> Path:
         candidate = parent
 
 
-def _resolve_repo(repo: Path, git_executable: Path) -> _ResolvedRepo:
+def _resolve_repo(
+    repo: Path, git_executable: Path, *, remaining: Remaining | None = None
+) -> _ResolvedRepo:
     """Resolve *repo*'s trusted work-tree root and real git directory
     (A-173). The bootstrap ``rev-parse --absolute-git-dir`` call runs with
     the SAME sanitized :data:`_REPLACEMENT_ENV` (so no ambient ``GIT_DIR``
@@ -311,6 +399,9 @@ def _resolve_repo(repo: Path, git_executable: Path) -> _ResolvedRepo:
     already trusts — but deliberately without ``--git-dir``/``--work-tree``,
     since resolving the git-dir correctly (including a linked-worktree
     gitfile redirect) is precisely what this call is for.
+
+    *remaining* (P26/A-212) reaches this bootstrap call too: a lane deadline
+    that expires here must stop before any substantive command ever starts.
     """
     repo_top = _nearest_git_marker(repo)
     argv = [
@@ -323,7 +414,7 @@ def _resolve_repo(repo: Path, git_executable: Path) -> _ResolvedRepo:
         "rev-parse",
         "--absolute-git-dir",
     ]
-    returncode, stdout, stderr = _run_bounded(argv)
+    returncode, stdout, stderr = _run_bounded(argv, remaining=remaining)
     if returncode != 0:
         raise _git_failed(
             f"git rev-parse --absolute-git-dir failed resolving {repo_top} "
@@ -349,7 +440,7 @@ def _prepare_subcommand_args(args: Sequence[str]) -> tuple[str, ...]:
     return tuple(args)
 
 
-def run(repo: Path, *args: str) -> str:
+def run(repo: Path, *args: str, remaining: Remaining | None = None) -> str:
     """Run *args* anchored to *repo*'s resolved identity and return stdout
     decoded as UTF-8.
 
@@ -362,29 +453,33 @@ def run(repo: Path, *args: str) -> str:
     error rather than a bare ``UnicodeDecodeError`` — see
     :func:`_decode_or_reject`, and the module docstring for why the decode is
     explicit rather than ``subprocess``' locale-driven ``text=True``.
+
+    *remaining* (P26/A-212) is the one lane deadline this call, its repository
+    bootstrap, and its process group all sample from; ``None`` stays legal
+    only for a genuine non-lane caller.
     """
     return _decode_or_reject(
-        _run_bytes(repo, *args), f"the output of git {' '.join(args)}"
+        _run_bytes(repo, *args, remaining=remaining), f"the output of git {' '.join(args)}"
     )
 
 
-def _run_bytes(repo: Path, *args: str) -> bytes:
-    """Run a git command and return its raw stdout bytes, undecoded.
+def _run_raw(
+    repo: Path, *args: str, remaining: Remaining | None = None
+) -> tuple[int, bytes, bytes]:
+    """Resolve *repo* and run *args* against it, returning the RAW
+    ``(returncode, stdout, stderr)`` without interpreting a non-zero exit.
 
-    Every caller in this module reaches git through here. Raw bytes are the
-    honest boundary: what git writes is a byte stream, and both the *what
-    encoding* question (:func:`_decode_or_reject`) and the *where do records
-    end* question (``-z`` in :func:`dirty_paths`) are then answered
-    deliberately, in one place, instead of by ``subprocess``' defaults.
-
-    The executable and repository identity are resolved fresh on every call
-    (A-173): no cross-call cache to go stale, and every command is anchored
-    with explicit ``--git-dir``/``--work-tree`` — the only pair that survives
-    a repository-local ``core.worktree`` redirect (verified empirically; a
-    command-line ``-c core.worktree=...`` override does not).
+    The shared construction every git call in this module (before P22) goes
+    through: fresh executable/repository resolution (A-173, no cross-call
+    cache), the literal-pathspec/git-dir/work-tree anchor, and *remaining*
+    forwarded to both the bootstrap and the substantive child. :func:`_run_bytes`
+    is the ordinary "any nonzero exit is GIT_FAILED" sibling; the narrow P26
+    attestation helpers (:func:`is_ancestor`, :func:`tree_entry_kind`,
+    :func:`path_is_current`) call this directly because THEY, not a generic
+    wrapper, own what a particular exit code means.
     """
     git_executable = _resolve_git_executable()
-    resolved = _resolve_repo(Path(repo), git_executable)
+    resolved = _resolve_repo(Path(repo), git_executable, remaining=remaining)
     argv = [
         str(git_executable),
         "--no-pager",
@@ -397,7 +492,21 @@ def _run_bytes(repo: Path, *args: str) -> bytes:
         str(resolved.repo_top),
         *_prepare_subcommand_args(args),
     ]
-    returncode, stdout, stderr = _run_bounded(argv)
+    return _run_bounded(argv, remaining=remaining)
+
+
+def _run_bytes(repo: Path, *args: str, remaining: Remaining | None = None) -> bytes:
+    """Run a git command and return its raw stdout bytes, undecoded.
+
+    Every caller in this module reaches git through here (or, for the narrow
+    P26 helpers that must see a specific nonzero exit themselves, through
+    :func:`_run_raw` directly). Raw bytes are the honest boundary: what git
+    writes is a byte stream, and both the *what encoding* question
+    (:func:`_decode_or_reject`) and the *where do records end* question
+    (``-z`` in :func:`dirty_paths`) are then answered deliberately, in one
+    place, instead of by ``subprocess``' defaults.
+    """
+    returncode, stdout, stderr = _run_raw(repo, *args, remaining=remaining)
     if returncode != 0:
         raise AssayError(
             f"git {' '.join(args)} failed ({returncode}): "
@@ -432,7 +541,7 @@ def _decode_or_reject(raw: bytes, what: str) -> str:
         ) from exc
 
 
-def repo_top(repo: Path) -> Path:
+def repo_top(repo: Path, *, remaining: Remaining | None = None) -> Path:
     """The absolute, resolved top level of the git repository containing
     *repo* — what every ``git status --porcelain`` path is relative to,
     regardless of which subdirectory this process was pointed at.
@@ -446,15 +555,15 @@ def repo_top(repo: Path) -> Path:
     worktree.
     """
     git_executable = _resolve_git_executable()
-    return _resolve_repo(Path(repo), git_executable).repo_top
+    return _resolve_repo(Path(repo), git_executable, remaining=remaining).repo_top
 
 
-def head_rev(repo: Path) -> str:
+def head_rev(repo: Path, *, remaining: Remaining | None = None) -> str:
     """The full SHA of ``HEAD``."""
-    return run(repo, "rev-parse", "HEAD").strip()
+    return run(repo, "rev-parse", "HEAD", remaining=remaining).strip()
 
 
-def _resolve_revision(repo: Path, revision: str) -> str:
+def _resolve_revision(repo: Path, revision: str, *, remaining: Remaining | None = None) -> str:
     """Validate and resolve *revision* (a caller/lane-declared string, never
     assumed to already be safe) to its full commit OID before it is used in
     any further command (A-173's "user-controlled revisions are first
@@ -463,10 +572,13 @@ def _resolve_revision(repo: Path, revision: str) -> str:
     parsed as a flag by the command that resolves it; the returned 40-hex
     OID cannot be mistaken for one either.
     """
-    return run(repo, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}").strip()
+    return run(
+        repo, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}",
+        remaining=remaining,
+    ).strip()
 
 
-def resolve_base(repo: Path, base: str) -> str:
+def resolve_base(repo: Path, base: str, *, remaining: Remaining | None = None) -> str:
     """Resolve *base* against the shape of ``HEAD``.
 
     A merge commit (``HEAD`` has two or more parents) resolves to its first
@@ -478,14 +590,16 @@ def resolve_base(repo: Path, base: str) -> str:
     validated/resolved to a full OID (:func:`_resolve_revision`) before it
     reaches ``merge-base`` (A-173).
     """
-    tokens = run(repo, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    tokens = run(repo, "rev-list", "--parents", "-n", "1", "HEAD", remaining=remaining).split()
     if len(tokens) >= 3:  # HEAD sha + >=2 parent shas
         return tokens[1]
-    resolved_base = _resolve_revision(repo, base)
-    return run(repo, "merge-base", "--end-of-options", resolved_base, "HEAD").strip()
+    resolved_base = _resolve_revision(repo, base, remaining=remaining)
+    return run(
+        repo, "merge-base", "--end-of-options", resolved_base, "HEAD", remaining=remaining
+    ).strip()
 
 
-def dirty_paths(repo: Path) -> tuple[str, ...]:
+def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str, ...]:
     """Repo-top-relative paths of every staged, unstaged, or untracked change.
 
     ``git status --porcelain`` reports the index AND the worktree in one pass
@@ -523,7 +637,7 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
     report every ignored path then subtract one artifact (that discards the
     repository's committed ignore policy).
     """
-    raw = _run_bytes(repo, "status", "--porcelain=v1", "-z")
+    raw = _run_bytes(repo, "status", "--porcelain=v1", "-z", remaining=remaining)
     # ``-z`` NUL-TERMINATES every record rather than separating them, so real
     # output always ends in a trailing NUL when there is at least one record,
     # and is simply zero bytes when there are none (``b"".split(b"\x00") ==
@@ -554,6 +668,7 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
         "--exclude-per-directory=.gitignore",
         "-z",
         "--",
+        remaining=remaining,
     )
     for path in untracked.split(b"\x00")[:-1]:
         paths.add(
@@ -562,6 +677,134 @@ def dirty_paths(repo: Path) -> tuple[str, ...]:
             )
         )
     return tuple(sorted(paths))
+
+
+# --------------------------------------------------------------------------
+# P26 — four narrow, sanitized attestation Git helpers (A-211)
+# --------------------------------------------------------------------------
+#
+# Each owns exactly one raw argv/exit/output interpretation for untrusted,
+# externally-supplied attestation input. All four reuse this module's
+# generic boundary (:func:`_run_raw`/:func:`_run_bounded`) -- including the
+# mandatory ``--literal-pathspecs`` global option -- rather than launching a
+# bespoke child. *remaining* is REQUIRED (never defaulted): every caller is
+# lane-owned, never a legacy non-lane helper.
+
+
+def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:
+    """Require that *oid* resolves to itself as an exact commit.
+
+    Runs sanitized ``rev-parse --verify --end-of-options <oid>^{commit}`` and
+    requires the sole stripped output to be byte-for-byte *oid* itself.
+    Peeling an annotated tag object (or any non-commit that still resolves)
+    changes the resolved OID, so it fails this identity check even though
+    the underlying ``rev-parse`` exits zero -- an attestation's declared
+    identity is never itself an indirection. Raises
+    ``AssayError``/``GIT_FAILED`` on any resolution failure or mismatch; the
+    caller (:mod:`assay.attestation`) remaps that to the untrusted-input
+    terminal.
+    """
+    output = run(
+        repo, "rev-parse", "--verify", "--end-of-options", f"{oid}^{{commit}}",
+        remaining=remaining,
+    ).strip()
+    if output != oid:
+        raise _git_failed(
+            f"{oid!r} does not resolve to itself as an exact commit "
+            f"(resolved to {output!r})"
+        )
+
+
+def is_ancestor(repo: Path, ancestor: str, descendant: str, *, remaining: Remaining) -> bool:
+    """Whether *ancestor* is *descendant* or an ancestor of it.
+
+    Interprets only ``merge-base --is-ancestor``'s own exit code: 0 is
+    ``True``, 1 is ``False``, anything else is a typed Git failure -- an
+    unrelated history or a malformed/unresolvable ref exits >1 empirically
+    and is never silently read as "not an ancestor".
+    """
+    returncode, _, stderr = _run_raw(
+        repo, "merge-base", "--is-ancestor", ancestor, descendant, remaining=remaining
+    )
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"git merge-base --is-ancestor failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
+
+
+def tree_entry_kind(repo: Path, commit: str, path: str, *, remaining: Remaining) -> str | None:
+    """The exact object kind of *path* at *commit* -- ``"blob"``, ``"tree"``,
+    or ``None`` when absent.
+
+    Runs literal ``ls-tree -z <commit> -- <path>`` and parses ONE raw record:
+    ``<mode> SP <type> SP <oid> TAB <path> NUL``. Empty output is absence
+    (``None``); more than one record, a record whose path does not match
+    *path* exactly, or a type other than ``blob``/``tree`` is a typed Git
+    failure -- never a display-name parser, never pathspec expansion (the
+    generic boundary's ``--literal-pathspecs`` is what makes a name
+    containing ``*?[]`` or a literal newline an exact identity here, not a
+    glob).
+    """
+    returncode, stdout, stderr = _run_raw(
+        repo, "ls-tree", "-z", commit, "--", path, remaining=remaining
+    )
+    if returncode != 0:
+        raise _git_failed(
+            f"git ls-tree failed ({returncode}): "
+            f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+        )
+    if not stdout:
+        return None
+    records = [record for record in stdout.split(b"\x00") if record]
+    if len(records) != 1:
+        raise _git_failed(
+            f"git ls-tree returned {len(records)} entries for a single exact "
+            f"path; expected exactly one"
+        )
+    meta, sep, name = records[0].partition(b"\t")
+    if not sep:
+        raise _git_failed("git ls-tree returned a malformed entry")
+    if _decode_or_reject(name, "an ls-tree path") != path:
+        raise _git_failed(
+            "git ls-tree returned a path that does not match the exact query"
+        )
+    fields = meta.split(b" ")
+    if len(fields) != 3:
+        raise _git_failed("git ls-tree returned malformed entry metadata")
+    kind = _decode_or_reject(fields[1], "an ls-tree object type")
+    if kind not in ("blob", "tree"):
+        raise _git_failed(f"git ls-tree returned an unsupported object type {kind!r}")
+    return kind
+
+
+def path_is_current(
+    repo: Path, before: str, after: str, path: str, *, remaining: Remaining
+) -> bool:
+    """Whether *path* is byte-identical between *before* and *after*.
+
+    Runs literal ``diff --quiet --exit-code --no-ext-diff --no-textconv
+    <before> <after> -- <path>`` (the ``--no-ext-diff``/``--no-textconv``
+    pair is :func:`_prepare_subcommand_args`'s own existing, mandatory
+    insertion for every ``diff`` invocation through this boundary). Exit 0 is
+    ``True`` (current), exit 1 is ``False`` (changed); anything else is a
+    typed Git failure.
+    """
+    returncode, _, stderr = _run_raw(
+        repo, "diff", "--quiet", "--exit-code", before, after, "--", path,
+        remaining=remaining,
+    )
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"git diff --quiet failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
 
 
 # --------------------------------------------------------------------------

@@ -160,6 +160,20 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         assert forbidden not in source, f"stale ambient-backend route reappeared: {forbidden}"
 
 
+def test_p26_installed_wheel_acceptance_has_its_test_closure_before_pytest() -> None:
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    inner = source.split("run_inner() {", 1)[1].split("# --- entry points", 1)[0]
+
+    wheel = inner.index("ASSAY_GATE_PHASE=wheel-installed")
+    closure = inner.index("write_tester_closure_pth")
+    purity = inner.index("require_installed_purity")
+    acceptance = inner.index("ASSAY_P26_PROJECT_ROOT")
+    marker = inner.index("ASSAY_GATE_PHASE=attestation-hardened")
+    self_host = inner.index("run_self_hosted_lane")
+
+    assert wheel < closure < purity < acceptance < marker < self_host
+
+
 def test_pyproject_build_system_matches_the_locked_five_pin_closure() -> None:
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
     assert tuple(pyproject["build-system"]["requires"]) == (

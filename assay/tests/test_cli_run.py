@@ -34,8 +34,12 @@ import pytest
 from conftest import R0_LANE, R1_LANE, GitRepo, set_key, why_invalid
 from jsonschema import Draft202012Validator
 
+from assay import cli as cli_module
+from assay import git
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verify import verify_document
 
 
 def _run_parser_description() -> str:
@@ -574,3 +578,123 @@ def test_run_requires_a_lane_positional_argument():
     with pytest.raises(SystemExit) as excinfo:
         main(["run"])
     assert excinfo.value.code == 2
+
+
+def test_an_attestation_timeout_outranks_an_adapter_that_would_refuse(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Reviewer combined-axis attack (new, outside the locked packet):
+    *atomic attestation timeout* CROSSED WITH *adapter refusal*.
+
+    The frozen terminal table gives these two rows separately —
+
+    * "expiry during attestation batch": every evidence and claim is
+      payload-free ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``, and **no adapter or
+      command** runs;
+    * "adapter refusal after resolved evidence": all claims carry the adapter
+      refusal.
+
+    — but never crosses them, and the locked suite exercises the timeout only
+    on a lane whose adapter resolves fine. The precedence is therefore
+    untested: an implementation that resolved the adapter before the batch, or
+    that let the refusal path catch the expiry, would emit a lane full of
+    ``ERROR``/``BAD_LANE_CONFIG`` claims and silently lose the budget
+    violation — a timeout downgraded into a config error.
+
+    The command is a real side-effect sentinel, so "no command ran" is
+    observed rather than assumed, and the adapter seam records any call at
+    all: reaching it is itself the defect, independent of what it returns.
+    """
+    sentinel_file = tmp_path / "command-really-ran"
+    lane_text = f"""\
+schema_version = 1
+
+[lanes.attested]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "touch {sentinel_file}"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.attested.judge]
+attestation_dir = ".assay/attestations"
+evidence = [
+  {{source="attested",key="slow"}},
+  {{source="attested",key="later"}},
+]
+"""
+    git_repo.write(".gitignore", ".assay/\nverdict.json\n")
+    git_repo.write("src/reviewed/child.py", "old\n")
+    path = _write_and_commit_lane(git_repo, lane_text)
+    head = git_repo.head()
+    attestations = git_repo.path / ".assay/attestations"
+    attestations.mkdir(parents=True, exist_ok=True)
+    for key in ("slow", "later"):
+        (attestations / f"{key}.json").write_text(
+            json.dumps(
+                {
+                    "producer": "human:alice",
+                    "attested_commit": head,
+                    "reviewed_paths": ["src/reviewed"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    timeout = AssayError(
+        "lane budget exhausted inside the attestation batch",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def expire(*args, **kwargs):
+        raise timeout
+
+    adapter_calls: list[object] = []
+
+    def refusing_adapter(lane):
+        adapter_calls.append(lane)
+        raise AssayError(
+            "this build cannot reach the declared rigor",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+    monkeypatch.setattr(git, "verify_exact_commit", expire, raising=False)
+    monkeypatch.setattr(cli_module, "_resolve_declared_adapters", refusing_adapter)
+
+    destination = git_repo.path / "verdict.json"
+    code, _, _ = run(
+        ["run", "attested", "--file", str(path), "--verdict-json", str(destination)]
+    )
+
+    assert code == 4, "the budget terminal, not the adapter-refusal exit"
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert verify_document(document) == [], "the artifact must still be complete v4"
+
+    # the timeout outranks the refusal, everywhere
+    assert (document["outcome"], document["reason_code"]) == (
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    assert [claim["status"] for claim in document["claims"]] == ["BUDGET_EXCEEDED"]
+    assert [claim["reason_code"] for claim in document["claims"]] == ["LANE_TIMEOUT"]
+    assert [item["key"] for item in document["evidence"]] == ["slow", "later"]
+    for item in document["evidence"]:
+        assert (item["status"], item["reason_code"]) == (
+            "BUDGET_EXCEEDED",
+            "LANE_TIMEOUT",
+        )
+        # payload-free: a timed-out identity never carries attested data
+        assert "producer" not in item and "attested_commit" not in item
+        assert "reviewed_paths" not in item
+    assert "BAD_LANE_CONFIG" not in json.dumps(document), (
+        "the adapter refusal must not appear anywhere: the batch expired first"
+    )
+
+    # ...and neither successor ever started
+    assert adapter_calls == [], "no adapter may be resolved after batch expiry"
+    assert not sentinel_file.exists(), "the lane command must never have run"

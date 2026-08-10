@@ -46,17 +46,18 @@ from __future__ import annotations
 import argparse
 import shlex
 import sys
+import time
 from pathlib import Path
 from typing import Sequence, TextIO
 
 from . import __version__
-from . import git, registry, runner
+from . import attestation, git, registry, runner
 from .adapters.base import LanguageAdapter
 from .adapters.python import PythonAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
-from .errors import AssayError, Outcome
+from .errors import AssayError, Outcome, ReasonCode
 from .output import VerdictOutput, reserve_verdict_output
-from .verdict import Verdict
+from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
@@ -280,6 +281,36 @@ def _cmd_run(
             destination.close()
 
 
+def _declared_evidence(lane: Lane) -> tuple[EvidenceDeclaration, ...]:
+    """The lane's own ordered Tier-3 identities, converted to
+    :class:`~assay.verdict.EvidenceDeclaration` (P26/A-213). Empty when the
+    lane declares none at all -- no location is ever derived.
+    """
+    if lane.judge is None or lane.judge.evidence is None:
+        return ()
+    return tuple(
+        EvidenceDeclaration(source=item.source, key=item.key) for item in lane.judge.evidence
+    )
+
+
+def _timed_out_evidence(
+    declared_evidence: tuple[EvidenceDeclaration, ...], exc: AssayError
+) -> tuple[Evidence, ...]:
+    """Every declared evidence identity as a payload-free
+    ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` entry (A-213's atomic attestation
+    timeout artifact)."""
+    return tuple(
+        Evidence(
+            source=item.source,
+            key=item.key,
+            status=exc.outcome,
+            verified_by_assay=False,
+            reason_code=exc.reason_code,
+        )
+        for item in declared_evidence
+    )
+
+
 def _run_reserved(
     args: argparse.Namespace,
     lane: Lane,
@@ -289,7 +320,57 @@ def _run_reserved(
     out: TextIO,
     err: TextIO,
 ) -> int:
-    commit = git.head_rev(lane_file.project_root)
+    # P26/A-212: one LaneDeadline, started here -- before HEAD is even
+    # resolved -- reaches HEAD, attestation, adapter resolution, and the
+    # whole of run_lane (direct R0 or higher rigor). CLI never passes
+    # `deadline=None` to run_lane; the exact sequence below is the contract:
+    # lane/output already reserved -> deadline -> HEAD -> attestation ->
+    # adapter -> command -> emit once.
+    deadline = runner.LaneDeadline.start(
+        budget_seconds=lane.budget_seconds, monotonic=time.monotonic
+    )
+    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+
+    declared_evidence = _declared_evidence(lane)
+    # No declaration means no loader call. Otherwise attestation_dir exists
+    # by config invariant; the loader reads live project-contained input and
+    # compares exact committed Git objects before adapter/command work.
+    if declared_evidence:
+        try:
+            evidence = attestation.load_attested_evidence(
+                lane_file.project_root,
+                head=commit,
+                declared=declared_evidence,
+                project_root=lane_file.project_root,
+                attestation_dir=lane.judge.attestation_dir,
+                remaining=deadline.remaining,
+            )
+        except AssayError as exc:
+            if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
+                raise
+            # A-213: the attestation deadline is atomic. No adapter or
+            # command ever launches; every declared rigor claim AND every
+            # declared evidence identity becomes the SAME payload-free
+            # BUDGET_EXCEEDED/LANE_TIMEOUT pair.
+            verdict = runner.refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=appended,
+                assay_version=__version__,
+                evidence=_timed_out_evidence(declared_evidence, exc),
+                declared_evidence=declared_evidence,
+            )
+            print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
+            if destination is not None:
+                runner.write_verdict(verdict, destination)
+            if args.verdict_json != "-":
+                _print_run_summary(verdict, out)
+            return verdict.exit_code
+    else:
+        evidence = ()
+
     try:
         adapter = _resolve_declared_adapters(lane)
     except AssayError as exc:
@@ -298,6 +379,9 @@ def _run_reserved(
         # artifact. Letting the typed error reach main()'s handler would
         # give a consumer the right exit code and nothing to read -- the
         # exact shape of un-auditable refusal P17 exists to remove.
+        #
+        # P26/A-213: adapter refusal preserves already-resolved evidence --
+        # it is never permission to erase it.
         verdict = runner.refuse_lane(
             lane,
             commit=commit,
@@ -305,6 +389,8 @@ def _run_reserved(
             reason_code=exc.reason_code,
             argv_append=appended,
             assay_version=__version__,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
         )
         print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
     else:
@@ -316,6 +402,9 @@ def _run_reserved(
             adapter=adapter,
             assay_version=__version__,
             argv_append=appended,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            deadline=deadline,
         )
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:

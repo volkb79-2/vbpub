@@ -413,3 +413,104 @@ def test_a_non_utf8_source_file_renders_a_complete_r2_claim(git_repo: GitRepo):
         ReasonCode.UNREADABLE_ARTIFACT,
     )
     assert r2.mutation is None
+
+
+def test_mutation_integrity_check_is_lane_budgeted_yet_keeps_completed_evidence(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """P26/A-212 and A-195 hold together at `_snapshot_left_dirt`'s call site.
+
+    The frozen P26 handoff §5 requires the mutation snapshot dirt/HEAD checks
+    to "pass ``deadline.remaining`` into the private helper" AND to "change no
+    bucket semantics". Two implementations each satisfy only one half, and
+    this oracle rejects both:
+
+    * omitting the callable leaves those Git children genuinely UNBOUNDED
+      (``git._run_bounded`` waits in ``selector.select(None)``/``proc.wait()``
+      with no timeout), so a hung ``status``/``rev-parse`` outlives the whole
+      lane budget inside a worker — caught by the forwarding assertions;
+    * forwarding it naively lets an expiry observed at this AFTER-the-fact
+      bookkeeping step reclassify an already-decisive mutant, so the completed
+      identity's real result is discarded — caught by the bucket assertions.
+
+    The deadline is driven by the same fake `monotonic` the sibling budget test
+    uses (the mutant's own process flips it), so nothing here depends on wall
+    clock, machine speed, worker, or test order.
+    """
+    source = "def f(x):\n    return x > 0 and x > 1 and x > 2\n"
+    base_rev, head_rev = _seed(git_repo, head_source=source)
+    expired = False
+    units: list[str] = []
+    integrity_remaining: list[object] = []
+
+    real_dirty_paths = mutation.git.dirty_paths
+    real_head_rev = mutation.git.head_rev
+
+    def monotonic() -> float:
+        return 101.0 if expired else 0.0
+
+    def spy_dirty_paths(repo, *, remaining=None):
+        if Path(repo) != git_repo.path:  # a mutant snapshot, not the lane repo
+            integrity_remaining.append(remaining)
+        return real_dirty_paths(repo, remaining=remaining)
+
+    def spy_head_rev(repo, *, remaining=None):
+        if Path(repo) != git_repo.path:
+            integrity_remaining.append(remaining)
+        return real_head_rev(repo, remaining=remaining)
+
+    monkeypatch.setattr(mutation.git, "dirty_paths", spy_dirty_paths)
+    monkeypatch.setattr(mutation.git, "head_rev", spy_head_rev)
+
+    def process(argv, *, env, cwd, timeout):
+        nonlocal expired
+        text = (Path(cwd) / "pkg/mod.py").read_text(encoding="utf-8")
+        unit = "baseline" if text == source else "mutant"
+        units.append(unit)
+        if unit == "mutant":
+            expired = True
+        return subprocess.CompletedProcess(
+            list(argv), 0 if unit == "baseline" else 1, "", ""
+        )
+
+    verdict = runner.run_lane(
+        _r2_lane(git_repo, base_rev, budget_seconds=100.0),
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=process,
+        clock=_clock,
+        monotonic=monotonic,
+    )
+
+    # (1) the integrity check really is deadline-forwarded, never unbounded
+    assert integrity_remaining, "the snapshot dirt/HEAD check never ran"
+    assert all(callable(item) for item in integrity_remaining), (
+        "the mutation snapshot dirt/HEAD check ran an UNBOUNDED Git child; "
+        "handoff §5 requires deadline.remaining reach the private helper"
+    )
+    # (2) it is the ONE lane deadline, not a fresh or detached budget: it
+    #     reports the very expiry this lane observed.
+    for item in integrity_remaining:
+        with pytest.raises(AssayError) as caught:
+            item()
+        assert (caught.value.outcome, caught.value.reason_code) == (
+            Outcome.BUDGET_EXCEEDED,
+            ReasonCode.LANE_TIMEOUT,
+        )
+
+    # (3) ...and the bucket semantics are byte-identical to before P26.
+    assert units == ["baseline", "mutant"], "no third or fourth process may start"
+    r2 = verdict.claims[1]
+    assert (r2.status, r2.reason_code) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    )
+    assert r2.mutation.total == 3
+    assert len(r2.mutation.killed) == 1, (
+        "an expiry seen at this AFTER-the-fact bookkeeping check discarded an "
+        "already-decisive mutant; completed identities remain evidence"
+    )
+    assert len(r2.mutation.budget_exceeded) == 2

@@ -1,8 +1,13 @@
 """``assemble_verdict``'s P10 extension: *evidence* and *declared_evidence*
 pass through, participate in the rollup exactly like a claim would, and the
-new missing/surplus guard fires BEFORE :class:`~assay.verdict.Verdict`'s own
-bare ``ValueError`` would (the identical reasoning P04's own rigor-coverage
-guard already established for ``claims``).
+P26/A-213 lane-binding guard fires BEFORE :class:`~assay.verdict.Verdict`'s
+own bare ``ValueError`` would (the identical reasoning P04's own
+rigor-coverage guard already established for ``claims``).
+
+P26/A-213 supersedes the old mutual-coverage-only guard: *evidence*/
+*declared_evidence* must now be exactly ``lane.judge.evidence``'s own ordered
+identities, so every fixture below that passes non-empty evidence declares a
+matching ``judge.evidence`` on its lane.
 
 Backward compatibility (every caller through P09 never named these two
 parameters) is proven by ``tests/test_runner_verdict_fixtures.py`` staying
@@ -18,6 +23,7 @@ import pytest
 from conftest import fixed_clock, make_lane
 
 from assay import runner
+from assay.config import EvidenceConfig, JudgeConfig
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Evidence, EvidenceDeclaration
 
@@ -32,8 +38,35 @@ def _r0_pass_result(tmp_path: Path):
     return lane_and_result
 
 
+def _r0_pass_result_declaring_review(tmp_path: Path):
+    """The identical fixture as :func:`_r0_pass_result`, except the lane
+    itself declares exactly ``evidence=[("attested","review")]`` (P26/A-213):
+    every test below that passes non-empty evidence needs a lane whose own
+    source matches it.
+    """
+    judge = JudgeConfig(
+        language=None,
+        source_roots=None,
+        source_root_paths=None,
+        fail_under=None,
+        allow_excluded=None,
+        coverage=None,
+        mutation=None,
+        canary=None,
+        base=None,
+        attestation_dir=".assay/attestations",
+        evidence=(EvidenceConfig(source="attested", key="review"),),
+    )
+    lane = make_lane(name="package", argv=("/bin/sh", "-c", "exit 0"), env={}, judge=judge)
+    clock = fixed_clock(
+        datetime(2026, 8, 7, 15, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 7, 15, 0, 1, tzinfo=timezone.utc),
+    )
+    return lane, runner.execute_command(lane, cwd=tmp_path, clock=clock)
+
+
 def test_current_evidence_alongside_a_passing_r0_claim_is_an_overall_pass(tmp_path: Path):
-    lane, result = _r0_pass_result(tmp_path)
+    lane, result = _r0_pass_result_declaring_review(tmp_path)
     evidence = Evidence(
         source="attested",
         key="review",
@@ -62,7 +95,7 @@ def test_current_evidence_alongside_a_passing_r0_claim_is_an_overall_pass(tmp_pa
 def test_stale_evidence_downgrades_an_otherwise_passing_verdict_to_no_measurement(
     tmp_path: Path,
 ):
-    lane, result = _r0_pass_result(tmp_path)
+    lane, result = _r0_pass_result_declaring_review(tmp_path)
     evidence = Evidence(
         source="attested",
         key="review",
@@ -92,7 +125,7 @@ def test_an_unreadable_attestation_outranks_a_passing_r0_claim(tmp_path: Path):
     # A-110's payoff one layer up: a broken attestation is not merely
     # "ignored" -- it makes the WHOLE verdict ERROR, exactly as it should for
     # a structurally broken input, even though R0 itself passed cleanly.
-    lane, result = _r0_pass_result(tmp_path)
+    lane, result = _r0_pass_result_declaring_review(tmp_path)
     evidence = Evidence(
         source="attested",
         key="review",
@@ -118,7 +151,7 @@ def test_an_unreadable_attestation_outranks_a_passing_r0_claim(tmp_path: Path):
 def test_missing_declared_evidence_is_refused_before_constructing_an_incomplete_verdict(
     tmp_path: Path,
 ):
-    lane, result = _r0_pass_result(tmp_path)
+    lane, result = _r0_pass_result_declaring_review(tmp_path)
 
     with pytest.raises(AssayError) as excinfo:
         runner.assemble_verdict(

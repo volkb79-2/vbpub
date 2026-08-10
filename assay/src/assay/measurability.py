@@ -42,7 +42,9 @@ class ResolvedBase:
     head_rev: str
 
 
-def check_dirty_tree(repo: Path, source_roots: Sequence[Path]) -> None:
+def check_dirty_tree(
+    repo: Path, source_roots: Sequence[Path], *, remaining: git.Remaining | None = None
+) -> None:
     """Raise ``NO_MEASUREMENT`` / ``DIRTY_TREE`` if anything under
     *source_roots* is staged, unstaged, or untracked; otherwise return
     ``None``.
@@ -66,10 +68,10 @@ def check_dirty_tree(repo: Path, source_roots: Sequence[Path]) -> None:
     this case wrong, because ``"...src/foo_evil"`` does start with
     ``"...src/foo"``.
     """
-    top = git.repo_top(repo)
+    top = git.repo_top(repo, remaining=remaining)
     dirty = sorted(
         rel
-        for rel in git.dirty_paths(repo)
+        for rel in git.dirty_paths(repo, remaining=remaining)
         if any((top / rel).resolve().is_relative_to(root) for root in source_roots)
     )
     if dirty:
@@ -83,7 +85,9 @@ def check_dirty_tree(repo: Path, source_roots: Sequence[Path]) -> None:
         )
 
 
-def check_base_is_head(repo: Path, base: str) -> ResolvedBase:
+def check_base_is_head(
+    repo: Path, base: str, *, remaining: git.Remaining | None = None
+) -> ResolvedBase:
     """Resolve *base* (:func:`assay.git.resolve_base`) and raise
     ``NO_MEASUREMENT`` / ``BASE_IS_HEAD`` if it equals ``HEAD``; otherwise
     return both revisions as a :class:`ResolvedBase`.
@@ -95,8 +99,8 @@ def check_base_is_head(repo: Path, base: str) -> ResolvedBase:
     before any diff is parsed, so a vacuous base never reaches
     :func:`assay.diff.parse_added_lines` at all.
     """
-    head = git.head_rev(repo)
-    resolved = git.resolve_base(repo, base)
+    head = git.head_rev(repo, remaining=remaining)
+    resolved = git.resolve_base(repo, base, remaining=remaining)
     if resolved == head:
         raise AssayError(
             f"resolved base ({resolved[:12]}) IS HEAD ({head[:12]}) — there "

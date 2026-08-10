@@ -506,6 +506,7 @@ def evaluate_r1(
     on_base_resolved: Callable[[str], None] | None = None,
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
+    remaining: git.Remaining | None = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -572,8 +573,8 @@ def evaluate_r1(
     """
     judge = lane.judge
     try:
-        measurability.check_dirty_tree(repo, judge.source_root_paths)
-        resolved = measurability.check_base_is_head(repo, base)
+        measurability.check_dirty_tree(repo, judge.source_root_paths, remaining=remaining)
+        resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
         if on_base_resolved is not None:
             on_base_resolved(resolved.base_rev)
         if profile is None:
@@ -581,9 +582,10 @@ def evaluate_r1(
                 project_root, judge.coverage.artifact, declared_format=judge.coverage.format
             )
         coverage.check_empty_coverage(profile)
-        repo_top = git.repo_top(repo)
+        repo_top = git.repo_top(repo, remaining=remaining)
         diff_text = git.run(
-            repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev
+            repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev,
+            remaining=remaining,
         )
         added = diff.parse_added_lines(diff_text)
         if on_added_resolved is not None:
@@ -631,6 +633,54 @@ def evaluate_r1(
             files_with_excluded_lines=result.files_with_excluded_lines,
         ),
     )
+
+
+def _lane_declared_evidence(lane: Lane) -> tuple[EvidenceDeclaration, ...]:
+    """The lane's own authoritative ordered evidence identities (P26/A-213) --
+    derived from ``lane.judge.evidence``, never from a caller-supplied
+    default. Empty exactly when the lane declares none at all.
+    """
+    judge = lane.judge
+    if judge is None or judge.evidence is None:
+        return ()
+    return tuple(
+        EvidenceDeclaration(source=item.source, key=item.key) for item in judge.evidence
+    )
+
+
+def _require_evidence_bound_to_lane(
+    lane: Lane,
+    declared_evidence: tuple[EvidenceDeclaration, ...],
+    evidence: tuple[Evidence, ...],
+) -> None:
+    """Refuse before any Git/plan/adapter/command work (P26/A-213) unless
+    BOTH *declared_evidence* and *evidence* are exactly the lane's own
+    authoritative ordered identities.
+
+    An unchecked empty-tuple default at a runner/assembly boundary is a
+    shadowing default (AGENTS.md §4.2a): it can silently substitute for
+    declarations the lane already names. Empty is legal only when the lane's
+    own derived source is itself empty.
+    """
+    authoritative = [item.identity for item in _lane_declared_evidence(lane)]
+    declared_identities = [item.identity for item in declared_evidence]
+    if declared_identities != authoritative:
+        raise AssayError(
+            f"lane {lane.name!r} declares evidence {authoritative} but was "
+            f"called with declared_evidence {declared_identities} -- refusing "
+            f"before any work",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    resolved_identities = [item.identity for item in evidence]
+    if resolved_identities != authoritative:
+        raise AssayError(
+            f"lane {lane.name!r} declares evidence {authoritative} but was "
+            f"called with evidence {resolved_identities} -- refusing before "
+            f"any work",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
 
 
 def assemble_verdict(
@@ -727,6 +777,7 @@ def assemble_verdict(
     the only way to make that honest without a schema change P16 already
     closed the book on.
     """
+    _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
     claims = claims if mutation_claim is None else (*claims, mutation_claim)
     covered = {claim.rigor for claim in claims}
     missing = [level for level in lane.rigor if level not in covered]
@@ -736,23 +787,6 @@ def assemble_verdict(
             f"assay build only computed claims for {sorted(covered)} -- "
             f"{missing} evaluation lands in a later package. Refusing before "
             f"constructing an incomplete verdict.",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
-        )
-    declared_identities = [item.identity for item in declared_evidence]
-    resolved_identities = [item.identity for item in evidence]
-    missing_evidence = [
-        identity for identity in declared_identities if identity not in resolved_identities
-    ]
-    surplus_evidence = [
-        identity for identity in resolved_identities if identity not in declared_identities
-    ]
-    if missing_evidence or surplus_evidence:
-        raise AssayError(
-            f"declared_evidence {declared_identities} and evidence "
-            f"{resolved_identities} do not cover each other exactly -- "
-            f"missing: {missing_evidence}, surplus: {surplus_evidence}. "
-            f"Refusing before constructing an incomplete verdict.",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
@@ -801,7 +835,9 @@ def assemble_verdict(
     )
 
 
-def _coverage_artifact_is_tracked(repo: Path, project_root: Path, artifact: str) -> bool:
+def _coverage_artifact_is_tracked(
+    repo: Path, project_root: Path, artifact: str, *, remaining: git.Remaining | None = None
+) -> bool:
     """True when the project-relative *artifact* is already tracked by git
     (P17 work item 3, closing sol finding 6's coverage-artifact half):
     measurement output has no business being committed, and this run is
@@ -814,7 +850,7 @@ def _coverage_artifact_is_tracked(repo: Path, project_root: Path, artifact: str)
     so this is the one remaining fact only git can answer.
     """
     artifact_path = project_root / artifact
-    tracked = git.run(repo, "ls-files", "--", str(artifact_path))
+    tracked = git.run(repo, "ls-files", "--", str(artifact_path), remaining=remaining)
     return bool(tracked.strip())
 
 
@@ -828,6 +864,8 @@ def refuse_lane(
     passthrough_source: Mapping[str, str] | None = None,
     project_prefix: PurePosixPath | None = None,
     assay_version: str,
+    evidence: tuple[Evidence, ...] = (),
+    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
 ) -> Verdict:
     """Refuse the WHOLE invocation before the lane's own command ever
@@ -861,7 +899,12 @@ def refuse_lane(
     precisely for :mod:`assay.cli`'s pre-adapter refusal, which happens
     before repository identity has entered that API at all: an honest
     absence, never an invented ``.``.
+
+    *evidence*/*declared_evidence* (P26/A-213) are bound to
+    ``lane.judge.evidence`` BEFORE the plan is even resolved: a refused run
+    still owes every declared evidence identity a complete artifact entry.
     """
+    _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
     plan = resolve_command_plan(
         lane,
         argv_append=argv_append,
@@ -875,6 +918,8 @@ def refuse_lane(
         status=status,
         reason_code=reason_code,
         assay_version=assay_version,
+        evidence=evidence,
+        declared_evidence=declared_evidence,
         clock=clock,
     )
 
@@ -887,6 +932,8 @@ def _refuse_lane_with_plan(
     status: Outcome,
     reason_code: ReasonCode,
     assay_version: str,
+    evidence: tuple[Evidence, ...] = (),
+    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
 ) -> Verdict:
     """The identical shape :func:`refuse_lane` builds, given an
@@ -922,6 +969,8 @@ def _refuse_lane_with_plan(
         result=result,
         claims=claims,
         assay_version=assay_version,
+        evidence=evidence,
+        declared_evidence=declared_evidence,
     )
 
 
@@ -1044,7 +1093,8 @@ def _execute_snapshot_unit(
             limit=coverage.MAX_COVERAGE_ARTIFACT_BYTES,
         )
         if _coverage_artifact_is_tracked(
-            snapshot.root, snapshot.project_root, coverage_artifact
+            snapshot.root, snapshot.project_root, coverage_artifact,
+            remaining=deadline.remaining,
         ):
             reservation.close()
             raise AssayError(
@@ -1065,9 +1115,9 @@ def _execute_snapshot_unit(
     )
 
     post_reason: ReasonCode | None = None
-    if git.dirty_paths(snapshot.root):
+    if git.dirty_paths(snapshot.root, remaining=deadline.remaining):
         post_reason = ReasonCode.DIRTY_TREE
-    elif git.head_rev(snapshot.root) != snapshot.commit:
+    elif git.head_rev(snapshot.root, remaining=deadline.remaining) != snapshot.commit:
         post_reason = ReasonCode.HEAD_CHANGED
 
     profile: CoverageProfile | None = None
@@ -1190,7 +1240,9 @@ class _PreparedOutcome:
     ended: str
 
 
-def _resolve_declared_base(repo: Path, base: str | None) -> str | None:
+def _resolve_declared_base(
+    repo: Path, base: str | None, *, remaining: git.Remaining | None = None
+) -> str | None:
     """*base* resolved all the way to its MERGE-BASE commit against the
     CONSUMER's real repository (:func:`assay.git.resolve_base`), or ``None``
     when the lane declares none.
@@ -1210,7 +1262,7 @@ def _resolve_declared_base(repo: Path, base: str | None) -> str | None:
     """
     if base is None:
         return None
-    return git.resolve_base(repo, base)
+    return git.resolve_base(repo, base, remaining=remaining)
 
 
 def _run_prepared_lane(
@@ -1308,6 +1360,7 @@ def _run_prepared_lane(
                     profile=unit.profile,
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
+                    remaining=deadline.remaining,
                 )
                 claims += (r1_claim,)
                 if r1_claim.coverage is not None:
@@ -1328,7 +1381,7 @@ def _run_prepared_lane(
             if added is None:
                 try:
                     resolved = measurability.check_base_is_head(
-                        baseline_snapshot.root, resolved_base
+                        baseline_snapshot.root, resolved_base, remaining=deadline.remaining
                     )
                     diff_text = git.run(
                         baseline_snapshot.root,
@@ -1336,6 +1389,7 @@ def _run_prepared_lane(
                         "--unified=0",
                         resolved.base_rev,
                         resolved.head_rev,
+                        remaining=deadline.remaining,
                     )
                     added = diff.parse_added_lines(diff_text)
                 except AssayError as exc:
@@ -1565,20 +1619,23 @@ def _run_higher_rigor_lane(
     passthrough_source: Mapping[str, str] | None,
     process_runner: ProcessRunner,
     clock: Clock,
-    monotonic: MonotonicClock,
+    deadline: LaneDeadline,
     scratch_root_factory: ScratchRootFactory,
     r1_declared: bool,
     r2_declared: bool,
     r3_declared: bool,
+    evidence: tuple[Evidence, ...] = (),
+    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
 ) -> Verdict:
     """P23's committed-snapshot state machine (A-189): any lane declaring
     R1, R2, or R3 reaches here instead of the direct live-tree path in
     :func:`run_lane` below. One immutable :class:`CommandPlan` (with its
-    exact, non-``None`` repo-relative ``project_prefix``) and one injected
-    :class:`LaneDeadline` are resolved ONCE and shared across every unit;
+    exact, non-``None`` repo-relative ``project_prefix``) and the ONE
+    CLI-started :class:`LaneDeadline` (P26/A-212, already begun before HEAD
+    resolution by the caller) are shared across every unit;
     :mod:`assay.isolation` (P22) owns all Git-object isolation and refusal.
     """
-    repo_top = git.repo_top(repo)
+    repo_top = git.repo_top(repo, remaining=deadline.remaining)
     project_prefix = _resolved_project_prefix(repo_top, project_root)
     plan = resolve_command_plan(
         lane,
@@ -1596,12 +1653,14 @@ def _run_higher_rigor_lane(
             status=status,
             reason_code=reason_code,
             assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
             clock=clock,
         )
 
-    if git.dirty_paths(repo):
+    if git.dirty_paths(repo, remaining=deadline.remaining):
         return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE)
-    if git.head_rev(repo) != commit:
+    if git.head_rev(repo, remaining=deadline.remaining) != commit:
         return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.HEAD_CHANGED)
 
     outcome_holder: list[_PreparedOutcome] = []
@@ -1611,12 +1670,10 @@ def _run_higher_rigor_lane(
         # common case) only the CONSUMER's own repository can resolve.
         # Resolved once, here, before any snapshot exists.
         resolved_base = _resolve_declared_base(
-            repo, lane.judge.base if lane.judge is not None else None
+            repo, lane.judge.base if lane.judge is not None else None,
+            remaining=deadline.remaining,
         )
         with scratch_root_factory() as scratch_root:
-            deadline = LaneDeadline.start(
-                budget_seconds=lane.budget_seconds, monotonic=monotonic
-            )
             spec = isolation.SnapshotSpec(
                 repo_top=repo_top,
                 commit=commit,
@@ -1676,6 +1733,8 @@ def _run_higher_rigor_lane(
         result=outcome.result,
         claims=outcome.claims,
         assay_version=assay_version,
+        evidence=evidence,
+        declared_evidence=declared_evidence,
         judgment=outcome.judgment,
         ended=outcome.ended,
     )
@@ -1695,6 +1754,9 @@ def run_lane(
     clock: Clock = _utc_now,
     monotonic: MonotonicClock = time.monotonic,
     scratch_root_factory: ScratchRootFactory = default_scratch_root,
+    evidence: tuple[Evidence, ...] = (),
+    declared_evidence: tuple[EvidenceDeclaration, ...] = (),
+    deadline: LaneDeadline | None = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
     dispatch on declared rigor, then either run the direct R0-only clean-tree
@@ -1710,15 +1772,28 @@ def run_lane(
 
     **The dispatch is a declared two-state policy, never a fallback
     (A-189).** ``rigor == ("R0",)`` retains this module's original direct
-    live-tree execution below: no :mod:`assay.isolation` snapshot, no
-    :class:`CommandPlan`/:class:`LaneDeadline`. Any lane declaring R1, R2 or
-    R3 is instead handed whole to :func:`_run_higher_rigor_lane`, which owns
-    the committed-snapshot state machine end to end (one resolved
-    :class:`CommandPlan`, one :class:`LaneDeadline`, one prepared P22 seed,
-    independent fresh snapshots per unit) -- see its own docstring and
+    live-tree execution below: no :mod:`assay.isolation` snapshot. Any lane
+    declaring R1, R2 or R3 is instead handed whole to
+    :func:`_run_higher_rigor_lane`, which owns the committed-snapshot state
+    machine end to end (one resolved :class:`CommandPlan`, one shared
+    :class:`LaneDeadline`, one prepared P22 seed, independent fresh
+    snapshots per unit) -- see its own docstring and
     :mod:`assay.canary`/:mod:`assay.mutation` for R1/R2/R3's actual
     evaluation. A P22 refusal on that path is final; this function never
     catches it to retry against the live tree.
+
+    **P26/A-212: one deadline, started once, reaches direct R0 too.**
+    *deadline* is normally the single :class:`LaneDeadline` :mod:`assay.cli`
+    started before HEAD resolution; ``None`` is a library convenience only
+    (this function then starts and immediately enforces one from
+    ``lane.budget_seconds``) -- never an omission of enforcement. Direct R0
+    receives the ALREADY-ELAPSED remainder as its process timeout, never a
+    fresh ``lane.budget_seconds``.
+
+    **P26/A-213: evidence is bound to its lane source before any work.**
+    *evidence*/*declared_evidence* must be exactly ``lane.judge.evidence``'s
+    own ordered identities (empty when the lane declares none); see
+    :func:`_require_evidence_bound_to_lane`.
 
     **P20 (A-175): the post-command repository check precedes the claim.**
     Immediately after the command returns, the whole Git-visible repository
@@ -1737,6 +1812,14 @@ def run_lane(
     committed and left unrelated dirt has the stronger, unusable tree. Assay
     never cleans the consumer's tree to make a claim true.
     """
+    _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
+    if deadline is None:
+        # A library convenience for a non-CLI caller only -- CLI always
+        # passes the instance it started before HEAD resolution (A-212).
+        deadline = LaneDeadline.start(
+            budget_seconds=lane.budget_seconds, monotonic=monotonic
+        )
+
     r1_declared = "R1" in lane.rigor
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor
@@ -1756,11 +1839,13 @@ def run_lane(
             passthrough_source=passthrough_source,
             process_runner=process_runner,
             clock=clock,
-            monotonic=monotonic,
+            deadline=deadline,
             scratch_root_factory=scratch_root_factory,
             r1_declared=r1_declared,
             r2_declared=r2_declared,
             r3_declared=r3_declared,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
         )
 
     # A-175 / work item 6: the post-command comparison is against the RESOLVED
@@ -1768,15 +1853,17 @@ def run_lane(
     # the pre-run cleanliness guard reads the tree -- never taken from the
     # caller's own `commit` label, which is an identity assay is asked to
     # record rather than a fact it has verified.
-    pre_run_head = git.head_rev(repo)
+    pre_run_head = git.head_rev(repo, remaining=deadline.remaining)
     # A-193 (reviewer repair): "Direct `run_lane` already has repo/project
     # identity and must pass its exact prefix; only a pre-repository refusal
     # or standalone helper may honestly retain `None`." Read here, beside the
     # other two pre-run Git facts, so this path's own plan states the same
     # truth the higher-rigor path's does.
-    direct_prefix = _resolved_project_prefix(git.repo_top(repo), project_root)
+    direct_prefix = _resolved_project_prefix(
+        git.repo_top(repo, remaining=deadline.remaining), project_root
+    )
 
-    if git.dirty_paths(repo):
+    if git.dirty_paths(repo, remaining=deadline.remaining):
         return refuse_lane(
             lane,
             commit=commit,
@@ -1786,15 +1873,24 @@ def run_lane(
             passthrough_source=passthrough_source,
             project_prefix=direct_prefix,
             assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
             clock=clock,
         )
 
-    result = execute_command(
+    # P26/A-212: direct R0 executes the already-resolved plan with the
+    # deadline's CURRENT remainder, never a fresh `lane.budget_seconds` --
+    # evidence/HEAD/dirt work already spent from the same singular budget.
+    plan = resolve_command_plan(
         lane,
         argv_append=argv_append,
-        cwd=project_root,
         passthrough_source=passthrough_source,
         project_prefix=direct_prefix,
+    )
+    result = execute_plan(
+        plan,
+        cwd=project_root,
+        timeout=deadline.remaining(),
         process_runner=process_runner,
         clock=clock,
     )
@@ -1828,9 +1924,9 @@ def run_lane(
     # was a false diagnosis for exactly the case P20 reproduced (a command
     # that commits away its own uncovered line).
     post_run_reason: ReasonCode | None = None
-    if git.dirty_paths(repo):
+    if git.dirty_paths(repo, remaining=deadline.remaining):
         post_run_reason = ReasonCode.DIRTY_TREE
-    elif git.head_rev(repo) != pre_run_head:
+    elif git.head_rev(repo, remaining=deadline.remaining) != pre_run_head:
         post_run_reason = ReasonCode.HEAD_CHANGED
     if post_run_reason is not None:
         return assemble_verdict(
@@ -1847,6 +1943,8 @@ def run_lane(
                 ),
             ),
             assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
             ended=iso_utc(clock()),
         )
 
@@ -1856,6 +1954,8 @@ def run_lane(
         result=result,
         claims=(r0_claim,),
         assay_version=assay_version,
+        evidence=evidence,
+        declared_evidence=declared_evidence,
     )
 
 

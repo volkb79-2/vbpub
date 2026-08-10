@@ -15,28 +15,39 @@ an attestation more than a rubber stamp, all of it mechanical:
 * the evidence entry always carries ``verified_by_assay: False`` — enforced
   by :class:`~assay.verdict.Evidence` itself, not repeated here.
 
-Three layers, kept deliberately separate so each is independently testable:
+**P26 (A-210/A-211) closes two false PASSes the pre-P26 implementation had:**
+a changed file beneath a reviewed *directory* used to read as current (a
+plain ``diff --name-only`` membership test never asked whether the directory
+itself changed), and a ``../`` evidence key used to read a seeded record
+outside the declared attestation directory. Both are now the DECLARED input's
+own contract: closed, bounded, descriptor-safe reads
+(:func:`assay.safeio.read_bounded_input`) before any Git, and four narrow
+sanitized Git helpers (:mod:`assay.git`) that ask for one exact identity —
+never a display-name parser, a membership set, or a ref shorthand.
 
-* :func:`parse_attestation` / :func:`load_attestation_file` — pure format
-  loading. No git involved; a malformed attestation FILE (bad JSON, missing
-  or mistyped fields) raises :class:`~assay.errors.AssayError`
+Four layers, kept deliberately separate so each is independently testable:
+
+* :func:`parse_attestation` — pure format loading. No git, no filesystem; a
+  malformed attestation body (bad JSON, duplicate member names, a value
+  outside the closed grammar) raises :class:`~assay.errors.AssayError`
   (``ERROR``/``UNREADABLE_ARTIFACT``) here, independent of any commit's
   resolvability.
-* :func:`evaluate_attestation` — the git-dependent core (A-110): proves
-  equal-or-ancestor for the attested commit specifically, proves every
-  declared reviewed path actually existed there, then diffs those paths
-  against the commit under test. Never raises for a judged outcome — every
-  git-level failure this function's own checks can produce (an unrelated
-  history, a malformed/unresolvable ref, a descendant commit, a reviewed path
-  that never existed at the attested commit) is caught and returned as an
-  ``ERROR``/``UNREADABLE_ARTIFACT`` :class:`~assay.verdict.Evidence` value,
-  never left to propagate as an uncaught exception.
-* :func:`load_attested_evidence` — the orchestration entry point (A-111):
-  accepts the list of declared ``(source, key)`` pairs to check as a DIRECT
-  parameter (not sourced from ``assay.toml`` — `config.py` is outside this
-  package's ``scope.touch`` and has no reserved field for this), validates
-  duplicates within that list itself, and resolves each declared identity
-  against a directory of ``<key>.json`` attestation files.
+* :func:`load_attestation_file` — reads exactly ``<attestation_dir>/<key>.json``
+  through the descriptor-safe seam and parses it. ``None`` is a genuine
+  absence (no producer supplied a record); malformed/unsafe input is
+  ``UNREADABLE_ARTIFACT``.
+* :func:`evaluate_attestation` — the git-dependent core (A-211): verifies the
+  attested commit is an exact, real commit and an ancestor-or-equal of the
+  commit under test, requires every declared reviewed path to exist there,
+  then requires every one to be byte-identical at the commit under test.
+  Never raises for a judged outcome; every Git-level failure this function's
+  own checks can produce is caught and rendered ``ERROR``/``UNREADABLE_ARTIFACT``,
+  except the lane's own ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``, which is never
+  remapped.
+* :func:`load_attested_evidence` — the orchestration entry point (A-210):
+  stages every declared identity's safe read/parse BEFORE any Git call,
+  enforces the aggregate query-cost ceiling before the first Git argv, then
+  resolves each valid record in declaration order.
 
 No function in this module ever constructs a
 :class:`~assay.verdict.Claim` — only :class:`~assay.verdict.Evidence`.
@@ -53,21 +64,59 @@ package's ``scope.touch``).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Sequence
 
-from . import git
+from . import git, safeio
 from .errors import AssayError, Outcome, ReasonCode
 from .verdict import Evidence, EvidenceDeclaration
 
 __all__ = [
+    "MAX_ATTESTATION_BYTES",
+    "MAX_ATTESTATION_DIR_BYTES",
+    "MAX_ATTESTATION_DIR_COMPONENTS",
+    "MAX_EVIDENCE_DECLARATIONS",
+    "MAX_GIT_PATH_QUERIES",
+    "MAX_PRODUCER_BYTES",
+    "MAX_REVIEWED_PATHS",
+    "MAX_REVIEWED_PATH_BYTES",
     "AttestationRecord",
     "evaluate_attestation",
     "load_attestation_file",
     "load_attested_evidence",
     "parse_attestation",
 ]
+
+#: P26/A-210 fixed constants. Every one of these is an authoritative bound;
+#: none is derived from the machine or the repository.
+MAX_EVIDENCE_DECLARATIONS = 64
+MAX_ATTESTATION_BYTES = 1024 * 1024
+MAX_ATTESTATION_DIR_BYTES = 4096
+MAX_ATTESTATION_DIR_COMPONENTS = 128
+MAX_PRODUCER_BYTES = 256
+MAX_REVIEWED_PATHS = 1000
+MAX_REVIEWED_PATH_BYTES = 4096
+#: Each reviewed path costs exactly two Git argv (``ls-tree`` + ``diff``).
+MAX_GIT_PATH_QUERIES = 4096
+
+_QUERIES_PER_REVIEWED_PATH = 2
+
+_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_OID_RE = re.compile(r"^[0-9a-f]{40}$")
+_ATTESTATION_DIR_CONTROL: frozenset[str] = frozenset(
+    chr(c) for c in range(0x20)
+) | {chr(0x7F)}
+_RECORD_KEYS = frozenset({"producer", "attested_commit", "reviewed_paths"})
+
+
+def _unreadable(message: str) -> AssayError:
+    return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.UNREADABLE_ARTIFACT)
+
+
+def _bad_lane_config(message: str) -> AssayError:
+    return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -114,7 +163,60 @@ class AttestationRecord:
             )
 
 
-# --- format loading: pure, no git involved -----------------------------------
+# --- format loading: pure, no git/filesystem involved -------------------------
+
+
+def _no_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """``object_pairs_hook`` rejecting a duplicate JSON member name (A-210):
+    the default decoder silently keeps the LAST value, which makes identity
+    ambiguous for a security-relevant field. Reject rather than choose.
+    """
+    seen: set[str] = set()
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON member {key!r}")
+        seen.add(key)
+        result[key] = value
+    return result
+
+
+def _utf8_bytes(value: str, what: str) -> bytes:
+    """Encode *value* as UTF-8 or raise -- catches a lone surrogate, which a
+    nominal string-length bound would not (A-210)."""
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{what} cannot be encoded as UTF-8: {exc}") from exc
+
+
+def _validate_reviewed_path(path: object, source_name: str) -> str:
+    if not isinstance(path, str):
+        raise _unreadable(
+            f"{source_name}: a reviewed path must be a string, got {type(path).__name__}"
+        )
+    try:
+        # A-210: exactly as 'producer' does. `_utf8_bytes` signals a lone
+        # surrogate with a bare ValueError; leaving it unmapped here let a
+        # hostile record escape this identity's UNREADABLE_ARTIFACT terminal
+        # and abort the whole batch (and the artifact) with an untyped error.
+        encoded = _utf8_bytes(path, "a reviewed path")
+    except ValueError as exc:
+        raise _unreadable(f"{source_name}: {exc}") from exc
+    if not (1 <= len(encoded) <= MAX_REVIEWED_PATH_BYTES):
+        raise _unreadable(
+            f"{source_name}: reviewed path must be 1..{MAX_REVIEWED_PATH_BYTES} "
+            f"UTF-8 bytes, got {len(encoded)}"
+        )
+    if "\x00" in path or path.startswith("/"):
+        raise _unreadable(f"{source_name}: reviewed path {path!r} is not project-relative")
+    parts = path.split("/")
+    if "" in parts or "." in parts or ".." in parts:
+        raise _unreadable(
+            f"{source_name}: reviewed path {path!r} is not canonical repo-top-relative "
+            f"POSIX spelling"
+        )
+    return path
 
 
 def parse_attestation(text: str, *, source_name: str) -> AttestationRecord:
@@ -126,189 +228,116 @@ def parse_attestation(text: str, *, source_name: str) -> AttestationRecord:
     :func:`load_attestation_file` and a test feeding in a literal string share
     this one parser.
 
-    Raises :class:`~assay.errors.AssayError` (``ERROR``/``UNREADABLE_ARTIFACT``)
-    on anything that is not a well-formed attestation: invalid JSON, a
-    non-object top level, a missing required key, a ``reviewed_paths`` that
-    is not a JSON array of strings, or a value :class:`AttestationRecord`
-    itself refuses (empty producer, duplicate reviewed path, ...). This is
-    ``UNREADABLE_ARTIFACT`` for the same reason a malformed coverage artifact
-    is (P03): the file exists, but what it says cannot be trusted, which is a
-    different fact from "no attestation was ever produced" (``MISSING_ATTESTATION``,
-    :func:`evaluate_attestation`'s own concern for a file that is simply
-    absent).
+    The only JSON object is exactly ``{"producer", "attested_commit",
+    "reviewed_paths"}``. Duplicate member names and strings that cannot be
+    encoded as UTF-8 (including a lone surrogate) are refused here, before any
+    Git call. Raises :class:`~assay.errors.AssayError`
+    (``ERROR``/``UNREADABLE_ARTIFACT``) on any violation of the closed
+    grammar (A-210).
     """
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise AssayError(
-            f"{source_name}: not valid JSON ({exc})",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
+        payload = json.loads(text, object_pairs_hook=_no_duplicate_pairs)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise _unreadable(f"{source_name}: not valid JSON ({exc})") from exc
     if not isinstance(payload, dict):
-        raise AssayError(
+        raise _unreadable(
             f"{source_name}: attestation must be a JSON object, got "
-            f"{type(payload).__name__}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            f"{type(payload).__name__}"
         )
-    required = ("producer", "attested_commit", "reviewed_paths")
-    missing = [key for key in required if key not in payload]
-    if missing:
-        raise AssayError(
-            f"{source_name}: missing required key(s) {missing}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    if set(payload) != _RECORD_KEYS:
+        raise _unreadable(
+            f"{source_name}: must have exactly the keys {sorted(_RECORD_KEYS)}, "
+            f"got {sorted(payload)}"
         )
+
+    producer = payload["producer"]
+    if not isinstance(producer, str):
+        raise _unreadable(f"{source_name}: 'producer' must be a string")
+    try:
+        producer_bytes = _utf8_bytes(producer, "producer")
+    except ValueError as exc:
+        raise _unreadable(f"{source_name}: {exc}") from exc
+    if not (1 <= len(producer_bytes) <= MAX_PRODUCER_BYTES):
+        raise _unreadable(
+            f"{source_name}: 'producer' must be 1..{MAX_PRODUCER_BYTES} UTF-8 "
+            f"bytes, got {len(producer_bytes)}"
+        )
+
+    attested_commit = payload["attested_commit"]
+    if not isinstance(attested_commit, str) or not _OID_RE.fullmatch(attested_commit):
+        raise _unreadable(
+            f"{source_name}: 'attested_commit' must be exactly 40 lowercase hex "
+            f"characters"
+        )
+
     reviewed_paths = payload["reviewed_paths"]
-    if not isinstance(reviewed_paths, list) or not all(
-        isinstance(item, str) for item in reviewed_paths
-    ):
-        raise AssayError(
-            f"{source_name}: reviewed_paths must be a JSON array of strings, "
-            f"got {reviewed_paths!r}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    if not isinstance(reviewed_paths, list) or not (1 <= len(reviewed_paths) <= MAX_REVIEWED_PATHS):
+        raise _unreadable(
+            f"{source_name}: 'reviewed_paths' must be an array of "
+            f"1..{MAX_REVIEWED_PATHS} strings"
         )
+    validated_paths = [_validate_reviewed_path(item, source_name) for item in reviewed_paths]
+    if len(set(validated_paths)) != len(validated_paths):
+        raise _unreadable(f"{source_name}: 'reviewed_paths' contains a duplicate")
+
     try:
         return AttestationRecord(
-            producer=payload["producer"],
-            attested_commit=payload["attested_commit"],
-            reviewed_paths=tuple(reviewed_paths),
+            producer=producer,
+            attested_commit=attested_commit,
+            reviewed_paths=tuple(validated_paths),
         )
     except ValueError as exc:
-        raise AssayError(
-            f"{source_name}: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
+        raise _unreadable(f"{source_name}: {exc}") from exc
 
 
-def load_attestation_file(path: Path) -> AttestationRecord:
-    """Read and parse the attestation file at *path*.
+def load_attestation_file(
+    project_root: Path, *, attestation_dir: str, key: str
+) -> AttestationRecord | None:
+    """Read exactly ``<attestation_dir>/<key>.json`` once, through the
+    descriptor-safe seam (P26/A-210).
 
-    Raises :class:`~assay.errors.AssayError` (``ERROR``/``UNREADABLE_ARTIFACT``)
-    if *path* cannot be read at all (permissions, or a race where it vanished
-    between the caller's existence check and this read), or if
-    :func:`parse_attestation` rejects its content. Whether *path* exists in
-    the first place is the CALLER's concern (:func:`load_attested_evidence`
-    treats non-existence as ``MISSING_ATTESTATION``, a judged outcome rather
-    than a structural failure) — this function is only ever called once
-    existence is already known.
+    ``None`` when no producer supplied the file (any ``ENOENT`` in the walk,
+    :func:`assay.safeio.read_bounded_input`'s own contract). A symlink,
+    non-directory parent, non-regular final object, permission failure,
+    oversized read, or invalid UTF-8/malformed JSON raises
+    ``ERROR``/``UNREADABLE_ARTIFACT``.
     """
+    relative_path = f"{attestation_dir}/{key}.json"
+    raw = safeio.read_bounded_input(project_root, relative_path, limit=MAX_ATTESTATION_BYTES)
+    if raw is None:
+        return None
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise AssayError(
-            f"{path}: could not be read ({exc})",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
-    return parse_attestation(text, source_name=str(path))
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _unreadable(f"{relative_path}: not valid UTF-8: {exc}") from exc
+    return parse_attestation(text, source_name=relative_path)
 
 
-# --- the git-dependent core: ancestry, then path staleness (A-110) -----------
-
-
-def _check_ancestor_or_equal(repo: Path, attested_commit: str, head: str) -> None:
-    """Raise ``ERROR``/``UNREADABLE_ARTIFACT`` unless *attested_commit* is
-    *head* itself or an ancestor of it.
-
-    A-110's exact trap: ``git.run`` (P02) raises ``AssayError``/``GIT_FAILED``
-    on ANY non-zero exit — verified directly against a real git binary:
-    ``merge-base`` on unrelated orphan histories exits 1, and on a
-    malformed/unresolvable ref exits 128. Both are caught here and remapped
-    to ``UNREADABLE_ARTIFACT`` — this is the one call site in assay that
-    deliberately does NOT let ``GIT_FAILED`` propagate, because *attested_commit*
-    is externally supplied, untrusted input (an attestation file's own claim),
-    unlike every other ref this codebase resolves, which comes from assay's
-    own git plumbing (P02's trap note, superseded here for this call site
-    only).
-
-    A descendant attested commit (``merge-base`` SUCCEEDS but the result is
-    not *attested_commit* — the true common ancestor is *head* itself,
-    verified empirically) reaches the identical ``UNREADABLE_ARTIFACT`` via
-    ordinary comparison below, no exception involved: an attestation cannot
-    have reviewed a commit that comes after the one under test.
-    """
-    try:
-        merge_base = git.run(repo, "merge-base", attested_commit, head).strip()
-    except AssayError as exc:
-        raise AssayError(
-            f"attested commit {attested_commit!r} could not be checked "
-            f"against {head!r}: {exc.message}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        ) from exc
-    if merge_base != attested_commit:
-        raise AssayError(
-            f"attested commit {attested_commit!r} is not {head!r} or an "
-            f"ancestor of it (merge-base resolved to {merge_base!r}) — an "
-            f"attestation must name the commit under test or an earlier one",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-        )
-
-
-def _check_reviewed_paths_exist(
-    repo: Path, attested_commit: str, reviewed_paths: tuple[str, ...]
-) -> None:
-    """Raise ``ERROR``/``UNREADABLE_ARTIFACT`` if any declared reviewed path
-    did not exist at *attested_commit* — an attestation cannot have reviewed
-    a file that was never in the tree it claims to review, so this is a
-    broken record, not a stale one (which requires the path to have existed
-    and then changed)."""
-    for path in reviewed_paths:
-        try:
-            git.run(repo, "cat-file", "-e", f"{attested_commit}:{path}")
-        except AssayError as exc:
-            raise AssayError(
-                f"reviewed path {path!r} does not exist at attested commit "
-                f"{attested_commit!r}: {exc.message}",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            ) from exc
-
-
-def _changed_paths(repo: Path, attested_commit: str, head: str) -> frozenset[str]:
-    """Repo-top-relative paths that differ between *attested_commit* and
-    *head* — the same spelling :func:`assay.git.dirty_paths` already
-    documents for ``git status``, restated for ``git diff --name-only``
-    between two commits (equal commits diff to nothing, so an attestation
-    naming ``head`` itself trivially has no changed paths)."""
-    output = git.run(repo, "diff", "--name-only", attested_commit, head)
-    return frozenset(line for line in output.splitlines() if line)
+# --- the git-dependent core: exact identity, ancestry, existence, currentness -
 
 
 def evaluate_attestation(
-    repo: Path, *, key: str, head: str, record: AttestationRecord | None
+    repo: Path,
+    *,
+    key: str,
+    head: str,
+    record: AttestationRecord | None,
+    remaining: git.Remaining,
 ) -> Evidence:
-    """The per-declaration judgement (O1/O2/O3): equal-or-ancestor, then
-    path-scoped staleness, for one already-loaded attestation.
+    """The per-declaration judgement (A-211): exact commit identity, then
+    ancestor-or-equal, then every reviewed path's existence, then every
+    reviewed path's currentness, for one already-loaded attestation.
 
     *record* is ``None`` for a declared identity with no attestation
     produced at all — renders ``NO_MEASUREMENT``/``MISSING_ATTESTATION``
     with no payload (A-075).
 
-    Otherwise: :func:`_check_ancestor_or_equal` and
-    :func:`_check_reviewed_paths_exist` run first: whichever of A-110's four
-    named failure shapes (unrelated, malformed, descendant attested commit,
-    or a missing reviewed path) is present is CAUGHT here and rendered as
-    ``ERROR``/``UNREADABLE_ARTIFACT`` — this function never lets that
-    exception escape, so no attestation path can produce a raw
-    ``GIT_FAILED``. Only then are the declared reviewed paths diffed against
-    *head*: any that changed renders ``NO_MEASUREMENT``/``STALE_ATTESTATION``
-    (A-075) with the full payload preserved (a consumer can see WHAT is
-    stale, not just THAT it is); none changed renders ``PASS`` — "current" is
-    the only ``PASS``-shaped outcome this module ever produces, and it is
-    never :func:`~assay.verdict.rollup`'s job to invent one, only to see it.
-
-    Never raises for a judged outcome: :func:`_check_ancestor_or_equal` and
-    :func:`_check_reviewed_paths_exist` only ever raise ``UNREADABLE_ARTIFACT``
-    by construction (both wrap every ``git.run`` failure and remap it before
-    it can escape as anything else), and :func:`_changed_paths` runs only
-    after both have already proven *attested_commit* resolves cleanly against
-    *head* — so the single broad catch below is exhaustive, not a guess.
+    Otherwise every existence query runs before any staleness query, so a
+    later missing path always outranks an earlier stale one. Never raises
+    for a judged outcome: every Git-level failure this function's own checks
+    can produce is caught and rendered ``ERROR``/``UNREADABLE_ARTIFACT`` —
+    except the lane's own ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``, which
+    propagates unmodified (A-213).
     """
     if record is None:
         return Evidence(
@@ -320,10 +349,30 @@ def evaluate_attestation(
         )
 
     try:
-        _check_ancestor_or_equal(repo, record.attested_commit, head)
-        _check_reviewed_paths_exist(repo, record.attested_commit, record.reviewed_paths)
-        changed = _changed_paths(repo, record.attested_commit, head)
-    except AssayError:
+        git.verify_exact_commit(repo, record.attested_commit, remaining=remaining)
+        if not git.is_ancestor(repo, record.attested_commit, head, remaining=remaining):
+            raise AssayError(
+                f"attested commit {record.attested_commit!r} is not {head!r} or "
+                f"an ancestor of it",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.GIT_FAILED,
+            )
+        for path in record.reviewed_paths:
+            kind = git.tree_entry_kind(repo, record.attested_commit, path, remaining=remaining)
+            if kind is None:
+                raise AssayError(
+                    f"reviewed path {path!r} does not exist at attested commit "
+                    f"{record.attested_commit!r}",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.GIT_FAILED,
+                )
+        changed = any(
+            not git.path_is_current(repo, record.attested_commit, head, path, remaining=remaining)
+            for path in record.reviewed_paths
+        )
+    except AssayError as exc:
+        if exc.reason_code is ReasonCode.LANE_TIMEOUT:
+            raise
         return Evidence(
             source="attested",
             key=key,
@@ -332,7 +381,7 @@ def evaluate_attestation(
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
 
-    if any(path in changed for path in record.reviewed_paths):
+    if changed:
         return Evidence(
             source="attested",
             key=key,
@@ -354,43 +403,60 @@ def evaluate_attestation(
     )
 
 
-# --- orchestration: the caller-supplied declared list (A-111) ---------------
+# --- orchestration: closed grammar repeated at the public boundary (A-210) ---
+
+
+def _validate_attestation_dir(value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise _bad_lane_config(
+            f"attestation_dir must be a non-empty string, got {value!r}"
+        )
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise _bad_lane_config(
+            f"attestation_dir {value!r} cannot be encoded as UTF-8: {exc}"
+        ) from exc
+    if not (1 <= len(encoded) <= MAX_ATTESTATION_DIR_BYTES):
+        raise _bad_lane_config(
+            f"attestation_dir must be 1..{MAX_ATTESTATION_DIR_BYTES} UTF-8 bytes, "
+            f"got {len(encoded)}"
+        )
+    if value.startswith("/"):
+        raise _bad_lane_config(f"attestation_dir {value!r} must not be absolute")
+    if any(ch in _ATTESTATION_DIR_CONTROL for ch in value):
+        raise _bad_lane_config(f"attestation_dir {value!r} contains a control character")
+    if PurePosixPath(value).as_posix() != value:
+        raise _bad_lane_config(f"attestation_dir {value!r} is not canonical POSIX spelling")
+    parts = value.split("/")
+    if "." in parts or ".." in parts:
+        # A-210's "no `.`/`..`", repeated at this public boundary exactly as
+        # `config.py` states it: `PurePosixPath` normalises away an EMBEDDED
+        # "." component but round-trips a bare ".", which would otherwise be an
+        # accepted spelling for the project root itself.
+        raise _bad_lane_config(
+            f"attestation_dir {value!r} contains a '.' or '..' component"
+        )
+    if len(parts) > MAX_ATTESTATION_DIR_COMPONENTS:
+        raise _bad_lane_config(
+            f"attestation_dir {value!r} has more than {MAX_ATTESTATION_DIR_COMPONENTS} "
+            f"components"
+        )
+
+
+def _validate_key(key: str) -> None:
+    if not isinstance(key, str) or not _KEY_RE.fullmatch(key):
+        raise _bad_lane_config(f"evidence key {key!r} does not match the closed grammar")
 
 
 def _check_no_duplicate_declarations(declared: Sequence[EvidenceDeclaration]) -> None:
     identities = [item.identity for item in declared]
     duplicates = sorted({identity for identity in identities if identities.count(identity) > 1})
     if duplicates:
-        raise AssayError(
+        raise _bad_lane_config(
             f"duplicate declared evidence identit{'y' if len(duplicates) == 1 else 'ies'}: "
-            f"{duplicates}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
+            f"{duplicates}"
         )
-
-
-def _resolve_one(
-    repo: Path, *, head: str, key: str, attestations_dir: Path
-) -> Evidence:
-    path = attestations_dir / f"{key}.json"
-    record: AttestationRecord | None
-    if not path.is_file():
-        record = None
-    else:
-        try:
-            record = load_attestation_file(path)
-        except AssayError:
-            # load_attestation_file/parse_attestation only ever raise
-            # UNREADABLE_ARTIFACT by construction -- every one of their raise
-            # sites names it explicitly, so this catch is exhaustive.
-            return Evidence(
-                source="attested",
-                key=key,
-                status=Outcome.ERROR,
-                verified_by_assay=False,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            )
-    return evaluate_attestation(repo, key=key, head=head, record=record)
 
 
 def load_attested_evidence(
@@ -398,50 +464,113 @@ def load_attested_evidence(
     *,
     head: str,
     declared: Sequence[EvidenceDeclaration],
-    attestations_dir: Path,
+    project_root: Path,
+    attestation_dir: str,
+    remaining: git.Remaining,
 ) -> tuple[Evidence, ...]:
-    """The entry point a caller (a future lane-file wiring, or this
-    package's own tests) uses directly (A-111): *declared* is the list of
-    ``(source, key)`` identities to check, supplied by the CALLER — never
-    read from ``assay.toml``, which has no reserved field for this and stays
-    untouched (``config.py`` is outside this package's ``scope.touch``). A
-    real declaration mechanism is a later, separate wiring decision (the
-    handoff's own words); this function's contract does not change when one
-    arrives — only what feeds *declared* does.
+    """The entry point a caller (:mod:`assay.cli`, or this package's own
+    tests) uses directly (A-210): resolve every declared identity's
+    attestation, closed and bounded, before any Git call.
 
-    A duplicate ``(source, key)`` identity within *declared* itself is
-    refused before any attestation is read: ``ERROR``/``BAD_LANE_CONFIG``.
-    Every identity's ``source`` must be ``"attested"`` — this loader is
-    Tier-3 only (A-085: the adjudicated sibling stays reserved, with no
-    registry); a non-attested identity is refused the same way, since
-    building any adjudicated behavior here would be exactly the "adjudicator
-    registry" this package's ``escalate_if`` forbids.
+    Repeats the closed ``attestation_dir``/source/key/duplicate-declaration
+    grammar at this public boundary and maps misuse to
+    ``ERROR``/``BAD_LANE_CONFIG`` before safe I/O — this function does not
+    assume every caller came through :mod:`assay.config`.
 
-    *attestations_dir* holds one JSON file per attested key, named
-    ``<key>.json`` — :func:`load_attestation_file`'s own format. A missing
-    file is ``NO_MEASUREMENT``/``MISSING_ATTESTATION``, judged, not an error;
-    a present-but-malformed file, or a git-level failure specific to that
-    key's own attested commit, is caught internally and rendered as a single
-    ``ERROR``/``UNREADABLE_ARTIFACT`` evidence entry for THAT key alone —
-    other keys in the same call are unaffected, so one broken attestation
-    does not hide the state of the rest.
+    All declarations are read/parsed first, in order. If the aggregate query
+    cost (``2 * sum(len(record.reviewed_paths))`` across every structurally
+    valid record) exceeds :data:`MAX_GIT_PATH_QUERIES`, every otherwise-valid
+    record becomes ``ERROR``/``UNREADABLE_ARTIFACT`` and NO Git call is made
+    for the batch; an identity already known missing or malformed keeps its
+    own result. *remaining* is sampled at batch entry, after every bounded
+    read/parse, and immediately before returning — including an all-missing
+    batch — so expiry during bounded JSON work is observed as an atomic
+    attestation timeout even when no valid record would otherwise launch Git.
 
     Returns exactly one :class:`~assay.verdict.Evidence` per entry in
-    *declared*, in the same order — the identity coverage
-    :class:`~assay.verdict.Verdict` itself independently re-verifies.
+    *declared*, in the same order.
     """
+    remaining()
+
+    _validate_attestation_dir(attestation_dir)
     _check_no_duplicate_declarations(declared)
-    results = []
+    if len(declared) > MAX_EVIDENCE_DECLARATIONS:
+        raise _bad_lane_config(
+            f"{len(declared)} evidence declarations exceeds the "
+            f"{MAX_EVIDENCE_DECLARATIONS} bound"
+        )
     for item in declared:
         if item.source != "attested":
-            raise AssayError(
-                f"evidence declaration {item.identity} is not source="
-                f"'attested'; this loader handles only attested evidence — "
-                f"adjudicated evidence has no loader (A-085)",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            raise _bad_lane_config(
+                f"evidence declaration {item.identity} is not source='attested'; "
+                f"this loader handles only attested evidence — adjudicated "
+                f"evidence has no loader (A-085)"
             )
-        results.append(
-            _resolve_one(repo, head=head, key=item.key, attestations_dir=attestations_dir)
+        _validate_key(item.key)
+
+    staged: list[AttestationRecord | None | AssayError] = []
+    for item in declared:
+        try:
+            record = load_attestation_file(
+                project_root, attestation_dir=attestation_dir, key=item.key
+            )
+        except AssayError as exc:
+            record = exc
+        staged.append(record)
+        remaining()
+
+    valid_records = [item for item in staged if isinstance(item, AttestationRecord)]
+    total_queries = _QUERIES_PER_REVIEWED_PATH * sum(
+        len(record.reviewed_paths) for record in valid_records
+    )
+    if total_queries > MAX_GIT_PATH_QUERIES:
+        results = tuple(
+            _evidence_for_aggregate_excess(item.key, record)
+            for item, record in zip(declared, staged)
         )
+        remaining()
+        return results
+
+    results = []
+    for item, record in zip(declared, staged):
+        if isinstance(record, AssayError):
+            results.append(
+                Evidence(
+                    source="attested",
+                    key=item.key,
+                    status=Outcome.ERROR,
+                    verified_by_assay=False,
+                    reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+                )
+            )
+        else:
+            results.append(
+                evaluate_attestation(repo, key=item.key, head=head, record=record, remaining=remaining)
+            )
+    remaining()
     return tuple(results)
+
+
+def _evidence_for_aggregate_excess(
+    key: str, record: AttestationRecord | None | AssayError
+) -> Evidence:
+    """One declared identity's result once the batch's aggregate query cost
+    is known to exceed the bound (A-210): a structurally valid record
+    becomes unreadable (it would have launched Git); an identity already
+    known missing or malformed keeps its own result.
+    """
+    if record is None:
+        return Evidence(
+            source="attested",
+            key=key,
+            status=Outcome.NO_MEASUREMENT,
+            verified_by_assay=False,
+            reason_code=ReasonCode.MISSING_ATTESTATION,
+        )
+    return Evidence(
+        source="attested",
+        key=key,
+        status=Outcome.ERROR,
+        verified_by_assay=False,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )

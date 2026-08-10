@@ -219,6 +219,19 @@ run_inner() {
   run_venv_site="$(write_tester_closure_pth "$scratch")"
   require_installed_purity "$scratch" "$version"
 
+  # P26: the locked attestation/deadline acceptance suite, run from the
+  # INSTALLED wheel's own run-venv interpreter after tester-unified's pytest
+  # closure is attached. Ambient PYTHONPATH is cleared and pytest's configured
+  # `pythonpath` ini is overridden empty, so `pyproject.toml` cannot shadow the
+  # wheel with `src/`. Only the worktree's locked test asset and project root
+  # are named; the imported `assay` is exactly what was just installed above.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= ASSAY_P26_PROJECT_ROOT="$worktree/assay" \
+    "$scratch/run-venv/bin/python" -m pytest \
+      "$worktree/assay/nyxloom-trove/carve-assets/P26/test_acceptance.py" \
+      -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=attestation-hardened'
+
   run_self_hosted_lane "$worktree" "$scratch" "$version"
 
   # P25: qualifies the CURRENT run-venv Assay (plus a separately
