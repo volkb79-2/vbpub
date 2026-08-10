@@ -438,3 +438,166 @@ diffstat), `docs/DESIGN-GUIDE.md`, this LOG. No forbidden path was touched:
 `tools/**`, `nyxloom-trove/nyxloom.toml`. No `assay/README.md` exists to
 touch. No BLOCKED condition was ever hit — no required contract needed a
 forbidden path. P24 was neither dispatched nor reviewed.
+
+---
+
+# Appendix R — independent review record (Opus reviewer, phases 1 and 2)
+
+Added by the fresh Opus xhigh reviewer, not the implementer. The sections
+above are the implementer's own record and are left verbatim; this appendix
+reconciles them against re-measured evidence and records what the review
+changed. Review commits: `d85125dc` (phase 1, blind) and the commit carrying
+this appendix (phase 2).
+
+## R1. Implementer claims re-measured
+
+| LOG claim | reviewer result |
+|---|---|
+| §1 seven locked SHA-256 values | **confirmed**, byte-identical at phase-1 entry and at phase-2 exit |
+| §7 locked acceptance `17 passed, 2 failed` | **confirmed** |
+| §7 project suite `2202 passed, 1 skipped` | **confirmed** |
+| §7 combined `2219 passed, 2 failed, 1 skipped` | **confirmed** |
+| §7 branch coverage 96% / 94% / 94% / 99%, total 96%, 24 partial | **confirmed, reproduced exactly** at `8268467f` with `--cov-branch` |
+| §7 runner residue `168/177, 1070-1071, 1579-1589, 1746` | **confirmed** |
+| §8 seven controlled breaks, one per traceability row | **not re-run**; the review ran its own eleven, listed in the review report |
+| §12 no forbidden path touched | **confirmed** by explicit per-path diff |
+| §6 "`runner.py:1746` … a pre-existing P20-era gap this package did not introduce" | **FALSE — see R2** |
+| §10 O3 "proven by `test_config_rigor.py`" | **FALSE — that file contains no rigor-grammar test; see R3** |
+| §11 `SB-P23-02` `evidence_ref` | test exists but lives in `tests/test_standalone.py`, not `tests/test_runner_run_lane_r2.py` |
+
+## R2. §6's residual claim is false: the gap is P23-introduced
+
+The direct R0-only path's post-command `HEAD_CHANGED` branch was **covered at
+the carve parent**. Measured on a read-only extraction of `0d46e954`:
+
+```text
+pytest tests/test_runner_run_lane.py --cov=assay.runner
+src/assay/runner.py  252  62  75%  161, 387-405, 494, 507, 648, 665, 677,
+                                   1187-1306, 1313-1350, 1383
+```
+
+Line `1099` — that commit's spelling of `post_run_reason =
+ReasonCode.HEAD_CHANGED` — is absent from the miss list. It was reached by
+`test_run_lane_refuses_when_the_command_moves_head_even_though_the_tree_is_
+clean`, which declares `rigor=("R0","R1")` and, before the two-state dispatch
+existed, therefore ran through the direct path.
+
+P23's dispatch moved that lane onto the committed-snapshot path, where
+`_execute_snapshot_unit`'s own check fires instead, and the migration added no
+R0-only replacement. Confirmed by controlled break: disabling the direct
+branch left all 36 cases in `test_runner_run_lane.py` green. The gap is a
+P23 regression, not a P20-era residue — and it is the registered R0-only
+gate's own code path. Closed by
+`tests/test_runner_p23_combined_axis_review.py::test_the_direct_r0_path_still_
+detects_a_command_that_moves_head`.
+
+## R3. A-192's grammar was unreachable from the gated suite
+
+`config.py`'s canonical-subsequence refusal and the uncovered-line R1
+prerequisite were reachable **only** from the byte-locked packet, which the
+registered gate does not run. `tests/test_config_vocabularies.py`'s own
+comment and §10's O3 paragraph both point at "test_config_rigor.py's own
+grammar tests"; that file has none. O3's further requirement — refusal
+"before Git, snapshot, output, or process side effects", with sentinels — was
+unproven anywhere. Closed by `tests/test_config_rigor_grammar.py` (13 cases,
+real sentinels on `git.run`/`dirty_paths`/`head_rev`/`repo_top`,
+`isolation.prepare_snapshot`, `safeio.reserve_output`, `subprocess.run`/
+`Popen`).
+
+## R4. Phase-2 blocking defect: R2 target selection dropped three landed gates
+
+`_mutation_targets_from_diff` applied source-root containment **only**. The
+direct path it replaced called P18's landed
+`mutation.resolve_mutation_targets`, which applies four gates: containment,
+the adapter's `excluded_dir_names`, its `source_globs`, and its
+`is_test_path`. §3 justifies the narrowing by a property of the locked test
+double ("the locked `FourSiteAdapter` fixture lacks the adapter attributes
+the frozen `resolve_mutation_targets` needs") — production selection policy
+shaped around a fixture. Two defects were reproduced on ordinary
+repositories:
+
+* **False refusal.** A changed non-Python file under a declared source root
+  (`pkg/NOTES.md`) reached `PythonAdapter.generate_mutation_sites`, which
+  raises `MutationDiscoveryError` on unparseable text. Observed: `R0 PASS`,
+  `R2 ERROR/MUTATION_DISCOVERY_FAILED`, **whole verdict**
+  `ERROR/MUTATION_DISCOVERY_FAILED`, for a repository that measured normally
+  before P23. Any project whose source root holds a changed `.md`, `.json`,
+  `.pyi` or data file hits this — squarely on P25's path.
+* **False evidence.** A changed `pkg/test_mod.py` under a declared source
+  root became a real mutant identity in the R2 payload
+  (`candidate_count=2`, both paths present). A suite that "kills" that mutant
+  killed it by having its own test broken.
+
+**Repaired** by deleting the partial duplicate and delegating to
+`mutation.resolve_mutation_targets`, with `read_source_text` bound to the
+prepared P22 seed so P23's "never reopen a consumer path" rule still holds
+while the selection policy is exactly the landed one. Three regression tests
+plus a still-outside-every-source-root control; controlled break (restoring
+containment-only) turns two of them red.
+
+## R5. F7 repaired: the wave loop's budget catch
+
+`run_mutation` matched `exc.outcome is Outcome.BUDGET_EXCEEDED` alone, so a
+P22 `BUDGET_EXCEEDED`/`SNAPSHOT_LIMIT_EXCEEDED` **policy refusal** escaping a
+worker would have been relabelled `LANE_TIMEOUT` and reported as a
+per-identity budget stop with the other identities still counted as evidence.
+The handoff says "catch **only that exact** `BUDGET_EXCEEDED/LANE_TIMEOUT`
+from `deadline.remaining()`". Now matched on the pair; proven by a direct
+`run_mutation` test whose `prepared` stand-in refuses with P22's own pair, and
+by controlled break.
+
+## R6. SB-P23-01 adjudicated — retained as known-red, and now TWO fixture defects
+
+Disposition retained: the locked suite stays at **exactly `2 failed, 17
+passed`**, the same two parametrizations of
+`test_max_minus_one_and_max_execute_every_discovered_site`, and both remain
+defects in the locked fixture rather than in P23. `test_acceptance.py` was not
+edited and `_validate_sites` was not weakened; all seven locked hashes are
+byte-identical.
+
+The review found the fixture's `FourSiteAdapter` has a **second**,
+independent defect, and it is the earlier of the two:
+
+* **SB-P23-01a — it is not a `LanguageAdapter`.** It declares no
+  `source_globs`, no `excluded_dir_names` and no `is_test_path`, yet it is
+  handed to `run_lane` for a lane declaring R2, whose landed P18 target
+  selection requires all three. The fixture was authored against an
+  implementation that does not apply the landed gates; it would have failed
+  the same way had P23 simply kept calling `resolve_mutation_targets` the way
+  the direct path always did.
+* **SB-P23-01b — `lineno=index + 1`.** Numbering sites by discovery order
+  contradicts `start_byte` whenever two sites share a source line, which both
+  parametrizations guarantee. P21's frozen `_validate_sites` correctly
+  refuses it.
+
+**Consequence of R4's repair, stated plainly:** the two cases still fail, but
+now at (a) rather than (b) — `AttributeError: 'FourSiteAdapter' object has no
+attribute 'excluded_dir_names'` instead of the `MutationDiscoveryError`-driven
+assertion mismatch §9 recorded. Fixing (a) alone would surface (b).
+
+The contract both defects hide is proved independently, in ordinary tests, by
+a conforming adapter that declares the three members and derives `lineno` via
+the landed `mutation.line_for_offset`: at max−1 and max, baseline plus every
+discovered site executes and R2 renders `PASS` with
+`candidate_count == total == len(killed)`. A companion negative keeps (b)'s
+refusal pinned as `ERROR/MUTATION_DISCOVERY_FAILED` with zero mutant
+processes. Both live in
+`tests/test_runner_p23_combined_axis_review.py`, so the evidence survives
+whatever the carver decides.
+
+**Carver action to reach 19/19:** in `carve-assets/P23/test_acceptance.py`,
+give `FourSiteAdapter` `source_globs = ("*.py",)`,
+`excluded_dir_names = frozenset()` and an `is_test_path` returning `False`,
+and compute `lineno` with `line_for_offset(raw, offset)`; then re-hash
+`test_acceptance.py` in `fixture-manifest.json` and in
+`reports/assay-P23-JIT-CARVE.md`. Reviewer-verified as sufficient.
+
+## R7. Residual, with dispositions
+
+| item | disposition |
+|---|---|
+| O4's "the deadline covers **evaluation**" | **BLOCKED-equivalent / successor.** `evaluate_r1`'s in-snapshot `git diff`/`merge-base` and `_resolve_declared_base`'s consumer-side call run through `git._run_bounded`, which bounds bytes but has no wall-clock timeout and takes no deadline. `git.py` is forbidden to P23. The mechanical contract ("`remaining()` immediately before every P22 entry/read/materialization and process launch") is fully met. Needs either narrowed oracle wording or a `git.py` deadline seam as its own package. |
+| `_resolve_declared_base` runs before `LaneDeadline.start` | same routing as above; it is one consumer-side `merge-base` outside the lane budget |
+| `runner.py` `_relocate_source_roots` called with an unresolved `project_root` while `canary._judge_unit` resolves it | reported, not repaired; unreachable via `cli.py` (`load_lane_file` resolves before `.parent`) |
+| an `OSError` escaping the prepared block discards a completed R0 claim | reported, not repaired; no reachable path found (`safeio`/`git`/`coverage`/`execute_plan` all convert first) |
+| §11 `SB-P23-02` `evidence_ref` file name | corrected in R1; the successor candidate itself stands and the review endorses it |

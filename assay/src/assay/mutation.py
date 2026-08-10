@@ -103,7 +103,7 @@ from __future__ import annotations
 import fnmatch
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Sequence
 
@@ -298,10 +298,6 @@ def line_for_offset(text_bytes: bytes, offset: int) -> int:
 # --------------------------------------------------------------------------
 # P12: bounded mutation execution
 # --------------------------------------------------------------------------
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -830,7 +826,21 @@ def run_mutation(
                 try:
                     results[position] = future.result()
                 except AssayError as exc:
-                    if exc.outcome is Outcome.BUDGET_EXCEEDED:
+                    # The handoff's own wording: "catch ONLY that exact
+                    # BUDGET_EXCEEDED/LANE_TIMEOUT from deadline.remaining()".
+                    # Reviewer repair (phase 2): matching on the OUTCOME alone
+                    # also swallowed P22's `BUDGET_EXCEEDED`/
+                    # `SNAPSHOT_LIMIT_EXCEEDED`, which is a policy REFUSAL, not
+                    # a lane that ran out of time -- it would have been
+                    # relabelled `LANE_TIMEOUT` and reported as a per-identity
+                    # budget stop with the other identities still counted as
+                    # evidence, instead of propagating unchanged as the
+                    # payload-free R2 terminal the table reserves for a P22
+                    # worker failure.
+                    if (
+                        exc.outcome is Outcome.BUDGET_EXCEEDED
+                        and exc.reason_code is ReasonCode.LANE_TIMEOUT
+                    ):
                         budget_exceeded_mask[position] = True
                         wave_stopped = True
                     elif fatal is None:

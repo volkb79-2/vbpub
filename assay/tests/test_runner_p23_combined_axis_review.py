@@ -37,6 +37,7 @@ The module covers five things the landed suite did not:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -107,13 +108,22 @@ def _seed_python_project(repo: GitRepo, *, head_source: str) -> tuple[str, str]:
 
 
 class _ConformingMultiSiteAdapter:
-    """The locked ``FourSiteAdapter``'s shape with its ONE defect removed:
+    """The locked ``FourSiteAdapter``'s shape with its TWO defects removed:
     each site's ``lineno`` is DERIVED from its own byte offset
     (:func:`~assay.mutation.line_for_offset`) instead of guessed from the
-    site's index. Everything else -- one site per ``<``, ``compare-swap``,
-    the ``limit`` slice -- is identical."""
+    site's index, and the three target-selection members every real
+    :class:`~assay.adapters.base.LanguageAdapter` carries are actually
+    declared, so R2's own landed
+    :func:`~assay.mutation.resolve_mutation_targets` gates can run against
+    it. Everything else -- one site per ``<``, ``compare-swap``, the
+    ``limit`` slice -- is identical."""
 
     name = "conforming-multi-site"
+    source_globs = ("*.py",)
+    excluded_dir_names = frozenset()
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return False
 
     def generate_mutation_sites(self, text, lines, *, operators, limit):
         raw = text.encode("utf-8")
@@ -415,6 +425,160 @@ def test_identical_bytes_at_two_paths_stay_two_independent_mutants(
     # never both (one shared write) and never neither (a collapsed cache).
     assert [sum(1 for text in pair if text != shared) for pair in observed[1:]] == [1, 1]
     assert observed[0] == (shared, shared), "the baseline unit is unmodified"
+
+
+# --- 3b. R2 target selection keeps all four landed gates (phase-2 repair) ----
+
+
+def _seed_mixed_source_root(repo: GitRepo, *, extra: dict[str, tuple[str, str]]):
+    """A real two-commit project whose declared source root ``pkg`` contains
+    one genuine module plus whatever *extra* ``{path: (base, head)}`` files
+    the caller wants changed alongside it."""
+    repo.write(".gitignore", "cov.json\n")
+    repo.write("pkg/__init__.py", "")
+    repo.write("pkg/mod.py", "def f(x):\n    return 0\n")
+    for rel, (base_text, _head) in extra.items():
+        repo.write(rel, base_text)
+    base_rev = repo.commit_all("base")
+    repo.write("pkg/mod.py", "def f(x):\n    return x > 0\n")
+    for rel, (_base, head_text) in extra.items():
+        repo.write(rel, head_text)
+    head_rev = repo.commit_all("change the module and its neighbours")
+    return base_rev, head_rev
+
+
+def _r2_paths(claim) -> list[str]:
+    if claim.mutation is None:
+        return []
+    return sorted(
+        {
+            outcome.path
+            for bucket in ("killed", "survived", "crashed", "budget_exceeded")
+            for outcome in getattr(claim.mutation, bucket)
+        }
+    )
+
+
+def test_a_changed_non_source_file_under_a_source_root_is_not_a_target(
+    git_repo: GitRepo,
+):
+    """Reproduced phase-2 defect: R2 target selection had been narrowed to
+    source-root containment alone, dropping the adapter's ``source_globs``
+    gate. A changed ``pkg/NOTES.md`` then reached
+    ``PythonAdapter.generate_mutation_sites``, which raises
+    ``MutationDiscoveryError`` on unparseable text -- so an ordinary
+    repository that measured normally before P23 collapsed to a whole-verdict
+    ``ERROR``/``MUTATION_DISCOVERY_FAILED``.
+
+    This is the false-refusal shape, not a false PASS: nothing about the
+    Python module changed, and the lane still cannot render its R2 claim."""
+    base_rev, head_rev = _seed_mixed_source_root(
+        git_repo,
+        extra={"pkg/NOTES.md": ("# Notes\n", "# Notes\n\nprose that is not python\n")},
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=_python_judge(git_repo, base=base_rev, max_mutants=20),
+        argv=("check",),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=lambda argv, **kwargs: subprocess.CompletedProcess(
+            list(argv), 0, "", ""
+        ),
+        clock=_clock,
+        monotonic=CountingMonotonic(),
+    )
+
+    r2 = verdict.claims[1]
+    assert r2.reason_code is not ReasonCode.MUTATION_DISCOVERY_FAILED
+    assert (r2.status, r2.reason_code) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
+    assert _r2_paths(r2) == ["pkg/mod.py"]
+
+
+def test_a_changed_test_file_under_a_source_root_is_never_mutated(
+    git_repo: GitRepo,
+):
+    """The second half of the same repair, and the false-EVIDENCE direction:
+    with only the containment gate, a changed ``pkg/test_mod.py`` became a
+    real mutant identity in the R2 payload. A suite that "kills" that mutant
+    killed it by having its own test broken -- an experiment about the test
+    file, reported as evidence about the code under test.
+
+    ``is_test_path`` is the adapter's own answer and is exactly why
+    ``resolve_mutation_targets`` adds it on top of R1's ``_is_considered``."""
+    base_rev, head_rev = _seed_mixed_source_root(
+        git_repo,
+        extra={
+            "pkg/test_mod.py": (
+                "def test_f():\n    assert 0 == 0\n",
+                "def test_f():\n    assert f(1) > 0\n",
+            )
+        },
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=_python_judge(git_repo, base=base_rev, max_mutants=20),
+        argv=("check",),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=lambda argv, **kwargs: subprocess.CompletedProcess(
+            list(argv), 0, "", ""
+        ),
+        clock=_clock,
+        monotonic=CountingMonotonic(),
+    )
+
+    r2 = verdict.claims[1]
+    assert r2.mutation.candidate_count == 1
+    assert _r2_paths(r2) == ["pkg/mod.py"]
+    assert PythonAdapter().is_test_path("pkg/test_mod.py"), "the fixture must be a test path"
+
+
+def test_a_changed_file_outside_every_source_root_is_still_never_a_target(
+    git_repo: GitRepo,
+):
+    """The gate that was already there, kept as a control so the repair
+    cannot be satisfied by dropping selection entirely: a changed file
+    outside every declared source root contributes no candidate."""
+    base_rev, head_rev = _seed_mixed_source_root(
+        git_repo,
+        extra={"other/elsewhere.py": ("y = 0\n", "y = 1 > 0\n")},
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=_python_judge(git_repo, base=base_rev, max_mutants=20),
+        argv=("check",),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=lambda argv, **kwargs: subprocess.CompletedProcess(
+            list(argv), 0, "", ""
+        ),
+        clock=_clock,
+        monotonic=CountingMonotonic(),
+    )
+
+    assert _r2_paths(verdict.claims[1]) == ["pkg/mod.py"]
 
 
 # --- 4. a mutant that dirties its OWN snapshot ------------------------------
@@ -890,3 +1054,70 @@ def test_the_direct_r0_path_still_detects_a_command_that_moves_head(
     assert verdict.reason_code is ReasonCode.HEAD_CHANGED
     assert [claim.rigor for claim in verdict.claims] == ["R0"]
     assert json.loads(verdict.to_json())["commit"] == recorded_head
+
+
+def test_a_mutant_that_commits_inside_its_snapshot_is_head_changed(
+    git_repo: GitRepo,
+):
+    """A-195's other half, and the one a dirt-only check cannot see: a
+    command that COMMITS leaves its snapshot perfectly clean while the tree
+    the mutant was judged against is no longer the one it was named for.
+
+    The terminal table's "unit commits" row makes this the payload-free
+    ``NO_MEASUREMENT``/``HEAD_CHANGED`` pair -- distinct from ``DIRTY_TREE``,
+    and still never folded into ``crashed``. The consumer's own repository is
+    untouched throughout: the commit happened inside a disposable snapshot."""
+    original = "def f(x):\n    return x > 0\n"
+    base_rev, head_rev = _seed_python_project(git_repo, head_source=original)
+    before_head = git_repo.head()
+    units: list[str] = []
+
+    # Change a tracked file and COMMIT it, so the snapshot ends perfectly
+    # clean while its HEAD no longer names the commit it was built from --
+    # the exact shape a dirt-only post-run check cannot see.
+    commit_cmd = (
+        "printf 'the mutant rewrote this\\n' > support.txt && "
+        "git add -A && "
+        "git -c user.name=cmd -c user.email=cmd@example.invalid "
+        "commit -q -m 'the mutant committed'"
+    )
+
+    def process(argv, *, env, cwd, timeout):
+        cwd = Path(cwd)
+        text = (cwd / "pkg/mod.py").read_text(encoding="utf-8")
+        if text != original:
+            units.append("mutant")
+            # a real `git commit`, inside the mutant's own snapshot only
+            subprocess.run(
+                ["/bin/sh", "-c", commit_cmd],
+                cwd=cwd,
+                env={"PATH": os.environ["PATH"]},
+                capture_output=True,
+                check=True,
+            )
+        else:
+            units.append("baseline")
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    verdict = runner.run_lane(
+        _lane_with_scribbling_mutant(git_repo, base_rev, original),
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=process,
+        clock=_clock,
+        monotonic=CountingMonotonic(),
+    )
+
+    assert units == ["baseline", "mutant"]
+    assert verdict.claims[0].status is Outcome.PASS
+    r2 = verdict.claims[1]
+    assert (r2.status, r2.reason_code) == (
+        Outcome.NO_MEASUREMENT,
+        ReasonCode.HEAD_CHANGED,
+    )
+    assert r2.mutation is None
+    assert git_repo.head() == before_head, "the consumer's HEAD never moves"
+    assert git_module.dirty_paths(git_repo.path) == ()

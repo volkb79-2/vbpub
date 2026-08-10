@@ -1123,40 +1123,54 @@ def _mutation_targets_from_diff(
     *,
     prepared: "isolation.SnapshotRepository",
     deadline: LaneDeadline,
+    adapter: LanguageAdapter,
     snapshot_repo_top: Path,
     source_root_paths: Sequence[Path],
 ) -> tuple[mutation.MutationTarget, ...]:
-    """Build R2's own per-file candidate list directly from *added* when R1
-    did not already resolve one (P23's own "give text to the landed P21
-    resolver" -- :func:`~assay.mutation.collect_mutation_sites`, never a
-    second call into P18's own :func:`~assay.mutation.
-    resolve_mutation_targets`, which additionally applies an ADAPTER's own
-    excluded-directory/source-glob/test-path conventions -- R1's "which
-    files are considered for coverage" policy, not a fact this bounded
-    execution boundary depends on). Scoped by declared source root alone,
-    the identical containment test that function itself applies, so a
-    changed file outside every declared root is still never a candidate.
+    """R2's per-file candidate list, from P18's own landed
+    :func:`~assay.mutation.resolve_mutation_targets` -- the SAME four gates
+    the direct path applied before P23 (under a declared source root, not
+    inside one of the adapter's excluded directories, matching one of its
+    ``source_globs``, and not one of its test paths).
 
-    Every path is read ONCE through *prepared* (never a snapshot disk copy,
-    "never reopen a consumer path"); a file contributing no line that
-    survives containment is simply absent, matching
-    :func:`~assay.mutation.resolve_mutation_targets`'s own "no empty
-    MutationTarget" rule.
+    P23 changes only WHERE the bytes come from: *read_source_text* is bound
+    to the prepared P22 seed (:func:`_read_prepared_source_text`) instead of
+    the consumer's work tree, so the "never reopen a consumer path" rule
+    holds while the selection policy stays exactly the landed one.
+
+    Reviewer repair (phase 2). This function previously applied ONLY the
+    source-root containment gate, on the reasoning that the other three were
+    "R1's which-files-are-considered-for-coverage policy". They are not:
+    :func:`~assay.mutation.resolve_mutation_targets`'s own docstring names
+    the ``is_test_path`` exclusion as an ADDITION to R1's ``_is_considered``,
+    made specifically for R2. Dropping them produced two reproduced defects
+    on ordinary repositories:
+
+    * a changed non-Python file under a declared source root (a ``src/
+      NOTES.md``, a ``.json`` fixture, a ``.pyi`` stub) reached
+      ``PythonAdapter.generate_mutation_sites``, which raises
+      ``MutationDiscoveryError`` on unparseable text -- collapsing the whole
+      verdict to ``ERROR``/``MUTATION_DISCOVERY_FAILED`` for a repository
+      that measured normally before P23; and
+    * a changed ``test_*.py`` under a declared source root became a real
+      mutant identity in the R2 payload, so the suite "killed" a mutant by
+      having its own test broken -- a false measurement, not a caught bug.
+
+    Both are the false-refusal / false-evidence shapes A-016/A-035 name, and
+    neither was reachable from the locked packet (whose only multi-file
+    fixture is a single ``.py``).
     """
-    targets: list[mutation.MutationTarget] = []
-    for path in sorted(added.by_file):
-        lines = added.by_file[path]
-        abs_path = (snapshot_repo_top / path).resolve()
-        if not any(abs_path.is_relative_to(root) for root in source_root_paths):
-            continue
-        targets.append(
-            mutation.MutationTarget(
-                path=path,
-                text=_read_prepared_source_text(prepared, path, deadline=deadline),
-                lines=frozenset(lines),
-            )
-        )
-    return tuple(targets)
+
+    def read_source_text(path: str) -> str:
+        return _read_prepared_source_text(prepared, path, deadline=deadline)
+
+    return mutation.resolve_mutation_targets(
+        added,
+        repo_top=snapshot_repo_top,
+        source_root_paths=source_root_paths,
+        adapter=adapter,
+        read_source_text=read_source_text,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1343,6 +1357,7 @@ def _run_prepared_lane(
                         added,
                         prepared=prepared,
                         deadline=deadline,
+                        adapter=adapter,
                         snapshot_repo_top=baseline_snapshot.root,
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
                     )
