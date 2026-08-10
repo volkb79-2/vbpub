@@ -11,7 +11,7 @@ depends_on: [assay-P26-attested-evidence-cli-hardening]
 session: resume:assay-go
 scope:
   touch: ["gate/go/**", "tools/tester-unified-gate.sh", "nyxloom-trove/nyxloom.toml", "src/assay/adapters/go.py", "src/assay/cli.py", "src/assay/config.py", "src/assay/registry.py", "tests/fixtures/go/**", "tests/**", "README.md"]
-  forbid: ["src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters/python.py"]
+  forbid: ["src/assay/mutation.py", "src/assay/canary.py", "src/assay/adapters/python.py", "src/assay/schemas", "src/assay/verdict.py", "src/assay/verify.py"]
 oracles:
   - id: O1
     observable: "An assay-owned image combining tester-unified Python with tester-unified-go's pinned toolchain runs a real two-commit Go module through go test -coverprofile and installed assay run to an exact R0+R1 artifact"
@@ -66,6 +66,10 @@ on branch `feat/assay-P27-go-gate-adapter-resolution`.
 4. `/workspaces/vbpub/tester-unified/Dockerfile` and `/workspaces/vbpub/tester-unified-go/Dockerfile`. Treat both as immutable stages; create the combined image only beneath assay's `gate/go/`.
 5. `nyxloom-trove/reports/assay-v1-post-series-review-sol.md` finding 12 and
    its historical Go carve. P28, not this package, owns the real srdm comparison.
+6. P21's final `tests/test_verdict_conformance.py::{VOCABULARY,
+   EXCLUDED_ENTIRELY}`, direct raw-verifier tests, and its complete-artifact
+   grammar. P27 closes only the already-reserved missing-tool pair; it does not
+   revise v4.
 
 ## Environment setup
 
@@ -88,6 +92,17 @@ network commands.
 the immutable P23 command plan first, find `go` only through its effective
 `PATH`, and use that absolute executable for preflight and module parsing. No
 ambient PATH or conventional `/usr/local/go/bin` fallback is legal.
+
+The P27 JIT carve must supply one complete hand-authored v4 missing-tool
+document as a locked asset. Implementation copies it byte-for-byte to the
+ordinary verdict fixtures and removes only
+`("NO_MEASUREMENT", "MISSING_EXTERNAL_TOOL")` from
+`tests/test_verdict_conformance.py::EXCLUDED_ENTIRELY`, correcting the adjacent
+reserved-terminal comment. The artifact contains the resolved lane and one
+claim for every declared rigor level, but no command/process/coverage evidence:
+preflight refused before consumer execution. Its tests call P21's raw checker
+directly before the merged verifier when claiming layer independence. Schema,
+model, and verifier already own the vocabulary and are forbidden to edit here.
 
 Construct the adapter once per resolved project:
 
@@ -149,8 +164,8 @@ absent in commits but its real parent exists for P20's output preflight.
 | stale/prebuilt profile | freshness refusal; real generation ledger required |
 
 Work 1–2 -> image/gate -> O1; work 3/7 -> adapter/tool/module -> O2; work 4–6 ->
-tiny real module -> O1/O3; work 8 -> all
-controlled breaks. The REPORT records image IDs, Go version, wheel hash, input
+tiny real module -> O1/O3; work 8 -> complete terminal conformance; work 9 ->
+all controlled breaks. The REPORT records image IDs, Go version, wheel hash, input
 OIDs, exact ledgers/manifests, tests, and break counts. Private harness layout
 may vary; image provenance, effective-PATH resolution, official module parser,
 fixture topology, independent expected artifacts, and R1-only capability may
@@ -179,7 +194,11 @@ not.
    product decision rather than choosing the current parser or srdm behavior by
    authority.
 7. Change the fixture module name and repository nesting to prove module-prefix derivation and boundary-safe normalization. Missing `go`, wrong Go version, or unavailable helper prerequisites render honest non-PASS outcomes.
-8. Break real tool execution, wheel installation, module derivation, prefix
+8. Install the exact JIT-locked complete missing-tool artifact in ordinary
+   fixtures, remove its sole conformance exclusion, and prove Schema/model,
+   direct raw verification, and merged verification accept it without editing
+   any of those owners.
+9. Break real tool execution, wheel installation, module derivation, prefix
    boundary, line/column attribution, doc/test exclusion, repeated normalized
    keys, and independent artifact comparison separately; run the full real gate
    and record exact A-067 counts.
