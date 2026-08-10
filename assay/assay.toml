@@ -59,8 +59,11 @@ argv = ["python", "-m", "pytest", "tests", "-q", "--ignore=tests/test_self_hosti
 env = {}
 env_passthrough = ["PATH"]
 
-# Read from the gate's own timeout_seconds = 1800 in nyxloom-trove/nyxloom.toml
-# rather than invented.
-budget = "30m"
+# Read from the gate's own timeout_seconds = 3600 in nyxloom-trove/nyxloom.toml
+# rather than invented. P25 widened that gate timeout (the topos-qualified
+# phase adds the full 2,923-test pinned Topos suite, and this lane's own
+# `pytest tests` now also runs the harness's real full-pipeline tests), so this
+# budget moves with it -- test_self_lane.py asserts the two never drift apart.
+budget = "60m"
 
 allow_argv_append = false

@@ -1039,7 +1039,12 @@ the exact coverage bytes Assay consumed inside its ephemeral snapshot to an
 external path *after* pytest exits zero (Assay's own snapshot is destroyed
 before an outside process could read it otherwise); and the unmodified,
 committed `topos/tools/coverage_gate.py` parses that same copy against the
-identical `base..HEAD` diff. `compare_complete_artifact` then does ONE
+identical `base..HEAD` diff. That third witness is compared by its NUMBERS
+against the carver-owned hand manifest, never by its `passed` flag alone:
+Topos defines `pct = 100.0` whenever `changed_executable == 0`, so a scenario
+that measured nothing would "agree" with a truthful 5/5 run on the boolean —
+and the release smoke, which carries no complete-artifact template, is exactly
+where that would have gone unnoticed. `compare_complete_artifact` then does ONE
 whole-document equality check against a locked template, normalizing only
 the fields whose real value it already checked separately (version, commit,
 base, timestamps, the declared/effective environment, the witness/log

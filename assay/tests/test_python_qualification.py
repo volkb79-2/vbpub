@@ -314,6 +314,73 @@ def test_normalize_artifact_rejects_a_witness_path_that_disagrees_with_the_plan(
         )
 
 
+def test_expected_comparator_pins_the_locked_hand_manifest_numbers() -> None:
+    """The copied Topos evaluator's own numbers are frozen per scenario, so
+    `passed` alone can never stand in for agreement."""
+    module = _load_harness()
+    pass_numbers = {
+        "passed": True,
+        "changed_executable": 5,
+        "covered": 5,
+        "uncovered": {},
+        "files_missing_coverage": [],
+    }
+    assert module._expected_comparator(module.PRIMARY) == pass_numbers
+    assert module._expected_comparator(module.RELEASE_SMOKE) == pass_numbers
+    assert module._expected_comparator(module.MISSING) == {
+        "passed": False,
+        "changed_executable": 5,
+        "covered": 4,
+        "uncovered": {"topos/src/topos/_assay_probe.py": [7]},
+        "files_missing_coverage": [],
+    }
+    assert module._expected_comparator(module.COMMENT_ONLY) == {
+        "passed": True,
+        "changed_executable": 0,
+        "covered": 0,
+        "uncovered": {},
+        "files_missing_coverage": [],
+    }
+    # The frozen exclusion-capability asymmetry stays recorded, not compared.
+    assert module._expected_comparator(module.EXCLUDED) is None
+
+
+def test_expected_comparator_agrees_with_the_carver_witnessed_topos_results() -> None:
+    """Independent cross-check: the numbers derived from the hand manifest
+    must equal the ones the carver's own tracer witnessed from the real
+    unmodified Topos evaluator inside tester-unified."""
+    module = _load_harness()
+    document = json.loads((ASSET_ROOT / "probe-results.json").read_text())
+    witnessed = {item["scenario"]: item["comparator"] for item in document["scenarios"]}
+    for spec, key in (
+        (module.PRIMARY, "pass"),
+        (module.MISSING, "missing"),
+        (module.COMMENT_ONLY, "comment-only"),
+    ):
+        expected = module._expected_comparator(spec)
+        assert {field: witnessed[key][field] for field in expected} == expected, key
+
+
+def test_a_topos_pass_alone_cannot_witness_agreement(tmp_path: Path) -> None:
+    """Topos defines `pct = 100.0` whenever `changed_executable == 0`, so a run
+    that measured NOTHING returns `passed=True` exactly like a truthful 5/5
+    run. Real unmodified evaluator, real pinned tree, no Assay involved."""
+    module = _load_harness()
+    repo, _witness, _log, _base, head = module.materialize_scenario(
+        source_repo=REPO_ROOT, scratch=tmp_path, spec=module.MISSING
+    )
+    empty_profile = tmp_path / "empty-witness.json"
+    empty_profile.write_text(json.dumps({"files": {}}), encoding="utf-8")
+
+    # base == HEAD, so the diff this evaluator sees is empty.
+    vacuous = module._topos_comparator(repo, head, empty_profile)
+    assert vacuous["passed"] is True
+    assert vacuous["changed_executable"] == 0
+
+    expected = module._expected_comparator(module.RELEASE_SMOKE)
+    assert {field: vacuous[field] for field in expected} != expected
+
+
 # --- full-pipeline tests: real only inside the self-hosted lane --------------
 
 
@@ -401,6 +468,72 @@ def test_universal_pass_mutation_is_rejected_by_the_whole_document_comparator(
         spec=module.MISSING,
     )
     module._check_universal_pass_mutation(result)
+
+
+def test_a_scenario_that_measured_nothing_is_refused(
+    installed_assay: Path, tmp_path: Path
+) -> None:
+    """Combined-axis regression: release-wheel ownership x a materialization
+    regression that seeds the scenario probe into the BASELINE.
+
+    `base..HEAD` then contains no executable change, so installed Assay
+    truthfully reports 0/0 PASS and the copied Topos evaluator truthfully
+    reports 0/0 PASS -- they "agree" on every boolean. The release smoke is
+    the ONLY proof the separately hash-installed clean 1.2.5 wheel gets and
+    carries no complete-artifact template, so it must refuse a run that
+    measured nothing rather than record a vacuous agreement.
+    """
+    module = _load_harness()
+    original = module._seed_baseline
+
+    def seeded_with_the_probe_already_present(source_repo: Path, repository: Path) -> str:
+        original(source_repo, repository)
+        module._copy_fixture("probe-pass.py", repository / "topos/src/topos/_assay_probe.py")
+        module._run(["git", "add", "-f", "topos/src/topos/_assay_probe.py"], cwd=repository)
+        module._run(
+            ["git", "commit", "-q", "-m", "probe already in baseline"],
+            cwd=repository,
+            env=module._fixed_identity(),
+        )
+        return module._git(repository, "rev-parse", "HEAD")
+
+    module._seed_baseline = seeded_with_the_probe_already_present
+    with pytest.raises(module.QualificationError, match="hand manifest"):
+        module.run_scenario(
+            source_repo=REPO_ROOT,
+            scratch=tmp_path,
+            assay_executable=installed_assay,
+            assay_version=_assay_version(installed_assay),
+            spec=module.RELEASE_SMOKE,
+        )
+
+
+def test_the_wrong_source_root_decoy_is_rejected_because_of_the_root(
+    installed_assay: Path, tmp_path: Path
+) -> None:
+    """The decoy must fail the whole-document comparison BECAUSE of the root.
+
+    `test_integrity_matrix_negatives_produce_their_frozen_terminals` already
+    covers the wrong-root direction; this is the control that makes it an
+    oracle. Run the identical construction with the CORRECT source root: if
+    the check still reported "decoy caught", its rejection was attributable to
+    something else (a mismatched probe or argv) and it proved nothing about
+    source roots at all.
+    """
+    module = _load_harness()
+    original = module._materialize_negative
+
+    def with_the_correct_source_root(*args: object, **kwargs: object):
+        kwargs["source_roots"] = "topos/src/topos"
+        return original(*args, **kwargs)
+
+    module._materialize_negative = with_the_correct_source_root
+    with pytest.raises(
+        module.QualificationError, match="discriminating difference|incorrectly passed"
+    ):
+        module._check_wrong_source_root(
+            REPO_ROOT, tmp_path, installed_assay, _assay_version(installed_assay)
+        )
 
 
 def test_install_locked_release_produces_a_pure_hash_bound_venv(tmp_path: Path) -> None:

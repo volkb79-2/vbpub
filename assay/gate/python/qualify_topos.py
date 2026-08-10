@@ -476,6 +476,34 @@ def _topos_comparator(repository: Path, base: str, witness: Path) -> dict[str, A
     }
 
 
+def _expected_comparator(spec: ScenarioSpec) -> dict[str, Any] | None:
+    """The copied Topos evaluator's own frozen numbers for ``spec``.
+
+    Derived from the carver-owned literal hand manifest, never from anything
+    Assay produced. ``passed`` alone is NOT an oracle: Topos computes
+    ``pct = 100.0`` whenever ``changed_executable == 0``, so a scenario that
+    measured nothing agrees with a truthful 5/5 run on the boolean. Returns
+    ``None`` for the frozen `compare_with_topos=False` exclusion-capability
+    asymmetry, whose Topos result is recorded and never terminal-compared.
+    """
+    if not spec.compare_with_topos:
+        return None
+    manifest = json.loads(_QUALIFICATION_MANIFEST.read_text(encoding="utf-8"))
+    entry = {
+        "probe-pass.py": manifest["pass_probe"],
+        "probe-missing.py": manifest["missing_probe"],
+        "comment-only.py": manifest["comment_only_probe"],
+    }[spec.probe_fixture]
+    missing = entry.get("missing_lines") or []
+    return {
+        "passed": not missing,
+        "changed_executable": entry["changed_executable"],
+        "covered": entry["covered"],
+        "uncovered": {entry["path"]: list(missing)} if missing else {},
+        "files_missing_coverage": [],
+    }
+
+
 def _invoke(assay_executable: Path, repo: Path, artifact_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     proc = _run(
         [str(assay_executable), "run", "topos-qualification", "--verdict-json", str(artifact_path)],
@@ -617,13 +645,24 @@ def run_scenario(
     if witness.exists():
         witness_sha256 = _sha256(witness)
         comparator = _topos_comparator(repo, base_oid, witness)
-        expected_topos_pass = spec.expected_outcome == "PASS" if spec.compare_with_topos else True
-        if comparator["passed"] != expected_topos_pass:
-            raise QualificationError(
-                f"scenario {spec.name!r}: copied Topos evaluator parity mismatch "
-                f"(expected passed={expected_topos_pass}, got {comparator['passed']})"
-            )
-    elif spec.expected_exit == 0:
+        expected_comparator = _expected_comparator(spec)
+        if expected_comparator is None:
+            # `compare_with_topos=False` is the frozen exclusion-capability
+            # asymmetry: Topos cannot express exclusion provenance, so its
+            # PASS is recorded, never compared as a terminal.
+            if comparator["passed"] is not True:
+                raise QualificationError(
+                    f"scenario {spec.name!r}: the expected Topos exclusion-capability "
+                    f"asymmetry requires a Topos PASS, got {comparator['passed']}"
+                )
+        else:
+            observed = {field: comparator[field] for field in expected_comparator}
+            if observed != expected_comparator:
+                raise QualificationError(
+                    f"scenario {spec.name!r}: copied Topos evaluator disagrees with the "
+                    f"locked hand manifest: expected {expected_comparator}, got {observed}"
+                )
+    elif spec.expected_exit == 0 or spec.compare_with_topos:
         raise QualificationError(f"scenario {spec.name!r}: expected a coverage witness but none was produced")
 
     consumer_clean = _git(repo, "status", "--porcelain=v1") == ""
@@ -855,31 +894,46 @@ def _check_command_head_move(source_repo: Path, scratch: Path, current_assay: Pa
 
 
 def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Path, current_version: str) -> None:
+    """A wrong-but-existing `judge.source_roots` must fail the whole-document
+    comparison BECAUSE OF THE ROOT.
+
+    The decoy is therefore MISSING's own construction -- same probe, test,
+    wrapper and targeted argv -- with only `source_roots` changed, compared
+    against MISSING's own template. Its control is the real `missing-line`
+    scenario in `qualify`, which matches that template exactly; so the only
+    field that can differ here is `judgment`. A decoy built from a different
+    probe or argv than its template would be rejected for the argv alone and
+    would prove nothing about source roots.
+    """
     name = "wrong-source-root"
     repo, witness, pytest_log, base, head = _materialize_negative(
         source_repo,
         scratch,
         name,
-        probe_fixture=PRIMARY.probe_fixture,
-        test_fixture=PRIMARY.test_fixture,
+        probe_fixture=MISSING.probe_fixture,
+        test_fixture=MISSING.test_fixture,
         argv_tail=MISSING.argv_tail,
         source_roots="topos/src",
     )
     artifact_path = scratch / name / "verdict.json"
     _proc, artifact = _invoke(current_assay, repo, artifact_path)
-    try:
-        compare_complete_artifact(
-            actual=artifact,
-            template=_EXPECTED_ROOT / "pass-v4-template.json",
-            assay_version=current_version,
-            base_oid=base,
-            head_oid=head,
-            witness=witness,
-            pytest_log=pytest_log,
+    normalized = normalize_artifact(
+        artifact,
+        assay_version=current_version,
+        base_oid=base,
+        head_oid=head,
+        witness=witness,
+        pytest_log=pytest_log,
+    )
+    expected = json.loads((_EXPECTED_ROOT / "missing-v4-template.json").read_text(encoding="utf-8"))
+    differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
+    if not differing:
+        raise QualificationError("a wrong-source-root decoy incorrectly passed the complete artifact comparison")
+    if "judgment" not in differing:
+        raise QualificationError(
+            f"the wrong-source-root decoy was rejected without the source root being the "
+            f"discriminating difference (differing fields: {differing})"
         )
-    except QualificationError:
-        return
-    raise QualificationError("a wrong-source-root decoy incorrectly passed the complete artifact comparison")
 
 
 def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
@@ -953,16 +1007,20 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in ((primary, "pass-v4-template.json"), (missing, "missing-v4-template.json")):
-        witness = Path(result.artifact["env_effective"]["ASSAY_P25_WITNESS"])
-        pytest_log = Path(result.artifact["env_effective"]["ASSAY_P25_LOG"])
+        # The version and the witness/log paths come from the committed plan
+        # (the owner this scenario was run with, and the deterministic scratch
+        # layout `materialize_scenario` built) -- NEVER from the artifact under
+        # test, which would turn `normalize_artifact`'s identity guards into
+        # tautologies that can no longer fail.
+        _executable, owner_version = owners[result.spec.name]
         compare_complete_artifact(
             actual=result.artifact,
             template=_EXPECTED_ROOT / template_name,
-            assay_version=result.artifact["assay_version"],
+            assay_version=owner_version,
             base_oid=result.base_oid,
             head_oid=result.head_oid,
-            witness=witness,
-            pytest_log=pytest_log,
+            witness=scratch / result.spec.name / "witness.json",
+            pytest_log=scratch / result.spec.name / "pytest.log",
         )
 
     _check_missing_profile(source_repo, scratch, current_assay, current_version)
