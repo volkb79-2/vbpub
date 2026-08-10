@@ -232,7 +232,8 @@ forbidden file is secretly needed.
   and post-merge locked acceptance `28 passed`.
 - P21 review dispositions were applied: normalized canary path is consumed,
   raw-checker evidence is direct, snapshot-limit exclusion moves to P22, and
-  the unrelated Go site-order item remains P29.
+  the unrelated Go item is promoted into P29 as the exact
+  `MutationSite.identity` order plus a reversed-valid-batch refusal.
 - Live full-closure probe at the anchor:
   `objects=26074 total=273578621 max_blob=11198464`; existing Git storage
   reports 28,787 packed objects / 21.58 MiB plus 291 loose / 2.04 MiB. This is

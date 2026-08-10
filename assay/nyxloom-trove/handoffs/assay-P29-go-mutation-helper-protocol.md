@@ -22,8 +22,8 @@ oracles:
     negative: "Regex matching mutates a comment/string, character offsets corrupt UTF-8, or whole-file gofmt changes unrelated bytes"
     gate: tester-unified
   - id: O3
-    observable: "Go implements P21's already-frozen selected-operator/max+1 MutationSite contract exactly, without a private API or any change to Python/core behavior"
-    negative: "Go gets a parallel unbounded shape, filters only after full discovery, or edits the frozen Python/core contract to fit the helper"
+    observable: "Go implements P21's already-frozen selected-operator/max+1 MutationSite contract exactly, returns each per-file batch strictly identity-ordered and duplicate-free, and needs no private API or Python/core change"
+    negative: "Go gets a parallel unbounded shape, filters or rescue-sorts only after discovery, returns two valid sites in reverse identity order, or edits the frozen Python/core contract to fit the helper"
     gate: tester-unified
   - id: O4
     observable: "Unknown/duplicate fields, invalid base64/UTF-8/Go, invalid lines/operators/limits, oversize input/response, helper nonzero, and malformed frames become typed discovery failures and never NO_MUTANTS"
@@ -65,8 +65,10 @@ on branch `feat/assay-P29-go-mutation-helper-protocol`.
 1. P21's final `MutantOutcome` byte-span/replacement-hash identity and cap.
 2. P23's mutation collection/execution seam and P27's effective-PATH Go adapter
    construction/image. P30, not this package, enables Go R2 or runs mutants.
-3. P21's final `MutationSite`, `generate_mutation_sites`, collection bounds,
-   Python parity manifests, and direct tests; plus Go's current `UNSUPPORTED`.
+3. P21's final `MutationSite.identity`, `generate_mutation_sites`,
+   `mutation._validate_sites`, collection bounds, Python parity manifests, and
+   `test_mutation_collect.py`'s reversed-valid-batch refusal; plus Go's current
+   `UNSUPPORTED`.
 4. Go `parser`, `ast`, `token`, and `format` from P27's pinned toolchain.
 5. Decisions A-112–A-115/A-157–A-160 and the post-series review's warning that
    `64 MiB × 10,001 mutated_text` is not a bound.
@@ -78,10 +80,16 @@ on branch `feat/assay-P29-go-mutation-helper-protocol`.
 Implement exactly P21's landed `generate_mutation_sites(text, lines, *,
 operators, limit)` and `MutationSite` shape. Do not edit `adapters/base.py`,
 `adapters/python.py`, or `mutation.py`. Go returns at most `limit` descriptors,
-already unique and sorted by P21's byte-based key. It applies the selected
-operator set during AST traversal, not after producing an unbounded catalogue.
-No `mutated_text` appears on the wire or in discovery. P30 applies one site to
-one fresh P22 snapshot only when the candidate is submitted.
+already unique and strictly sorted by `MutationSite.identity`, exactly
+`(start_byte, end_byte, replacement_sha256, operator)`. The shared collector
+does not sort a wrong adapter batch into compliance: it raises
+`MutationDiscoveryError` before building any job when the identities are
+out-of-order or duplicated. Go therefore sorts before returning and its tests
+must show two individually valid sites in reverse order are refused at that
+real shared boundary. It applies the selected operator set during AST traversal,
+not after producing an unbounded catalogue. No `mutated_text` appears on the
+wire or in discovery. P30 applies one site to one fresh P22 snapshot only when
+the candidate is submitted.
 
 P21 leaves Go's method on the common union but unconditionally returns the
 adapter-wide `"UNSUPPORTED"` marker, which renders payload-free
@@ -150,7 +158,7 @@ lookalikes in comments/strings, `_test.go` targets, and canonical generated
 files. For each descriptor, apply its single splice to original bytes, parse the
 full result, and call `format.Source` only as a validity check whose output is
 discarded. All non-span bytes must remain equal. Stop at `max_sites` in the
-fixed global sort order and return the max+1 sentinel honestly.
+fixed `MutationSite.identity` order and return the max+1 sentinel honestly.
 
 ### Prepared proof and traceability
 
@@ -160,11 +168,13 @@ lookalikes; generated/test/invalid sources; every limit boundary; a 64 MiB spars
 source with 10,001 sites; and P21's unchanged Python candidate manifests. Memory is
 proved structurally (response contains only bounded descriptors and collection
 holds sites). Peak-memory may be recorded as non-gating diagnostic evidence;
-no machine-dependent RSS threshold decides the test.
+no machine-dependent RSS threshold decides the test. A locked adapter-boundary
+case reverses two otherwise valid helper sites and requires the existing shared
+collector to emit `MUTATION_DISCOVERY_FAILED`; no production sort may hide it.
 
 | work | owner | oracle | controlled break |
 |---|---|---|---|
-| common site conformance/no core drift | Go adapter + frozen P23 tests | O3 | parallel API, filter late, or alter core/Python |
+| common site conformance/no core drift | Go adapter + frozen P23 tests | O3 | parallel API, filter late, rescue-sort an out-of-order batch, or alter core/Python |
 | request/response/error boundary | helper/Go adapter | O1/O4 | unbounded read or empty-on-error |
 | Go AST/token spans | helper | O2 | regex, character offsets, or use formatted output |
 | aggregate bounds | helper/mutation | O1/O3/O4 | retain full copies or discover beyond sentinel |
