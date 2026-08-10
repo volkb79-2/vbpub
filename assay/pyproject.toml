@@ -2,7 +2,13 @@
 # builds are reproducible (same toolchain + SOURCE_DATE_EPOCH -> identical
 # sha256).
 [build-system]
-requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+requires = [
+    "setuptools==84.0.0",
+    "wheel==0.47.0",
+    "setuptools-scm==10.0.5",
+    "packaging==26.3",
+    "vcs-versioning==2.2.4",
+]
 build-backend = "setuptools.build_meta"
 
 [project]

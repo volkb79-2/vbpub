@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "requires_python": ">=3.11",
+  "requirements": [
+    {
+      "requirement": "setuptools==84.0.0",
+      "filename": "setuptools-84.0.0-py3-none-any.whl",
+      "size": 818216,
+      "sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+    },
+    {
+      "requirement": "wheel==0.47.0",
+      "filename": "wheel-0.47.0-py3-none-any.whl",
+      "size": 32218,
+      "sha256": "212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced"
+    },
+    {
+      "requirement": "setuptools-scm==10.0.5",
+      "filename": "setuptools_scm-10.0.5-py3-none-any.whl",
+      "size": 21695,
+      "sha256": "f611037d8aae618221503b8fa89319f073438252ae3420e01c9ceec249131a0a"
+    },
+    {
+      "requirement": "packaging==26.3",
+      "filename": "packaging-26.3-py3-none-any.whl",
+      "size": 129956,
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+    },
+    {
+      "requirement": "vcs-versioning==2.2.4",
+      "filename": "vcs_versioning-2.2.4-py3-none-any.whl",
+      "size": 109066,
+      "sha256": "48ffea8a6a175c37a718c7ee2e5f508d0e500c2cf3371791f7948bccb2b44628"
+    }
+  ]
+}

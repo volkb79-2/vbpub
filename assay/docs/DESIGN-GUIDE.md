@@ -880,12 +880,12 @@ opacity being removed.
 
 ## 13. Adoption order, and what each consumer proves
 
-Before consumer migration, P24 qualifies the versioned installed wheel
-against a disposable current Topos tree and its independent changed-line gate
-(A-162). That is evidence that an existing Python project can obtain the same
-R1 answer, not a claim that Topos has adopted Assay. The real adoption package
-is carved later in Topos's own trove, after its active wave permits a stable
-input revision.
+Before consumer migration, P25 qualifies the versioned installed wheel P24
+produces (§14) against a disposable current Topos tree and its independent
+changed-line gate (A-162). That is evidence that an existing Python project
+can obtain the same R1 answer, not a claim that Topos has adopted Assay. The
+real adoption package is carved later in Topos's own trove, after its active
+wave permits a stable input revision.
 
 | # | Consumer | Proves |
 |---|---|---|
@@ -904,6 +904,85 @@ rather than being where you discover it is not.
 **"Adapter validated" ≠ "consumer migrated."** The P90 handoff conflates them.
 The Go adapter is proven against committed fixtures; srdm migrating is a
 separate call.
+
+## 14. Versioned wheel distribution (P24)
+
+A-198–A-201 close the last unversioned corner: before P24, every wheel built
+in `tester-unified` was `0.0.0`, because `setuptools-scm` was never part of
+the build closure and setuptools silently falls through to a placeholder when
+no plugin supplies a real version. A placeholder version is unsafe for a real
+consumer to depend on — it cannot distinguish one release from the next — so
+this is a distribution-safety fix, not a cosmetic one.
+
+**The five-wheel closure is exact, not "whatever the resolver picks."**
+`[build-system].requires` names `setuptools==84.0.0`, `wheel==0.47.0`,
+`setuptools-scm==10.0.5`, `packaging==26.3`, `vcs-versioning==2.2.4` — the
+*complete* transitive closure (`wheel` and `setuptools-scm` both need
+`packaging`; `setuptools-scm` also needs `vcs-versioning`), hash-bound in
+`gate/distribution/build-requirements.txt` and installed with pip's
+`--no-index --require-hashes` from a committed wheelhouse. A network-disabled
+resolver cannot invent a missing transitive dependency, so the old
+three-package declaration was never a real closure — it built only because the
+ambient interpreter's own bare `setuptools` was reachable via `PYTHONPATH`,
+which is exactly the cockpit-green pathway §9 already rejects for the
+standalone claim, recurring one layer down in the *build* tools instead of the
+*runtime* ones.
+
+**Four identities, one honest producer each:**
+
+| source shape | identity | is it a release? |
+|---|---|---|
+| clean, tracked, tagged `assay-v1.2.3` | exactly `1.2.3` | yes — the only shape a release manifest may describe |
+| same tree, one tracked mutation after the tag | `setuptools-scm`'s own `.dev…+g….d…` | no — a clean manifest must refuse it |
+| tracked `pyproject.toml` + `src/**`, no `.git` at all | the declared `fallback_version = "0.1.0"` | no — a source-distribution witness only |
+| the real, untagged vbpub clone (what the gate actually builds) | `setuptools-scm`'s own non-placeholder development identity | no — self-hosting development build |
+
+None of these is a manual version file, an environment pretend-version
+variable, or `0.0.0`. `src/assay/__init__.py`'s `importlib.metadata.version`
+read (with its `0+unknown` source-import fallback) is untouched by any of
+this — a wheel's version is a build-time fact about bytes on disk, never a
+runtime guess.
+
+**The gate builds from a private clone, never the live worktree.** A `cp -a`
+of `src/**` followed by `git add` is not the same as `git ls-files` — it also
+picks up whatever `__pycache__`/`*.egg-info`/`build/` residue happens to sit
+in the working tree, and a *reproducible* contaminated wheel is still
+contaminated (P24's own first probe did exactly this: a byte-identical but
+582,556-byte wheel instead of the correct 232,651 bytes). So the registered
+gate records the worktree's exact HEAD OID, makes a `--no-local
+--no-checkout` clone of the worktree itself (no hardlinks/alternates back to
+the caller's object store), sparse-checks out only `assay/`, and checks out
+that exact OID detached — verifying the clone's own HEAD before building.
+Ignored residue in the caller's tree structurally cannot reach a clone built
+from committed objects.
+
+**Verification is not installation.** `gate/distribution/release_wheel.py` is
+a standalone, stdlib-only tool a consumer runs *before* Assay is installed:
+`manifest` derives a closed four-field JSON document
+(`schema_version`/`filename`/`version`/`sha256`) from one already-built
+release wheel; `verify` re-derives the same facts (streamed sha256, then the
+wheel's own bounded METADATA — exactly one `assay-<version>.dist-info/
+METADATA` member, `Name`/`Version` re-checked independently of the hash) and,
+only on success, prints one PEP 508 requirement line:
+
+```
+assay @ file:///abs/path/assay-1.2.3-py3-none-any.whl --hash=sha256:<64hex>
+```
+
+A separate check followed by an ordinary `pip install <path>` has a check/use
+race — nothing stops the bytes at that path from changing between the two
+opens. Feeding the verifier's own line into `pip install --no-index
+--require-hashes -r <that file>` closes the gap: pip rechecks the identical
+sha256 against the bytes it actually opens, so verification and installation
+are bound to the same artifact by construction rather than by discipline.
+
+**Two venvs, not one.** `build-venv` gets the hash-checked five-wheel closure
+and nothing else; `run-venv` gets the built wheel installed with `--no-index
+--no-deps` and nothing else. The build closure never leaks into the runtime
+venv's `sys.path`, so "zero runtime dependencies" is checked against the
+*installed* artifact (`importlib.metadata.requires("assay")`, extras aside)
+rather than merely asserted from the pinned `dependencies = []` in
+`pyproject.toml`.
 
 ---
 
