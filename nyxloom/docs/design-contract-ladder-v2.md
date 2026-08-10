@@ -472,6 +472,34 @@ required and no cross-slice negotiation.
 it must exist: five individually-green packages hid four critical cross-package
 false-PASS defects. Wq is also where every `C3`/`C4` obligation is discharged.
 
+### 6.1a W0 splits along its own A axis — and that is what makes it deployable
+
+Refinement found while piloting this against dstdns CW2. The contract package
+contains two different kinds of work, and they sit at opposite ends of the
+contract axis:
+
+| phase | work | axis | role |
+|---|---|---|---|
+| **decide + probe** | choose and *prove* the schema, signatures, cursor codec, config vocabulary, error constants, decision table | `A1` — frontier, **no committed product code** | the existing carve authority |
+| **land** | write exactly what the frozen contract dictates: DDL, stubs, config keys, gate declarations, red conformance suite | `A4` — mechanical against a locked contract | the existing implementer lane |
+
+This matters more than it first appears. Treating W0 as one frontier package
+that both decides *and* writes code breaks the role separation most controller
+loops already depend on — dstdns's, for instance, states plainly that the
+review/carve authority does not write product code and the implementer does not
+decide architecture. Splitting W0 at its own A boundary means **the wave needs
+no new role and no new lane**: "decide + probe" is simply what the carve step
+produces this cycle (a contract document plus a probe log, committed with the
+successor handoff), and "land" is an ordinary implementation package.
+
+It is also cheaper. The frontier session spends its budget on decisions instead
+of on typing DDL, which is precisely the substitution §4.5's inequality is
+about.
+
+**Corollary for the axes:** a package whose A value is not uniform across its
+own work is a split signal, exactly like a package extreme on two axes. Ask
+where inside the package A changes, and cut there.
+
 ### 6.2 What may and may not be deferred
 
 A natural instinct, once slices run in parallel, is to defer the gate until
