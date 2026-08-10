@@ -60,7 +60,10 @@ on branch `feat/assay-P23-exact-reexecution-integration`.
 
 ## Context to read first
 
-1. P22's final public interface and tests; never reimplement or bypass it.
+1. P22's final
+   `SnapshotSpec`/`prepare_snapshot`/`SnapshotRepository` interface and tests;
+   never reimplement or bypass it. Preparation transfers the source once;
+   every method requires the lane's remaining seconds.
 2. Post-series review F01–F04/F13–F14 and decisions A-154–A-161. Reproduce
    lost appended argv/passthrough, nested sibling false-PASS, stale canary
    coverage, R2-only crash, and multiplicative budget probes.
@@ -99,6 +102,10 @@ is omitted exactly as today; it is never replaced by empty text or re-read later
 Every process ledger records `effective_argv`, the effective environment subset,
 and the same project prefix. Relocation computes only
 `snapshot.root / project_prefix`; it does not rebuild any other field.
+`project_prefix` becomes the exact normalized `PurePosixPath` used by P22.
+P21-normalized `judge.canary.target` is converted to a repo-relative
+replacement path exactly once by prefixing it; no snapshot or scratch path
+rereads `assay.toml`.
 
 ### Landed bounded mutation-site contract
 
@@ -116,26 +123,38 @@ translation, or manifest. P29 later makes Go implement P21's same protocol.
    selection otherwise. If R3 mechanism is `uncovered-line`, also require R1.
    Refuse before Git, output reservation, snapshot, or command activity.
 2. Resolve full repository/commit/project prefix through P20, reserve the verdict
-   destination, resolve one plan, and create one injected monotonic deadline.
-3. Create a uniquely owned P22 snapshot for the resolved commit before making
-   the P20 output reservation; ensure the declared coverage artifact is absent;
-   execute baseline from `snapshot.project_root` with only the remaining budget;
-   read only that invocation's fresh bounded artifact. No shared live-tree
-   writer may race reservation/arming: private snapshot ownership, not ctime
-   granularity, removes that residual identity ambiguity.
+   destination, resolve one plan, create one caller-owned scratch root, and
+   create one injected monotonic deadline. Immediately before every P22 call,
+   compute remaining seconds and refuse `LANE_TIMEOUT` if none remains; pass
+   that exact positive value to P22, which never resets it internally.
+3. Before the baseline, call `prepare_snapshot` exactly once with P22's fixed
+   `DEFAULT_SNAPSHOT_LIMITS`; keep its private seed for the whole lane. A
+   preparation limit is the complete R0-only snapshot-limit refusal frozen by
+   P22. Materialize one independent base context, create/arm the P20 coverage
+   reservation inside `snapshot.project_root`, execute the already-resolved
+   plan there with only the remaining budget, consume that context's output,
+   and close it. No consumer-tree reservation or shared live-tree writer
+   participates: private snapshot ownership, not ctime granularity, removes
+   that residual identity ambiguity.
 4. If baseline/prerequisite fails, emit its complete v4 artifact and start no
    mutation/canary work.
-5. For R2, resolve targets from the already-resolved diff and call P21's bounded
-   common mutation-site interface unchanged. Retain at most
+5. For R2, resolve targets from the already-resolved diff, but load every target
+   blob through `SnapshotRepository.read_regular_file(repo_relative_path,
+   timeout=remaining)` rather than the consumer working tree. Decode once as
+   P21 requires and call its bounded common mutation-site interface unchanged.
+   Retain at most
    `max_mutants + 1`; if the sentinel exists, emit P21's limit terminal with zero
-   submissions. Otherwise each submitted site receives a fresh base snapshot,
-   uses P22's exact-byte replacement, and runs the same plan with remaining
-   budget.
-6. For R3, materialize independent base control and exact transform snapshots.
+   submissions. Otherwise each submitted site builds its one full whole-blob
+   splice inside the worker, calls P22's `materialize_replacement` with the
+   repo-relative path, exact original bytes and remaining seconds, then runs the
+   same plan from the returned `project_root`.
+6. For R3, materialize an independent base control and exact replacement
+   snapshot from the same prepared seed. Prefix the already-normalized
+   project-relative target once to obtain P22's repo-relative replacement path.
    Neither inherits baseline/control coverage. Run the same plan; judge only the
    fixed expected cause.
-7. Before snapshotting or launching any next unit, compute remaining budget from
-   the injected clock. When non-positive, launch nothing else and emit the fixed
+7. Before snapshotting, reading a seed blob, or launching any next unit, compute
+   remaining budget from the injected clock. When non-positive, launch nothing else and emit the fixed
    lane-budget terminal. Completed outcomes remain evidence but never convert a
    partial R2/R3 run into PASS.
 
@@ -164,7 +183,7 @@ writes coverage while transform does not. Expected v4 artifacts are handwritten.
 | work | owner | oracle | controlled break |
 |---|---|---|---|
 | plan capture/reuse | `runner.py` | O1 | re-resolve lane inside R2/R3 |
-| snapshot orchestration | runner/mutation/canary | O2 | reuse baseline tree/profile |
+| snapshot orchestration | runner/mutation/canary | O2 | prepare per unit, reopen source, reuse baseline tree/profile, or reread lane config |
 | rigor prerequisites | `config.py` | O3 | accept R2-only or missing R1 |
 | landed sites/deadline/cap | runner/mutation | O4 | bypass P21 collection, per-process timeout, or truncate |
 

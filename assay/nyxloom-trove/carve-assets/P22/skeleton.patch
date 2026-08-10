@@ -1,0 +1,176 @@
+diff --git a/assay/src/assay/isolation.py b/assay/src/assay/isolation.py
+new file mode 100644
+index 00000000..11111111
+--- /dev/null
++++ b/assay/src/assay/isolation.py
+@@ -0,0 +1,170 @@
++"""Committed-object repository snapshots.
++
++P22 owns this boundary. A prepared repository transfers and validates one
++exact commit once, then produces independent consumer-visible snapshots from
++that private seed. No consumer command can reach the source object store.
++"""
++
++from __future__ import annotations
++
++import math
++import re
++from contextlib import contextmanager
++from dataclasses import dataclass
++from pathlib import Path, PurePosixPath
++from typing import ContextManager, Iterator
++
++__all__ = [
++    "DEFAULT_SNAPSHOT_LIMITS",
++    "Snapshot",
++    "SnapshotLimits",
++    "SnapshotRepository",
++    "SnapshotSpec",
++    "prepare_snapshot",
++]
++
++
++@dataclass(frozen=True, kw_only=True)
++class SnapshotLimits:
++    """Fixed ceilings for source inspection, transfer, and materialization."""
++
++    max_objects: int
++    max_entries: int
++    max_path_bytes: int
++    max_total_path_bytes: int
++    max_blob_bytes: int
++    max_total_object_bytes: int
++    max_pack_bytes: int
++
++    def __post_init__(self) -> None:
++        """Reject booleans/non-positive/incoherent bounds."""
++        for name in self.__dataclass_fields__:
++            value = getattr(self, name)
++            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
++                raise ValueError(f"{name} must be a positive integer, got {value!r}")
++        if self.max_blob_bytes > self.max_total_object_bytes:
++            raise ValueError(
++                "max_blob_bytes cannot exceed max_total_object_bytes "
++                f"({self.max_blob_bytes} > {self.max_total_object_bytes})"
++            )
++
++
++DEFAULT_SNAPSHOT_LIMITS = SnapshotLimits(
++    max_objects=100_000,
++    max_entries=200_000,
++    max_path_bytes=4_096,
++    max_total_path_bytes=64 * 1024 * 1024,
++    max_blob_bytes=64 * 1024 * 1024,
++    max_total_object_bytes=1024 * 1024 * 1024,
++    max_pack_bytes=512 * 1024 * 1024,
++)
++
++
++@dataclass(frozen=True, kw_only=True)
++class SnapshotSpec:
++    """One source commit and caller-owned scratch namespace."""
++
++    repo_top: Path
++    commit: str
++    project_prefix: PurePosixPath
++    scratch_root: Path
++    limits: SnapshotLimits = DEFAULT_SNAPSHOT_LIMITS
++
++    def __post_init__(self) -> None:
++        """Validate exact SHA-1, prefix, roots, and concrete limits."""
++        if not isinstance(self.limits, SnapshotLimits):
++            raise ValueError(f"limits must be SnapshotLimits, got {self.limits!r}")
++        for name in ("repo_top", "scratch_root"):
++            value = getattr(self, name)
++            if not isinstance(value, Path) or not value.is_absolute():
++                raise ValueError(f"{name} must be an absolute Path, got {value!r}")
++            try:
++                resolved = value.resolve(strict=True)
++            except OSError as exc:
++                raise ValueError(f"{name} does not resolve: {value!r}") from exc
++            if resolved != value or value.is_symlink() or not value.is_dir():
++                raise ValueError(
++                    f"{name} must be an existing resolved non-symlink directory, "
++                    f"got {value!r}"
++                )
++        if self.scratch_root.is_relative_to(self.repo_top):
++            raise ValueError("scratch_root must be outside repo_top")
++        if not isinstance(self.commit, str) or re.fullmatch(r"[0-9a-f]{40}", self.commit) is None:
++            raise ValueError(f"commit must be exactly 40 lowercase hex characters, got {self.commit!r}")
++        if not isinstance(self.project_prefix, PurePosixPath):
++            raise ValueError(
++                f"project_prefix must be PurePosixPath, got {self.project_prefix!r}"
++            )
++        if self.project_prefix.is_absolute() or ".." in self.project_prefix.parts:
++            raise ValueError(
++                "project_prefix must be a normalized repo-relative POSIX path, "
++                f"got {self.project_prefix!s}"
++            )
++
++
++@dataclass(frozen=True, kw_only=True)
++class Snapshot:
++    """One independently owned working repository, valid for its context."""
++
++    root: Path
++    project_root: Path
++    commit: str
++
++
++class SnapshotRepository:
++    """Validated private seed for repeated independent materializations."""
++
++    def __init__(self, *, spec: SnapshotSpec) -> None:
++        self._spec = spec
++
++    @property
++    def spec(self) -> SnapshotSpec:
++        return self._spec
++
++    def read_regular_file(self, path: PurePosixPath, *, timeout: float) -> bytes:
++        """Read one repo-relative regular blob from the prepared commit."""
++        _check_timeout(timeout)
++        raise NotImplementedError("P22 TODO: read a prepared regular blob")
++
++    def materialize(self, *, timeout: float) -> ContextManager[Snapshot]:
++        """Return a context for one independent exact base snapshot."""
++        _check_timeout(timeout)
++        return _unimplemented_snapshot()
++
++    def materialize_replacement(
++        self,
++        *,
++        path: PurePosixPath,
++        expected: bytes,
++        replacement: bytes,
++        timeout: float,
++    ) -> ContextManager[Snapshot]:
++        """Return a fixed-identity child commit replacing one whole blob."""
++        _check_timeout(timeout)
++        return _unimplemented_snapshot()
++
++
++def _check_timeout(timeout: float) -> None:
++    if (
++        isinstance(timeout, bool)
++        or not isinstance(timeout, (int, float))
++        or not math.isfinite(timeout)
++        or timeout <= 0
++    ):
++        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
++
++
++@contextmanager
++def _unimplemented_snapshot() -> Iterator[Snapshot]:
++    raise NotImplementedError("P22 TODO: materialize snapshot")
++    yield Snapshot(root=Path(), project_root=Path(), commit="")
++
++
++@contextmanager
++def prepare_snapshot(
++    spec: SnapshotSpec, *, timeout: float
++) -> Iterator[SnapshotRepository]:
++    """Transfer and validate *spec.commit* once, then yield its private seed."""
++    _check_timeout(timeout)
++    raise NotImplementedError("P22 TODO: prepare committed-object seed")
++    yield SnapshotRepository(spec=spec)

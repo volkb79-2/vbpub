@@ -1,6 +1,6 @@
 # assay — state of play
 
-> **P00–P20 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
+> **P00–P21 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
 > The current review is
 > `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`;
 > read it before the older v1 review or this accumulated state. P15–P19 made
@@ -8,11 +8,12 @@
 > adversarial pass reproduced false-PASS/integrity failures in exact command
 > reuse, monorepo mutation isolation, stale canary coverage, commit binding,
 > and ambient Git repository selection. The cost-aware recarve is a serial
-> **P20 → … → P32** queue; P20 merged as `618b6f15`. P21 is next and
-> JIT-READY against that merge with locked carver assets and an exact
-> adversarial review (A-180–A-183). Three original bundles were
+> **P20 → … → P32** queue; P20 merged as `618b6f15` and P21 as
+> `678104ad`. P22 is next and JIT-READY against that exact merge with locked
+> carver assets, a tester-unified Git-plumbing tracer, and an exact adversarial
+> review (A-184–A-187). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
-> microtasks. P22–P32 remain provisional until their predecessor merges and
+> microtasks. P23–P32 remain provisional until their predecessor merges and
 > their named JIT proof assets pass the exact pre-dispatch review.
 >
 > **Reachable does not mean proven safe.** Sol finding 1 was about
@@ -30,8 +31,10 @@
 
 ## Where things stand
 
-**Merged on `main`, P00 through P19** — the complete P00–P14 series, plus
-the five-package P15–P19 repair/validation series. Gate green at
+**Merged on `main`, P00 through P21** — the complete P00–P14 series, the
+five-package P15–P19 repair/validation series, and P20/P21 of the pre-adoption
+integrity queue. The historical gate count below is the P19-era receipt; P20
+and P21 have their own controller-owned receipts and larger suites. Gate green at
 **1831 passed, 1 skipped, exit 0, 100% statement AND branch coverage**
 (3070 stmts / 1256 branches) — counts measured INSIDE `tester-unified:
 local` itself, not in the devcontainer, because the gate's own `argv`
@@ -265,6 +268,16 @@ far, and it has never once come back clean.
   claim (A-151). `judgment.r3.target` stays untied on purpose — nothing in
   schema v3 can witness it (A-152/A-O18). LOG:
   `nyxloom-trove/reports/assay-P19-isolated-r3-cli-pipeline-LOG.md`.
+- **P20** (repository/artifact boundary integrity): one sanitized explicit
+  Git identity, descriptor-owned bounded coverage I/O, post-command whole-repo
+  dirt/HEAD checks, and a controller-owned registered gate receipt. Merged as
+  `618b6f15`; A-173–A-179 and the P20 JIT/review reports are authoritative.
+- **P21** (v4 evidence contract): the sole current schema is v4; verdict output
+  is reserved atomically; mutation identities/sites/caps, canary target,
+  exclusion capability, and timestamp ordering are independently checkable.
+  The first dispatch correctly blocked on Go capability ambiguity; A-183 fixed
+  it before the successful Opus implementation/review. Merged as `678104ad`;
+  locked acceptance was 28 passed and the registered gate carried all markers.
 
 Key commits: `d9839e81` (P17 controller repairs, A-139–A-143),
 `e5b81d4c` (P17 implementation), `340d9633` (P16 merge), `50110247` (P16 controller repairs),
@@ -303,11 +316,11 @@ carved.** Adoption belongs in the selected
 consumer's trove after Assay's wheel contract is real; it is not an Assay
 handoff with authority to edit another project.
 
-**Implementation status of that series: P15 through P20 are MERGED. P21 is
-READY for Opus xhigh implementation at `618b6f15`.** Its frozen packet is
-`handoffs/assay-P21-verdict-v4-evidence-contract.md`, its locked acceptance
-material is `carve-assets/P21/`, and its JIT disposition is
-`reports/assay-P21-JIT-CARVE.md`. The execution order is:
+**Implementation status of that series: P15 through P21 are MERGED. P22 is
+READY for Opus xhigh implementation at `678104ad`.** Its frozen packet is
+`handoffs/assay-P22-committed-object-snapshot-substrate.md`, its locked
+acceptance material is `carve-assets/P22/`, and its JIT disposition is
+`reports/assay-P22-JIT-CARVE.md`. The execution order is:
 
 `P20 repository/artifact boundary → P21 verdict v4 → P22 committed snapshot →
 P23 exact reexecution integration → P24 wheel → P25 real Python qualification →

@@ -1,0 +1,57 @@
+{
+  "commit": "9cb3482b1b55b46fdca1f6e30f8a76ca8e641b0b",
+  "project_prefix": "apps/p",
+  "entries": {
+    ".gitattributes": {
+      "mode": "100644",
+      "size": 25,
+      "sha256": "c0f046fe3f0d9ff79a80e258d11c5fd7c141f199191df6ebd5b82c6f83721bcb"
+    },
+    ".gitignore": {
+      "mode": "100644",
+      "size": 21,
+      "sha256": "d01dc7296eb386f52d990eaef8c859cef61824c9af41411e246e0f1dfe1b01b5"
+    },
+    "apps/p/main.py": {
+      "mode": "100644",
+      "size": 75,
+      "sha256": "4b6f83db33b14029be2738ae0cad96a074a22fab6f6464520b84e4700a2fc548"
+    },
+    "filtered.txt": {
+      "mode": "100644",
+      "size": 20,
+      "sha256": "e98bdc61e2ec71a0cdd21258c4833c5b542fa2c66f75cd37812c6c005c68fc7f"
+    },
+    "links/in": {
+      "mode": "120000",
+      "size": 19,
+      "sha256": "c7c3b28468811280c3deed0ac47cfd24c7c62aefaa24a3c6887827933754c686",
+      "target": "../shared/input.txt"
+    },
+    "plain.bin": {
+      "mode": "100644",
+      "size": 12,
+      "sha256": "045e9a3e1206b6a375a51f8f3028e0f2add37f34bb27e29549b95a4f3b2ff39c"
+    },
+    "run.sh": {
+      "mode": "100755",
+      "size": 17,
+      "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb"
+    },
+    "shared/input.txt": {
+      "mode": "100644",
+      "size": 16,
+      "sha256": "11cb62cd0c1d14375808af9b37f5c5896efda9c9e742e768b07d6599ba57c0ab"
+    },
+    "unicodé\nline\\slash.txt": {
+      "mode": "100644",
+      "size": 9,
+      "sha256": "52b8d38853b318512a58992bde6b377767653d9075eaf7164f11dfb12e3a1df3"
+    }
+  },
+  "absent_untracked": [
+    "coverage.json",
+    "cache/stale.bin",
+    "cache/ignored.fifo"
+  ]
+}

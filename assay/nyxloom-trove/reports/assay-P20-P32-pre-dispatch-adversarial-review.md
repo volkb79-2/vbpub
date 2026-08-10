@@ -138,7 +138,7 @@ the detailed rows live in each handoff.
 |---|---|---|
 | repository/artifact | hostile Git env × repo≠project × artifact-parent rename × post-command support mutation | exact Git/process ledger, descriptor inode, complete terminal, source status |
 | v4 | same-line sites × killed identity × operator policy × max sentinel × old version | three independent validators over handwritten whole documents |
-| snapshot | nested project × tracked sibling × hostile replace/filter × symlink × object/pack limit | literal tree/object manifest, private repo OID, source-object-store hash |
+| snapshot | nested project × tracked sibling × hostile replace/filter × source disconnect × concurrent seed children × symlink × entry/path/object/pack limit | literal tree/object manifest, private repo/child OIDs, disjoint inodes, source-object-store hash |
 | repeated execution | appended argv × passthrough × nested cwd × stale profile × shared deadline | byte-equal process ledgers and handwritten artifacts |
 | wheel/Python consumer | tagged wheel/hash × source-path poison × real Topos delta × exclusion asymmetry | metadata/import origin, hand manifest, unmodified Topos result |
 | attestation | full old OID × reviewed directory × newline/pathspec-magic child × dirfd swap × later sibling identity | bounded Git argv/exit ledger and exact evidence array |
@@ -154,8 +154,8 @@ the detailed rows live in each handoff.
 | package | disposition | why |
 |---|---|---|
 | P20 | **MERGED** | landed as `618b6f15` after locked acceptance and controller-owned gate |
-| P21 | **READY — IMPLEMENT NEXT** | exact JIT review at `618b6f15`; first-dispatch Go contradiction corrected by A-183; full migration/site/output goldens, skeleton, and 28 controlled reds committed |
-| P22 | **NOT READY — PROVISIONAL** | depends on P21/P20 landed boundaries; security fixtures absent |
+| P21 | **MERGED** | landed as `678104ad` after A-183 correction, independent Opus repair, locked acceptance, and controller-owned gate |
+| P22 | **READY — IMPLEMENT NEXT** | exact JIT review at `678104ad`; prepared-seed API, bounded raw-tree/pack construction, timeout seam, literal manifest, hostile fixtures, skeleton, and tracer committed under A-184–A-187 |
 | P23 | **NOT READY — PROVISIONAL** | depends on P22 signatures; process-ledger/snapshot integration assets absent; P21 already owns site parity |
 | P24 | **NOT READY — PROVISIONAL** | positive offline build/release inputs absent |
 | P25 | **NOT READY — PROVISIONAL** | external commit/patch/manifest not pinned |
@@ -167,6 +167,6 @@ the detailed rows live in each handoff.
 | P31 | **NOT READY — PROVISIONAL** | cause-sensitive real fixtures/artifacts absent |
 | P32 | **NOT READY — PROVISIONAL** | pinned producer closure and parser/source goldens absent |
 
-The intended next action is not to recarve all thirteen again. Implement,
-independently review, and merge READY P20, then update only the successor
-horizon affected by what actually landed and JIT-freeze P21.
+The intended next action remains serial. Implement, independently review, and
+merge READY P22, then update only the successor horizon affected by its landed
+API and JIT-freeze P23.
