@@ -6,7 +6,7 @@ the byte-locked packet under ``nyxloom-trove/carve-assets/P23/``; each fixture
 is built independently, from real ``git`` state, so a defect in one cannot
 make the other look green.
 
-The module covers five things the landed suite did not:
+The module covers seven things the landed suite did not:
 
 1. **The locked ``FourSiteAdapter`` defect (SB-P23-01), adjudicated.** Two
    locked cases fail because the packet's own adapter records
@@ -26,12 +26,20 @@ The module covers five things the landed suite did not:
    The packet routes A-196's identity-multiplicity axis to P29/P30; A-191
    binds it to P23 NOW, and nothing exercised it through R2's own
    replacement units.
-4. **A mutant that dirties its OWN snapshot.** The terminal table's
-   "mutant path is payload-free, not ``crashed``" row, and its "no later
-   unit" consequence, had no oracle in either suite.
+4. **A mutant that dirties -- or commits inside -- its OWN snapshot.** The
+   terminal table's "mutant path is payload-free, not ``crashed``" row, its
+   "unit commits" sibling, and their shared "no later unit" consequence had
+   no oracle in either suite.
 5. **The direct R0-only path's own plan identity and ``HEAD_CHANGED``
    terminal**, both of which lost their only oracle when P23 moved the
    tests that used to reach them onto the higher-rigor path.
+6. **R2 target selection keeps all four landed gates** (phase 2). Narrowing
+   it to source-root containment made a changed non-Python file under a
+   source root collapse the whole verdict, and made a changed ``test_*.py``
+   a real mutant identity.
+7. **A canary half that dirties its own snapshot**, for both the control and
+   the transform, with the control case additionally proving the transform
+   half is never materialised afterwards.
 """
 
 from __future__ import annotations
