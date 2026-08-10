@@ -33,7 +33,7 @@ from assay.config import (
     load_lane_file,
 )
 from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from assay.mutation import MutationSite, MutationTarget
+from assay.mutation import MutationSite, MutationTarget, line_for_offset
 from assay.verdict import load_schema
 from assay.verify import verify_document
 
@@ -401,6 +401,11 @@ def test_nested_plan_is_identical_for_baseline_and_mutant_and_source_is_unchange
 
 class FourSiteAdapter:
     name = "four-site"
+    source_globs = ("*.py",)
+    excluded_dir_names = frozenset()
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return False
 
     def generate_mutation_sites(self, text, lines, *, operators, limit):
         raw = text.encode("utf-8")
@@ -410,11 +415,11 @@ class FourSiteAdapter:
                 start_byte=offset,
                 end_byte=offset + 1,
                 replacement=b"<=",
-                lineno=index + 1,
+                lineno=line_for_offset(raw, offset),
                 operator="compare-swap",
                 description="< to <=",
             )
-            for index, offset in enumerate(offsets)
+            for offset in offsets
         )
         return sites[:limit]
 

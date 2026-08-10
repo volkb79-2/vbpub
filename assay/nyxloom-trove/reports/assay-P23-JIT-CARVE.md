@@ -289,8 +289,8 @@ P23 production is green.
 ```text
 bd2e1485727816cd4f57045cfb32c9774cbe5f87c49a81624c7031e666096b5f  README.md
 1e2cb8bd86139751b8f61818d474e42b013a736e20dad9cb02f842245ba1a3f7  skeleton.patch
-5e6cd1133ded19526de045e0ed3941c2da5d933241569cb7d87ad896946a86ec  test_acceptance.py
-71133e9c08d7b90f09ab90e79796f8aa657f003b529c01f00a941f398d8fa2c9  fixture-manifest.json
+708872ad2d9cfb4b0de27a1943e2a37ff6183e1cfeef520abc480bad631dd776  test_acceptance.py
+690ab12b813d14792e6a89d0034c52e6100514317bc41fb8793737faf7c32591  fixture-manifest.json
 0ace77ff3dbfc501717fc7d5a90ffec0fbffda02c1b9a7f675e061527e35139d  probe_reexecution_contract.py
 5054c66eb4c76033fff7bc0ef019331e7ab88aa28944c025772664dd5199a566  expected/process-ledger.json
 5b7f3cfc039b01c6d68e2169575b4580f3fd141cefa468fbc19f1088c91056a2  expected/r0-snapshot-limit-v4.json
@@ -299,3 +299,14 @@ bd2e1485727816cd4f57045cfb32c9774cbe5f87c49a81624c7031e666096b5f  README.md
 The last hash is byte-identical to P22's locked expected document. The fixture
 manifest records every asset hash except itself, avoiding a self-referential
 hash.
+
+## Post-P23 carver correction — SB-P23-01
+
+After merge, the controller and both Opus review phases correctly retained two
+red max-boundary parametrizations because the locked `FourSiteAdapter` was not
+a conforming `LanguageAdapter` and assigned line numbers by discovery order.
+The P24 Sol route repaired the carver-owned fixture exactly as prescribed:
+added the three target-selection members and derived every `lineno` through
+P21's `line_for_offset`. No production code or assertion changed. The exact
+post-correction locked run is **19 passed**, and the two updated hashes above
+supersede the original freeze values. Decision A-197 records the correction.
