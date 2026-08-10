@@ -242,3 +242,60 @@ left for Sonnet to invent.
   semantics oracle.
 - The P25 reviewer must add one materially new combined-axis attack and must
   judge actual Git state and gate evidence, not the implementer's LOG alone.
+
+## Post-dispatch correction — phase-1 review
+
+The original READY conclusion above was too strong. Fresh Opus phase-1 review
+of implementation `2607cb7deda55280c7934bba765553e7a8b9f981` produced repair
+`c563349123848276da5b7bd4a01ab9e1751acba3` and found two defects in this
+carver's frozen contract, plus two implementation-level identity/root defects.
+This addendum preserves the original review as evidence of what was actually
+dispatched; it supersedes only its “no scope defect / no missing packet
+content” claims.
+
+### Carver miss 1: coupled budget owner omitted from scope
+
+The implementation reasonably widened P25's registered gate timeout from
+1,800 to 3,600 seconds for the new full Topos phase. Existing
+`test_lane_budget_agrees_with_the_gate_timeout` deliberately binds that value
+to the R0 self-lane declaration in `assay.toml`. Because the handoff allowed
+`nyxloom-trove/nyxloom.toml` but omitted `assay.toml`, the correct derived
+change made the branch either gate-red or out of scope. The exact AUTHORING
+review should have found that cross-file owner. A-207 adds only `assay.toml`
+and freezes `budget = "60m"`; no runtime source, locked asset, or test is
+weakened.
+
+### Carver miss 2: independent numbers recorded but not enforced
+
+The packet's tracer and manifest recorded Topos's exact 5/5, 4/5-line-7, and
+0/0 results. Nevertheless, its skeleton and locked acceptance allowed an
+implementation to compare only `comparator["passed"]`. The copied Topos
+evaluator defines an empty changed-executable set as 100%, so a materialization
+bug that seeds the probe into the baseline yields Assay PASS 0/0 and Topos PASS
+0/0. Both independent programs truthfully agree while the release scenario
+measures nothing.
+
+That attack was explicitly adjacent to the original adversarial matrix, yet
+the locked suite did not instantiate it for the release-wheel owner. The
+reviewer demonstrated the false qualification live and repaired production to
+derive the complete expected comparator tuple from the carver-owned literal
+manifest. A-208 makes the rule explicit and carries it to P28. This was a real
+oracle-specification failure by Sol; greater prose/detail did not substitute
+for a discriminating controlled break.
+
+### Reviewer repairs accepted for phase 2
+
+The same review also repaired two implementation defects within existing P25
+scope:
+
+- the wrong-source-root decoy previously failed because its argv/template did
+  not match even with the correct root; it now requires `judgment` to be the
+  discriminating difference; and
+- normalization no longer obtains the expected version/witness/log identities
+  from the artifact under test, which had made three checks tautological.
+
+Locked acceptance is 13/13 and all 19 asset hashes remain intact at the repair
+head. The ordinary suite is green after A-207's exact budget synchronization.
+The existing branch is therefore ready for same-reviewer phase-2
+reconciliation against the scope amendment, followed—not preceded—by the
+controller-owned registered gate.

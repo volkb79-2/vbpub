@@ -19,7 +19,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P22 | committed-object snapshot substrate | 2b | **merged as `9d30b25b` (A-184–A-187)** | Opus xhigh | fresh Opus xhigh |
 | P23 | exact reexecution integration over landed sites | 2c | **merged as `a7f49bb4`; fixture epoch `7c52ecc2` (A-188–A-197)** | Sonnet xhigh | fresh Opus xhigh |
 | P24 | versioned wheel contract | 2d | **merged as `9f522a72` (A-198–A-201)** | Sonnet xhigh | fresh Opus xhigh |
-| P25 | external Python/Topos qualification | 2d | **READY — locked A-202–A-206 packet** | Sonnet xhigh | fresh Opus xhigh |
+| P25 | external Python/Topos qualification | 2d | **reviewed; resume after A-207/A-208 scope/oracle amendment** | Sonnet xhigh | fresh Opus xhigh |
 | P26 | attested-evidence CLI hardening | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P27 | Go gate and adapter resolution | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P28 | real srdm R1 qualification | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
@@ -28,7 +28,9 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 
-P20 through P24 are **MERGED**. P25 is **READY**: its implementation-shaped
+P20 through P24 are **MERGED**. P25 is **IMPLEMENTED AND PHASE-1 REVIEWED**;
+its bounded A-207 scope amendment is ready for phase-2 reconciliation and the
+controller-owned gate. Its implementation-shaped
 contract, pinned 966-entry Topos manifest, explicit three-symlink prospective
 adoption patch, clean-tagged 1.2.5 wheel/manifest, full v4 templates, literal
 line fixtures, compiling harness skeleton, quick acceptance, and real
@@ -105,6 +107,18 @@ ordinary add dropped four tracked ignored fixtures (13 full-suite failures), a
 JSON destinations left Assay's own reserved profile empty. A forced exact
 965-entry index, closed witnessed environment, and bounded byte-copy wrapper
 make the 2,923-test/full-v4/Topos-evaluator proof truthful (A-202–A-206).
+
+P25 phase-1 review then found two authoring misses despite that freeze. First,
+the widened 3,600-second registered gate and the existing `assay.toml` lane
+budget are mechanically coupled by an anti-drift test, but the handoff omitted
+`assay.toml` from `scope.touch`; A-207 ratifies the exact `30m` → `60m`
+consequence instead of discarding a green reviewed branch. Second, the packet
+recorded the copied Topos evaluator's exact 5/5 and 4/5 answers but did not
+force production to compare those numbers: `passed=true` also describes a
+vacuous 0/0 run. Opus's repair binds the complete shared tuple to the literal
+hand manifest, and A-208 carries that requirement into P28's Go qualification.
+This is a genuine carver/oracle miss, not implementer discretion hidden as a
+review enhancement.
 
 Luna may run the frozen-orientation/fork workflow mechanically from
 `nyxloom-trove/FROZEN-WAVE-CONTROLLER-PROMPT.md`. It does not adjudicate briefs,

@@ -321,6 +321,60 @@ items:
   component: review
   context_estimate: medium
   folds_into: F005
+- id: B38
+  title: 'contract ladder v2 — replace the prose 2a-2e class with four declared
+    axes (A contract fixedness / B integration breadth / C proof cost / D blast
+    radius) carried in frontmatter. A drives implementer tier and packet depth,
+    C drives the gate lane, D drives review tier, B drives parallel-vs-serial.
+    Adds A1 = contracts unfixed = NOT dispatchable, the rung the current ladder
+    lacks. Design: docs/design-contract-ladder-v2.md.'
+  type: feature
+  component: spine
+  context_estimate: medium
+  folds_into: F008
+- id: B39
+  title: 'handoff frontmatter v2 + lint cross-checks: add axes/wave/packet/
+    review_tier objects to handoff-frontmatter.schema.json, and the axis->tier
+    mapping as declared data in routes.toml ([contract_axis]/[blast_axis])
+    rather than doctrine prose that names tiers a host may not have. New rules
+    L-A1..L-A8; ship L-A5 (a gate whose argv cannot COLLECT an oracle''s
+    evidence is an error) and L-A8 (wave-level scope closure: no slice forbids a
+    path another slice or the contract needs) first — both have observed defects
+    behind them (dstdns P85, assay P21). Design: docs/design-contract-ladder-v2.md.'
+  type: feature
+  component: spine
+  context_estimate: medium
+  folds_into: F008
+- id: B40
+  title: 'wave carving: a contract-freeze package whose deliverable is EXECUTABLE
+    (real DDL, importable signatures, declared config keys, error constants, and
+    a conformance suite that fails red for every unimplemented slice), then
+    parallel A4/A5 slices gated on their own slice of that suite, then one
+    terminal qualification package owning all C3/C4 proof. Amortises the
+    per-package JIT carve. Defer the live/scale proof, NEVER contract
+    conformance — the pre-ladder assay regime is the recorded natural experiment
+    for deferral (5 individually-green packages, terminal NOT READY on four
+    cross-package integrity defects, 13-package recarve). Design:
+    docs/design-contract-ladder-v2.md §6.'
+  type: feature
+  component: carve
+  context_estimate: large
+  folds_into: F008
+- id: B41
+  title: 'authoring corrections folded from the v2 design: state the carve-down
+    inequality explicitly (carve down only when the carve delta beats the tier
+    delta — routing UP is a correct outcome, not a discipline failure); emit a
+    standing escalate_if "the normative packet is internally inconsistent or
+    contradicted by the code it names" with every packet, since a prescriptive
+    WRONG packet is worse than a vague one; split the pre-flight packet bullet
+    into individually falsifiable checkboxes (tracer bullet run, hostile case
+    run, skeleton compiles, each negative WITNESSED failing, one carver-authored
+    artifact); add two worked examples per axis value from merged packages.
+    Design: docs/design-contract-ladder-v2.md §4.5-§4.7.'
+  type: feature
+  component: spine
+  context_estimate: small
+  folds_into: F005
 ---
 
 # nyxloom — backlog

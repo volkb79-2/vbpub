@@ -110,6 +110,13 @@ terminal pass/fail at the same floor. Assay's explicit exclusion capability and
 integrity terminals have no covergate equivalent: check those against the hand
 manifest/artifact contract, never coerce the tools to appear equal.
 
+**A-208 carried from P25:** an independent evaluator's verdict boolean is not
+an oracle by itself. Compare its complete shared numeric/identity tuple against
+the literal hand manifest. In particular, prove that a `passed=true` result
+with a zero denominator cannot satisfy a scenario whose manifest requires a
+non-zero changed-executable set; P25's copied evaluator truthfully returned
+PASS for 0/0 and exposed exactly this false-qualification shape.
+
 ### Scenario matrix
 
 | scenario | Assay | covergate | hand manifest |
