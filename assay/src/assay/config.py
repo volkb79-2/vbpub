@@ -71,6 +71,7 @@ __all__ = [
     "CanaryConfig",
     "CoverageConfig",
     "ENFORCEMENTS",
+    "EvidenceConfig",
     "JUDGE_FIELDS_BY_RIGOR",
     "JudgeConfig",
     "LANE_FILE_NAME",
@@ -85,6 +86,21 @@ __all__ = [
     "load_lane_file",
     "parse_duration",
 ]
+
+#: P26/A-209-A-210. Duplicated verbatim from :mod:`assay.attestation` (which
+#: repeats it at its own public boundary) rather than imported: config.py and
+#: attestation.py stay independent readers of the same closed grammar, and
+#: neither trusts the other to have already validated it.
+MAX_ATTESTATION_DIR_BYTES = 4096
+MAX_ATTESTATION_DIR_COMPONENTS = 128
+MIN_EVIDENCE_DECLARATIONS = 1
+MAX_EVIDENCE_DECLARATIONS = 64
+_EVIDENCE_FIELDS: tuple[str, ...] = ("source", "key")
+_EVIDENCE_SOURCES: frozenset[str] = frozenset({"attested"})
+_EVIDENCE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_ATTESTATION_DIR_CONTROL: frozenset[str] = frozenset(
+    chr(c) for c in range(0x20)
+) | {chr(0x7F)}
 
 #: A-014. The lane file is `assay.toml`, at the project root.
 LANE_FILE_NAME = "assay.toml"
@@ -261,6 +277,23 @@ class CanaryConfig:
 
 
 @dataclass(frozen=True)
+class EvidenceConfig:
+    """``judge.evidence[]`` (P26/A-209) -- one declared Tier-3 identity.
+
+    Exactly ``source``/``key``; ``source`` is closed to ``"attested"`` (the
+    adjudicated sibling has no loader, A-085). Reproduces the parsed TOML
+    entry exactly via :meth:`as_declared`, the same mechanical no-invented-
+    default proof :meth:`Lane.as_declared` already gives the rest of the file.
+    """
+
+    source: str
+    key: str
+
+    def as_declared(self) -> dict[str, str]:
+        return {"source": self.source, "key": self.key}
+
+
+@dataclass(frozen=True)
 class JudgeConfig:
     """``[lanes.X.judge]`` — HOW to judge (D7's second question, A-015).
 
@@ -289,6 +322,12 @@ class JudgeConfig:
     #: check_base_is_head`), never guessed here. Required, never defaulted
     #: to "main" or another assumed ref (A-018's own "no invented values").
     base: str | None
+    #: (P26/A-209) Tier-3 evidence's HOW pair -- both ``None`` or both
+    #: present, on ANY canonical R0-led rigor sequence including R0-only.
+    #: Separate from computed rigor (§3): declaring these two never satisfies
+    #: nor requires a computed ``judge`` field.
+    attestation_dir: str | None = None
+    evidence: tuple[EvidenceConfig, ...] | None = None
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {}
@@ -308,6 +347,10 @@ class JudgeConfig:
             declared["canary"] = self.canary.as_declared()
         if self.base is not None:
             declared["base"] = self.base
+        if self.attestation_dir is not None:
+            declared["attestation_dir"] = self.attestation_dir
+        if self.evidence is not None:
+            declared["evidence"] = [item.as_declared() for item in self.evidence]
         return declared
 
 
@@ -643,11 +686,11 @@ def _load_judge(
             f"{where}: 'judge' must be a table, got {_type_name(table)}"
         )
 
-    unknown = sorted(set(table) - set(_KNOWN_JUDGE_FIELDS))
+    unknown = sorted(set(table) - set(_KNOWN_JUDGE_FIELDS) - {"attestation_dir", "evidence"})
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge key(s): {', '.join(unknown)}; expected only: "
-            f"{', '.join(_KNOWN_JUDGE_FIELDS)}"
+            f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'evidence'))}"
         )
 
     for field in required:
@@ -656,6 +699,17 @@ def _load_judge(
                 f"{where}: declares rigor {list(rigor)} but is missing required "
                 f"field 'judge.{field}'"
             )
+
+    # P26/A-209: Tier-3 evidence's HOW pair is a separate axis from computed
+    # rigor -- both present or both absent, on ANY rigor sequence including
+    # R0-only, and never itself counted toward `required`/`surplus` below.
+    has_attestation_dir = "attestation_dir" in table
+    has_evidence = "evidence" in table
+    if has_attestation_dir != has_evidence:
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' and 'judge.evidence' must "
+            f"both be present or both be absent"
+        )
 
     # A-062 (controller ruling, overriding this package's first reading).
     # Judge config for a rigor level the lane does NOT declare is refused.
@@ -671,7 +725,7 @@ def _load_judge(
     # The cost is the "write the config, enable the level later" workflow,
     # which is a habit rather than a requirement: declaring the level is one
     # line in the same edit. The remedy is always visible in the message.
-    surplus = sorted(set(table) - set(required))
+    surplus = sorted(set(table) - set(required) - {"attestation_dir", "evidence"})
     if surplus:
         raise LaneConfigError(
             f"{where}: declares rigor {list(rigor)}, which reads none of "
@@ -732,6 +786,12 @@ def _load_judge(
         if not base:
             raise LaneConfigError(f"{where}: 'judge.base' is empty")
 
+    attestation_dir = None
+    evidence = None
+    if has_attestation_dir:
+        attestation_dir = _validate_attestation_dir(table["attestation_dir"], where)
+        evidence = _load_evidence(table["evidence"], where)
+
     return JudgeConfig(
         language=language,
         source_roots=source_roots,
@@ -742,7 +802,116 @@ def _load_judge(
         mutation=mutation,
         canary=canary,
         base=base,
+        attestation_dir=attestation_dir,
+        evidence=evidence,
     )
+
+
+def _validate_attestation_dir(value: Any, where: str) -> str:
+    """The closed ``judge.attestation_dir`` grammar (P26/A-210): canonical,
+    nonempty, project-relative POSIX spelling, 1..4,096 UTF-8 bytes and at
+    most 128 nonempty components; not absolute; no ``.``/``..``/repeated
+    slash/trailing slash/NUL/control character (U+0000..U+001F, U+007F).
+    Existence is not required at load time -- runtime descriptor traversal
+    owns absence and symlink/type facts (:func:`assay.safeio.read_bounded_input`).
+    """
+    if not isinstance(value, str) or not value:
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' must be a non-empty string, "
+            f"got {_type_name(value)}"
+        )
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' {value!r} cannot be encoded as "
+            f"UTF-8: {exc}"
+        ) from exc
+    if not (1 <= len(encoded) <= MAX_ATTESTATION_DIR_BYTES):
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' must be 1..{MAX_ATTESTATION_DIR_BYTES} "
+            f"UTF-8 bytes, got {len(encoded)}"
+        )
+    if value.startswith("/"):
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' {value!r} must not be absolute"
+        )
+    if any(ch in _ATTESTATION_DIR_CONTROL for ch in value):
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' {value!r} contains a control character"
+        )
+    if PurePosixPath(value).as_posix() != value:
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' {value!r} is not canonical POSIX "
+            f"spelling (no repeated slash, trailing slash, or '.' component)"
+        )
+    parts = value.split("/")
+    if ".." in parts:
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' {value!r} contains a '..' component"
+        )
+    if len(parts) > MAX_ATTESTATION_DIR_COMPONENTS:
+        raise LaneConfigError(
+            f"{where}: 'judge.attestation_dir' {value!r} has more than "
+            f"{MAX_ATTESTATION_DIR_COMPONENTS} components"
+        )
+    return value
+
+
+def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
+    """The closed ``judge.evidence`` grammar (P26/A-209): 1..64 entries,
+    input order preserved, exactly the inline keys ``source``/``key``, only
+    ``source="attested"`` supported, and no duplicate ``(source, key)``.
+    """
+    if not isinstance(value, list):
+        raise LaneConfigError(
+            f"{where}: 'judge.evidence' must be an array, got {_type_name(value)}"
+        )
+    if not (MIN_EVIDENCE_DECLARATIONS <= len(value) <= MAX_EVIDENCE_DECLARATIONS):
+        raise LaneConfigError(
+            f"{where}: 'judge.evidence' must declare "
+            f"{MIN_EVIDENCE_DECLARATIONS}..{MAX_EVIDENCE_DECLARATIONS} entries, "
+            f"got {len(value)}"
+        )
+    items: list[EvidenceConfig] = []
+    seen: set[tuple[str, str]] = set()
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise LaneConfigError(
+                f"{where}: 'judge.evidence[{index}]' must be a table, got "
+                f"{_type_name(entry)}"
+            )
+        unknown = sorted(set(entry) - set(_EVIDENCE_FIELDS))
+        if unknown:
+            raise LaneConfigError(
+                f"{where}: unknown judge.evidence[{index}] key(s): "
+                f"{', '.join(unknown)}; expected only: {', '.join(_EVIDENCE_FIELDS)}"
+            )
+        for field in _EVIDENCE_FIELDS:
+            if field not in entry:
+                raise LaneConfigError(
+                    f"{where}: missing required field 'judge.evidence[{index}].{field}'"
+                )
+        source = _as_str(entry["source"], where, f"judge.evidence[{index}].source")
+        if source not in _EVIDENCE_SOURCES:
+            raise LaneConfigError(
+                f"{where}: 'judge.evidence[{index}].source' must be one of "
+                f"{sorted(_EVIDENCE_SOURCES)}, got {source!r}"
+            )
+        key = _as_str(entry["key"], where, f"judge.evidence[{index}].key")
+        if not _EVIDENCE_KEY_RE.fullmatch(key):
+            raise LaneConfigError(
+                f"{where}: 'judge.evidence[{index}].key' {key!r} does not match "
+                f"the closed grammar {_EVIDENCE_KEY_RE.pattern!r}"
+            )
+        identity = (source, key)
+        if identity in seen:
+            raise LaneConfigError(
+                f"{where}: 'judge.evidence' declares {identity} more than once"
+            )
+        seen.add(identity)
+        items.append(EvidenceConfig(source=source, key=key))
+    return tuple(items)
 
 
 def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig:

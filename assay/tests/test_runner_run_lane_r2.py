@@ -432,10 +432,10 @@ def test_r1_and_r2_together_reuse_the_same_resolved_diff_not_a_second_one(
     diff_calls: list[tuple] = []
     real_run = git_module.run
 
-    def counting_run(repo, *args):
+    def counting_run(repo, *args, **kwargs):
         if args and args[0] == "diff":
             diff_calls.append(args)
-        return real_run(repo, *args)
+        return real_run(repo, *args, **kwargs)
 
     monkeypatch.setattr(git_module, "run", counting_run)
 

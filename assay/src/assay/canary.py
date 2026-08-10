@@ -328,6 +328,7 @@ def _judge_unit(
     scratch_project_root: Path,
     base: str | None,
     adapter: LanguageAdapter,
+    deadline: LaneDeadline,
 ) -> tuple[Outcome, ReasonCode | None]:
     """The R0-then-R1 judgement one already-EXECUTED snapshot unit renders --
     the identical two-step :func:`_run_pipeline` performs for
@@ -337,6 +338,13 @@ def _judge_unit(
     the caller's problem, not this function's -- checked before this is ever
     called (O2's "fresh unit" attack: a unit that no longer names its own
     commit is never silently judged as if it did).
+
+    *deadline* (P26/A-212) is the ONE lane-wide deadline :func:`run_isolated_canary`
+    already carries -- forwarded into :func:`~assay.runner.evaluate_r1` so this
+    isolated-canary path's own R1 Git calls sample the same singular budget
+    every other lane-owned call does. The legacy standalone
+    :func:`run_python_canary`/:func:`_run_pipeline` path is unaffected and
+    keeps its own ``remaining=None``.
     """
     r0_claim = build_r0_claim(unit.result)
     if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
@@ -353,6 +361,7 @@ def _judge_unit(
         base=base,
         adapter=adapter,
         profile=unit.profile,
+        remaining=deadline.remaining,
     )
     return r1_claim.status, r1_claim.reason_code
 
@@ -455,6 +464,7 @@ def run_isolated_canary(
             scratch_project_root=control_snapshot.project_root,
             base=resolved_base,
             adapter=adapter,
+            deadline=deadline,
         )
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
@@ -529,6 +539,7 @@ def run_isolated_canary(
             scratch_project_root=transform_snapshot.project_root,
             base=prepared.spec.commit,
             adapter=adapter,
+            deadline=deadline,
         )
 
     return CanaryResult(

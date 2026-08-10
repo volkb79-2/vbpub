@@ -1,6 +1,7 @@
-"""O1/O2/O3 — ``evaluate_attestation``'s git-dependent core: equal-or-ancestor
-first, then path-scoped staleness, entirely against real ``tmp_path`` git
-repositories (DESIGN-GUIDE §10; no committed nested repo).
+"""O1/O2/O3 — ``evaluate_attestation``'s git-dependent core: exact commit
+identity, then ancestor-or-equal, then path-scoped existence and staleness,
+entirely against real ``tmp_path`` git repositories (DESIGN-GUIDE §10; no
+committed nested repo).
 
 O1 (verbatim): *an attestation at HEAD and one at an ancestor with
 byte-identical declared reviewed paths both produce attested evidence with
@@ -16,12 +17,21 @@ ignoring path changes passes the changed-path fixture.*
 
 O3 (verbatim, this module's slice): *a descendant, unrelated, or malformed
 attested commit and a missing reviewed path render ERROR/UNREADABLE_ARTIFACT
-(A-110 -- any git.run/GIT_FAILED the ancestry check itself raises for the
-unrelated/malformed cases is caught and remapped, never left to propagate);
-... no attestation path can create a computed claim.*
+(A-211 -- any git.py AssayError/GIT_FAILED the ancestry/existence checks
+themselves raise is caught and remapped, never left to propagate); ... no
+attestation path can create a computed claim.*
 Negative: *a plain lexicographic/hash comparison, duplicate collapse,
 letting GIT_FAILED propagate uncaught, or claims[] insertion makes one
 reject fixture load or produces the wrong complete artifact.*
+
+P26 (A-211) replaces the old ``_check_ancestor_or_equal``/
+``_check_reviewed_paths_exist`` private helpers with four narrow, sanitized
+:mod:`assay.git` helpers (:func:`~assay.git.verify_exact_commit`,
+:func:`~assay.git.is_ancestor`, :func:`~assay.git.tree_entry_kind`,
+:func:`~assay.git.path_is_current`) that :func:`evaluate_attestation` alone
+orchestrates -- this module exercises the composed behavior through that one
+public function, with a required ``remaining`` callable (A-212) every call
+below supplies as a fixed, generous budget.
 
 Mutation evidence for all of the above lives in the package LOG (A-067); this
 module is the POSITIVE proof each mutation is checked against.
@@ -31,14 +41,13 @@ from __future__ import annotations
 
 import pytest
 
-from assay.attestation import (
-    AttestationRecord,
-    _check_ancestor_or_equal,
-    _check_reviewed_paths_exist,
-    evaluate_attestation,
-)
+from assay.attestation import AttestationRecord, evaluate_attestation
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import CLAIM_SOURCES, Claim
+
+
+def _remaining() -> float:
+    return 60.0
 
 
 def _record(*, attested_commit: str, reviewed_paths: tuple[str, ...]) -> AttestationRecord:
@@ -57,7 +66,9 @@ def test_an_attestation_naming_head_itself_is_current(git_repo):
     head = git_repo.commit_all("add reviewed.py")
     record = _record(attested_commit=head, reviewed_paths=("reviewed.py",))
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert evidence.source == "attested"
     assert evidence.key == "review"
@@ -76,7 +87,9 @@ def test_an_ancestor_attestation_with_unchanged_reviewed_paths_is_current(git_re
     head = git_repo.commit_all("unrelated change")
     record = _record(attested_commit=attested_commit, reviewed_paths=("reviewed.py",))
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert attested_commit != head  # proves this is a REAL ancestor, not HEAD
     assert evidence.status is Outcome.PASS
@@ -99,7 +112,9 @@ def test_requiring_exact_head_would_reject_the_ancestor_fixture(git_repo):
         "is current"
     )
     record = _record(attested_commit=attested_commit, reviewed_paths=("reviewed.py",))
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
     assert evidence.status is Outcome.PASS
 
 
@@ -113,7 +128,9 @@ def test_a_changed_reviewed_path_renders_stale(git_repo):
     head = git_repo.commit_all("change reviewed.py")
     record = _record(attested_commit=attested_commit, reviewed_paths=("reviewed.py",))
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert evidence.status is Outcome.NO_MEASUREMENT
     assert evidence.reason_code is ReasonCode.STALE_ATTESTATION
@@ -132,7 +149,9 @@ def test_a_change_outside_every_reviewed_path_remains_current(git_repo):
     head = git_repo.commit_all("change unrelated.py")
     record = _record(attested_commit=attested_commit, reviewed_paths=("reviewed.py",))
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert evidence.status is Outcome.PASS
     assert evidence.reason_code is None
@@ -153,14 +172,18 @@ def test_commit_inequality_alone_would_wrongly_stale_the_outside_path_fixture(gi
         "no reviewed path changed"
     )
     record = _record(attested_commit=attested_commit, reviewed_paths=("reviewed.py",))
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
     assert evidence.status is Outcome.PASS
 
 
 def test_a_missing_attestation_renders_no_measurement_missing_attestation(git_repo):
     head = git_repo.head()
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=None)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=None, remaining=_remaining
+    )
 
     assert evidence.source == "attested"
     assert evidence.key == "review"
@@ -181,7 +204,9 @@ def test_a_descendant_attested_commit_renders_unreadable_artifact(git_repo):
     descendant = git_repo.commit_all("a commit AFTER head")  # attested "reviews the future"
     record = _record(attested_commit=descendant, reviewed_paths=("later.py",))
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert evidence.status is Outcome.ERROR
     assert evidence.reason_code is ReasonCode.UNREADABLE_ARTIFACT
@@ -192,16 +217,18 @@ def test_a_descendant_attested_commit_renders_unreadable_artifact(git_repo):
 def test_an_unrelated_attested_commit_renders_unreadable_artifact_not_git_failed(git_repo):
     head = git_repo.head()
     # An orphan branch inside the SAME repo has no common ancestor with main:
-    # merge-base exits 1 (verified empirically), so this proves the real
-    # GIT_FAILED->UNREADABLE_ARTIFACT remap (A-110), not just "some git
-    # command failed".
+    # merge-base --is-ancestor exits 1 (verified empirically), so this proves
+    # the real is_ancestor()=False -> UNREADABLE_ARTIFACT remap (A-211), not
+    # just "some git command failed".
     git_repo.git("checkout", "-q", "--orphan", "unrelated-history")
     git_repo.write("island.py", "w = 1\n")
     unrelated = git_repo.commit_all("a commit with no shared history")
     git_repo.git("checkout", "-q", "main")
     record = _record(attested_commit=unrelated, reviewed_paths=("island.py",))
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert evidence.status is Outcome.ERROR
     assert evidence.reason_code is ReasonCode.UNREADABLE_ARTIFACT
@@ -214,7 +241,9 @@ def test_a_malformed_attested_commit_ref_renders_unreadable_artifact_not_git_fai
         attested_commit="not-a-real-ref-anywhere-zzz", reviewed_paths=("README.md",)
     )
 
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
 
     assert evidence.status is Outcome.ERROR
     assert evidence.reason_code is ReasonCode.UNREADABLE_ARTIFACT
@@ -222,7 +251,7 @@ def test_a_malformed_attested_commit_ref_renders_unreadable_artifact_not_git_fai
 
 
 def test_letting_git_failed_propagate_uncaught_would_be_the_bug(git_repo):
-    """A-110's own negative, made concrete: proves the malformed-ref case
+    """A-211's own negative, made concrete: proves the malformed-ref case
     above does NOT raise at all (an uncaught GIT_FAILED would propagate as an
     exception here instead of returning a value)."""
     head = git_repo.head()
@@ -233,7 +262,9 @@ def test_letting_git_failed_propagate_uncaught_would_be_the_bug(git_repo):
     # If GIT_FAILED were left to propagate, this call would raise AssayError
     # instead of returning -- pytest.raises used here NEGATIVELY, i.e. proving
     # it does NOT raise, by simply calling it and reading the return value.
-    evidence = evaluate_attestation(git_repo.path, key="review", head=head, record=record)
+    evidence = evaluate_attestation(
+        git_repo.path, key="review", head=head, record=record, remaining=_remaining
+    )
     assert evidence.reason_code is not ReasonCode.GIT_FAILED
     assert evidence.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
@@ -246,7 +277,7 @@ def test_a_reviewed_path_missing_at_the_attested_commit_renders_unreadable_artif
     record = _record(attested_commit=attested_commit, reviewed_paths=("ghost.py",))
 
     evidence = evaluate_attestation(
-        git_repo.path, key="review", head=attested_commit, record=record
+        git_repo.path, key="review", head=attested_commit, record=record, remaining=_remaining
     )
 
     assert evidence.status is Outcome.ERROR
@@ -262,61 +293,34 @@ def test_one_missing_reviewed_path_among_several_still_renders_unreadable_artifa
     )
 
     evidence = evaluate_attestation(
-        git_repo.path, key="review", head=attested_commit, record=record
+        git_repo.path, key="review", head=attested_commit, record=record, remaining=_remaining
     )
 
     assert evidence.status is Outcome.ERROR
     assert evidence.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
-# --- A-110's own remap, pinned INDEPENDENTLY of evaluate_attestation's outer
-# --- catch: the ancestry/path-existence checks themselves never let a raw
-# --- GIT_FAILED escape, even called directly.
-
-
-def test_check_ancestor_or_equal_itself_remaps_a_malformed_ref_not_git_failed(git_repo):
+def test_the_lane_deadline_expiring_mid_evaluation_is_never_remapped(git_repo):
+    """A-213's own carve-out, pinned at this layer: an
+    ``AssayError``/``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` raised by *remaining*
+    itself must propagate unmodified, never caught and turned into
+    ``UNREADABLE_ARTIFACT`` alongside every other git-level failure."""
     head = git_repo.head()
+    record = _record(attested_commit=head, reviewed_paths=("README.md",))
+    sentinel = AssayError(
+        "lane deadline expired",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def expired() -> float:
+        raise sentinel
 
     with pytest.raises(AssayError) as excinfo:
-        _check_ancestor_or_equal(git_repo.path, "not-a-real-ref-anywhere-zzz", head)
-
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-
-
-def test_check_ancestor_or_equal_itself_remaps_an_unrelated_history_not_git_failed(git_repo):
-    head = git_repo.head()
-    git_repo.git("checkout", "-q", "--orphan", "unrelated-history-2")
-    git_repo.write("island2.py", "w = 1\n")
-    unrelated = git_repo.commit_all("no shared history")
-    git_repo.git("checkout", "-q", "main")
-
-    with pytest.raises(AssayError) as excinfo:
-        _check_ancestor_or_equal(git_repo.path, unrelated, head)
-
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-
-
-def test_check_ancestor_or_equal_itself_rejects_a_descendant_with_no_exception(git_repo):
-    head = git_repo.head()
-    git_repo.write("later.py", "z = 1\n")
-    descendant = git_repo.commit_all("after head")
-
-    with pytest.raises(AssayError) as excinfo:
-        _check_ancestor_or_equal(git_repo.path, descendant, head)
-
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-
-
-def test_check_reviewed_paths_exist_itself_remaps_a_missing_path_not_git_failed(git_repo):
-    head = git_repo.head()
-
-    with pytest.raises(AssayError) as excinfo:
-        _check_reviewed_paths_exist(git_repo.path, head, ("ghost.py",))
-
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+        evaluate_attestation(
+            git_repo.path, key="review", head=head, record=record, remaining=expired
+        )
+    assert excinfo.value is sentinel
 
 
 # --- O3: no attestation path can create a computed claim -------------------

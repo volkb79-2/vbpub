@@ -10,6 +10,12 @@ accepted with missing/wrong-typed fields that would only surface as a
 confusing failure two layers deeper (in :func:`assay.attestation.
 evaluate_attestation` or in :class:`assay.verdict.Evidence`'s own
 construction-time checks).
+
+P26: :func:`load_attestation_file` now reads exactly
+``<attestation_dir>/<key>.json`` through the descriptor-safe seam
+(:func:`assay.safeio.read_bounded_input`) rather than an arbitrary caller-
+composed path -- every fixture here is addressed by
+``(project_root, attestation_dir, key)`` instead of a bare :class:`Path`.
 """
 
 from __future__ import annotations
@@ -21,11 +27,14 @@ import pytest
 from assay.attestation import AttestationRecord, load_attestation_file, parse_attestation
 from assay.errors import AssayError, Outcome, ReasonCode
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "attestations"
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+ATTESTATION_DIR = "attestations"
 
 
 def test_a_well_formed_file_parses_into_an_attestation_record():
-    record = load_attestation_file(FIXTURES / "well_formed_example.json")
+    record = load_attestation_file(
+        FIXTURE_ROOT, attestation_dir=ATTESTATION_DIR, key="well_formed_example"
+    )
 
     assert record == AttestationRecord(
         producer="adversarial-review-bot-v3",
@@ -35,42 +44,41 @@ def test_a_well_formed_file_parses_into_an_attestation_record():
 
 
 @pytest.mark.parametrize(
-    "fixture_name",
+    "key",
     [
-        "missing_producer.json",
-        "reviewed_paths_not_array.json",
-        "reviewed_paths_not_all_strings.json",
-        "empty_reviewed_paths.json",
-        "not_valid_json.json",
-        "top_level_not_an_object.json",
+        "missing_producer",
+        "reviewed_paths_not_array",
+        "reviewed_paths_not_all_strings",
+        "empty_reviewed_paths",
+        "not_valid_json",
+        "top_level_not_an_object",
     ],
 )
-def test_a_malformed_file_raises_unreadable_artifact(fixture_name: str):
+def test_a_malformed_file_raises_unreadable_artifact(key: str):
     with pytest.raises(AssayError) as excinfo:
-        load_attestation_file(FIXTURES / fixture_name)
+        load_attestation_file(FIXTURE_ROOT, attestation_dir=ATTESTATION_DIR, key=key)
 
     assert excinfo.value.outcome is Outcome.ERROR
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert fixture_name in str(excinfo.value)
+    assert key in str(excinfo.value)
 
 
-def test_a_missing_file_raises_unreadable_artifact_not_a_bare_oserror(tmp_path: Path):
-    # load_attestation_file itself always treats "cannot be read" as
-    # UNREADABLE_ARTIFACT; distinguishing "never produced" (MISSING_ATTESTATION)
-    # from "present but unreadable" is load_attested_evidence's job (it checks
-    # existence BEFORE calling this), proven in test_attestation_load_declared.py.
-    with pytest.raises(AssayError) as excinfo:
-        load_attestation_file(tmp_path / "does-not-exist.json")
+def test_a_missing_file_returns_none_not_a_raised_error(tmp_path: Path):
+    # P26/A-210: absence is now the loader's own None -- the declared
+    # producer supplied no record. Present-but-unreadable is
+    # load_attestation_file's OTHER concern, proven above.
+    record = load_attestation_file(tmp_path, attestation_dir="attestations", key="does-not-exist")
 
-    assert excinfo.value.outcome is Outcome.ERROR
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert record is None
 
 
 # --- parse_attestation is the shared, filesystem-free core -------------------
 
 
 def test_parse_attestation_accepts_the_identical_text_load_attestation_file_reads():
-    text = (FIXTURES / "well_formed_example.json").read_text(encoding="utf-8")
+    text = (FIXTURE_ROOT / ATTESTATION_DIR / "well_formed_example.json").read_text(
+        encoding="utf-8"
+    )
 
     record = parse_attestation(text, source_name="<inline>")
 

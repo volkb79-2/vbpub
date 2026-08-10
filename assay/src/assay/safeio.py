@@ -28,7 +28,12 @@ from typing import Self
 
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["OutputReservation", "read_bounded_file", "reserve_output"]
+__all__ = [
+    "OutputReservation",
+    "read_bounded_file",
+    "read_bounded_input",
+    "reserve_output",
+]
 
 _OPEN_DIR_FLAGS = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _OPEN_READ_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -344,6 +349,62 @@ def read_bounded_file(
         raise ValueError(f"limit must be positive, got {limit}")
     parts = _lexical_components(artifact)
     parent_fd = _open_parent_chain(project_root, parts)
+    try:
+        return _safe_bounded_read(parts[-1], dir_fd=parent_fd, limit=limit)
+    finally:
+        os.close(parent_fd)
+
+
+def _open_parent_chain_or_missing(project_root: Path, parts: tuple[str, ...]) -> int | None:
+    """Like :func:`_open_parent_chain`, but ``ENOENT`` at any intermediate
+    component returns ``None`` instead of raising.
+
+    A declared attestation's directory may simply never have been created by
+    its producer -- that is the same absence as a missing final file, not an
+    unsafe object that happens to be present (A-210). Every OTHER failure
+    (a symlinked or non-directory component, a permission error, a race)
+    still raises exactly as :func:`_open_parent_chain` does.
+    """
+    current = _open_root(project_root)
+    for name in parts[:-1]:
+        try:
+            next_fd = os.open(name, _OPEN_DIR_FLAGS, dir_fd=current)
+        except FileNotFoundError:
+            os.close(current)
+            return None
+        except OSError as exc:
+            os.close(current)
+            raise _refuse(
+                f"path component {name!r} is not an existing, non-symlink directory: {exc}"
+            ) from exc
+        os.close(current)
+        current = next_fd
+    return current
+
+
+def read_bounded_input(
+    project_root: Path, relative_path: str, *, limit: int
+) -> bytes | None:
+    """Descriptor-walk one input; ``ENOENT`` anywhere is ``None``, never a
+    guess (P26/A-210).
+
+    *relative_path* is a lexical, project-relative POSIX spelling -- the same
+    grammar :func:`read_bounded_file`/:func:`reserve_output` already enforce
+    (no absolute path, no empty/``.``/``..`` component). Absence of any
+    directory component in the walk, or of the final name itself, returns
+    ``None``: the declared producer supplied no record. A symlink, a
+    non-directory parent, a non-regular final object, a permission failure, a
+    race, or a read exceeding *limit* raises
+    ``AssayError(ERROR, UNREADABLE_ARTIFACT)`` -- present, but untrustworthy.
+    Never a pathname precheck followed by a second open: every step walks an
+    already-open ``dir_fd`` with ``O_NOFOLLOW``.
+    """
+    if limit <= 0:
+        raise ValueError(f"limit must be positive, got {limit}")
+    parts = _lexical_components(relative_path)
+    parent_fd = _open_parent_chain_or_missing(project_root, parts)
+    if parent_fd is None:
+        return None
     try:
         return _safe_bounded_read(parts[-1], dir_fd=parent_fd, limit=limit)
     finally:

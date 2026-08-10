@@ -1,8 +1,12 @@
 """The full real pipeline, end to end: a materialised git repo, a real
 attestation file on disk, :func:`assay.attestation.load_attested_evidence`,
-and :func:`assay.runner.assemble_verdict` -- proving the two P10 touches
+and :func:`assay.runner.assemble_verdict` -- proving the two P10/P26 touches
 (``attestation.py`` and ``runner.py``) actually compose, not just that each
 passes its own isolated unit tests.
+
+P26/A-213: ``assemble_verdict`` now binds *evidence*/*declared_evidence* to
+``lane.judge.evidence`` exactly, so every lane built here declares the same
+attestation pair it resolves.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from conftest import fixed_clock, make_lane
 
 from assay import runner
 from assay.attestation import load_attested_evidence
+from assay.config import EvidenceConfig, JudgeConfig
 from assay.errors import Outcome, ReasonCode
 from assay.verdict import EvidenceDeclaration
 
@@ -33,6 +38,27 @@ def _write_attestation(directory: Path, key: str, *, attested_commit: str, revie
     )
 
 
+def _remaining() -> float:
+    return 60.0
+
+
+def _r0_lane_declaring_review():
+    judge = JudgeConfig(
+        language=None,
+        source_roots=None,
+        source_root_paths=None,
+        fail_under=None,
+        allow_excluded=None,
+        coverage=None,
+        mutation=None,
+        canary=None,
+        base=None,
+        attestation_dir="attestations",
+        evidence=(EvidenceConfig(source="attested", key="review"),),
+    )
+    return make_lane(name="package", argv=("/bin/sh", "-c", "exit 0"), env={}, judge=judge)
+
+
 def test_a_current_attestation_flows_through_to_an_overall_pass_verdict(
     git_repo, tmp_path: Path
 ):
@@ -49,10 +75,15 @@ def test_a_current_attestation_flows_through_to_an_overall_pass_verdict(
     declared = (EvidenceDeclaration(source="attested", key="review"),)
 
     evidence = load_attested_evidence(
-        git_repo.path, head=head, declared=declared, attestations_dir=attestations_dir
+        git_repo.path,
+        head=head,
+        declared=declared,
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
-    lane = make_lane(name="package", argv=("/bin/sh", "-c", "exit 0"), env={})
+    lane = _r0_lane_declaring_review()
     clock = fixed_clock(
         datetime(2026, 8, 7, 16, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 8, 7, 16, 0, 1, tzinfo=timezone.utc),
@@ -90,10 +121,15 @@ def test_a_stale_attestation_flows_through_to_an_overall_no_measurement_verdict(
     declared = (EvidenceDeclaration(source="attested", key="review"),)
 
     evidence = load_attested_evidence(
-        git_repo.path, head=head, declared=declared, attestations_dir=attestations_dir
+        git_repo.path,
+        head=head,
+        declared=declared,
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
-    lane = make_lane(name="package", argv=("/bin/sh", "-c", "exit 0"), env={})
+    lane = _r0_lane_declaring_review()
     clock = fixed_clock(
         datetime(2026, 8, 7, 16, 5, 0, tzinfo=timezone.utc),
         datetime(2026, 8, 7, 16, 5, 1, tzinfo=timezone.utc),
@@ -121,16 +157,21 @@ def test_a_broken_attested_commit_flows_through_to_an_overall_error_verdict(
     _write_attestation(
         attestations_dir,
         "review",
-        attested_commit="not-a-real-ref-anywhere-zzz",
+        attested_commit="0" * 40,
         reviewed_paths=("README.md",),
     )
     declared = (EvidenceDeclaration(source="attested", key="review"),)
 
     evidence = load_attested_evidence(
-        git_repo.path, head=head, declared=declared, attestations_dir=attestations_dir
+        git_repo.path,
+        head=head,
+        declared=declared,
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
-    lane = make_lane(name="package", argv=("/bin/sh", "-c", "exit 0"), env={})
+    lane = _r0_lane_declaring_review()
     clock = fixed_clock(
         datetime(2026, 8, 7, 16, 10, 0, tzinfo=timezone.utc),
         datetime(2026, 8, 7, 16, 10, 1, tzinfo=timezone.utc),

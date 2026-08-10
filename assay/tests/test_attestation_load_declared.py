@@ -1,15 +1,16 @@
-"""O3/A-111 — ``load_attested_evidence``: the caller-supplied declared list,
-duplicate rejection, and the directory-of-``<key>.json`` file convention
-that ties :func:`assay.attestation.evaluate_attestation` to a real,
-materialised attestations directory end to end.
+"""O3/A-210 — ``load_attested_evidence``: the caller-supplied declared list,
+duplicate rejection, and the closed ``attestation_dir``/``<key>.json`` file
+convention that ties :func:`assay.attestation.evaluate_attestation` to a
+real, materialised attestations directory end to end.
 
 O3 (verbatim, this module's slice): *duplicate (source,key) in the
-caller-supplied declaration list renders ERROR/BAD_LANE_CONFIG (A-111).*
+caller-supplied declaration list renders ERROR/BAD_LANE_CONFIG (A-210).*
 Negative: *duplicate collapse ... makes one reject fixture load.*
 
-A-111 (verbatim): the declared list is a DIRECT parameter -- never sourced
-from ``assay.toml`` (``config.py`` is untouched by this package, verified by
-its own dedicated test below).
+P26 replaces the old caller-composed ``attestations_dir: Path`` parameter
+with a project-relative ``attestation_dir: str`` resolved through the
+descriptor-safe seam, and adds the required ``remaining`` lane-deadline
+callable (A-212).
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ import pytest
 from assay.attestation import load_attested_evidence
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import EvidenceDeclaration
+
+
+def _remaining() -> float:
+    return 60.0
 
 
 def _write_attestation(directory: Path, key: str, *, attested_commit: str, reviewed_paths):
@@ -38,7 +43,7 @@ def _write_attestation(directory: Path, key: str, *, attested_commit: str, revie
     )
 
 
-# --- the dedup guard (A-111) --------------------------------------------------
+# --- the dedup guard (A-210) --------------------------------------------------
 
 
 def test_a_duplicate_declared_identity_is_rejected_before_any_attestation_is_read(
@@ -55,7 +60,9 @@ def test_a_duplicate_declared_identity_is_rejected_before_any_attestation_is_rea
             git_repo.path,
             head=head,
             declared=declared,
-            attestations_dir=tmp_path / "attestations",
+            project_root=tmp_path,
+            attestation_dir="attestations",
+            remaining=_remaining,
         )
 
     assert excinfo.value.outcome is Outcome.ERROR
@@ -76,7 +83,9 @@ def test_distinct_keys_are_not_treated_as_duplicates(git_repo, tmp_path: Path):
         git_repo.path,
         head=head,
         declared=declared,
-        attestations_dir=tmp_path / "attestations",
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
     assert [item.key for item in results] == ["review-a", "review-b"]
@@ -92,7 +101,9 @@ def test_a_non_attested_declared_source_is_rejected(git_repo, tmp_path: Path):
             git_repo.path,
             head=head,
             declared=declared,
-            attestations_dir=tmp_path / "attestations",
+            project_root=tmp_path,
+            attestation_dir="attestations",
+            remaining=_remaining,
         )
 
     assert excinfo.value.outcome is Outcome.ERROR
@@ -120,7 +131,9 @@ def test_load_attested_evidence_resolves_a_current_attestation_from_a_real_file(
         git_repo.path,
         head=head,
         declared=(EvidenceDeclaration(source="attested", key="review"),),
-        attestations_dir=attestations_dir,
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
     assert len(results) == 1
@@ -152,7 +165,9 @@ def test_load_attested_evidence_isolates_one_malformed_file_from_the_rest(
             EvidenceDeclaration(source="attested", key="broken"),
             EvidenceDeclaration(source="attested", key="good"),
         ),
-        attestations_dir=attestations_dir,
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
     by_key = {item.key: item for item in results}
@@ -172,13 +187,43 @@ def test_load_attested_evidence_returns_results_in_declared_order(git_repo, tmp_
         git_repo.path,
         head=head,
         declared=declared,
-        attestations_dir=tmp_path / "attestations",
+        project_root=tmp_path,
+        attestation_dir="attestations",
+        remaining=_remaining,
     )
 
     assert [item.key for item in results] == ["z-review", "a-review"]
 
 
-# --- A-111: config.py is never touched or imported ---------------------------
+def test_the_lane_deadline_expiring_before_any_record_is_read_is_never_remapped(
+    git_repo, tmp_path: Path
+):
+    """A-210's atomic-batch rule, pinned at the loader's own boundary: a
+    ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` from *remaining* propagates
+    unmodified, never becomes ``BAD_LANE_CONFIG`` or ``UNREADABLE_ARTIFACT``."""
+    head = git_repo.head()
+    sentinel = AssayError(
+        "lane deadline expired",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def expired() -> float:
+        raise sentinel
+
+    with pytest.raises(AssayError) as excinfo:
+        load_attested_evidence(
+            git_repo.path,
+            head=head,
+            declared=(EvidenceDeclaration(source="attested", key="review"),),
+            project_root=tmp_path,
+            attestation_dir="attestations",
+            remaining=expired,
+        )
+    assert excinfo.value is sentinel
+
+
+# --- A-210: config.py is never touched or imported ---------------------------
 
 
 def test_attestation_module_never_imports_config():

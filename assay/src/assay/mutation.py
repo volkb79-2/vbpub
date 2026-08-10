@@ -660,13 +660,21 @@ def _outcome_of(job: MutantJob) -> MutantOutcome:
     )
 
 
-def _snapshot_left_dirt(job: MutantJob, snapshot) -> AssayError | None:
+def _snapshot_left_dirt(
+    job: MutantJob, snapshot, *, remaining: git.Remaining | None = None
+) -> AssayError | None:
     """P23/A-195: a mutant's own snapshot must still name its own commit
     after the command runs, exactly like every other snapshot unit. Checked
     HERE, inside the worker, so a dirty/committing mutant is caught before
     its context closes and before any sibling is affected.
+
+    *remaining* (P26/A-212) is an optional hook for a caller that DOES want
+    this Git-owned check bounded by a shared budget; :func:`run_mutation`'s
+    own call site deliberately omits it (see that call site's own comment)
+    so an already-decided mutant result is never discarded merely because
+    this bookkeeping check ran after the shared deadline expired.
     """
-    if git.dirty_paths(snapshot.root):
+    if git.dirty_paths(snapshot.root, remaining=remaining):
         return AssayError(
             f"mutant {job.path}:{job.site.identity} left the snapshot's "
             f"tracked/support state dirty; the result no longer represents "
@@ -674,7 +682,7 @@ def _snapshot_left_dirt(job: MutantJob, snapshot) -> AssayError | None:
             outcome=Outcome.NO_MEASUREMENT,
             reason_code=ReasonCode.DIRTY_TREE,
         )
-    if git.head_rev(snapshot.root) != snapshot.commit:
+    if git.head_rev(snapshot.root, remaining=remaining) != snapshot.commit:
         return AssayError(
             f"mutant {job.path}:{job.site.identity} committed inside its "
             f"snapshot; the result no longer represents its own commit",
@@ -807,6 +815,16 @@ def run_mutation(
                 process_runner=process_runner,
                 clock=clock,
             )
+            # P26/A-212: deliberately NOT `remaining=deadline.remaining` here.
+            # This check runs AFTER the mutant's own process already produced
+            # a decisive result; forwarding the shared lane deadline would let
+            # an expiry discovered only at this bookkeeping step discard an
+            # already-completed identity's real result -- exactly the
+            # "completed identities remain evidence, never discarded for a
+            # partial sample" invariant `run_mutation`'s own docstring states.
+            # Budget enforcement for a NOT-YET-STARTED mutant already happens
+            # earlier, at `materialize_timeout`/`execute_plan`'s own
+            # `deadline.remaining()` samples.
             dirt = _snapshot_left_dirt(job, snapshot)
             if dirt is not None:
                 raise dirt
