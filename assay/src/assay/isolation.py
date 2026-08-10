@@ -223,13 +223,32 @@ class _BatchReader:
     ``max_blob_bytes`` and nothing larger is ever buffered here.
     """
 
-    def __init__(self, open_sink: Callable[[str, str, int], Callable[[bytes], None] | None]) -> None:
+    def __init__(
+        self,
+        open_sink: Callable[[str, str, int], Callable[[bytes], None] | None],
+        close_sink: Callable[[str], None] | None = None,
+    ) -> None:
         self._open = open_sink
+        self._close = close_sink
         self._buffer = bytearray()
         self._sink: Callable[[bytes], None] | None = None
+        self._current: str | None = None
         self._remaining = 0
         self._trailer = 0
         self._seen = 0
+
+    def _finish_object(self) -> None:
+        """Release the current object's sink the moment its bytes are complete.
+
+        Dropping only the reference here -- what this reader did before the
+        independent review -- leaves every object's resources live until the
+        whole batch ends, which is how "one open descriptor per tracked path"
+        rather than "one at a time" became the real bound.
+        """
+        current, self._current = self._current, None
+        self._sink = None
+        if self._close is not None and current is not None:
+            self._close(current)
 
     def feed(self, chunk: bytes) -> None:
         self._buffer.extend(chunk)
@@ -243,7 +262,7 @@ class _BatchReader:
                     self._remaining -= take
                 if self._remaining:
                     return
-                self._sink = None
+                self._finish_object()
                 self._trailer = 1
             if self._trailer:
                 if not self._buffer:
@@ -272,9 +291,10 @@ class _BatchReader:
             raise _git_failed(f"git cat-file --batch reported a non-integer size in {header!r}") from exc
         self._seen += 1
         self._remaining = size
+        self._current = oid
         self._sink = self._open(oid, kind, size)
         if size == 0:
-            self._sink = None
+            self._finish_object()
             self._trailer = 1
 
     def finish(self, expected: int) -> None:
@@ -510,6 +530,7 @@ class SnapshotRepository:
             git_dir=git_dir,
             root=root,
             entries=entries,
+            directories=self._manifest.directories,
             deadline=deadline,
         )
         (git_dir / "HEAD").write_text(f"{commit}\n", encoding="ascii")
@@ -641,10 +662,22 @@ def _batch_objects(
     oids: tuple[str, ...],
     deadline: "_git._P22Deadline",
     open_sink: Callable[[str, str, int], Callable[[bytes], None] | None],
+    close_sink: Callable[[str], None] | None = None,
 ) -> None:
+    """Read *oids* from *git_dir*, dispatching each object to a per-object sink.
+
+    The object names are DEDUPLICATED first, and that is a correctness
+    requirement rather than an optimization. ``cat-file --batch`` answers one
+    record per input line, so a repeated name is read back repeatedly; a sink
+    that accumulates (the tree walker's does) would then see one object's
+    bytes twice and parse a phantom second copy of every record in it.
+    Repeated names are ORDINARY: two directories with identical content are
+    one tree object at two paths, and one blob may be committed at many paths.
+    """
     if not oids:
         return
-    reader = _BatchReader(open_sink)
+    unique = tuple(dict.fromkeys(oids))
+    reader = _BatchReader(open_sink, close_sink)
     _git._p22_git(
         git_executable,
         git_dir=git_dir,
@@ -652,10 +685,10 @@ def _batch_objects(
         args=("cat-file", "--batch"),
         deadline=deadline,
         cwd=git_dir,
-        stdin_bytes=("\n".join(oids) + "\n").encode("ascii"),
+        stdin_bytes=("\n".join(unique) + "\n").encode("ascii"),
         on_stdout=reader.feed,
     )
-    reader.finish(len(oids))
+    reader.finish(len(unique))
 
 
 def _closure_oids(
@@ -1021,6 +1054,7 @@ def _write_worktree(
     git_dir: Path,
     root: Path,
     entries: tuple[_Entry, ...],
+    directories: tuple[PurePosixPath, ...],
     deadline: "_git._P22Deadline",
 ) -> None:
     """Write exact committed bytes with no checkout, filter, or hardlink."""
@@ -1039,20 +1073,23 @@ def _write_worktree(
         else:
             handles.setdefault(entry.oid, []).append(destination)
 
-    by_oid = {entry.oid: entry for entry in entries if entry.mode != _MODE_SYMLINK}
     open_files: dict[str, list] = {}
 
     def open_sink(oid: str, kind: str, _size: int) -> Callable[[bytes], None] | None:
         if kind != "blob":
             raise _git_failed(f"object {oid} is a {kind} where a blob was required")
-        streams = [path.open("wb") for path in handles[oid]]
-        open_files[oid] = streams
+        # ONE descriptor per object, not one per path: a blob committed at
+        # many paths (an empty ``__init__.py`` is the everyday case) would
+        # otherwise open them all at once, and holding them for the whole
+        # batch makes the peak descriptor count the tracked-file count --
+        # a resource no declared limit bounds.
+        stream = handles[oid][0].open("wb")
+        open_files[oid] = [stream]
+        return stream.write
 
-        def write(chunk: bytes) -> None:
-            for stream in streams:
-                stream.write(chunk)
-
-        return write
+    def close_sink(oid: str) -> None:
+        for stream in open_files.pop(oid, ()):
+            stream.close()
 
     try:
         _batch_objects(
@@ -1061,31 +1098,44 @@ def _write_worktree(
             oids=tuple(handles),
             deadline=deadline,
             open_sink=open_sink,
+            close_sink=close_sink,
         )
     finally:
         for streams in open_files.values():
             for stream in streams:
                 stream.close()
+        open_files.clear()
 
-    for oid, paths in handles.items():
-        mode = 0o755 if by_oid[oid].mode == _MODE_EXECUTABLE else 0o644
-        for path in paths:
-            path.chmod(mode)
-            os.utime(path, (_FIXED_MTIME, _FIXED_MTIME))
+    for paths in handles.values():
+        for duplicate in paths[1:]:
+            shutil.copyfile(paths[0], duplicate)
 
-    directories = sorted(
-        {
-            root.joinpath(*entry.path.parts).parent
-            for entry in entries
-        },
-        key=lambda item: len(item.parts),
-        reverse=True,
-    )
-    for directory in directories:
-        if directory == root or not directory.is_dir():
+    # Mode belongs to the TREE ENTRY, never to the blob. The same bytes may be
+    # committed ``100644`` at one path and ``100755`` at another, so deriving
+    # one mode per object silently gives one of the two paths the other's
+    # mode -- which the pre-yield clean-status check then reports as a
+    # corrupt snapshot rather than as the mode error it is.
+    for entry in entries:
+        if entry.mode == _MODE_SYMLINK:
             continue
-        directory.chmod(0o755)
-        os.utime(directory, (_FIXED_MTIME, _FIXED_MTIME))
+        path = root.joinpath(*entry.path.parts)
+        path.chmod(0o755 if entry.mode == _MODE_EXECUTABLE else 0o644)
+        os.utime(path, (_FIXED_MTIME, _FIXED_MTIME))
+
+    # EVERY materialized directory, not only the direct parent of a file: an
+    # intermediate directory left at its creation defaults carries the
+    # ambient umask and the wall clock, so two snapshots of one commit
+    # differ in exactly the way the fixed mtime exists to prevent.
+    for directory in sorted(
+        directories, key=lambda item: len(item.parts), reverse=True
+    ):
+        if str(directory) == ".":
+            continue
+        materialized = root.joinpath(*directory.parts)
+        if not materialized.is_dir():
+            continue
+        materialized.chmod(0o755)
+        os.utime(materialized, (_FIXED_MTIME, _FIXED_MTIME))
 
 
 @contextmanager

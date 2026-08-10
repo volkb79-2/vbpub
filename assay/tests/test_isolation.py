@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import resource
 import shutil
 import stat
 import subprocess
@@ -1016,3 +1017,337 @@ def test_a_replacement_never_writes_to_the_prepared_seed(tmp_path: Path) -> None
             prepared.read_regular_file(PurePosixPath("lib/data.bin"), timeout=TIMEOUT)
             == LITERALS["lib/data.bin"]
         )
+
+
+# --------------------------------------------------------------------------
+# Independent review (blind phase 1) -- combined-axis attacks
+#
+# Written against the handoff's own normative text before any implementation
+# narrative was read. Every expected value below is authored from the literal
+# committed bytes, never produced by calling :mod:`assay.isolation`.
+#
+# The locked matrix varies its axes one fixture at a time: a NORMAL repository
+# for source-disconnect, a CLEAN repository for the linked worktree, a
+# single-mode blob everywhere, and no two directories with identical content.
+# A-134's standing consequence is that an oracle enumerating input shapes must
+# also COMBINE them, so these do.
+# --------------------------------------------------------------------------
+
+
+#: The literal committed bytes of the combined-axis fixture, repo-top-relative.
+COMBINED: dict[str, bytes] = {
+    "apps/p/main.py": b"import shared\n",
+    "apps/p/a/__init__.py": b"",
+    "apps/p/b/__init__.py": b"",
+    "shared/input.txt": b"tracked sibling\n",
+    "tools/run.sh": b"#!/bin/sh\nexit 0\n",
+    "docs/run.sh.txt": b"#!/bin/sh\nexit 0\n",
+    "od\N{LATIN SMALL LETTER E WITH ACUTE}\nline\\slash.txt": b"odd path\n",
+}
+#: ``apps/p/a`` and ``apps/p/b`` hold identical content, so git stores ONE tree
+#: object at two paths at the same depth. ``tools/run.sh`` and
+#: ``docs/run.sh.txt`` are ONE blob at two paths with DIFFERENT modes.
+COMBINED_MODES: dict[str, int] = {
+    "apps/p/main.py": 0o644,
+    "apps/p/a/__init__.py": 0o644,
+    "apps/p/b/__init__.py": 0o644,
+    "shared/input.txt": 0o644,
+    "tools/run.sh": 0o755,
+    "docs/run.sh.txt": 0o644,
+    "od\N{LATIN SMALL LETTER E WITH ACUTE}\nline\\slash.txt": 0o644,
+}
+#: Every directory the commit contains, including the intermediate ones that
+#: are the direct parent of no file.
+COMBINED_DIRECTORIES: tuple[str, ...] = (
+    "apps",
+    "apps/p",
+    "apps/p/a",
+    "apps/p/b",
+    "docs",
+    "links",
+    "shared",
+    "tools",
+)
+FIXED_MTIME = 946684800
+
+
+def _combined_repo(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A repository combining every axis the locked fixtures vary separately.
+
+    Returns ``(main_repository, linked_worktree, commit)``.
+    """
+    repo = tmp_path / "main"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    for name, data in COMBINED.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (repo / "tools" / "run.sh").chmod(0o755)
+    (repo / "links").mkdir()
+    os.symlink("../shared/input.txt", repo / "links" / "in")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "combined-axis base")
+    commit = _git(repo, "rev-parse", "HEAD")
+
+    linked = tmp_path / "linked"
+    _git(repo, "worktree", "add", "--detach", str(linked), commit)
+    assert (linked / ".git").is_file() and not (linked / ".git").is_symlink()
+    return repo, linked, commit
+
+
+def _assert_combined_worktree(root: Path) -> None:
+    """Assert the exact committed content, from hand-authored literals."""
+    for name, data in COMBINED.items():
+        path = root / name
+        assert path.is_file() and not path.is_symlink(), name
+        assert path.read_bytes() == data, name
+        assert stat.S_IMODE(path.stat().st_mode) == COMBINED_MODES[name], name
+        assert int(path.stat().st_mtime) == FIXED_MTIME, name
+    link = root / "links" / "in"
+    assert link.is_symlink()
+    assert os.readlink(link) == "../shared/input.txt"
+    for name in COMBINED_DIRECTORIES:
+        directory = root / name
+        assert directory.is_dir() and not directory.is_symlink(), name
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o755, name
+        assert int(directory.stat().st_mtime) == FIXED_MTIME, name
+
+
+def test_reviewer_linked_worktree_survives_full_source_removal_with_hostile_tree(
+    tmp_path: Path,
+) -> None:
+    """Five axes at once, none of which the locked matrix pairs.
+
+    Source namespace (a linked-worktree gitfile, whose objects live in a
+    common directory somewhere else) is combined with a source removed
+    ENTIRELY after preparation -- not just the gitfile, the whole main
+    repository, so the common object store is gone too -- and with a tree
+    carrying identical sibling directories, one blob committed at two paths
+    under two different modes, a UTF-8/newline/backslash path, a zero-byte
+    blob, a contained symlink, and a nested project prefix. The replacement
+    then names a tracked sibling OUTSIDE that prefix.
+
+    Any one of these passes on its own against a convenient implementation.
+    Together they are what a real monorepo actually looks like.
+    """
+    repo, linked, commit = _combined_repo(tmp_path)
+    scratch = _scratch(tmp_path)
+    spec = _spec(linked, scratch, commit, project_prefix=PurePosixPath("apps/p"))
+
+    with prepare_snapshot(spec, timeout=TIMEOUT) as prepared:
+        sibling = prepared.read_regular_file(
+            PurePosixPath("shared/input.txt"), timeout=TIMEOUT
+        )
+        assert sibling == COMBINED["shared/input.txt"]
+
+        # The ENTIRE source disappears: the linked worktree's gitfile target,
+        # the common object store, and every source path are gone. Anything
+        # the seed does not already own cannot be recovered from here.
+        shutil.rmtree(repo)
+        assert not repo.exists()
+
+        with prepared.materialize(timeout=TIMEOUT) as base:
+            assert base.commit == commit
+            assert base.project_root == base.root / "apps" / "p"
+            _assert_combined_worktree(base.root)
+            assert _git(base.root, "rev-parse", "HEAD") == commit
+            assert _git(base.root, "status", "--porcelain=v1") == ""
+
+            with prepared.materialize_replacement(
+                path=PurePosixPath("shared/input.txt"),
+                expected=COMBINED["shared/input.txt"],
+                replacement=b"mutated sibling\n",
+                timeout=TIMEOUT,
+            ) as child:
+                assert child.commit != commit
+                assert (
+                    child.root / "shared/input.txt"
+                ).read_bytes() == b"mutated sibling\n"
+                assert _git(child.root, "status", "--porcelain=v1") == ""
+                assert (
+                    _git(child.root, "rev-list", "--parents", "-n", "1", child.commit)
+                    == f"{child.commit} {commit}"
+                )
+                # the concurrently-held base snapshot is untouched
+                assert (
+                    base.root / "shared/input.txt"
+                ).read_bytes() == COMBINED["shared/input.txt"]
+                # and each path sharing one blob still carries its own mode
+                assert (
+                    stat.S_IMODE((child.root / "tools/run.sh").stat().st_mode) == 0o755
+                )
+                assert (
+                    stat.S_IMODE((child.root / "docs/run.sh.txt").stat().st_mode)
+                    == 0o644
+                )
+                deterministic = child.commit
+
+        with prepared.materialize_replacement(
+            path=PurePosixPath("shared/input.txt"),
+            expected=COMBINED["shared/input.txt"],
+            replacement=b"mutated sibling\n",
+            timeout=TIMEOUT,
+        ) as repeated:
+            assert repeated.commit == deterministic
+
+    assert list(scratch.iterdir()) == []
+
+
+def test_reviewer_identical_sibling_directories_are_not_a_duplicate_path(
+    tmp_path: Path,
+) -> None:
+    """Two directories with identical content are ONE tree object at two paths.
+
+    ``cat-file --batch`` answers one record per requested name, so a walker
+    that asks for the same tree twice in one level and accumulates the reply
+    parses every record in it twice, then reports its own second copy as a
+    "duplicate or colliding path" in the consumer's repository. Reproduced
+    against the live vbpub tree, where ``ciu/nyxloom-trove/archive`` and
+    ``shared-ramdisk-depot-manager/nyxloom-trove/archive`` are one object.
+    """
+    repo = tmp_path / "consumer"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    for package in ("sub1", "sub2"):
+        directory = repo / "src" / package
+        directory.mkdir(parents=True)
+        (directory / "__init__.py").write_bytes(b"")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "two identical packages")
+    commit = _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "rev-parse", f"{commit}:src/sub1") == _git(
+        repo, "rev-parse", f"{commit}:src/sub2"
+    )
+
+    scratch = _scratch(tmp_path)
+    with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as snapshot:
+            for package in ("sub1", "sub2"):
+                member = snapshot.root / "src" / package / "__init__.py"
+                assert member.is_file()
+                assert member.read_bytes() == b""
+            assert _git(snapshot.root, "status", "--porcelain=v1") == ""
+
+
+def test_reviewer_one_blob_at_two_paths_keeps_each_entrys_own_mode(
+    tmp_path: Path,
+) -> None:
+    """Mode belongs to the tree ENTRY, not to the object it names.
+
+    Deriving one mode per blob gives whichever entry is processed last the
+    other's permission bits, which the pre-yield clean-status check then
+    reports as a corrupt snapshot -- a refusal naming neither the file nor
+    the real cause.
+    """
+    repo = tmp_path / "consumer"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    body = b"#!/bin/sh\necho hi\n"
+    (repo / "run.sh").write_bytes(body)
+    (repo / "run.sh").chmod(0o755)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "run.sh.txt").write_bytes(body)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "same blob, two modes")
+    commit = _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "rev-parse", f"{commit}:run.sh") == _git(
+        repo, "rev-parse", f"{commit}:docs/run.sh.txt"
+    )
+
+    scratch = _scratch(tmp_path)
+    with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as snapshot:
+            assert (snapshot.root / "run.sh").read_bytes() == body
+            assert (snapshot.root / "docs/run.sh.txt").read_bytes() == body
+            assert stat.S_IMODE((snapshot.root / "run.sh").stat().st_mode) == 0o755
+            assert (
+                stat.S_IMODE((snapshot.root / "docs/run.sh.txt").stat().st_mode)
+                == 0o644
+            )
+            assert _git(snapshot.root, "status", "--porcelain=v1") == ""
+
+
+def test_reviewer_intermediate_directories_carry_no_ambient_umask_or_clock(
+    tmp_path: Path,
+) -> None:
+    """Every materialized directory is fixed, not only a file's direct parent.
+
+    A directory left at its creation defaults takes the ambient umask and the
+    wall clock, so one commit materializes differently on two hosts -- the
+    exact difference the fixed mtime exists to remove. The umask used here is
+    an ordinary group-writable one, not a hostile value.
+    """
+    repo = tmp_path / "consumer"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    deep = repo / "apps" / "p" / "pkg"
+    deep.mkdir(parents=True)
+    (deep / "main.py").write_bytes(b"x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "nested project")
+    commit = _git(repo, "rev-parse", "HEAD")
+
+    scratch = _scratch(tmp_path)
+    previous = os.umask(0o002)
+    try:
+        spec = _spec(repo, scratch, commit, project_prefix=PurePosixPath("apps/p"))
+        with prepare_snapshot(spec, timeout=TIMEOUT) as prepared:
+            with prepared.materialize(timeout=TIMEOUT) as snapshot:
+                for name in ("apps", "apps/p", "apps/p/pkg"):
+                    directory = snapshot.root / name
+                    assert stat.S_IMODE(directory.stat().st_mode) == 0o755, name
+                    assert int(directory.stat().st_mtime) == FIXED_MTIME, name
+                member = snapshot.root / "apps/p/pkg/main.py"
+                assert stat.S_IMODE(member.stat().st_mode) == 0o644
+                assert int(member.stat().st_mtime) == FIXED_MTIME
+    finally:
+        os.umask(previous)
+
+
+def test_reviewer_materialization_holds_a_bounded_descriptor_count(
+    tmp_path: Path,
+) -> None:
+    """Open descriptors are a resource no declared limit bounds.
+
+    Opening one file per tracked path and holding them all for the whole
+    batch makes the peak descriptor count the repository's file count, so an
+    ordinary ``RLIMIT_NOFILE`` of 1024 turns a legitimate commit into a bare
+    ``OSError`` that escapes the terminal table entirely. The ceiling is
+    derived from this process's own current usage rather than hardcoded, so
+    the test states the property instead of a machine's configuration.
+    """
+    if not Path("/proc/self/fd").is_dir():  # pragma: no cover - Linux gate only
+        pytest.skip("descriptor accounting requires /proc/self/fd")
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = len(os.listdir("/proc/self/fd")) + 128
+    if hard != resource.RLIM_INFINITY and hard < target:  # pragma: no cover
+        pytest.skip("no headroom to constrain RLIMIT_NOFILE")
+    file_count = target + 256
+
+    repo = tmp_path / "consumer"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    many = repo / "many"
+    many.mkdir()
+    for index in range(file_count):
+        # Distinct bytes per file: identical content would collapse to one
+        # object and hide the very fan-out being bounded.
+        (many / f"f{index:05d}.txt").write_bytes(b"content-%d\n" % index)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "many tracked files")
+    commit = _git(repo, "rev-parse", "HEAD")
+    scratch = _scratch(tmp_path)
+
+    resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    try:
+        with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+            with prepared.materialize(timeout=TIMEOUT) as snapshot:
+                materialized = sorted((snapshot.root / "many").iterdir())
+                assert len(materialized) == file_count
+                assert materialized[0].read_bytes() == b"content-0\n"
+                assert materialized[-1].read_bytes() == (
+                    b"content-%d\n" % (file_count - 1)
+                )
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
