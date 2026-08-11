@@ -15,14 +15,15 @@ mandatory for this semi-manual wave, not permanent product routing:
 
 > ## ⚠ THE TABLE BELOW IS NOT IN EXECUTION ORDER
 >
-> **Execution order: P20–P26 (done) → P33 → P34 → \[ship\] → P27 (resumed) →
-> P28 → P29 → P30 → P31 → P32.**
+> **Execution order: P20–P26 (done) → P33 (done) → \[ship: cmru + zipapp\] →
+> P34 → P27 (resumed) → P28 → P29 → P30 → P31 → P32.**
 >
-> **P33 and P34 run BEFORE the resumed P27–P32 series, despite their higher
-> numbers.** Numbers are identity, not sequence
-> (A-153/A-167/A-219). Do not infer order from this table; read the dependency
-> chain below it. P27 is additionally **not dispatchable** until it is re-carved
-> around A-217.
+> **RESEQUENCED AGAIN 2026-08-11 (A-248): the ship milestone moved AHEAD of
+> P34.** P34 is no longer "next" — it is next *after ship*. P33 and P34 still
+> run BEFORE the resumed P27–P32 series despite their higher numbers. Numbers
+> are identity, not sequence (A-153/A-167/A-219/A-248). Do not infer order from
+> this table; read the dependency chain below it. P27 is additionally **not
+> dispatchable** until it is re-carved around A-217.
 
 | # | Claim boundary | class | JIT carve | implement | independent review |
 |---|---|---|---|---|---|
@@ -40,7 +41,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P33 | **schema v5 contract** (language-qualified operators, hoisted lane facts, equivalence bucket, kill attribution, helper provenance) | 2b | **merged as `e41ea99f` (A-220–A-233); post-review carve repair `62305df3`** | Opus xhigh | fresh Opus xhigh |
-| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | NEXT: JIT freeze required; both owed rulings now landed (A-242/A-243) | Sonnet xhigh | fresh Opus xhigh |
+| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | **NOT NEXT — blocked on the ship milestone (A-248).** JIT freeze required; both owed rulings landed (A-242/A-243) | Sonnet xhigh | fresh Opus xhigh |
 
 P20 through P26 are **MERGED**. P25's implementation-shaped contract, pinned
 966-entry Topos manifest, explicit three-symlink prospective adoption patch,
@@ -67,11 +68,20 @@ The dependency chain is exactly:
 ```text
 P19 -> P20 -> P21 -> P22 -> P23 -> P24 -> P25 -> P26
     -> P33 (schema v5 contract)
+    -> [SHIP MILESTONE: cmru release adoption + zipapp, full coverage,
+        deep adversarial pass]
     -> P34 (SQL/DDL adapter + integration)
-    -> [SHIP MILESTONE: cmru release adoption, full coverage, deep adversarial pass]
     -> P27 (re-carve around A-217 option 2) -> P28
     -> P29 -> P30 -> P31 -> P32
 ```
+
+**RESEQUENCED TWICE. The second (A-248, 2026-08-11) moved \[ship\] ahead of
+P34**, so the release lands before the second language: a zipapp is the
+near-zero-cost answer for a consumer with no installed Python manager (A-O04's
+srdm blocker), and every package merged before shipping is value no consumer
+can reach. A-247's two blockers became rulings rather than unknowns, which is
+what made ship landable. **The first resequence (A-219) is recorded below and
+still holds for everything after ship.**
 
 **RESEQUENCED 2026-08-11 by operator decision (A-219).** The former order was
 `… P26 -> P27 -> P28 -> [B001 checkpoint] -> P29 …`. SQL now goes first, and the

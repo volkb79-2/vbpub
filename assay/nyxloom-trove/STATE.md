@@ -20,8 +20,9 @@
 > scope status and O3 a rewritten negative. Read
 > `reports/assay-P27-JIT-CARVE.md` and `carve-assets/P27/BLOCKED-grammar.md`
 > before touching P27. NEXT WORK IS NOT P27: the operator resequenced the wave
-> SQL-first (A-219). **Execution order is now P20–P26 (done) → P33 → P34 →
-> \[ship\] → P27 (resumed) → P28 → P29–P32; numbers are identity, not sequence.
+> SQL-first (A-219), then moved \[ship\] ahead of P34 (A-248). **Execution order
+> is now P20–P26 (done) → P33 (done) → \[ship: cmru + zipapp\] → P34 → P27
+> (resumed) → P28 → P29–P32; numbers are identity, not sequence.
 > P33 (verdict schema v5) was carved at `b6f0b3bf`, reviewed **NOT READY** by
 > CR-opus-0 (eleven blocking defects; report
 > `reports/assay-P33-pre-dispatch-adversarial-review.md`), and **RE-CARVED at
@@ -64,8 +65,13 @@
 > not be "tidied" up. assay's trove does not run under the nyxloom daemon; the
 > schemas are the contract.
 >
-> **NEXT WORK IS P34 (SQL adapter), and it is now UNBLOCKED.** Both rulings P34
-> was waiting on are landed: **A-242** (the flat seven-method `LanguageAdapter`
+> **NEXT WORK IS THE SHIP MILESTONE (cmru adoption + zipapp), NOT P34.**
+> Resequenced 2026-08-11 by A-248: the execution order is now
+> **P33 (done) → \[ship: cmru + zipapp\] → P34 → P27 (resumed) → P28 → P29 →
+> P30 → P31 → P32.** P34's carve must NOT be dispatched until ship is landed.
+> `handoffs/README.md`'s table row for P34 says NOT NEXT for the same reason.
+>
+> **P34's own rulings are landed, so it inherits rather than makes them:** **A-242** (the flat seven-method `LanguageAdapter`
 > stays; the five SQL-dead methods raise rather than return a plausible value)
 > and **A-243** (helper provenance is permitted for `MUTATION_DISCOVERY_FAILED`
 > only, with a negative test for the other two failure terminals). P34's carve

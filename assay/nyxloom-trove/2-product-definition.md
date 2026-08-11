@@ -225,7 +225,7 @@ features:
     text: Qualified against srdm's own Go covergate on the same commits, so union fidelity is mechanical rather than a review question.
     status: absent
   status: building
-  milestone: M5
+  milestone: M6
 - id: F009
   title: Attested evidence, bound to a commit and checked for staleness
   acceptance:
@@ -339,7 +339,7 @@ features:
   - Qualified against a real PostgreSQL project rather than a synthetic fixture.
   - The five adapter methods SQL cannot answer raise rather than return a plausible value (A-242), and a helper that fails during discovery can still record its provenance (A-243).
   status: planned
-  milestone: M4
+  milestone: M5
 - id: F014
   title: Release ergonomics - cmru adoption and a parallel zipapp artifact
   acceptance:
@@ -347,7 +347,7 @@ features:
   - A zipapp is published beside the wheel, built FROM the released wheel so it reports a real version rather than 0+unknown, and byte-identical across two builds.
   - Both the cmru .sha256 sidecar and assay's own release manifest sit on one Release, with the manifest documented as authoritative because only it can feed pip's hash mode.
   status: planned
-  milestone: M6
+  milestone: M4
 - id: F015
   title: fail-before/pass-after as a computed method
   acceptance:

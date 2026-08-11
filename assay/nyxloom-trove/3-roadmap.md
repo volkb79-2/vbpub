@@ -29,22 +29,22 @@ milestones:
   - F012
   status: done
 - id: M4
-  title: A second language, then ship
+  title: 'Ship: release ergonomics'
+  target_product_version: 1
+  features:
+  - F014
+  status: active
+- id: M5
+  title: A second language
   target_product_version: 1
   features:
   - F013
-  status: active
-- id: M5
+  status: planned
+- id: M6
   title: Go, honestly
   target_product_version: 1
   features:
   - F008
-  status: planned
-- id: M6
-  title: Release ergonomics
-  target_product_version: 1
-  features:
-  - F014
   status: planned
 - id: M7
   title: New computed methods
@@ -58,8 +58,22 @@ milestones:
 
 Milestones toward the current product definition. The frontmatter is the
 machine-readable target; this body records *why* the order is what it is, since
-the ordering has already been re-decided once on evidence and would otherwise
+the ordering has now been re-decided **twice** on evidence and would otherwise
 look arbitrary.
+
+**Execution order is the array order above**, and milestone ids run with it:
+
+```text
+M1 M2 M3 (done) -> M4 [ship: cmru + zipapp] -> M5 (SQL, P34)
+   -> M6 (Go: P27 resumed -> P28 -> P29 -> P30 -> P31 -> P32) -> M7
+```
+
+Note for anyone holding an older copy: `M4`/`M5`/`M6` were reassigned once, by
+A-248, when the ship milestone moved ahead of SQL. That was a deliberate
+one-time exception taken while these ids were a single commit old and cited
+nowhere outside this document and `2-product-definition.md`. **They are identity
+from here on** — the same rule A-153/A-167 impose on package numbers, which is
+why P34 keeps its number while running second.
 
 ## Done — M1, M2, M3
 
@@ -70,40 +84,45 @@ cites a passing test in `2-product-definition.md`, and the ones that could not
 be proved are marked `absent` rather than quietly rolled into a `shipped`
 feature.
 
-## M4 — A second language, then ship (ACTIVE)
+## M4 — Ship: release ergonomics (ACTIVE)
 
-**Delivers F013 (the SQL/DDL adapter), as package P34, and then the ship
-milestone.**
+**Delivers F014: cmru adoption plus a zipapp published beside the wheel.**
 
-This is where the roadmap was re-decided. The original order put the Go wave
-(P27–P32) before any second language. Two findings forced the swap (A-219):
+This is the ship milestone, and it now runs **first** of the remaining work —
+ahead of SQL, not after Go (A-248). The reasoning is the one that was already
+sitting in this document as the honest alternative to its own ordering: a
+zipapp is the near-zero-cost answer for a consumer with no installed Python
+manager, which is A-O04's srdm blocker, and every additional package assay
+merges before shipping is a package whose value no consumer can reach.
 
-1. **A-217 ruled A-O19 as option 2**, so P27 must be *re-carved* around a real
-   source-side Go statement-position oracle rather than dispatched as carved.
-   Profile-only line attribution was proven impossible — two byte-identical
-   coverprofiles can come from sources with different statement lines.
-2. **SQL R2 was blocked on a schema migration**, because v4's
-   `mutation_operator` was a closed four-value Python-only enum. Designing v5
-   once, for SQL *and* Go together, is cheaper than designing it twice.
+What made this landable rather than a checkpoint is that A-247's two blockers
+are rulings, not unknowns: assay adopts cmru's **orchestration** and declines
+its **build** (cmru's built-in `wheel-build` is bare `python -m build`, with
+none of A-198/A-199's hash-bound closure), and where a cmru `.sha256` sidecar
+and assay's own release manifest sit on one Release, the manifest is
+authoritative because only it can feed pip's hash mode.
 
-So schema v5 (P33) landed first, and SQL goes next. The trade is named rather
-than hidden: A-215's ordering rationale — do not freeze a second-language
-mutation contract before the first language is qualified — is knowingly given
-up here, and the risk is recorded in A-219.
+## M5 — A second language (PLANNED)
 
-P34 is **unblocked**: both rulings it was waiting on are landed (A-242, the flat
-seven-method adapter with raising stubs; A-243, helper provenance for a failed
-discovery). Its carve inherits them rather than making them.
+**Delivers F013 (the SQL/DDL adapter), as package P34.**
 
-**The ship milestone sits at the end of M4**, not after the Go wave: assay is
-already adoptable for Python and SQL consumers, and holding a release for Go's
-oracle would price adoption behind work no current consumer is waiting on.
+P34 was previously "next, unblocked"; A-248 **postpones it behind ship**. It
+stays unblocked in the sense that matters — both rulings its carve was waiting
+on are landed (A-242, the flat seven-method adapter with raising stubs; A-243,
+helper provenance for a failed discovery), so the carve inherits them rather
+than making them — but it must not be dispatched until M4 is done.
 
-## M5 — Go, honestly (PLANNED)
+The trade this milestone rests on is named rather than hidden. A-219 already
+gave up A-215's ordering rationale (do not freeze a second-language mutation
+contract before the first language is qualified) in order to design schema v5
+once for SQL and Go together instead of twice; A-248 does not revisit that, it
+only moves the release ahead of the second language.
+
+## M6 — Go, honestly (PLANNED)
 
 **Delivers F008's three absent criteria, as the P27 re-carve through P32.**
 
-Go comes *after* the ship milestone by the same A-219 decision. Two named
+Go still comes after SQL, by A-219, and now after ship as well. Two named
 blockers must be handled inside the re-carve, and both are already documented
 so the carve does not discover them:
 
@@ -122,22 +141,6 @@ One more thing the re-carve must claim explicitly rather than inherit silently:
 **effective-PATH reachability** (`MISSING_EXTERNAL_TOOL`), whose ownership
 hopped P22 → P26 → P27 with the last hop recorded nowhere until A-246. It
 belongs to P27 now, because A-217's oracle is assay's first real external tool.
-
-## M6 — Release ergonomics (PLANNED)
-
-**Delivers F014: cmru adoption plus a zipapp published beside the wheel.**
-
-Scoped and measured, deliberately not landed (A-247, B002, B003). The zipapp
-half is mechanically proven — built, driven, and shown byte-reproducible after
-one mtime normalisation — but the cmru half edits release keys that seven other
-products share, so it is a design checkpoint rather than a package.
-
-**Its position in this list is the least settled thing on the roadmap.** It is
-placed after M5 because nothing currently blocks on it; the honest alternative
-is that it belongs *inside* M4's ship milestone, since a zipapp is the
-near-zero-cost answer for a consumer with no installed Python (A-O04's srdm
-blocker). That sequencing has not been ruled, and this document should not
-pretend otherwise.
 
 ## M7 — New computed methods (PLANNED)
 
