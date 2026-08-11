@@ -827,7 +827,7 @@ source_roots = ["libs/common/src", "applications/controller/src", "scripts"]
 fail_under = 100.0
 allow_excluded = false
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
-mutation = { jobs = 4, max_mutants = 200, operators = ["compare-swap","boolop-swap","bool-const-flip","falsy-swap"] }
+mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
 attestation_dir = ".assay/attestations"
 evidence = [{source = "attested", key = "adversarial-review"}]

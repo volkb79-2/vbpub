@@ -4,7 +4,7 @@ id: assay-P33-verdict-schema-v5
 project: assay
 title: "The verdict artifact expresses a coverage-less mutation language without inventing one"
 tier: implement-2
-input_revision: "b22ebd56c4af3f89cd393ef013ca292f722b16ee"
+input_revision: "7a774d57b41033e0f3de84cd5c2bb188f3cc401b"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P26-attested-evidence-cli-hardening]

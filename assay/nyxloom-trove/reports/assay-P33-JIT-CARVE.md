@@ -240,16 +240,15 @@ sentence claiming completeness.
 
 ## Residual, named rather than hidden
 
-- **`input_revision`** names `b22ebd56`, which contains the P33 assets in their
-  *pre-repair* form; the repaired assets land in the commit carrying this report
-  section. A handoff cannot contain its own commit hash. Verify against
-  `carve-assets/P33/README.md`'s hash table before starting, and treat that table
-  as the anchor.
-- **`DESIGN-GUIDE.md`'s worked TOML example** declares the four bare operator
-  names and becomes a config-load refusal after P33. The guide is carver-owned and
-  forbidden to the implementer, so **I own that edit** and it is not in P33's
-  scope. It must land before P33 merges, not after; recorded here so it is not
-  discovered by a reader of a shipped doc.
+- **`input_revision`** is `7a774d57b41033e0f3de84cd5c2bb188f3cc401b`, the commit
+  containing the repaired assets and this report section — set in a follow-up
+  commit, because a handoff cannot contain its own hash. Verify against
+  `carve-assets/P33/README.md`'s hash table before starting; that table is the
+  anchor if the two ever disagree.
+- **`DESIGN-GUIDE.md`'s worked TOML example** declared the four bare operator
+  names and would have become a config-load refusal after P33. **Discharged:**
+  line 830 now reads `operators = ["python:compare-swap", ...]`. Carver-owned, so
+  it landed here rather than in P33's scope.
 - **`judge.language` remains an opaque string** at every layer, so "closed per
   language" is enforced only for the three prefixes that exist. The review is
   right that an enum is locally expressible. I am not adding one in P33: it would

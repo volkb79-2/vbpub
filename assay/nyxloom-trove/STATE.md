@@ -22,8 +22,11 @@
 > before touching P27. NEXT WORK IS NOT P27: the operator resequenced the wave
 > SQL-first (A-219). **Execution order is now P20–P26 (done) → P33 → P34 →
 > \[ship\] → P27 (resumed) → P28 → P29–P32; numbers are identity, not sequence.
-> P33 (verdict schema v5) is CARVED as of `b6f0b3bf` and awaiting its CR-opus-0
-> carve review — read `reports/assay-P33-JIT-CARVE.md` and
+> P33 (verdict schema v5) was carved at `b6f0b3bf`, reviewed **NOT READY** by
+> CR-opus-0 (eleven blocking defects; report
+> `reports/assay-P33-pre-dispatch-adversarial-review.md`), and **RE-CARVED at
+> `7a774d57`** answering all seventeen findings (A-223/A-224/A-225). It awaits a
+> FRESH mandatory carve review; a second round is not a formality — read `reports/assay-P33-JIT-CARVE.md` and
 > `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
 > decisions A-220/A-221/A-222.** Its pinned image inputs, two-commit fixture with real
 > reproduced profiles, independent statement manifest, and locked v4
