@@ -432,6 +432,117 @@ def _raw_two_arg(fn, document: dict) -> list[str]:
     return failures
 
 
+def _operator_document(*, language: str, declared: list[str], applied: str) -> dict:
+    """An R0,R2 document with invariant 1's two inputs set INDEPENDENTLY.
+
+    `_sql_r2_document(language=...)` moves both at once -- it flips the
+    resolved language, which makes the declared list AND every recorded
+    outcome foreign in the same breath. That is what the two tests below
+    exist to stop being the only shape available.
+    """
+    document = _sql_r2_document()
+    document["judgment"]["resolved"]["language"] = language
+    document["judgment"]["r2"]["operators"] = list(declared)
+    for claim in document["claims"]:
+        if claim.get("rigor") == "R2":
+            for name in ("killed", "survived", "crashed", "budget_exceeded",
+                         "equivalent"):
+                for entry in claim["mutation"][name]:
+                    entry["operator"] = applied
+    return document
+
+
+def test_raw_layer_clause_operator_language_the_DECLARED_half_alone():
+    """Invariant 1a, isolated (P33 work item 3: per CLAUSE, not per function).
+
+    `test_raw_layer_clause_operator_prefix_must_equal_the_resolved_language`
+    above flips `judgment.resolved.language` on the whole document, which
+    trips this clause AND the per-outcome clause together -- so either one
+    surviving keeps it green. Here only the DECLARED list is foreign; every
+    recorded outcome matches the resolution. The negative this defends:
+    deleting the `judgment.r2.operators` sweep leaves a lane free to declare
+    another language's catalogue as long as it never used it.
+    """
+    check = verify._check_resolved_language_owns_every_operator
+    clean = _operator_document(
+        language="python", declared=["python:compare-swap"],
+        applied="python:compare-swap")
+    assert _raw_two_arg(check, clean) == []
+    broken = _operator_document(
+        language="python", declared=["python:compare-swap", "sql:drop-check"],
+        applied="python:compare-swap")
+    failures = _raw_two_arg(check, broken)
+    assert len(failures) == 1, failures
+    assert "judgment.r2.operators" in failures[0], failures
+    assert "sql:drop-check" in failures[0], failures
+
+
+def test_raw_layer_clause_operator_language_the_PER_OUTCOME_half_alone():
+    """Invariant 1b, isolated. The mirror of the test above: the declared
+    policy is entirely clean and a single recorded mutant carries a foreign
+    operator.
+
+    The negative this defends is the sharper of the two, because a payload
+    is what a run actually DID: deleting this sweep lets an artifact record
+    mutants produced by a catalogue the lane's own resolution says it does
+    not have, with the policy object agreeing with the language throughout.
+    """
+    check = verify._check_resolved_language_owns_every_operator
+    clean = _operator_document(
+        language="python", declared=["python:compare-swap"],
+        applied="python:compare-swap")
+    assert _raw_two_arg(check, clean) == []
+    broken = _operator_document(
+        language="python", declared=["python:compare-swap"],
+        applied="sql:drop-check")
+    failures = _raw_two_arg(check, broken)
+    assert len(failures) == 1, failures
+    assert "mutation payload" in failures[0], failures
+    assert "sql:drop-check" in failures[0], failures
+
+
+def test_model_clause_operator_language_the_DECLARED_half_alone():
+    """Invariant 1a at the MODEL layer, isolated the same way.
+
+    Reached through `_reconstruct_verdict` rather than `verify_document`, so
+    no raw failure can stand in for the model's own refusal -- the same
+    independence this module's header describes for defect 2.
+    """
+    clean = _operator_document(
+        language="python", declared=["python:compare-swap"],
+        applied="python:compare-swap")
+    verify._reconstruct_verdict(clean)
+    broken = _operator_document(
+        language="python", declared=["python:compare-swap", "sql:drop-check"],
+        applied="python:compare-swap")
+    with pytest.raises(ValueError, match="judgment.r2.operators names"):
+        verify._reconstruct_verdict(broken)
+
+
+def test_model_clause_operator_language_the_PER_OUTCOME_half_alone():
+    """Invariant 1b at the MODEL layer, isolated.
+
+    The assertion is on the MESSAGE, not merely on "something raised", and
+    that is load-bearing: a foreign operator in the payload is necessarily
+    also an undeclared one, so if this clause were deleted the model would
+    still raise -- from the undeclared-operator sweep that runs directly
+    after it. Both messages open with the identical
+    `claim[R2].mutation records outcome(s) for ...` prefix, so the pattern
+    below deliberately anchors on the LANGUAGE clause's own tail instead.
+    Anchoring on the shared prefix was tried first and the controlled break
+    proved it vacuous: the sweep satisfied it verbatim.
+    """
+    clean = _operator_document(
+        language="python", declared=["python:compare-swap"],
+        applied="python:compare-swap")
+    verify._reconstruct_verdict(clean)
+    broken = _operator_document(
+        language="python", declared=["python:compare-swap"],
+        applied="sql:drop-check")
+    with pytest.raises(ValueError, match=r"judgment\.resolved\.language is"):
+        verify._reconstruct_verdict(broken)
+
+
 def test_raw_layer_clause_base_is_required_when_r1_or_r2_is_present():
     """Invariant, A-223a's `if` half."""
     check = verify._check_base_matches_the_tiers_present
