@@ -50,13 +50,27 @@
 > a session resuming from an older banner would re-do finished work.**
 > Read `reports/assay-P33-JIT-CARVE.md` and `carve-assets/P33/README.md`; the
 > design is `SCHEMA-V5-DESIGN.md` (which carries its own precedence banner per
-> A-231) with decisions A-220–A-233 plus A-234–A-237 from the Fable
-> full-codebase review.
+> A-231) with decisions A-220–A-233 plus A-234–A-244 from the two Fable
+> full-codebase review rounds.
 >
-> **NEXT WORK IS P34 (SQL adapter).** Before P27's re-carve is dispatched, read
-> **A-235** (the statement-position oracle has no seam to be called through)
-> and **A-234** (the committed Go coverage fixtures contradict A-172's own
-> disproven premise and must be regenerated first).**
+> **NEXT WORK IS P34 (SQL adapter), and it is now UNBLOCKED.** Both rulings P34
+> was waiting on are landed: **A-242** (the flat seven-method `LanguageAdapter`
+> stays; the five SQL-dead methods raise rather than return a plausible value)
+> and **A-243** (helper provenance is permitted for `MUTATION_DISCOVERY_FAILED`
+> only, with a negative test for the other two failure terminals). P34's carve
+> inherits these rather than making them.
+>
+> Before P27's re-carve is dispatched, read **A-234** (the committed Go coverage
+> fixtures are wrong in both coordinates and must be regenerated *with* their
+> consumer expectations re-derived from the option-2 oracle) and **A-239** (the
+> oracle's seam is RULED — explicit block extents from `go_cover.py`, a NEW
+> protocol hook for statement positions, intersection as a pure core function,
+> Go-specific; do not re-open the shape). Also **A-240/A-241**: A-237's narrowing
+> stands but its stated evidence was false, and A-116's verbatim-propagation
+> enforcement is now known to be PARTIAL — a payload-free `ERROR` carrying the
+> wrong `reason_code` is not caught. **A-241 is an open verifier gap, owned by
+> whoever next touches `verify.py`'s R2 re-derivation.** **A-244** accepts A-O06
+> as the next capability after P32 — planning only, no package, no dispatch.**
 > **P27's** pinned image inputs, two-commit fixture with real reproduced
 > profiles, independent statement manifest, and locked v4 missing-tool artifact
 > remain frozen and survived the A-O19 ruling; P27's expected R1 `Coverage` line

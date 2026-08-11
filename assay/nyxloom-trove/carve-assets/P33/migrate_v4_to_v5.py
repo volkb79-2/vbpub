@@ -331,17 +331,26 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
     # shipped schema the ONLY contract an external consumer gets -- they never
     # run verdict.py or verify.py. Three families did not match that claim.
 
-    # (a) WITHDRAWN before landing. A first version of this repair added
-    #     PASS/FAIL-requires-its-payload branches for R1/R2/R3. Running the full
-    #     suite showed they break two tests in tests/test_verdict_conformance.py
-    #     whose assertions read "claims-cover-declared-rigor is NOT expressible
-    #     in JSON Schema 2020-12 -- this stays schema-valid ON PURPOSE". That file
-    #     carries a FAMILY of four such assertions, so the schema's silence here
-    #     is a documented layer boundary authored by a prior package, not
-    #     accretion. A-237 narrows A-182's overclaiming text instead of
-    #     overriding that boundary; the model and raw verifier keep sole
-    #     ownership of requiredness-of-evidence, and verify.py catches every
-    #     case. Reverted deliberately, recorded so it is not re-attempted.
+    # (a) NOT DONE, and the reason is measured rather than argued (A-240).
+    #     A payload-free PASS/FAIL validates against the schema alone. Adding
+    #     PASS/FAIL-requires-its-payload branches was attempted TWICE and reverted
+    #     twice; the second attempt found the real cost, which the first had
+    #     mis-attributed:
+    #
+    #     `test_verify_rejects_an_r2_claim_that_misreports_its_own_failed_
+    #     prerequisite` proves A-116's verbatim-propagation rule -- a payload-free
+    #     R2 claim must reuse the baseline's exact (outcome, reason_code). Driving
+    #     the shipped verifier across every payload-free-LEGAL status shows the
+    #     oracle fires for NONE of them: ERROR/GIT_FAILED, ERROR/UNREADABLE_
+    #     ARTIFACT, ERROR/MUTATION_DISCOVERY_FAILED, NO_MEASUREMENT/EMPTY_COVERAGE
+    #     and BUDGET_EXCEEDED/LANE_TIMEOUT all pass the re-derivation check,
+    #     because they are independent terminals. So the ONLY statuses that can
+    #     violate A-116 on a payload-free claim are exactly PASS and FAIL --
+    #     precisely what these branches would forbid. Closing the schema gap would
+    #     make that oracle structurally unreachable and force deleting a real test.
+    #
+    #     A-237's narrowing therefore stands, on this measured ground rather than
+    #     on its original (false) claim about four conformance tests. See A-240.
 
     # (b) judgment_r2's own description already stated the rule -- "Required when
     #     kill_attribution is 'declared'; forbidden when 'unattributed'" -- with

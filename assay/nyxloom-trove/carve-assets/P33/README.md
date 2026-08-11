@@ -62,8 +62,11 @@ PYTHONPATH=src python3 -m pytest \
 
 ## Asset hashes
 
-Regenerated after the Fable full-codebase review repair (A-236b/c touched the
-transform and therefore the generated schema).
+Regenerated after the second Fable round (A-240). Only `migrate_v4_to_v5.py`
+moved: its withdrawn-gap comment now records the *measured* reason the
+PASS/FAIL-requires-its-payload branches stay out. `verdict.schema.v5.json` is
+byte-identical to the merged asset — the second attempt at those branches was
+reverted, and `--check` proves the generated schema is unchanged.
 
 ```text
 f9f7bc86b316928a752e29ec52b352d51c0bd74ccef1096f60dc1bf5a421af47  expected/ca1-r3-no-base-v5-template.json
@@ -72,7 +75,7 @@ f1734e62782558b47799b3f77d933a37c6c63de2fcc4f54f21e226ddb768e408  expected/ca4-a
 e4378a0e85189b9f9b2c59184df0760bcbfeb7efbc01e44417af0b960ac128e7  expected/p25-missing-v5-template.json
 7d2685455f70f8e7d4a2d55deba4aff1e6b4799d9e885ca7bda5bf8da985dea1  expected/p25-pass-v5-template.json
 c1544667e2ec25fa9fe22d97598809e0ffe8836a600e7e296c6d9e6120831adb  expected/sql-r2-v5-template.json
-16ac55ce0c2ec25c61dbce2e3595a883dc46aae12593cca724622947404d3515  migrate_v4_to_v5.py
+20a60338466dcce318a288067b18e2b547b60c2483053753cbbbc6afdbaba19d  migrate_v4_to_v5.py
 83b3641214f5e74bc7ac3152b446e3ceb3b4f6d9f87704e2569f3b9ea2f7e925  migration-manifest.json
 41e57d3208575fae8dc8c7b2e0794ac805ec62d44861df240f36e01207a70d3f  probe_v5_controlled_red.py
 262899cca2bb7ed667bd248b41473535d4ceae07068546f644f695f3dfb9e2a1  sweep_v4_consumers.py

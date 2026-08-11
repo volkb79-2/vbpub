@@ -1,12 +1,22 @@
 # Schema v5 — the design, and what it deliberately does not do
 
-> **SCHEMA OWNERSHIP, NARROWED (A-237).** The shipped schema owns refusal of
-> *impossible* payloads, not requiredness of *evidence*. A payload-free PASS
-> validates against the schema alone and is refused by the model and raw
-> verifier — deliberately, and `tests/test_verdict_conformance.py` carries a
-> family of four assertions documenting that boundary. A-182's "every locally
-> expressible rule" should be read with this narrowing. Enforcing it in the
-> schema was attempted and reverted; see A-237 for the evidence.
+> **SCHEMA OWNERSHIP, NARROWED (A-237, evidence corrected by A-240).** The
+> shipped schema owns refusal of *impossible* payloads, not requiredness of
+> *evidence*. A payload-free PASS validates against the schema alone and is
+> refused by the model and raw verifier — deliberately. A-182's "every locally
+> expressible rule" should be read with this narrowing.
+>
+> **A-237's stated evidence was wrong.** It claimed
+> `tests/test_verdict_conformance.py` carries "a family of four assertions
+> documenting that boundary"; those four defend argv arithmetic,
+> claims-cover-declared-rigor (both directions) and evidence-covers-declarations,
+> and **none** of them is about payload requiredness. The narrowing nevertheless
+> stands, for a measured reason: driving the shipped verifier across every
+> payload-free-LEGAL status shows the A-116 re-derivation oracle fires for none
+> of them, so the only statuses that could violate A-116 on a payload-free claim
+> are exactly PASS and FAIL — the ones the schema branches would forbid. Adding
+> them makes a real oracle structurally unreachable. Read **A-240** for the
+> measurement and **A-241** for the partial-enforcement gap it exposed.
 >
 > **PRECEDENCE (A-231).** This document was written before three pre-dispatch
 > repair rounds. Where it conflicts with `carve-assets/P33/verdict.schema.v5.json`
@@ -258,6 +268,45 @@ New optional top-level `helpers`:
 P29's Go helper), `executable-code` (Go's existing `has_executable_code`).
 Designing it once, now, is what the operator asked for; adding a fourth role
 later is an additive enum change.
+
+**Correspondence rule, widened (A-243).** A `helpers` entry requires *either* a
+claim carrying the payload that role produces, *or* a claim whose terminal names
+that helper's own failure. Only `MUTATION_DISCOVERY_FAILED` qualifies for the
+second arm: `MUTATION_UNSUPPORTED` means nothing was invoked and
+`MISSING_EXTERNAL_TOOL` means the helper could not have been, so both must still
+refuse a `helpers` entry. The rule is cross-object and therefore lives in
+`verdict.py`/`verify.py`, **not** in the schema (A-182 as narrowed above). This
+reuses A-183's reasoning for keeping `judgment.r2` beside `MUTATION_UNSUPPORTED`:
+the provenance is exactly what a consumer needs to interpret the refusal. Still
+open for P34: a helper that ran successfully on a run that then failed for an
+unrelated reason.
+
+## V5-5a — the seam `statement-positions` is invoked through (A-239)
+
+The `statement-positions` role above had no seam to be called through when v5
+was designed (A-235). The accepted shape, which P27's re-carve starts from
+rather than re-litigating:
+
+1. **`go_cover.py` emits block extents as an explicit representation** — an
+   optional `blocks` field or sibling type — instead of pre-merging them into
+   line sets. P27's re-carve designs it; A-084 gives the extension to the
+   package that proves the need.
+2. **Statement positions arrive through a NEW protocol hook.** Never by
+   overloading `statement_spans`, whose contract is "called ONLY for
+   unattributed lines" (frozen by A-097/A-101) — that gates in the wrong
+   direction, rescuing gaps where Go needs to *demote fabrications*, and its
+   type carries no columns.
+3. **The intersection is a pure, language-free core function**: given block
+   extents plus statement positions, compute statement-granular line sets. Same
+   division of labour P07 established for spans.
+
+Built **Go-specific, not shared infrastructure** — there is no third consumer to
+amortize against (Istanbul is already statement-precise, SQL has no coverage
+tool). The rejected alternative — correcting at the adapter/evaluate boundary
+with no shared-model change — is not merely messier but information-theoretically
+insufficient: a statement on a shared block boundary (A-218's column-1 case) is
+collapsed to "executed" *during parsing*, and the per-block columns a recovery
+would need are already gone.
 
 ## What v5 deliberately does NOT do
 

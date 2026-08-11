@@ -40,7 +40,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P33 | **schema v5 contract** (language-qualified operators, hoisted lane facts, equivalence bucket, kill attribution, helper provenance) | 2b | **merged as `e41ea99f` (A-220–A-233); post-review carve repair `62305df3`** | Opus xhigh | fresh Opus xhigh |
-| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | NEXT: JIT freeze required; two rulings owed first (A-238) | Sonnet xhigh | fresh Opus xhigh |
+| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | NEXT: JIT freeze required; both owed rulings now landed (A-242/A-243) | Sonnet xhigh | fresh Opus xhigh |
 
 P20 through P26 are **MERGED**. P25's implementation-shaped contract, pinned
 966-entry Topos manifest, explicit three-symlink prospective adoption patch,
@@ -88,18 +88,28 @@ not interpretable at face value, and those ids are cited across merged packets,
 briefs, decisions and reports. Renumbering a third time would corrupt that
 trail. Read the chain above for order and the table for identity.
 
-**Before P27's re-carve is dispatched (A-234/A-235):** the committed Go coverage
+**Before P27's re-carve is dispatched (A-234):** the committed Go coverage
 fixtures contradict A-172's own disproven premise and must be regenerated *and*
 their consumer expectations re-derived from the option-2 oracle — regenerating
-alone would encode the over-approximation as truth. And `statement_spans` has no
-seam through which that oracle could be invoked, because `go_cover.py` leaves no
-unattributed line; closing it needs a real interface ruling with its own probe.
-Evidence: `carve-assets/P27/GO-FIXTURES-STALE.md`.
+alone would encode the over-approximation as truth. Evidence:
+`carve-assets/P27/GO-FIXTURES-STALE.md`.
 
-**Before P34 is dispatched (A-238):** its carve must rule on whether the flat
-seven-method `LanguageAdapter` stays honest for an R2-only language (B001 item 3,
-still open), and on the A-183/V5-5 tension that makes a failed SQL parser's
-provenance unrecordable.
+**The oracle's seam is RULED (A-239), not an open design question.** `go_cover.py`
+emits block extents as an explicit representation; statement positions arrive
+through a **new** protocol hook, never by overloading `statement_spans`; the
+intersection is a pure language-free core function. Go-specific, not shared
+infrastructure. P27's re-carve designs the details and must not re-open the shape
+— the alternative was eliminated on evidence, see `SCHEMA-V5-DESIGN.md` §V5-5a.
+
+**P34's two owed rulings are DECIDED (A-242/A-243); its carve inherits them
+rather than making them.** The flat seven-method `LanguageAdapter` stays: SQL
+genuinely needs three of the seven plus the four unconditional ones, and the five
+truly-dead methods **raise** rather than return a plausible value, per
+`verify.py`'s `_BASELINE_NEVER_READ` precedent. P34's carve owes one sentence
+distinguishing that from `GoAdapter.statement_spans` returning `None`, which is
+correct-by-contract. Helper provenance for a failed SQL parser is permitted, for
+`MUTATION_DISCOVERY_FAILED` only, with a negative test for the other two failure
+terminals. B001 item 3 is thereby closed.
 
 B001 is **absorbed**, not deleted: A-215's checkpoint questions are answered by
 P33's design (`SCHEMA-V5-DESIGN.md`) and proved by P34's real-PostgreSQL
@@ -274,6 +284,16 @@ shape with `(source, key)` identity for `adjudicated` and `attested` evidence.
 P10 implements only attested loading. No adjudicator registry is created until
 a real integration exists, so that future addition is additive rather than a
 consumer-wide schema bump (A-078).
+
+## After this series — accepted, un-numbered (A-244)
+
+**A-O06, `fail-before/pass-after` as a computed Tier 1 method**, is the accepted
+next capability priority once the Go wave closes at P32. It is a **planning
+acceptance, not a dispatch**: it has no package number, it does not gate the ship
+milestone, and no package in the queue above may cite it as a dependency. It beat
+A-O05 and A-O07 because it inverts already-qualified machinery (the R3 canary's
+build-a-variant-commit path) to produce a genuinely new claim — "this test would
+have caught the bug" — at close to zero new substrate.
 
 ## Not in this series
 
