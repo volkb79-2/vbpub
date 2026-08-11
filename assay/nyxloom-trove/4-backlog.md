@@ -5,6 +5,7 @@ items:
   - {id: B001, title: "SQL/DDL source-mutation adapter — design/probe checkpoint after P28 and before P29. Preferred path recorded; not yet carved.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process — design checkpoint. STOPPED SHORT of landing: two named blockers, and it edits release keys seven other products share.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
+  - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -409,3 +410,74 @@ is cmru's work and should not gate assay.
    artifact verifies exit 0 and one from another schema version exits 1.
 3. Wire it into B002 step 3's push step. Not before — the assets need a Release
    to attach to.
+
+---
+
+## B004 — provenance as VERIFIED evidence, not merely recorded
+
+**Proposed by:** dstdns's reconciliation program, 2026-08-11, out of its
+real-lane isolation work on ciu's S16 worktree verb ("embed provenance in the
+verdict so invariant #18 holds by construction").
+**Status:** the RECORDED half shipped the same day (A-254/A-255). The VERIFIED
+half is **hard-blocked on ciu CIU-20**, which does not exist. A-256 rules the
+adjacent same-instance question as discipline, not schema.
+
+### What already ships — do not re-carve this part
+
+A lane declaring `env_required` for a provenance variable puts it in the
+artifact's `env_effective` verbatim, on every outcome including refusals, and
+the artifact verifies clean. Measured, not designed: a real `S3` lane produced
+`env_effective` carrying `CIU_IMAGE_REVISION=1b369e23` and
+`CIU_INSTANCE_ID=dstdns-pkgP96`. **No verdict-schema change was needed and none
+should be added** (A-255).
+
+### What is blocked, and on exactly what
+
+| step | needs | status |
+|---|---|---|
+| Recorded, caller-asserted | `env_required` (A-254) | **SHIPPED** |
+| Recorded, ciu-**attested** | **ciu CIU-21** — inject the image's own baked `org.opencontainers.image.revision` as an env var | blocked; zero assay work when it lands |
+| **Verified** (adjudicated Tier-2 evidence) | **ciu CIU-20** — `ciu provenance --json`, a closed machine-readable verdict | blocked; this backlog item |
+| **Enforced** (refuse on mismatch) | a new `ReasonCode` → closed-enum widening → v6-class | not proposed |
+
+The distinction the middle two rows turn on is not cosmetic. Until CIU-21, the
+recorded value is **whatever the caller put in the environment** — an assertion,
+not an attestation. It is still worth recording (it is the truth about what ran)
+but a consumer must not read it as verified, and assay's artifact deliberately
+does not claim it is.
+
+### Why the verified step cannot be short-circuited
+
+A-030 is the binding constraint: assay never shells out to docker. At S3/S4 it
+runs *inside* the container, and an OCI label is readable only from the daemon
+side. So assay structurally cannot compute a provenance verdict, and the only
+honest carriers are the evidence arrays. `adjudicated` is the right one — "a
+tool's verdict assay records but does not verify" — and it has had zero
+integrations since A-034/A-078 reserved it.
+
+### The shape, when CIU-20 lands
+
+* A lane declares `(adjudicated, "image-provenance")` in `declared_evidence`.
+* A `--provenance-json <path>` style input, read through the existing bounded
+  `safeio` seam, never parsed from prose (A-204: byte-copy, never interpret).
+* A closed status mapping: `verified-match` → PASS, `mismatch` → FAIL,
+  `not-verified-*`/`refused-*` → NO_MEASUREMENT-class. An unrecognised member is
+  **refused**, not guessed, per this project's closed-vocabulary discipline.
+* It creates the adjudicator registry A-078 deferred, which is why this is a
+  package rather than a patch.
+
+### What it resolves
+
+**A-O12** (provenance verification for S3/S4 lanes) — fully, and A-O12's own
+text needs correcting first: its claim that "assay records `declared_unverified`"
+is false, verified — that string appears nowhere in `src/`, `docs/` or the
+schema, only in A-O12's own row. **A-O10** (which Tier-2 integration is built
+first) — provenance is the leading candidate precisely because it has *no
+threshold policy question*, which is the thing A-O10 is actually blocked on.
+
+### Sequencing
+
+**Not urgent, because its blocker is external.** It cannot start before CIU-20
+exists, and nothing assay controls changes that. When it does become available it
+competes with A-O06 (A-244's accepted next capability) and should **not** displace
+it — but it is cheap and in-estate, so it is the obvious item after.

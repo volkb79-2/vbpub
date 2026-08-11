@@ -1904,6 +1904,48 @@ def run_lane(
             budget_seconds=lane.budget_seconds, monotonic=monotonic
         )
 
+    # (A-254) The declared-environment precondition, checked BEFORE the
+    # higher-rigor delegation below so one insertion point covers both paths.
+    #
+    # WHY this exists: `resolve_command_plan` copies a passthrough name only
+    # `if name in source`, so an ABSENT one is silently dropped and the lane
+    # runs anyway. A lane that passes through a provenance or instance
+    # identity in order to RECORD it in `env_effective` therefore produces a
+    # clean PASS carrying no identity at all when the variable is missing --
+    # measured, not theorised: a lane declaring
+    # `env_passthrough = ["CIU_IMAGE_REVISION", "CIU_INSTANCE_ID"]` with
+    # neither set emits `env_effective` without them and PASSes. That is
+    # A-025's rule broken at the environment layer: the absence of a value
+    # read as the absence of a requirement.
+    #
+    # This is a PRE-REPOSITORY refusal -- decided before any Git work -- so
+    # `project_prefix=None` is the honest value, which is exactly the case
+    # A-193 sanctions for it.
+    #
+    # `ERROR`/`BAD_LANE_CONFIG` rather than a new reason code: the lane as
+    # DECLARED cannot be honoured in this environment, which is what that
+    # terminal already means for the tracked-coverage-artifact refusal. A
+    # dedicated `NO_MEASUREMENT` code would be marginally more precise, and
+    # would cost a closed-enum widening every consumer's schema copy would
+    # then reject -- a price A-138/A-170 make deliberate, not incidental.
+    missing_required = [
+        name for name in lane.env_required
+        if name not in (os.environ if passthrough_source is None else passthrough_source)
+    ]
+    if missing_required:
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+
     r1_declared = "R1" in lane.rigor
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor

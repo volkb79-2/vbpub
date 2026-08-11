@@ -73,6 +73,17 @@
 > `cmru release --project assay --dry-run` correctly refuses: *"Local main is
 > 103 commit(s) ahead of origin/main"* — cmru's own global guard, identical for
 > `--project ciu`. It needs `main` pushed and explicit operator authorisation.
+> **SHIPPED OUT OF SEQUENCE for dstdns (A-254/A-255/A-256), ahead of P34 and
+> deliberately:** the new optional lane key **`env_required`** — the subset of
+> `env_passthrough` whose absence refuses the lane, `ERROR/BAD_LANE_CONFIG`,
+> pre-repository. It closes a LIVE hole: an absent passthrough name is silently
+> dropped, so a lane recording a provenance/instance identity emitted a clean
+> PASS carrying nothing. **"Embed provenance in the verdict" needs NO schema
+> change and none was added** (A-255) — `env_effective` already carries it; what
+> is missing is a trustworthy producer, which is ciu's CIU-21/CIU-20. B004 holds
+> the verified half. **Same-instance re-verify is discipline over an existing
+> field, not a schema feature** (A-256).
+>
 > **The hollow-PASS/FAIL gap is CLOSED (A-251/A-252), P34's last blocker.**
 > Four `claim.allOf` branches plus a matching raw-verifier check; A-237's
 > narrowing is superseded and A-182's original doctrine restored. In-place

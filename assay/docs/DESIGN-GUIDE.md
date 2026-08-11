@@ -195,6 +195,47 @@ explicitly in `env` or `env_passthrough`; otherwise the lane fails to load with
 `BAD_LANE_CONFIG`. This prevents Python/libc's implementation-default executable
 search from becoming an undeclared input. An argv containing `/` needs no PATH.
 
+**`env_required` is the subset whose ABSENCE refuses the lane (A-254).** A
+passthrough name that is not set is silently dropped — `env_effective` copies a
+name only when the source has it — which is correct for an optional input and
+actively wrong for an *identity*. A lane that passes a container image revision
+or an instance id through in order to RECORD it in the artifact otherwise emits
+a clean `PASS` carrying no identity at all, and nothing anywhere says so: the
+absence of a value read as the absence of a requirement, which is A-025's rule
+broken one layer down.
+
+Naming a passthrough variable in `env_required` makes it a precondition. The
+refusal is `ERROR`/`BAD_LANE_CONFIG`, decided **before any Git work**, so a
+dirty tree cannot mask a missing identity; a name in `env_required` that
+`env_passthrough` does not declare is refused at *load*, because no environment
+could ever satisfy it. This is what lets an environment invariant hold by
+construction rather than by hope:
+
+```toml
+[lanes.integration]
+scope = "S3"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["pytest", "tests/integration", "-q"]
+env = {}
+env_passthrough = ["PATH", "CIU_INSTANCE_ID", "CIU_IMAGE_REVISION"]
+env_required    = ["CIU_INSTANCE_ID", "CIU_IMAGE_REVISION"]
+budget = "20m"
+allow_argv_append = false
+```
+
+Both names then appear verbatim in the artifact's `env_effective` on **every**
+outcome where the lane resolved, refusals included (A-036), so *which
+environment produced this verdict* is answerable from the artifact instead of
+asserted by whoever ran it. Two caveats that matter:
+
+* **`env_effective` is recorded, not verified.** assay copies the value; it does
+  not compare it against anything. It is transparency, not a claim — see §3 on
+  what makes something evidence.
+* **Pass identities through, never secrets.** Everything in `env_passthrough`
+  that is present lands in the artifact in cleartext. That is the point for an
+  instance id and a disaster for a token.
+
 ## 6. The verdict contract
 
 **Three channels, none duplicating another's authority.** The **exit code is

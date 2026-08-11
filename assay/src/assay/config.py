@@ -130,7 +130,7 @@ REQUIRED_LANE_FIELDS: tuple[str, ...] = (
     "allow_argv_append",
 )
 
-_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where")
+_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where", "env_required")
 
 #: A-017/A-048: declared rigor is ENFORCED, and the `judge` fields are
 #: CONDITIONALLY required — an R0-only lane has no `[judge]` table at all.
@@ -387,6 +387,11 @@ class Lane:
     judge: JudgeConfig | None
     #: §7: WHERE is data assay parses and never interprets.
     where: Mapping[str, Any] | None
+    #: (A-254) The subset of `env_passthrough` whose ABSENCE refuses the lane
+    #: before its command runs. Defaults to empty, so every lane written before
+    #: this field existed is unchanged -- and it is LAST in the field order
+    #: because it is the only defaulted field on a positional dataclass.
+    env_required: tuple[str, ...] = ()
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -406,6 +411,8 @@ class Lane:
             "budget": self.budget,
             "allow_argv_append": self.allow_argv_append,
         }
+        if self.env_required:
+            declared["env_required"] = list(self.env_required)
         if self.judge is not None:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
@@ -610,6 +617,23 @@ def _load_lane(
     # the collision here, at load time, makes that overwrite structurally
     # unreachable without touching runner.py at all: it can never see a lane
     # whose two tables disagree about a name's ownership.
+    env_required = _as_str_list(
+        table.get("env_required", []), where, "env_required"
+    )
+    # (A-254) `env_required` must be a SUBSET of `env_passthrough`, because a
+    # name outside it is unreachable by construction -- `resolve_command_plan`
+    # only ever copies declared passthrough names, so requiring a name the lane
+    # never asked for would refuse every run for a reason no environment could
+    # satisfy. Caught at load, where a typo is cheap, rather than at run time.
+    unreachable = sorted(set(env_required) - set(env_passthrough))
+    if unreachable:
+        raise LaneConfigError(
+            f"{where}: 'env_required' names {unreachable} which "
+            f"'env_passthrough' does not declare. A required name that is not "
+            f"passed through can never be satisfied -- add it to "
+            f"'env_passthrough' or drop it from 'env_required'."
+        )
+
     collisions = sorted(set(env) & set(env_passthrough))
     if collisions:
         raise LaneConfigError(
@@ -661,6 +685,7 @@ def _load_lane(
         argv=tuple(argv),
         env=MappingProxyType(dict(env)),
         env_passthrough=tuple(env_passthrough),
+        env_required=tuple(env_required),
         budget=budget,
         budget_seconds=budget_seconds,
         allow_argv_append=allow_argv_append,
