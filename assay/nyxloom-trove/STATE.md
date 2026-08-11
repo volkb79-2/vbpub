@@ -73,7 +73,15 @@
 > `cmru release --project assay --dry-run` correctly refuses: *"Local main is
 > 103 commit(s) ahead of origin/main"* — cmru's own global guard, identical for
 > `--project ciu`. It needs `main` pushed and explicit operator authorisation.
-> After that, P34.
+> After that, P34 — whose **pre-carve SCOPE is written** at
+> `reports/assay-P34-CARVE-SCOPE.md`. It is not a carve and P34 is **not
+> dispatchable**: it is gated on ship AND on the operator's ruling on Fable's
+> hollow-PASS/FAIL recommendation (Addendum 3 Part 2), which would tighten the
+> very schema P34's keystone SQL template freezes against. The scope also
+> surfaces one cross-package collision: if P34's SQL parser is an EXTERNAL tool
+> rather than a stdlib-only scanner, P34 — not P27 — becomes the first
+> `MISSING_EXTERNAL_TOOL` producer, and A-246's ownership assignment needs
+> revisiting by decision rather than by whichever package writes code first.
 >
 > **NEXT WORK WAS THE SHIP MILESTONE (cmru adoption + zipapp), NOT P34.**
 > Resequenced 2026-08-11 by A-248: the execution order is now
