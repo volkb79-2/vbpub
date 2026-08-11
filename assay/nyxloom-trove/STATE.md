@@ -67,9 +67,11 @@
 > protocol hook for statement positions, intersection as a pure core function,
 > Go-specific; do not re-open the shape). Also **A-240/A-241**: A-237's narrowing
 > stands but its stated evidence was false, and A-116's verbatim-propagation
-> enforcement is now known to be PARTIAL — a payload-free `ERROR` carrying the
-> wrong `reason_code` is not caught. **A-241 is an open verifier gap, owned by
-> whoever next touches `verify.py`'s R2 re-derivation.** **A-244** accepts A-O06
+> enforcement was PARTIAL. **A-241 is now FIXED (`a7c16d0c`, A-245) — and half
+> of it was wrong: only `MUTATION_DISCOVERY_FAILED`, `BASE_IS_HEAD` and
+> `UNREADABLE_ARTIFACT` were under-enforced; `GIT_FAILED`/`DIRTY_TREE`/
+> `HEAD_CHANGED` beside a failing baseline are legitimate producer output and
+> must stay unconstrained.** **A-244** accepts A-O06
 > as the next capability after P32 — planning only, no package, no dispatch.**
 > **P27's** pinned image inputs, two-commit fixture with real reproduced
 > profiles, independent statement manifest, and locked v4 missing-tool artifact
