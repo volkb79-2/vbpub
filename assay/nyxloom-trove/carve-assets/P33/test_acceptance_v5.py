@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -701,6 +702,61 @@ def test_sweep_reports_no_zero_frozen_tree_noise_without_a_supplying_caller():
             )
 
 
+def _gate_pytest_args(gate_text: str, target: str) -> list[str]:
+    """Pytest's OWN arguments from the gate's invocation of `target`.
+
+    Extracted from the test so it can be driven directly, because round 6 found
+    the collection code had never executed: an earlier assertion in the same test
+    short-circuits while P33 is undispatched, so every bug below shipped unrun.
+
+    Three bugs this fixes, all found by reading and then reproduced:
+
+    1. A whole-script grep for a bare marker flag harvested `-m pytest` from the gate's
+       own `python -m pytest` module invocation and fed it back as a marker
+       filter, so the reconstructed call filtered to zero collected tests
+       unconditionally. Fixed structurally rather than with a lookahead: split
+       the logical line into tokens and take only what follows the `pytest`
+       token, which is by definition pytest's own argv.
+    2. `f.split(None, 1)` on `-k "not foo"` kept the literal quotes and produced
+       an expression pytest rejects. `shlex.split` handles quoting correctly.
+    3. Flags were harvested from the entire script rather than from the one
+       invocation, so an unrelated pytest call elsewhere leaked in.
+
+    Shell line-continuations are folded first; the gate writes this invocation
+    across four physical lines.
+    """
+    joined = re.sub(r"\\\n\s*", " ", gate_text)
+    line = next(
+        (ln for ln in joined.splitlines()
+         if target in ln and "pytest" in ln),
+        None,
+    )
+    if line is None:
+        return []
+    try:
+        tokens = shlex.split(line, comments=True)
+    except ValueError:
+        return []
+    # everything after the `pytest` token is pytest's own argv; everything
+    # before it is `<interpreter> -m`, which is what bug 1 was harvesting.
+    try:
+        tokens = tokens[tokens.index("pytest") + 1:]
+    except ValueError:
+        return []
+
+    args: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("--deselect="):
+            args += tok.split("=", 1)
+        elif tok in ("--deselect", "-k", "-m") and i + 1 < len(tokens):
+            args += [tok, tokens[i + 1]]
+            i += 1
+        i += 1
+    return args
+
+
 def test_gate_script_wiring_is_exactly_what_the_handoff_claims():
     """O5's source-level oracle.
 
@@ -725,20 +781,22 @@ def test_gate_script_wiring_is_exactly_what_the_handoff_claims():
         "P26's module was retired; A-226/A-229 require it kept"
     )
 
-    # Reconstruct the gate's P26 invocation and ask pytest what it collects.
-    line = next(
-        (ln for ln in gate.splitlines() if "carve-assets/P26/test_acceptance.py" in ln
-         and "pytest" not in ln or "test_acceptance.py" in ln and "--deselect" in ln),
-        None,
-    )
-    flags = re.findall(r'(--deselect[= ]\S+|-k\s+"[^"]+"|-m\s+\S+)', gate)
     argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
             str(ROOT / "nyxloom-trove/carve-assets/P26/test_acceptance.py")]
-    for f in flags:
-        argv += f.split("=", 1) if f.startswith("--deselect=") else f.split(None, 1)
+    argv += _gate_pytest_args(gate, "carve-assets/P26/test_acceptance.py")
     proc = subprocess.run(argv, capture_output=True, text=True, cwd=ROOT,
-                          env={**__import__("os").environ, "PYTHONPATH": str(ROOT / "src")})
+                          env={**__import__("os").environ,
+                               "PYTHONPATH": str(ROOT / "src")})
+    # Bug 3: an unchecked returncode silently parsed whatever stdout held, so a
+    # malformed reconstruction read as "nothing collected" and the oracle passed
+    # or failed for reasons unrelated to the gate's real wiring.
+    assert proc.returncode == 0, (
+        f"pytest collection failed (exit {proc.returncode}) -- the oracle's own "
+        f"setup is broken, which is not the same as a wiring defect.\n"
+        f"argv={argv}\nstderr={proc.stderr[-600:]}"
+    )
     collected = set(re.findall(r"::(\w+)", proc.stdout))
+    assert collected, "pytest collected nothing; the reconstruction is wrong"
 
     must_run = "test_all_structural_and_aggregate_bounds_precede_every_git_call"
     must_not_run = {
@@ -749,8 +807,7 @@ def test_gate_script_wiring_is_exactly_what_the_handoff_claims():
     }
     assert must_run in collected, (
         f"A-210's aggregate-bounds oracle is NOT collected under the gate's own "
-        f"flags -- however it was suppressed, it stopped running (A-229). "
-        f"collected={sorted(collected)[:5]}..."
+        f"flags -- however it was suppressed, it stopped running (A-229)."
     )
     still_collected = must_not_run & collected
     assert not still_collected, (
