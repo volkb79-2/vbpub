@@ -54,6 +54,10 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-18 | Image provenance is STAMPED but not ENFORCED. `bake` now sets `org.opencontainers.image.revision` (with a `-dirty` suffix) on every baked image, so a container can be traced to its commit — but nothing yet REFUSES to run a live/integration lane against an image whose label does not match the commit under test. Until it does, a live result can still silently describe an unknown artifact, which the consuming project's own policy (dstdns AGENTS.md §4.1a) already calls a defect. FIXED as a TEST-time gate (`ciu provenance`, S17.2) over RUNNING containers — not a deploy-time one: at deploy the question is "did I bake?", which surfaces immediately, whereas the question that yields bad EVIDENCE is asked against an already-running stack. `ciu test` (D7) will call it when that surface exists | Medium | FIXED |
 | CIU-20 | `ciu provenance` has no machine-readable output: the success path is silent and the failure path is prose + exit code, so a downstream evidence consumer (assay) cannot record *what was checked and what it found* — only "no refusal happened", which is not the same fact | Low | OPEN |
 | CIU-21 | No way for a process INSIDE a container to learn the image's own `org.opencontainers.image.revision`: the label is readable only from the docker-daemon side, so an in-container test runner cannot verify its own provenance without an outside co-process | Low | OPEN |
+| CIU-22 | No shared-infra-join for `ciu worktree`: `worktree add` gives a new instance its OWN full stack, but heavy/rarely-diverging infra (identity, secrets, observability, reverse-proxy) has to stand up N times too — no way to join a new worktree's diverging tier onto an EXISTING instance's shared infra networks | Medium | OPEN |
+| CIU-23 | No lightweight per-worktree DATA isolation: the only isolation `ciu worktree` offers is a full separate container stack, but the common real-lane case (schema diverges per package, nothing else does) needs only a namespaced database on a shared server, not N full Postgres containers | Medium | OPEN |
+| CIU-24 | No concurrency budget for worktree instances: nothing caps how many can run at once against a host's actual capacity, so K parallel isolated real-lane gates can OOM or starve a shared host with no warning | Low | OPEN |
+| CIU-25 | No leak detector for worktree instances: an orphaned stack (crashed child, killed session, forgotten `worktree rm`) is never reaped, silently consuming host resources indefinitely | Low | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -752,3 +756,131 @@ changing a label requires rebuilding the image; and an env var is visible only
 to processes inside the container while it runs, so unlike the label it cannot
 serve a post-hoc audit or S17.2's own gate over an already-running stack. This
 entry therefore complements CIU-20 and does not replace it.
+
+### CIU-22 detail: no shared-infra-join for `ciu worktree`
+
+**Reported by:** assay/vbpub (cross-project review), 2026-08-11, corroborated
+by dstdns's own reconciliation program hitting the need in practice the same
+day while designing real-lane (integration/schema/E2E) isolation.
+**Severity:** Medium — S16 already gives full isolation; this is about not
+paying for isolation on the tiers that never diverge.
+
+**The problem, concretely.** A project's stack is not one uniform thing.
+dstdns's own tiering (independently derived, and it lines up with existing
+CIU practice — S15.10's global-vs-stack governance split draws the same kind
+of line): a **state/schema tier** (Postgres, Redis, app services, object
+storage) that genuinely diverges per package under test — different schema,
+different code, different data; and an **identity/secrets/observability
+tier** (an IdP, a secrets manager, tracing, a reverse proxy) that is heavy,
+slow to start, and essentially never differs between one worktree and
+another. `ciu worktree add` today gives a new instance the whole stack or
+nothing — there is no way to bring up only the diverging tier and join it to
+an *existing* instance's already-running shared-infra services. Standing up
+N full copies of the heavy tier (dstdns names its IdP specifically as
+expensive and finicky to replicate) to get isolation on the cheap tier is a
+real cost multiplier that scales with concurrent worktrees.
+
+**What's needed.** A join mode: `ciu worktree add <pkg> --shared-infra
+<instance-ref>` (or an equivalent profile pair), where the new worktree's own
+`ciu.env`/compose overlay wires its data+app tier's containers onto the named
+existing instance's network(s) for the shared services, rather than
+generating fresh ones. The new instance still gets its OWN `INSTANCE_ID`
+(S2) and its own diverging containers; only the shared-tier network
+membership is borrowed.
+
+**Why it belongs in CIU, not in a consumer.** Network naming, instance
+identity, and compose overlay generation are already exclusively CIU's
+(S1-S2, S15.3); a consumer script reaching in to attach a container to
+another instance's network by hand would be exactly the kind of re-derivation
+D7 already argues CIU should own instead of every consumer inventing badly.
+
+**Proposed SPEC ID:** S16.1 — shared-infra join for worktree instances.
+
+### CIU-23 detail: no lightweight per-worktree DATA isolation
+
+**Reported by:** assay/vbpub, 2026-08-11, same source as CIU-22.
+**Severity:** Medium — full-container isolation (what S16 gives today) is
+correct but expensive for the common real-lane case.
+
+**The problem.** The only isolation `ciu worktree` currently offers is a
+full separate container per service. For the specific, common shape of a
+Postgres-backed real/integration lane, that is more than the isolation
+requirement actually demands: what has to diverge is the **schema and data**,
+not a running `postgres` process. dstdns's own `scripts/schema-gate.sh`
+already prototypes exactly this cheaper pattern by hand — a throwaway,
+uniquely-named database provisioned on a live server, torn down via `trap` on
+every exit path — because no first-class primitive exists. Two packages'
+worktrees can legitimately have *incompatible* schemas at once (one deletes a
+table the other still declares); a namespaced database per instance on one
+shared Postgres server gives that isolation at a fraction of the cost of N
+full Postgres containers, memory and startup time both.
+
+**What's needed.** A first-class lightweight data-isolation mode: given a
+shared Postgres (or similar) service and a worktree's `INSTANCE_ID`, provision
+a uniquely-named database/schema on it, apply the worktree's own init/schema
+scripts, and guarantee teardown on `worktree rm` (S16's existing
+clean-before-remove ordering already gives a natural hook for this). The
+project still owns *what* the init scripts do (D7's WHAT/HOW split); CIU
+would own *provisioning and naming* the isolated slot, the same WHERE
+responsibility it already has for full containers.
+
+**Why it belongs in CIU, not in a consumer.** Every consumer with a
+Postgres-backed real lane will reinvent `schema-gate.sh`'s pattern by hand
+otherwise — naming collisions, cleanup-on-every-exit-path, and the
+instance-identity binding are the same problem S16 already solved for whole
+containers, one level down.
+
+**Proposed SPEC ID:** S16.2 — namespaced data isolation for worktree
+instances.
+
+### CIU-24 detail: no concurrency budget for worktree instances
+
+**Reported by:** assay/vbpub, 2026-08-11, same source as CIU-22/23.
+**Severity:** Low — a real risk once concurrent gating is actually used, not
+a defect in anything shipped today.
+
+**The problem.** Nothing today caps how many `ciu worktree` instances can be
+up at once against what the host can actually sustain. A program that wants
+to gate K packages in parallel (the whole point of per-worktree isolation —
+without it, "exactly one gate at a time" is a standing rule specifically
+because a shared stack contaminates evidence) has no signal from CIU about
+how large K can safely be; it can only find out by OOMing the host.
+
+**What's needed.** A concurrency budget, keyed to the same mechanism CIU
+already uses for resource governance: `governance.py` already resolves
+`cgroup_parent` from `$CGROUP_PARENT_DEV_BACKGROUND` (S15.8); extending that
+to a declared max-concurrent-instances gate (refuse `worktree add`, or
+`ciu up` inside one, past the configured cap) reuses an existing mechanism
+rather than inventing a new one.
+
+**Why it belongs in CIU, not in a consumer.** Instance count and host
+resource governance are already CIU's domain (S15); a consumer has no way to
+see how many *other* worktree instances currently exist on the host, since
+that is cross-repo, host-wide state only CIU can see.
+
+**Proposed SPEC ID:** S16.3 — worktree instance concurrency budget.
+
+### CIU-25 detail: no leak detector for worktree instances
+
+**Reported by:** assay/vbpub, 2026-08-11, same source as CIU-22/23/24.
+**Severity:** Low — a hygiene gap, not a correctness one; compounds CIU-24
+(a leaked instance quietly eats into the concurrency budget above).
+
+**The problem.** `ciu worktree rm` cleans up correctly when it runs (S16's
+own normative clean-then-remove order) — but nothing catches the case where
+it never runs at all: a crashed dispatcher, a killed session, a forgotten
+manual cleanup. The stack (and, per S16, the volumes a plain `rm -rf` cannot
+touch) is left running indefinitely with nothing surfacing that it happened.
+
+**What's needed.** `ciu worktree list --stale` (or equivalent), identifying
+instances whose git worktree no longer exists on disk, or whose containers
+have been running past some staleness signal with no corresponding live
+process; and a reap path — either an explicit `ciu worktree gc` a human/CI
+job runs periodically, or an on-child-death hook a dispatcher can register.
+
+**Why it belongs in CIU, not in a consumer.** `worktree list` already exists
+and already enumerates exactly the state needed to detect this (S16); a
+consumer cannot see other instances' worktrees at all, so leak detection is
+structurally CIU's to own, same reasoning as CIU-24.
+
+**Proposed SPEC ID:** S16.4 — stale worktree instance detection and reap.
