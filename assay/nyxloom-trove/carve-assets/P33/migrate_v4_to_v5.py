@@ -314,6 +314,17 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
     )
     log.append("mutation.description: FOUR -> FIVE identity buckets (A-228)")
 
+    # Post-implementation review: `wire_path`'s own description still pointed at
+    # `judgment.r1.source_roots`, a key V5-1 moved. Inherited verbatim from the
+    # v4 snapshot, so it has to be rewritten here rather than in the generated
+    # JSON. The neighbouring reference to `judgment.r1.allow_excluded` is left
+    # alone deliberately: V5-1 hoisted exactly three keys and that is not one.
+    wp = defs.get("wire_path", {})
+    if "description" in wp and "judgment.r1.source_roots" in wp["description"]:
+        wp["description"] = wp["description"].replace(
+            "judgment.r1.source_roots", "judgment.resolved.source_roots")
+        log.append("wire_path.description: judgment.r1 -> judgment.resolved.source_roots")
+
     # R2-B4 repair (A-227): the base rule was `if`, never `only-if`. An r3-only
     # judgment carrying a base validated. The producer cannot reach that state
     # (A-062 refuses judge.base on an R0,R3 lane as inert config) but verify.py

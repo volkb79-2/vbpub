@@ -575,7 +575,7 @@ claims knowledge must say what it knows it from.
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version: 4` (an integer, bumped on any breaking shape change) and
+carries `schema_version: 5` (an integer, bumped on any breaking shape change) and
 `assay_version`.
 
 **A version bump is a migration for the consumer, never an upgrade by the

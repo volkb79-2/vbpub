@@ -559,9 +559,10 @@ def _load_lane(tmp_path, mutation_inline: str, language: str = "python"):
       argv[0] absolute         -- a bare name is refused unless PATH is declared
       src/ must exist          -- source roots are checked against the tree
 
-    Verified: with `operators = ["compare-swap"]` this fixture loads TODAY
-    against the shipped v4 loader. That is what makes the control meaningful --
-    the only thing separating it from green is the operator vocabulary.
+    The lane body below is structurally valid under both schema versions; only
+    the operator spelling distinguishes them. Under v5 the qualified
+    `python:compare-swap` loads and the bare `compare-swap` does not, because
+    A-220/V5-2 is rename-not-alias.
     """
     from assay import config as C
 
@@ -589,14 +590,28 @@ def _load_lane(tmp_path, mutation_inline: str, language: str = "python"):
 
 
 def test_config_fixture_itself_loads_today(tmp_path):
-    """The control for the controls.
+    """The control for the controls: does the fixture itself load?
 
-    If this goes red, every config test below is failing for a fixture reason
-    rather than a contract reason -- which is exactly the defect round 5 found,
-    twice in the same tests. It uses the v4 spelling deliberately, so it is
-    green BEFORE the migration and must stay green after.
+    Its purpose is unchanged and still worth having -- if this reddens, every
+    config test below it is failing for a FIXTURE reason rather than a contract
+    reason, which is exactly the defect that got through rounds 4 and 5.
+
+    What changed is the spelling. The first version declared the bare v4
+    operator `compare-swap` so the test would be green *before* the migration,
+    and its docstring claimed it would "stay green after". **That premise was
+    false, and the fault is mine:** A-220/V5-2 is rename-not-alias -- after v5
+    there is no accepted bare spelling anywhere, in config, in the artifact, or
+    in `vocabulary.py`. The implementer, the phase-1 reviewer and the phase-2
+    reviewer each reached that independently, and phase 2 correctly refused to
+    work around a locked asset (A-197/A-222 give the correction to the carver).
+
+    So the fixture now declares the qualified `python:compare-swap`. That is
+    green under any correct v5 implementation and red under none. The
+    pre-implementation-green property is gone, which is fine: it was a carve-time
+    convenience, never this test's purpose.
     """
-    C, toml = _load_lane(tmp_path, 'jobs = 1, max_mutants = 10, operators = ["compare-swap"]')
+    C, toml = _load_lane(
+        tmp_path, 'jobs = 1, max_mutants = 10, operators = ["python:compare-swap"]')
     lane_file = C.load_lane_file(toml)
     assert "demo" in lane_file.lanes
 

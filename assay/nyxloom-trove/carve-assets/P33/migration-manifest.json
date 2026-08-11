@@ -14,7 +14,14 @@
     },
     "p26_deselected": 4,
     "p26_retained": 20,
-    "locked_suite_pre_implementation": "see the pasted pytest output in reports/assay-P33-JIT-CARVE.md"
+    "locked_suite_pre_implementation": "see the pasted pytest output in reports/assay-P33-JIT-CARVE.md",
+    "sweep_consumers_note": "BOTH counts are recorded because they are both true, of different trees. 27 is main (pre-merge); 30 is feat/assay-P33-verdict-schema-v5 at 6ce66717, verified by running the sweep in a detached worktree of that commit. The three added entries are carve-assets/P33/test_acceptance_v5.py, carve-assets/P33/sweep_v4_consumers.py and src/assay/verify.py -- all v5-NATIVE, none a v4 consumer, so no escalate_if condition fires. Both post-implementation reviewers reached that independently. Pinning a single number here would have been wrong either way: the inventory necessarily grows when the package it inventories ships code.",
+    "sweep_consumers_post_implementation": 30,
+    "sweep_consumers_by_kind_post_implementation": {
+      "direct": 26,
+      "indirect-path-from-argv": 2,
+      "indirect-path-from-environ": 2
+    }
   },
   "note": "CANONICAL_COUNTS is the ONLY place a count lives. Round 5: a stated pass/fail count is not evidence -- the carve report pastes real command output instead.",
   "scan_command": "git ls-files + four content patterns, UNION sweep_v4_consumers.py --json, plus tools/tester-unified-gate.sh",
