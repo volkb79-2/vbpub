@@ -53,6 +53,17 @@
 > A-231) with decisions A-220–A-233 plus A-234–A-244 from the two Fable
 > full-codebase review rounds.
 >
+> **The nyxloom spine now exists** (`1-north-star.md`, `2-product-definition.md`,
+> `3-roadmap.md`, beside the pre-existing `4-backlog.md`). `2-product-definition.md`
+> is the machine-diffed one: 15 features, 44 structured acceptance criteria, 40
+> `proven` with real pytest node ids and 4 `absent` with what blocks each. All
+> four validate against `nyxloom/src/nyxloom/schemas/spine-*.schema.json` and
+> return **zero findings from `nyxloom.lint.lint_spine`**; every citation
+> resolves under `nyxloom.product_evidence.evidence_resolves`. **F008 (Go) is
+> `building`, not `shipped`** — that is the honest record of A-234/A-239 and must
+> not be "tidied" up. assay's trove does not run under the nyxloom daemon; the
+> schemas are the contract.
+>
 > **NEXT WORK IS P34 (SQL adapter), and it is now UNBLOCKED.** Both rulings P34
 > was waiting on are landed: **A-242** (the flat seven-method `LanguageAdapter`
 > stays; the five SQL-dead methods raise rather than return a plausible value)
