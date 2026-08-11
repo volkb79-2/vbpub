@@ -375,6 +375,51 @@ items:
   component: spine
   context_estimate: small
   folds_into: F005
+- id: B42
+  title: 'L13 path extraction is noise-dominated on prose oracles: measured 10/10
+    FALSE POSITIVES across 11 dstdns handoffs. Four distinct causes, all in the
+    extractor rather than the carve: (a) SHORTHAND paths in oracle prose --
+    `mock_targets/mock_dns.py` warned while scope.touch correctly held
+    `tests/_harness/mock_targets/mock_dns.py`; (b) DIRECTORY mentions -- a warning
+    on `tests/config` while touch held `tests/config/test_x.py`, i.e. the inverse
+    of a real gap; (c) GATE-COMMAND targets -- `tests/unit`, `tests/contract`,
+    `tests/schema` extracted from the pytest argv, which are RUN targets and must
+    never be edit targets; (d) `./` PREFIX defeating fnmatch --
+    `./scripts/testing-exec.sh` warned while touch held `scripts/testing-exec.sh`.
+    Why it matters more than the noise: L13 exists to catch an oracle
+    unsatisfiable within scope.touch, which is the single failure mode that
+    killed dstdns packages P26 and P31 and was caught again by hand on P97. A
+    warning that is wrong every time trains the operator to filter the channel --
+    and dstdns did exactly that, grepping lint output for `error` for a whole
+    session and never seeing L13 at all. Suggested: normalise a leading `./`;
+    treat a directory-shaped token as covered when any touch entry lies under it;
+    do not extract from gate-command text; and require an extracted token to
+    resolve in-repo before warning.'
+  type: bugfix
+  component: carve
+  context_estimate: medium
+  folds_into: F008
+- id: B43
+  title: 'a scope.touch entry that is an existing BARE DIRECTORY grants zero
+    coverage yet passes every rule. L7 checks existence, and a directory exists,
+    so it passes; L13 matches per-file with fnmatch (lint.py:1175), under which
+    fnmatch("docs/X.md", "docs") is False. The entry therefore looks generous and
+    covers nothing, and there is no rule that reports the contradiction between
+    the two. Detection today is INCIDENTAL: it surfaces only if an oracle happens
+    to reference a path beneath that directory. Canaried both ways on dstdns --
+    a handoff with `tests/fixtures/mock_data/dns_queries` and the same handoff
+    with `.../dns_queries/**` produce BYTE-IDENTICAL lint output and both exit 0.
+    dstdns shipped this in P98 (`- "docs"`) and carried a second live instance in
+    P94; both were caught by hand, then mechanically by a project-local checker.
+    Suggested: error on a scope.touch entry resolving to an existing directory
+    with no glob metacharacter, prescribing `<dir>/**`. scope.forbid MUST be
+    exempt -- bare directories are the established convention there (all 11
+    dstdns packages use them) and lint accepts them today.'
+  type: bugfix
+  component: carve
+  context_estimate: small
+  folds_into: F008
+
 ---
 
 # nyxloom — backlog

@@ -954,7 +954,7 @@
       "additionalProperties": false
     },
     "wire_path": {
-      "description": "A normalized relative forward-slash path (A-182): at least one component, no empty/'.'/'..' component, no leading or trailing slash, no backslash, no NUL. Deliberately NOT applied to judgment.r1.source_roots, where '.' is a legal declared directory (a Go module rooted at its own repository top declares exactly that).",
+      "description": "A normalized relative forward-slash path (A-182): at least one component, no empty/'.'/'..' component, no leading or trailing slash, no backslash, no NUL. Deliberately NOT applied to judgment.resolved.source_roots, where '.' is a legal declared directory (a Go module rooted at its own repository top declares exactly that).",
       "type": "string",
       "minLength": 1,
       "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$"
