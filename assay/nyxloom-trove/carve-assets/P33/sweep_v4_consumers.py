@@ -2,161 +2,268 @@
 """Inventory every consumer of a frozen expected-artifact inside the REGISTERED
 GATE's transitive execution path. Carver-owned locked asset.
 
-Round 1 found the gate running P26's locked v4 acceptance suite. The repair
-retired that invocation and added one scanner pattern for it. Round 2 then found
-`gate/python/qualify_topos.py` doing whole-document equality against locked
-**P25** v4 templates at the very next gate step. Same disease, one package over.
+History, because it explains the shape:
 
-The lesson, in the round-2 reviewer's words: *a version bump breaks every frozen
-expectation any live code compares against, not only the ones that live in a test
-file* — and *a defect class closes when its inventory closes, not when its
-instance does* (A-141's rule). So this is an INVENTORY, not another pattern.
+* Round 1 found the gate running P26's locked v4 acceptance suite. The repair
+  retired that invocation and added one scanner pattern for it.
+* Round 2 found `gate/python/qualify_topos.py` comparing against locked **P25**
+  templates at the next gate step. The repair produced v1 of this sweep.
+* Round 3 found v1's own closure claim false on five independent grounds, with a
+  real missed consumer: `gate/distribution/release_wheel.py`.
 
-Method, and why it is shaped this way:
+A-141's rule — *a defect class closes when its inventory closes, not when its
+instance does* — applies to the inventory tool as much as to the defect. v2
+closes round 3's five gaps:
 
-1. Start from `tools/tester-unified-gate.sh` and extract every path it invokes.
-   A content scan alone cannot find this class: `qualify_topos.py` builds
-   `carve-assets/P25/expected` from `/`-joined components, so no grep for the
-   literal path matches it. We therefore look for the *components*.
-2. Follow local imports transitively from each invoked Python target, so a helper
-   module that owns the comparison is reached even though the gate never names it.
-3. For every file in that closure, report each consumption SIGNAL:
-     - references a frozen-expectation directory by literal path or by components
-     - calls verify_document / verify_text
-     - compares a parsed document for equality against a template
-     - carries a `schema_version` literal
-4. Print a verdict per file: does a v5 shipped schema break it?
+1. **Seeds.** The gate's primary Python invocation is `assay run tester-unified`,
+   whose argv lives in `assay.toml`, not in the gate script. v1 never read it and
+   reached `tests/` only incidentally, via a failure-only diagnostic line. v2
+   seeds from the gate script AND `assay.toml`'s declared argv AND the gate
+   script's inline `python - <<PYEOF` heredocs.
+2. **Subprocess targets.** `qualify_topos.py` shells out to
+   `gate/distribution/release_wheel.py` via `/`-joined components. v2 applies the
+   same component logic to executable targets, so a shelled-to helper enters the
+   closure.
+3. **Dotted imports.** v1 resolved `a.b.c` by leaf name only, so
+   `src/assay/adapters/**` and `src/assay/coverage_parsers/**` were structurally
+   unreachable. v2 resolves through the real package layout.
+4. **`from . import X`.** `ImportFrom` with `module=None` was skipped — nine
+   occurrences, and `safeio.py` provably fell out. v2 handles it.
+5. **The predicate.** v1 asked "does the text mention one of four directory
+   names, and match one of five regexes". That missed `read_bytes() ==` against
+   locked P24 assets entirely. v2 asks the real question: *does this file read a
+   path under a carver-owned frozen tree, by any idiom, and compare it?*
+
+Completeness is not provable for a dynamic language and this does not claim it.
+What it claims is that the five demonstrated gaps are closed, and
+`test_sweep_finds_a_planted_decoy_consumer` in the locked suite plants a
+synthetic consumer the sweep must find — so a regression in this file's own logic
+is caught by the gate rather than by a fifth review round.
 
 Run from the assay project root:
     python3 nyxloom-trove/carve-assets/P33/sweep_v4_consumers.py
+    python3 nyxloom-trove/carve-assets/P33/sweep_v4_consumers.py --json
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 GATE = ROOT / "tools" / "tester-unified-gate.sh"
+LANE_CONFIG = ROOT / "assay.toml"
+SRC = ROOT / "src"
 
-# Directories holding frozen expected artifacts. Components, not just paths,
-# because the class hides behind path joining.
-FROZEN_DIR_COMPONENTS = ("carve-assets", "expected", "fixtures", "verdicts")
+#: Trees holding a carver-frozen expectation. A file that reads one of these and
+#: compares is a consumer, whatever idiom it uses. Derived from where frozen
+#: expectations actually live, not from a list of pretty names.
+FROZEN_TREES = (
+    "nyxloom-trove/carve-assets",
+    "gate/python/release",
+    "gate/python/fixtures",
+    "tests/fixtures",
+)
 
-SIGNALS = {
-    "verify_document": re.compile(r"\bverify_document\b"),
-    "verify_text": re.compile(r"\bverify_text\b"),
-    "schema_version_literal": re.compile(r"schema_version"),
-    "document_equality": re.compile(
-        r"(!=\s*expected|==\s*expected|expected\s*!=|expected\s*==|"
-        r"normalized\s*!=|assert\s+actual\s*==)"
-    ),
-    "reads_expected_template": re.compile(
-        r"(_EXPECTED_ROOT|expected[\"'\]/]|template\.read_text|"
-        r"_substitute_template)"
-    ),
-}
-
-
-def gate_invocations() -> list[Path]:
-    """Every repository path the gate script hands to an interpreter."""
-    text = GATE.read_text()
-    found: list[Path] = []
-    for m in re.finditer(r'\$worktree/assay/([A-Za-z0-9_./-]+\.py)', text):
-        found.append(ROOT / m.group(1))
-    # pytest targets given relative to the project root
-    for m in re.finditer(r'-m pytest\s+(?:"[^"]*"|)?\s*([A-Za-z0-9_./-]+\.py)', text):
-        p = ROOT / m.group(1)
-        if p.exists():
-            found.append(p)
-    for m in re.finditer(r'-m pytest\s+(tests)\b', text):
-        found.append(ROOT / "tests")
-    return sorted(set(found))
+#: Any idiom that compares a read document/bytes against something.
+COMPARISON = re.compile(
+    r"(==\s*expected|!=\s*expected|expected\s*[=!]=|normalized\s*[=!]=|"
+    r"assert\s+\w+\s*==|read_bytes\(\)\s*==|read_text\(\)\s*==|"
+    r"json\.loads\([^)]*\)\s*[=!]=|verify_document|verify_text|"
+    r"_substitute_template|_EXPECTED_ROOT|assertEqual)"
+)
 
 
-def local_imports(path: Path) -> set[Path]:
-    """Sibling/relative modules this file imports, so helpers are reached."""
-    out: set[Path] = set()
-    try:
-        tree = ast.parse(path.read_text())
-    except Exception:
-        return out
-    for node in ast.walk(tree):
-        names: list[str] = []
-        if isinstance(node, ast.Import):
-            names = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names = [node.module]
-        for name in names:
-            leaf = name.split(".")[-1]
-            for cand in (path.parent / f"{leaf}.py", ROOT / "src" / "assay" / f"{leaf}.py"):
-                if cand.exists() and cand != path:
-                    out.add(cand)
+def _seg_variants(tree: str) -> list[str]:
+    """A frozen tree spelled as a literal path, or built from components."""
+    parts = tree.split("/")
+    out = [tree, tree.replace("/", '" / "'), tree.replace("/", "', '")]
+    out += [f'"{p}"' for p in parts if p not in ("gate", "tests", "src")]
+    out += [f"'{p}'" for p in parts if p not in ("gate", "tests", "src")]
     return out
 
 
-def closure(seeds: list[Path]) -> list[Path]:
+def reads_frozen_tree(text: str) -> list[str]:
+    hits = []
+    for tree in FROZEN_TREES:
+        if any(v in text for v in _seg_variants(tree)):
+            hits.append(tree)
+    return hits
+
+
+# --- seeds --------------------------------------------------------------------
+
+def _paths_in(text: str) -> list[Path]:
+    out = []
+    for m in re.finditer(r'([A-Za-z0-9_][A-Za-z0-9_./-]*\.py)\b', text):
+        rel = m.group(1)
+        for cand in (ROOT / rel, ROOT / rel.split("assay/", 1)[-1]):
+            if cand.exists() and cand.is_file():
+                out.append(cand.resolve())
+    return out
+
+
+def seeds() -> tuple[list[Path], list[str]]:
+    notes: list[str] = []
+    found: set[Path] = set()
+
+    gate_text = GATE.read_text()
+    found.update(_paths_in(gate_text))
+    for m in re.finditer(r'-m pytest\s+(?:\S+\s+)?(tests)\b', gate_text):
+        found.add((ROOT / "tests").resolve())
+    notes.append("gate script: paths + pytest targets")
+
+    # gap 1: the gate's inline heredocs
+    for m in re.finditer(r"<<'PYEOF'(.*?)PYEOF", gate_text, re.S):
+        found.update(_paths_in(m.group(1)))
+    notes.append("gate script: inline python heredocs scanned")
+
+    # gap 1: the REAL primary invocation -- `assay run tester-unified`, whose
+    # argv lives in assay.toml, never in the gate script.
+    if LANE_CONFIG.exists():
+        cfg = LANE_CONFIG.read_text()
+        found.update(_paths_in(cfg))
+        for m in re.finditer(r'argv\s*=\s*\[([^\]]*)\]', cfg):
+            argv = m.group(1)
+            for t in re.findall(r'"([^"]+)"', argv):
+                p = (ROOT / t).resolve()
+                if p.exists():
+                    found.add(p)
+            notes.append(f"assay.toml argv: {argv.strip()}")
+    return sorted(found), notes
+
+
+# --- closure ------------------------------------------------------------------
+
+def _resolve_module(name: str, here: Path) -> list[Path]:
+    """Resolve a dotted module through the REAL package layout (gap 3)."""
+    rel = name.replace(".", "/")
+    cands = [
+        SRC / f"{rel}.py",
+        SRC / rel / "__init__.py",
+        here.parent / f"{rel}.py",
+        here.parent / rel / "__init__.py",
+    ]
+    tail = name.split(".")[-1]
+    cands += [here.parent / f"{tail}.py", SRC / "assay" / f"{tail}.py"]
+    out = []
+    for c in cands:
+        try:
+            r = c.resolve()
+        except OSError:
+            continue
+        # never leave this project: a leaf-name fallback can otherwise pull in a
+        # sibling project's module and make the closure meaningless.
+        if c.exists() and c.is_file() and r.is_relative_to(ROOT):
+            out.append(r)
+    return out
+
+
+def deps(path: Path) -> set[Path]:
+    out: set[Path] = set()
+    try:
+        text = path.read_text()
+        tree = ast.parse(text)
+    except Exception:
+        return out
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                out.update(_resolve_module(a.name, path))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                out.update(_resolve_module(node.module, path))
+                for a in node.names:  # `from pkg import mod`
+                    out.update(_resolve_module(f"{node.module}.{a.name}", path))
+            else:
+                # gap 4: `from . import X` -- module is None
+                for a in node.names:
+                    out.update(_resolve_module(a.name, path))
+    # gap 2: subprocess targets built from joined components
+    for m in re.finditer(r'"([A-Za-z0-9_-]+)"\s*/\s*"([A-Za-z0-9_.-]+\.py)"', text):
+        for cand in ROOT.rglob(m.group(2)):
+            out.add(cand.resolve())
+    for m in re.finditer(r'([A-Za-z0-9_./-]+\.py)', text):
+        cand = (ROOT / m.group(1)).resolve()
+        if cand.exists() and cand.is_file():
+            out.add(cand)
+    out.discard(path.resolve())
+    return {d for d in out if d.is_relative_to(ROOT)}
+
+
+def closure(seed_paths: list[Path]) -> list[Path]:
     seen: set[Path] = set()
-    queue = list(seeds)
+    queue = list(seed_paths)
     while queue:
         item = queue.pop()
+        item = item.resolve()
         if item in seen:
             continue
         seen.add(item)
         if item.is_dir():
-            for child in sorted(item.rglob("*.py")):
-                if child not in seen:
-                    queue.append(child)
+            queue.extend(item.rglob("*.py"))
             continue
-        for dep in local_imports(item):
-            if dep not in seen:
-                queue.append(dep)
-    return sorted(p for p in seen if p.is_file())
+        queue.extend(d for d in deps(item) if d not in seen)
+    return sorted(p for p in seen if p.is_file() and p.suffix == ".py")
 
 
-def frozen_dir_hits(text: str) -> list[str]:
-    hits = []
-    for comp in FROZEN_DIR_COMPONENTS:
-        if f'"{comp}"' in text or f"'{comp}'" in text or f"/{comp}/" in text:
-            hits.append(comp)
-    return hits
+#: A file that compares a document whose PATH ARRIVES AS A PARAMETER cannot name
+#: a frozen tree, so no name-based predicate can ever find it. This is exactly
+#: how `gate/distribution/release_wheel.py` hid: the gate passes it
+#: `gate/python/release/P25/release-manifest.json` on the command line, and the
+#: frozen path lives in the caller. Round 3 found it; a longer list of directory
+#: names would never have.
+INDIRECT = re.compile(
+    r"(--manifest|argparse|sys\.argv|def main\()"
+)
 
 
-def main() -> int:
-    seeds = gate_invocations()
-    print("=== gate invocations (seeds) ===")
-    for s in seeds:
-        print("   ", s.relative_to(ROOT))
-
-    files = closure(seeds)
-    print(f"\n=== transitive closure: {len(files)} python files ===")
-
-    consumers = []
+def find_consumers() -> list[dict]:
+    files = closure(seeds()[0])
+    out = []
     for f in files:
         try:
             text = f.read_text()
         except Exception:
             continue
-        sig = {k: bool(r.search(text)) for k, r in SIGNALS.items()}
-        dirs = frozen_dir_hits(text)
-        # A consumer of a frozen expectation: it names a frozen dir AND either
-        # verifies or compares documents.
-        is_consumer = bool(dirs) and (
-            sig["verify_document"] or sig["verify_text"] or sig["document_equality"]
-            or sig["reads_expected_template"]
-        )
-        if is_consumer:
-            consumers.append((f, dirs, sig))
+        if not COMPARISON.search(text):
+            continue
+        trees = reads_frozen_tree(text)
+        indirect = bool(INDIRECT.search(text)) and not trees
+        if not trees and not indirect:
+            continue
+        out.append({
+            "path": str(f.relative_to(ROOT)),
+            "frozen_trees": trees,
+            "kind": "direct" if trees else "indirect-path-from-caller",
+            "v4_verdict_consumer": bool(
+                re.search(r'v4-template|schema_version|verify_document', text)
+            ),
+        })
+    return out
 
-    print(f"\n=== CONSUMERS OF A FROZEN EXPECTED ARTIFACT: {len(consumers)} ===")
-    for f, dirs, sig in consumers:
-        rel = f.relative_to(ROOT)
-        active = ",".join(k for k, v in sig.items() if v)
-        print(f"\n  {rel}")
-        print(f"      frozen-dir components : {dirs}")
-        print(f"      signals               : {active}")
+
+def main() -> int:
+    as_json = "--json" in sys.argv
+    seed_paths, notes = seeds()
+    consumers = find_consumers()
+    if as_json:
+        print(json.dumps({"consumers": consumers}, indent=2))
+        return 0
+    print("=== seeds ===")
+    for n in notes:
+        print("   ", n)
+    for s in seed_paths:
+        print("   ", s.relative_to(ROOT))
+    print(f"\n=== transitive closure: {len(closure(seed_paths))} python files ===")
+    print(f"\n=== CONSUMERS OF A FROZEN EXPECTATION: {len(consumers)} ===")
+    for c in consumers:
+        flag = "  <-- compares a VERDICT artifact" if c["v4_verdict_consumer"] else ""
+        print(f"\n  {c['path']}{flag}")
+        print(f"      frozen trees: {c['frozen_trees']}")
     print()
     return 0
 

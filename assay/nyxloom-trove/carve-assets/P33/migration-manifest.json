@@ -1,23 +1,20 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_for": "P33 schema v5 migration",
-  "frozen_at_main": "b22ebd56c4af3f89cd393ef013ca292f722b16ee",
-  "scan_command": "git ls-files, then grep each tracked .json/.py/.sh/.md for: '\"schema_version\": 4'; 'source_roots' co-occurring with judgment or \"r1\"; a bare unqualified operator name; the literal 'urn:assay:schema:verdict:4'; an invocation of carve-assets/P26/test_acceptance.py",
+  "frozen_at_main": "8877910b537eb319a5c96312846b012140c8adcf",
+  "scan_command": "git ls-files, grep each tracked .json/.py/.sh/.md for the four content patterns, UNION the consumer set reported by sweep_v4_consumers.py --json; plus tools/tester-unified-gate.sh, which invokes both v4-coupled gate steps",
   "corrections_from_review": [
-    "scan runs over the git INDEX, not the working tree -- v1 listed 7 untracked build/lib files an implementer in a fresh worktree would never have",
-    "added schema-id-string, which catches tests/test_verdict_schema_is_packaged.py (B8)",
-    "added runs-P26-v4-acceptance, which catches tools/tester-unified-gate.sh (D3)",
-    "gate/python/qualify_topos.py is present and now inside scope.touch via gate/python/** (D1)",
-    "carver_owned_prose_excluded is a THIRD bucket, listed rather than silently dropped: these files narrate the strings historically and must not be migrated. DESIGN-GUIDE's stale worked TOML example is a real drift the carver owns (see the handoff's doc-drift note), not implementer work."
+    "round 3: regenerated at the current anchor. The v2 manifest was frozen at the round-1 commit, so the third consumer (tests/test_python_qualification.py) was absent from the ownership split the implementer follows.",
+    "the sweep's own consumer list is now a detection reason, so the manifest and the inventory cannot drift apart -- they are generated from the same run."
   ],
   "counts": {
-    "locked_carver_owned": 19,
-    "implementer_owned": 92,
-    "carver_owned_prose_excluded": 16
+    "locked_carver_owned": 21,
+    "implementer_owned": 110,
+    "carver_owned_prose_excluded": 17
   },
   "ownership_rule": {
-    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-222 keeps them unedited as historical evidence and A-224 retires their EXECUTION instead. The implementer must not edit any path here.",
-    "implementer_owned": "P33's implementer migrates these. Every path is inside scope.touch.",
+    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-222 keeps them unedited and A-224/A-226 retire or repoint their EXECUTION instead.",
+    "implementer_owned": "P33's implementer migrates or repoints these. Every path is inside scope.touch.",
     "carver_owned_prose_excluded": "Historical narrative or carver-owned design prose. Not migrated. Listed so the exclusion is auditable."
   },
   "buckets": {
@@ -84,6 +81,12 @@
         ]
       },
       {
+        "path": "nyxloom-trove/carve-assets/P24/test_acceptance.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
         "path": "nyxloom-trove/carve-assets/P25/expected/missing-v4-template.json",
         "why": [
           "schema_version-4",
@@ -104,9 +107,15 @@
         ]
       },
       {
-        "path": "nyxloom-trove/carve-assets/P26/README.md",
+        "path": "nyxloom-trove/carve-assets/P25/skeleton/qualify_topos.py",
         "why": [
-          "runs-P26-v4-acceptance"
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P25/test_acceptance.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -136,7 +145,7 @@
       {
         "path": "nyxloom-trove/carve-assets/P26/test_acceptance.py",
         "why": [
-          "runs-P26-v4-acceptance"
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -148,9 +157,16 @@
     ],
     "implementer_owned": [
       {
+        "path": "gate/distribution/release_wheel.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
         "path": "gate/python/qualify_topos.py",
         "why": [
-          "judgment.r1-hoisted-keys"
+          "judgment.r1-hoisted-keys",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -188,7 +204,8 @@
       {
         "path": "src/assay/verify.py",
         "why": [
-          "judgment.r1-hoisted-keys"
+          "judgment.r1-hoisted-keys",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -475,13 +492,39 @@
       {
         "path": "tests/test_adapters_go_generate_mutants.py",
         "why": [
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_adapters_go_python_equivalence.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tests/test_adapters_python_generate_mutants.py",
         "why": [
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_attestation_record.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_canary_go_pipeline.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_canary_p23_isolated_edges.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -491,10 +534,23 @@
         ]
       },
       {
+        "path": "tests/test_cgroup_parent.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
         "path": "tests/test_cli_run.py",
         "why": [
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_config_accept.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -510,22 +566,55 @@
         ]
       },
       {
+        "path": "tests/test_config_reject.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
         "path": "tests/test_config_rigor.py",
         "why": [
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tests/test_config_rigor_grammar.py",
         "why": [
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tests/test_config_vocabularies.py",
         "why": [
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_dependency_purity.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_distribution_gate.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_distribution_release_wheel.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_isolation.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -595,6 +684,12 @@
         ]
       },
       {
+        "path": "tests/test_python_qualification.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
         "path": "tests/test_runner_assemble_verdict_judgment.py",
         "why": [
           "judgment.r1-hoisted-keys"
@@ -615,14 +710,16 @@
       {
         "path": "tests/test_runner_p23_cleanup_and_budget.py",
         "why": [
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tests/test_runner_p23_combined_axis_review.py",
         "why": [
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -645,18 +742,50 @@
         ]
       },
       {
+        "path": "tests/test_runner_verdict_fixtures.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_safeio.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_self_hosting.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_self_lane.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
         "path": "tests/test_standalone.py",
         "why": [
           "schema_version-4",
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_canary_artifacts.py",
+        "why": [
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tests/test_verdict_claims.py",
         "why": [
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -664,7 +793,8 @@
         "why": [
           "schema_version-4",
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -683,7 +813,8 @@
       {
         "path": "tests/test_verdict_mutation_artifacts.py",
         "why": [
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -695,7 +826,8 @@
       {
         "path": "tests/test_verdict_schema_is_packaged.py",
         "why": [
-          "schema-id-string"
+          "schema-id-string",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -708,13 +840,15 @@
         "path": "tests/test_verdict_serialises.py",
         "why": [
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tests/test_verdict_span_attribution_artifacts.py",
         "why": [
-          "judgment.r1-hoisted-keys"
+          "judgment.r1-hoisted-keys",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
@@ -722,13 +856,15 @@
         "why": [
           "schema_version-4",
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "frozen-expectation-consumer(sweep)"
         ]
       },
       {
         "path": "tools/tester-unified-gate.sh",
         "why": [
-          "runs-P26-v4-acceptance"
+          "runs-P26-v4-acceptance",
+          "invokes-qualify_topos"
         ]
       }
     ],
@@ -736,8 +872,7 @@
       {
         "path": "docs/DESIGN-GUIDE.md",
         "why": [
-          "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "judgment.r1-hoisted-keys"
         ]
       },
       {
@@ -755,8 +890,7 @@
       {
         "path": "nyxloom-trove/decisions.md",
         "why": [
-          "judgment.r1-hoisted-keys",
-          "runs-P26-v4-acceptance"
+          "judgment.r1-hoisted-keys"
         ]
       },
       {
@@ -776,12 +910,6 @@
         "why": [
           "schema_version-4",
           "bare-operator-name"
-        ]
-      },
-      {
-        "path": "nyxloom-trove/handoffs/assay-P26-attested-evidence-cli-hardening.md",
-        "why": [
-          "runs-P26-v4-acceptance"
         ]
       },
       {
@@ -821,9 +949,24 @@
         ]
       },
       {
-        "path": "nyxloom-trove/reports/assay-P26-attested-evidence-cli-hardening-LOG.md",
+        "path": "nyxloom-trove/reports/assay-P33-JIT-CARVE.md",
         "why": [
-          "runs-P26-v4-acceptance"
+          "judgment.r1-hoisted-keys",
+          "schema-id-string"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P33-pre-dispatch-adversarial-review-round2.md",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P33-pre-dispatch-adversarial-review-round3.md",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
         ]
       },
       {
@@ -831,8 +974,7 @@
         "why": [
           "judgment.r1-hoisted-keys",
           "bare-operator-name",
-          "schema-id-string",
-          "runs-P26-v4-acceptance"
+          "schema-id-string"
         ]
       }
     ]

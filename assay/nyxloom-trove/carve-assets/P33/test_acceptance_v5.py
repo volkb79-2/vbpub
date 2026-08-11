@@ -407,3 +407,224 @@ def test_p25_v5_siblings_are_the_declared_projection(v4_name, v5_name):
 @pytest.mark.parametrize("_v4,v5_name", P25_SIBLINGS)
 def test_p25_v5_siblings_validate(verify_document, _v4, v5_name):
     assert verify_document(load(HERE / "expected" / v5_name)) == []
+
+
+# --- round-3 additions -------------------------------------------------------
+
+SWEEP = HERE / "sweep_v4_consumers.py"
+
+
+def _run_sweep() -> list[dict]:
+    proc = subprocess.run(
+        [sys.executable, str(SWEEP), "--json"],
+        capture_output=True, text=True, cwd=ROOT, timeout=600,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)["consumers"]
+
+
+def test_sweep_finds_every_known_consumer():
+    """CA14, part one. The four consumers three review rounds established,
+    frozen. If a future change hides one from the sweep, this fails here rather
+    than in a fifth review."""
+    paths = {c["path"]: c for c in _run_sweep()}
+    for required in (
+        "gate/python/qualify_topos.py",              # round 2
+        "nyxloom-trove/carve-assets/P26/test_acceptance.py",  # round 1
+        "tests/test_python_qualification.py",        # the round-2 sweep
+        "gate/distribution/release_wheel.py",        # round 3
+        "tests/test_distribution_gate.py",           # round 3, byte-comparison idiom
+    ):
+        assert required in paths, f"the sweep no longer finds {required}"
+    assert paths["gate/distribution/release_wheel.py"]["kind"] == (
+        "indirect-path-from-caller"
+    ), "release_wheel receives its manifest path from the caller, not a literal"
+
+
+def test_sweep_finds_a_planted_decoy_consumer():
+    """CA14, part two -- the reviewer's specific ask.
+
+    Two files are planted, and the pair is the point:
+
+      tests/_p33_sweep_decoy_entry.py   reachable, because tests/ is a seed
+        -> imports assay.adapters._p33_sweep_decoy   a DOTTED SUBPACKAGE import
+      src/assay/adapters/_p33_sweep_decoy.py         reads a locked carve asset
+                                                     and compares it
+
+    The sweep must report the second one. Reaching it requires resolving a
+    dotted module through the real package layout -- precisely what v1 could not
+    do, which is why `src/assay/adapters/**` and `coverage_parsers/**` were
+    structurally invisible to it.
+
+    A decoy that nothing imports would prove nothing: it is genuinely not in the
+    gate's execution path, and the sweep would be right to ignore it. The import
+    edge is what makes this falsifiable.
+    """
+    entry = ROOT / "tests" / "_p33_sweep_decoy_entry.py"
+    target = ROOT / "src" / "assay" / "adapters" / "_p33_sweep_decoy.py"
+    for path in (entry, target):
+        assert not path.exists(), f"decoy path is dirty; a previous run leaked: {path}"
+    entry.write_text(
+        '"""Planted by P33\'s locked suite; removed in the same test."""\n'
+        "from assay.adapters import _p33_sweep_decoy\n"
+        "\n"
+        "def test_decoy():\n"
+        "    assert _p33_sweep_decoy is not None\n"
+    )
+    target.write_text(
+        '"""Planted by P33\'s locked suite. sweep_v4_consumers MUST find this."""\n'
+        "import json\n"
+        "from pathlib import Path\n"
+        "\n"
+        "ROOT = Path(__file__).resolve().parents[3]\n"
+        "\n"
+        "def check() -> bool:\n"
+        "    expected = json.loads(\n"
+        '        (ROOT / "nyxloom-trove" / "carve-assets" / "P26" / "expected"\n'
+        '         / "current-v4-template.json").read_text()\n'
+        "    )\n"
+        "    actual = json.loads((ROOT / 'actual.json').read_text())\n"
+        "    return actual == expected\n"
+    )
+    try:
+        found = {c["path"] for c in _run_sweep()}
+    finally:
+        entry.unlink()
+        target.unlink()
+    assert "src/assay/adapters/_p33_sweep_decoy.py" in found, (
+        "the sweep failed to find a planted consumer reached by a dotted "
+        "subpackage import -- its closure or its predicate has regressed"
+    )
+
+
+def test_sweep_closure_never_leaves_the_project():
+    """A leaf-name fallback once pulled a sibling project's module into the
+    closure, which makes the inventory meaningless. Pin it."""
+    sys.path.insert(0, str(HERE))
+    try:
+        import sweep_v4_consumers as S
+        for p in S.closure(S.seeds()[0]):
+            assert p.is_relative_to(S.ROOT), f"closure escaped the project: {p}"
+    finally:
+        sys.path.remove(str(HERE))
+
+
+def test_third_consumer_is_in_the_migration_manifest():
+    """R3: the manifest was frozen at the round-1 commit and never regenerated,
+    so the third consumer the sweep found was absent from the ownership split
+    the implementer is told to follow."""
+    manifest = json.loads((HERE / "migration-manifest.json").read_text())
+    owned = {e["path"] for e in manifest["buckets"]["implementer_owned"]}
+    assert "tests/test_python_qualification.py" in owned
+    assert "gate/python/qualify_topos.py" in owned
+    assert "tools/tester-unified-gate.sh" in owned
+
+
+def test_helpers_executable_code_requires_a_payload_bearing_claim(verify_document):
+    """CA13 / A-227, rebuilt as a real differential.
+
+    The round-2 version compared two DIFFERENT documents, so a wrong
+    implementation passed it, and it never exercised the R1 branch at all. Both
+    halves are here now, each as clean-versus-same-document-plus-defect.
+    """
+    entry = {
+        "role": "executable-code", "tool": "assay-go-exec",
+        "resolved_path": "/opt/assay-helpers/bin/assay-go-exec",
+        "identity": "assay-go-exec 0.1.0",
+    }
+    # R2 branch: accepted alongside a mutation-bearing claim.
+    with_r2 = load(HERE / "expected" / "sql-r2-v5-template.json")
+    with_r2["helpers"] = [entry]
+    assert verify_document(with_r2) == [], (
+        "executable-code alongside an R2 mutation claim must be accepted"
+    )
+    # R1 branch: accepted alongside a coverage-bearing claim. Never exercised
+    # before this round.
+    r1_doc = load(HERE / "expected" / "p25-pass-v5-template.json")
+    r1_clean = json.loads(json.dumps(r1_doc))
+    r1_doc["helpers"] = [entry]
+    assert verify_document(r1_doc) == [], (
+        "executable-code alongside an R1 coverage claim must be accepted"
+    )
+    # Neither branch: same document, one defect.
+    clean = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken["helpers"] = [entry]
+    refuses_only_the_defect(verify_document, clean, broken,
+        "executable-code on an R3-only lane carries no payload-bearing claim")
+    assert "helpers" not in r1_clean
+
+
+# --- config-layer negatives (CA16) -------------------------------------------
+#
+# O2's own observable says "refused at config load", three work items touch
+# config.py, and until round 3 this suite had ZERO config-layer tests -- the
+# whole artifact half was pinned and the load half was not.
+
+def _load_lane(tmp_path, mutation_block: str, language: str = "python"):
+    from assay import config as C
+    toml = tmp_path / "assay.toml"
+    toml.write_text(
+        '[lanes.demo]\n'
+        'argv = ["python", "-m", "pytest"]\n'
+        'rigor = ["R0", "R2"]\n'
+        '[lanes.demo.judge]\n'
+        f'language = "{language}"\n'
+        'source_roots = ["src"]\n'
+        'base = "0000000000000000000000000000000000000000"\n'
+        f'{mutation_block}\n'
+    )
+    return C, toml
+
+
+def test_config_refuses_a_cross_language_operator(tmp_path):
+    """O2's load half. A python lane declaring a sql: operator must be refused
+    AT LOAD, naming the operator -- not silently accepted for the verifier to
+    catch later."""
+    C, toml = _load_lane(
+        tmp_path,
+        'mutation = { jobs = 1, max_mutants = 10, '
+        'operators = ["sql:drop-check"] }',
+    )
+    with pytest.raises(Exception) as exc:
+        C.load_lane(toml, "demo") if hasattr(C, "load_lane") else C.load(toml)
+    assert "sql:drop-check" in str(exc.value), (
+        "the refusal must name the offending operator"
+    )
+
+
+def test_config_accepts_a_matching_language_operator(tmp_path):
+    """The control for the test above: same shape, correct prefix. Without this
+    the negative could pass because the loader rejects everything."""
+    C, toml = _load_lane(
+        tmp_path,
+        'mutation = { jobs = 1, max_mutants = 10, '
+        'operators = ["python:compare-swap"] }',
+    )
+    loader = getattr(C, "load_lane", None) or C.load
+    lane = loader(toml, "demo") if loader is not C.load else loader(toml)
+    assert lane is not None
+
+
+def test_config_names_kill_signal_artifact_as_reserved_for_p34(tmp_path):
+    """Work item 6's real oracle (A-227/A-229).
+
+    `judge.mutation` is already a closed sub-table, so an unknown key is already
+    rejected today -- "it is refused" cannot distinguish a correct implementation
+    from doing nothing. What must change is the MESSAGE: the field is reserved
+    and deferred, not unknown.
+    """
+    C, toml = _load_lane(
+        tmp_path,
+        'mutation = { jobs = 1, max_mutants = 10, '
+        'operators = ["python:compare-swap"], '
+        'kill_signal_artifact = ".assay/kill-signal.txt" }',
+    )
+    with pytest.raises(Exception) as exc:
+        C.load_lane(toml, "demo") if hasattr(C, "load_lane") else C.load(toml)
+    message = str(exc.value)
+    assert "kill_signal_artifact" in message
+    assert "P34" in message, (
+        "the refusal must name the field as reserved for P34, not report it as "
+        "an unknown key -- otherwise this work item has no observable"
+    )

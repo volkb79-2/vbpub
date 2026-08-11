@@ -30,8 +30,8 @@ oracles:
     negative: "A survived or equivalent entry carries a kill_signal, so a mutant nothing killed reports the mechanism that supposedly killed it"
     gate: tester-unified
   - id: O5
-    observable: "The whole registered gate is green after v5: P33's locked suite runs and passes, P26's module still runs with exactly five tests deselected, and both P25 qualification consumers compare against the carver-supplied v5 siblings"
-    negative: "Any gate step still compares a live v5 artifact against a locked v4 expectation -- P26's four template-coupled tests, gate/python/qualify_topos.py, or tests/test_python_qualification.py"
+    observable: "The whole registered gate is green after v5: P33's locked suite runs and passes, P26's module still runs with exactly FOUR tests deselected (20 of 24), and both P25 qualification consumers compare against the carver-supplied v5 siblings"
+    negative: "Any gate step still compares a live v5 artifact against a locked v4 expectation -- P26's three template-coupled tests, gate/python/qualify_topos.py, tests/test_python_qualification.py -- or a non-v4-coupled security oracle is deselected along with them"
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
@@ -53,15 +53,15 @@ one, without inventing capability for any language that lacks it.**
 - Required roles: **Opus xhigh implementer → fresh Opus xhigh independent
   reviewer**. Opus because the change is a closed-vocabulary schema plus two
   cross-object invariants, and because 92 files migrate behind it.
-- Readiness: **re-carved after a NOT READY pre-dispatch review.**
+- Readiness: **re-carved three times, after three NOT READY pre-dispatch reviews.**
   `nyxloom-trove/SCHEMA-V5-DESIGN.md` and decisions A-220/A-221/A-222 plus the
-  repair sets A-223/A-224/A-225 and A-226/A-227/A-228 fix every externally
-  visible choice. Committed under `nyxloom-trove/carve-assets/P33/`: the locked v5
+  repair sets A-223/A-224/A-225, A-226/A-227/A-228 and **A-229** fix every
+  externally visible choice. Committed under `nyxloom-trove/carve-assets/P33/`: the locked v5
   schema, a committed v4 snapshot, **six** expected templates (four v5 shapes plus
   two P25 v5 siblings), the controlled-red probe, the migration manifest, the
-  consumer sweep, and the locked v5 acceptance suite. **Two review rounds are
+  consumer sweep, and the locked v5 acceptance suite. **Three review rounds are
   answered** in `reports/assay-P33-JIT-CARVE.md` §§ "Answering the pre-dispatch
-  review" and "Answering round 2".
+  review", "Answering round 2" and "Answering round 3".
 - Implementer freedom: internal decomposition of model and verifier code only.
   The schema bytes, the operator vocabulary, the field names, the ownership split
   in the migration manifest, the six expected templates, and the locked v5
@@ -87,7 +87,8 @@ branch `feat/assay-P33-verdict-schema-v5`.
    amendment that P26's module is deselected rather than retired), **A-227**
    (`kill_signal_artifact` reserved but not declarable; all three `helpers` roles
    ruled; the base rule's only-if half), **A-228** (the new terminal inherits every
-   sibling constraint), plus
+   sibling constraint), **A-229** (the sweep's own five closure gaps, the
+   over-inclusive deselect, and CA8 taken rather than deferred), plus
    A-138/A-170 (a schema version is a consumer migration), A-192 (rigor grammar —
    why `R0,R2` is legal and therefore why V5-1 is a bug fix), A-183
    (`UNSUPPORTED` versus `NO_MUTANTS`), A-209 (the both-present-or-both-absent
@@ -193,9 +194,16 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    derived, never stored, for A-036's reason. But P33 ships no producer for
    `kill_signal`, so a lane declaring that field could not emit a consistent
    artifact: `config` must refuse `judge.mutation.kill_signal_artifact` at load
-   with a typed error naming P34. Every real P33 lane therefore derives
-   `unattributed`; both values stay expressible as documents and the locked
-   templates exercise both.
+   with a **typed error whose message names it as reserved for P34**. Every real
+   P33 lane therefore derives `unattributed`; both values stay expressible as
+   documents and the locked templates exercise both.
+
+   **The observable is the message, not the refusal.** `judge.mutation` is already
+   a closed sub-table, so an unknown key is *already* rejected today — meaning
+   "the declaration is refused" cannot distinguish a correct implementation of
+   this work item from doing nothing at all. The oracle is that the refusal names
+   `kill_signal_artifact` as **reserved and deferred to P34**, not as an unknown
+   key. The locked suite pins that string.
 7. Add the `ALL_MUTANTS_EQUIVALENT` terminal (A-223d) to `errors.py` and rank it
    in `judge_mutation` after `survived`: `killed + survived == 0` with a
    non-empty `equivalent` bucket renders `INCONCLUSIVE/ALL_MUTANTS_EQUIVALENT`.
@@ -207,19 +215,25 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    buckets" error text, which is now five. Ranking after `survived` is
    order-insensitive given the guard; keep it there for readability, not because
    it is load-bearing.
-8. **Keep P26's module, deselect exactly five tests, and add P33's suite
-   (A-226, amending A-224).** In `tools/tester-unified-gate.sh`, keep the P26
-   invocation and append
-   `--deselect` for each of: `test_all_structural_and_aggregate_bounds_precede_every_git_call`,
+8. **Keep P26's module, deselect exactly FOUR tests, and add P33's suite
+   (A-226 as amended by A-229).** In `tools/tester-unified-gate.sh`, keep the P26
+   invocation and append `--deselect` for each of:
    `test_cli_emits_the_complete_hand_authored_v4_artifact`,
    `test_cli_preserves_independent_malformed_missing_and_current_evidence`,
    `test_attestation_timeout_is_atomic_and_does_not_run_a_failing_command`, and
    `test_registered_gate_runs_locked_acceptance_from_the_wheel_and_marks_it`.
    Then add a second invocation of `carve-assets/P33/test_acceptance_v5.py` and
    emit `ASSAY_GATE_PHASE=verdict-v5-accepted`. Do not edit P26's suite or its
-   templates. **Retiring the module is explicitly wrong** — it drops 18
-   shape-independent oracles, several of them security boundaries earned from
-   witnessed incidents.
+   templates. **20 of P26's 24 tests keep running.**
+
+   `test_all_structural_and_aggregate_bounds_precede_every_git_call` is **NOT**
+   deselected. It tests A-210's aggregate-bounds-before-Git ordering and touches
+   no artifact shape. An earlier version of this work item deselected it because
+   a summary table and its own appendix disagreed and the wrong one was adopted —
+   a security oracle dropped by a transcription slip.
+   **Retiring the module outright is explicitly wrong**: it drops 18
+   shape-independent oracles, several of them boundaries earned from witnessed
+   incidents.
 8b. **Repoint the other two consumers of a locked v4 expectation (A-226).**
    `gate/python/qualify_topos.py` (`_EXPECTED_ROOT`, and the
    `normalized["judgment"]["r1"]["base"]` line, which v5 moves) and
@@ -229,7 +243,26 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    stay frozen and unedited. Do **not** write a v4→v5 transform inside a gate
    harness: an unfrozen proof source is not an expectation.
    The inventory is `carve-assets/P33/sweep_v4_consumers.py`; re-run it and
-   confirm it reports no consumer you have not addressed.
+   confirm it reports no consumer you have not addressed. It now also reports
+   `gate/distribution/release_wheel.py` as `indirect-path-from-caller`: it
+   compares a frozen release manifest whose path arrives on its command line, so
+   v5 does not break it, but it is in the inventory because the closure claim has
+   to be true regardless of whether a given instance happens to be harmless.
+
+8c. **Take CA8: make declared and resolved `base` genuinely differ (A-143/A-229).**
+   In `gate/python/qualify_topos.py`, add one qualification scenario declaring
+   `judge.base` as a **tag on the base commit** — not HEAD, which
+   `_check_base_is_head` already occupies — and assert `judgment.resolved.base`
+   equals the resolved 40-hex and is **not** the declared string. The machinery
+   exists: `:404` has `base_override`, `:424` uses it as `declared_base`, `:836`
+   already passes it. Without this, an implementation that records the declared
+   string passes every other oracle, because every locked template substitutes a
+   full 40-hex and `resolve_base` returns a full SHA unchanged. A-143: *the
+   fixture must make resolved and declared genuinely different, or it proves
+   nothing.* This carve deferred it twice on the premise that it needs a real
+   repository and therefore belongs with the producer proof — a premise that does
+   not survive checking, since the harness is already in `scope.touch` and
+   already edited by 8b.
 9. Migrate every path in `migration-manifest.json`'s `implementer_owned` bucket
    — 92 files. Do not touch `locked_carver_owned` (19) or any path in
    `carver_owned_prose_excluded` (16).
