@@ -438,7 +438,13 @@ items:
     the inference problem entirely -- so sequence this behind that rather than
     building an inference now. Consumer evidence: 21 rows written to dstdns''s
     PRODUCTION classification_parameter_sets table, one per gate run, before
-    anyone noticed the adjacency.'
+    anyone noticed the adjacency. UPDATE 2026-08-11 (surfaced by assay''s
+    cross-project review, not yet acted on here): ciu''s `worktree` verb has
+    shipped (S16, `worktree add|rm|list`, commit d977d3aa) -- the named wait
+    condition has fired. Whether S16''s owned instance identity (keyed off the
+    PHYSICAL worktree path, S2) actually dissolves this inference problem is
+    still nyxloom''s own question to answer by using it in gate_runner.py;
+    nothing further is owed from ciu''s side.'
   type: bugfix
   component: gate
   context_estimate: medium
