@@ -25,8 +25,11 @@
 > P33 (verdict schema v5) was carved at `b6f0b3bf`, reviewed **NOT READY** by
 > CR-opus-0 (eleven blocking defects; report
 > `reports/assay-P33-pre-dispatch-adversarial-review.md`), and **RE-CARVED at
-> `7a774d57`** answering all seventeen findings (A-223/A-224/A-225). It awaits a
-> FRESH mandatory carve review; a second round is not a formality — read `reports/assay-P33-JIT-CARVE.md` and
+> `7a774d57`** answering all seventeen findings (A-223/A-224/A-225), then reviewed
+> **NOT READY a second time** and **re-carved again** (A-226/A-227/A-228) — round 2
+> found the round-1 defect class at a second gate step, so the closure is now an
+> INVENTORY: `carve-assets/P33/sweep_v4_consumers.py`, which found a third
+> instance neither review named. It awaits a THIRD mandatory carve review — read `reports/assay-P33-JIT-CARVE.md` and
 > `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
 > decisions A-220/A-221/A-222 as amended by A-223/A-224/A-225.**
 > **P27's** pinned image inputs, two-commit fixture with real reproduced
