@@ -35,7 +35,11 @@
 > reviews in parallel (CR-opus-0 plus a one-time second opinion from a different
 > model family); both NOT READY, neither finding a new design problem — the
 > residue was verification, including three locked tests that called a function
-> that does not exist (A-230/A-231). It awaits a FIFTH mandatory carve review — read `reports/assay-P33-JIT-CARVE.md` and
+> that does not exist (A-230/A-231). Round 5 found that round-4 fix itself
+> unverified — the same tests still unsatisfiable — and made the remedy
+> procedural: **A-232, a stated pass/fail count is not evidence; paste real
+> command output and classify each pre-implementation red as legitimate or
+> illegitimate.** It awaits a SIXTH mandatory carve review — read `reports/assay-P33-JIT-CARVE.md` and
 > `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
 > decisions A-220/A-221/A-222 as amended by A-223/A-224/A-225.**
 > **P27's** pinned image inputs, two-commit fixture with real reproduced
