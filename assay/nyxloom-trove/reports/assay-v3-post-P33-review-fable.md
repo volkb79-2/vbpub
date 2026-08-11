@@ -459,3 +459,117 @@ Evidence (attested, "security-review")   PASS → PASS
 ---
 
 **One process note to end on.** Two of this session's three real findings (A-240's evidence, A-163's silent ownership hop) and both prior rounds' headline findings (A-237's evidence, the Go fixtures) are instances of a single failure mode: *a claim about what code or tests do, recorded without the output that would prove it, by someone confident enough not to run it.* A-232 already names the rule. The addition this round suggests: it applies to decision *reasons* — especially reverts — exactly as much as to carve receipts. Every claim in this report that could be produced by running something was produced by running it.
+
+---
+
+# Addendum 3 — round 4 (2026-08-11): ciu-synergy check and the A-237/A-240/A-241
+# doctrine recommendation
+
+> **Controller note.** This is Fable's last round for this wave — per the
+> operator's direct instruction, carve/review reverts to the standard Opus
+> xhigh pipeline (CR-opus-0) after this. Two asks this round: (1) whether
+> ciu's newly-shipped features (S15.17-S15.20 KSM/exec-wrapper, S16
+> worktree instances, S17 image provenance) answer any assay open decision
+> or warrant an upstream ciu backlog entry; (2) an explicit pros/cons/
+> recommendation — not a deferral — on whether to close the hollow-PASS/FAIL
+> schema gap now that A-240's counter-evidence was shown wrong. Verified
+> against HEAD `59a94473a27877bfb405cfad7ca59774456e4a85`.
+>
+> **Headline 1:** S17 (image provenance) closes half of A-O12 outright, and
+> found A-O12's own text stale (its `declared_unverified` claim doesn't
+> exist in assay's source). Drafted concrete substance for a ciu upstream
+> backlog entry (`ciu provenance --json`) that would let assay build its
+> first real Tier-2 `adjudicated` integration — also naming provenance as
+> the leading candidate for A-O10.
+>
+> **Headline 2: recommends CLOSING the hollow-PASS/FAIL schema gap now**,
+> ~75/25, not a coin flip — the shipped schema already enforces requiredness
+> in three other places (NO_MUTANTS, MUTANT_LIMIT_EXCEEDED,
+> ALL_MUTANTS_EQUIVALENT), so "leave it open for doctrine coherence" is
+> defending a doctrine the artifact already contradicts. Recommends this as
+> a small standalone carver-owned change before P34's dispatch, not folded
+> into P34. This has NOT yet been decided by the operator as of this
+> addendum — surfaced for a decision, not yet acted on.
+
+HEAD verified at `59a94473`. Everything below was read from the actual SPEC sections and code — `deploy.py:556` (`verify_running_provenance`), `cli.py:376`, S15.17–S15.20, S16, S17 in full — plus fresh greps of assay's own surface where A-O12's wording made claims about it.
+
+---
+
+# Part 1 — ciu's new functionality against assay's open decisions
+
+## S17 (image provenance) vs A-O12: closes ciu's half completely; assay's half was never built, and A-O12's own text misdescribes it
+
+**What S17 delivers, verified:** `bake` stamps `org.opencontainers.image.revision` with a load-bearing `-dirty` suffix and stamps *nothing* when the revision is unknown; `verify_running_provenance` (`deploy.py:556–637`) refuses at **test** time when a running container's labelled revision differs from the commit under test, correctly instance-scoped so a sibling S16 worktree running a different commit isn't misread as staleness, with honest non-refusals (unlabelled skipped, dirty warns, absent-image not a mismatch). This is exactly the mechanism A-O12 said didn't exist — "the check needs `org.opencontainers.image.revision` stamped at bake time, which ciu does not do today (D7 lists it as a gap)." That gap is gone, and the check's fail-closed/test-time design is *better* than what A-O12 asked for.
+
+**Why A-O12 still can't be marked fully closed:** two assay-side facts, both checked this session.
+
+1. **A-O12's claim "assay records `declared_unverified`" is false.** That string appears nowhere in assay's source, schema, or design guide. The verdict artifact records the bare `scope` enum (`S0`–`S4`) and nothing about whether the WHERE was verified. The entry describes a field that was apparently planned and never built — a fourth instance of the stale-open-entry pattern (alongside A-O14/A-O15/A-O16 from round 4).
+2. **Assay has no slot to carry a provenance result, and structurally cannot compute one itself.** This is the A-030 boundary doing exactly what it was designed to do: at S3/S4, assay runs *inside* the test container; the provenance question ("what image is this running container actually built from?") is answerable only from *outside*, via the docker daemon — ciu's side of the boundary. So assay can never make this a computed claim. The only honest carriers are the evidence arrays: and of the two, **adjudicated** — reserved since A-034/A-078 with zero integrations — is the natural fit ("a tool's verdict assay records but does not verify").
+
+**The convergence worth naming:** this makes `ciu provenance` the best candidate answer to **A-O10** ("which Tier 2 integration is built first, and its threshold vocabulary — deferred pending a target tool, SAST vs SBOM"). Compared to either SAST or SBOM, provenance is in-estate, has a tiny closed vocabulary with *no threshold policy question at all* (the thing A-O10 is actually blocked on), and building it discharges another open decision (A-O12) at the same time. One integration, two open entries advanced.
+
+**What ciu doesn't yet have that this integration needs — the backlog entry.** `verify_running_provenance` returns `None` or raises; its outputs are prose warnings and exit codes, and — the load-bearing gap — **the success path is silent**. For gate wiring (a consumer's script runs `ciu provenance` before `assay run`), that's fine. For *evidence* (the verdict artifact records that provenance was checked and what it found), it's insufficient twice over: assay must never parse prose (its own A-204 precedent: byte-copy, never interpret — an interpreting reader becomes a shared oracle), and "no refusal happened" is not the same fact as "checked and matched" (assay's A-025 doctrine: absence of an adverse signal is never recorded as a positive fact). So:
+
+> **Draft substance for `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`** (matching house style — mechanism, what's needed, why here; SPEC ID cited):
+>
+> *Title:* S17.3 — machine-readable provenance verdict, for downstream evidence consumers (assay).
+> *Mechanism:* `ciu provenance --json [PATH|-]` (precedent: `ciu diagnose --json`, `cli.py:59`) emitting one closed, bounded JSON document alongside the existing exit-code behaviour: `{schema_version, instance: "<project>-<env_tag>", commit_under_test, tree_state: "clean"|"dirty"|"not-a-checkout", containers: [{name, image, labelled_revision|null, status: "match"|"mismatch"|"unlabelled"}], overall: "verified-match"|"mismatch"|"not-verified-dirty"|"not-verified-unknown"|"refused-no-identity"}`. **A verified match must be recorded, not silent** — the current success path returns without output, and downstream evidence needs the positive fact, not the absence of a refusal. The vocabulary must be closed and stable: the consumer (assay, per its closed-vocabulary discipline) will refuse members it doesn't know rather than guess.
+> *Why it belongs in ciu, not assay:* the instance-prefix scoping and the label are ciu's own facts (S16/S17.1 — only ciu knows which running containers belong to this instance); assay runs *inside* the container at S3/S4, on the wrong side of the ciu/assay topological boundary (assay decision A-030), and must never shell out to docker; and parsing `ciu provenance`'s prose from a consumer script would couple two estate tools through unstable human-facing text.
+> *What it unblocks downstream (context, not ciu's work):* assay's first Tier-2 adjudicated integration — a lane declaring `(adjudicated, "image-provenance")`, a bounded reader for this document (assay's existing `safeio` pattern), and the status mapping (`verified-match`→PASS, `mismatch`→FAIL, `not-verified-*`/`refused-*`→NO_MEASUREMENT-class). That is an assay package, resolving assay's A-O12 and answering A-O10; it is named here only so the vocabulary is designed once, for its real consumer.
+
+Assay-side, correspondingly: A-O12 should be annotated (ciu half closed by S17; the `declared_unverified` claim stale; assay half re-scoped to "first Tier-2 integration, vocabulary per the ciu backlog entry"), and A-O10 annotated to name provenance as the leading candidate. Sequencing: post-ship-milestone material — it competes with A-244's accepted A-O06, and I would *not* displace A-O06 for it; but it's now the obvious second post-Go item, and cheap.
+
+## S16 (worktree instances) vs A-O04: no connection — its real relevance is B44
+
+S16 is checkout/instance lifecycle (`worktree add|rm|list`, per-worktree `ciu.env`, normative clean-before-remove ordering). It contains nothing about container toolchains, so it neither helps nor hinders A-O04 (python-in-srdm's-container). Its actual significance in this estate is that it is **B44's named wait-condition arriving**: B44 (gate identity, filed from dstdns two days ago) explicitly said "ciu is expected to grow a `worktree` verb owning the directory structure, which likely dissolves the inference problem — sequence this behind that rather than building an inference now." The verb now exists. Whether S16's owned directory structure actually dissolves nyxloom's gate-identity inference problem is a nyxloom/B44 question, not an assay one — but whoever owns B44 should be told its blocking condition has (at least partially) fired. Nothing for assay to file.
+
+## S15.17–S15.20 (KSM shim / exec-wrapper / memory_profile) vs the container probe: mechanism exists in spirit, unsuitable in fact — and S17 strengthens my original recommendation
+
+I checked the injection mechanisms honestly rather than dismissing on category: ciu *does* have a build-in-container-and-inject pattern (S15.17 compiles the shim in `gcc:13-bookworm` and bind-mounts the artifact; S15.20 re-states entrypoints around a wrapper binary). Could that inject python3 into a running srdm container without owning the image build? No, for two reasons, one technical and one doctrinal:
+
+- **Technical:** the injection class is a single dependency-free object — S15.17's verify-before-use rule *requires* zero `DT_NEEDED` entries precisely because the artifact must load inside another process under either libc. A python3 runtime is the opposite shape: an interpreter binary plus a full stdlib tree plus loader/libc coupling. It doesn't fit through this door, and forcing it through a bind mount would be a fragile reinvention of "installing python," worse than either real option.
+- **Doctrinal, and this is the stronger reason:** a runtime-injected toolchain is *ambient* — invisible to S17's provenance stamp and to assay's own identity discipline (V5-5's `helpers` array exists because "a symbolic toolchain reference makes a verdict unreproducible"; the P27 probe pinned image digests for the same reason). S17 actually resolves the question in the other direction: **bake python3 (or the assay zipapp) into `tester-unified-go`, and the toolchain is then covered by the stamped revision** — provenance-verifiable, pinned, reproducible. The container probe recommendation from round 3 stands, now with a stronger justification than it had: the probe should note that the resulting image is S17-stampable, which makes the assay-in-Go-image deployment *more* provenance-honest than any injection scheme could be.
+
+Nothing to file upstream here; rule S15.x out of the A-O04 path explicitly so nobody re-derives this.
+
+---
+
+# Part 2 — The doctrine call: close the hollow-PASS/FAIL gap, or leave it open
+
+## Pros of closing now
+
+1. **It restores the *simpler* doctrine, because the narrowed one is factually false about the shipped schema.** This is the decisive argument, and it's not philosophical. A-237/A-240's narrowed doctrine says the schema owns "refusal of impossible payloads, **not requiredness of evidence**." The shipped schema *already owns requiredness of evidence in three places*: the `NO_MUTANTS` branch **requires** `mutation` (line ~1527), `MUTANT_LIMIT_EXCEEDED` requires the exact sentinel payload (~1550), `ALL_MUTANTS_EQUIVALENT` requires `mutation` (~1598) — each added by a review round because its absence was a forgery window (A-136, A-163, A-228). So "leave it open for doctrine coherence" defends a doctrine the artifact contradicts today; keeping it honestly would need a *third* reformulation — "the schema owns requiredness keyed on reason codes but never on statuses" — which is gerrymandered around an accident of which review round found which hole. Closing the gap makes A-182's original one-sentence doctrine ("every locally expressible rule") true again and deletes the exception that has now consumed three decisions and two failed justifications.
+2. **It protects the only consumer population the schema exists for, in the direction that matters.** A-029's whole design is that consumers validate with the shipped schema and never link against assay. The hollow PASS is the *gate-defeating* direction — a false green — the model's own docstring calls it "the strongest form of exactly the lie P16 exists to catch." Today that lie is caught only by consumers who run assay's own verify. The comparer (accepted roadmap direction) will be the first real schema-consumer; it should not be the discovery vehicle for this gap.
+3. **The measured cost is as close to zero as schema work gets.** No v6: A-236(b) set the in-place-tightening precedent three days ago, for exactly this situation (no truthful producer emits the refused shape). Zero committed documents break — measured, 49 swept, output pasted in round 4. The two conformance fixture vehicles were already repaired once during the A-240 attempt. The misreport test survives untouched under the correctly-scoped branches — also measured.
+4. **This is the cheapest moment there will ever be.** Pre-consumer, pre-adoption, precedent fresh. Tightening later — with consumers' handwritten test documents in the wild — is when it becomes a genuinely breaking change needing a v-bump and a migration. This is A-153's "last cheap moment" logic applied to a contract instead of package ids.
+
+## Cons of closing now
+
+1. **It's real, verified work in a mid-flight wave:** roughly four new branches, a negative fixture per branch, two vehicle repairs, a full-suite run to A-232 standard, and a supersession decision. Small, but it must be done properly — the failure mode of tossing it into a doc commit is the one A-241 just correctly refused.
+2. **A second withdrawal from the A-236 in-place-tightening account.** Documents valid yesterday become invalid today under the same `$id`. Once is a precedent; twice is a pattern; a third would start to look like unversioned contract churn. If closing, the decision should state the rule explicitly: in-place tightening is legal only when a sweep proves zero truthful documents affected, with the sweep output pasted.
+3. **Residual scope-error risk** — the overbroad-R2-FAIL mistake is exactly how the last attempt went wrong. Mitigation is mechanical: the branches must mirror `Claim._check_a_judged_status_carries_its_own_payload` and `_MUTATION_ONLY_REASON_CODES` *verbatim* — R1 ∧ status∈{PASS,FAIL} ⇒ `coverage`; R2 ∧ status=PASS ⇒ `mutation`; R2 ∧ reason=`MUTANTS_SURVIVED` ⇒ `mutation`; R3 ∧ status∈{PASS,FAIL,INCONCLUSIVE} ⇒ `canary` — and *nothing else*, because payload-free R2 FAIL is A-116's own truthful propagation shape.
+
+## Pros of leaving open
+
+Zero implementation work now; no second precedent withdrawal; no live exposure (model + verify catch every case in the real pipeline, and the schema-only consumer population is currently empty); fewer schema conditionals.
+
+## Cons of leaving open
+
+The big one: **it isn't actually the zero-work option.** A-240's evidence is disproven and must be corrected in the record regardless (A-232 is unambiguous about this), and an honest leave-open also requires re-stating the doctrine so it stops misdescribing the shipped schema — that's most of the writing cost of closing, purchased without the protection. Plus: the contract permanently permits a state no honest producer can emit, in the gate-defeating direction; and this corner is empirically a churn magnet — two of my review rounds plus A-236/A-237/A-240 have all orbited it, and an open exception with two failed justifications invites the next reviewer to orbit it again.
+
+## Recommendation
+
+**Close it.** Not 50/50 — roughly 75/25, and the 25 is execution risk, not doubt about direction. The argument that decides it for me is #1: the choice is not "tighter schema vs. simple doctrine," it is "make the doctrine true again vs. write a third, more contorted doctrine to excuse the gap." Once the "it breaks a real test" counter-argument fell to measurement, leaving the gap open stopped having a principled defense and kept only an effort defense — and the effort difference between honest-leave-open and close is small and one-time.
+
+Shape: a small standalone carver-owned change **before P34 dispatch**, not folded into P34 — it touches the schema, which P34 otherwise doesn't, and A-219(c)'s own seam rule says contract changes don't ride adapter packages. Contents: the four branches above, one negative fixture each, the two vehicle repairs, full suite run with output pasted, and one supersession decision that (a) corrects A-240's evidence with the measured table, (b) restores A-182's original scope, and (c) states the in-place-tightening rule from con #2.
+
+The one condition that would flip me: **if the operator already expects a v6 in P34's near wake** (say, real SQL runs force the `per_mutant_seconds` trigger named in SCHEMA-V5-DESIGN, or adjudicated-evidence detail fields for the provenance integration above force schema room) — then fold the branches into that v6 instead of tightening v5 a second time, and record only the A-240 correction now. That's a sequencing preference, not a change of direction.
+
+## Does A-241 change the calculus?
+
+It sharpens it rather than changing it, and the two do **not** share a design — but they share an inventory, and that's worth one decision naming both. The full question is "what may a payload-free claim assert?", and it splits cleanly along the layer boundary:
+
+- The **hollow-green** lie (PASS/FAIL without the payload that judged it) is the *locally expressible* slice — claim-internal, schema's job under the restored doctrine. That's the gap to close now.
+- The **wrong-reason-adverse** lie (A-241: `ERROR/GIT_FAILED` claimed against an `ERROR/EXEC_FAILED` baseline) is irreducibly *cross-object* — it needs the R0 sibling, which Draft 2020-12 cannot reach — so it belongs to verify's re-derivation, exactly where A-241 already assigns it.
+
+Two facts make the split principled rather than convenient: the failure directions differ (hollow-green defeats the gate; A-241's misreports keep the outcome adverse and the exit code identical — they corrupt diagnosis, not verdicts), and the layers' consumers differ (schema-only consumers vs. verify-running consumers). Closing the schema slice makes the layering claim exact: after it, every payload-free-lying case is either schema-refused (green lies) or verify-refused (reason lies, once A-241 lands), with the model backstopping both. So: schema branches now; A-241's fix stays scheduled with P34's verify touch per its own ownership note — with the round-4 caveat repeated, because it's the part that could go wrong: the fix needs per-terminal reachability evidence, since `DIRTY_TREE`/`HEAD_CHANGED` legitimately co-occur with a non-PASS baseline (A-175/A-178) and `BASE_IS_HEAD`'s co-occurrence needs a `run_lane` control-flow read, not an assumption. A blanket verbatim rule over all six independent terminals would refuse truthful artifacts — the same class of scope error, one layer over.
