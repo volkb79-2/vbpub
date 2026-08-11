@@ -19,8 +19,13 @@
 > must be re-carved around option 2, which also owes `go_cover.py` an explicit
 > scope status and O3 a rewritten negative. Read
 > `reports/assay-P27-JIT-CARVE.md` and `carve-assets/P27/BLOCKED-grammar.md`
-> before touching P27. NEXT WORK IS NOT P27: the operator resequenced B001
-> (SQL/DDL, A-215) ahead of finishing the Go work.** Its pinned image inputs, two-commit fixture with real
+> before touching P27. NEXT WORK IS NOT P27: the operator resequenced the wave
+> SQL-first (A-219). **Execution order is now P20–P26 (done) → P33 → P34 →
+> \[ship\] → P27 (resumed) → P28 → P29–P32; numbers are identity, not sequence.
+> P33 (verdict schema v5) is CARVED as of `b6f0b3bf` and awaiting its CR-opus-0
+> carve review — read `reports/assay-P33-JIT-CARVE.md` and
+> `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
+> decisions A-220/A-221/A-222.** Its pinned image inputs, two-commit fixture with real
 > reproduced profiles, independent statement manifest, and locked v4
 > missing-tool artifact are frozen and survive whichever way A-O19 is ruled;
 > the expected R1 `Coverage` line sets and the work item 5/6/9 oracles do not
