@@ -52,18 +52,25 @@
         "hand_manifest": {"changed_executable": 3, "covered": 2, "missing": 1, "percent": 66.7,
                           "covered_lines": [22,25]}
       },
-      "result": "CONTRADICTION. All three rules report 66.7% while attributing disjoint line sets. A percentage-only oracle cannot tell them apart -- A-208's vacuous-agreement failure mode, in the Go setting."
+      "result": "CONTRADICTION. All three rules report 66.7% over DIFFERENT line sets, so a percentage-only oracle cannot tell them apart -- A-208's vacuous-agreement failure mode, in the Go setting. CORRECTED 2026-08-11: the sets are NOT disjoint. The manifest's covered set {22,25} is a strict subset of the inclusive rule's {21,...,26}, and {30} of {29,30,31}; block extent is a strict over-approximation of the statement-line set. The superset relation holds for the executable and executed sets but NOT for the missing set -- see P27-PROBE-9."
     },
     {
       "id": "P27-PROBE-5",
       "question": "does the hand-authored locked missing-tool artifact satisfy the real v4 layers?",
-      "asset": "expected/missing-tool-v4.json",
+      "asset": "expected/missing-tool-v4-template.json",
       "checks": [
-        "jsonschema Draft202012 against src/assay/schemas/verdict.schema.json: valid",
-        "assay.verify.verify_text (P21 raw checker): returned [] (no failures)",
+        "jsonschema Draft202012 against src/assay/schemas/verdict.schema.json, AFTER substituting the four placeholders: valid",
+        "assay.verify.verify_text (P21 raw checker), AFTER substitution: returned [] (no failures)",
         "judgment key absent, as A-136/P16 require for a claim with no coverage payload"
       ],
-      "result": "ACCEPTED by both layers. Independent of the blocked grammar decision."
+      "substitutions_required_before_use": {
+        "@ASSAY_VERSION@": "the installed wheel's version",
+        "@HEAD_OID@": "the resolved full HEAD OID",
+        "@STARTED@": "an ISO-8601 timestamp with an explicit offset",
+        "@ENDED@": "an ISO-8601 timestamp with an explicit offset"
+      },
+      "result": "ACCEPTED by both layers ONLY after substitution. Independent of the grammar ruling.",
+      "correction_2026_08_11": "The first version of this probe recorded 'valid' and 'returned []' without stating that a substituted copy was what got validated, and the asset was named missing-tool-v4.json with no 'template' marker. As committed the raw bytes fail jsonschema with 2 errors (started, ended fail the ISO-8601 pattern) and verify_text with 3 failures. Independently reconfirmed. The asset is now named *-template.json, matching the identical placeholder convention in every P25/P26 expected/ file. This was an A-067-class defect: a recorded check whose stated subject was not what was checked."
     },
     {
       "id": "P27-PROBE-6",
@@ -75,12 +82,51 @@
         "GoVersion": "1.25"
       },
       "result": "Exactly one Main:true object with one nonempty Path. Offline, no dependency resolution. Confirms the packet's resolve_go_adapter contract is implementable as written; the returned object also carries Dir/GoMod keys, which the adapter must tolerate without treating them as module identity."
+    },
+    {
+      "id": "P27-PROBE-7",
+      "added": "2026-08-11, from the CR-opus-0 carve review",
+      "question": "is the impossibility unconditional, or only a property of our four fixtures?",
+      "sources": ["witness/collision-colA.go", "witness/collision-colB.go"],
+      "profile": "witness/coverage-collision.out",
+      "profile_sha256": "f6c593a961f742b3c809d213f290b499bfebec677d8853197e5cc6d44df14da8",
+      "both_gofmt_clean": true,
+      "statement_truth": {"collision-colA.go": [4, 6], "collision-colB.go": [4, 5]},
+      "result": "UNCONDITIONAL. Both files compile and execute under go1.25.12 and emit BYTE-IDENTICAL profiles. A rule is a function of the profile; identical input forces identical output; the two correct answers differ; therefore every profile-only rule is wrong on at least one. Independently reproduced by the carver after the review reported it. This supersedes the four-witness argument as the proof of record."
+    },
+    {
+      "id": "P27-PROBE-8",
+      "added": "2026-08-11, from the CR-opus-0 carve review",
+      "question": "do the original four witnesses discriminate a wrong rule from a right one?",
+      "source": "witness/seg.go",
+      "profile": "witness/coverage-seg.out",
+      "counterexample_rule": "R1: startLine==endLine -> {startLine}; numStmts==1 -> {startLine+1}; numStmts==2 -> {startLine+1, endLine-1}",
+      "result": "NO. R1 matches the manifest exactly on all four original witnesses, so the original claim that they 'do not support one lossless rule' was FALSE -- they were non-discriminating, this project's A-143/A-150 class one layer up. R1 dies on seg.go, whose third block (7.2,8.4) is a MULTI-LINE block starting AT a statement, so its statement sits on startLine -- the opposite offset from the multi-line blocks above it. Every statement-start block among the original four was single-line, which is why the gap went unseen."
+    },
+    {
+      "id": "P27-PROBE-9",
+      "added": "2026-08-11, from the CR-opus-0 carve review",
+      "question": "is block extent a superset of the statement-line set for the MISSING set too?",
+      "source": "witness/lit.go",
+      "profile": "witness/coverage-lit.out",
+      "result": "NO. Line 4 is 'f := func() int { return 7 }'. The literal's body block 4.18,4.30 never ran, but the enclosing 3.14,4.18 did, and executed-wins-on-overlap promotes line 4 to executed -- an uncovered statement laundered by a covered neighbour on the same line. So the over-approximation relation holds for the executable and executed sets but NOT for the missing set. Noted honestly: this particular collapse is line granularity's own limit and coverage.py shares it, unlike the comment and closing-brace over-attribution, which is specific to block extent."
     }
   ],
   "disposition": {
     "work_items_frozen": [1, 2, 3, 8],
     "work_items_blocked": [5, 6, 9],
-    "blocked_reason": "see BLOCKED-grammar.md -- the block-to-line rule is a product decision under A-172",
-    "readiness": "NOT_READY"
+    "blocked_reason": "the block-to-line rule was a product decision under A-172; see BLOCKED-grammar.md",
+    "readiness": "NOT_READY",
+    "ruling": {
+      "date": "2026-08-11",
+      "outcome": "A-O19 ruled by the operator: OPTION 2 -- build a real source-side statement-position oracle",
+      "recorded_as": "decision A-217; A-172's disproved position premise closed as A-218",
+      "still_required_before_dispatch": [
+        "re-carve P27 around option 2",
+        "give src/assay/coverage_parsers/go_cover.py an explicit scope status (currently neither touch nor forbid, which silently permitted only option 1)",
+        "rewrite O3's negative, which is self-contradicting under one reading and unfalsifiable under the other",
+        "check any new line-attribution oracle against witness/seg.go and the collision pair, not only the original four"
+      ]
+    }
   }
 }

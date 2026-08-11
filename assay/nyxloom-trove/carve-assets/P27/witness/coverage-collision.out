@@ -1,0 +1,2 @@
+mode: atomic
+example.invalid/coll/f.go:3.22,7.2 2 1

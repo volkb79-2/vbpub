@@ -1,0 +1,4 @@
+mode: atomic
+example.invalid/lit/lit.go:3.14,4.18 1 1
+example.invalid/lit/lit.go:4.18,4.30 1 0
+example.invalid/lit/lit.go:5.2,6.10 2 1

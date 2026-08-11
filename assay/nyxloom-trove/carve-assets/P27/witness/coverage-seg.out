@@ -1,0 +1,4 @@
+mode: atomic
+example.invalid/seg/seg.go:3.19,4.11 1 1
+example.invalid/seg/seg.go:4.11,6.3 1 1
+example.invalid/seg/seg.go:7.2,8.4 1 0
