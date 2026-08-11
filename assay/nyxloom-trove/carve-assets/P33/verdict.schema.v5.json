@@ -1644,6 +1644,104 @@
               }
             }
           }
+        },
+        {
+          "description": "A-251: a judged R1 status carries the payload it was judged from. evaluate_coverage returns PASS or FAIL and ALWAYS with a Coverage; its three NO_MEASUREMENT causes are guarded before it is called (A-090) and carry no payload by branch 5. So a changed-line judgement naming no coverage cannot be re-derived by anyone but its own producer.",
+          "if": {
+            "required": [
+              "rigor",
+              "status"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R1"
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "coverage"
+            ]
+          }
+        },
+        {
+          "description": "A-251: a judged R2 status carries the payload it was judged from. judge_mutation reaches PASS only on the mutation-is-not-None branch. An absent payload means mutation testing never began because the baseline never passed (A-116), which cannot itself pass. Every OTHER R2 status stays representable without a payload, because a failed baseline is exactly how they arise -- a payload-free R2 FAIL is A-116's own propagation shape and remains valid.",
+          "if": {
+            "required": [
+              "rigor",
+              "status"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R2"
+              },
+              "status": {
+                "enum": [
+                  "PASS"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mutation"
+            ]
+          }
+        },
+        {
+          "description": "A-251: a judged R3 status carries the payload it was judged from. judge_canary returns PASS/FAIL/INCONCLUSIVE and build_canary_claim attaches the CanaryResult it judged on every one of them. ERROR/BUDGET_EXCEEDED stay representable without one: those describe the canary machinery failing to produce a result at all, not a judgement of one.",
+          "if": {
+            "required": [
+              "rigor",
+              "status"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R3"
+              },
+              "status": {
+                "enum": [
+                  "PASS",
+                  "FAIL",
+                  "INCONCLUSIVE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "canary"
+            ]
+          }
+        },
+        {
+          "description": "A-251: MUTANTS_SURVIVED is read off the survived bucket and nowhere else, so a claim wearing it without the payload it was read from is unproducible -- the same forgery branches 7 and 9 close for NO_MUTANTS and ALL_MUTANTS_EQUIVALENT. It was the one member of the model's _MUTATION_ONLY_REASON_CODES the schema did not yet enforce.",
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "const": "MUTANTS_SURVIVED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mutation"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R2"
+              }
+            }
+          }
         }
       ],
       "additionalProperties": false

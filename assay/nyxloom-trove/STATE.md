@@ -73,6 +73,13 @@
 > `cmru release --project assay --dry-run` correctly refuses: *"Local main is
 > 103 commit(s) ahead of origin/main"* — cmru's own global guard, identical for
 > `--project ciu`. It needs `main` pushed and explicit operator authorisation.
+> **The hollow-PASS/FAIL gap is CLOSED (A-251/A-252), P34's last blocker.**
+> Four `claim.allOf` branches plus a matching raw-verifier check; A-237's
+> narrowing is superseded and A-182's original doctrine restored. In-place
+> tightening of v5 has now happened TWICE (A-236b, A-251) and A-252 makes a
+> third need its own ruling. **`MISSING_EXTERNAL_TOOL`'s preflight is P34's, not
+> P27's (A-253)** — P27 only declares its helper.
+>
 > After that, P34 — whose **pre-carve SCOPE is written** at
 > `reports/assay-P34-CARVE-SCOPE.md`. It is not a carve and P34 is **not
 > dispatchable**: it is gated on ship AND on the operator's ruling on Fable's

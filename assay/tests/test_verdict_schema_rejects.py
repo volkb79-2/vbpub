@@ -84,6 +84,19 @@ NON_PASS = [outcome.value for outcome in Outcome if outcome is not Outcome.PASS]
 # --- A-025: no percentage exists unless a measurement produced one ------------
 
 
+def _verdict_document(name: str) -> dict:
+    """A named fixture from `tests/fixtures/verdicts/`, freshly parsed.
+
+    `verdict_fixture` only reaches the six outcome-named artifacts; A-251's
+    branches need the per-rigor ones.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path(__file__).resolve().parent / "fixtures" / "verdicts" / name
+    return _json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_a_no_measurement_verdict_carrying_a_coverage_block_is_rejected(
     validator: Draft202012Validator,
 ):
@@ -365,3 +378,98 @@ def test_the_coverage_payload_refuses_an_impossible_measurement(kwargs, match):
 
     with pytest.raises(ValueError, match=match):
         Coverage(**{**base, **kwargs})
+
+# ---------------------------------------------------------------------------
+# A-251 — a judged status carries the payload it was judged FROM
+# ---------------------------------------------------------------------------
+#
+# The hollow-green lie: not a payload that contradicts its status (sol finding
+# 2's three artifacts) but a DELETED payload. Every re-derivation then has
+# nothing to judge and returns, the rollup still agrees, and a PASS backed by no
+# evidence at all validated against the shipped schema. A-237/A-240 left this
+# open on a doctrine ("the schema owns refusal of impossible payloads, not
+# requiredness of evidence") that was already false of the shipped artifact --
+# branches 7, 8 and 9 require a payload keyed on reason code. A-251 closes it and
+# restores A-182's original one-sentence scope.
+#
+# Each test below deletes the payload from a REAL fixture and asserts the
+# untouched document validates in the same body, so a schema that rejected
+# everything would fail here too.
+
+_HOLLOW_CASES = [
+    ("r1_pass.json", "R1", "coverage"),
+    ("r1_fail_uncovered_lines.json", "R1", "coverage"),
+    ("r2_pass_with_judgment.json", "R2", "mutation"),
+    ("r3_pass.json", "R3", "canary"),
+    ("r3_fail_canary_survived_unexpected_pass.json", "R3", "canary"),
+    ("r3_inconclusive_canary_inconclusive.json", "R3", "canary"),
+]
+
+
+@pytest.mark.parametrize("fixture, rigor, payload", _HOLLOW_CASES)
+def test_a_judged_claim_whose_payload_was_deleted_is_rejected(
+    validator: Draft202012Validator, fixture: str, rigor: str, payload: str,
+):
+    document = _verdict_document(fixture)
+    assert why_invalid(validator, document) == [], "the canonical form must validate"
+
+    claim = next(item for item in document["claims"] if item["rigor"] == rigor)
+    assert payload in claim, f"{fixture} carries no {payload} to delete"
+    del claim[payload]
+
+    messages = why_invalid(validator, document)
+    assert messages, (
+        f"a {rigor} claim kept its judged status after its {payload} payload was "
+        f"deleted -- the hollow-green lie"
+    )
+
+
+def test_mutants_survived_without_the_bucket_it_is_read_from_is_rejected(
+    validator: Draft202012Validator,
+):
+    """The one member of the model's `_MUTATION_ONLY_REASON_CODES` the schema did
+    not enforce. `NO_MUTANTS` and `ALL_MUTANTS_EQUIVALENT` were already required
+    by their own branches; this was the third."""
+    document = _verdict_document("r2_fail_mutants_survived.json")
+    assert why_invalid(validator, document) == []
+
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    assert claim["reason_code"] == "MUTANTS_SURVIVED"
+    del claim["mutation"]
+
+    assert why_invalid(validator, document), (
+        "MUTANTS_SURVIVED validated with no survived bucket to have read it from"
+    )
+
+
+_STILL_LEGAL = [
+    ("r2_error_exec_failed_baseline_crashed.json", "R2"),
+    ("r2_inconclusive_mutation_unsupported.json", "R2"),
+    ("r2_no_measurement_head_changed.json", "R2"),
+    ("r2_error_mutation_discovery_failed.json", "R2"),
+    ("r1_no_measurement_dirty_tree.json", "R1"),
+    ("r1_error_git_failed.json", "R1"),
+    ("r1_error_unreadable_artifact.json", "R1"),
+]
+
+
+@pytest.mark.parametrize("fixture, rigor", _STILL_LEGAL)
+def test_a_payload_free_claim_a_producer_really_emits_stays_valid(
+    validator: Draft202012Validator, fixture: str, rigor: str,
+):
+    """The scope guard, and the half the first attempt at this rule got wrong.
+
+    A-116's own truthful propagation shape is a payload-free R2 claim reusing a
+    failed baseline's `(outcome, reason_code)` verbatim, and the
+    ERROR/NO_MEASUREMENT/BUDGET_EXCEEDED terminals describe machinery that never
+    produced a result to judge. Every one of these is real producer output. If
+    A-251's branches ever widen to cover them, `assay run` starts emitting
+    artifacts its own schema rejects -- the exact defect A-240's overbroad
+    attempt would have shipped.
+    """
+    document = _verdict_document(fixture)
+    claim = next(item for item in document["claims"] if item["rigor"] == rigor)
+    assert not any(
+        key in claim for key in ("coverage", "mutation", "canary")
+    ), f"{fixture} is not the payload-free shape this test exists to protect"
+    assert why_invalid(validator, document) == []

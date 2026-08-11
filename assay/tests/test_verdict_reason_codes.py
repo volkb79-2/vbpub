@@ -104,6 +104,12 @@ _R2_ONLY_CODES = frozenset(
         # non-R2 ALL_MUTANTS_EQUIVALENT would otherwise validate, which is
         # verbatim the forgery A-136 closed for NO_MUTANTS, one bucket over.
         "ALL_MUTANTS_EQUIVALENT",
+        # (A-251) the third member of the model's own
+        # `_MUTATION_ONLY_REASON_CODES`, and the one the schema had never
+        # pinned. It is read off the `survived` bucket and nowhere else, so it
+        # belongs here for exactly the reason its two siblings do -- this
+        # helper's docstring already stated the rule; only this row was missing.
+        "MUTANTS_SURVIVED",
     }
 )
 
@@ -132,8 +138,27 @@ _ONE_EQUIVALENT_MUTANT = {
     "operator": "sql:drop-check",
     "description": "drop the CHECK constraint",
 }
+#: (A-251) one mutant that survived, for the terminal that reports exactly
+#: that. Deliberately a DIFFERENT bucket from `_ONE_EQUIVALENT_MUTANT`'s: a
+#: survivor changed behaviour and was not caught, an equivalent one changed
+#: nothing, and a payload that conflated them would let this row pass while the
+#: rule it checks was wrong.
+_ONE_SURVIVING_MUTANT = {
+    "path": "pkg/mod.py",
+    "lineno": 3,
+    "start_byte": 10,
+    "end_byte": 20,
+    "replacement_sha256": "d" * 64,
+    "operator": "python:compare-swap",
+    "description": "Lt->LtE",
+}
 _MUTATION_PAYLOAD_FOR: dict[str | None, dict | None] = {
     "NO_MUTANTS": {"candidate_count": 0, "total": 0, **_EMPTY_BUCKETS},
+    "MUTANTS_SURVIVED": {
+        "candidate_count": 1,
+        "total": 1,
+        **{**_EMPTY_BUCKETS, "survived": [_ONE_SURVIVING_MUTANT]},
+    },
     "MUTANT_LIMIT_EXCEEDED": {"candidate_count": 3, "total": 0, **_EMPTY_BUCKETS},
     "ALL_MUTANTS_EQUIVALENT": {
         "candidate_count": 1,

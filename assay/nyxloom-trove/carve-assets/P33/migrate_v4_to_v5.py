@@ -295,6 +295,104 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
         "ALL_MUTANTS_EQUIVALENT (R2-B1/A-228)"
     )
 
+    # (A-251, closing the hollow-PASS/FAIL gap A-237/A-240 left open) The
+    # converse of branches 5 and 6: those forbid a payload where nothing was
+    # measured; these forbid a JUDGED STATUS where no payload was measured.
+    # Without them the R1/R2/R3 re-derivation is evaded not by a contradictory
+    # payload but by DELETING the payload -- each re-derivation has nothing to
+    # judge and returns, the rollup still agrees, and a PASS backed by no
+    # evidence at all validates. The model calls that "the strongest form of
+    # exactly the lie P16 exists to catch".
+    #
+    # These four mirror `Claim._check_a_judged_status_carries_its_own_payload`
+    # and `_MUTATION_ONLY_REASON_CODES` VERBATIM, and nothing else. The scope is
+    # the part that went wrong on the first attempt (A-240), so it is stated
+    # exactly: a payload-free R2 FAIL stays LEGAL because that is A-116's own
+    # truthful propagation shape -- the R2 claim reusing a failed baseline's
+    # (outcome, reason_code) verbatim -- and a payload-free R1/R3 ERROR,
+    # NO_MEASUREMENT or BUDGET_EXCEEDED stays legal for the same class of
+    # reason. Only the statuses a producer can reach ONLY by judging a payload
+    # are constrained.
+    #
+    # NO_MUTANTS and ALL_MUTANTS_EQUIVALENT, the other two members of
+    # `_MUTATION_ONLY_REASON_CODES`, are already required by branches 7 and 9;
+    # MUTANTS_SURVIVED was the missing third, which is why one branch per reason
+    # code is added here rather than one branch over an enum -- it matches how
+    # this schema already expresses the rule.
+    for level, payload, statuses, why in (
+        (
+            "R1", "coverage", ["PASS", "FAIL"],
+            "evaluate_coverage returns PASS or FAIL and ALWAYS with a Coverage; "
+            "its three NO_MEASUREMENT causes are guarded before it is called "
+            "(A-090) and carry no payload by branch 5. So a changed-line "
+            "judgement naming no coverage cannot be re-derived by anyone but "
+            "its own producer.",
+        ),
+        (
+            "R2", "mutation", ["PASS"],
+            "judge_mutation reaches PASS only on the mutation-is-not-None "
+            "branch. An absent payload means mutation testing never began "
+            "because the baseline never passed (A-116), which cannot itself "
+            "pass. Every OTHER R2 status stays representable without a "
+            "payload, because a failed baseline is exactly how they arise -- a "
+            "payload-free R2 FAIL is A-116's own propagation shape and remains "
+            "valid.",
+        ),
+        (
+            "R3", "canary", ["PASS", "FAIL", "INCONCLUSIVE"],
+            "judge_canary returns PASS/FAIL/INCONCLUSIVE and build_canary_claim "
+            "attaches the CanaryResult it judged on every one of them. "
+            "ERROR/BUDGET_EXCEEDED stay representable without one: those "
+            "describe the canary machinery failing to produce a result at all, "
+            "not a judgement of one.",
+        ),
+    ):
+        defs["claim"]["allOf"].append(
+            {
+                "description": (
+                    f"A-251: a judged {level} status carries the payload it was "
+                    f"judged from. {why}"
+                ),
+                "if": {
+                    "required": ["rigor", "status"],
+                    "properties": {
+                        "rigor": {"const": level},
+                        "status": {"enum": list(statuses)},
+                    },
+                },
+                "then": {"required": [payload]},
+            }
+        )
+        log.append(
+            f"claim.allOf: +branch requiring {payload} for a judged {level} "
+            f"status {statuses} (A-251)"
+        )
+
+    defs["claim"]["allOf"].append(
+        {
+            "description": (
+                "A-251: MUTANTS_SURVIVED is read off the survived bucket and "
+                "nowhere else, so a claim wearing it without the payload it was "
+                "read from is unproducible -- the same forgery branches 7 and 9 "
+                "close for NO_MUTANTS and ALL_MUTANTS_EQUIVALENT. It was the "
+                "one member of the model's _MUTATION_ONLY_REASON_CODES the "
+                "schema did not yet enforce."
+            ),
+            "if": {
+                "required": ["reason_code"],
+                "properties": {"reason_code": {"const": "MUTANTS_SURVIVED"}},
+            },
+            "then": {
+                "required": ["mutation"],
+                "properties": {"rigor": {"const": "R2"}},
+            },
+        }
+    )
+    log.append(
+        "claim.allOf: +branch requiring the mutation payload and rigor R2 for "
+        "MUTANTS_SURVIVED (A-251)"
+    )
+
     # Same root cause: the fifth bucket was never propagated into the limit
     # sentinel's own shape, nor into the prose that counts buckets.
     for branch in defs["claim"]["allOf"]:

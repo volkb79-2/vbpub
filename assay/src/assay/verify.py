@@ -132,6 +132,23 @@ _LANE_RESOLVED_FIELDS: tuple[str, ...] = (
 )
 
 
+#: (A-251) ``(rigor, payload, judged statuses)``, transcribed from
+#: :meth:`assay.verdict.Claim._check_a_judged_status_carries_its_own_payload`.
+#: A table rather than open-coded conditionals so the SCOPE is auditable at a
+#: glance -- the first attempt at this rule failed on scope, not mechanism.
+_JUDGED_STATUS_REQUIRES_PAYLOAD: tuple[tuple[str, str, frozenset[str]], ...] = (
+    ("R1", "coverage", frozenset({"PASS", "FAIL"})),
+    ("R2", "mutation", frozenset({"PASS"})),
+    ("R3", "canary", frozenset({"PASS", "FAIL", "INCONCLUSIVE"})),
+)
+
+#: ``verdict._MUTATION_ONLY_REASON_CODES`` by name, for the raw layer, which
+#: reads strings and must never import the model's enum to compare them.
+_MUTATION_ONLY_REASON_CODE_NAMES: frozenset[str] = frozenset(
+    {"MUTANTS_SURVIVED", "NO_MUTANTS", "ALL_MUTANTS_EQUIVALENT"}
+)
+
+
 def _outcome_of(value: Any) -> Outcome | None:
     try:
         return Outcome(value)
@@ -650,6 +667,61 @@ def _check_helpers_have_a_judged_claim(document: dict, failures: list[str]) -> N
                 f"a helper with role {role!r} is recorded, but no claim in this "
                 f"verdict carries the payload such a helper would have produced"
             )
+
+
+def _check_a_judged_status_carries_its_own_payload(document: dict, failures: list[str]) -> None:
+    """(A-251) A judged status must carry the payload it was judged FROM.
+
+    The converse of :func:`_check_mutation_payload_shapes`' first rule: that
+    forbids a payload where nothing was measured, this forbids a judged status
+    where no payload was measured. Deleting a payload -- rather than
+    contradicting it -- makes every re-derivation below return with nothing to
+    judge while the rollup still agrees, so a ``PASS`` backed by no evidence at
+    all was accepted. That is the strongest form of the lie P16 exists to catch,
+    and it is the *gate-defeating* direction.
+
+    Mirrors :meth:`assay.verdict.Claim.
+    _check_a_judged_status_carries_its_own_payload` and
+    ``verdict._MUTATION_ONLY_REASON_CODES`` VERBATIM -- transcribed as a table
+    rather than hand-picked, because scope is exactly what the first attempt at
+    this got wrong (A-240 refused an overbroad branch set and drew the wrong
+    conclusion from the breakage). Two shapes must stay LEGAL and are not
+    listed:
+
+    * a payload-free R2 **FAIL** -- A-116's own truthful propagation, the R2
+      claim reusing a failed baseline's ``(outcome, reason_code)`` verbatim;
+    * a payload-free R1/R2/R3 ``ERROR``/``NO_MEASUREMENT``/``BUDGET_EXCEEDED``
+      -- those describe the machinery failing to produce a result at all, not a
+      judgement of one.
+
+    Worded differently from both the model's messages and the schema's, for the
+    reason P16 recorded: identical wording makes "is this raw branch even
+    reached" untestable by message content alone.
+    """
+    claims = document.get("claims")
+    if not isinstance(claims, list):
+        return
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        rigor = claim.get("rigor")
+        status = claim.get("status")
+        for level, payload, judged in _JUDGED_STATUS_REQUIRES_PAYLOAD:
+            if rigor == level and status in judged and payload not in claim:
+                failures.append(
+                    f"the {level} claim reports {status} with no {payload} "
+                    f"payload; that status is a judgement OF one, so nothing "
+                    f"but its own producer could re-derive it"
+                )
+        if rigor == "R2" and "mutation" not in claim:
+            reason = claim.get("reason_code")
+            if reason in _MUTATION_ONLY_REASON_CODE_NAMES:
+                failures.append(
+                    f"the R2 claim reports {reason} with no mutation payload; "
+                    f"that reason code is read off the mutation buckets and "
+                    f"nowhere else, so a run that never got as far as mutants "
+                    f"could not have produced it"
+                )
 
 
 def _check_interval_is_ordered(document: dict, failures: list[str]) -> None:
@@ -1401,6 +1473,7 @@ def verify_document(document: Any) -> list[str]:
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
     _check_mutation_payload_shapes(document, failures)
+    _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)
 
     try:

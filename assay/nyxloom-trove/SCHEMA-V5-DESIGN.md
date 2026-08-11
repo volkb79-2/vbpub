@@ -1,22 +1,24 @@
 # Schema v5 — the design, and what it deliberately does not do
 
-> **SCHEMA OWNERSHIP, NARROWED (A-237, evidence corrected by A-240).** The
-> shipped schema owns refusal of *impossible* payloads, not requiredness of
-> *evidence*. A payload-free PASS validates against the schema alone and is
-> refused by the model and raw verifier — deliberately. A-182's "every locally
-> expressible rule" should be read with this narrowing.
+> **SCHEMA OWNERSHIP — A-237's NARROWING IS SUPERSEDED (A-251).** A-182's
+> original one sentence stands again: the schema owns **every locally
+> expressible rule**, requiredness of evidence included. A payload-free PASS no
+> longer validates — four `claim.allOf` branches now require the payload a
+> judged status was judged from (R1 PASS/FAIL ⇒ `coverage`; R2 PASS ⇒
+> `mutation`; R3 PASS/FAIL/INCONCLUSIVE ⇒ `canary`; `MUTANTS_SURVIVED` ⇒
+> `mutation`), and `verify.py` carries the same rule as an independent witness.
 >
-> **A-237's stated evidence was wrong.** It claimed
-> `tests/test_verdict_conformance.py` carries "a family of four assertions
-> documenting that boundary"; those four defend argv arithmetic,
-> claims-cover-declared-rigor (both directions) and evidence-covers-declarations,
-> and **none** of them is about payload requiredness. The narrowing nevertheless
-> stands, for a measured reason: driving the shipped verifier across every
-> payload-free-LEGAL status shows the A-116 re-derivation oracle fires for none
-> of them, so the only statuses that could violate A-116 on a payload-free claim
-> are exactly PASS and FAIL — the ones the schema branches would forbid. Adding
-> them makes a real oracle structurally unreachable. Read **A-240** for the
-> measurement and **A-241** for the partial-enforcement gap it exposed.
+> A payload-free R2 **FAIL** is still valid, and must stay so: it is A-116's own
+> truthful propagation shape. So are the payload-free ERROR / NO_MEASUREMENT /
+> BUDGET_EXCEEDED terminals.
+>
+> Why the narrowing fell: it claimed the schema does not own requiredness, while
+> the shipped schema had owned it in three places since P21/P33 (branches 7, 8
+> and 9, keyed on `NO_MUTANTS`, `MUTANT_LIMIT_EXCEEDED` and
+> `ALL_MUTANTS_EQUIVALENT`). Both of A-240's justifications for leaving the gap
+> open are on record as wrong — the first false, the second measured against an
+> overbroad branch set. Read **A-251** for the closure, **A-252** for the
+> in-place-tightening rule it is bound by, and A-237/A-240 only for the trail.
 >
 > **PRECEDENCE (A-231).** This document was written before three pre-dispatch
 > repair rounds. Where it conflicts with `carve-assets/P33/verdict.schema.v5.json`

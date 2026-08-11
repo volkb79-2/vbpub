@@ -542,11 +542,24 @@ def test_verify_rejects_claims_for_an_undeclared_rigor_level(
     validator: Draft202012Validator,
 ):
     document = _load("r0_pass.json")
+    # (A-251) The extra claim carries a real coverage payload. It used to be
+    # bare, which was fine while the schema was silent about requiredness --
+    # but A-251 now refuses a judged R1 PASS with no coverage, so a bare claim
+    # would make this document schema-invalid for a reason that has nothing to
+    # do with the rule under test. The payload makes the extra claim
+    # INDEPENDENTLY schema-valid, which is precisely what the assertion below
+    # says: the only thing wrong with this document is cross-object, and JSON
+    # Schema 2020-12 cannot see it.
     extra_claim = {
         "rigor": "R1",
         "source": "computed",
         "status": "PASS",
         "verified_by_assay": True,
+        # Lifted from a REAL R1 fixture rather than hand-written, so it cannot
+        # drift from the shape the schema actually requires.
+        "coverage": next(
+            claim for claim in _load("r1_pass.json")["claims"] if claim["rigor"] == "R1"
+        )["coverage"],
     }
     document["claims"] = [*document["claims"], extra_claim]
     assert why_invalid(validator, document) == [], (

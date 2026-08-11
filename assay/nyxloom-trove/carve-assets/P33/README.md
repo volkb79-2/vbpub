@@ -62,11 +62,13 @@ PYTHONPATH=src python3 -m pytest \
 
 ## Asset hashes
 
-Regenerated after the second Fable round (A-240). Only `migrate_v4_to_v5.py`
-moved: its withdrawn-gap comment now records the *measured* reason the
-PASS/FAIL-requires-its-payload branches stay out. `verdict.schema.v5.json` is
-byte-identical to the merged asset — the second attempt at those branches was
-reverted, and `--check` proves the generated schema is unchanged.
+Regenerated after **A-251 closed the hollow-PASS/FAIL gap** — the second and,
+by A-251's own rule, presumptively last in-place tightening of v5. Both
+`migrate_v4_to_v5.py` and `verdict.schema.v5.json` moved: the transform gained
+four `claim.allOf` branches and the generated schema carries them. `--check`
+passes, and `src/assay/schemas/verdict.schema.json` is the same bytes
+(`test_production_distribution_assets_are_byte_identical_to_locked_carve_assets`
+pins that).
 
 ```text
 f9f7bc86b316928a752e29ec52b352d51c0bd74ccef1096f60dc1bf5a421af47  expected/ca1-r3-no-base-v5-template.json
@@ -75,13 +77,13 @@ f1734e62782558b47799b3f77d933a37c6c63de2fcc4f54f21e226ddb768e408  expected/ca4-a
 e4378a0e85189b9f9b2c59184df0760bcbfeb7efbc01e44417af0b960ac128e7  expected/p25-missing-v5-template.json
 7d2685455f70f8e7d4a2d55deba4aff1e6b4799d9e885ca7bda5bf8da985dea1  expected/p25-pass-v5-template.json
 c1544667e2ec25fa9fe22d97598809e0ffe8836a600e7e296c6d9e6120831adb  expected/sql-r2-v5-template.json
-20a60338466dcce318a288067b18e2b547b60c2483053753cbbbc6afdbaba19d  migrate_v4_to_v5.py
+7cb948ff44b4f3506982ce744d17c6be3d7cb2c8f1191c12b7df1c50c7bfe78b  migrate_v4_to_v5.py
 83b3641214f5e74bc7ac3152b446e3ceb3b4f6d9f87704e2569f3b9ea2f7e925  migration-manifest.json
 41e57d3208575fae8dc8c7b2e0794ac805ec62d44861df240f36e01207a70d3f  probe_v5_controlled_red.py
 262899cca2bb7ed667bd248b41473535d4ceae07068546f644f695f3dfb9e2a1  sweep_v4_consumers.py
 b0ed316e28c9e052fa2601ea40ec975659cec8eca9a8b51ffda191930a6f4001  test_acceptance_v5.py
 4e8bcbf46eca1836e52502114c6583a7dc1af88d85eff6772e837a9b9a1c3df0  verdict.schema.v4-snapshot.json
-d62d9377d17a3841fab7ac84b606bb1ccd83491d3e7195d8f96cb78b0573ffce  verdict.schema.v5.json
+82b41aefc9cd11abf41201b34396c6963930870b57d36a6e8ab9209d71862a9e  verdict.schema.v5.json
 ```
 
 `README.md` is excluded because it carries the list.

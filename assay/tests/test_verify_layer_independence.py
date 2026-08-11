@@ -765,3 +765,97 @@ def test_raw_layer_clause_an_empty_helpers_array_is_refused():
     assert _raw(check, _sql_r2_document()) == []
     failures = _raw(check, _sql_r2_document(helpers=[]))
     assert failures and any("present but empty" in f for f in failures), failures
+
+# ---------------------------------------------------------------------------
+# A-251 — the RAW layer's own witness for "a judged status carries its payload"
+# ---------------------------------------------------------------------------
+#
+# This module's founding reason applies exactly: `verify_document` merges the raw
+# layer with the model's reconstruction, so a passing end-to-end negative cannot
+# distinguish "the raw branch caught it" from "reconstruction did and the raw
+# branch is dead code". The model has enforced this rule since P16
+# (`Claim._check_a_judged_status_carries_its_own_payload`) and the schema now
+# does too (A-251), which makes the raw branch the layer most at risk of being
+# unreachable and never noticed. So these call it DIRECTLY.
+
+_HOLLOW_RAW_CASES = [
+    ("r1_pass.json", "R1", "coverage", "PASS"),
+    ("r1_fail_uncovered_lines.json", "R1", "coverage", "FAIL"),
+    ("r2_pass_with_judgment.json", "R2", "mutation", "PASS"),
+    ("r3_pass.json", "R3", "canary", "PASS"),
+    ("r3_fail_canary_survived_unexpected_pass.json", "R3", "canary", "FAIL"),
+    ("r3_inconclusive_canary_inconclusive.json", "R3", "canary", "INCONCLUSIVE"),
+]
+
+
+def _fixture(name: str) -> dict:
+    path = Path(__file__).resolve().parent / "fixtures" / "verdicts" / name
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("fixture, rigor, payload, status", _HOLLOW_RAW_CASES)
+def test_the_raw_layer_alone_rejects_a_judged_status_whose_payload_was_deleted(
+    fixture, rigor, payload, status,
+):
+    document = _fixture(fixture)
+    clean = _raw(verify._check_a_judged_status_carries_its_own_payload, document)
+    assert clean == [], f"the untouched {fixture} must be clean at this layer"
+
+    claim = next(item for item in document["claims"] if item["rigor"] == rigor)
+    assert claim["status"] == status
+    del claim[payload]
+
+    failures = _raw(verify._check_a_judged_status_carries_its_own_payload, document)
+    assert any(
+        f"reports {status} with no {payload} payload" in item for item in failures
+    ), failures
+
+
+def test_the_raw_layer_alone_rejects_each_mutation_only_reason_without_its_buckets():
+    """All three members of the model's `_MUTATION_ONLY_REASON_CODES`, not just
+    the one the schema was missing -- the raw table is transcribed from the model
+    verbatim, so its coverage is the model's."""
+    for reason in sorted(verify._MUTATION_ONLY_REASON_CODE_NAMES):
+        document = _fixture("r2_fail_mutants_survived.json")
+        claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+        claim["reason_code"] = reason
+        claim["status"] = "FAIL" if reason == "MUTANTS_SURVIVED" else "INCONCLUSIVE"
+        assert _raw(verify._check_a_judged_status_carries_its_own_payload, document) == [], (
+            f"{reason} WITH its payload must be clean here"
+        )
+        del claim["mutation"]
+        failures = _raw(verify._check_a_judged_status_carries_its_own_payload, document)
+        assert any(
+            f"reports {reason} with no mutation payload" in item for item in failures
+        ), (reason, failures)
+
+
+def test_the_raw_layers_message_is_worded_differently_from_the_models():
+    """P16's own finding: identical wording makes the raw branch's failure
+    indistinguishable from reconstruction catching the same defect, which leaves
+    "is this branch reached" untestable by message content."""
+    document = _fixture("r1_pass.json")
+    claim = next(item for item in document["claims"] if item["rigor"] == "R1")
+    del claim["coverage"]
+
+    raw_only = _raw(verify._check_a_judged_status_carries_its_own_payload, document)
+    assert raw_only and all("claim[R1]:" not in item for item in raw_only), raw_only
+
+    everything = verify.verify_document(document)
+    assert any("claim[R1]: PASS without a coverage payload" in item for item in everything), (
+        "the model's own message should also appear, from reconstruction"
+    )
+    assert any(item in everything for item in raw_only), (
+        "the raw layer's message must survive into verify_document's list"
+    )
+
+
+def test_a_payload_free_r2_fail_stays_clean_at_the_raw_layer_too():
+    """A-116's propagation shape, at the layer most likely to over-tighten it.
+    A-245 fixed the neighbouring rule one layer over and its whole lesson was
+    that a blanket rule here refuses truthful artifacts."""
+    document = _fixture("r2_error_exec_failed_baseline_crashed.json")
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    assert "mutation" not in claim
+    assert claim["status"] != "PASS"
+    assert _raw(verify._check_a_judged_status_carries_its_own_payload, document) == []
