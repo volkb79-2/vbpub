@@ -12,10 +12,15 @@
 > `678104ad`, P22 as `9d30b25b`, P23 as `a7f49bb4`, P24 as `9f522a72`, and
 > P25 as `233926ce`, and P26 as `8f121be3`; P23's carver-owned fixture
 > correction is `7c52ecc2` (A-197). **P27's post-P26 JIT carve ran on 2026-08-11
-> (`239f6671`) and is BLOCKED, not ready: work item 6's Go block-to-line grammar
-> is a product decision, recorded as open item A-O19. Read
+> (`239f6671`), was reviewed by CR-opus-0 (PARTIALLY CONFIRMED), and was
+> corrected in `a22842c2`. Its blocking question A-O19 is now RULED — option 2,
+> a real source-side Go statement-position oracle (A-217); A-172's end-column-1
+> premise is disproved and closed (A-218). P27 is still NOT dispatchable: it
+> must be re-carved around option 2, which also owes `go_cover.py` an explicit
+> scope status and O3 a rewritten negative. Read
 > `reports/assay-P27-JIT-CARVE.md` and `carve-assets/P27/BLOCKED-grammar.md`
-> before touching P27.** Its pinned image inputs, two-commit fixture with real
+> before touching P27. NEXT WORK IS NOT P27: the operator resequenced B001
+> (SQL/DDL, A-215) ahead of finishing the Go work.** Its pinned image inputs, two-commit fixture with real
 > reproduced profiles, independent statement manifest, and locked v4
 > missing-tool artifact are frozen and survive whichever way A-O19 is ruled;
 > the expected R1 `Coverage` line sets and the work item 5/6/9 oracles do not
