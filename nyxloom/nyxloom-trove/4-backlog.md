@@ -419,6 +419,30 @@ items:
   component: carve
   context_estimate: small
   folds_into: F008
+- id: B44
+  title: 'gate identity: a project gate must not silently run MAIN''s tests against
+    MAIN''s stack. dstdns spent a whole package (dstdns-P96, two BLOCK verdicts,
+    §4.4 tripped) trying to solve this project-locally and it is not solvable
+    there. Two coupled facts: (a) the gate argv runs the MAIN checkout''s shim by
+    design, so a guard keyed on the shim''s checkout demands --force for EVERY
+    dispatched package and becomes decoration; (b) the obvious alternative
+    discriminator -- does the command carry a worktree cd prefix -- cannot be
+    written against the argv nyxloom actually emits, because gate_runner.py:80,91
+    substitutes an ABSOLUTE path and BOTH fallbacks (gate_runner.py:89,91 when
+    scratch is None; effects_gates.py:294-297 post-merge) substitute main''s repo
+    root with no .worktrees segment at all. A string match fires on every
+    dispatch; a path match turns a degraded run into a hard refusal with no
+    operator in the loop. This belongs upstream because worktree identity is
+    nyxloom''s to declare, not each project''s to infer. Note ciu is expected to
+    grow a `worktree` verb owning the directory structure, which likely dissolves
+    the inference problem entirely -- so sequence this behind that rather than
+    building an inference now. Consumer evidence: 21 rows written to dstdns''s
+    PRODUCTION classification_parameter_sets table, one per gate run, before
+    anyone noticed the adjacency.'
+  type: bugfix
+  component: gate
+  context_estimate: medium
+  folds_into: F008
 
 ---
 
