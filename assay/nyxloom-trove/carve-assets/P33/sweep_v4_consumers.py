@@ -78,11 +78,21 @@ COMPARISON = re.compile(
 
 
 def _seg_variants(tree: str) -> list[str]:
-    """A frozen tree spelled as a literal path, or built from components."""
+    """A frozen tree spelled as a literal path, or built from ADJACENT components.
+
+    Round 4: an earlier version also matched bare single tokens ("P25",
+    "expected", "fixtures"). That produced 17 false positives -- and worse, it
+    classified `tests/test_self_hosting.py` as a DIRECT consumer on a bare-token
+    hit when it actually reads its artifact path from `os.environ`. Anyone doing
+    the obvious cleanup of that noise would have silently dropped a real
+    consumer. Requiring at least two adjacent components removes the noise
+    without hiding anything: a genuine reader either spells the path or joins its
+    parts in sequence.
+    """
     parts = tree.split("/")
     out = [tree, tree.replace("/", '" / "'), tree.replace("/", "', '")]
-    out += [f'"{p}"' for p in parts if p not in ("gate", "tests", "src")]
-    out += [f"'{p}'" for p in parts if p not in ("gate", "tests", "src")]
+    for a, b in zip(parts, parts[1:]):
+        out += [f'"{a}" / "{b}"', f'"{a}", "{b}"', f"{a}/{b}"]
     return out
 
 
@@ -210,15 +220,42 @@ def closure(seed_paths: list[Path]) -> list[Path]:
     return sorted(p for p in seen if p.is_file() and p.suffix == ".py")
 
 
-#: A file that compares a document whose PATH ARRIVES AS A PARAMETER cannot name
-#: a frozen tree, so no name-based predicate can ever find it. This is exactly
-#: how `gate/distribution/release_wheel.py` hid: the gate passes it
-#: `gate/python/release/P25/release-manifest.json` on the command line, and the
-#: frozen path lives in the caller. Round 3 found it; a longer list of directory
-#: names would never have.
-INDIRECT = re.compile(
-    r"(--manifest|argparse|sys\.argv|def main\()"
-)
+#: A file that compares a document whose PATH ARRIVES FROM ELSEWHERE cannot name
+#: a frozen tree, so no name-based predicate can ever find it. Two distinct
+#: sources, each detected separately because round 4 showed one heuristic cannot
+#: cover both:
+#:
+#:   argv    -- `gate/distribution/release_wheel.py`, which the gate invokes with
+#:              `gate/python/release/P25/release-manifest.json` on its command
+#:              line. Round 3 found it.
+#:   environ -- `tests/test_self_hosting.py`, which reads its artifact path from
+#:              `os.environ`. Round 4 found it, and found that it was in the
+#:              manifest only by a bare-token false positive -- so the obvious
+#:              cleanup of that noise would have silently dropped a REAL consumer.
+INDIRECT_ARGV = re.compile(r"(--manifest|argparse|sys\.argv)")
+INDIRECT_ENV = re.compile(r"os\.environ|getenv")
+
+
+def _subprocess_callers(target: Path, files: list[Path]) -> list[str]:
+    """Closure members that invoke `target` AND name a frozen tree.
+
+    This is what separates a genuine indirect consumer from library noise.
+    `release_wheel.py` is shelled to by `qualify_topos.py`, which holds the
+    frozen path -- so the pair is a real consumer. `src/assay/verify.py` matches
+    the same comparison regexes but is *imported*, never invoked with a frozen
+    path, so it is noise and round 4 was right to call it out.
+    """
+    out = []
+    for f in files:
+        if f == target:
+            continue
+        try:
+            text = f.read_text()
+        except Exception:
+            continue
+        if target.name in text and reads_frozen_tree(text):
+            out.append(str(f.relative_to(ROOT)))
+    return out
 
 
 def find_consumers() -> list[dict]:
@@ -232,17 +269,30 @@ def find_consumers() -> list[dict]:
         if not COMPARISON.search(text):
             continue
         trees = reads_frozen_tree(text)
-        indirect = bool(INDIRECT.search(text)) and not trees
-        if not trees and not indirect:
-            continue
-        out.append({
+        if trees:
+            kind = "direct"
+        else:
+            # An indirect candidate is only a consumer if some OTHER closure
+            # member actually hands it a frozen path. Without that edge it is a
+            # library that happens to compare documents -- noise, not a finding.
+            callers = _subprocess_callers(f, files)
+            if INDIRECT_ARGV.search(text) and callers:
+                kind = "indirect-path-from-argv"
+            elif INDIRECT_ENV.search(text):
+                kind = "indirect-path-from-environ"
+            else:
+                continue
+        entry = {
             "path": str(f.relative_to(ROOT)),
             "frozen_trees": trees,
-            "kind": "direct" if trees else "indirect-path-from-caller",
+            "kind": kind,
             "v4_verdict_consumer": bool(
                 re.search(r'v4-template|schema_version|verify_document', text)
             ),
-        })
+        }
+        if kind == "indirect-path-from-argv":
+            entry["frozen_path_supplied_by"] = _subprocess_callers(f, files)
+        out.append(entry)
     return out
 
 

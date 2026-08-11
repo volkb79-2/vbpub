@@ -12,9 +12,11 @@ this carve retired it, which would have dropped 18 of its 24 tests — only 4 to
 artifact shape, and the other 18 include A-212's process-group kill on a witnessed
 descendant-held pipe, aggregate bounds before the first Git call, literal-pathspec
 identity and annotated-tag peel refusal. v5 does not touch any of that. The gate
-now deselects exactly the 4 template-coupled tests plus
-`test_registered_gate_runs_locked_acceptance_from_the_wheel_and_marks_it`, and
-keeps the other 19 running. `test_p26_attestation_shapes_survive_v5` below carries
+now deselects exactly THREE template-coupled tests plus
+`test_registered_gate_runs_locked_acceptance_from_the_wheel_and_marks_it` —
+four in total — and keeps the other **20** running.
+`test_all_structural_and_aggregate_bounds_precede_every_git_call` is NOT among
+them: it tests A-210's aggregate-bounds ordering, not artifact shape (A-229). `test_p26_attestation_shapes_survive_v5` below carries
 the shape half forward by reading P26's own locked templates and bumping only
 `schema_version` in memory, so no locked byte moves.
 
@@ -24,6 +26,7 @@ Run: PYTHONPATH=src python3 -m pytest nyxloom-trove/carve-assets/P33/test_accept
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -562,6 +565,14 @@ def test_helpers_executable_code_requires_a_payload_bearing_claim(verify_documen
 # whole artifact half was pinned and the load half was not.
 
 def _load_lane(tmp_path, mutation_block: str, language: str = "python"):
+    """The real loader is `load_lane_file(path) -> LaneFile`.
+
+    Round 4: the first version of these three tests called `config.load_lane` /
+    `config.load`, neither of which exists, so all three raised AttributeError
+    against a CORRECT implementation -- AUTHORING's NOT READY trigger verbatim.
+    `test_locked_suite_only_references_symbols_that_exist` now pins the API
+    surface so this cannot recur.
+    """
     from assay import config as C
     toml = tmp_path / "assay.toml"
     toml.write_text(
@@ -586,8 +597,8 @@ def test_config_refuses_a_cross_language_operator(tmp_path):
         'mutation = { jobs = 1, max_mutants = 10, '
         'operators = ["sql:drop-check"] }',
     )
-    with pytest.raises(Exception) as exc:
-        C.load_lane(toml, "demo") if hasattr(C, "load_lane") else C.load(toml)
+    with pytest.raises(C.LaneConfigError) as exc:
+        C.load_lane_file(toml)
     assert "sql:drop-check" in str(exc.value), (
         "the refusal must name the offending operator"
     )
@@ -601,9 +612,8 @@ def test_config_accepts_a_matching_language_operator(tmp_path):
         'mutation = { jobs = 1, max_mutants = 10, '
         'operators = ["python:compare-swap"] }',
     )
-    loader = getattr(C, "load_lane", None) or C.load
-    lane = loader(toml, "demo") if loader is not C.load else loader(toml)
-    assert lane is not None
+    lane_file = C.load_lane_file(toml)
+    assert lane_file is not None
 
 
 def test_config_names_kill_signal_artifact_as_reserved_for_p34(tmp_path):
@@ -620,11 +630,126 @@ def test_config_names_kill_signal_artifact_as_reserved_for_p34(tmp_path):
         'operators = ["python:compare-swap"], '
         'kill_signal_artifact = ".assay/kill-signal.txt" }',
     )
-    with pytest.raises(Exception) as exc:
-        C.load_lane(toml, "demo") if hasattr(C, "load_lane") else C.load(toml)
+    with pytest.raises(C.LaneConfigError) as exc:
+        C.load_lane_file(toml)
     message = str(exc.value)
     assert "kill_signal_artifact" in message
     assert "P34" in message, (
         "the refusal must name the field as reserved for P34, not report it as "
         "an unknown key -- otherwise this work item has no observable"
     )
+
+
+# --- round-4 additions -------------------------------------------------------
+
+def test_locked_suite_only_references_symbols_that_exist():
+    """Round 4: three config tests called `config.load_lane`/`config.load`,
+    neither of which exists, so they raised AttributeError against a CORRECT
+    implementation. A locked suite no implementation can satisfy is AUTHORING's
+    NOT READY trigger verbatim.
+
+    This pins the API surface the suite depends on. It is deliberately a
+    *positive* check on the real module rather than a lint of this file: what
+    matters is that the names resolve at run time.
+    """
+    from assay import config as C
+    from assay import verdict as V
+    from assay import verify as VF
+
+    for module, name in (
+        (C, "load_lane_file"), (C, "LaneConfigError"), (C, "MutationConfig"),
+        (V, "VERDICT_SCHEMA_VERSION"), (VF, "verify_document"),
+    ):
+        assert hasattr(module, name), (
+            f"the locked suite references {module.__name__}.{name}, which does "
+            f"not exist -- no implementation could satisfy this suite"
+        )
+
+
+def test_sweep_classifies_the_environ_consumer_for_the_right_reason():
+    """Round 4's live instance of the indirect gap.
+
+    `tests/test_self_hosting.py` receives its artifact path from `os.environ`.
+    An earlier matcher classified it `direct` on a BARE-TOKEN hit -- so the
+    obvious cleanup of that noise would have silently dropped a real consumer.
+    It must now be found as an environ consumer, which is a separate, named,
+    separately-tested category rather than a side effect of loose matching.
+    """
+    by_path = {c["path"]: c for c in _run_sweep()}
+    entry = by_path.get("tests/test_self_hosting.py")
+    assert entry, "the environ-sourced consumer vanished from the inventory"
+    assert entry["kind"] == "indirect-path-from-environ", (
+        f"detected as {entry['kind']} -- if this is 'direct', the matcher is "
+        f"firing on a bare token again, not on a real path"
+    )
+
+
+def test_sweep_reports_no_zero_frozen_tree_noise_without_a_supplying_caller():
+    """Terra's finding: `src/assay/verify.py` was reported as a consumer with
+    `frozen_trees: []` because generic document-comparison code matched the
+    signal set. An indirect entry is only a finding if some other closure member
+    actually hands it a frozen path (argv) or it sources one itself (environ)."""
+    for c in _run_sweep():
+        if c["kind"] == "indirect-path-from-argv":
+            assert c.get("frozen_path_supplied_by"), (
+                f"{c['path']} is reported indirect-from-argv with no caller that "
+                f"supplies a frozen path -- that is noise, not a finding"
+            )
+
+
+def test_gate_script_wiring_is_exactly_what_the_handoff_claims():
+    """O5's source-level oracle (terra).
+
+    Every other O5 assertion is about artifact shape, so a green gate proved
+    nothing about the WIRING. Someone could weaken the deselect list or drop the
+    P33 invocation and no test would notice. This reads the gate script itself.
+    """
+    gate = (ROOT / "tools" / "tester-unified-gate.sh").read_text()
+
+    assert "carve-assets/P33/test_acceptance_v5.py" in gate, (
+        "the gate does not invoke P33's locked suite"
+    )
+    assert "ASSAY_GATE_PHASE=verdict-v5-accepted" in gate
+
+    # P26's module still runs...
+    assert "carve-assets/P26/test_acceptance.py" in gate, (
+        "P26's module was retired; A-229 requires it kept with four deselects"
+    )
+    # ...with exactly these four deselected, and no others.
+    required = {
+        "test_cli_emits_the_complete_hand_authored_v4_artifact",
+        "test_cli_preserves_independent_malformed_missing_and_current_evidence",
+        "test_attestation_timeout_is_atomic_and_does_not_run_a_failing_command",
+        "test_registered_gate_runs_locked_acceptance_from_the_wheel_and_marks_it",
+    }
+    deselected = set(re.findall(r"--deselect[= ]\S*?::(\w+)", gate))
+    assert deselected == required, (
+        f"deselect list drifted: extra={deselected - required}, "
+        f"missing={required - deselected}"
+    )
+    assert "test_all_structural_and_aggregate_bounds_precede_every_git_call" \
+        not in deselected, (
+        "A-210's aggregate-bounds oracle must NOT be deselected (A-229)"
+    )
+
+    # both P25 consumers point at the v5 siblings
+    for sibling in ("p25-pass-v5-template.json", "p25-missing-v5-template.json"):
+        assert sibling in (
+            gate + (ROOT / "gate" / "python" / "qualify_topos.py").read_text()
+        ), f"no consumer was repointed at {sibling}"
+
+
+def test_helpers_is_omitted_when_no_helper_ran(verify_document):
+    """A-230: emission default. A P33 artifact that used no helper OMITS the
+    field; it does not serialize `helpers: []`. Same rule as `judgment`, which is
+    absent rather than empty when nothing was judged -- A-025/A-136's "do not
+    record a fact nothing witnesses"."""
+    for name in V5_TEMPLATES:
+        doc = load(HERE / "expected" / name)
+        if name == "sql-r2-v5-template.json":
+            continue  # the one template that legitimately carries helpers
+        assert "helpers" not in doc, (
+            f"{name} carries an empty/absent-helper field; the emission default "
+            f"is omission"
+        )
+        assert verify_document(doc) == []

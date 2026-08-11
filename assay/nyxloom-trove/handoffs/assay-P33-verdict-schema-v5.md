@@ -4,7 +4,7 @@ id: assay-P33-verdict-schema-v5
 project: assay
 title: "The verdict artifact expresses a coverage-less mutation language without inventing one"
 tier: implement-2
-input_revision: "c22c607344bdf0e76c257d81cf6034e19e9c2aaa"
+input_revision: "@LANDING_COMMIT@"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P26-attested-evidence-cli-hardening]
@@ -203,7 +203,27 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    "the declaration is refused" cannot distinguish a correct implementation of
    this work item from doing nothing at all. The oracle is that the refusal names
    `kill_signal_artifact` as **reserved and deferred to P34**, not as an unknown
-   key. The locked suite pins that string.
+   key. The locked suite pins that string, and pins the exception type to
+   `LaneConfigError` specifically (A-230c) — a test accepting any exception whose
+   message carries the right words is satisfied by the wrong class with an
+   accidentally-right message.
+
+6b. **`equivalence_artifact` gets the identical disposition (A-230b):** reserved
+   in the artifact contract, refused at config load with the same typed
+   `LaneConfigError` naming P34. P33 ships a producer for neither field, so
+   allowing one and refusing the other was an inconsistency with nothing behind
+   it.
+
+6c. **`helpers` is OMITTED when no helper ran (A-230a)** — never serialized as
+   `helpers: []`. The same rule the artifact already follows for `judgment`,
+   which is absent rather than empty when nothing was judged.
+
+6d. **P33 does not claim to witness the `kill_attribution` derivation
+   (A-230d).** Because `kill_signal_artifact` is P33-refused, every P33 lane
+   derives `unattributed`, and no P33 fixture can distinguish a correct
+   derivation from a hardcoded constant. Specify the rule, enforce it for
+   documents, leave the producer-side proof to P34 — and do **not** build a
+   construction seam whose only purpose is to make the claim testable.
 7. Add the `ALL_MUTANTS_EQUIVALENT` terminal (A-223d) to `errors.py` and rank it
    in `judge_mutation` after `survived`: `killed + survived == 0` with a
    non-empty `equivalent` bucket renders `INCONCLUSIVE/ALL_MUTANTS_EQUIVALENT`.
@@ -235,10 +255,15 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    shape-independent oracles, several of them boundaries earned from witnessed
    incidents.
 8b. **Repoint the other two consumers of a locked v4 expectation (A-226).**
-   `gate/python/qualify_topos.py` (`_EXPECTED_ROOT`, and the
-   `normalized["judgment"]["r1"]["base"]` line, which v5 moves) and
-   `tests/test_python_qualification.py:259` both compare against P25's locked
-   v4 templates. Point both at `carve-assets/P33/expected/p25-pass-v5-template.json`
+   `gate/python/qualify_topos.py` and `tests/test_python_qualification.py:259`
+   both compare against P25's locked v4 templates. **`qualify_topos.py` has SIX
+   v4-coupled sites, not two** — an earlier version named only the first two, so
+   round 3's R3-D2 was only partially closed. All six, verified by direct read:
+   `:51` `_EXPECTED_ROOT`; `:715` `normalized["judgment"]["r1"]["base"]`, which
+   v5 moves to `judgment.resolved.base`; `:928` reads `missing-v4-template.json`;
+   `:962` passes it as `template=`; `:1009` iterates both template names; `:1018`
+   passes `template=_EXPECTED_ROOT / template_name`. Every one must point at the
+   v5 siblings. Point both at `carve-assets/P33/expected/p25-pass-v5-template.json`
    and `p25-missing-v5-template.json`, which the carver supplies. P25's originals
    stay frozen and unedited. Do **not** write a v4→v5 transform inside a gate
    harness: an unfrozen proof source is not an expectation.
@@ -264,12 +289,15 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    not survive checking, since the harness is already in `scope.touch` and
    already edited by 8b.
 9. Migrate every path in `migration-manifest.json`'s `implementer_owned` bucket
-   — 92 files. Do not touch `locked_carver_owned` (19) or any path in
-   `carver_owned_prose_excluded` (16).
+   — see `migration-manifest.json`'s `CANONICAL_COUNTS`, which is the single
+   source of truth for every count in this package. Do not touch
+   `locked_carver_owned` or any path in `carver_owned_prose_excluded`. Round 4
+   found four different count pairs across the handoff, README, manifest and
+   suite docstring; no document restates a number independently any more.
 10. Make the locked suite green: `PYTHONPATH=src python3 -m pytest
     nyxloom-trove/carve-assets/P33/test_acceptance_v5.py -q -p no:randomly` is
-    **26 failed, 4 passed** on the pre-implementation tree (30 tests) and must
-    reach all green. Every negative in it is differential — it asserts a clean control
+    the pre-implementation state recorded in `migration-manifest.json`'s
+    `CANONICAL_COUNTS` and must reach all green. Every negative in it is differential — it asserts a clean control
     verifies *and* the injected defect does not — so none of them can pass on a
     version mismatch.
 11. Run the full gate and record exact A-067 controlled-break counts.

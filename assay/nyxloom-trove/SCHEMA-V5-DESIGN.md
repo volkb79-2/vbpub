@@ -1,5 +1,12 @@
 # Schema v5 — the design, and what it deliberately does not do
 
+> **PRECEDENCE (A-231).** This document was written before three pre-dispatch
+> repair rounds. Where it conflicts with `carve-assets/P33/verdict.schema.v5.json`
+> or with a named decision (A-221, A-223 – A-230), **the locked schema and the
+> decision win.** Two known conflicts are corrected inline below and marked
+> SUPERSEDED; treat any other divergence the same way and raise it rather than
+> following the prose.
+
 Author: C-sol-1 (design authority under A-216), 2026-08-11.
 Anchor: main `5a7af3f6`. Supersedes nothing; v4 artifacts are never upgraded in
 place (A-138/A-170 — a schema version is a consumer migration).
@@ -33,7 +40,13 @@ unavoidable rather than merely reachable.
 `base` must hoist for the same reason `language` must: mutation targets changed
 lines (P12/A-116), so it consumes the same resolved comparison commit R1 does.
 
-New required object, present whenever `judgment` is present:
+New required object, present whenever `judgment` is present.
+> **SUPERSEDED IN PART by A-223(a).** `base` inside `judgment_resolved` is
+> **conditional**, not unconditionally required: required iff `judgment` carries
+> `r1` or `r2`, and forbidden otherwise (A-227 closed the only-if half).
+> `JUDGE_FIELDS_BY_RIGOR` carries `base` for R1/R2 and not for R3, so an `R0,R3`
+> lane genuinely has none. The `required` list in the fragment below is stale;
+> the locked schema is authoritative.
 
 ```json
 "judgment_resolved": {
@@ -88,9 +101,15 @@ v5 makes the vocabulary namespaced and closed **per language**:
 
 Three deliberate choices:
 
-**Go gets no operators.** Not an omission — P29 owns the Go mutation helper, and
-until it lands a Go R2 declaration must fail at load rather than run and report
-nothing. This matches the design guide's existing "Go returns `UNSUPPORTED`
+**Go gets no operators.** ~~Not an omission — P29 owns the Go mutation helper,
+and until it lands a Go R2 declaration must fail at load rather than run and
+report nothing.~~
+> **SUPERSEDED by A-221/A-225.** `go:*` carries three operators —
+> `go:compare-swap`, `go:boolop-swap`, `go:bool-const-flip` — transcribed from
+> `_COMPARE_SWAP` under A-112, with no `falsy-swap` analogue. And the
+> load-versus-runtime argument in the struck text is wrong about the shipped
+> product: `_resolve_declared_adapters` refuses an unregistered language before
+> execution either way. This matches the design guide's existing "Go returns `UNSUPPORTED`
 until P29 lands its helper". When P29 arrives it adds a third `enum` branch; that
 is an additive change to a `oneOf`, which is the one shape here that a future
 package can extend without a v6.
