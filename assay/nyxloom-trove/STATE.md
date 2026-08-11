@@ -11,8 +11,15 @@
 > **P20 → … → P32** queue; P20 merged as `618b6f15`, P21 as
 > `678104ad`, P22 as `9d30b25b`, P23 as `a7f49bb4`, P24 as `9f522a72`, and
 > P25 as `233926ce`, and P26 as `8f121be3`; P23's carver-owned fixture
-> correction is `7c52ecc2` (A-197). P27 is next and requires its post-P26 JIT
-> freeze. P26's exact config/safe-I/O/Git/deadline interfaces, complete v4
+> correction is `7c52ecc2` (A-197). **P27's post-P26 JIT carve ran on 2026-08-11
+> (`239f6671`) and is BLOCKED, not ready: work item 6's Go block-to-line grammar
+> is a product decision, recorded as open item A-O19. Read
+> `reports/assay-P27-JIT-CARVE.md` and `carve-assets/P27/BLOCKED-grammar.md`
+> before touching P27.** Its pinned image inputs, two-commit fixture with real
+> reproduced profiles, independent statement manifest, and locked v4
+> missing-tool artifact are frozen and survive whichever way A-O19 is ruled;
+> the expected R1 `Coverage` line sets and the work item 5/6/9 oracles do not
+> exist yet and must not be invented. P26's exact config/safe-I/O/Git/deadline interfaces, complete v4
 > templates, process-boundary proof, and 41-test acceptance are recorded in
 > `reports/assay-P26-JIT-CARVE.md` (A-209–A-214). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
