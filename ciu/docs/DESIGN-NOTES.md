@@ -410,14 +410,33 @@ mistaken for a small change:
   stack's own instance rather than a repo-global runner.
 - **Changed-path → stack mapping** for `--changed`. Cheap only because stacks
   are already directory-scoped; still a new inference CIU does not perform.
-- **A provenance precondition.** Any lane touching real containers must refuse
-  to run when the running image's revision does not match the commit under
-  test. This depends on stamping `org.opencontainers.image.revision` at bake
-  time, which CIU does not currently do. Without it the most expensive lane
-  produces the least trustworthy evidence — it silently describes an unknown
-  artifact — and no amount of added test rigor detects that.
+- **A provenance precondition — DONE (S17, 2026-08-08/09).** `bake` now stamps
+  `org.opencontainers.image.revision`, and `ciu provenance` (S17.2) refuses a
+  live lane against a stale image at TEST time. `ciu test`'s job here shrinks
+  to *calling* the existing gate rather than building one — nothing left
+  to design. (`ciu provenance` itself still has no machine-readable output,
+  which matters for the next bullet — see CIU-20 in
+  `KNOWN_ISSUES_TODO_BACKLOG.md`.)
 - **A judged-result contract**, so `ciu test` can surface a testing library's
-  verdict without linking against it or parsing its prose.
+  verdict without linking against it or parsing its prose. Still open, but no
+  longer abstract: this is not a contract CIU has to invent. **assay**, an
+  independent testing-rigor library elsewhere in this estate, already ships
+  exactly this — a versioned, `jsonschema`-validated verdict artifact
+  (`assay run <lane> --verdict-json <path>`) that any reader validates without
+  linking against assay (its own design doctrine, A-029). This suggests the
+  WHAT layer's sketch above doesn't need its own bespoke shape:
+  `[test.lanes.X].argv` can simply BE `["assay", "run", "<lane>", ...]` for a
+  project that has adopted assay, with no CIU-side knowledge of assay at all
+  — the argv is opaque either way, exactly as the where/what/how split above
+  requires. The one addition worth considering, still generic: an optional
+  `[test.lanes.X]` key (`verdict_path`, naming or `--verdict-json`, unnamed)
+  telling `ciu test` where to look for a judged-result JSON after the argv
+  exits, purely as an opaque attachment to its own report — CIU never
+  interprets the contents, so a project using a different judged-rigor tool,
+  or none, costs nothing and loses nothing. Whether that key is worth adding
+  now or only once a real consumer wants it is still open; recorded here so a
+  future implementer starts from "there is a working example one directory
+  over" instead of designing a contract from nothing.
 
 Deliberately excluded: coverage/mutation/canary implementations, any notion of
 a rigor score, and any awareness of an automation tool. If CIU ever needs to
