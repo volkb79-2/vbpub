@@ -28,11 +28,12 @@
 > `7a774d57`** answering all seventeen findings (A-223/A-224/A-225). It awaits a
 > FRESH mandatory carve review; a second round is not a formality — read `reports/assay-P33-JIT-CARVE.md` and
 > `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
-> decisions A-220/A-221/A-222.** Its pinned image inputs, two-commit fixture with real
-> reproduced profiles, independent statement manifest, and locked v4
-> missing-tool artifact are frozen and survive whichever way A-O19 is ruled;
-> the expected R1 `Coverage` line sets and the work item 5/6/9 oracles do not
-> exist yet and must not be invented. P26's exact config/safe-I/O/Git/deadline interfaces, complete v4
+> decisions A-220/A-221/A-222 as amended by A-223/A-224/A-225.**
+> **P27's** pinned image inputs, two-commit fixture with real reproduced
+> profiles, independent statement manifest, and locked v4 missing-tool artifact
+> remain frozen and survived the A-O19 ruling; P27's expected R1 `Coverage` line
+> sets and its work item 5/6/9 oracles do not exist yet and must not be
+> invented. P26's exact config/safe-I/O/Git/deadline interfaces, complete v4
 > templates, process-boundary proof, and 41-test acceptance are recorded in
 > `reports/assay-P26-JIT-CARVE.md` (A-209–A-214). Three original bundles were
 > split at independent security/integration seams, not expanded into 33
