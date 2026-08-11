@@ -1,0 +1,749 @@
+{
+  "schema_version": 1,
+  "generated_for": "P33 schema v5 migration",
+  "frozen_at_main": "b03555d79227ef7eb76eaf7f851c2896968fa455",
+  "scan": "files under assay/ with schema_version 4, judgment.r1 hoisted keys, or a bare (unqualified) operator name",
+  "counts": {
+    "locked_carver_owned": 17,
+    "implementer_owned": 90,
+    "excluded_build_artifact": 7
+  },
+  "ownership_rule": {
+    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-197 permits ONLY the carver to touch them, with an explicit decision and a new hash epoch. A-222 rules they are NOT rewritten to v5 -- they are historical evidence of what a merged package proved. The implementer must not edit any path in this bucket.",
+    "implementer_owned": "P33's implementer migrates these.",
+    "excluded_build_artifact": "build/lib is a stale copy produced by a wheel build; it is not source and must not be edited. If it is tracked, that is a separate defect, not P33's work."
+  },
+  "buckets": {
+    "locked_carver_owned": [
+      {
+        "path": "nyxloom-trove/carve-assets/P21/expected/combined-pass-v4.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P21/expected/r1-unavailable-v4.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P21/expected/r2-limit-v4.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P21/expected/r2-unsupported-v4.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P21/python-site-manifest.json",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P21/test_acceptance.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P22/expected/r0-snapshot-limit-v4.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P23/expected/r0-snapshot-limit-v4.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P23/test_acceptance.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P25/expected/missing-v4-template.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P25/expected/pass-v4-template.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P25/probe_topos_qualification.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P26/expected/attestation-timeout-v4-template.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P26/expected/current-v4-template.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P26/expected/independent-errors-v4-template.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P26/expected/stale-directory-v4-template.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P27/expected/missing-tool-v4-template.json",
+        "why": [
+          "schema_version-4"
+        ]
+      }
+    ],
+    "implementer_owned": [
+      {
+        "path": "gate/python/qualify_topos.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "src/assay/adapters/python.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "src/assay/config.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "src/assay/runner.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "src/assay/schemas/verdict.schema.json",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "src/assay/verdict.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "src/assay/verify.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "src/assay/vocabulary.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/budget_exceeded.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/error.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/evidence_current.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/evidence_declared_missing.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/evidence_never_declared.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/evidence_stale.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/evidence_unreadable_artifact.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/fail.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/inconclusive.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/no_measurement.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/pass.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r0_error_argv_append_rejected.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r0_error_exec_failed_missing_executable.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r0_fail_command_failed.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r0_pass.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_error_format_mismatch.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_error_git_failed.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_error_unreadable_artifact.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_fail_excluded_lines.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_fail_unclassified_lines.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_fail_uncovered_lines.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_fail_uncovered_lines_span_attributed.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_no_measurement_base_is_head.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_no_measurement_dirty_tree.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_no_measurement_empty_coverage.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_pass.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r1_pass_span_attributed.json",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_budget_exceeded_lane_timeout.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_budget_exceeded_mutant_limit_exceeded.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_error_exec_failed_baseline_crashed.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_error_exec_failed_mutant_crashed.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_error_mutation_discovery_failed.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_fail_mutants_survived.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_inconclusive_mutation_unsupported.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_inconclusive_no_mutants.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_no_measurement_head_changed.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_pass.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r2_pass_with_judgment.json",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r3_fail_canary_survived_unexpected_pass.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r3_fail_canary_survived_wrong_reason.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r3_inconclusive_canary_inconclusive.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/fixtures/verdicts/r3_pass.json",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/test_adapters_go_generate_mutants.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_adapters_python_generate_mutants.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_canary_python_pipeline.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/test_cli_run.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_config_judge_base.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_config_mutation.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_config_rigor.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_config_rigor_grammar.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_config_vocabularies.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_argv_fidelity.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_baseline_gate.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_collect.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_executor_bound.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_isolation.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_judge.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_operator_filter.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_python_pipeline.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_target.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_mutation_type.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_output_reservation.py",
+        "why": [
+          "schema_version-4"
+        ]
+      },
+      {
+        "path": "tests/test_runner_assemble_verdict_judgment.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/test_runner_assemble_verdict_mutation.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_runner_evaluate_r1.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/test_runner_p23_cleanup_and_budget.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_runner_p23_combined_axis_review.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_runner_run_lane.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/test_runner_run_lane_r2.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_runner_run_lane_r3.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_standalone.py",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_claims.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_conformance.py",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_interval_and_unsupported.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_judgment.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_mutation_artifacts.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_mutation_payload.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_schema_rejects.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_serialises.py",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "tests/test_verdict_span_attribution_artifacts.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "tests/test_verify_layer_independence.py",
+        "why": [
+          "schema_version-4",
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      }
+    ],
+    "excluded_build_artifact": [
+      {
+        "path": "build/lib/assay/adapters/python.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "build/lib/assay/config.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "build/lib/assay/runner.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "build/lib/assay/schemas/verdict.schema.json",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "build/lib/assay/verdict.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "build/lib/assay/verify.py",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "build/lib/assay/vocabulary.py",
+        "why": [
+          "bare-operator-name"
+        ]
+      }
+    ]
+  }
+}

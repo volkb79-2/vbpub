@@ -12,6 +12,17 @@ not pretend uncertain signatures or fixtures are already true.
 body's contract class records the planned five-band fit. Model names below are
 mandatory for this semi-manual wave, not permanent product routing:
 
+> ## ⚠ THE TABLE BELOW IS NOT IN EXECUTION ORDER
+>
+> **Execution order: P20–P26 (done) → P33 → P34 → \[ship\] → P27 (resumed) →
+> P28 → P29 → P30 → P31 → P32.**
+>
+> **P33 and P34 run BEFORE the resumed P27–P32 series, despite their higher
+> numbers.** Numbers are identity, not sequence
+> (A-153/A-167/A-219). Do not infer order from this table; read the dependency
+> chain below it. P27 is additionally **not dispatchable** until it is re-carved
+> around A-217.
+
 | # | Claim boundary | class | JIT carve | implement | independent review |
 |---|---|---|---|---|---|
 | P20 | repository/artifact integrity | 2c | **merged as `618b6f15`** | Sonnet xhigh | fresh Opus xhigh |
