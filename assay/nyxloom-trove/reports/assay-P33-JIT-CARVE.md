@@ -478,3 +478,105 @@ exactly as the reviewer predicted. What I would attack first: the sweep's
 it keys on argparse-ish markers, and a consumer that takes its path some other
 way would still be missed. The decoy pins the direct path; nothing yet pins the
 indirect one.
+
+---
+
+# Answering round 4 (2026-08-11) — two reviews, one conclusion
+
+Round 4 ran twice in parallel against the same commit: the standing CR-opus-0
+reviewer, and a one-time independent second opinion from a different model
+family. Both returned **NOT READY**. Neither found a new design problem, and
+their overlap was in the *kind* of defect rather than the instances — which is
+the useful signal. Round 4's own summary is accurate: **the substance is sound;
+the verification of the repairs was not.**
+
+One item is set aside on the operator's instruction: the second opinion treated
+`verdict.py` and `verify.py` as forbidden and concluded P33 was impossible. The
+review prompt said so; the real handoff has both in `scope.touch`. Not a finding.
+
+## What running the checks found, which reasoning had not
+
+The operator's instruction to run the real thing before landing is what surfaced
+the worst defect. **Three config tests called `config.load_lane` / `config.load`.
+Neither exists** — the loader is `load_lane_file`. All three raised
+`AttributeError` against a *correct* implementation, so the locked suite could
+not be satisfied by any implementation at all. That is AUTHORING's NOT READY
+trigger verbatim, and it was invisible to every kind of reasoning I had applied
+to those tests; one run of pytest showed it in nine seconds.
+`test_locked_suite_only_references_symbols_that_exist` now pins the API surface
+so a locked test can never again reference a symbol that isn't there.
+
+## The sweep, third round on the same tool
+
+Both reviewers found the same class here, from opposite directions.
+
+**Bare-token matching had to go, and the reason is the interesting part.** My
+`_seg_variants` matched bare `"P25"`, `"expected"`, `"fixtures"`. That produced
+12 false positives — and it classified `tests/test_self_hosting.py` as a
+**direct** consumer on a bare hit, when it actually reads its artifact path from
+`os.environ:138`. So the obvious cleanup of the noise would have silently dropped
+a **real** consumer. Round 4 caught exactly that trap. Matching now requires two
+adjacent path components, and environ-sourced paths are their own named category
+with their own test rather than a side effect of loose matching.
+
+**Indirect entries now require a supplying caller.** The second opinion found
+`src/assay/verify.py` reported as a consumer with `frozen_trees: []` — generic
+document-comparison code matching the signal set. That is noise. But blanket
+suppression of zero-frozen-tree entries would have deleted `release_wheel.py`,
+which is a *real* finding with the identical shape. The distinguishing fact is
+whether another closure member actually hands it a frozen path: `qualify_topos.py`
+does for `release_wheel.py`; nobody does for `verify.py`, which is imported, not
+invoked. Consumers 40 → 28, every established consumer retained, and the argv
+entries now name their suppliers.
+
+## Contract gaps pinned, and one claim narrowed instead
+
+A-230 settles four things the second opinion was right to call unpinned:
+`helpers` is **omitted** when no helper ran, never `[]` — the rule `judgment`
+already follows; `equivalence_artifact` gets the same reserved-and-refused
+disposition as `kill_signal_artifact`, because P33 ships a producer for neither
+and allowing one while refusing the other had nothing behind it; both refusals
+pin `LaneConfigError` rather than any exception carrying the right substrings.
+
+The fourth is a narrowing rather than a fix. `kill_attribution: declared` has no
+reachable proof seam in P33, because its only source is P33-refused. The options
+were to build a model-level construction seam whose sole purpose is to make the
+claim testable, or to stop claiming it. **P33 now specifies the derivation and
+does not claim to witness it**; P34 has the producer that can. Machinery built
+only to make an assertion provable is worse than an honest smaller assertion.
+
+## Documents that had drifted
+
+A-231 gives `SCHEMA-V5-DESIGN.md` an explicit precedence rule and marks its two
+stale claims inline — "Go gets no operators" (superseded by A-221) and an
+unconditional `resolved.base` (superseded by A-223a). The handoff calls that file
+"the specification", and a reviewer coming to it cold got the wrong answer on
+both. A design document written before three repair rounds cannot be the
+specification without a precedence rule.
+
+O5's wiring claim now has a **source-level oracle on the gate script itself** —
+the exact P33 invocation, the exact four deselections, the absence of A-210's
+oracle from that list, and the P25 v5 target paths. Every other O5 assertion was
+about artifact shape, so a green gate proved nothing about the wiring, and it
+could have been weakened silently. The deselect docstring matches the code it
+describes. `qualify_topos.py`'s **six** v4-coupled sites are enumerated, not two
+— round 3's R3-D2 was only partially closed and I recorded it as fully closed.
+
+Every count now cites `migration-manifest.json`'s `CANONICAL_COUNTS`. Round 4
+found four different count pairs across four documents; no document restates a
+number independently any more.
+
+## Disposition
+
+**READY for a fifth mandatory review.** The pattern across four rounds is worth
+stating plainly, because it is mine rather than the reviewers': each round I
+repaired the instance correctly and stopped at the instance's boundary, and each
+following round found the same class one step further out. Round 4 is the first
+where the residue was verification rather than substance, and the single most
+effective thing I did this round was run the suite instead of reasoning about it.
+
+What I would attack first: `test_gate_script_wiring_is_exactly_what_the_handoff_claims`
+is new and reads the gate script with regexes, so it inherits exactly the
+fragility this package has now been burned by three times. If the implementer
+writes the deselect flags in a form my regex does not match, that test fails for
+the wrong reason — or worse, passes vacuously if the script is restructured.
