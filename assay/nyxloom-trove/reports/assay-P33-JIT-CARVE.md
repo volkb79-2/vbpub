@@ -391,3 +391,90 @@ shape in a new place, and the honest thing to say is that an inventory closes a
 class only if the inventory is right. `sweep_v4_consumers.py` is the artifact to
 attack first: if its closure or its signal set misses a consumer, the class is
 still open.
+
+---
+
+# Answering round 3 (2026-08-11)
+
+Round 3 returned **NOT READY** and did the thing I asked for: it turned the
+inventory tool on itself and found my closure *claim* false on five independent
+grounds — with a real missed consumer, not a hypothetical one.
+
+## The sweep's own gaps, and why a longer list would not have closed them
+
+`gate/distribution/release_wheel.py` executes inside the registered gate
+(`qualify_topos.py:539-545`) and compares against the frozen
+`gate/python/release/P25/release-manifest.json`. v1 missed it twice over, and the
+second reason is the instructive one: **it receives its manifest path on the
+command line.** The frozen path lives in the caller. No predicate of the form
+"does this file name a frozen directory" can ever find it, however many
+directory names the list contains — which is precisely the move I made after
+round 2. v2 adds a second category, `indirect-path-from-caller`, and that is what
+finds it.
+
+The other four were structural: leaf-name import resolution left
+`src/assay/adapters/**` and `coverage_parsers/**` entirely unreachable while
+`adapters/python.py` sits in this package's own `scope.touch`; `from . import X`
+(`module=None`) was skipped, dropping `safeio.py`; `read_bytes() ==` against
+locked P24 assets matched none of the five regexes; and the seed set never read
+`assay.toml`, where the gate's primary invocation's argv actually lives — so
+`tests/`, and therefore the third consumer, entered only via a failure-only
+diagnostic line. All five are closed and each was verified individually. Closure
+147 → 189 files; consumers 11 → 40.
+
+## Pinning the tool, which is the part that generalizes
+
+Nothing ran or pinned the sweep, so every one of those gaps would have regressed
+in silence. Three locked tests now hold it: the five established consumers are
+frozen; the closure is asserted never to leave the project (a leaf-name fallback
+had been pulling a sibling project's module in); and a **planted decoy** under
+`src/assay/adapters/` must be found.
+
+The decoy is reached by a real dotted-subpackage import edge, and my first
+version of it was wrong: I planted a file nothing imported and asserted the sweep
+must find it. The sweep was right to ignore it — an unimported file genuinely is
+not in the gate's execution path. The import edge is what makes the test
+falsifiable rather than merely demanding.
+
+## Two corrections to my own prior framing, both real
+
+**The deselect list was over-inclusive by one.**
+`test_all_structural_and_aggregate_bounds_precede_every_git_call` tests A-210's
+aggregate-bounds-before-Git ordering and touches no artifact shape. My round-2
+attribution table and its own appendix disagreed about it, and the wrong one got
+adopted — a security oracle dropped by a transcription slip inside the very
+repair that existed because I had dropped eighteen others. Four deselects now,
+twenty of P26's twenty-four tests still running.
+
+**CA8's deferral did not hold.** I reasoned that proving declared-versus-resolved
+`base` divergence needs a real repository and therefore belonged with the
+producer proof in P34. It does not: `qualify_topos.py` already writes the lane's
+`base`, already has a `base_override` parameter, already passes it at `:836`, is
+`implementer_owned`, sits in `scope.touch`, and is already edited by work item
+8b. A-143's shape was one scenario and one assertion away, in the package that
+collapses two independently-resolved base values into one field. It was raised in
+round 1, round 2 and round 3; taking it now is work item 8c. **CA7's deferral —
+the producer-side v5 exercise — stands**, and round 3 agreed it is legitimate;
+only CA8 was wrongly grouped with it.
+
+## Also closed
+
+Work item 6 had no observable: `judge.mutation` is already a closed sub-table, so
+"the declaration is refused" is true today with or without the change. The oracle
+is now the *message* — the field must be named reserved for P34, not reported as
+an unknown key. The third `helpers` role fixture compared two different documents
+and never exercised its R1 branch; both halves are rebuilt as true differentials.
+Three config-layer negatives exist where the suite previously had none, though
+O2's own observable has always said "refused at config load". The manifest is
+regenerated at the current anchor and unioned with the sweep's own output so the
+two cannot drift. `input_revision` is `c22c6073`, set in the same landing rather
+than a round later.
+
+## Disposition
+
+**READY for a fourth mandatory review**, and this round was narrow and mechanical
+exactly as the reviewer predicted. What I would attack first: the sweep's
+`indirect-path-from-caller` heuristic is the newest and least-tested idea here —
+it keys on argparse-ish markers, and a consumer that takes its path some other
+way would still be missed. The decoy pins the direct path; nothing yet pins the
+indirect one.

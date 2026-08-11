@@ -29,7 +29,10 @@
 > **NOT READY a second time** and **re-carved again** (A-226/A-227/A-228) — round 2
 > found the round-1 defect class at a second gate step, so the closure is now an
 > INVENTORY: `carve-assets/P33/sweep_v4_consumers.py`, which found a third
-> instance neither review named. It awaits a THIRD mandatory carve review — read `reports/assay-P33-JIT-CARVE.md` and
+> instance neither review named. Round 3 then turned that inventory on itself and
+> found its closure claim false on five grounds with a real missed consumer, so
+> the sweep is now pinned by a planted-decoy oracle (A-229). It awaits a FOURTH
+> mandatory carve review — read `reports/assay-P33-JIT-CARVE.md` and
 > `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
 > decisions A-220/A-221/A-222 as amended by A-223/A-224/A-225.**
 > **P27's** pinned image inputs, two-commit fixture with real reproduced
