@@ -39,7 +39,7 @@ _TARGETS = (
     ),
 )
 
-_OPERATORS = ("compare-swap",)
+_OPERATORS = ("python:compare-swap",)
 
 
 def _baseline(lane, project_root, process_runner, clock=None):

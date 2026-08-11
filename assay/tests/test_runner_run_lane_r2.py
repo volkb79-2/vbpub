@@ -34,7 +34,7 @@ MOMENT_C = datetime(2026, 8, 8, 10, 0, 2, tzinfo=timezone.utc)
 MOMENT_D = datetime(2026, 8, 8, 10, 0, 3, tzinfo=timezone.utc)
 MOMENT_E = datetime(2026, 8, 8, 10, 0, 4, tzinfo=timezone.utc)
 
-_MUTATION = MutationConfig(jobs=1, max_mutants=50, operators=("compare-swap",))
+_MUTATION = MutationConfig(jobs=1, max_mutants=50, operators=("python:compare-swap",))
 
 
 def _seed_compare_swap_site(repo: GitRepo) -> tuple[str, str]:
@@ -107,7 +107,7 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     assert r2_claim.mutation.total == 1
     assert len(r2_claim.mutation.killed) == 1
     assert verdict.judgment.r2.jobs == 1
-    assert verdict.judgment.r2.operators == ("compare-swap",)
+    assert verdict.judgment.r2.operators == ("python:compare-swap",)
     assert verdict.judgment.r1 is None
 
 
@@ -192,7 +192,7 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
     """
     base_rev, head_rev = _seed_compare_swap_site(git_repo)
     declared = MutationConfig(
-        jobs=3, max_mutants=50, operators=("falsy-swap", "compare-swap")
+        jobs=3, max_mutants=50, operators=("python:falsy-swap", "python:compare-swap")
     )
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
@@ -211,7 +211,7 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
 
     assert verdict.claims[1].mutation.total == 1, "only the compare-swap site exists"
     assert verdict.judgment.r2.jobs == 3
-    assert verdict.judgment.r2.operators == ("falsy-swap", "compare-swap")
+    assert verdict.judgment.r2.operators == ("python:falsy-swap", "python:compare-swap")
 
 
 def test_the_lanes_command_runs_exactly_once_against_the_unmodified_tree(
@@ -411,6 +411,10 @@ def test_r1_and_r2_together_reuse_the_same_resolved_diff_not_a_second_one(
     reads ``x >= 0``)."""
     base_rev, _ = _seed_compare_swap_site(git_repo)
     r1_judge = make_r1_judge(
+        # P33/V5-2: a combined R1+R2 judge declares python operators, so the
+        # resolved language must be `python` -- the default `zzz` would make
+        # the recorded policy name a catalogue that language does not have.
+        language="python",
         source_root_paths=(git_repo.path / "src",),
         base=base_rev,
         fail_under=0.0,
@@ -470,6 +474,9 @@ def test_r1_declared_but_its_own_coverage_guard_trips_still_lets_r2_resolve(
     genuine PASS."""
     base_rev, _ = _seed_compare_swap_site(git_repo)
     r1_judge = make_r1_judge(
+        # P33/V5-2: see the sibling above -- python operators need a python
+        # resolution.
+        language="python",
         source_root_paths=(git_repo.path / "src",),
         base=base_rev,
         fail_under=0.0,

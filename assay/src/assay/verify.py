@@ -90,6 +90,7 @@ from .canary import judge_canary
 from .mutation import judge_mutation
 from .verdict import (
     EXIT_CODES,
+    MUTATION_BUCKETS,
     REASON_CODES,
     VERDICT_SCHEMA_VERSION,
     CanaryResult,
@@ -97,15 +98,18 @@ from .verdict import (
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    Helper,
     Judgment,
     JudgmentR1,
     JudgmentR2,
     JudgmentR3,
+    JudgmentResolved,
     MutantOutcome,
     Mutation,
     Outcome,
     ReasonCode,
     Verdict,
+    operator_language,
     rollup,
 )
 
@@ -360,13 +364,15 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
             # model reached through reconstruction -- which is precisely the
             # independence A-182 assigns to model AND raw verifier
             # separately.
-            for bucket_name in ("killed", "survived", "crashed", "budget_exceeded"):
-                bucket = mutation.get(bucket_name)
-                if not isinstance(bucket, list):
-                    continue
-                for entry in bucket:
-                    if isinstance(entry, dict) and isinstance(entry.get("operator"), str):
-                        observed.add(entry["operator"])
+            # (P33/A-228) `equivalent` joins the sweep for the identical
+            # reason `killed` did: a bucket this loop does not visit is a
+            # bucket in which an operator the policy never selected is
+            # structurally unobservable to the raw layer, leaving the model
+            # as its only witness -- which is precisely the independence
+            # A-182 assigns to model AND raw verifier separately.
+            for _bucket_name, entry in _mutant_entries(mutation):
+                if isinstance(entry.get("operator"), str):
+                    observed.add(entry["operator"])
             unknown_operators = sorted(observed - set(operators))
             if unknown_operators:
                 failures.append(
@@ -374,6 +380,13 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
                     f"{unknown_operators} that judgment.r2.operators "
                     f"{operators} never declared"
                 )
+
+    if isinstance(judgment, dict):
+        _check_resolved_language_owns_every_operator(document, judgment, failures)
+        _check_base_matches_the_tiers_present(judgment, failures)
+    if isinstance(judgment_r2, dict) and r2_judged:
+        _check_equivalence_pairing(r2_claim, judgment_r2, failures)
+        _check_kill_attribution(r2_claim, judgment_r2, failures)
 
     r3_claim = next(
         (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R3"),
@@ -413,6 +426,230 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
                     f"the recorded canary answers for a different file than "
                     f"the policy asked about"
                 )
+
+
+def _mutant_entries(mutation: Any) -> list[tuple[str, dict]]:
+    """Every ``(bucket_name, entry)`` pair in a raw mutation payload.
+
+    One helper rather than five open-coded loops, for A-228's own reason: a
+    bucket that reaches some of the layers that constrain the others and not
+    the rest is precisely how the fifth bucket's constraints went missing the
+    first time.
+    """
+    if not isinstance(mutation, dict):
+        return []
+    pairs: list[tuple[str, dict]] = []
+    for name in MUTATION_BUCKETS:
+        entries = mutation.get(name)
+        if not isinstance(entries, list):
+            continue
+        pairs.extend((name, entry) for entry in entries if isinstance(entry, dict))
+    return pairs
+
+
+def _check_resolved_language_owns_every_operator(
+    document: dict, judgment: dict, failures: list[str]
+) -> None:
+    """(P33/V5-2, invariant 1) every operator's prefix equals
+    ``judgment.resolved.language``, on the RAW document.
+
+    The schema closes each language's vocabulary but cannot relate one field
+    to another (no ``$data`` in draft 2020-12), so on its own it accepts a
+    Python lane recording a complete set of SQL operators. Worded
+    deliberately differently from the model's own two messages, the
+    convention this module has followed since P16: identical wording would
+    make the raw check's failure indistinguishable from reconstruction
+    catching the same defect, and "is this raw branch even reached" would
+    stop being testable by message content.
+    """
+    resolved = judgment.get("resolved")
+    if not isinstance(resolved, dict):
+        return
+    language = resolved.get("language")
+    if not isinstance(language, str):
+        return
+    r2 = judgment.get("r2")
+    declared = r2.get("operators") if isinstance(r2, dict) else None
+    if isinstance(declared, list):
+        foreign = sorted(
+            {
+                operator
+                for operator in declared
+                if isinstance(operator, str)
+                and operator_language(operator) != language
+            }
+        )
+        if foreign:
+            failures.append(
+                f"judgment.r2.operators declares {foreign}, whose language "
+                f"prefix is not the resolved language {language!r} recorded in "
+                f"judgment.resolved"
+            )
+    claims = document.get("claims")
+    if not isinstance(claims, list):
+        return
+    r2_claim = next(
+        (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
+        None,
+    )
+    applied = sorted(
+        {
+            entry["operator"]
+            for _, entry in _mutant_entries(_mutation_of(r2_claim))
+            if isinstance(entry.get("operator"), str)
+            and operator_language(entry["operator"]) != language
+        }
+    )
+    if applied:
+        failures.append(
+            f"the R2 mutation payload records mutants produced by {applied} "
+            f"while judgment.resolved.language is {language!r}; a run cannot "
+            f"apply a catalogue belonging to another language"
+        )
+
+
+def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -> None:
+    """(P33/A-223a/A-227) ``judgment.resolved.base`` is required IF ``r1`` or
+    ``r2`` is present and forbidden UNLESS one of them is.
+
+    The producer cannot reach the forbidden half -- A-062 refuses
+    ``judge.base`` on an ``R0,R3`` lane as inert config -- but this verifier
+    exists for FOREIGN documents, which is exactly the population that can.
+    """
+    resolved = judgment.get("resolved")
+    if not isinstance(resolved, dict):
+        return
+    compares_a_base = "r1" in judgment or "r2" in judgment
+    has_base = "base" in resolved
+    if compares_a_base and not has_base:
+        failures.append(
+            "judgment.resolved omits base while judgment records an r1 or r2 "
+            "tier, both of which judge a diff against a resolved comparison "
+            "commit"
+        )
+    if not compares_a_base and has_base:
+        failures.append(
+            "judgment.resolved records a base although judgment carries "
+            "neither r1 nor r2; no tier present here reads a comparison commit"
+        )
+
+
+def _check_equivalence_pairing(
+    claim: dict, judgment_r2: dict, failures: list[str]
+) -> None:
+    """(P33/V5-3, invariant 2) equivalent entries require a declared
+    ``equivalence_artifact``.
+
+    Equivalence is established by byte comparison of that artifact against
+    the baseline run's, so with none declared the claim was inferred from
+    something else -- and "inferred from something else" is the whole thing
+    A-209's both-present-or-both-absent pattern refuses.
+    """
+    mutation = _mutation_of(claim)
+    if not isinstance(mutation, dict):
+        return
+    equivalent = mutation.get("equivalent")
+    if not isinstance(equivalent, list) or not equivalent:
+        return
+    if "equivalence_artifact" not in judgment_r2:
+        failures.append(
+            f"the R2 payload claims {len(equivalent)} provably-inert mutant(s) "
+            f"while judgment.r2 declares no equivalence_artifact to have "
+            f"compared them against"
+        )
+
+
+def _check_kill_attribution(
+    claim: dict, judgment_r2: dict, failures: list[str]
+) -> None:
+    """(P33/V5-4, invariant 4) attribution consistency, one clause at a time.
+
+    Three separate failures rather than one, because they are three separate
+    defects: an attribution whose declared source is missing, an attributed
+    run that left some kill unexplained, and an unattributed run carrying a
+    signal it could not have observed. A single collapsed diagnostic would
+    make a document violating two of them look like it violated one.
+    """
+    attribution = judgment_r2.get("kill_attribution")
+    artifact_declared = "kill_signal_artifact" in judgment_r2
+    if attribution == "declared" and not artifact_declared:
+        failures.append(
+            "judgment.r2 claims attributed kills but names no "
+            "kill_signal_artifact for them to have been read from"
+        )
+    if attribution == "unattributed" and artifact_declared:
+        failures.append(
+            "judgment.r2 names a kill_signal_artifact while reporting kills as "
+            "unattributed; the attribution value is derived from that field's "
+            "presence, so the two cannot disagree"
+        )
+    mutation = _mutation_of(claim)
+    entries = _mutant_entries(mutation)
+    if attribution == "declared":
+        unexplained = [
+            entry.get("path")
+            for name, entry in entries
+            if name == "killed" and "kill_signal" not in entry
+        ]
+        if unexplained:
+            failures.append(
+                f"an attributed R2 run leaves killed mutant(s) in "
+                f"{sorted(set(unexplained))} with no kill_signal; attribution "
+                f"that covers only some kills is not attribution"
+            )
+    elif attribution == "unattributed":
+        signalled = sorted(
+            {name for name, entry in entries if "kill_signal" in entry}
+        )
+        if signalled:
+            failures.append(
+                f"an unattributed R2 run records a kill_signal in bucket(s) "
+                f"{signalled}; observing an exit status supplies no mechanism "
+                f"to name"
+            )
+
+
+def _check_helpers_have_a_judged_claim(document: dict, failures: list[str]) -> None:
+    """(P33/V5-5, A-223c/A-227) every ``helpers`` entry requires a
+    correspondingly-judged claim.
+
+    Only the OBSERVABLE direction. The converse -- a claim produced with a
+    helper requires an entry -- has no readable antecedent in the artifact
+    bytes, so implementing it here would be vacuous; P34 owns it, with the
+    adapter that makes the state reachable.
+    """
+    helpers = document.get("helpers")
+    if not isinstance(helpers, list):
+        return
+    if not helpers:
+        failures.append(
+            "helpers is present but empty; a run that invoked no helper omits "
+            "the array rather than recording an empty one"
+        )
+        return
+    claims = document.get("claims")
+    claims = claims if isinstance(claims, list) else []
+    def judged(rigor: str, payload: str) -> bool:
+        return any(
+            isinstance(item, dict) and item.get("rigor") == rigor and payload in item
+            for item in claims
+        )
+    r1_judged = judged("R1", "coverage")
+    r2_judged = judged("R2", "mutation")
+    needs = {
+        "statement-positions": r1_judged,
+        "mutation-sites": r2_judged,
+        "executable-code": r1_judged or r2_judged,
+    }
+    for helper in helpers:
+        if not isinstance(helper, dict):
+            continue
+        role = helper.get("role")
+        if role in needs and not needs[role]:
+            failures.append(
+                f"a helper with role {role!r} is recorded, but no claim in this "
+                f"verdict carries the payload such a helper would have produced"
+            )
 
 
 def _check_interval_is_ordered(document: dict, failures: list[str]) -> None:
@@ -497,7 +734,10 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
 
     total = mutation.get("total")
     candidate_count = mutation.get("candidate_count")
-    buckets = ("killed", "survived", "crashed", "budget_exceeded")
+    # P33/A-228: `equivalent` is an ATTEMPTED mutant like any other -- it was
+    # built, submitted and run; what it failed to do is change anything. So
+    # it counts here, and only the mutation SCORE excludes it.
+    buckets = MUTATION_BUCKETS
     sizes = [
         len(mutation[name]) for name in buckets if isinstance(mutation.get(name), list)
     ]
@@ -505,7 +745,7 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
         if total != sum(sizes):
             failures.append(
                 f"the R2 mutation payload says {total} attempted mutant(s) but "
-                f"lists {sum(sizes)} identity/identities across its four buckets"
+                f"lists {sum(sizes)} identity/identities across its five buckets"
             )
     _check_identities_are_unique(mutation, buckets, failures)
 
@@ -599,15 +839,22 @@ def _reconstruct_coverage(raw: dict) -> Coverage:
     return coverage
 
 
-def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
-    r1 = JudgmentR1(
+def _reconstruct_judgment_resolved(raw: dict) -> JudgmentResolved:
+    resolved = JudgmentResolved(
         language=raw["language"],
         source_roots=tuple(raw["source_roots"]),
+        base=raw.get("base"),
+    )
+    _reject_unknown_keys(raw, resolved.to_dict(), "judgment.resolved")
+    return resolved
+
+
+def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
+    r1 = JudgmentR1(
         coverage_format=raw["coverage_format"],
         coverage_artifact=raw["coverage_artifact"],
         fail_under=raw["fail_under"],
         allow_excluded=raw["allow_excluded"],
-        base=raw["base"],
     )
     _reject_unknown_keys(raw, r1.to_dict(), "judgment.r1")
     return r1
@@ -618,6 +865,9 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         jobs=raw["jobs"],
         max_mutants=raw["max_mutants"],
         operators=tuple(raw["operators"]),
+        kill_attribution=raw["kill_attribution"],
+        kill_signal_artifact=raw.get("kill_signal_artifact"),
+        equivalence_artifact=raw.get("equivalence_artifact"),
     )
     _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
     return r2
@@ -631,6 +881,7 @@ def _reconstruct_judgment_r3(raw: dict) -> JudgmentR3:
 
 def _reconstruct_judgment(raw: dict) -> Judgment:
     judgment = Judgment(
+        resolved=_reconstruct_judgment_resolved(raw["resolved"]),
         r1=_reconstruct_judgment_r1(raw["r1"]) if "r1" in raw else None,
         r2=_reconstruct_judgment_r2(raw["r2"]) if "r2" in raw else None,
         r3=_reconstruct_judgment_r3(raw["r3"]) if "r3" in raw else None,
@@ -665,6 +916,7 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         replacement_sha256=raw["replacement_sha256"],
         operator=raw["operator"],
         description=raw["description"],
+        kill_signal=raw.get("kill_signal"),
     )
     _reject_unknown_keys(raw, item.to_dict(), "mutant outcome")
     return item
@@ -674,12 +926,10 @@ def _reconstruct_mutation(raw: dict) -> Mutation:
     mutation = Mutation(
         candidate_count=raw["candidate_count"],
         total=raw["total"],
-        killed=tuple(_reconstruct_mutant_outcome(item) for item in raw["killed"]),
-        survived=tuple(_reconstruct_mutant_outcome(item) for item in raw["survived"]),
-        crashed=tuple(_reconstruct_mutant_outcome(item) for item in raw["crashed"]),
-        budget_exceeded=tuple(
-            _reconstruct_mutant_outcome(item) for item in raw["budget_exceeded"]
-        ),
+        **{
+            name: tuple(_reconstruct_mutant_outcome(item) for item in raw[name])
+            for name in MUTATION_BUCKETS
+        },
     )
     _reject_unknown_keys(raw, mutation.to_dict(), "mutation")
     return mutation
@@ -699,6 +949,17 @@ def _reconstruct_claim(raw: dict) -> Claim:
     )
     _reject_unknown_keys(raw, claim.to_dict(), "claim")
     return claim
+
+
+def _reconstruct_helper(raw: dict) -> Helper:
+    helper = Helper(
+        role=raw["role"],
+        tool=raw["tool"],
+        resolved_path=raw["resolved_path"],
+        identity=raw["identity"],
+    )
+    _reject_unknown_keys(raw, helper.to_dict(), "helpers entry")
+    return helper
 
 
 def _reconstruct_evidence(raw: dict) -> Evidence:
@@ -748,6 +1009,10 @@ def _reconstruct_verdict(document: dict) -> Verdict:
     judgment_kwargs: dict[str, Any] = {}
     if "judgment" in document:
         judgment_kwargs["judgment"] = _reconstruct_judgment(document["judgment"])
+    if "helpers" in document:
+        judgment_kwargs["helpers"] = tuple(
+            _reconstruct_helper(item) for item in document["helpers"]
+        )
 
     reason_code = document.get("reason_code")
     verdict = Verdict(
@@ -824,6 +1089,17 @@ _BASELINE_NEVER_READ = object()
 #: ``refuse_lane``'s ``BAD_LANE_CONFIG`` is deliberately absent: it renders
 #: the IDENTICAL pair on every declared level including R0, so the ordinary
 #: baseline comparison below already re-derives it correctly.
+#:
+#: (P33/A-228) ``ALL_MUTANTS_EQUIVALENT`` is deliberately absent too, and for
+#: the opposite reason to ``BAD_LANE_CONFIG``'s: this set exists for
+#: PAYLOAD-FREE R2 terminals, and the new one is the reverse -- it is read
+#: off the ``equivalent``/``killed``/``survived`` buckets and cannot exist
+#: without them (``_MUTATION_ONLY_REASON_CODES`` refuses the payload-free
+#: form at construction, and the schema pins it to a ``mutation`` payload and
+#: rigor R2). So it never reaches the ``claim.mutation is None`` branch this
+#: set guards; it is re-derived by ``judge_mutation`` below like every other
+#: bucket-borne status. Adding it here would advertise a payload-free
+#: spelling that no layer accepts.
 _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
     {
         ReasonCode.MUTATION_DISCOVERY_FAILED,
@@ -1057,6 +1333,7 @@ def verify_document(document: Any) -> list[str]:
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
     _check_mutation_payload_shapes(document, failures)
+    _check_helpers_have_a_judged_claim(document, failures)
 
     try:
         verdict = _reconstruct_verdict(document)

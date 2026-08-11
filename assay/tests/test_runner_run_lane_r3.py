@@ -477,7 +477,7 @@ def test_r1_r2_and_r3_together_each_render_their_own_independent_claim(
         fail_under=0.0,
         allow_excluded=False,
         coverage=CoverageConfig(format="coverage-py-json", artifact="cov.json"),
-        mutation=MutationConfig(jobs=1, max_mutants=50, operators=("compare-swap",)),
+        mutation=MutationConfig(jobs=1, max_mutants=50, operators=("python:compare-swap",)),
         canary=CanaryConfig(mechanism="import-break", target="pkg/mod.py"),
         base=base_rev,
     )

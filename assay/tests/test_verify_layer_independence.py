@@ -42,10 +42,14 @@ from assay import verify
 from assay.cli import main
 from assay.errors import REASON_CODES, Outcome, ReasonCode
 
-_BUCKETS = ("killed", "survived", "crashed", "budget_exceeded")
+#: (P33/V5-3) FIVE buckets since v5. `equivalent` joins the raw operator
+#: sweep for the same reason `killed` did in P21: a bucket the sweep does not
+#: visit is a bucket in which an undeclared operator is structurally
+#: unobservable.
+_BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent")
 
 
-def _mutant(operator: str = "compare-swap", start: int = 25) -> dict:
+def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
     return {
         "path": "src/m.py",
         "lineno": 2,
@@ -70,6 +74,8 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         "survived": ("FAIL", "MUTANTS_SURVIVED"),
         "crashed": ("ERROR", "EXEC_FAILED"),
         "budget_exceeded": ("BUDGET_EXCEEDED", "LANE_TIMEOUT"),
+        # P33/A-223d: killed + survived == 0 with a non-empty `equivalent`.
+        "equivalent": ("INCONCLUSIVE", "ALL_MUTANTS_EQUIVALENT"),
     }[bucket]
     claim = {
         "rigor": "R2",
@@ -82,7 +88,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 4,
+        "schema_version": 5,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -100,7 +106,34 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         "env_effective": {},
         "scope": "S1",
         "enforcement": "gate",
-        "judgment": {"r2": {"jobs": 1, "max_mutants": 50, "operators": ["compare-swap"]}},
+        "judgment": {
+            # P33/V5-1: an R0,R2 lane records what it judged. This is the
+            # exact shape v4 could not express -- no language, no source
+            # roots, no comparison commit -- while R2 scopes mutation to
+            # changed lines against precisely that commit.
+            "resolved": {
+                "language": "python",
+                "source_roots": ["pkg"],
+                "base": "a" * 40,
+            },
+            "r2": {
+                "jobs": 1,
+                "max_mutants": 50,
+                "operators": ["python:compare-swap"],
+                "kill_attribution": "unattributed",
+                # P33/V5-3: the `equivalent` bucket is paired
+                # both-present-or-both-absent with this declaration (A-209's
+                # pattern), because equivalence is established by comparing
+                # this artifact's bytes and nothing else may be inferred
+                # from. Declared only for the bucket that uses it, so the
+                # other four rows still exercise the absent half.
+                **(
+                    {"equivalence_artifact": ".assay/schema-dump.sql"}
+                    if bucket == "equivalent"
+                    else {}
+                ),
+            },
+        },
         "claims": [
             {"rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": True},
             claim,
@@ -135,26 +168,26 @@ def test_the_raw_layer_alone_rejects_an_operator_outside_the_declared_policy(buc
     # schema enum nor `MutantOutcome`'s own closure objects: the ONLY thing
     # wrong with this artifact is that the recorded policy never selected it.
     # That makes it exactly the cross-object rule the raw layer must own.
-    document = _r2_document(bucket=bucket, operator="boolop-swap")
+    document = _r2_document(bucket=bucket, operator="python:boolop-swap")
     failures = _raw_failures(document)
     assert failures, (
         f"the raw layer accepted an undeclared operator in {bucket!r}; before "
         f"this repair `killed` was omitted from the sweep and only the model "
         f"objected"
     )
-    assert any("boolop-swap" in item and "never declared" in item for item in failures)
+    assert any("python:boolop-swap" in item and "never declared" in item for item in failures)
 
 
 @pytest.mark.parametrize("bucket", _BUCKETS)
 def test_the_raw_layer_accepts_the_same_bucket_when_the_policy_declares_it(bucket):
     # The negative's control: identical artifact, operator inside the policy.
     # Without this, a raw check that rejected everything would pass above.
-    document = _r2_document(bucket=bucket, operator="compare-swap")
+    document = _r2_document(bucket=bucket, operator="python:compare-swap")
     assert _raw_failures(document) == []
 
 
 def test_verify_document_also_rejects_the_undeclared_killed_operator_end_to_end():
-    document = _r2_document(bucket="killed", operator="boolop-swap")
+    document = _r2_document(bucket="killed", operator="python:boolop-swap")
     failures = verify.verify_document(document)
     assert failures
     # Both witnesses must speak, not just reconstruction. The raw message is
@@ -181,7 +214,7 @@ INDEPENDENT_TERMINALS: dict[str, str] = {
 
 
 def _payload_free_r2(status: str, reason: str, *, r0_status: str = "PASS") -> dict:
-    document = _r2_document(bucket="survived", operator="compare-swap")
+    document = _r2_document(bucket="survived", operator="python:compare-swap")
     document["outcome"] = status
     document["reason_code"] = reason
     document["exit_code"] = Outcome(status).exit_code
@@ -270,7 +303,7 @@ def test_assay_run_emits_a_discovery_failure_artifact_its_own_verify_accepts(
         "[lanes.package.judge]\n"
         'language = "python"\nsource_roots = ["src"]\nbase = "HEAD^"\n'
         "[lanes.package.judge.mutation]\n"
-        'jobs = 1\nmax_mutants = 5\noperators = ["compare-swap"]\n',
+        'jobs = 1\nmax_mutants = 5\noperators = ["python:compare-swap"]\n',
     )
     repo.commit_all("lane")
     repo.write("src/m.py", "def broken(\n")
@@ -294,3 +327,223 @@ def test_assay_run_emits_a_discovery_failure_artifact_its_own_verify_accepts(
     assert verify.verify_document(document) == [], (
         "assay run emitted an artifact its own assay verify rejects"
     )
+
+
+# ---------------------------------------------------------------------------
+# P33 — the five cross-object invariants, at the RAW layer, ONE CLAUSE EACH
+# ---------------------------------------------------------------------------
+#
+# Work item 3 is explicit that each invariant gets its own controlled break
+# "per clause, not per function". These call the raw checks DIRECTLY rather
+# than through `verify_document`, for this module's founding reason (A-182):
+# `verify_document` merges the raw layer with the model's reconstruction, so
+# a passing end-to-end negative cannot distinguish "the raw layer caught it"
+# from "reconstruction caught it and the raw branch is dead code". Every test
+# below is differential -- the clean document produces NO failure from the
+# same function in the same breath -- so none can pass because a check
+# rejects everything.
+
+
+def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
+    """A minimal, complete R0,R2 SQL document. SQL is used deliberately: it is
+    the shape v4 could not express at all, so every clause below is exercised
+    against the artifact this migration exists to make possible."""
+    mutant = {
+        "path": "schema/001.sql",
+        "lineno": 3,
+        "start_byte": 10,
+        "end_byte": 20,
+        "replacement_sha256": "c" * 64,
+        "operator": "sql:drop-check",
+        "description": "drop the CHECK constraint",
+    }
+    document = {
+        "schema_version": 5,
+        "assay_version": "0.1.0",
+        "lane": "package",
+        "commit": "4" * 40,
+        "outcome": "PASS",
+        "exit_code": 0,
+        "started": "2026-08-09T11:00:00+00:00",
+        "ended": "2026-08-09T11:00:01+00:00",
+        "declared_rigor": ["R0", "R2"],
+        "declared_evidence": [],
+        "argv_declared": ["make", "test"],
+        "argv_appended": [],
+        "argv_effective": ["make", "test"],
+        "argv_modified": False,
+        "env_declared": {},
+        "env_effective": {},
+        "scope": "S1",
+        "enforcement": "gate",
+        "judgment": {
+            "resolved": {
+                "language": language,
+                "source_roots": ["schema"],
+                "base": "a" * 40,
+            },
+            "r2": {
+                "jobs": 1,
+                "max_mutants": 50,
+                "operators": ["sql:drop-check"],
+                "kill_attribution": "unattributed",
+            },
+        },
+        "claims": [
+            {"rigor": "R0", "source": "computed", "status": "PASS",
+             "verified_by_assay": True},
+            {
+                "rigor": "R2", "source": "computed", "status": "PASS",
+                "verified_by_assay": True,
+                "mutation": {
+                    "candidate_count": 1, "total": 1, "killed": [mutant],
+                    "survived": [], "crashed": [], "budget_exceeded": [],
+                    "equivalent": [],
+                },
+            },
+        ],
+        "evidence": [],
+    }
+    document.update(overrides)
+    return document
+
+
+def _raw(fn, document: dict) -> list[str]:
+    failures: list[str] = []
+    fn(document, failures)
+    return failures
+
+
+def test_raw_layer_clause_operator_prefix_must_equal_the_resolved_language():
+    """Invariant 1. The schema closes each language's vocabulary but has no
+    `$data`, so it cannot see that these `sql:` operators sit beside a
+    `python` resolution."""
+    check = verify._check_resolved_language_owns_every_operator
+    clean = _sql_r2_document()
+    assert _raw_two_arg(check, clean) == []
+    broken = _sql_r2_document(language="python")
+    failures = _raw_two_arg(check, broken)
+    assert failures and any("sql:drop-check" in f for f in failures), failures
+
+
+def _raw_two_arg(fn, document: dict) -> list[str]:
+    failures: list[str] = []
+    fn(document, document["judgment"], failures)
+    return failures
+
+
+def test_raw_layer_clause_base_is_required_when_r1_or_r2_is_present():
+    """Invariant, A-223a's `if` half."""
+    check = verify._check_base_matches_the_tiers_present
+    clean = _sql_r2_document()
+    assert _raw(lambda d, f: check(d["judgment"], f), clean) == []
+    broken = _sql_r2_document()
+    del broken["judgment"]["resolved"]["base"]
+    failures = _raw(lambda d, f: check(d["judgment"], f), broken)
+    assert failures and any("omits base" in f for f in failures), failures
+
+
+def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
+    """A-227's `only-if` half -- the other clause of the same rule, broken
+    separately because a single collapsed check could satisfy one and not the
+    other."""
+    check = verify._check_base_matches_the_tiers_present
+    r3_only = {
+        "resolved": {"language": "python", "source_roots": ["pkg"]},
+        "r3": {"mechanism": "uncovered-line", "target": "pkg/mod.py"},
+    }
+    assert _raw(lambda d, f: check(d, f), r3_only) == []
+    broken = json.loads(json.dumps(r3_only))
+    broken["resolved"]["base"] = "9" * 40
+    failures = _raw(lambda d, f: check(d, f), broken)
+    assert failures and any("neither r1 nor r2" in f for f in failures), failures
+
+
+def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():
+    """Invariant 2, and its control: the SAME payload with the declaration
+    present raises nothing."""
+    check = verify._check_equivalence_pairing
+    document = _sql_r2_document()
+    claim = document["claims"][1]
+    mutation = claim["mutation"]
+    mutation["equivalent"] = mutation.pop("killed")
+    mutation["killed"] = []
+    paired = dict(document["judgment"]["r2"],
+                  equivalence_artifact=".assay/schema-dump.sql")
+    assert _raw(lambda d, f: check(claim, paired, f), document) == []
+    failures = _raw(lambda d, f: check(claim, document["judgment"]["r2"], f), document)
+    assert failures and any("equivalence_artifact" in f for f in failures), failures
+
+
+def test_raw_layer_clause_declared_attribution_requires_its_artifact():
+    """Invariant 4, clause 1."""
+    check = verify._check_kill_attribution
+    document = _sql_r2_document()
+    claim = document["claims"][1]
+    claim["mutation"]["killed"][0]["kill_signal"] = "23514"
+    declared = dict(
+        document["judgment"]["r2"],
+        kill_attribution="declared",
+        kill_signal_artifact=".assay/kill-signal.txt",
+    )
+    assert _raw(lambda d, f: check(claim, declared, f), document) == []
+    orphaned = {k: v for k, v in declared.items() if k != "kill_signal_artifact"}
+    failures = _raw(lambda d, f: check(claim, orphaned, f), document)
+    assert failures and any("names no" in f for f in failures), failures
+
+
+def test_raw_layer_clause_declared_attribution_requires_every_kill_explained():
+    """Invariant 4, clause 2 -- a separate break, because an implementation
+    can satisfy clause 1 and still let a kill go unexplained."""
+    check = verify._check_kill_attribution
+    declared_policy = {
+        "jobs": 1, "max_mutants": 50, "operators": ["sql:drop-check"],
+        "kill_attribution": "declared",
+        "kill_signal_artifact": ".assay/kill-signal.txt",
+    }
+    document = _sql_r2_document()
+    claim = document["claims"][1]
+    claim["mutation"]["killed"][0]["kill_signal"] = "23514"
+    assert _raw(lambda d, f: check(claim, declared_policy, f), document) == []
+    broken = _sql_r2_document()
+    broken_claim = broken["claims"][1]
+    failures = _raw(lambda d, f: check(broken_claim, declared_policy, f), broken)
+    assert failures and any("no kill_signal" in f for f in failures), failures
+
+
+def test_raw_layer_clause_unattributed_forbids_a_signal_anywhere():
+    """Invariant 4, clause 3 -- the one the schema deliberately leaves open,
+    because a `kill_signal` on a KILLED entry is locally legal and only a
+    layer that can see `kill_attribution` can refuse it."""
+    check = verify._check_kill_attribution
+    document = _sql_r2_document()
+    claim = document["claims"][1]
+    policy = document["judgment"]["r2"]
+    assert _raw(lambda d, f: check(claim, policy, f), document) == []
+    claim["mutation"]["killed"][0]["kill_signal"] = "23514"
+    failures = _raw(lambda d, f: check(claim, policy, f), document)
+    assert failures and any("no mechanism to name" in f for f in failures), failures
+
+
+def test_raw_layer_clause_a_helper_entry_needs_a_correspondingly_judged_claim():
+    """Invariant 5, observable direction only (A-223c)."""
+    check = verify._check_helpers_have_a_judged_claim
+    document = _sql_r2_document()
+    document["helpers"] = [{
+        "role": "mutation-sites", "tool": "assay-sql-sites",
+        "resolved_path": "/opt/assay-helpers/bin/assay-sql-sites",
+        "identity": "assay-sql-sites 0.1.0",
+    }]
+    assert _raw(check, document) == []
+    broken = _sql_r2_document()
+    broken["helpers"] = [dict(document["helpers"][0], role="statement-positions")]
+    failures = _raw(check, broken)
+    assert failures and any("statement-positions" in f for f in failures), failures
+
+
+def test_raw_layer_clause_an_empty_helpers_array_is_refused():
+    """A-230a's omission rule, at the layer that reads foreign documents."""
+    check = verify._check_helpers_have_a_judged_claim
+    assert _raw(check, _sql_r2_document()) == []
+    failures = _raw(check, _sql_r2_document(helpers=[]))
+    assert failures and any("present but empty" in f for f in failures), failures

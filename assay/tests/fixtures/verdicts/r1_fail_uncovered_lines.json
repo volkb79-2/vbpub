@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "7777777777777777777777777777777777777777",
@@ -30,16 +30,18 @@
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {
-    "r1": {
+    "resolved": {
       "language": "zzz",
       "source_roots": [
         "pkg"
       ],
+      "base": "0000000000000000000000000000000000000a"
+    },
+    "r1": {
       "coverage_format": "coverage-py-json",
       "coverage_artifact": "cov.json",
       "fail_under": 100.0,
-      "allow_excluded": false,
-      "base": "0000000000000000000000000000000000000a"
+      "allow_excluded": false
     }
   },
   "claims": [

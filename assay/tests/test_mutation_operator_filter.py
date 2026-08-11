@@ -52,31 +52,31 @@ def test_the_fixture_itself_offers_both_operator_types():
     """The fixture's own precondition, checked directly: with BOTH operators
     selected, two real distinct sites exist -- if this failed, every
     assertion below would be proving nothing."""
-    jobs = _collect(("compare-swap", "bool-const-flip"))
+    jobs = _collect(("python:compare-swap", "python:bool-const-flip"))
 
-    assert {job.site.operator for job in jobs} == {"compare-swap", "bool-const-flip"}
+    assert {job.site.operator for job in jobs} == {"python:compare-swap", "python:bool-const-flip"}
 
 
 def test_an_undeclared_operator_yields_no_candidate_at_all():
     """Not "collected then dropped" -- never collected. This is what makes
     the candidate count a count of work the lane actually authorised."""
-    jobs = _collect(("compare-swap",))
+    jobs = _collect(("python:compare-swap",))
 
-    assert [job.site.operator for job in jobs] == ["compare-swap"]
+    assert [job.site.operator for job in jobs] == ["python:compare-swap"]
 
 
 def test_selecting_the_other_operator_selects_the_other_site():
     """The mirror case, so the test above cannot pass by an implementation
     that simply always returns the first site."""
-    jobs = _collect(("bool-const-flip",))
+    jobs = _collect(("python:bool-const-flip",))
 
-    assert [job.site.operator for job in jobs] == ["bool-const-flip"]
+    assert [job.site.operator for job in jobs] == ["python:bool-const-flip"]
 
 
 def test_an_operator_the_file_has_no_site_for_yields_nothing():
     """A supported analysis that observed no eligible candidate -- distinct
     from an adapter with no engine, which cannot happen for Python."""
-    assert _collect(("falsy-swap",)) == ()
+    assert _collect(("python:falsy-swap",)) == ()
 
 
 def test_the_selection_is_applied_before_the_cap_not_after(tmp_path: Path):
@@ -85,9 +85,9 @@ def test_the_selection_is_applied_before_the_cap_not_after(tmp_path: Path):
     compare-swap site that sorts earlier by byte offset. A collector that
     gathered everything, capped, and then filtered would retain the
     compare-swap site and report zero candidates."""
-    jobs = _collect(("bool-const-flip",), limit=1)
+    jobs = _collect(("python:bool-const-flip",), limit=1)
 
-    assert [job.site.operator for job in jobs] == ["bool-const-flip"]
+    assert [job.site.operator for job in jobs] == ["python:bool-const-flip"]
 
 
 def test_run_mutation_never_submits_an_undeclared_operators_mutant(tmp_path: Path):
@@ -134,14 +134,14 @@ def test_run_mutation_never_submits_an_undeclared_operators_mutant(tmp_path: Pat
             adapter=PythonAdapter(),
             jobs=1,
             max_mutants=10,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             process_runner=mutant_runner,
             clock=lambda: datetime.now(timezone.utc),
         )
 
     assert result.candidate_count == 1
     assert result.total == 1
-    assert [outcome.operator for outcome in result.killed] == ["compare-swap"]
+    assert [outcome.operator for outcome in result.killed] == ["python:compare-swap"]
     # Exactly one mutant command ran, and the file it ran against carries the
     # compare-swap splice -- never the `True` -> `False` one.
     assert len(submitted) == 1

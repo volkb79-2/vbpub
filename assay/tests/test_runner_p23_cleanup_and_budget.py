@@ -80,7 +80,7 @@ def _r2_lane(
             source_root_paths=(repo.path / "pkg",),
             base=base_rev,
             mutation=MutationConfig(
-                jobs=jobs, max_mutants=max_mutants, operators=("compare-swap",)
+                jobs=jobs, max_mutants=max_mutants, operators=("python:compare-swap",)
             ),
         ),
         argv=("check",),
@@ -354,7 +354,7 @@ def test_a_p22_policy_refusal_in_a_worker_keeps_its_own_pair(git_repo: GitRepo):
             adapter=PythonAdapter(),
             jobs=1,
             max_mutants=20,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             process_runner=explode_process,
             clock=_clock,
         )

@@ -106,15 +106,16 @@ def test_run_lane_full_pass_builds_judgment_and_covers_ended_after_r1(
     assert verdict.started == "2026-08-08T09:00:00+00:00", "R0's own start, unchanged"
     assert verdict.ended == "2026-08-08T09:00:02+00:00", "covers R1's own completion"
     assert isinstance(verdict.judgment, Judgment)
-    assert verdict.judgment.r1.base == base_rev
+    # P33/V5-1: the three lane facts now live on `judgment.resolved`.
+    assert verdict.judgment.resolved.base == base_rev
     # make_r1_judge's own .source_roots is a stringified copy of the SAME
     # absolute source_root_paths (conftest.py's own documented shortcut),
     # so this assertion cannot by itself distinguish "read judge.source_roots"
     # from "stringify judge.source_root_paths" -- that discriminating
     # assertion lives in test_cli_run.py, against a REAL assay.toml load,
     # where the two genuinely differ.
-    assert verdict.judgment.r1.source_roots == judge.source_roots
-    assert verdict.judgment.r1.language == judge.language
+    assert verdict.judgment.resolved.source_roots == judge.source_roots
+    assert verdict.judgment.resolved.language == judge.language
 
 
 def test_run_lane_r0_only_never_builds_judgment_and_ended_is_r0s_own(
@@ -715,7 +716,7 @@ def test_run_lane_uncovered_changed_lines_fail_and_still_record_the_policy(
         "pkg/mod.zzz": frozenset({4, 5})
     }
     assert isinstance(verdict.judgment, Judgment)
-    assert verdict.judgment.r1.base == base_rev
+    assert verdict.judgment.resolved.base == base_rev
     assert verdict.judgment.r1.fail_under == judge.fail_under
     assert verdict.judgment.r1.allow_excluded == judge.allow_excluded
     assert verdict.judgment.r1.coverage_format == judge.coverage.format

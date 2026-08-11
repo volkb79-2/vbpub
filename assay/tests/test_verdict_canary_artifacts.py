@@ -29,7 +29,14 @@ from conftest import canary_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import CanaryResult, Claim, Judgment, JudgmentR3, Verdict
+from assay.verdict import (
+    CanaryResult,
+    Claim,
+    Judgment,
+    JudgmentR3,
+    JudgmentResolved,
+    Verdict,
+)
 
 BASE = {
     "lane": "package",
@@ -78,7 +85,13 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
         outcome=Outcome.PASS,
         started="2026-08-07T13:00:00+00:00",
         ended="2026-08-07T13:00:05+00:00",
-        judgment=Judgment(r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py")),
+        judgment=Judgment(
+            # P33/V5-1/A-223a: an R0,R3 lane records language and source
+            # roots and NO base -- JUDGE_FIELDS_BY_RIGOR gives R3 none, so a
+            # comparison commit here would be invented rather than resolved.
+            resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
+            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py"),
+        ),
         claims=(R0_PASS, r3_claim),
     )
 
@@ -114,7 +127,13 @@ def test_canary_survived_via_unexpected_pass_matches_the_hand_written_fixture(
         reason_code=ReasonCode.CANARY_SURVIVED,
         started="2026-08-07T13:05:00+00:00",
         ended="2026-08-07T13:05:05+00:00",
-        judgment=Judgment(r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py")),
+        judgment=Judgment(
+            # P33/V5-1/A-223a: an R0,R3 lane records language and source
+            # roots and NO base -- JUDGE_FIELDS_BY_RIGOR gives R3 none, so a
+            # comparison commit here would be invented rather than resolved.
+            resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
+            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py"),
+        ),
         claims=(R0_PASS, r3_claim),
     )
 
@@ -150,7 +169,10 @@ def test_canary_survived_via_wrong_reason_matches_the_hand_written_fixture(
         reason_code=ReasonCode.CANARY_SURVIVED,
         started="2026-08-07T13:10:00+00:00",
         ended="2026-08-07T13:10:05+00:00",
-        judgment=Judgment(r3=JudgmentR3(mechanism="import-break", target="pkg/greet.py")),
+        judgment=Judgment(
+            resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
+            r3=JudgmentR3(mechanism="import-break", target="pkg/greet.py"),
+        ),
         claims=(R0_PASS, r3_claim),
     )
 
@@ -185,7 +207,8 @@ def test_canary_inconclusive_matches_the_hand_written_fixture(
         started="2026-08-07T13:15:00+00:00",
         ended="2026-08-07T13:15:05+00:00",
         judgment=Judgment(
-            r3=JudgmentR3(mechanism="not-a-real-mechanism", target="pkg/greet.py")
+            resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
+            r3=JudgmentR3(mechanism="not-a-real-mechanism", target="pkg/greet.py"),
         ),
         claims=(R0_PASS, r3_claim),
     )

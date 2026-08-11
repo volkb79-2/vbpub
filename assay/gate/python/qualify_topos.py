@@ -48,7 +48,16 @@ RELEASE_ROOT = Path(__file__).resolve().parent / "release" / "P25"
 # manifest's own self-hash. `qualify_topos.py` lives at `gate/python/`, two
 # levels under the project root.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "expected"
+# P33/A-226: the expectations move to P33's carver-supplied v5 SIBLINGS. P25's
+# own `expected/*-v4-template.json` files stay frozen and unedited as the
+# historical record of what P25 actually proved (A-222) -- rewriting them to
+# v5 would falsify that record, claiming a merged package was accepted
+# against a contract that did not exist when it was accepted. A v4->v5
+# projection computed inside this harness was considered and rejected: an
+# unfrozen transform is machinery to be trusted, whereas a frozen expectation
+# is evidence to be checked, and the whole point of comparing against a
+# locked template is that nothing in the run under test produced it.
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P33" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -403,6 +412,7 @@ def _materialize_negative(
     source_roots: str = "topos/src/topos",
     base_override: str | None = None,
     tag_head_as: str | None = None,
+    tag_base_as: str | None = None,
 ) -> tuple[Path, Path, Path, str, str]:
     """Shared construction for both the five named scenarios and the
     integrity-negative matrix -- only the wrapper/root/base declaration
@@ -412,6 +422,12 @@ def _materialize_negative(
     witness = root / "witness.json"
     pytest_log = root / "pytest.log"
     base_oid = _seed_baseline(source_repo, repo)
+    # (P33/CA8) A tag on the BASE commit, so a lane can declare a symbolic
+    # base that is genuinely NOT HEAD -- the one shape `tag_head_as` cannot
+    # produce, since `_check_base_is_head` already occupies that case and
+    # refuses before any base is ever recorded.
+    if tag_base_as is not None:
+        _run(["git", "tag", tag_base_as, base_oid], cwd=repo, env=_fixed_identity())
     _copy_fixture(probe_fixture, repo / "topos/src/topos" / source_target)
     _copy_fixture(test_fixture, repo / "topos/tests/test_assay_probe.py")
     wrapper_path = repo / "topos/tools/assay_p25_coverage.py"
@@ -695,7 +711,10 @@ def normalize_artifact(
         raise QualificationError("artifact assay_version is not the installed version")
     if normalized.get("commit") != head_oid:
         raise QualificationError("artifact commit is not disposable HEAD")
-    if normalized.get("judgment", {}).get("r1", {}).get("base") != base_oid:
+    # P33/V5-1: the comparison commit hoisted out of `judgment.r1` into the
+    # shared `judgment.resolved`, which is where an R0,R2 lane can record one
+    # at all.
+    if normalized.get("judgment", {}).get("resolved", {}).get("base") != base_oid:
         raise QualificationError("artifact judgment base is not the seeded base")
     for field in ("started", "ended"):
         if not isinstance(normalized.get(field), str) or not normalized[field]:
@@ -712,7 +731,7 @@ def normalize_artifact(
     normalized["commit"] = "@HEAD_OID@"
     normalized["started"] = "@STARTED@"
     normalized["ended"] = "@ENDED@"
-    normalized["judgment"]["r1"]["base"] = "@BASE_OID@"
+    normalized["judgment"]["resolved"]["base"] = "@BASE_OID@"
     for field in ("env_declared", "env_effective"):
         normalized[field]["ASSAY_P25_WITNESS"] = "@WITNESS_PATH@"
         normalized[field]["ASSAY_P25_LOG"] = "@PYTEST_LOG@"
@@ -893,6 +912,68 @@ def _check_command_head_move(source_repo: Path, scratch: Path, current_assay: Pa
         raise QualificationError("command-head-move scenario's own consumer repository was mutated")
 
 
+def _check_resolved_base_is_the_resolution_not_the_declaration(
+    source_repo: Path, scratch: Path, current_assay: Path, current_version: str
+) -> None:
+    """(P33/CA8, A-143/A-229) `judgment.resolved.base` records the RESOLVED
+    comparison commit, never the lane's own declared spelling.
+
+    v5 collapses two independently-resolved base values into one field, so
+    "which one lands here" stops being an implementation detail and becomes
+    contract. Without this scenario, an implementation that simply copied the
+    declared string would pass every other oracle in this package: every
+    locked template substitutes a full 40-hex for `@BASE_OID@`, and
+    `resolve_base` returns a full SHA unchanged, so declared and resolved are
+    accidentally identical in each of them. A-143 is explicit that a fixture
+    which fails to make the two genuinely different proves nothing.
+
+    The lane therefore declares an ANNOTATED-free lightweight tag pointing at
+    the base commit -- not at HEAD, which `_check_base_is_head` already owns
+    and which refuses before a base is ever recorded. Declared is
+    `p33-declared-base`; resolved must be the 40-hex the tag names.
+    """
+    name = "declared-base-is-a-tag"
+    tag = "p33-declared-base"
+    repo, witness, pytest_log, base, head = _materialize_negative(
+        source_repo,
+        scratch,
+        name,
+        probe_fixture=PRIMARY.probe_fixture,
+        test_fixture=PRIMARY.test_fixture,
+        argv_tail=PRIMARY.argv_tail,
+        base_override=tag,
+        tag_base_as=tag,
+    )
+    artifact_path = scratch / name / "verdict.json"
+    _proc, artifact = _invoke(current_assay, repo, artifact_path)
+    if artifact.get("outcome") != "PASS":
+        raise QualificationError(
+            f"the declared-base-as-tag scenario expected PASS, got "
+            f"{artifact.get('outcome')}/{artifact.get('reason_code')}"
+        )
+    recorded = artifact.get("judgment", {}).get("resolved", {}).get("base")
+    if recorded == tag:
+        raise QualificationError(
+            "judgment.resolved.base recorded the lane's DECLARED spelling "
+            f"{tag!r} rather than the commit it resolves to; a consumer cannot "
+            "re-derive a diff from a ref name that may since have moved"
+        )
+    if recorded != base:
+        raise QualificationError(
+            f"judgment.resolved.base is {recorded!r}, which is neither the "
+            f"declared tag {tag!r} nor the commit it names ({base})"
+        )
+    if recorded == head:
+        raise QualificationError(
+            "judgment.resolved.base resolved to HEAD; the scenario is meant to "
+            "compare against an earlier commit"
+        )
+    if _git(repo, "status", "--porcelain=v1") != "":
+        raise QualificationError(
+            "the declared-base-as-tag scenario's own consumer repository was mutated"
+        )
+
+
 def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Path, current_version: str) -> None:
     """A wrong-but-existing `judge.source_roots` must fail the whole-document
     comparison BECAUSE OF THE ROOT.
@@ -925,7 +1006,9 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         witness=witness,
         pytest_log=pytest_log,
     )
-    expected = json.loads((_EXPECTED_ROOT / "missing-v4-template.json").read_text(encoding="utf-8"))
+    expected = json.loads(
+        (_EXPECTED_ROOT / "p25-missing-v5-template.json").read_text(encoding="utf-8")
+    )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
         raise QualificationError("a wrong-source-root decoy incorrectly passed the complete artifact comparison")
@@ -959,7 +1042,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "missing-v4-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v5-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1006,7 +1089,10 @@ def qualify(
 
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
-    for result, template_name in ((primary, "pass-v4-template.json"), (missing, "missing-v4-template.json")):
+    for result, template_name in (
+        (primary, "p25-pass-v5-template.json"),
+        (missing, "p25-missing-v5-template.json"),
+    ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch
         # layout `materialize_scenario` built) -- NEVER from the artifact under
@@ -1029,6 +1115,9 @@ def qualify(
     _check_command_dirt(source_repo, scratch, current_assay, current_version)
     _check_command_head_move(source_repo, scratch, current_assay, current_version)
     _check_wrong_source_root(source_repo, scratch, current_assay, current_version)
+    _check_resolved_base_is_the_resolution_not_the_declaration(
+        source_repo, scratch, current_assay, current_version
+    )
     _check_universal_pass_mutation(missing)
 
     after = _consumer_status(source_repo)

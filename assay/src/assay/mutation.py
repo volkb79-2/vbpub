@@ -933,9 +933,21 @@ def judge_mutation(
     ``mutation.total == 0`` -> ``INCONCLUSIVE``/``NO_MUTANTS``; else
     non-empty ``crashed`` -> ``ERROR``/``EXEC_FAILED``; else non-empty
     ``budget_exceeded`` -> ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``; else
-    non-empty ``survived`` -> ``FAIL``/``MUTANTS_SURVIVED``; else ``PASS``.
+    non-empty ``survived`` -> ``FAIL``/``MUTANTS_SURVIVED``; else
+    ``killed + survived == 0`` with a non-empty ``equivalent`` ->
+    ``INCONCLUSIVE``/``ALL_MUTANTS_EQUIVALENT``; else ``PASS``.
     This precedence (crashed > budget_exceeded > survived) matches the
     existing cross-claim ``ROLLUP_PRECEDENCE`` applied one level down.
+
+    **P33/A-223d: the all-inert terminal, ranked after ``survived``.**
+    Without it, ``killed 0, survived 0, equivalent 3`` walks straight to
+    ``PASS`` — A-026/A-035's 0/0-is-100% bug one layer down, reintroduced
+    inside the change that exists to fix a lossiness problem. Every mutant
+    was proven to change nothing, so nothing the suite could have caught was
+    ever at risk and the run says nothing about the tests. Ranking is
+    order-insensitive given the ``killed + survived == 0`` guard (a non-empty
+    ``survived`` has already returned by then); it sits here for readability,
+    not because the position is load-bearing.
     """
     if mutation is None:
         return baseline.outcome, baseline.reason_code
@@ -957,6 +969,12 @@ def judge_mutation(
         return Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT
     if mutation.survived:
         return Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED
+    if not mutation.killed and mutation.equivalent:
+        # A-223d. `killed + survived == 0` and something was proven inert:
+        # the run attempted real mutants and none of them could ever have
+        # been caught, so there is no evidence about the tests here to pass
+        # on. `survived` is already known empty on this branch.
+        return Outcome.INCONCLUSIVE, ReasonCode.ALL_MUTANTS_EQUIVALENT
     return Outcome.PASS, None
 
 

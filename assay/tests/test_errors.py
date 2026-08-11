@@ -74,6 +74,11 @@ EXPECTED_REASON_CODES = {
         # free, and deliberately NOT NO_MUTANTS, which asserts that a
         # supported analysis ran and observed nothing.
         "MUTATION_UNSUPPORTED",
+        # P33/A-223d: every attempted mutant was PROVEN inert. Deliberately
+        # neither PASS (a run in which nothing could have been caught proves
+        # nothing about the tests -- A-026/A-035's 0/0-is-100% bug one layer
+        # down) nor NO_MUTANTS (candidates were found AND run).
+        "ALL_MUTANTS_EQUIVALENT",
         "CANARY_INCONCLUSIVE",
     },
 }

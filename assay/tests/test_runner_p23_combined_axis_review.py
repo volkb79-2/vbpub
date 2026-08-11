@@ -94,7 +94,7 @@ def _python_judge(
         source_root_paths=(repo.path / source_root,),
         base=base,
         mutation=MutationConfig(
-            jobs=1, max_mutants=max_mutants, operators=("compare-swap",)
+            jobs=1, max_mutants=max_mutants, operators=("python:compare-swap",)
         ),
     )
 
@@ -142,7 +142,7 @@ class _ConformingMultiSiteAdapter:
                 end_byte=offset + 1,
                 replacement=b"<=",
                 lineno=line_for_offset(raw, offset),
-                operator="compare-swap",
+                operator="python:compare-swap",
                 description="< to <=",
             )
             for offset in offsets
@@ -166,7 +166,7 @@ class _MisreportedLinenoAdapter(_ConformingMultiSiteAdapter):
                 end_byte=offset + 1,
                 replacement=b"<=",
                 lineno=index + 1,
-                operator="compare-swap",
+                operator="python:compare-swap",
                 description="< to <=",
             )
             for index, offset in enumerate(offsets)
@@ -360,7 +360,7 @@ def test_a_diverged_symbolic_judge_base_resolves_to_its_forkpoint(
     assert r1.coverage.changed_executable == 2, "the fork-point diff, not an empty one"
     # The artifact binds the FORK POINT, never the declared symbolic name and
     # never the diverged tip -- P16's "the FULL resolved comparison commit".
-    assert verdict.judgment.r1.base == fork_point
+    assert verdict.judgment.resolved.base == fork_point
 
 
 # --- 3. one blob at two paths stays two replacement units (A-191) ------------
@@ -683,7 +683,7 @@ def test_an_r2_orchestration_fault_starts_no_r3_unit(git_repo: GitRepo):
         fail_under=None,
         allow_excluded=None,
         coverage=None,
-        mutation=MutationConfig(jobs=1, max_mutants=10, operators=("compare-swap",)),
+        mutation=MutationConfig(jobs=1, max_mutants=10, operators=("python:compare-swap",)),
         canary=CanaryConfig(mechanism="import-break", target="pkg/mod.py"),
         base=base_rev,
     )
@@ -730,7 +730,7 @@ def test_a_judged_r2_failure_still_lets_r3_run(git_repo: GitRepo):
         fail_under=None,
         allow_excluded=None,
         coverage=None,
-        mutation=MutationConfig(jobs=1, max_mutants=10, operators=("compare-swap",)),
+        mutation=MutationConfig(jobs=1, max_mutants=10, operators=("python:compare-swap",)),
         canary=CanaryConfig(mechanism="import-break", target="pkg/mod.py"),
         base=base_rev,
     )

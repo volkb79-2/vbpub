@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "ffffffffffffffffffffffffffffffffffffffff",
@@ -34,6 +34,12 @@
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "pkg"
+      ]
+    },
     "r3": {
       "mechanism": "not-a-real-mechanism",
       "target": "pkg/greet.py"

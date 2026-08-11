@@ -72,7 +72,7 @@ def _site() -> MutationSite:
         end_byte=5,
         replacement=b"<=",
         lineno=1,
-        operator="compare-swap",
+        operator="python:compare-swap",
         description="Lt->LtE",
     )
 

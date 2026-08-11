@@ -18,7 +18,7 @@ MUTATION_TABLE = """
 [lanes.package.judge.mutation]
 jobs = 4
 max_mutants = 50
-operators = ["compare-swap"]
+operators = ["python:compare-swap"]
 """
 
 R2_JUDGE = """

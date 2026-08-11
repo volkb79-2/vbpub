@@ -18,7 +18,7 @@ from conftest import fixed_clock, make_lane
 
 from assay import runner
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.verdict import Claim, Coverage, Judgment, JudgmentR1
+from assay.verdict import Claim, Coverage, Judgment, JudgmentR1, JudgmentResolved
 
 
 def _r0_pass_result(tmp_path: Path):
@@ -44,11 +44,13 @@ def _r1_pass_claim() -> Claim:
 
 def _r1_judgment() -> Judgment:
     return Judgment(
+        resolved=JudgmentResolved(
+            language="python", source_roots=("src",), base="a" * 40,
+        ),
         r1=JudgmentR1(
-            language="python", source_roots=("src",), coverage_format="coverage-py-json",
+            coverage_format="coverage-py-json",
             coverage_artifact="cov.json", fail_under=100.0, allow_excluded=False,
-            base="a" * 40,
-        )
+        ),
     )
 
 

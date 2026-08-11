@@ -33,7 +33,15 @@ from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
 from assay.errors import Outcome, ReasonCode
 from assay.evaluate import CoverageEvaluation, evaluate_coverage
-from assay.verdict import Claim, Coverage, Judgment, JudgmentR1, Verdict, rollup
+from assay.verdict import (
+    Claim,
+    Coverage,
+    Judgment,
+    JudgmentR1,
+    JudgmentResolved,
+    Verdict,
+    rollup,
+)
 
 REPO_TOP = Path("/repo")
 PATH = "pkg/mod.py"
@@ -44,15 +52,17 @@ VERSION = "0.1.0"
 #: always calls `evaluate_coverage` with the same `fail_under`/
 #: `allow_excluded`/adapter/source root.
 R1_JUDGMENT = Judgment(
-    r1=JudgmentR1(
+    resolved=JudgmentResolved(
         language="python",
         source_roots=("pkg",),
+        base="0000000000000000000000000000000000000a",
+    ),
+    r1=JudgmentR1(
         coverage_format="coverage-py-json",
         coverage_artifact="cov.json",
         fail_under=100.0,
         allow_excluded=False,
-        base="0000000000000000000000000000000000000a",
-    )
+    ),
 )
 
 SOURCE = (

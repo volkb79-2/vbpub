@@ -75,9 +75,9 @@ def test_crashed_outranks_survived_and_budget_exceeded_when_all_three_are_presen
     or budget_exceeded FIRST would silently launder a real crash."""
     from assay.verdict import Mutation, MutantOutcome
 
-    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
-    crashed = MutantOutcome(path="pkg/mod.py", lineno=2, start_byte=20, end_byte=21, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
-    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, start_byte=30, end_byte=31, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE")
+    crashed = MutantOutcome(path="pkg/mod.py", lineno=2, start_byte=20, end_byte=21, replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE")
+    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, start_byte=30, end_byte=31, replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE")
     mutation = Mutation(
         candidate_count=3,
         total=3,
@@ -92,8 +92,8 @@ def test_crashed_outranks_survived_and_budget_exceeded_when_all_three_are_presen
 def test_budget_exceeded_outranks_survived_when_both_are_present():
     from assay.verdict import Mutation, MutantOutcome
 
-    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
-    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, start_byte=30, end_byte=31, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE")
+    stopped = MutantOutcome(path="pkg/mod.py", lineno=3, start_byte=30, end_byte=31, replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE")
     mutation = Mutation(
         candidate_count=2, total=2, survived=(survivor,), budget_exceeded=(stopped,)
     )
@@ -104,7 +104,7 @@ def test_budget_exceeded_outranks_survived_when_both_are_present():
 def test_survived_alone_is_fail_mutants_survived():
     from assay.verdict import Mutation, MutantOutcome
 
-    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="compare-swap", description="Lt->LtE")
+    survivor = MutantOutcome(path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11, replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE")
     mutation = Mutation(candidate_count=1, total=1, survived=(survivor,))
     baseline = _baseline(Outcome.PASS, None)
     assert judge_mutation(baseline, mutation) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
@@ -122,7 +122,7 @@ def test_every_bucket_empty_with_a_positive_total_is_pass():
             start_byte=index * 10,
             end_byte=index * 10 + 1,
             replacement_sha256=_SHA_LTE,
-            operator="compare-swap",
+            operator="python:compare-swap",
             description="Lt->LtE",
         )
         for index in (1, 2, 3)
@@ -147,7 +147,7 @@ def test_build_mutation_claim_wires_status_reason_and_the_mutation_payload():
             start_byte=index * 10,
             end_byte=index * 10 + 1,
             replacement_sha256=_SHA_LTE,
-            operator="compare-swap",
+            operator="python:compare-swap",
             description="Lt->LtE",
         )
         for index in (1, 2)
@@ -226,7 +226,7 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("bool-const-flip",),
+            operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
         )

@@ -34,8 +34,50 @@ from conftest import PROJECT_ROOT, SCHEMA_PATH, Standalone, verdict_fixture, why
 from jsonschema import Draft202012Validator
 
 from assay.verdict import SCHEMA_RESOURCE, VERDICT_SCHEMA_VERSION
+from assay.vocabulary import MUTATION_OPERATORS, MUTATION_OPERATORS_BY_LANGUAGE
 
 WHEEL_MEMBER = "assay/schemas/verdict.schema.json"
+
+
+def test_the_shipped_schema_enumerates_exactly_the_vocabulary_module_declares():
+    """(P33/V5-2) The drift guard between two independently maintained
+    artifacts, in the same shape `test_verdict_reason_codes.py` already uses
+    for the reason vocabulary.
+
+    v5 makes this necessary rather than merely tidy: the operator catalogue
+    is now THREE per-language enums in the schema against one per-language
+    map in :mod:`assay.vocabulary`, and nothing else in the suite compares
+    them. A language whose enum was added to one and not the other would
+    make the config loader and the shipped schema disagree about what a
+    lane may declare -- exactly the model/schema/verifier mismatch P21's own
+    work item 2 deleted for the flat four-value list.
+
+    ORDER is asserted too, not just membership: `judgment.r2.operators`
+    records a lane's own order-preserving selection, and the module
+    docstring calls its tuple order normative for these branches.
+    """
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    branches = schema["$defs"]["mutation_operator"]["oneOf"]
+    shipped = [branch["enum"] for branch in branches]
+
+    declared = [list(operators) for operators in MUTATION_OPERATORS_BY_LANGUAGE.values()]
+    assert shipped == declared
+
+    # Every branch is single-language, so a `oneOf` really does partition the
+    # catalogue rather than merely covering it -- two branches sharing a name
+    # would make a document ambiguous under `oneOf` and reject a valid
+    # operator.
+    for branch, (language, operators) in zip(
+        branches, MUTATION_OPERATORS_BY_LANGUAGE.items()
+    ):
+        assert {name.split(":", 1)[0] for name in branch["enum"]} == {language}
+        assert len(set(operators)) == len(operators)
+
+    # ...and the flat tuple the model and config close against is exactly the
+    # union of what the schema ships.
+    assert set(MUTATION_OPERATORS) == {
+        name for branch in branches for name in branch["enum"]
+    }
 
 
 # --- the declaration ----------------------------------------------------------
@@ -156,4 +198,4 @@ def test_load_schema_works_from_the_installed_package(standalone: Standalone):
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:4"
+    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:5"

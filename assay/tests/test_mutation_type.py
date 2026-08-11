@@ -33,7 +33,7 @@ def _site(**overrides) -> MutationSite:
         "end_byte": 37,
         "replacement": b"<=",
         "lineno": 3,
-        "operator": "compare-swap",
+        "operator": "python:compare-swap",
         "description": "Lt->LtE",
     }
     fields.update(overrides)
@@ -115,7 +115,7 @@ def test_an_empty_span_is_refused_because_a_no_op_is_not_an_experiment():
             end_byte=36,
             replacement=b"<=",
             lineno=3,
-            operator="compare-swap",
+            operator="python:compare-swap",
             description="Lt->LtE",
         )
 

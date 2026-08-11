@@ -38,10 +38,10 @@ def test_stdout_mode_emits_the_complete_text_and_never_closes_the_stream():
     stream = io.StringIO()
     destination = reserve_verdict_output("-", stdout=stream)
 
-    destination.emit('{"schema_version": 4}\n')
+    destination.emit('{"schema_version": 5}\n')
     destination.close()
 
-    assert stream.getvalue() == '{"schema_version": 4}\n'
+    assert stream.getvalue() == '{"schema_version": 5}\n'
     assert not stream.closed, "the caller owns its own stdout"
 
 

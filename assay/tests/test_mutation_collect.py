@@ -26,7 +26,7 @@ from assay.mutation import (
     collect_mutation_sites,
 )
 
-OPERATORS = ("compare-swap", "boolop-swap", "bool-const-flip")
+OPERATORS = ("python:compare-swap", "python:boolop-swap", "python:bool-const-flip")
 
 
 def _target(path: str, text: str, lines: set[int]) -> MutationTarget:
@@ -64,7 +64,7 @@ def _sites(count: int) -> tuple[MutationSite, ...]:
             end_byte=index + 1,
             replacement=b"9",
             lineno=1,
-            operator="compare-swap",
+            operator="python:compare-swap",
             description=f"site-{index}",
         )
         for index in range(count)
@@ -83,7 +83,7 @@ def test_targets_are_visited_in_path_order_regardless_of_input_order():
             _target("b.py", _TEXTS["b.py"], {1}),
         ),
         adapter=adapter,
-        operators=("compare-swap",),
+        operators=("python:compare-swap",),
         limit=10,
     )
 
@@ -104,7 +104,7 @@ def test_each_file_receives_only_the_remaining_capacity():
             _target("c.py", _TEXTS["c.py"], {1}),
         ),
         adapter=adapter,
-        operators=("compare-swap",),
+        operators=("python:compare-swap",),
         limit=5,
     )
 
@@ -123,7 +123,7 @@ def test_a_full_sentinel_stops_calling_later_files_entirely():
             _target("c.py", _TEXTS["c.py"], {1}),
         ),
         adapter=adapter,
-        operators=("compare-swap",),
+        operators=("python:compare-swap",),
         limit=3,
     )
 
@@ -139,7 +139,7 @@ def test_a_job_shares_its_target_text_rather_than_copying_it_per_site():
     target = _target("a.py", _TEXTS["a.py"], {1})
 
     jobs = collect_mutation_sites(
-        (target,), adapter=adapter, operators=("compare-swap",), limit=5
+        (target,), adapter=adapter, operators=("python:compare-swap",), limit=5
     )
 
     assert len(jobs) == 3
@@ -157,7 +157,7 @@ def test_an_unsupported_adapter_propagates_the_marker_with_no_jobs():
             _target("b.py", _TEXTS["b.py"], {1}),
         ),
         adapter=adapter,
-        operators=("compare-swap",),
+        operators=("python:compare-swap",),
         limit=5,
     )
 
@@ -179,7 +179,7 @@ def test_supported_then_unsupported_is_a_discovery_failure_not_a_partial_result(
                 _target("b.py", _TEXTS["b.py"], {1}),
             ),
             adapter=adapter,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             limit=5,
         )
 
@@ -196,7 +196,7 @@ def test_an_empty_first_answer_still_counts_as_supported():
                 _target("b.py", _TEXTS["b.py"], {1}),
             ),
             adapter=adapter,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             limit=5,
         )
 
@@ -209,7 +209,7 @@ def test_no_targets_returns_the_supported_empty_tuple():
 
     assert (
         collect_mutation_sites(
-            (), adapter=adapter, operators=("compare-swap",), limit=5
+            (), adapter=adapter, operators=("python:compare-swap",), limit=5
         )
         == ()
     )
@@ -227,7 +227,7 @@ def test_no_targets_returns_the_supported_empty_tuple():
                     end_byte=99,
                     replacement=b"9",
                     lineno=1,
-                    operator="compare-swap",
+                    operator="python:compare-swap",
                     description="past the end",
                 ),
             ),
@@ -240,7 +240,7 @@ def test_no_targets_returns_the_supported_empty_tuple():
                     end_byte=1,
                     replacement=b"x",
                     lineno=1,
-                    operator="compare-swap",
+                    operator="python:compare-swap",
                     description="no-op",
                 ),
             ),
@@ -253,7 +253,7 @@ def test_no_targets_returns_the_supported_empty_tuple():
                     end_byte=1,
                     replacement=b"9",
                     lineno=9,
-                    operator="compare-swap",
+                    operator="python:compare-swap",
                     description="wrong line",
                 ),
             ),
@@ -266,7 +266,7 @@ def test_no_targets_returns_the_supported_empty_tuple():
                     end_byte=1,
                     replacement=b"9",
                     lineno=1,
-                    operator="boolop-swap",
+                    operator="python:boolop-swap",
                     description="unselected operator",
                 ),
             ),
@@ -293,7 +293,7 @@ def test_a_wrong_adapter_batch_is_refused_before_any_job_is_built(sites, match: 
         collect_mutation_sites(
             (_target("a.py", "x = 1\n", {1}),),
             adapter=adapter,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             limit=5,
         )
 
@@ -312,7 +312,7 @@ def test_the_limit_itself_is_bounded(limit, match: str):
     unbounded discovery work."""
     with pytest.raises(ValueError, match=match):
         collect_mutation_sites(
-            (), adapter=PythonAdapter(), operators=("compare-swap",), limit=limit
+            (), adapter=PythonAdapter(), operators=("python:compare-swap",), limit=limit
         )
 
 
@@ -320,8 +320,8 @@ def test_the_limit_itself_is_bounded(limit, match: str):
     "operators,match",
     [
         ((), "non-empty tuple"),
-        (["compare-swap"], "non-empty tuple"),
-        (("compare-swap", "compare-swap"), "duplicate"),
+        (["python:compare-swap"], "non-empty tuple"),
+        (("python:compare-swap", "python:compare-swap"), "duplicate"),
         (("invented-swap",), "unknown operator"),
     ],
 )
@@ -351,4 +351,4 @@ def test_the_real_python_adapter_collects_across_files_in_order():
     )
 
     assert [job.path for job in jobs] == ["a.py", "z.py"]
-    assert [job.site.operator for job in jobs] == ["boolop-swap", "compare-swap"]
+    assert [job.site.operator for job in jobs] == ["python:boolop-swap", "python:compare-swap"]

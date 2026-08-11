@@ -129,6 +129,12 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         # and deliberately NOT NO_MUTANTS, which asserts a supported analysis
         # ran and observed nothing.
         "MUTATION_UNSUPPORTED",
+        # P33/A-223d: a supported analysis ran, found candidates, executed
+        # them, and every one was PROVEN inert. Distinct from both siblings
+        # above: NO_MUTANTS found nothing to run, MUTATION_UNSUPPORTED could
+        # not look, and this one looked, ran, and learned nothing about the
+        # tests -- which is why it is not PASS.
+        "ALL_MUTANTS_EQUIVALENT",
         "CANARY_INCONCLUSIVE",
     ),
 }
@@ -164,6 +170,15 @@ EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
         ("NO_MEASUREMENT", "MISSING_EXTERNAL_TOOL"),
+        # (P33/A-223d) `ALL_MUTANTS_EQUIVALENT` is spellable in the artifact
+        # and enforced for documents, but NO P33 lane can produce it: the
+        # `equivalent` bucket is only populated by comparing a declared
+        # `equivalence_artifact`, and `config` refuses that declaration until
+        # P34 ships the producer (A-227/A-230b/A-230d). Excluded here on the
+        # same terms as P27's own reserved terminal above -- and with the
+        # same obligation: P34 removes this line when it makes the state
+        # reachable, and this audit turns red until it does.
+        ("INCONCLUSIVE", "ALL_MUTANTS_EQUIVALENT"),
     }
 )
 
@@ -826,7 +841,7 @@ def test_verify_rejects_an_r2_mutation_claim_without_judgment_r2():
 def test_verify_rejects_judgment_r2_present_without_an_r2_mutation_claim():
     document = _load("r0_pass.json")
     document["judgment"] = {
-        "r2": {"jobs": 1, "max_mutants": 50, "operators": ["compare-swap"]}
+        "r2": {"jobs": 1, "max_mutants": 50, "operators": ["python:compare-swap"]}
     }
     failures = verify_document(document)
     assert any(
@@ -837,8 +852,8 @@ def test_verify_rejects_judgment_r2_present_without_an_r2_mutation_claim():
 
 def test_verify_rejects_an_r2_operator_judgment_r2_never_declared():
     document = _load("r2_fail_mutants_survived.json")
-    assert document["judgment"]["r2"]["operators"] == ["compare-swap"]
-    document["claims"][1]["mutation"]["survived"][0]["operator"] = "boolop-swap"
+    assert document["judgment"]["r2"]["operators"] == ["python:compare-swap"]
+    document["claims"][1]["mutation"]["survived"][0]["operator"] = "python:boolop-swap"
     failures = verify_document(document)
     assert any(
         "names operator(s)" in f and "never declared" in f for f in failures
@@ -911,11 +926,19 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
     # an independent check of the closed shape.
     document = _load("r2_pass.json")
     document["judgment"] = {
+        # P33/V5-1: `resolved` is required whenever a judgment exists, and it
+        # carries `base` here because r2 is present (A-223a).
+        "resolved": {
+            "language": "python",
+            "source_roots": ["pkg"],
+            "base": "0000000000000000000000000000000000000a",
+        },
         "r2": {
             "jobs": 4,
             "max_mutants": 50,
-            "operators": ["compare-swap", "boolop-swap"],
-        }
+            "operators": ["python:compare-swap", "python:boolop-swap"],
+            "kill_attribution": "unattributed",
+        },
     }
     assert verify_document(document) == []
 
@@ -924,7 +947,10 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
     # synthesised policy can vary `mechanism`'s neighbours but no longer the
     # target -- that equality is precisely what this migration added.
     document2["judgment"] = {
-        "r3": {"mechanism": "uncovered-line", "target": "pkg/greet.py"}
+        # P33/A-223a: an r3-only judgment records NO base -- and, since
+        # A-227, is REFUSED if it does.
+        "resolved": {"language": "python", "source_roots": ["pkg"]},
+        "r3": {"mechanism": "uncovered-line", "target": "pkg/greet.py"},
     }
     assert verify_document(document2) == []
 
@@ -944,11 +970,17 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
     r2_claim = next(claim for claim in document["claims"] if claim["rigor"] == "R2")
 
     assert document["judgment"] == {
+        "resolved": {
+            "language": "python",
+            "source_roots": ["pkg"],
+            "base": "0000000000000000000000000000000000000a",
+        },
         "r2": {
             "jobs": 2,
             "max_mutants": 50,
-            "operators": ["compare-swap", "bool-const-flip"],
-        }
+            "operators": ["python:compare-swap", "python:bool-const-flip"],
+            "kill_attribution": "unattributed",
+        },
     }
     assert r2_claim["mutation"]["total"] == 2
 
@@ -1074,7 +1106,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-        "schema_version": 4,
+        "schema_version": 5,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1185,9 +1217,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 4: a verdict "
+        "schema_version 2 is not this verifier's version 5: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 4"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 5"
     ]
 
 
@@ -1206,7 +1238,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 4" in failures[0]
+    assert "schema_version 3 is not this verifier's version 5" in failures[0]
 
 
 # ============================================================================
@@ -1229,7 +1261,7 @@ def _a_survivor() -> dict:
         "replacement_sha256": (
             "92a00d7d91da9f0f06c3f218c49c9b98323469962b291365b85d3c16b6b7f95f"
         ),
-        "operator": "compare-swap",
+        "operator": "python:compare-swap",
         "description": "a < b -> a >= b",
     }
 

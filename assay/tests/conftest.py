@@ -609,7 +609,7 @@ def make_r1_judge(
 
 def make_r2_judge(
     *,
-    language: str = "zzz",
+    language: str = "python",
     source_root_paths: tuple[Path, ...],
     base: str = "main",
     mutation: MutationConfig,
@@ -619,7 +619,22 @@ def make_r2_judge(
     fields stay ``None``, matching a real ``assay.toml`` lane that
     declares ``rigor = ["R0", "R2"]`` without R1 alongside it (A-062: a
     real loader would refuse ``fail_under``/``coverage`` here as inert
-    config for an undeclared level)."""
+    config for an undeclared level).
+
+    **P33/V5-2: this default is ``python``, not the synthetic ``zzz``.** The
+    mutation vocabulary is language-qualified and closed per language, so an
+    operator's prefix must equal the resolved language -- a lane declaring
+    ``python:compare-swap`` while resolving to ``zzz`` is exactly the
+    incoherent artifact that invariant exists to reject, and it was only
+    expressible while operator names were bare. A synthetic language has no
+    catalogue by construction (adding one is a deliberate act, A-221), so
+    there is no ``zzz:*`` spelling to reach for.
+
+    **R1's language-free proof is untouched**: ``make_r1_judge`` still
+    defaults to ``zzz`` and :class:`FakeAdapter` still drives coverage
+    evaluation, because coverage carries no vocabulary at all. What changed
+    is only that R2's *policy record* must name the language whose operators
+    it declares."""
     return JudgeConfig(
         language=language,
         source_roots=tuple(str(p) for p in source_root_paths),

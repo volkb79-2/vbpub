@@ -65,7 +65,11 @@ from typing import Any, Iterable, Mapping
 
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
-from .vocabulary import MUTATION_OPERATORS
+from .vocabulary import (
+    MUTATION_OPERATORS,
+    MUTATION_OPERATORS_BY_LANGUAGE,
+    operator_language,
+)
 
 __all__ = [
     "CanaryConfig",
@@ -208,6 +212,15 @@ class CoverageConfig:
 
 
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
+
+#: (P33/A-227/A-230b) v5 artifact fields reserved for P34's producer. Named
+#: separately from `_MUTATION_FIELDS` so the refusal can say RESERVED rather
+#: than UNKNOWN: both are refused either way, and only the message tells a
+#: reader whether the field is a typo or a capability that is coming.
+_MUTATION_FIELDS_RESERVED_FOR_P34: tuple[str, ...] = (
+    "kill_signal_artifact",
+    "equivalence_artifact",
+)
 
 #: (P21/A-163) the declared candidate ceiling's inclusive bounds. Required,
 #: never defaulted: "no runtime consumer may invent a missing cap" is the
@@ -775,7 +788,7 @@ def _load_judge(
 
     mutation = None
     if "mutation" in table:
-        mutation = _load_mutation(table["mutation"], where)
+        mutation = _load_mutation(table["mutation"], where, language)
     canary = None
     if "canary" in table:
         canary = _load_canary(table["canary"], where, project_root, source_root_paths)
@@ -977,10 +990,30 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
     return CoverageConfig(format=fmt, artifact=artifact)
 
 
-def _load_mutation(value: Any, where: str) -> MutationConfig:
+def _load_mutation(value: Any, where: str, language: str | None) -> MutationConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{where}: 'judge.mutation' must be a table, got {_type_name(value)}"
+        )
+    # (P33/A-227/A-230b) The two v5 artifact fields whose PRODUCER is P34's.
+    # Checked BEFORE the unknown-key sweep on purpose: `judge.mutation` is
+    # already a closed table, so both names are already rejected today as
+    # unknown keys -- which means "the declaration is refused" is true with
+    # or without this code and distinguishes nothing. The observable is the
+    # MESSAGE. Declaring either would create a legal lane whose own artifact
+    # has no representable shape: assay ships no producer for a `kill_signal`
+    # value or for an equivalence comparison, so the lane could not emit a
+    # consistent document. Reserving the artifact shape while refusing the
+    # declaration keeps v5 stable for P34 without inventing a bounded
+    # safe-input reader inside a contract migration.
+    reserved = sorted(set(value) & set(_MUTATION_FIELDS_RESERVED_FOR_P34))
+    if reserved:
+        raise LaneConfigError(
+            f"{where}: judge.mutation key(s) {', '.join(reserved)} are "
+            f"RESERVED for P34 and cannot be declared yet; the v5 verdict "
+            f"contract carries them, but this build ships no producer for the "
+            f"values they imply, so a lane declaring one could not emit a "
+            f"consistent artifact"
         )
     unknown = sorted(set(value) - set(_MUTATION_FIELDS))
     if unknown:
@@ -1031,6 +1064,27 @@ def _load_mutation(value: Any, where: str) -> MutationConfig:
     # a genuine `config -> mutation -> config` cycle. `assay.vocabulary` is a
     # leaf that imports nothing, so the workaround is deleted rather than
     # maintained.
+    # (P33/V5-2/O2) The vocabulary is language-qualified and closed PER
+    # LANGUAGE, so the cross-check is two questions, not one, and the
+    # cross-language answer must come first: `sql:drop-check` on a Python
+    # lane IS a known operator, and reporting it as unknown would misname the
+    # defect. A flat extension would have let a Python lane declare
+    # `drop-check` and then report SQL mutation operators it could not
+    # possibly have applied.
+    foreign = sorted(
+        operator
+        for operator in operators
+        if operator in MUTATION_OPERATORS
+        and language is not None
+        and operator_language(operator) != language
+    )
+    if foreign:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' names {', '.join(foreign)}, "
+            f"which belong to another language; this lane declares "
+            f"judge.language = {language!r}, and its operators are: "
+            f"{', '.join(MUTATION_OPERATORS_BY_LANGUAGE.get(language, ()))}"
+        )
     unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
     if unknown_operators:
         raise LaneConfigError(

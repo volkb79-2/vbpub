@@ -273,7 +273,7 @@ base = "{base_rev}"
 [lanes.package.judge.mutation]
 jobs = 1
 max_mutants = 50
-operators = ["compare-swap"]
+operators = ["python:compare-swap"]
 """
     path = git_repo.write("assay.toml", lane)
     git_repo.commit_all("add assay.toml")
@@ -298,6 +298,10 @@ operators = ["compare-swap"]
     assert mutation["survived"] == []
     assert mutation["crashed"] == []
     assert mutation["budget_exceeded"] == []
+    # P33/V5-3: the fifth bucket is present and empty -- a real Python run
+    # proves no mutant inert, which is a different fact from not having the
+    # bucket at all.
+    assert mutation["equivalent"] == []
     assert len(mutation["killed"]) == 1
     killed = mutation["killed"][0]
     assert set(killed) == {
@@ -309,14 +313,89 @@ operators = ["compare-swap"]
         "operator",
         "description",
     }
-    assert killed["operator"] == "compare-swap"
+    assert killed["operator"] == "python:compare-swap"
     assert killed["start_byte"] < killed["end_byte"]
     assert len(killed["replacement_sha256"]) == 64
     assert document["judgment"]["r2"] == {
         "jobs": 1,
         "max_mutants": 50,
-        "operators": ["compare-swap"],
+        "operators": ["python:compare-swap"],
+        # P33/V5-4: DERIVED from `kill_signal_artifact`'s absence (A-223b),
+        # never declared. Every real P33 lane renders this value, because the
+        # config loader refuses that field until P34 (A-227/A-230d) -- so
+        # this assertion pins the only derivation this build can reach, and
+        # does not pretend to witness the other branch.
+        "kill_attribution": "unattributed",
     }
+    # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --
+    # exactly the hole v4 had, since `judgment.r1` is absent here and there
+    # was nowhere else for a language, source roots or a comparison commit
+    # to live.
+    resolved = document["judgment"]["resolved"]
+    assert resolved["language"] == "python"
+    assert resolved["source_roots"] == ["src"]
+    assert resolved["base"] == base_rev
+    assert "r1" not in document["judgment"]
+    # A-230a: no helper ran, so the key is absent rather than an empty array.
+    assert "helpers" not in document
+
+
+@pytest.mark.parametrize("language", ["go", "sql"])
+def test_run_refuses_an_r2_lane_for_an_unregistered_language(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator, language: str
+):
+    """(P33 work item 5 / A-225) v5 gives Go and SQL an operator SPELLING; it
+    gives neither a producer, and this test exists so a later package cannot
+    quietly change that without saying so.
+
+    `cli._built_in_registry` registers Python only, and
+    `cli._resolve_declared_adapters` refuses any declared level above R0 for
+    an unregistered language with `ERROR`/`BAD_LANE_CONFIG` before anything
+    executes (A-139). That was true before v5 and is still true after it --
+    populating the vocabulary changed the artifact contract, not the
+    registry. The marker file is the proof that nothing ran.
+    """
+    marker = tmp_path / "the-command-ran"
+    operators = {
+        "go": '["go:compare-swap"]',
+        "sql": '["sql:drop-check"]',
+    }[language]
+    lane = f"""\
+schema_version = 1
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "touch {marker}"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.judge]
+language = "{language}"
+source_roots = ["src"]
+base = "HEAD~1"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 50
+operators = {operators}
+"""
+    path = _write_and_commit_lane(git_repo, lane)
+    (git_repo.path / "src").mkdir(exist_ok=True)
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 2, err
+    assert not marker.exists(), (
+        "the lane's command ran; the refusal must precede execution (A-139)"
+    )
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
 
 
 def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
@@ -520,13 +599,25 @@ base = "{base_rev}"
     assert document["outcome"] == "PASS"
     assert document["claims"][1]["rigor"] == "R1"
     assert document["claims"][1]["coverage"]["pct"] == 100.0
-    assert document["judgment"]["r1"]["base"] == base_rev
-    # judgment.r1.source_roots must be the DECLARED relative string ("src"),
-    # never judge.source_root_paths' resolved absolute form -- through a
-    # real assay.toml load the two genuinely differ, unlike the make_r1_judge
-    # test helper (conftest.py), which stores the same absolute string in
-    # both fields and so could not catch this the other way.
-    assert document["judgment"]["r1"]["source_roots"] == ["src"]
+    # P33/V5-1: both facts hoisted to `judgment.resolved`, which is where an
+    # R0,R2 lane can record them too. The assertions are unchanged in
+    # substance -- only their address moved.
+    assert document["judgment"]["resolved"]["base"] == base_rev
+    # judgment.resolved.source_roots must be the DECLARED relative string
+    # ("src"), never judge.source_root_paths' resolved absolute form, and
+    # never the relocated absolute scratch path a snapshot run works in
+    # (A-049/A-149/A-223f) -- through a real assay.toml load the two
+    # genuinely differ, unlike the make_r1_judge test helper (conftest.py),
+    # which stores the same absolute string in both fields and so could not
+    # catch this the other way.
+    assert document["judgment"]["resolved"]["source_roots"] == ["src"]
+    # ...and R1 keeps only what is genuinely R1 POLICY.
+    assert set(document["judgment"]["r1"]) == {
+        "coverage_format",
+        "coverage_artifact",
+        "fail_under",
+        "allow_excluded",
+    }
 
 
 # --- structural failures: no verdict can even be built -----------------------

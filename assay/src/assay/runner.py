@@ -98,6 +98,7 @@ from .verdict import (
     JudgmentR1,
     JudgmentR2,
     JudgmentR3,
+    JudgmentResolved,
     Verdict,
     iso_utc,
     rollup,
@@ -1364,14 +1365,34 @@ def _run_prepared_lane(
                 )
                 claims += (r1_claim,)
                 if r1_claim.coverage is not None:
+                    # (P33/A-223f) v5 collapses two independently-resolved
+                    # `base` values into ONE field, so which wins is stated
+                    # rather than left to whoever writes the code next:
+                    # `judgment.resolved.base` is the PRE-SNAPSHOT resolution
+                    # against the consumer's own repository, and R1's
+                    # in-snapshot resolution must EQUAL it. Merge-base is
+                    # idempotent on an already-ancestor value, so the second
+                    # call reproduces the first's OID -- and if it ever
+                    # stops doing so, that is a real divergence between the
+                    # commit assay measured and the one it recorded, which
+                    # must be loud rather than silently resolved in favour
+                    # of whichever value happened to be assigned last.
+                    if resolved_base_holder[0] != resolved_base:
+                        raise AssayError(
+                            f"the comparison commit resolved inside the "
+                            f"snapshot ({resolved_base_holder[0]}) differs "
+                            f"from the one resolved against the consumer "
+                            f"repository ({resolved_base}); a verdict cannot "
+                            f"record one base for a diff measured against "
+                            f"another",
+                            outcome=Outcome.ERROR,
+                            reason_code=ReasonCode.GIT_FAILED,
+                        )
                     judgment_r1 = JudgmentR1(
-                        language=lane.judge.language,
-                        source_roots=lane.judge.source_roots,
                         coverage_format=lane.judge.coverage.format,
                         coverage_artifact=lane.judge.coverage.artifact,
                         fail_under=lane.judge.fail_under,
                         allow_excluded=lane.judge.allow_excluded,
-                        base=resolved_base_holder[0],
                     )
                 if added_holder:
                     added = added_holder[0]
@@ -1476,11 +1497,7 @@ def _run_prepared_lane(
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
                 if r2_claim.mutation is not None:
-                    judgment_r2 = JudgmentR2(
-                        jobs=lane.judge.mutation.jobs,
-                        max_mutants=lane.judge.mutation.max_mutants,
-                        operators=lane.judge.mutation.operators,
-                    )
+                    judgment_r2 = _build_judgment_r2(lane)
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None
@@ -1566,9 +1583,75 @@ def _run_prepared_lane(
 
     judgment: Judgment | None = None
     if judgment_r1 is not None or judgment_r2 is not None or judgment_r3 is not None:
-        judgment = Judgment(r1=judgment_r1, r2=judgment_r2, r3=judgment_r3)
+        judgment = Judgment(
+            resolved=_build_judgment_resolved(
+                lane,
+                resolved_base=resolved_base,
+                compares_a_base=judgment_r1 is not None or judgment_r2 is not None,
+            ),
+            r1=judgment_r1,
+            r2=judgment_r2,
+            r3=judgment_r3,
+        )
 
     return _PreparedOutcome(result=result, claims=claims, judgment=judgment, ended=ended)
+
+
+def _build_judgment_resolved(
+    lane: Lane, *, resolved_base: str | None, compares_a_base: bool
+) -> JudgmentResolved:
+    """(P33/V5-1) the lane facts every computed tier above R0 consumes.
+
+    Both provenance rules A-223(f) fixes are visible here:
+
+    * ``source_roots`` comes from ``lane.judge``, the DECLARED
+      project-relative spelling (A-049) -- never from the relocated lane
+      ``_relocate_source_roots`` builds for a snapshot run, whose roots are
+      absolute scratch paths (A-149). A consumer reading ``/tmp/...`` learns
+      nothing about the project, and two prior packages got a copy-based
+      orchestration wrong about paths in a way no fixture could see.
+    * ``base`` is the PRE-SNAPSHOT resolution against the consumer's own
+      repository, and it is present exactly when a tier that reads one is
+      (A-223a/A-227). An ``R0,R3`` lane genuinely has no comparison commit:
+      ``JUDGE_FIELDS_BY_RIGOR`` gives R3 none, so recording one would be an
+      invented fact rather than a missing one.
+    """
+    return JudgmentResolved(
+        language=lane.judge.language,
+        source_roots=lane.judge.source_roots,
+        base=resolved_base if compares_a_base else None,
+    )
+
+
+def _build_judgment_r2(lane: Lane) -> JudgmentR2:
+    """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
+
+    A-223(b): the single declared source is
+    ``judge.mutation.kill_signal_artifact`` -- present means ``declared``,
+    absent means ``unattributed``. Never a second declared field, for A-036's
+    reason: deriving it removes the whole class of artifact in which the two
+    disagree.
+
+    In THIS build the derivation has exactly one reachable answer, and that
+    is deliberate rather than a shortcut (A-230d). ``config`` refuses
+    ``kill_signal_artifact`` until P34 ships a producer for the values it
+    implies, so every real P33 lane derives ``unattributed``. P33 therefore
+    SPECIFIES the rule and enforces it for documents; it does not claim to
+    witness it, and no construction seam exists here whose only purpose
+    would be to make that claim testable.
+    """
+    mutation_config = lane.judge.mutation
+    kill_signal_artifact = getattr(mutation_config, "kill_signal_artifact", None)
+    return JudgmentR2(
+        jobs=mutation_config.jobs,
+        max_mutants=mutation_config.max_mutants,
+        operators=mutation_config.operators,
+        kill_attribution=(
+            "declared" if kill_signal_artifact is not None else "unattributed"
+        ),
+        kill_signal_artifact=kill_signal_artifact,
+        equivalence_artifact=getattr(mutation_config, "equivalence_artifact", None),
+    )
 
 
 def _replace_highest_higher_rigor_claim_with_git_failed(

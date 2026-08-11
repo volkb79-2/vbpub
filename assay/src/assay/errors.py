@@ -133,6 +133,17 @@ class ReasonCode(StrEnum):
     #: claim no Go analysis exists to support. Go carries this until P29
     #: lands real bounded sites; Python never renders it.
     MUTATION_UNSUPPORTED = "MUTATION_UNSUPPORTED"
+    #: (P33/A-223d) every attempted mutant was PROVEN inert: `killed` and
+    #: `survived` are both empty while `equivalent` is not. Deliberately not
+    #: `PASS` -- a run in which nothing the suite could have caught was ever
+    #: at risk proves nothing about the tests, so walking it to green would
+    #: be A-026/A-035's 0/0-is-100% bug one layer down, reintroduced inside
+    #: the very change that exists to fix a lossiness problem. Deliberately
+    #: not `NO_MUTANTS` either: a supported analysis DID find candidates and
+    #: DID run them, which is a different fact from finding none. Ranked
+    #: after `survived` (A-117), and R2-only with a required payload, exactly
+    #: like its three sibling terminals (A-228).
+    ALL_MUTANTS_EQUIVALENT = "ALL_MUTANTS_EQUIVALENT"
     CANARY_INCONCLUSIVE = "CANARY_INCONCLUSIVE"
 
 
@@ -184,6 +195,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
             {
                 ReasonCode.NO_MUTANTS,
                 ReasonCode.MUTATION_UNSUPPORTED,
+                ReasonCode.ALL_MUTANTS_EQUIVALENT,
                 ReasonCode.CANARY_INCONCLUSIVE,
             }
         ),

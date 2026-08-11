@@ -21,7 +21,14 @@ import pytest
 
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import build_mutation_claim, judge_mutation
-from assay.verdict import Claim, Judgment, JudgmentR2, Mutation, Verdict
+from assay.verdict import (
+    Claim,
+    Judgment,
+    JudgmentR2,
+    JudgmentResolved,
+    Mutation,
+    Verdict,
+)
 from assay.verify import verify_document
 
 BASE = dict(
@@ -192,7 +199,15 @@ def test_the_unsupported_terminal_still_records_the_policy_it_applied():
             ),
         ),
         judgment=Judgment(
-            r2=JudgmentR2(jobs=2, max_mutants=50, operators=("compare-swap",))
+            resolved=JudgmentResolved(
+                language="python", source_roots=("pkg",), base="a" * 40
+            ),
+            r2=JudgmentR2(
+                jobs=2,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                kill_attribution="unattributed",
+            ),
         ),
     )
 
@@ -221,6 +236,14 @@ def test_a_policy_recorded_for_a_baseline_that_never_ran_is_refused():
                 ),
             ),
             judgment=Judgment(
-                r2=JudgmentR2(jobs=2, max_mutants=50, operators=("compare-swap",))
+                resolved=JudgmentResolved(
+                    language="python", source_roots=("pkg",), base="a" * 40
+                ),
+                r2=JudgmentR2(
+                    jobs=2,
+                    max_mutants=50,
+                    operators=("python:compare-swap",),
+                    kill_attribution="unattributed",
+                ),
             ),
         )
