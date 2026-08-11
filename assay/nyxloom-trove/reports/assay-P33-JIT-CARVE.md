@@ -580,3 +580,154 @@ is new and reads the gate script with regexes, so it inherits exactly the
 fragility this package has now been burned by three times. If the implementer
 writes the deselect flags in a form my regex does not match, that test fails for
 the wrong reason — or worse, passes vacuously if the script is restructured.
+
+---
+
+# Answering round 5 (2026-08-11) — evidence, not counts
+
+Round 5's finding about round 4 is the one that matters: **the round-4 lesson
+recurred inside round-4's own fix.** I repaired the config tests' symbol names
+and did not re-run them. The fixture was still missing seven required lane
+fields, so the control could not pass against any implementation — the same
+class, in the same tests, in the same wave, twice.
+
+A-232 makes the remedy binding: **a stated pass/fail count is not evidence.**
+An aggregate reads identically whether a red is a correct oracle awaiting its
+implementation or a test that is simply broken, and that is exactly the
+distinction that decides dispatch. What follows is output, not summary.
+
+## R5-B1 — the fixture, rebuilt by running the loader
+
+Each field below was found by running `load_lane_file` and reading its error:
+
+```text
+LaneConfigError: missing required field 'schema_version' (this assay understands schema_version = 1)
+LaneConfigError: lane 'demo': argv[0] 'python' is a bare executable name but PATH is declared by neither 'env' nor 'env_passthrough'
+LaneConfigError: lane 'demo': source root 'src' does not exist under the project root
+```
+
+The repaired fixture, driven four ways:
+
+```text
+--- v4 bare name (valid TODAY -> proves the fixture is sound)
+    LOADS OK -> lanes: ['demo']
+--- python:compare-swap (control; green only under v5)
+    LaneConfigError: 'judge.mutation.operators' names unknown operator(s): python:compare-swap;
+                     known operators: compare-swap, boolop-swap, bool-const-flip, falsy-swap
+--- sql:drop-check (negative)
+    LaneConfigError: 'judge.mutation.operators' names unknown operator(s): sql:drop-check; ...
+--- kill_signal_artifact reserved (negative)
+    LaneConfigError: unknown judge.mutation key(s): kill_signal_artifact; expected only: jobs, max_mutants, operators
+```
+
+`test_config_fixture_itself_loads_today` freezes the first line. It uses the v4
+spelling deliberately and is green **now**, so it is the control for the
+controls: if it ever reddens, every config test below it is failing for a
+fixture reason rather than a contract reason — which is the defect that got
+through twice.
+
+## Classification of every pre-implementation red
+
+```text
+$ python3 nyxloom-trove/carve-assets/P33/migrate_v4_to_v5.py --check
+OK: committed v5 asset matches the transform exactly
+
+$ PYTHONPATH=src python3 -m pytest .../test_acceptance_v5.py -p no:randomly -q
+31 failed, 13 passed
+
+$ ... | grep -E "^E " | sort | uniq -c | sort -rn
+     24 Left contains one more item: "schema_version 5 is not this verifier's version 4: ..."
+      1 - urn:assay:schema:verdict:5 / + urn:assay:schema:verdict:4
+      1 At index 98 diff: b'4' != b'5'
+      1 assert 'P34' in "... unknown judge.mutation key(s): kill_signal_artifact ..."
+      1 assert 'P34' in "... unknown judge.mutation key(s): equivalence_artifact ..."
+      1 AssertionError: the gate does not invoke P33's locked suite
+```
+
+Four causes, **all legitimate**:
+
+| cause | count | why the red turns green |
+|---|---|---|
+| v4 verifier rejects a v5 document | 24 | work items 1–3 install the v5 schema and verifier |
+| `$id` / schema bytes still v4 | 2 | work item 1 installs the locked asset |
+| refusal message does not name P34 | 2 | work items 6 and 6b |
+| gate does not yet invoke P33's suite | 1 | work item 8 |
+
+**No `AttributeError`, no `TypeError`, no fixture error** — which is the check
+that would have caught R5-B1 in round 4, and it is one `grep` over real output.
+The one ambiguous case, `executable-code alongside an R2 mutation claim must be
+accepted`, I resolved by calling the verifier directly: its cause is the same
+version short-circuit, not a contract defect.
+
+## The other blockers
+
+**R5-B2** — `indirect-path-from-caller` was a dead constant no code emitted.
+Purged from the suite, the sweep, the handoff and the README; `grep` now returns
+zero occurrences across the carve assets and handoff.
+
+**R5-B3** — every remaining bare number now references `CANONICAL_COUNTS`,
+including the README's stale round-3 table that contradicted its own round-4
+table eight lines below it.
+
+**R5-B4** — verified by running the loader that `judge.mutation` already refuses
+both reserved keys today, so "it is refused" is vacuous. Work items 6 and 6b now
+require the message to name P34, and each has a test that fails today for exactly
+that reason.
+
+**A-230a was prose-only.** `helpers` now carries `minItems: 1`. Verified:
+`helpers: []` → `[] should be non-empty`; the template that legitimately carries
+helpers still validates.
+
+**Frontmatter O4** no longer says "is derived from" — that is the half work item
+6d withdrew, and the frontmatter is the machine-parsed oracle definition.
+**A-231's handoff half** is applied: the design doc is no longer called "the
+specification" unqualified.
+
+**O5 was exploitable exactly where I flagged it.** It now reconstructs the gate's
+own flags and asks pytest what it would **collect**, so any suppression mechanism
+— `--deselect`, `-k`, a marker, a path change — shows up. The `-k "not ..."`
+bypass that would have silently stopped A-210's oracle is closed.
+
+## The sweep (A-233), and three failures that only running found
+
+`carve-assets/P20/test_acceptance.py` does `ASSET_ROOT = Path(__file__).resolve().parent`.
+That is a fact about **location**, not contents, so no text matcher could ever
+find it — and it had been appearing in the inventory only by accident, because it
+mentions `os.environ` elsewhere for an unrelated reason. A location rule finds it.
+
+Giving the environ branch the argv branch's supplier discipline took three
+iterations, each driven out by printing what the sweep actually saw:
+
+```text
+env names: []                      -> the name is a module constant, ENV_VAR = "ASSAY_SELF_HOSTING_VERDICT"
+env names: ['ASSAY_...'] suppliers: []  -> the setter is the gate SHELL SCRIPT, not any module
+still []                           -> the setter spells it bare: NAME="$path", not quoted
+```
+
+Final state:
+
+```text
+consumers: 27 {'direct': 24, 'indirect-path-from-argv': 1, 'indirect-path-from-environ': 2}
+  tests/test_self_hosting.py            indirect-path-from-environ ['tools/tester-unified-gate.sh::ASSAY_SELF_HOSTING_VERDICT']
+  carve-assets/P20/test_acceptance.py   direct                     (by location)
+  gate/distribution/release_wheel.py    indirect-path-from-argv    ['gate/python/qualify_topos.py', ...]
+  src/assay/verify.py (must be absent): True
+ALL REQUIRED CONSUMERS PRESENT: True
+```
+
+`reads_frozen_tree`'s docstring now states its real, bounded coverage instead of
+claiming completeness — it is a filter, and the decoy plus the frozen-consumer
+test are what make its output falsifiable.
+
+## Disposition
+
+**READY for a sixth mandatory review.** The honest summary of five rounds: the
+substance has been sound since round 2, and every round since has been my
+verification failing rather than my design. Round 5 is the first where the
+remedy is procedural rather than another repair — and A-232 is that remedy.
+
+What I would attack first: `test_gate_script_wiring_is_exactly_what_the_handoff_claims`
+now spawns a real pytest collection, which makes it slower and gives it a new
+failure mode — if collection errors for an unrelated reason, the test reports a
+wiring defect that isn't there. It is the newest thing here and the one I trust
+least.
