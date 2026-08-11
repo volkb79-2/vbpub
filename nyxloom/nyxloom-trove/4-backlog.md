@@ -444,7 +444,21 @@ items:
     condition has fired. Whether S16''s owned instance identity (keyed off the
     PHYSICAL worktree path, S2) actually dissolves this inference problem is
     still nyxloom''s own question to answer by using it in gate_runner.py;
-    nothing further is owed from ciu''s side.'
+    nothing further is owed from ciu''s side. UPDATE 2026-08-11, part 2 (from
+    the same review, corroborated same-day by dstdns''s own reconciliation
+    program hitting this independently): this is NOT one problem with one
+    fix, it splits by lane. MOCK lanes (no real container dependencies) need
+    nothing from this fix -- P96''s shared-stack design is correct and stays
+    as-is for them. Only REAL lanes (integration/schema/E2E, real Postgres
+    etc.) need per-worktree isolation, and even those do not strictly block
+    on gate_runner.py: a MANUAL dispatcher (one not bound by nyxloom''s own
+    tick/merge loop) can already get S16''s isolation today by literally
+    `cd`-ing into the worktree before invoking ciu -- confirmed working by
+    the dstdns reconciliation program, which adopted exactly that as its
+    interim policy. So this fix matters specifically for nyxloom''s
+    AUTOMATED dispatch path, not as a blocker on real-lane work generally;
+    priority should reflect that narrower scope, not the original framing''s
+    full urgency.'
   type: bugfix
   component: gate
   context_estimate: medium
