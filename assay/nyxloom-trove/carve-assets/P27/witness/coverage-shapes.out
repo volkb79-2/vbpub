@@ -1,0 +1,15 @@
+mode: atomic
+example.invalid/shapes/shapes.go:4.28,5.11 1 1
+example.invalid/shapes/shapes.go:6.9,7.15 1 1
+example.invalid/shapes/shapes.go:8.9,9.15 1 0
+example.invalid/shapes/shapes.go:11.2,11.15 1 0
+example.invalid/shapes/shapes.go:17.25,18.10 1 1
+example.invalid/shapes/shapes.go:19.8,20.13 1 0
+example.invalid/shapes/shapes.go:21.8,22.13 1 1
+example.invalid/shapes/shapes.go:24.1,24.14 1 0
+example.invalid/shapes/shapes.go:28.22,29.2 1 1
+example.invalid/shapes/shapes.go:29.2,31.3 1 1
+example.invalid/shapes/shapes.go:32.2,32.10 1 1
+example.invalid/shapes/shapes.go:36.35,38.9 1 1
+example.invalid/shapes/shapes.go:38.9,40.3 1 1
+example.invalid/shapes/shapes.go:41.2,41.14 1 0

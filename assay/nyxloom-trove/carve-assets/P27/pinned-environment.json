@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "frozen_at_main": "016863a4792e2cc6c3ef1eb472cb91314f109cb2",
+  "purpose": [
+    "Every toolchain reference P27 may rely on, resolved to a digest or to a",
+    "repository source of truth. The implementer may not substitute a symbolic",
+    "tag for any of these, and may not download a second Go or Python toolchain."
+  ],
+  "images": {
+    "golang:1.25": {
+      "role": "the upstream Go toolchain source, consumed only via tester-unified-go",
+      "image_id": "sha256:3a155947c92ccef10ae7171e33633937ef9163e879d76966d488da6fe30daa43",
+      "repo_digest": "golang@sha256:9669c2ed28435af1b8989acb9fd5235346a912016cc8b152b694a9a91dced0a6",
+      "pinned_by": "FROM golang:1.25 in tester-unified-go/Dockerfile"
+    },
+    "tester-unified:local": {
+      "role": "final stage; owns Python/runtime identity",
+      "image_id": "sha256:98dd9eb5e2f3010a0a600f5f4a61f1be16669e22ae36516d80f1bf9b710b5da1",
+      "repo_digest": null,
+      "repo_digest_absent_because": "locally built, never pushed; its source of truth is the Dockerfile hash below",
+      "dockerfile": "tester-unified/Dockerfile",
+      "dockerfile_sha256": "b16a90bf8819a5218122bfcad966254a15aed28a48c2cd444b0a3323f6426933",
+      "built": "2026-08-01T12:08:14.06186629+02:00"
+    },
+    "tester-unified-go:local": {
+      "role": "toolchain donor; ONLY /usr/local/go is copied out of it",
+      "image_id": "sha256:0c435ca1b7059caeb8020301102a7fb05e4f3a2d987a88d0b3e6bbe738b0f8ce",
+      "repo_digest": null,
+      "repo_digest_absent_because": "locally built, never pushed; its source of truth is the Dockerfile hash below",
+      "dockerfile": "tester-unified-go/Dockerfile",
+      "dockerfile_sha256": "689e91d2b54074c11e3c16a385c3a4488b7c51357894c9fc811ee7e546fc0e5a",
+      "built": "2026-08-06T23:22:58.059953498+02:00"
+    }
+  },
+  "go_toolchain": {
+    "expected_go_version_output": "go version go1.25.12 linux/amd64",
+    "GOLANG_VERSION": "1.25.12",
+    "observed_in": "tester-unified-go:local",
+    "gate_must_assert": "the exact string above, not a prefix match on 1.25"
+  },
+  "required_env_in_combined_image": {
+    "GOTOOLCHAIN": "local",
+    "GOFLAGS": "-mod=mod",
+    "GOCACHE": "/gocache",
+    "GOMODCACHE": "/gomodcache",
+    "HOME": "/home/gate",
+    "XDG_CONFIG_HOME": "/home/gate/.config",
+    "XDG_CACHE_HOME": "/home/gate/.cache",
+    "XDG_STATE_HOME": "/home/gate/.local/state"
+  },
+  "identity": {
+    "user": "1003:1003",
+    "note": "tester-unified-go declares USER 1003:1003 with a full passwd/group entry; the combined image must preserve a full identity, not only the numeric uid"
+  },
+  "forbidden_in_gate": ["go install", "go env -w", "any package manager", "any network command"],
+  "run_placement": {
+    "cgroup_parent_source": "assay/tools/cgroup-parent.sh",
+    "observed_value_at_freeze": "dev-background.slice",
+    "rule": "verify the slice exists; never hardcode and never fall back -- a missing slice fails OPEN and silently unconfines the run"
+  },
+  "probe_invocation": {
+    "note": "the probes below used a tar pipe rather than a bind mount, because this devcontainer's /tmp is not visible at the same path to the Docker daemon; the gate itself binds the repository by its HOST path",
+    "argv": [
+      "docker", "run", "-i", "--rm", "--network=none",
+      "--cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND",
+      "-e", "GOPROXY=off", "-e", "GOWORK=off", "-e", "GOTOOLCHAIN=local",
+      "tester-unified-go:local"
+    ],
+    "lane_command": "go test ./... -coverpkg=./... -covermode=atomic -coverprofile=.assay/coverage.out"
+  }
+}

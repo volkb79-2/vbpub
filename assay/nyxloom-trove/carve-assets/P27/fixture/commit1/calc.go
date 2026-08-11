@@ -1,0 +1,16 @@
+package app
+
+// Add is covered, and its body is a single statement on one line.
+func Add(a, b int) int {
+	return a + b
+}
+
+// Classify is covered on exactly one branch: the test passes 11, so the
+// if-body executes and the trailing return never does. Two blocks in one
+// function, disagreeing about their own lines and nothing else.
+func Classify(n int) string {
+	if n > 10 {
+		return "big"
+	}
+	return "small"
+}

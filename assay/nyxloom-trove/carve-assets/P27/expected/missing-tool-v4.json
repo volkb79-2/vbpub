@@ -1,0 +1,52 @@
+{
+  "schema_version": 4,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "go-tiny",
+  "commit": "@HEAD_OID@",
+  "outcome": "NO_MEASUREMENT",
+  "exit_code": 3,
+  "reason_code": "MISSING_EXTERNAL_TOOL",
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "declared_rigor": ["R0", "R1"],
+  "declared_evidence": [],
+  "argv_declared": [
+    "go", "test", "./...",
+    "-coverpkg=./...",
+    "-covermode=atomic",
+    "-coverprofile=.assay/coverage.out"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "go", "test", "./...",
+    "-coverpkg=./...",
+    "-covermode=atomic",
+    "-coverprofile=.assay/coverage.out"
+  ],
+  "argv_modified": false,
+  "env_declared": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "env_effective": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "MISSING_EXTERNAL_TOOL"
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "MISSING_EXTERNAL_TOOL"
+    }
+  ],
+  "evidence": []
+}

@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "frozen_at_main": "016863a4792e2cc6c3ef1eb472cb91314f109cb2",
+  "toolchain": {
+    "go_version": "go version go1.25.12 linux/amd64",
+    "image": "tester-unified-go:local",
+    "image_id": "sha256:0c435ca1b7059caeb8020301102a7fb05e4f3a2d987a88d0b3e6bbe738b0f8ce",
+    "network": "none",
+    "cgroup_parent": "dev-background.slice",
+    "env": {"GOTOOLCHAIN": "local", "GOPROXY": "off", "GOWORK": "off"}
+  },
+  "lane_command": "go test ./... -coverpkg=./... -covermode=atomic -coverprofile=<artifact>",
+  "probes": [
+    {
+      "id": "P27-PROBE-1",
+      "question": "what does the pinned toolchain really emit for the fixture, and does it agree with the independent hand manifest?",
+      "source": "fixture/commit2/calc.go",
+      "profile": "witness/coverage-commit2.out",
+      "profile_sha256": "50ea01c3ae44afa6a7154213ea7f6ab6d60c61fdf3fc9aebbafb2d297b1619cb",
+      "go_reported": "coverage: 71.4% of statements in ./...",
+      "sum_numstmts": 7,
+      "executed_stmts": 5,
+      "result": "AGREES with manifest totals (5/7). Reproduced byte-identically on a second independent run from the committed asset."
+    },
+    {
+      "id": "P27-PROBE-2",
+      "question": "is the position range half-open, and can an end column of 1 occur?",
+      "source": "witness/shapes.go",
+      "profile": "witness/coverage-shapes.out",
+      "profile_sha256": "05529b09a04620a4798e03d081d7a890c86557a5795ce0e283d5b4842ed85331",
+      "result": "half-open PROVEN by shared boundary positions (28.22,29.2 ends where 29.2,31.3 begins). No end column of 1 in any gofmt-clean shape, including an unformatted switch whose closing brace sits at column 1 -- a case-clause body ends at its last statement (21.8,22.13), not at the following token."
+    },
+    {
+      "id": "P27-PROBE-3",
+      "question": "can an end column of 1 be produced at all, and does it discriminate the two candidate rules?",
+      "source": "witness/edge.go",
+      "profile": "witness/coverage-edge.out",
+      "profile_sha256": "da727ce5a38dd681791cfbacc685f240ab9902312c1ad3c10c0be180dac26aaf",
+      "result": "PRODUCIBLE (6.24,7.1) but only in source gofmt rewrites, and it DISCRIMINATES NOTHING: the token ending the block at column 1 begins the next block, so both rules attribute the same lines {6,7,8,9,10}. Both still attribute line 6 (a func signature) and line 9 (a closing brace), neither of which is a statement."
+    },
+    {
+      "id": "P27-PROBE-4",
+      "question": "on the real two-commit diff, do the candidate rules and the manifest agree?",
+      "base_commit_content": "fixture/commit1",
+      "head_commit_content": "fixture/commit2",
+      "changed_lines_head_side": [17,18,19,20,21,22,23,24,25,26,27,28,29,30,31],
+      "computed": {
+        "inclusive": {"changed_executable": 9, "covered": 6, "missing": 3, "percent": 66.7,
+                      "covered_lines": [21,22,23,24,25,26]},
+        "half_open": {"changed_executable": 9, "covered": 6, "missing": 3, "percent": 66.7,
+                      "covered_lines": [21,22,23,24,25,26]},
+        "hand_manifest": {"changed_executable": 3, "covered": 2, "missing": 1, "percent": 66.7,
+                          "covered_lines": [22,25]}
+      },
+      "result": "CONTRADICTION. All three rules report 66.7% while attributing disjoint line sets. A percentage-only oracle cannot tell them apart -- A-208's vacuous-agreement failure mode, in the Go setting."
+    },
+    {
+      "id": "P27-PROBE-5",
+      "question": "does the hand-authored locked missing-tool artifact satisfy the real v4 layers?",
+      "asset": "expected/missing-tool-v4.json",
+      "checks": [
+        "jsonschema Draft202012 against src/assay/schemas/verdict.schema.json: valid",
+        "assay.verify.verify_text (P21 raw checker): returned [] (no failures)",
+        "judgment key absent, as A-136/P16 require for a claim with no coverage payload"
+      ],
+      "result": "ACCEPTED by both layers. Independent of the blocked grammar decision."
+    },
+    {
+      "id": "P27-PROBE-6",
+      "question": "what does the real module query return, for the adapter's module-path derivation?",
+      "command": "go list -m -json (cwd=repo/app, GOWORK=off GOTOOLCHAIN=local GOPROXY=off, --network=none)",
+      "observed": {
+        "Path": "example.invalid/assayfixture",
+        "Main": true,
+        "GoVersion": "1.25"
+      },
+      "result": "Exactly one Main:true object with one nonempty Path. Offline, no dependency resolution. Confirms the packet's resolve_go_adapter contract is implementable as written; the returned object also carries Dir/GoMod keys, which the adapter must tolerate without treating them as module identity."
+    }
+  ],
+  "disposition": {
+    "work_items_frozen": [1, 2, 3, 8],
+    "work_items_blocked": [5, 6, 9],
+    "blocked_reason": "see BLOCKED-grammar.md -- the block-to-line rule is a product decision under A-172",
+    "readiness": "NOT_READY"
+  }
+}

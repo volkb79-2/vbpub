@@ -1,0 +1,4 @@
+mode: atomic
+example.invalid/edge/edge.go:6.24,7.1 1 1
+example.invalid/edge/edge.go:7.1,9.2 1 1
+example.invalid/edge/edge.go:10.1,10.9 1 1
