@@ -137,10 +137,11 @@ so the carve does not discover them:
   speculative shared infrastructure. The re-carve designs the details; it must
   not re-open the shape.
 
-One more thing the re-carve must claim explicitly rather than inherit silently:
-**effective-PATH reachability** (`MISSING_EXTERNAL_TOOL`), whose ownership
-hopped P22 → P26 → P27 with the last hop recorded nowhere until A-246. It
-belongs to P27 now, because A-217's oracle is assay's first real external tool.
+One thing the re-carve does **not** own, contrary to A-246: the
+**effective-PATH preflight** for `MISSING_EXTERNAL_TOOL`. **A-253 gives that to
+P34**, which runs first, so P27 only *declares* its statement-position helper in
+`external_tools` — restoring what A-163 always said ("P27 only adds the helper
+declaration").
 
 ## M7 — New computed methods (PLANNED)
 

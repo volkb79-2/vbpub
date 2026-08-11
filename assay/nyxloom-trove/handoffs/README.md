@@ -41,7 +41,7 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P33 | **schema v5 contract** (language-qualified operators, hoisted lane facts, equivalence bucket, kill attribution, helper provenance) | 2b | **merged as `e41ea99f` (A-220–A-233); post-review carve repair `62305df3`** | Opus xhigh | fresh Opus xhigh |
-| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | **NOT NEXT — blocked on the ship milestone (A-248).** JIT freeze required; both owed rulings landed (A-242/A-243) | Sonnet xhigh | fresh Opus xhigh |
+| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | **NOT NEXT — blocked on ship's PUBLICATION only (A-248/A-250); no decisional blocker left.** JIT freeze required; inherits A-242/A-243/A-251/A-253. Scope: `reports/assay-P34-CARVE-SCOPE.md` | Sonnet xhigh | fresh Opus xhigh |
 
 P20 through P26 are **MERGED**. P25's implementation-shaped contract, pinned
 966-entry Topos manifest, explicit three-symlink prospective adoption patch,
@@ -110,6 +110,16 @@ through a **new** protocol hook, never by overloading `statement_spans`; the
 intersection is a pure language-free core function. Go-specific, not shared
 infrastructure. P27's re-carve designs the details and must not re-open the shape
 — the alternative was eliminated on evidence, see `SCHEMA-V5-DESIGN.md` §V5-5a.
+
+**P34 has NO decisional blockers left (A-251/A-252/A-253 cleared the last
+three); only ship's publication stands between it and dispatch.** Its pre-carve
+scope is `reports/assay-P34-CARVE-SCOPE.md`. Two additions to what it inherits:
+the schema was tightened again by **A-251** (four `claim.allOf` branches
+requiring a judged status's own payload), so P34's keystone SQL template must
+satisfy them and **A-252 spends the in-place-tightening precedent** — a third
+needs its own ruling; and **A-253** gives P34 the `MISSING_EXTERNAL_TOOL`
+effective-PATH preflight unconditionally, superseding A-246's assignment to P27,
+which now only *declares* its helper.
 
 **P34's two owed rulings are DECIDED (A-242/A-243); its carve inherits them
 rather than making them.** The flat seven-method `LanguageAdapter` stays: SQL
