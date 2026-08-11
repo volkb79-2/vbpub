@@ -4,7 +4,7 @@ id: ciu-P01-worktree-isolation-primitives
 project: ciu
 title: "Worktree instances become usable for real (non-mock) test lanes"
 tier: implement-2
-input_revision: "d747a4d31e93f7fd21446079ccc6153bb4744f44"
+input_revision: "1a891facc6936419b67f2876c1eafb6eeb0862d4"
 source: {kind: user, ref: "KNOWN_ISSUES_TODO_BACKLOG.md CIU-20, CIU-21, CIU-23"}
 stack: none
 depends_on: []
