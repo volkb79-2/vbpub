@@ -27,6 +27,8 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P30 | real Go/srdm R2 integration | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
+| P33 | **schema v5 contract** (language-qualified operators, hoisted lane facts, equivalence bucket, kill attribution, helper provenance) | 2b | `SCHEMA-V5-DESIGN.md` landed; JIT freeze pending | Opus xhigh | fresh Opus xhigh |
+| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | PROVISIONAL until P33 merges | Sonnet xhigh | fresh Opus xhigh |
 
 P20 through P26 are **MERGED**. P25's implementation-shaped contract, pinned
 966-entry Topos manifest, explicit three-symlink prospective adoption patch,
@@ -52,15 +54,34 @@ The dependency chain is exactly:
 
 ```text
 P19 -> P20 -> P21 -> P22 -> P23 -> P24 -> P25 -> P26
-    -> P27 -> P28 -> [B001 SQL/DDL design/probe checkpoint]
+    -> P33 (schema v5 contract)
+    -> P34 (SQL/DDL adapter + integration)
+    -> [SHIP MILESTONE: cmru release adoption, full coverage, deep adversarial pass]
+    -> P27 (re-carve around A-217 option 2) -> P28
     -> P29 -> P30 -> P31 -> P32
 ```
 
-A-215 makes the bracketed checkpoint mandatory before P29's JIT freeze, but it
-is not yet an implementation handoff and does not renumber the queue. P27/P28
-first prove the current language abstraction against real Go and srdm. Sol then
-tests the preferred source-oriented SQL mutation design; only a truthful frozen
-contract earns a new handoff.
+**RESEQUENCED 2026-08-11 by operator decision (A-219).** The former order was
+`… P26 -> P27 -> P28 -> [B001 checkpoint] -> P29 …`. SQL now goes first, and the
+Go work resumes after Assay ships. Two things forced it: A-217 ruled A-O19 as
+option 2, so P27 must be re-carved around a real Go statement-position helper
+rather than dispatched; and the B001 assessment found that SQL R2 is blocked on a
+schema migration, because v4's `mutation_operator` is a closed four-value
+Python-only enum. Designing v5 once, for SQL and Go together, is cheaper than
+designing it twice.
+
+**Numbers are identity, not order.** P27–P32 keep their ids even though they now
+run later: A-153/A-167 already warn that ids from before the two renumbers are
+not interpretable at face value, and those ids are cited across merged packets,
+briefs, decisions and reports. Renumbering a third time would corrupt that
+trail. Read the chain above for order and the table for identity.
+
+B001 is **absorbed**, not deleted: A-215's checkpoint questions are answered by
+P33's design (`SCHEMA-V5-DESIGN.md`) and proved by P34's real-PostgreSQL
+qualification, so there is no longer a separate un-numbered checkpoint pending.
+A-215's ordering rationale — do not freeze a second-language mutation contract
+before the first language is qualified — is knowingly traded away here and the
+risk is named in A-219.
 
 The apparent expansion from ten to thirteen packages is three splits, not a
 microtask explosion: snapshot substrate/integration, Go adapter/real-srdm R1,
