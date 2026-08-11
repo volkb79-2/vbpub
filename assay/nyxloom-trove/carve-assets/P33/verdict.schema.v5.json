@@ -1037,7 +1037,7 @@
       "additionalProperties": false
     },
     "mutation": {
-      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FOUR identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants, is cross-object and lives in the model and the raw verifier.",
+      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FIVE identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants, is cross-object and lives in the model and the raw verifier.",
       "type": "object",
       "required": [
         "candidate_count",
@@ -1299,6 +1299,38 @@
               }
             }
           }
+        },
+        {
+          "description": "A-227: base is required IF r1|r2 and forbidden UNLESS r1|r2. Closes the only-if half, so a foreign artifact cannot record a comparison commit for a tier that reads none.",
+          "if": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "r1"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "r2"
+                  ]
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolved": {
+                "not": {
+                  "required": [
+                    "base"
+                  ]
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -1503,7 +1535,7 @@
           }
         },
         {
-          "description": "A-163: the pre-submission limit refusal carries the exact sentinel -- nothing attempted, four empty buckets. Whether candidate_count equals max_mutants + 1 is cross-object and lives in the model and raw verifier.",
+          "description": "A-163: the pre-submission limit refusal carries the exact sentinel -- nothing attempted, five empty buckets. Whether candidate_count equals max_mutants + 1 is cross-object and lives in the model and raw verifier.",
           "if": {
             "required": [
               "reason_code"
@@ -1541,8 +1573,34 @@
                   },
                   "budget_exceeded": {
                     "maxItems": 0
+                  },
+                  "equivalent": {
+                    "maxItems": 0
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "description": "A-228/A-223d: ALL_MUTANTS_EQUIVALENT is the SUPPORTED all-inert result, so it must carry the payload that proves an analysis ran and every attempted mutant was provably no-op. A payload-free variant would be indistinguishable from capability absence, which is the same forgery branch 7 closes for NO_MUTANTS. Whether killed + survived == 0 with a non-empty equivalent bucket is cross-object and lives in the model and raw verifier.",
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "const": "ALL_MUTANTS_EQUIVALENT"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mutation"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R2"
               }
             }
           }

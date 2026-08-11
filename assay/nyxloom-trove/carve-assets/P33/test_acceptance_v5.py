@@ -1,21 +1,22 @@
 """P33's locked v5 acceptance suite. Carver-owned; implementers and reviewers
 may not edit it (A-176/A-206/A-214 precedent).
 
-This suite replaces `carve-assets/P26/test_acceptance.py` in the registered gate
-(A-224). It runs POST-implementation, against the installed wheel, and every
+This suite runs alongside `carve-assets/P26/test_acceptance.py` in the registered
+gate. It runs POST-implementation, against the installed wheel, and every
 expectation here is derived from the locked v5 schema and the shipped forbidden
-modules rather than from whatever the implementer happens to write — so it
-cannot be back-fitted.
+modules rather than from whatever the implementer happens to write — so it cannot
+be back-fitted.
 
-**What moved out of P26's suite, and where it landed (A-222's second clause,
-executed).** P26's suite validated four attestation-state artifacts
-(`current`, `stale-directory`, `independent-errors`, `attestation-timeout`)
-with `verify_document(expected) == []` plus exact equality. v5 changes nothing
-about those shapes except `schema_version`, so `test_p26_attestation_shapes_
-survive_v5` below reads P26's own locked v4 templates, bumps only
-`schema_version` in memory, and requires all four to validate under v5. P26's
-templates are never edited and its suite is never run again. That is the whole
-of the carry-forward; nothing else in P26's suite asserted artifact shape.
+**P26's module is NOT retired (A-226, amending A-224).** An earlier version of
+this carve retired it, which would have dropped 18 of its 24 tests — only 4 touch
+artifact shape, and the other 18 include A-212's process-group kill on a witnessed
+descendant-held pipe, aggregate bounds before the first Git call, literal-pathspec
+identity and annotated-tag peel refusal. v5 does not touch any of that. The gate
+now deselects exactly the 4 template-coupled tests plus
+`test_registered_gate_runs_locked_acceptance_from_the_wheel_and_marks_it`, and
+keeps the other 19 running. `test_p26_attestation_shapes_survive_v5` below carries
+the shape half forward by reading P26's own locked templates and bumping only
+`schema_version` in memory, so no locked byte moves.
 
 Run: PYTHONPATH=src python3 -m pytest nyxloom-trove/carve-assets/P33/test_acceptance_v5.py -q -p no:randomly
 """
@@ -285,3 +286,124 @@ def test_helpers_entry_requires_a_correspondingly_judged_claim(verify_document):
     ]
     refuses_only_the_defect(verify_document, clean, broken,
         "a mutation-sites helper on a lane with no R2 mutation claim must be refused")
+
+
+# --- round-2 additions -------------------------------------------------------
+
+P25_EXPECTED = ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "expected"
+
+P25_SIBLINGS = [
+    ("pass-v4-template.json", "p25-pass-v5-template.json"),
+    ("missing-v4-template.json", "p25-missing-v5-template.json"),
+]
+
+
+def test_ca9_payload_free_all_mutants_equivalent_is_refused(verify_document):
+    """R2-B1 / A-228. The new terminal must inherit branch 7's payload rule.
+    Before the repair this validated -- verbatim the forgery A-136 closed for
+    NO_MUTANTS, one bucket over."""
+    clean = load(HERE / "expected" / "ca4-all-equivalent-v5-template.json")
+    broken = load(HERE / "expected" / "ca4-all-equivalent-v5-template.json")
+    del broken["claims"][1]["mutation"]
+    refuses_only_the_defect(verify_document, clean, broken,
+        "a payload-free ALL_MUTANTS_EQUIVALENT must be refused")
+
+
+def test_ca9_all_mutants_equivalent_is_bound_to_r2(verify_document):
+    """R2-B1(b) / A-228. Every sibling terminal pins rigor to R2; this one did
+    not, so a canary claim could report that all mutants were inert."""
+    clean = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken["claims"][1] = {
+        "rigor": "R3", "source": "computed", "status": "INCONCLUSIVE",
+        "verified_by_assay": True, "reason_code": "ALL_MUTANTS_EQUIVALENT",
+    }
+    refuses_only_the_defect(verify_document, clean, broken,
+        "ALL_MUTANTS_EQUIVALENT on a non-R2 claim must be refused")
+
+
+def test_base_is_forbidden_unless_r1_or_r2(verify_document):
+    """R2-B4 / A-227: the only-if half. Unreachable by this producer (A-062
+    refuses judge.base on an R0,R3 lane as inert config), reachable by any
+    foreign one -- which is the population verify.py exists for."""
+    clean = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken["judgment"]["resolved"]["base"] = "9" * 40
+    refuses_only_the_defect(verify_document, clean, broken,
+        "an r3-only judgment must not record a comparison base")
+
+
+def test_ca10_declared_attribution_requires_a_kill_signal_artifact(verify_document):
+    """Invariant 4, clause 1. Three of five clauses had no discriminating
+    fixture; this and the next two close them."""
+    clean = load(HERE / "expected" / "sql-r2-v5-template.json")
+    broken = load(HERE / "expected" / "sql-r2-v5-template.json")
+    del broken["judgment"]["r2"]["kill_signal_artifact"]
+    refuses_only_the_defect(verify_document, clean, broken,
+        "kill_attribution=declared without kill_signal_artifact must be refused")
+
+
+def test_ca10_declared_requires_a_kill_signal_on_every_killed_entry(verify_document):
+    """Invariant 4, clause 2."""
+    clean = load(HERE / "expected" / "sql-r2-v5-template.json")
+    broken = load(HERE / "expected" / "sql-r2-v5-template.json")
+    del broken["claims"][1]["mutation"]["killed"][0]["kill_signal"]
+    refuses_only_the_defect(verify_document, clean, broken,
+        "a killed entry without kill_signal under declared must be refused")
+
+
+def test_ca10_unattributed_forbids_a_kill_signal_on_a_killed_entry(verify_document):
+    """Invariant 4, clause 3 -- the one bucket the schema deliberately leaves
+    open, because the rule is cross-object. No prior fixture reached it."""
+    clean = load(HERE / "expected" / "ca4-all-equivalent-v5-template.json")
+    broken = load(HERE / "expected" / "sql-r2-v5-template.json")
+    broken["judgment"]["r2"]["kill_attribution"] = "unattributed"
+    del broken["judgment"]["r2"]["kill_signal_artifact"]
+    refuses_only_the_defect(verify_document, clean, broken,
+        "unattributed with a kill_signal on a killed entry must be refused")
+
+
+def test_helpers_role_executable_code_has_a_defined_correspondence(verify_document):
+    """R2-B3 / A-227: all three roles are ruled. executable-code is satisfied by
+    an R1-with-coverage or an R2-with-mutation claim, and by neither on an
+    R3-only lane."""
+    clean = load(HERE / "expected" / "sql-r2-v5-template.json")
+    ok = load(HERE / "expected" / "sql-r2-v5-template.json")
+    ok["helpers"].append({
+        "role": "executable-code", "tool": "assay-go-exec",
+        "resolved_path": "/opt/assay-helpers/bin/assay-go-exec",
+        "identity": "assay-go-exec 0.1.0",
+    })
+    assert verify_document(ok) == [], (
+        "executable-code alongside an R2 mutation claim must be accepted"
+    )
+    broken = load(HERE / "expected" / "ca1-r3-no-base-v5-template.json")
+    broken["helpers"] = [{
+        "role": "executable-code", "tool": "assay-go-exec",
+        "resolved_path": "/opt/assay-helpers/bin/assay-go-exec",
+        "identity": "assay-go-exec 0.1.0",
+    }]
+    refuses_only_the_defect(verify_document, clean, broken,
+        "executable-code on an R3-only lane must be refused")
+
+
+@pytest.mark.parametrize("v4_name,v5_name", P25_SIBLINGS)
+def test_p25_v5_siblings_are_the_declared_projection(v4_name, v5_name):
+    """A-226. The v4 original is never edited; the v5 sibling differs from it in
+    EXACTLY the two declared ways, so a reader can audit the projection instead
+    of trusting a transform inside a gate harness."""
+    v4 = json.loads((P25_EXPECTED / v4_name).read_text())
+    v5 = json.loads((HERE / "expected" / v5_name).read_text())
+    assert v4["schema_version"] == 4 and v5["schema_version"] == 5
+    r1_v4 = dict(v4["judgment"]["r1"])
+    hoisted = {k: r1_v4.pop(k) for k in ("language", "source_roots", "base")}
+    assert v5["judgment"]["resolved"] == hoisted
+    assert v5["judgment"]["r1"] == r1_v4
+    scrub = lambda d: {k: v for k, v in d.items()
+                       if k not in ("schema_version", "judgment")}
+    assert scrub(v4) == scrub(v5), "the projection changed something undeclared"
+
+
+@pytest.mark.parametrize("_v4,v5_name", P25_SIBLINGS)
+def test_p25_v5_siblings_validate(verify_document, _v4, v5_name):
+    assert verify_document(load(HERE / "expected" / v5_name)) == []

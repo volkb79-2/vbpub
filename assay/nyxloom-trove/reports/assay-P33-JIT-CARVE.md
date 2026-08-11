@@ -267,3 +267,127 @@ existing `NO_MUTANTS` and `MUTATION_UNSUPPORTED` terminals; whether the
 `judgment.allOf` conditional actually expresses "base iff r1|r2" for every rigor
 combination; and whether retiring P26's suite from the gate loses any coverage the
 carry-forward test does not reproduce.
+
+
+---
+
+# Answering round 2 (2026-08-11)
+
+Round 2 returned **NOT READY** and confirmed eleven of the seventeen round-1
+fixes by re-derivation. Its root-cause naming is correct and is the thing worth
+carrying: **the carve was validated against the artifacts the reviewer named, not
+against the class the reviewer described.** Round 1 said "the gate runs a locked
+v4 suite"; I retired that suite and added a scanner pattern for that invocation,
+while a second gate step comparing against locked v4 templates went unexamined.
+
+## The sweep, and what it found
+
+The operator required an inventory rather than a third patch. It is
+`carve-assets/P33/sweep_v4_consumers.py`, a locked asset. It starts from
+`tools/tester-unified-gate.sh`, extracts every path the gate hands to an
+interpreter, follows local imports transitively, and looks for **directory
+components** rather than literal paths — because `qualify_topos.py` builds
+`carve-assets/P25/expected` from `/`-joined parts, which is precisely why a
+content grep cannot find this class.
+
+```text
+$ python3 nyxloom-trove/carve-assets/P33/sweep_v4_consumers.py
+=== gate invocations (seeds) ===
+    gate/python/qualify_topos.py
+    nyxloom-trove/carve-assets/P26/test_acceptance.py
+    tests
+    tests/test_self_hosting.py
+
+=== transitive closure: 147 python files ===
+=== CONSUMERS OF A FROZEN EXPECTED ARTIFACT: 11 ===
+```
+
+Of the eleven, eight read only `tests/fixtures/**`, which is implementer-owned
+and migratable. **Three consume a locked v4 expectation:**
+
+| consumer | locked expectation | found by |
+|---|---|---|
+| `nyxloom-trove/carve-assets/P26/test_acceptance.py` | P26's four templates, via `HERE/expected` | round 1 (D3) |
+| `gate/python/qualify_topos.py` | P25 `pass`/`missing-v4-template.json` | round 2 (R2-D1) |
+| `tests/test_python_qualification.py:259` | P25 `pass-v4-template.json` | **this sweep** |
+
+So the answer to "does the sweep turn up anything beyond round 2" is **yes, one
+more**, and it is in `tests/`, not in the gate harness — which is why an
+inventory of *consumers* was the right closure and another content pattern would
+not have been.
+
+## What changed
+
+**A-226** makes the rule general: every locked v4 expectation that live gate code
+compares against gets a carver-supplied v5 sibling, and the consumer is
+repointed. P25's two siblings are committed and
+`test_p25_v5_siblings_are_the_declared_projection` audits that each differs from
+its original in exactly the two declared ways — so the projection is evidence to
+check rather than a transform to trust, which is the objection round 2 correctly
+raised against an in-harness v4→v5 conversion.
+
+**A-226 also amends A-224: P26's module is not retired.** The reviewer's surgical
+fix is better and I have taken it. Retiring dropped 18 of 24 tests, only 4 of
+which touch artifact shape; the lost 18 include A-212's process-group kill on a
+witnessed descendant-held pipe, aggregate bounds before the first Git call,
+literal-pathspec identity and annotated-tag peel refusal. My justification —
+"nothing else in P26's suite asserted artifact shape" — was a true sentence that
+silently substituted *shape coverage* for *coverage*. The gate now deselects five
+named tests and keeps nineteen running.
+
+**A-228** carries `ALL_MUTANTS_EQUIVALENT` to every layer that constrains its
+three siblings. Verified after regenerating: a payload-free variant and an R3
+variant are both now **REJECTED**, where both validated before. The fifth bucket
+also reached the limit sentinel's shape and the "four buckets" prose in two
+places.
+
+**A-227** settles the two open decisions and closes the `only-if`.
+`kill_signal_artifact` is reserved in the artifact contract but **refused at
+config load until P34**, because making a field declarable while shipping no
+producer for the value it implies creates a legal lane whose own artifact has no
+representable shape. All three `helpers` roles are ruled. And on the `iff`: my
+call is to **close it now** — the producer cannot reach the state, but `verify.py`
+exists for foreign documents, A-182 puts locally expressible conditionals in the
+schema, and it is one branch in the identical form of the ones already there.
+Verified: an `r3`-only judgment carrying `base` is now rejected.
+
+The locked suite grew 19 → 30 tests (**26 failed / 4 passed** pre-implementation),
+adding CA9's two forgeries, CA10's three attribution clauses, the `only-if`, the
+third `helpers` role, and the P25 sibling audit.
+
+## The boundary I am not closing, stated plainly
+
+Round 2's cross-cutting observation is correct and I am not fixing it in P33:
+**every locked test here validates a hand-written document.** Nothing runs
+`assay run` and inspects what it emitted, and assay's self-hosted lane is
+permanently R0-only (A-189) so it emits no `judgment` at all and cannot witness
+`resolved`. A correct verifier with a wrong producer passes this package's entire
+acceptance material.
+
+Two reasons it stays open, and one thing I did do. P33 is a contract migration:
+its deliverable is the artifact contract and the layers that judge it, and the
+only v5 producer path that exercises `judgment.resolved` end-to-end is a real
+R1/R2 lane — which for a *new* language is P34's SQL adapter, the first R2
+producer this package does not already have shipped Python coverage for. Adding a
+producer oracle here would mean carving P34's proof inside P33. What I did do is
+repoint the two P25 qualification consumers at v5 siblings, which restores the one
+real producer-side v5 check the registered gate has. CA7 belongs to P34 and is
+recorded in its successor dispositions.
+
+Also acknowledged from round 2 and not repaired here: **no fixture makes declared
+and resolved `base` genuinely differ** (A-143's required shape, CA8). A-223(f)
+pins the rule in prose and the locked templates all substitute a full 40-hex, so
+`resolve_base` returns the same string either way. This is a real gap in P33's own
+material. It needs a fixture whose lane declares a branch name — which requires a
+real repository, so it belongs with CA7 in the producer-side proof rather than in
+a document-validation suite. Named rather than left for a reviewer to find a third
+time.
+
+## Disposition
+
+**READY for a third mandatory review.** Nothing about a second repair round makes
+the third review a formality; the two rounds so far each found the same failure
+shape in a new place, and the honest thing to say is that an inventory closes a
+class only if the inventory is right. `sweep_v4_consumers.py` is the artifact to
+attack first: if its closure or its signal set misses a consumer, the class is
+still open.

@@ -1,0 +1,116 @@
+{
+  "schema_version": 5,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "topos-qualification",
+  "commit": "@HEAD_OID@",
+  "outcome": "FAIL",
+  "reason_code": "UNCOVERED_LINES",
+  "exit_code": 1,
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "/opt/tester-venv/bin/python",
+    "topos/tools/assay_p25_coverage.py",
+    "topos/tests/test_config.py",
+    "topos/tests/test_assay_probe.py",
+    "-q",
+    "-n",
+    "2"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "/opt/tester-venv/bin/python",
+    "topos/tools/assay_p25_coverage.py",
+    "topos/tests/test_config.py",
+    "topos/tests/test_assay_probe.py",
+    "-q",
+    "-n",
+    "2"
+  ],
+  "argv_modified": false,
+  "env_declared": {
+    "ASSAY_P25_LOG": "@PYTEST_LOG@",
+    "ASSAY_P25_WITNESS": "@WITNESS_PATH@",
+    "HOME": "/home/tester",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin",
+    "PYTHONPATH": "topos/src:topos",
+    "XDG_CACHE_HOME": "/home/tester/.cache",
+    "XDG_CONFIG_HOME": "/home/tester/.config",
+    "XDG_STATE_HOME": "/home/tester/.local/state"
+  },
+  "env_effective": {
+    "ASSAY_P25_LOG": "@PYTEST_LOG@",
+    "ASSAY_P25_WITNESS": "@WITNESS_PATH@",
+    "HOME": "/home/tester",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin",
+    "PYTHONPATH": "topos/src:topos",
+    "XDG_CACHE_HOME": "/home/tester/.cache",
+    "XDG_CONFIG_HOME": "/home/tester/.config",
+    "XDG_STATE_HOME": "/home/tester/.local/state"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "r1": {
+      "coverage_format": "coverage-py-json",
+      "coverage_artifact": ".assay/topos-coverage.json",
+      "fail_under": 100.0,
+      "allow_excluded": true
+    },
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "topos/src/topos"
+      ],
+      "base": "@BASE_OID@"
+    }
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "UNCOVERED_LINES",
+      "coverage": {
+        "covered": 4,
+        "changed_executable": 5,
+        "pct": 80.0,
+        "considered": 1,
+        "exclusion_capability": "reported",
+        "missing_lines": {
+          "topos/src/topos/_assay_probe.py": [
+            7
+          ]
+        },
+        "files_missing_coverage": [],
+        "unclassified_lines": {},
+        "files_with_unclassified_lines": [],
+        "excluded_lines": {
+          "topos/src/topos/_assay_probe.py": [
+            11
+          ]
+        },
+        "files_with_excluded_lines": [
+          "topos/src/topos/_assay_probe.py"
+        ]
+      }
+    }
+  ],
+  "evidence": []
+}

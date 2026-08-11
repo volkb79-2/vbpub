@@ -263,6 +263,82 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
         "(B6/A-223d)"
     )
 
+    # R2-B1 repair (A-228): the new terminal must inherit every constraint its
+    # three siblings carry. Branches 6/7/8 each pin reason -> payload + rigor R2;
+    # the first version of this transform gave the new code none, so a
+    # payload-free, non-R2 ALL_MUTANTS_EQUIVALENT validated -- verbatim the
+    # forgery A-136 closed for NO_MUTANTS, one bucket over.
+    defs["claim"]["allOf"].append(
+        {
+            "description": (
+                "A-228/A-223d: ALL_MUTANTS_EQUIVALENT is the SUPPORTED "
+                "all-inert result, so it must carry the payload that proves "
+                "an analysis ran and every attempted mutant was provably no-op. "
+                "A payload-free variant would be indistinguishable from "
+                "capability absence, which is the same forgery branch 7 closes "
+                "for NO_MUTANTS. Whether killed + survived == 0 with a "
+                "non-empty equivalent bucket is cross-object and lives in the "
+                "model and raw verifier."
+            ),
+            "if": {
+                "required": ["reason_code"],
+                "properties": {"reason_code": {"const": "ALL_MUTANTS_EQUIVALENT"}},
+            },
+            "then": {
+                "required": ["mutation"],
+                "properties": {"rigor": {"const": "R2"}},
+            },
+        }
+    )
+    log.append(
+        "claim.allOf: +branch requiring the mutation payload and rigor R2 for "
+        "ALL_MUTANTS_EQUIVALENT (R2-B1/A-228)"
+    )
+
+    # Same root cause: the fifth bucket was never propagated into the limit
+    # sentinel's own shape, nor into the prose that counts buckets.
+    for branch in defs["claim"]["allOf"]:
+        then = branch.get("then", {})
+        mprops = then.get("properties", {}).get("mutation", {}).get("properties")
+        if mprops and "killed" in mprops and "equivalent" not in mprops:
+            mprops["equivalent"] = {"maxItems": 0}
+            branch["description"] = branch["description"].replace(
+                "four empty buckets", "five empty buckets"
+            )
+            log.append(
+                "claim.allOf limit sentinel: +equivalent maxItems 0, prose "
+                "four->five buckets (R2-B1/A-228)"
+            )
+    mutation["description"] = mutation["description"].replace(
+        "FOUR identity buckets", "FIVE identity buckets"
+    )
+    log.append("mutation.description: FOUR -> FIVE identity buckets (A-228)")
+
+    # R2-B4 repair (A-227): the base rule was `if`, never `only-if`. An r3-only
+    # judgment carrying a base validated. The producer cannot reach that state
+    # (A-062 refuses judge.base on an R0,R3 lane as inert config) but verify.py
+    # exists for FOREIGN documents, and A-182 puts a locally expressible
+    # conditional in the schema.
+    judgment["allOf"].append(
+        {
+            "description": (
+                "A-227: base is required IF r1|r2 and forbidden UNLESS r1|r2. "
+                "Closes the only-if half, so a foreign artifact cannot record a "
+                "comparison commit for a tier that reads none."
+            ),
+            "if": {
+                "allOf": [
+                    {"not": {"required": ["r1"]}},
+                    {"not": {"required": ["r2"]}},
+                ]
+            },
+            "then": {
+                "properties": {"resolved": {"not": {"required": ["base"]}}}
+            },
+        }
+    )
+    log.append("judgment.allOf: +base forbidden unless r1|r2 (R2-B4/A-227)")
+
     # --- V5-5: helper provenance -------------------------------------------
     d["properties"]["helpers"] = {
         "description": (
