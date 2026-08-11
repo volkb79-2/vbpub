@@ -36,6 +36,7 @@ from assay import mutation, runner
 from assay.adapters.python import PythonAdapter
 from assay.config import MutationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.verify import verify_document
 
 MOMENT = datetime(2026, 8, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -169,6 +170,58 @@ def test_a_cleanup_assay_error_replaces_only_the_highest_higher_rigor_claim(
     assert (r2.status, r2.reason_code) == (Outcome.ERROR, ReasonCode.GIT_FAILED)
     assert r2.mutation is None
     assert verdict.judgment is None
+
+
+def test_a_cleanup_failure_after_a_FAILING_baseline_is_still_verify_clean(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """A-245's over-tightening guard, driven through the same seam.
+
+    The test above uses a passing baseline, so it says nothing about the pair
+    A-241 named as its own headline example: ``R2 = ERROR/GIT_FAILED`` beside
+    ``R0 = ERROR/EXEC_FAILED``-style non-passing baseline. That artifact is
+    LEGITIMATE -- the cleanup handler replaces only the highest higher-rigor
+    claim and leaves every lower completed claim as it was -- so ``GIT_FAILED``
+    must stay out of ``verify._POST_BASELINE_R2_TERMINALS``. Asserted through
+    ``verify_document`` because the two halves of one product disagreeing
+    about one document is the whole failure mode here.
+    """
+    base_rev, head_rev = _seed(git_repo, head_source="def f(x):\n    return x > 0\n")
+    scratch = (tmp_path / "owned-scratch").resolve()
+    scratch.mkdir()
+
+    def failing(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), 1, "", "the lane's own tests failed")
+
+    verdict = runner.run_lane(
+        _r2_lane(git_repo, base_rev),
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=failing,
+        clock=_clock,
+        monotonic=CountingMonotonic(),
+        scratch_root_factory=lambda: _ExitRaises(
+            scratch,
+            AssayError(
+                "injected cleanup failure",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.GIT_FAILED,
+            ),
+        ),
+    )
+
+    r0, r2 = verdict.claims[0], verdict.claims[1]
+    assert (r0.status, r0.reason_code) == (Outcome.FAIL, ReasonCode.COMMAND_FAILED), (
+        "the completed, FAILING R0 claim survives verbatim"
+    )
+    assert (r2.status, r2.reason_code) == (Outcome.ERROR, ReasonCode.GIT_FAILED)
+    assert r2.mutation is None
+    assert verify_document(verdict.to_dict()) == [], (
+        "assay run emitted an artifact its own assay verify rejects"
+    )
 
 
 def test_a_cleanup_runtime_error_after_a_result_is_not_masked_away(

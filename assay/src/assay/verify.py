@@ -1111,6 +1111,44 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
     }
 )
 
+#: (A-245, closing A-241) The subset of the above that is independent of the
+#: baseline's REASON but not of whether the baseline PASSED at all.
+#:
+#: ``_INDEPENDENT_R2_TERMINALS`` stopped after re-deriving the OUTCOME, so a
+#: payload-free R2 claim could name any of the six beside any baseline -- and
+#: three of them are producible only on a branch ``run_lane`` reaches after
+#: the command PASSED, because target resolution and mutation discovery are
+#: both inside ``if r2_declared and result.outcome is Outcome.PASS``
+#: (``runner.py``); the not-PASS arm renders
+#: ``build_mutation_claim(result, None)``, which propagates the baseline's own
+#: pair verbatim (A-116). So one of these three beside a non-passing baseline
+#: is a misreported reason code, and that was accepted.
+#:
+#: The other three are deliberately NOT here, each with a producer path that
+#: renders it beside a baseline that did NOT pass -- proven by driving
+#: ``run_lane``, not by reading it (``tests/test_runner_p23_cleanup_and_
+#: budget.py``, ``tests/test_verify_layer_independence.py``):
+#:
+#: * ``GIT_FAILED`` -- ``_replace_highest_higher_rigor_claim_with_git_failed``
+#:   runs on outer-scratch/snapshot cleanup failure and leaves EVERY lower
+#:   completed claim (including a failed R0) exactly as it was (A-193/A-194).
+#: * ``DIRTY_TREE`` / ``HEAD_CHANGED`` -- the post-command refusal keeps the
+#:   REAL R0 claim and marks every other declared level (A-195/A-178), so
+#:   ``R0 = FAIL/COMMAND_FAILED`` beside ``R2 = NO_MEASUREMENT/DIRTY_TREE`` is
+#:   a truthful artifact.
+#:
+#: A-241's own headline example was ``ERROR``/``GIT_FAILED`` against an
+#: ``ERROR``/``EXEC_FAILED`` baseline. That example is WRONG -- it is exactly
+#: the cleanup path above and is legitimate; the gap is real for the other
+#: three. Recorded here because the wrong example is the more memorable half.
+_POST_BASELINE_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
+    {
+        ReasonCode.MUTATION_DISCOVERY_FAILED,
+        ReasonCode.BASE_IS_HEAD,
+        ReasonCode.UNREADABLE_ARTIFACT,
+    }
+)
+
 
 def _outcome_owning(reason_code: ReasonCode) -> Outcome | None:
     """The single :class:`Outcome` the closed vocabulary binds *reason_code*
@@ -1232,6 +1270,36 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
                 f"{claim.reason_code.value} is "
                 f"{'no outcome' if expected_outcome is None else expected_outcome.value}"
             )
+        # (A-245, closing A-241) "Independent of the baseline's REASON" is not
+        # "independent of whether the baseline ran". For the three terminals
+        # only a PASSING baseline can lead to, a non-passing R0 sibling means
+        # the producer would have propagated ITS pair verbatim instead
+        # (A-116) -- so the recorded reason code is a misreport, and only the
+        # OUTCOME agreeing was hiding it.
+        #
+        # The equal-pair escape is not redundant: a whole-lane refusal
+        # (`_refuse_lane_with_plan`) renders the IDENTICAL pair on every
+        # declared level, R0 included, which is verbatim propagation by
+        # construction. Accepting it keeps this check fail-safe against any
+        # refusal path whose reason lands in this set.
+        if claim.reason_code in _POST_BASELINE_R2_TERMINALS:
+            r0_sibling = next(
+                (item for item in verdict.claims if item.rigor == "R0"), None
+            )
+            if (
+                r0_sibling is not None
+                and r0_sibling.status is not Outcome.PASS
+                and (r0_sibling.status, r0_sibling.reason_code)
+                != (claim.status, claim.reason_code)
+            ):
+                failures.append(
+                    f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
+                    f"names a refusal reachable only after a PASSING "
+                    f"baseline, but the R0 claim is "
+                    f"{_fmt(r0_sibling.status, r0_sibling.reason_code)}: a "
+                    f"payload-free R2 claim beside a baseline that did not "
+                    f"pass must reuse the baseline's own pair verbatim"
+                )
         return
     if claim.mutation is None:
         r0_claim = next((item for item in verdict.claims if item.rigor == "R0"), None)

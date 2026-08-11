@@ -279,6 +279,113 @@ def test_baseline_propagation_still_decides_reasons_outside_that_set():
 
 
 # ---------------------------------------------------------------------------
+# A-245 (closing A-241) — "independent of the baseline's REASON" was being
+# read as "independent of whether the baseline ran"
+# ---------------------------------------------------------------------------
+#
+# The repair above re-derives only the OUTCOME from the closed vocabulary, so
+# every one of the six reasons was accepted beside every baseline. Three of
+# them are producible ONLY after the command PASSED — `runner.py` puts target
+# resolution and mutation discovery inside `if r2_declared and result.outcome
+# is Outcome.PASS`, and the not-PASS arm propagates the baseline's own pair
+# verbatim instead (A-116). The other three have a real producer path beside a
+# FAILING baseline, so tightening all six would reject truthful artifacts;
+# both directions are witnessed below.
+
+#: The verbatim-propagation message this repair adds, matched on the half that
+#: cannot collide with the pre-existing "disagrees with the re-derived
+#: judgment" wording.
+_POST_BASELINE_MESSAGE = "names a refusal reachable only after a PASSING baseline"
+
+_POST_BASELINE_ONLY = ("MUTATION_DISCOVERY_FAILED", "BASE_IS_HEAD", "UNREADABLE_ARTIFACT")
+_BASELINE_INDEPENDENT = ("GIT_FAILED", "DIRTY_TREE", "HEAD_CHANGED")
+
+
+@pytest.mark.parametrize("reason", _POST_BASELINE_ONLY)
+def test_a_post_baseline_only_terminal_beside_a_failing_baseline_is_rejected(reason):
+    owner = next(o for o, codes in REASON_CODES.items() if ReasonCode(reason) in codes)
+    document = _payload_free_r2(owner.value, reason, r0_status="FAIL")
+    failures = verify.verify_document(document)
+    assert any(_POST_BASELINE_MESSAGE in item for item in failures), failures
+    assert any("FAIL, COMMAND_FAILED" in item for item in failures), (
+        "the message must name the baseline it was checked against"
+    )
+
+
+@pytest.mark.parametrize("reason", _POST_BASELINE_ONLY)
+def test_the_same_terminal_beside_a_passing_baseline_stays_accepted(reason):
+    # The differential half: the identical claim is clean when the baseline
+    # really did pass, so the check above cannot be passing by rejecting the
+    # reason code outright.
+    owner = next(o for o, codes in REASON_CODES.items() if ReasonCode(reason) in codes)
+    document = _payload_free_r2(owner.value, reason, r0_status="PASS")
+    assert verify.verify_document(document) == []
+
+
+@pytest.mark.parametrize("reason", _BASELINE_INDEPENDENT)
+def test_a_genuinely_baseline_independent_terminal_survives_a_failing_baseline(reason):
+    # The over-tightening guard. Each of these three has a producer path that
+    # renders it beside a baseline that did NOT pass (A-193/A-194's cleanup
+    # replacement; A-195/A-178's post-command refusal), so this repair must
+    # NOT reach them. Two of the three are witnessed end to end below.
+    owner = next(o for o, codes in REASON_CODES.items() if ReasonCode(reason) in codes)
+    document = _payload_free_r2(owner.value, reason, r0_status="FAIL")
+    failures = verify.verify_document(document)
+    assert not any(_POST_BASELINE_MESSAGE in item for item in failures), failures
+
+
+def test_a_failing_lane_that_leaves_the_tree_dirty_round_trips_through_verify(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The producer witness for the over-tightening guard, through the real
+    entry point: a command that BOTH fails and leaves an untracked file behind
+    yields ``R0 = FAIL/COMMAND_FAILED`` beside ``R2 =
+    NO_MEASUREMENT/DIRTY_TREE`` (A-195 keeps the real R0 claim and marks every
+    other declared level). Requiring verbatim propagation for ``DIRTY_TREE``
+    would refuse this document."""
+    repo = git_repo
+    repo.write("src/m.py", "x = 1\n")
+    repo.write(".gitignore", "verdict.json\n")
+    repo.write(
+        "assay.toml",
+        'schema_version = 1\n'
+        "[lanes.package]\n"
+        'scope = "S1"\nrigor = ["R0", "R2"]\nenforcement = "gate"\n'
+        'argv = ["/bin/sh", "-c", "touch left-behind.py; exit 1"]\n'
+        'env = {}\nenv_passthrough = ["PATH"]\n'
+        'budget = "1m"\nallow_argv_append = false\n'
+        "[lanes.package.judge]\n"
+        'language = "python"\nsource_roots = ["src"]\nbase = "HEAD^"\n'
+        "[lanes.package.judge.mutation]\n"
+        'jobs = 1\nmax_mutants = 5\noperators = ["python:compare-swap"]\n',
+    )
+    repo.commit_all("lane")
+    repo.write("src/m.py", "def f(x):\n    return x > 0\n")
+    repo.commit_all("a mutable change")
+
+    target = repo.path / "verdict.json"
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(repo.path / "assay.toml"),
+         "--verdict-json", str(target)],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code != 0
+    document = json.loads(target.read_text(encoding="utf-8"))
+    pairs = {
+        claim["rigor"]: (claim["status"], claim.get("reason_code"))
+        for claim in document["claims"]
+    }
+    assert pairs["R0"] == ("FAIL", "COMMAND_FAILED"), pairs
+    assert pairs["R2"] == ("NO_MEASUREMENT", "DIRTY_TREE"), pairs
+    assert verify.verify_document(document) == [], (
+        "assay run emitted an artifact its own assay verify rejects"
+    )
+
+
+# ---------------------------------------------------------------------------
 # The producer-to-verify round trip, through the real installed entry point
 # ---------------------------------------------------------------------------
 
