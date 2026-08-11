@@ -3,6 +3,6 @@
   "instance": null,
   "commit_under_test": null,
   "tree_state": null,
-  "containers": [],
+  "containers": null,
   "overall": "refused-no-identity"
 }
