@@ -9,7 +9,8 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-06 (CIU-15/16/17/18/19 all filed + fixed).
+Last updated: 2026-08-11 (CIU-20/21 filed by assay, OPEN — no code items pending
+before that).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -51,6 +52,8 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-17 | No CLI-level `--ksm` / `--no-ksm` override for an ad-hoc run; toggling KSM requires editing `governance.ksm_optin` in the TOML layer. Raised alongside CIU-14 and explicitly ruled out of its scope as a convenience feature, then never filed on its own | Low | FIXED |
 | CIU-19 | `reset_service`'s orphan sweep filtered on `<prefix>.component=<service>` ALONE, which is not instance-scoped — a second checkout of the same repo labels its containers identically, so `ciu clean` in one instance deleted the same-named service out of **every** instance on the host. Observed live while building `ciu worktree` (S16): cleaning a worktree instance removed the PRIMARY instance's `db-init`. With a full stack up, that is someone's database | High | FIXED |
 | CIU-18 | Image provenance is STAMPED but not ENFORCED. `bake` now sets `org.opencontainers.image.revision` (with a `-dirty` suffix) on every baked image, so a container can be traced to its commit — but nothing yet REFUSES to run a live/integration lane against an image whose label does not match the commit under test. Until it does, a live result can still silently describe an unknown artifact, which the consuming project's own policy (dstdns AGENTS.md §4.1a) already calls a defect. FIXED as a TEST-time gate (`ciu provenance`, S17.2) over RUNNING containers — not a deploy-time one: at deploy the question is "did I bake?", which surfaces immediately, whereas the question that yields bad EVIDENCE is asked against an already-running stack. `ciu test` (D7) will call it when that surface exists | Medium | FIXED |
+| CIU-20 | `ciu provenance` has no machine-readable output: the success path is silent and the failure path is prose + exit code, so a downstream evidence consumer (assay) cannot record *what was checked and what it found* — only "no refusal happened", which is not the same fact | Low | OPEN |
+| CIU-21 | No way for a process INSIDE a container to learn the image's own `org.opencontainers.image.revision`: the label is readable only from the docker-daemon side, so an in-container test runner cannot verify its own provenance without an outside co-process | Low | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -588,3 +591,164 @@ namespace. Any `is_file()`/`is_dir()`/`exists()` applied to its return value is
 asking the wrong kernel. See the CIU-14 note about auditing other
 `frag["volumes"]` sites — that audit should now also check for this inverse
 error, not just the missing-check one.
+
+### CIU-20 detail: `ciu provenance` emits no machine-readable verdict
+
+**Reported by:** assay, 2026-08-11, during a cross-project review of ciu's S17
+against assay's open decision A-O12 (provenance verification for S3/S4 lanes).
+**Severity:** Low — S17.2's gate is correct and complete for its own purpose
+(refusing a live lane against a stale image). This is a missing *output*
+surface, not a wrong behaviour.
+
+**Mechanism.** `verify_running_provenance` (`deploy.py:556-637`) returns `None`
+or raises `ValueError`. Its outputs are a prose `warn()` string and an exit
+code, and — the load-bearing part — **the success path returns silently**:
+
+```python
+    mismatches: list[tuple[str, str, str]] = []
+    for name, image in _running_containers(project_prefix):
+        actual = _image_revision_label(image)
+        if actual and actual != expected:
+            mismatches.append((name, image, actual))
+
+    if not mismatches:
+        return
+```
+
+For gate wiring (a consumer's script runs `ciu provenance` before its test
+command) that is exactly right. For **evidence** it is insufficient twice over:
+
+1. A consumer must not parse prose. assay's own precedent (A-204) is byte-copy,
+   never interpret — an interpreting reader becomes a shared oracle coupled to
+   another tool's human-facing text.
+2. "No refusal happened" is not the same fact as "checked, and matched". assay's
+   A-025 doctrine forbids recording the absence of an adverse signal as a
+   positive fact — it is the same class as its own `0/0 is not 100%` rule.
+
+Three of the four non-refusal paths are also indistinguishable from success to a
+caller reading only the exit code: unlabelled-skipped, absent-image, and
+dirty-tree-warns all exit 0, and each is a *different* fact about how much was
+verified.
+
+**What's needed.** `ciu provenance --json [PATH|-]` (precedent: `ciu diagnose
+--json`, `cli.py:59`), emitting one closed, bounded JSON document alongside the
+existing exit-code behaviour:
+
+```json
+{
+  "schema_version": 1,
+  "instance": "<project>-<env_tag>",
+  "commit_under_test": "<revision as get_git_hash() renders it, -dirty suffix included>",
+  "tree_state": "clean" | "dirty" | "not-a-checkout",
+  "containers": [
+    {"name": "...", "image": "...", "labelled_revision": "..." | null,
+     "status": "match" | "mismatch" | "unlabelled"}
+  ],
+  "overall": "verified-match" | "mismatch" | "not-verified-dirty"
+           | "not-verified-unknown" | "refused-no-identity"
+}
+```
+
+Requirements that make it usable as evidence rather than as a log:
+
+- **A verified match must be recorded, not silent.** The positive fact is the
+  thing a downstream artifact needs.
+- **The vocabularies must be closed and stable.** The consumer refuses a member
+  it does not recognise rather than guessing, so adding one later is a
+  `schema_version` bump, not a silent widening.
+- **`labelled_revision` is the image's own label, verbatim**, never
+  `get_git_hash()`. Those are different claims — see CIU-21.
+- The four honest non-refusals stay distinguishable in `overall`, so a consumer
+  can tell "verified and matched" from "nothing was verifiable".
+
+**Why it belongs in CIU, not in the consumer.** The instance-prefix scoping and
+the label are ciu's own facts (S16/S17.1 — only ciu knows which running
+containers belong to this instance). assay runs *inside* the container at
+S3/S4, on the far side of its own topological boundary (assay decision A-030),
+and must never shell out to docker. And a consumer parsing `ciu provenance`'s
+prose would couple two estate tools through unstable human-facing text.
+
+**Proposed SPEC ID:** S17.3 — machine-readable provenance verdict.
+
+**What it unblocks downstream** (context, not ciu's work): assay's first Tier-2
+*adjudicated* evidence integration — a lane declaring `(adjudicated,
+"image-provenance")`, a bounded reader for this document, and a status mapping
+(`verified-match` → PASS, `mismatch` → FAIL, `not-verified-*`/`refused-*` →
+NO_MEASUREMENT-class). That is an assay package which resolves assay's A-O12 and
+answers its A-O10 ("which Tier 2 integration is built first"). Named here only
+so the vocabulary is designed once, for its real consumer.
+
+### CIU-21 detail: an in-container process cannot read its own image's revision label
+
+**Reported by:** assay, 2026-08-11, investigating whether an injected env var
+could replace the co-process in CIU-20.
+**Severity:** Low — CIU-20 is the complete answer on its own. This is a
+convenience surface that removes a co-process from the consumer's critical path,
+and it is strictly optional relative to CIU-20.
+
+**Mechanism.** `org.opencontainers.image.revision` (S17.1) is an OCI **label**.
+`_image_revision_label` (`deploy.py:666`) reads it with `docker image inspect`,
+i.e. from the daemon side. A process running *inside* the container has no
+access to it, so an in-container test runner cannot verify its own provenance at
+all without an outside co-process.
+
+The injection mechanism for fixing this already exists and needs nothing new:
+`governance.py:1025` already injects an env var into every non-exempt service
+for the KSM opt-in, and `composefile.py:936` treats `environment` as an
+append-never-clobber MERGE key, so S15.3's author-precedence rule for scalar
+keys does not apply (S15.11 states this explicitly):
+
+```python
+            frag["environment"] = [f"LD_PRELOAD={KSM_PRELOAD_TARGET}"]
+```
+
+**What's needed.** Inject `CIU_IMAGE_REVISION=<value>` into every non-exempt
+service, where `<value>` is **read back from that service's image's own
+`org.opencontainers.image.revision` label** — the same value S17.1 baked.
+
+Three requirements, and the first is the whole point of the entry:
+
+1. **The value MUST come from the image label, never from
+   `engine.get_git_hash()`.** Those are different claims: the label is the
+   image's baked truth, `get_git_hash()` is the host working tree's current
+   view. A consumer that compares an injected `get_git_hash()` against its own
+   `git rev-parse HEAD` of the same mounted source is comparing a value to
+   itself — it always matches, including in exactly the case S17 exists to
+   catch (a stale image running against a newer checkout). That is not a weaker
+   check; it is a check that cannot fail, which is worse than none.
+2. **Append, do not assign.** `governance.py:1025` currently does
+   `frag["environment"] = [...]`. A second `frag["environment"] = [...]` would
+   silently drop the KSM `LD_PRELOAD` entry and disable the shim with no error
+   anywhere — the same silent-efficacy-fail-open class as CIU-14.
+3. **Omit the variable when the label is absent**, rather than injecting an
+   empty or placeholder value. This mirrors S17.1's own rule that nothing is
+   stamped when the revision is unknown, because "a label reading `dev` looks
+   like an answer and would be trusted as one". Note that the overlay is
+   generated at Step 15 of the up pipeline (`engine.py:1368`), before Step 16's
+   `docker compose up`, so on a plain `ciu up` with no prior bake the image may
+   not exist yet and the label is legitimately unavailable.
+
+**The cost this creates, which the consumer must be told about rather than
+discovering.** `composefile.py` currently invokes no docker at all — the overlay
+generator is pure text/YAML over the rendered compose. Reading labels at overlay
+time gives it a docker dependency, and S4.17/S8.1's rationale for a separate
+overlay is that it carries machine-derived *wiring*. Whether that trade is worth
+it is ciu's call; it is the reason this is filed as a separate, lower-priority
+entry rather than folded into CIU-20.
+
+**Why it belongs in CIU, not in the consumer.** Only ciu knows the mapping from
+service to image and holds the daemon-side access to inspect it; and the
+injection point is ciu's own generated overlay. A consumer cannot inject into a
+container it does not launch.
+
+**Proposed SPEC ID:** S17.4 — in-container revision exposure (optional; depends
+on nothing in S17.3 and vice versa).
+
+**Honest limits, so this is not over-adopted.** An env var is weaker evidence
+than a label in two ways a consumer should be told: a compose author, an `.env`
+file, or `docker compose run -e` can set the same variable and win the per-key
+env merge (ciu's own code comment already notes this for `LD_PRELOAD`), whereas
+changing a label requires rebuilding the image; and an env var is visible only
+to processes inside the container while it runs, so unlike the label it cannot
+serve a post-hoc audit or S17.2's own gate over an already-running stack. This
+entry therefore complements CIU-20 and does not replace it.
