@@ -4,35 +4,39 @@ id: assay-P33-verdict-schema-v5
 project: assay
 title: "The verdict artifact expresses a coverage-less mutation language without inventing one"
 tier: implement-2
-input_revision: "b03555d79227ef7eb76eaf7f851c2896968fa455"
+input_revision: "b22ebd56c4af3f89cd393ef013ca292f722b16ee"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P26-attested-evidence-cli-hardening]
 session: fresh
 scope:
-  touch: ["src/assay/schemas/verdict.schema.json", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/vocabulary.py", "src/assay/config.py", "src/assay/adapters/python.py", "src/assay/runner.py", "tests/**"]
-  forbid: ["src/assay/coverage_parsers/**", "src/assay/adapters/go.py", "src/assay/mutation.py", "src/assay/canary.py", "src/assay/git.py", "src/assay/safeio.py", "nyxloom-trove/carve-assets/**", "nyxloom-trove/decisions.md", "docs/DESIGN-GUIDE.md", "nyxloom-trove/nyxloom.toml"]
+  touch: ["src/assay/schemas/verdict.schema.json", "src/assay/verdict.py", "src/assay/verify.py", "src/assay/vocabulary.py", "src/assay/config.py", "src/assay/mutation.py", "src/assay/errors.py", "src/assay/cli.py", "src/assay/adapters/python.py", "src/assay/runner.py", "gate/python/**", "tools/tester-unified-gate.sh", "tests/**"]
+  forbid: ["src/assay/coverage_parsers/**", "src/assay/adapters/go.py", "src/assay/canary.py", "src/assay/git.py", "src/assay/safeio.py", "nyxloom-trove/carve-assets/**", "nyxloom-trove/decisions.md", "docs/DESIGN-GUIDE.md", "nyxloom-trove/nyxloom.toml"]
 oracles:
   - id: O1
-    observable: "The installed CLI's own verifier accepts a schema-v5 R0,R2 artifact that records language, source_roots and base in judgment.resolved with no judgment.r1 present, and records the helper that produced its mutation sites"
-    negative: "An R0,R2 artifact omitting judgment.resolved still validates, so a mutation verdict exists whose language and comparison base are unrecorded"
+    observable: "The installed CLI's own verifier accepts a schema-v5 R0,R2 artifact recording language and source_roots in judgment.resolved with no judgment.r1 present, and accepts an R0,R3 artifact whose judgment.resolved carries NO base, while refusing an R0,R2 artifact that omits base"
+    negative: "judgment.resolved is absent, or carries no base on an R1/R2 lane, or an R0,R3 lane is forced to invent a base it never resolved"
     gate: tester-unified
   - id: O2
     observable: "Each language's operator vocabulary is closed: a lane whose resolved language is python and which declares a sql: or go: operator is refused at config load, and every mutant_outcome.operator prefix equals judgment.resolved.language"
     negative: "A cross-language operator is accepted, so a Python lane reports SQL mutation operators it cannot possibly have applied"
     gate: tester-unified
   - id: O3
-    observable: "The equivalent bucket is paired both-present-or-both-absent with judgment.r2.equivalence_artifact, and equivalent mutants are excluded from the mutation score's numerator and denominator"
-    negative: "An equivalent mutant is counted as survived, or equivalent entries appear with no declared equivalence_artifact, so a provable no-op reads as untested behaviour"
+    observable: "A run whose mutants are all provably equivalent renders INCONCLUSIVE/ALL_MUTANTS_EQUIVALENT, and the equivalent bucket is paired both-present-or-both-absent with judgment.r2.equivalence_artifact"
+    negative: "An all-equivalent run renders PASS, so a run that proved nothing about the tests reads as green; or equivalent entries appear with no declared equivalence_artifact"
     gate: tester-unified
   - id: O4
-    observable: "kill_attribution is required and self-consistent: declared demands kill_signal_artifact plus a kill_signal on every killed entry, unattributed forbids both"
-    negative: "A killed entry carries a kill_signal while kill_attribution is unattributed, so an unverifiable mechanism claim rides in an artifact that says it has none"
+    observable: "kill_attribution is derived from judge.mutation.kill_signal_artifact and self-consistent: declared requires a kill_signal on every killed entry, unattributed forbids one anywhere, and no bucket other than killed may carry a kill_signal under either value"
+    negative: "A survived or equivalent entry carries a kill_signal, so a mutant nothing killed reports the mechanism that supposedly killed it"
+    gate: tester-unified
+  - id: O5
+    observable: "The registered gate runs P33's locked v5 acceptance suite instead of P26's v4 suite, and every P26 attestation artifact shape still validates under v5 with only schema_version changed"
+    negative: "The gate still invokes carve-assets/P26/test_acceptance.py, which asserts verify_document(<v4 template>) == [] and therefore reddens on a v5 verifier"
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
   - "a v5 field cannot be populated without reaching a forbidden owner"
-  - "migrating a locked carve asset appears necessary despite A-222"
+  - "editing a locked carve asset appears necessary despite A-222/A-224"
 mutexes: [merge-lane]
 ---
 
@@ -47,14 +51,19 @@ one, without inventing capability for any language that lacks it.**
 - Contract class: **2b — contract migration**.
 - Required roles: **Opus xhigh implementer → fresh Opus xhigh independent
   reviewer**. Opus because the change is a closed-vocabulary schema plus two
-  cross-object invariants, and because 90 files migrate behind it.
-- Readiness: **the design is frozen.** `nyxloom-trove/SCHEMA-V5-DESIGN.md` and
-  decisions A-220/A-221/A-222 fix every externally visible choice. The locked v5
-  schema, both expected templates, the controlled-red probe and the migration
-  manifest are committed under `nyxloom-trove/carve-assets/P33/`.
+  cross-object invariants, and because 92 files migrate behind it.
+- Readiness: **re-carved after a NOT READY pre-dispatch review.**
+  `nyxloom-trove/SCHEMA-V5-DESIGN.md` and decisions A-220/A-221/A-222 plus the
+  repair set A-223/A-224/A-225 fix every externally visible choice. The locked v5
+  schema, a committed v4 snapshot, four expected templates, the controlled-red
+  probe, the migration manifest and the locked v5 acceptance suite are committed
+  under `nyxloom-trove/carve-assets/P33/`. The first review's eleven blocking
+  defects and six scope defects are answered in
+  `reports/assay-P33-JIT-CARVE.md` § "Answering the pre-dispatch review".
 - Implementer freedom: internal decomposition of model and verifier code only.
   The schema bytes, the operator vocabulary, the field names, the ownership split
-  in the migration manifest, and the expected templates are fixed.
+  in the migration manifest, the four expected templates, and the locked v5
+  acceptance suite are fixed.
 
 ## Worktree and branch
 
@@ -66,7 +75,13 @@ branch `feat/assay-P33-verdict-schema-v5`.
 1. `nyxloom-trove/SCHEMA-V5-DESIGN.md` in full — it is the specification, and it
    records what v5 deliberately does *not* do and why.
 2. Decisions **A-220** (v5's shape), **A-221** (the `go:*` vocabulary and its
-   deliberate exclusions), **A-222** (locked v4 evidence is not rewritten), plus
+   deliberate exclusions), **A-222** (locked v4 evidence is not rewritten),
+   **A-223** (the repair set: conditional `base`, derived `kill_attribution`,
+   observable-direction helper correspondence, the `ALL_MUTANTS_EQUIVALENT`
+   terminal, `kill_signal` killed-only, base/source-roots provenance, the
+   restored at-least-one-tier guarantee), **A-224** (the gate retirement and the
+   scope corrections), **A-225** (A-221's corrected reasoning — P33 does not make
+   a Go or SQL R2 lane reachable), plus
    A-138/A-170 (a schema version is a consumer migration), A-192 (rigor grammar —
    why `R0,R2` is legal and therefore why V5-1 is a bug fix), A-183
    (`UNSUPPORTED` versus `NO_MUTANTS`), A-209 (the both-present-or-both-absent
@@ -92,12 +107,17 @@ create it.
 `src/assay/schemas/verdict.schema.json`. Install it byte-for-byte. Do not
 hand-edit it, and do not regenerate it from a modified transform:
 `python3 nyxloom-trove/carve-assets/P33/migrate_v4_to_v5.py --check` must exit 0
-against the committed asset both before and after your work.
+against the committed asset both before and after your work. It can, because the
+transform reads the committed `verdict.schema.v4-snapshot.json` rather than the
+live shipped schema you are about to overwrite — the first carve read the live
+path, which made this requirement unsatisfiable the moment work item 1 ran.
 
-The five changes are V5-1 through V5-5 in the design document. Their rationale
-is not repeated here; read it there, because two of them are counter-intuitive
-(V5-1 is a v4 bug fix rather than an SQL feature, and V5-4 deliberately does not
-close the gap it describes).
+The five changes are V5-1 through V5-5 in the design document, as amended by
+A-223. Their rationale is not repeated here; read it there, because three are
+counter-intuitive: V5-1 is a v4 bug fix rather than an SQL feature, V5-4
+deliberately does not close the gap it describes, and `base` inside
+`judgment.resolved` is conditional rather than always-required because
+`JUDGE_FIELDS_BY_RIGOR` carries it for R1/R2 and not for R3.
 
 ### The cross-object invariants the schema cannot express
 
@@ -111,16 +131,26 @@ descriptions already use for byte-order and bucket arithmetic:
    set, and in the verifier for the artifact.
 2. **Equivalence pairing.** `equivalent` nonempty requires
    `judgment.r2.equivalence_artifact`; absent artifact requires an empty bucket.
-3. **Score arithmetic.** The mutation score is `killed / (killed + survived)`.
-   `equivalent`, `crashed` and `budget_exceeded` are excluded from both. The
-   existing `candidate_count`/`total`/bucket-length relation extends to include
+3. **The all-inert terminal, not a score.** There is no `score` field in v5 and
+   none is being added, so "excluded from the score" would have been an
+   unobservable requirement. What is observable is the terminal: `killed +
+   survived == 0` with a non-empty `equivalent` bucket renders
+   `INCONCLUSIVE/ALL_MUTANTS_EQUIVALENT`, ranked after `survived` in A-117's
+   precedence. That makes the exclusion falsifiable — an implementation that
+   ignores `equivalent` renders `PASS` and fails `test_ca4_*`. The
+   `candidate_count`/`total`/bucket-length relation extends to include
    `equivalent`.
 4. **Attribution consistency.** `kill_attribution: declared` requires
    `kill_signal_artifact` and a `kill_signal` on every `killed` entry;
    `unattributed` forbids both, on every bucket.
-5. **Helper correspondence.** A claim whose payload was produced with an external
-   helper requires the matching `helpers` entry. P33 has no helper-producing
-   adapter, so the *check* lands here while its first real exercise is P34's.
+5. **Helper correspondence, observable direction only (A-223c).** Every
+   `helpers` entry requires a correspondingly-judged claim: `mutation-sites`
+   requires an R2 claim carrying a `mutation` payload, `statement-positions` an R1
+   claim carrying `coverage`. The **converse is deliberately not implemented
+   here** — nothing in the artifact bytes says a claim used a helper, so "a claim
+   produced with a helper requires an entry" has no readable antecedent and any
+   implementation of it would be vacuous. P34 owns it, with the adapter that makes
+   the state reachable (A-142/A-144's precedent).
 
 ### Operator renaming is not an alias
 
@@ -143,18 +173,38 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
 4. Rename the Python operator vocabulary throughout `vocabulary.py`,
    `adapters/python.py`, and `config.py`'s validation.
 5. Populate `go:*` and `sql:*` in the vocabulary as **declarable but
-   unproducible**: no adapter generates them in P33. A Go or SQL R2 lane must
-   load and then render payload-free `INCONCLUSIVE/MUTATION_UNSUPPORTED` per
-   A-183, never a load-time refusal and never green.
-6. Migrate every path in `migration-manifest.json`'s `implementer_owned` bucket
-   — 90 files. Do not touch `locked_carver_owned` (17 files) or
-   `excluded_build_artifact` (7).
-7. Prove both `carve-assets/P33/expected/*-v5-template.json` validate through the
-   installed wheel's own verifier, and that
-   `probe_v5_controlled_red.py`'s expectations 3, 4 and 5 now **invert** — the v5
-   templates that the pre-implementation tree rejected are accepted, and the v4
-   artifact that v5 rejected is still rejected.
-8. Run the full gate and record exact A-067 controlled-break counts.
+   unreachable**, and **prove the refusal behaviour unchanged** (A-225). P33 does
+   **not** make a Go or SQL R2 lane runnable: `cli._built_in_registry` registers
+   Python only, and `cli._resolve_declared_adapters` already refuses any declared
+   level above R0 for an unregistered language with `ERROR/BAD_LANE_CONFIG`
+   before anything executes (A-139). Add a test pinning exactly that, for both
+   `go` and `sql`, so a later package cannot quietly change it. Do not register a
+   language, do not touch `adapters/go.py`, and do not create `adapters/sql.py` —
+   that is P34's.
+6. Derive `kill_attribution` (A-223b). Add `kill_signal_artifact` to
+   `MutationConfig`; `judgment.r2.kill_attribution` is `declared` when it is
+   present and `unattributed` otherwise. Never a stored field, never a literal —
+   the same reason A-036 derives `argv_modified`.
+7. Add the `ALL_MUTANTS_EQUIVALENT` terminal (A-223d) to `errors.py` and rank it
+   in `judge_mutation` after `survived`: `killed + survived == 0` with a
+   non-empty `equivalent` bucket renders `INCONCLUSIVE/ALL_MUTANTS_EQUIVALENT`.
+   Extend the `candidate_count`/`total`/bucket-length arithmetic to include
+   `equivalent`.
+8. **Retire P26's v4 acceptance from the registered gate (A-224).** Point
+   `tools/tester-unified-gate.sh` at `carve-assets/P33/test_acceptance_v5.py`
+   instead of `carve-assets/P26/test_acceptance.py`, and emit a new phase marker
+   `ASSAY_GATE_PHASE=verdict-v5-accepted`. Do not edit P26's suite or its
+   templates — they stay as historical evidence and simply stop running.
+9. Migrate every path in `migration-manifest.json`'s `implementer_owned` bucket
+   — 92 files. Do not touch `locked_carver_owned` (19) or any path in
+   `carver_owned_prose_excluded` (16).
+10. Make the locked suite green: `PYTHONPATH=src python3 -m pytest
+    nyxloom-trove/carve-assets/P33/test_acceptance_v5.py -q -p no:randomly` is
+    **17 failed, 2 passed** on the pre-implementation tree and must reach all
+    green. Every negative in it is differential — it asserts a clean control
+    verifies *and* the injected defect does not — so none of them can pass on a
+    version mismatch.
+11. Run the full gate and record exact A-067 controlled-break counts.
 
 ## Carried in from P21, merged (read before work items 2 and 3)
 
@@ -175,8 +225,17 @@ has to *validate* it, never populate it.
 
 Note the defect that produced this explicit status: P27's own handoff left
 `go_cover.py` in neither `touch` nor `forbid`, and its scope therefore silently
-permitted exactly one of three product options. Every load-bearing file in this
-handoff has a status for that reason.
+permitted exactly one of three product options.
+
+**This handoff's first version repeated the defect it named.** It claimed every
+load-bearing file had a status while leaving `src/assay/cli.py` and
+`tools/tester-unified-gate.sh` with none, forbidding `src/assay/mutation.py`
+that in-scope `verify.py` already imports, and omitting
+`gate/python/qualify_topos.py` from scope while work item 9 required migrating
+it. All four are corrected above (A-224). The lesson is not "add statuses" but
+that a claim of completeness is itself a thing to verify: the scope list is now
+checked mechanically against `migration-manifest.json`, and that check is a test
+in the locked suite rather than a sentence here.
 
 ## Test constraints copied from AUTHORING.md §3b
 
@@ -203,7 +262,15 @@ migrated fixtures cannot tell a correct migration from a consistent one. So:
 at least one test must assert that a *v4* artifact is refused for its version,
 at least one that a v5 artifact missing `judgment.resolved` is refused, and at
 least one that a cross-language operator is refused — none of which any migrated
-fixture would catch.
+fixture would catch. All three are frozen in the locked suite rather than
+delegated.
+
+**Every negative must be differential.** Assert that the unmodified control
+verifies clean in the same test that asserts the injected defect does not. A bare
+"this is refused" passes on a pre-implementation tree for the wrong reason — the
+v4 verifier refuses any v5 document on its version alone — and that exact
+short-circuit is why three blocking defects survived the first carve. The locked
+suite's `refuses_only_the_defect` helper is the required shape.
 
 ## Scope / forbid
 

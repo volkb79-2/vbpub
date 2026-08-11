@@ -24,7 +24,12 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-V4 = HERE.parents[2] / "src" / "assay" / "schemas" / "verdict.schema.json"
+# B1 repair (A-223): the source is a COMMITTED v4 SNAPSHOT, never the live
+# shipped schema. Work item 1 overwrites the live path with v5, so a transform
+# reading it could only ever run once -- `--check` was unsatisfiable after the
+# work it was required to verify. The snapshot is byte-identical to the shipped
+# v4 at the input revision and keeps the delta auditable forever.
+V4 = HERE / "verdict.schema.v4-snapshot.json"
 V5 = HERE / "verdict.schema.v5.json"
 
 # --- V5-2 / A-221: the language-qualified operator vocabulary ----------------
@@ -62,7 +67,11 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
     log: list[str] = []
 
     # --- identity -----------------------------------------------------------
-    d["$id"] = d["$id"].replace("v4", "v5") if "v4" in d.get("$id", "") else d.get("$id", "")
+    # B8 repair (A-223(h)): the first version tested `"v4" in $id`, but the id is
+    # `urn:assay:schema:verdict:4` -- no literal "v4" -- so the rewrite was dead
+    # code and the v5 contract self-identified as v4. Set it explicitly.
+    d["$id"] = "urn:assay:schema:verdict:5"
+    log.append("$id -> urn:assay:schema:verdict:5 (B8/A-223h)")
     sv = d["properties"]["schema_version"]
     if "const" in sv:
         sv["const"] = 5
@@ -86,20 +95,53 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
             "out of judgment.r1 in v5 because an R0,R2 lane -- legal since "
             "A-192 -- renders no r1 and would otherwise record no language, "
             "source roots, or comparison base at all, even though R2 scopes "
-            "mutation to changed lines against exactly that base."
+            "mutation to changed lines against exactly that base. `base` is "
+            "REQUIRED ONLY when r1 or r2 is present (A-223a): "
+            "JUDGE_FIELDS_BY_RIGOR carries `base` for R1 and R2 and not for R3, "
+            "so an R0,R3 lane genuinely has no comparison commit and must not be "
+            "made to invent one. That conditional lives on `judgment`, which can "
+            "see its own tiers. `source_roots` is the DECLARED project-relative "
+            "spelling (A-049), never the relocated absolute scratch paths "
+            "(A-149); `base` is the pre-snapshot consumer-repository resolution, "
+            "which R1's in-snapshot resolution must equal (A-223f). Both are "
+            "cross-object and belong to the model and raw verifier."
         ),
         "type": "object",
-        "required": ["language", "source_roots", "base"],
+        "required": ["language", "source_roots"],
         "properties": hoisted,
         "additionalProperties": False,
     }
-    log.append("judgment_resolved: NEW (V5-1)")
+    log.append("judgment_resolved: NEW, base conditional (V5-1/A-223a)")
 
     judgment = defs["judgment"]
     judgment["properties"]["resolved"] = {"$ref": "#/$defs/judgment_resolved"}
     judgment["required"] = ["resolved"]
+    # B9 repair (A-223g): v4's minProperties:1 guaranteed at least one real tier.
+    # Dropping it silently made `judgment: {resolved}` valid for a run that
+    # judged nothing. Restore the guarantee EXPLICITLY rather than by a count
+    # that now also counts `resolved`.
     judgment.pop("minProperties", None)
-    log.append("judgment: +resolved, required=[resolved], minProperties dropped")
+    judgment["allOf"] = [
+        {
+            "anyOf": [
+                {"required": ["r1"]},
+                {"required": ["r2"]},
+                {"required": ["r3"]},
+            ]
+        },
+        {
+            "if": {"anyOf": [{"required": ["r1"]}, {"required": ["r2"]}]},
+            "then": {
+                "properties": {
+                    "resolved": {"required": ["language", "source_roots", "base"]}
+                }
+            },
+        },
+    ]
+    log.append(
+        "judgment: +resolved (required), at-least-one-tier restored explicitly "
+        "(B9/A-223g), base required iff r1|r2 (B3/A-223a)"
+    )
 
     # --- V5-2 / A-221: language-qualified operators --------------------------
     defs["mutation_operator"] = {
@@ -183,12 +225,43 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
         "description": (
             "The mechanism this kill was attributed to, verbatim from the "
             "declared kill_signal_artifact. Present on every killed entry when "
-            "kill_attribution is 'declared'; absent otherwise."
+            "kill_attribution is 'declared'; absent otherwise. Legal ONLY on a "
+            "killed entry (A-223e) -- a kill signal on a mutant nothing killed "
+            "is a contradiction. Enforced below, per bucket."
         ),
         "type": "string",
         "minLength": 1,
     }
     log.append("mutant_outcome: +kill_signal (optional) (V5-4)")
+
+    # B10 repair (A-223e): kill_signal is legal only in the killed bucket. The
+    # constraint is locally expressible, so per A-182 it belongs in the schema
+    # rather than in a verifier check nobody can see from the document.
+    for bucket in ("survived", "crashed", "budget_exceeded", "equivalent"):
+        mutation["properties"][bucket]["items"] = {
+            "allOf": [
+                {"$ref": "#/$defs/mutant_outcome"},
+                {"not": {"required": ["kill_signal"]}},
+            ]
+        }
+    log.append(
+        "mutation: kill_signal forbidden on survived/crashed/budget_exceeded/"
+        "equivalent items (B10/A-223e)"
+    )
+
+    # B6 repair (A-223d): an all-inert run needs its own terminal, or it walks
+    # judge_mutation to PASS -- A-026/A-035's 0/0-is-100% bug one layer down.
+    # A-050 forbids inventing a reason code without a ruling; A-223(d) is it.
+    rc = defs["reason_code"]
+    if "enum" in rc and "ALL_MUTANTS_EQUIVALENT" not in rc["enum"]:
+        rc["enum"].append("ALL_MUTANTS_EQUIVALENT")
+    inc = defs["reason_codes"]["INCONCLUSIVE"]
+    if "ALL_MUTANTS_EQUIVALENT" not in inc["enum"]:
+        inc["enum"].append("ALL_MUTANTS_EQUIVALENT")
+    log.append(
+        "reason_code + reason_codes.INCONCLUSIVE: +ALL_MUTANTS_EQUIVALENT "
+        "(B6/A-223d)"
+    )
 
     # --- V5-5: helper provenance -------------------------------------------
     d["properties"]["helpers"] = {

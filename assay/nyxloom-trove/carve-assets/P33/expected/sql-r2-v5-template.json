@@ -44,8 +44,8 @@
       "verified_by_assay": true,
       "reason_code": "MUTANTS_SURVIVED",
       "mutation": {
-        "candidate_count": 4,
-        "total": 4,
+        "candidate_count": 3,
+        "total": 3,
         "killed": [
           {
             "path": "schema/03-create-tables-core.sql",
@@ -81,17 +81,7 @@
           }
         ],
         "crashed": [],
-        "budget_exceeded": [
-          {
-            "path": "schema/03-create-tables-core.sql",
-            "lineno": 63,
-            "start_byte": 1801,
-            "end_byte": 1844,
-            "replacement_sha256": "@BUDGET_REPLACEMENT_SHA@",
-            "operator": "sql:drop-trigger",
-            "description": "drop trigger corpora_complete_guard"
-          }
-        ]
+        "budget_exceeded": []
       }
     }
   ],

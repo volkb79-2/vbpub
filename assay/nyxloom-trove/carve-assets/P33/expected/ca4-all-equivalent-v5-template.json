@@ -1,0 +1,92 @@
+{
+  "schema_version": 5,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "schema",
+  "commit": "@HEAD_OID@",
+  "outcome": "INCONCLUSIVE",
+  "exit_code": 5,
+  "reason_code": "ALL_MUTANTS_EQUIVALENT",
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "declared_rigor": ["R0", "R2"],
+  "declared_evidence": [],
+  "argv_declared": ["./run-schema-tests.sh"],
+  "argv_appended": [],
+  "argv_effective": ["./run-schema-tests.sh"],
+  "argv_modified": false,
+  "env_declared": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "env_effective": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "INCONCLUSIVE",
+      "verified_by_assay": true,
+      "reason_code": "ALL_MUTANTS_EQUIVALENT",
+      "mutation": {
+        "candidate_count": 3,
+        "total": 3,
+        "killed": [],
+        "survived": [],
+        "equivalent": [
+          {
+            "path": "schema/07-legacy-constraints.sql",
+            "lineno": 18,
+            "start_byte": 402,
+            "end_byte": 448,
+            "replacement_sha256": "@EQ1_SHA@",
+            "operator": "sql:drop-check",
+            "description": "drop CHECK corpora_state_check -- redeclared by 12-repair.sql"
+          },
+          {
+            "path": "schema/07-legacy-constraints.sql",
+            "lineno": 24,
+            "start_byte": 512,
+            "end_byte": 560,
+            "replacement_sha256": "@EQ2_SHA@",
+            "operator": "sql:drop-check",
+            "description": "drop CHECK corpora_kind_check -- redeclared by 12-repair.sql"
+          },
+          {
+            "path": "schema/07-legacy-constraints.sql",
+            "lineno": 31,
+            "start_byte": 640,
+            "end_byte": 701,
+            "replacement_sha256": "@EQ3_SHA@",
+            "operator": "sql:drop-not-null",
+            "description": "drop NOT NULL from corpora.kind -- re-added by 12-repair.sql"
+          }
+        ],
+        "crashed": [],
+        "budget_exceeded": []
+      }
+    }
+  ],
+  "evidence": [],
+  "judgment": {
+    "resolved": {
+      "language": "sql",
+      "source_roots": ["schema"],
+      "base": "@BASE_OID@"
+    },
+    "r2": {
+      "jobs": 1,
+      "max_mutants": 50,
+      "operators": ["sql:drop-check", "sql:drop-not-null"],
+      "kill_attribution": "unattributed",
+      "equivalence_artifact": ".assay/schema-dump.sql"
+    }
+  }
+}

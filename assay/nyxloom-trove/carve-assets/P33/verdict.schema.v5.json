@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:4",
+  "$id": "urn:assay:schema:verdict:5",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.target against judgment.r3.target), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks.",
   "type": "object",
@@ -538,7 +538,8 @@
         "SNAPSHOT_LIMIT_EXCEEDED",
         "NO_MUTANTS",
         "MUTATION_UNSUPPORTED",
-        "CANARY_INCONCLUSIVE"
+        "CANARY_INCONCLUSIVE",
+        "ALL_MUTANTS_EQUIVALENT"
       ]
     },
     "reason_codes": {
@@ -585,7 +586,8 @@
         "enum": [
           "NO_MUTANTS",
           "MUTATION_UNSUPPORTED",
-          "CANARY_INCONCLUSIVE"
+          "CANARY_INCONCLUSIVE",
+          "ALL_MUTANTS_EQUIVALENT"
         ]
       }
     },
@@ -1027,7 +1029,7 @@
           "minLength": 1
         },
         "kill_signal": {
-          "description": "The mechanism this kill was attributed to, verbatim from the declared kill_signal_artifact. Present on every killed entry when kill_attribution is 'declared'; absent otherwise.",
+          "description": "The mechanism this kill was attributed to, verbatim from the declared kill_signal_artifact. Present on every killed entry when kill_attribution is 'declared'; absent otherwise. Legal ONLY on a killed entry (A-223e) -- a kill signal on a mutant nothing killed is a contradiction. Enforced below, per bucket.",
           "type": "string",
           "minLength": 1
         }
@@ -1065,26 +1067,70 @@
         "survived": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/mutant_outcome"
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
           }
         },
         "crashed": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/mutant_outcome"
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
           }
         },
         "budget_exceeded": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/mutant_outcome"
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
           }
         },
         "equivalent": {
           "description": "Mutants proven to produce no change in the judged artifact, established by byte comparison of judgment.r2.equivalence_artifact against the baseline run's. NOT survived: a no-op mutant is evidence about the mutation, not about the tests. Excluded from the mutation-score denominator (arithmetic is cross-object and belongs to the model and raw verifier).",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/mutant_outcome"
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
           }
         }
       },
@@ -1206,6 +1252,54 @@
       "additionalProperties": false,
       "required": [
         "resolved"
+      ],
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "r1"
+              ]
+            },
+            {
+              "required": [
+                "r2"
+              ]
+            },
+            {
+              "required": [
+                "r3"
+              ]
+            }
+          ]
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "r1"
+                ]
+              },
+              {
+                "required": [
+                  "r2"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolved": {
+                "required": [
+                  "language",
+                  "source_roots",
+                  "base"
+                ]
+              }
+            }
+          }
+        }
       ]
     },
     "claim": {
@@ -1695,12 +1789,11 @@
       "additionalProperties": false
     },
     "judgment_resolved": {
-      "description": "What was judged, shared by every computed tier above R0. Hoisted out of judgment.r1 in v5 because an R0,R2 lane -- legal since A-192 -- renders no r1 and would otherwise record no language, source roots, or comparison base at all, even though R2 scopes mutation to changed lines against exactly that base.",
+      "description": "What was judged, shared by every computed tier above R0. Hoisted out of judgment.r1 in v5 because an R0,R2 lane -- legal since A-192 -- renders no r1 and would otherwise record no language, source roots, or comparison base at all, even though R2 scopes mutation to changed lines against exactly that base. `base` is REQUIRED ONLY when r1 or r2 is present (A-223a): JUDGE_FIELDS_BY_RIGOR carries `base` for R1 and R2 and not for R3, so an R0,R3 lane genuinely has no comparison commit and must not be made to invent one. That conditional lives on `judgment`, which can see its own tiers. `source_roots` is the DECLARED project-relative spelling (A-049), never the relocated absolute scratch paths (A-149); `base` is the pre-snapshot consumer-repository resolution, which R1's in-snapshot resolution must equal (A-223f). Both are cross-object and belong to the model and raw verifier.",
       "type": "object",
       "required": [
         "language",
-        "source_roots",
-        "base"
+        "source_roots"
       ],
       "properties": {
         "language": {

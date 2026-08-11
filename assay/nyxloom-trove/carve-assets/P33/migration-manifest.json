@@ -1,17 +1,24 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_for": "P33 schema v5 migration",
-  "frozen_at_main": "b03555d79227ef7eb76eaf7f851c2896968fa455",
-  "scan": "files under assay/ with schema_version 4, judgment.r1 hoisted keys, or a bare (unqualified) operator name",
+  "frozen_at_main": "b22ebd56c4af3f89cd393ef013ca292f722b16ee",
+  "scan_command": "git ls-files, then grep each tracked .json/.py/.sh/.md for: '\"schema_version\": 4'; 'source_roots' co-occurring with judgment or \"r1\"; a bare unqualified operator name; the literal 'urn:assay:schema:verdict:4'; an invocation of carve-assets/P26/test_acceptance.py",
+  "corrections_from_review": [
+    "scan runs over the git INDEX, not the working tree -- v1 listed 7 untracked build/lib files an implementer in a fresh worktree would never have",
+    "added schema-id-string, which catches tests/test_verdict_schema_is_packaged.py (B8)",
+    "added runs-P26-v4-acceptance, which catches tools/tester-unified-gate.sh (D3)",
+    "gate/python/qualify_topos.py is present and now inside scope.touch via gate/python/** (D1)",
+    "carver_owned_prose_excluded is a THIRD bucket, listed rather than silently dropped: these files narrate the strings historically and must not be migrated. DESIGN-GUIDE's stale worked TOML example is a real drift the carver owns (see the handoff's doc-drift note), not implementer work."
+  ],
   "counts": {
-    "locked_carver_owned": 17,
-    "implementer_owned": 90,
-    "excluded_build_artifact": 7
+    "locked_carver_owned": 19,
+    "implementer_owned": 92,
+    "carver_owned_prose_excluded": 16
   },
   "ownership_rule": {
-    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-197 permits ONLY the carver to touch them, with an explicit decision and a new hash epoch. A-222 rules they are NOT rewritten to v5 -- they are historical evidence of what a merged package proved. The implementer must not edit any path in this bucket.",
-    "implementer_owned": "P33's implementer migrates these.",
-    "excluded_build_artifact": "build/lib is a stale copy produced by a wheel build; it is not source and must not be edited. If it is tracked, that is a separate defect, not P33's work."
+    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-222 keeps them unedited as historical evidence and A-224 retires their EXECUTION instead. The implementer must not edit any path here.",
+    "implementer_owned": "P33's implementer migrates these. Every path is inside scope.touch.",
+    "carver_owned_prose_excluded": "Historical narrative or carver-owned design prose. Not migrated. Listed so the exclusion is auditable."
   },
   "buckets": {
     "locked_carver_owned": [
@@ -97,6 +104,12 @@
         ]
       },
       {
+        "path": "nyxloom-trove/carve-assets/P26/README.md",
+        "why": [
+          "runs-P26-v4-acceptance"
+        ]
+      },
+      {
         "path": "nyxloom-trove/carve-assets/P26/expected/attestation-timeout-v4-template.json",
         "why": [
           "schema_version-4"
@@ -118,6 +131,12 @@
         "path": "nyxloom-trove/carve-assets/P26/expected/stale-directory-v4-template.json",
         "why": [
           "schema_version-4"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/carve-assets/P26/test_acceptance.py",
+        "why": [
+          "runs-P26-v4-acceptance"
         ]
       },
       {
@@ -156,7 +175,8 @@
         "path": "src/assay/schemas/verdict.schema.json",
         "why": [
           "judgment.r1-hoisted-keys",
-          "bare-operator-name"
+          "bare-operator-name",
+          "schema-id-string"
         ]
       },
       {
@@ -673,6 +693,12 @@
         ]
       },
       {
+        "path": "tests/test_verdict_schema_is_packaged.py",
+        "why": [
+          "schema-id-string"
+        ]
+      },
+      {
         "path": "tests/test_verdict_schema_rejects.py",
         "why": [
           "bare-operator-name"
@@ -698,50 +724,115 @@
           "judgment.r1-hoisted-keys",
           "bare-operator-name"
         ]
+      },
+      {
+        "path": "tools/tester-unified-gate.sh",
+        "why": [
+          "runs-P26-v4-acceptance"
+        ]
       }
     ],
-    "excluded_build_artifact": [
+    "carver_owned_prose_excluded": [
       {
-        "path": "build/lib/assay/adapters/python.py",
-        "why": [
-          "bare-operator-name"
-        ]
-      },
-      {
-        "path": "build/lib/assay/config.py",
-        "why": [
-          "judgment.r1-hoisted-keys"
-        ]
-      },
-      {
-        "path": "build/lib/assay/runner.py",
-        "why": [
-          "judgment.r1-hoisted-keys"
-        ]
-      },
-      {
-        "path": "build/lib/assay/schemas/verdict.schema.json",
+        "path": "docs/DESIGN-GUIDE.md",
         "why": [
           "judgment.r1-hoisted-keys",
           "bare-operator-name"
         ]
       },
       {
-        "path": "build/lib/assay/verdict.py",
+        "path": "nyxloom-trove/SCHEMA-V5-DESIGN.md",
         "why": [
           "judgment.r1-hoisted-keys"
         ]
       },
       {
-        "path": "build/lib/assay/verify.py",
+        "path": "nyxloom-trove/STATE.md",
         "why": [
           "judgment.r1-hoisted-keys"
         ]
       },
       {
-        "path": "build/lib/assay/vocabulary.py",
+        "path": "nyxloom-trove/decisions.md",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "runs-P26-v4-acceptance"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P17-r1-cli-pipeline.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P20-repository-artifact-boundary-integrity.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P21-verdict-v4-evidence-contract.md",
+        "why": [
+          "schema_version-4",
+          "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P26-attested-evidence-cli-hardening.md",
+        "why": [
+          "runs-P26-v4-acceptance"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P27-go-gate-adapter-resolution.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P29-go-mutation-helper-protocol.md",
         "why": [
           "bare-operator-name"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/handoffs/assay-P33-verdict-schema-v5.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P16-independent-verdict-conformance-v3-LOG.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P19-isolated-r3-cli-pipeline-LOG.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P23-exact-reexecution-integration-LOG.md",
+        "why": [
+          "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P26-attested-evidence-cli-hardening-LOG.md",
+        "why": [
+          "runs-P26-v4-acceptance"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P33-pre-dispatch-adversarial-review.md",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name",
+          "schema-id-string",
+          "runs-P26-v4-acceptance"
         ]
       }
     ]

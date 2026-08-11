@@ -1,0 +1,58 @@
+{
+  "schema_version": 5,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "canary",
+  "commit": "@HEAD_OID@",
+  "outcome": "PASS",
+  "exit_code": 0,
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "declared_rigor": ["R0", "R3"],
+  "declared_evidence": [],
+  "argv_declared": ["python", "-m", "pytest", "-q"],
+  "argv_appended": [],
+  "argv_effective": ["python", "-m", "pytest", "-q"],
+  "argv_modified": false,
+  "env_declared": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "env_effective": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R3",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true,
+      "canary": {
+        "mechanism": "uncovered-line",
+        "target": "pkg/greet.py",
+        "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
+        "control_outcome": "PASS",
+        "transformed_outcome": "FAIL",
+        "expected_reason_code": "UNCOVERED_LINES",
+        "observed_reason_code": "UNCOVERED_LINES"
+      }
+    }
+  ],
+  "evidence": [],
+  "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": ["pkg"]
+    },
+    "r3": {
+      "mechanism": "uncovered-line",
+      "target": "pkg/greet.py"
+    }
+  }
+}

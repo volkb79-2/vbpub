@@ -8,13 +8,29 @@ Assets: `nyxloom-trove/carve-assets/P33/`. Handoff:
 
 ## Result
 
-**READY, pending the mandatory CR-opus-0 carve review.** Every externally visible
-decision is fixed: the schema exists as bytes, both expected templates exist, the
-ownership boundary is a committed manifest rather than prose, and thirteen
-pre-implementation expectations are witnessed and reproducible.
+> **SUPERSEDED IN PART, 2026-08-11.** The first freeze recorded below was reviewed
+> **NOT READY** (eleven blocking defects, six scope defects) and re-carved. Read
+> § "Answering the pre-dispatch review" at the end of this file for what changed;
+> the sections between here and there are the original freeze, retained because
+> the review's central finding is about *how* they were validated and deleting
+> them would erase the evidence. Where a statement below conflicts with the
+> answer section, **the answer section governs.** In particular: the locked
+> acceptance suite that "What is not frozen" declines to supply now exists, the
+> asset counts are 19/92/16 rather than 17/90/7, and A-221's reasoning is
+> corrected by A-225.
+
+**First freeze's claim — READY, pending the mandatory CR-opus-0 carve review.**
+Every externally visible decision is fixed: the schema exists as bytes, both
+expected templates exist, the ownership boundary is a committed manifest rather
+than prose, and thirteen pre-implementation expectations are witnessed and
+reproducible.
 
 Nothing here is left for the implementer to invent. The one thing I deliberately
 did *not* supply is a full locked acceptance suite; see "What is not frozen".
+
+*That claim did not survive review.* Three of the thirteen expectations passed on
+a version short-circuit, four requirements were mechanically unsatisfiable, and
+five externally visible decisions were in fact left to the implementer.
 
 ## What the carve established
 
@@ -65,6 +81,13 @@ populating the vocabulary restores it. I recommended against including Go
 operators last turn on "don't invent" grounds; that instinct was right in general
 and wrong here, because these three are transcription of an existing catalogue
 rather than invention.
+
+> **WITHDRAWN by A-225.** The paragraph above is wrong about the shipped product.
+> `cli._resolve_declared_adapters` consults the registry for every declared level
+> above R0 before anything executes, and only Python is registered, so a Go R2
+> lane is refused `ERROR/BAD_LANE_CONFIG` at load *either way* — the load-versus-
+> runtime distinction I relied on does not exist in this build. The catalogue
+> stands; the justification does not. See A-225 and the answer section.
 
 **A-222 — locked v4 assets are not rewritten.** A-138/A-170 make a version bump a
 consumer migration with no in-place upgrade, and A-176/A-206/A-214 lock these
@@ -147,3 +170,101 @@ attack rather than assess is worth repeating for this one. The highest-value
 targets: whether the absent locked suite is a real gap; whether the five
 cross-object invariants are complete; and whether `judgment.resolved` being
 *required* whenever `judgment` is present breaks any legitimate R0-only artifact.
+
+---
+
+# Answering the pre-dispatch review (re-carve, 2026-08-11)
+
+The CR-opus-0 pre-dispatch review returned **NOT READY** with eleven blocking
+defects and six scope defects
+(`reports/assay-P33-pre-dispatch-adversarial-review.md`). It was right on every
+count I could check, and I checked all of the load-bearing ones directly rather
+than accepting them. The review's own framing is the accurate one: the design was
+not the problem; the freeze was.
+
+**The methodological finding is the one worth carrying forward.** I cited thirteen
+green probe expectations as evidence. Three of them were satisfied by
+`verify_document`'s version short-circuit alone — the verifier returned
+`schema_version 5 is not this verifier's version 4` and stopped, so no semantic
+check ever ran against either template. That masking is not incidental; it is why
+three blocking defects survived. All three (B1, B2, D3) are facts about the
+post-implementation state, and no assertion made against a tree whose shipped
+schema is still v4 can see any of them. I had reasoned myself into omitting the
+locked suite on common-mode grounds; the correct answer was to author it *against
+the post-implementation state*, which would have caught all three.
+
+## Verified before repairing
+
+| finding | how I checked it | result |
+|---|---|---|
+| B8 `$id` still v4 | read the generated asset | `urn:assay:schema:verdict:4` with `const: 5`. My rewrite tested `"v4" in $id`; the id contains `:4`, so it was dead code |
+| B2 template contradicts precedence | re-derived buckets against shipped `judge_mutation` | non-empty `budget_exceeded` with `FAIL`/`MUTANTS_SURVIVED` recorded — unreachable under A-117 |
+| B3 `base` on R0,R3 | read `JUDGE_FIELDS_BY_RIGOR` | `R3 == ('language','source_roots','canary')`; R1/R2 carry `base`, R3 does not. Also confirms the *other* two hoists are right |
+| B7 A-183 misread | read `_resolve_declared_adapters` | `for level in lane.rigor: if level != "R0": registry.get_adapter(...)` — a Go R2 lane fails at load today, so my load-vs-runtime argument described a distinction that does not exist |
+| D5 forbidden import | grepped `verify.py` | `from .mutation import judge_mutation` — I forbade a module in-scope code already imports |
+| D3 gate breakage | read `tools/tester-unified-gate.sh:231` and P26's suite | the gate runs P26's locked suite, which asserts `verify_document(<v4 template>) == []` at three sites |
+| D1 path outside scope | `git ls-files gate/python/qualify_topos.py` | tracked, 7 `source_roots` hits, outside my `scope.touch` |
+| manifest ran on the worktree | `git ls-files build` | empty — the v1 manifest listed 7 untracked files a fresh worktree would not have |
+
+## What changed
+
+**Decisions.** A-223 answers all five invented-decision findings plus B8/B9;
+A-224 executes A-222's unexecuted second clause and corrects the scope; A-225
+withdraws A-221's reasoning while leaving its catalogue intact.
+
+**Assets.** A committed v4 snapshot makes `--check` survive the migration (B1).
+The SQL template's `budget_exceeded` bucket is emptied and its arithmetic redone
+(B2). `$id` is set explicitly (B8). `base` became conditional and the
+at-least-one-tier guarantee is restored explicitly rather than dropped (B3, B9).
+`kill_signal` is forbidden on the four non-killed buckets in the schema itself,
+since the constraint is locally expressible (B10, A-182). `ALL_MUTANTS_EQUIVALENT`
+enters the reason vocabulary, which is what finally makes O3's exclusion
+falsifiable (B6). Two new locked templates freeze CA1 and CA4. The manifest is
+regenerated over the git index with two new detection reasons — one catching
+`tests/test_verdict_schema_is_packaged.py`, one catching the gate script — and a
+third bucket listing the sixteen carver-owned prose files so their exclusion is
+auditable instead of silent.
+
+**The locked suite exists.** `test_acceptance_v5.py`, 19 tests, **17 failed / 2
+passed** pre-implementation. It carries P26's attestation coverage forward by
+reading P26's own locked templates and bumping only `schema_version` in memory —
+so A-222's "never rewritten" and A-224's "no longer executed" both hold literally.
+Every negative is differential, which is the direct structural answer to the
+version-masking that defeated the first freeze.
+
+**Two claims I had to withdraw.** My assertion that "every load-bearing file has
+a status" was false while `cli.py` and `tools/tester-unified-gate.sh` had none —
+I diagnosed that exact defect in P27 and reproduced it. And the scope↔manifest
+agreement is now a mechanical check (92/92 inside `scope.touch`) rather than a
+sentence claiming completeness.
+
+## Residual, named rather than hidden
+
+- **`input_revision`** names `b22ebd56`, which contains the P33 assets in their
+  *pre-repair* form; the repaired assets land in the commit carrying this report
+  section. A handoff cannot contain its own commit hash. Verify against
+  `carve-assets/P33/README.md`'s hash table before starting, and treat that table
+  as the anchor.
+- **`DESIGN-GUIDE.md`'s worked TOML example** declares the four bare operator
+  names and becomes a config-load refusal after P33. The guide is carver-owned and
+  forbidden to the implementer, so **I own that edit** and it is not in P33's
+  scope. It must land before P33 merges, not after; recorded here so it is not
+  discovered by a reader of a shipped doc.
+- **`judge.language` remains an opaque string** at every layer, so "closed per
+  language" is enforced only for the three prefixes that exist. The review is
+  right that an enum is locally expressible. I am not adding one in P33: it would
+  refuse every currently-valid lane declaring an unregistered language at config
+  load, which is a behaviour change beyond a contract migration. Named for P34,
+  which is the first package with a second real language.
+
+## Disposition
+
+**READY for a fresh mandatory carve review**, with no claim that a second round
+is a formality. The first review found the freeze had never been observed in the
+state it produces; the repair's whole thrust is that the state is now asserted by
+a locked, differential, post-implementation suite. The highest-value targets for
+the next reviewer: whether `ALL_MUTANTS_EQUIVALENT` interacts correctly with the
+existing `NO_MUTANTS` and `MUTATION_UNSUPPORTED` terminals; whether the
+`judgment.allOf` conditional actually expresses "base iff r1|r2" for every rigor
+combination; and whether retiring P26's suite from the gate loses any coverage the
+carry-forward test does not reproduce.
