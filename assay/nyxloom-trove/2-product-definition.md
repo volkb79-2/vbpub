@@ -343,10 +343,46 @@ features:
 - id: F014
   title: Release ergonomics - cmru adoption and a parallel zipapp artifact
   acceptance:
-  - assay releases through cmru's orchestration (per-product prefix, tag, GitHub Release, latest.json, isolated release worktree) while keeping its own hash-bound build via an explicit build step override, so A-198/A-199's closure is not silently downgraded.
-  - A zipapp is published beside the wheel, built FROM the released wheel so it reports a real version rather than 0+unknown, and byte-identical across two builds.
-  - Both the cmru .sha256 sidecar and assay's own release manifest sit on one Release, with the manifest documented as authoritative because only it can feed pip's hash mode.
-  status: planned
+  - id: F014-A1
+    text: assay releases through cmru's orchestration (per-product prefix, tag, GitHub Release, latest.json, isolated release worktree) while keeping its own hash-bound build via an explicit build-step override, so A-198/A-199's closure is not silently downgraded.
+    status: proven
+    evidence:
+    - tests/test_distribution_build_release.py::test_the_builder_is_a_standalone_stdlib_only_module
+    - tests/test_distribution_build_release.py::test_locked_pins_agree_with_the_gate_scripts_independent_transcription
+    - tests/test_distribution_build_release.py::test_the_tag_glob_is_the_same_one_pyproject_and_cmru_use
+  - id: F014-A2
+    text: A zipapp is built FROM the released wheel, so it reports the wheel's own version rather than the 0+unknown source-tree fallback, and reads its packaged schema from inside the archive.
+    status: proven
+    evidence:
+    - tests/test_distribution_build_release.py::test_the_zipapp_reports_the_wheels_version_and_never_the_source_fallback
+    - tests/test_distribution_build_release.py::test_the_zipapp_reads_its_packaged_schema_from_inside_the_archive
+    - tests/test_distribution_build_release.py::test_the_zipapp_verifies_a_real_artifact_and_refuses_a_foreign_version
+  - id: F014-A3
+    text: The zipapp propagates a non-zero exit code, so a FAIL, ERROR or NO_MEASUREMENT verdict is not read as success by a consumer.
+    status: proven
+    evidence:
+    - tests/test_distribution_build_release.py::test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane
+    - tests/test_distribution_build_release.py::test_the_generated_zipapp_entry_point_propagates_the_exit_code
+    - tests/test_distribution_build_release.py::test_zipapps_own_generated_main_really_does_drop_the_return_value
+  - id: F014-A4
+    text: Two builds of one commit produce byte-identical artifacts, and no builder-specific path enters the archive.
+    status: proven
+    evidence:
+    - tests/test_distribution_build_release.py::test_two_builds_of_one_commit_are_byte_identical
+    - tests/test_distribution_build_release.py::test_the_archive_carries_no_builder_specific_paths
+    - tests/test_distribution_build_release.py::test_stripping_removes_direct_url_and_prunes_record_to_what_exists
+  - id: F014-A5
+    text: A release manifest is emitted only for a build whose HEAD carries the project's own assay-v* tag, so an SCM development identity cannot be published as a release.
+    status: proven
+    evidence:
+    - tests/test_distribution_build_release.py::test_an_untagged_build_emits_no_release_manifest
+    - tests/test_distribution_build_release.py::test_head_release_tag_refuses_a_tag_that_is_merely_REACHABLE
+    - tests/test_distribution_build_release.py::test_head_release_tag_ignores_another_products_tag_on_head
+    - tests/test_distribution_build_release.py::test_the_fallback_version_is_refused_on_an_untagged_build
+  - id: F014-A6
+    text: The wheel, the zipapp, both .sha256 sidecars and the release manifest all appear as assets on one GitHub Release, with the manifest documented as authoritative because only it can feed pip's hash mode.
+    status: absent
+  status: building
   milestone: M4
 - id: F015
   title: fail-before/pass-after as a computed method

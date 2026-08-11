@@ -192,9 +192,15 @@ C14).
 ## B002 — adopt cmru for assay's release process (design checkpoint, NOT landed)
 
 **Proposed by:** the operator, standing intent, scoped here 2026-08-11 by C-sol-1.
-**Status:** scoped and STOPPED SHORT of landing, per the B001 design-checkpoint
-pattern. A-247 records the disposition. Two blockers below are product
-decisions, not mechanical edits.
+**Status:** **IMPLEMENTED 2026-08-11 (A-249/A-250)**, except the first real
+release (step 6), which needs `main` pushed plus explicit authorisation — see
+A-250. A-247 recorded the original stop-short and A-248 lifted it. The two
+blockers below became rulings: adopt cmru's orchestration, decline its build;
+the release manifest is authoritative over a `.sha256` sidecar. **The plan
+below is kept as written, because what it got wrong is worth more than a tidy
+record: it treated the mtime normalisation as the whole reproducibility story,
+and a real build showed the wheel itself was non-deterministic until
+`SOURCE_DATE_EPOCH` was set.**
 
 ### What is true today, verified
 
@@ -284,8 +290,12 @@ the case the carve rules say to hand back rather than land.
 **Proposed by:** Fable, round-3 review, 2026-08-11, as the near-zero-cost
 answer for consumers with no installed Python package manager (A-O04's srdm
 blocker). Scoped and measured the same day.
-**Status:** mechanically proven end to end; blocked only on B002's release
-path. A-247 records the disposition.
+**Status:** **IMPLEMENTED 2026-08-11 (A-249)** as part of
+`gate/distribution/build_release.py`; publication of the `.pyz` asset itself
+waits on A-250's release step. Two things this scoping did not find, both caught
+by building for real: the WHEEL is also non-reproducible without
+`SOURCE_DATE_EPOCH`, and `zipapp -m` would have discarded every non-zero exit
+code.
 
 ### Measured, not assumed — a zipapp really works
 

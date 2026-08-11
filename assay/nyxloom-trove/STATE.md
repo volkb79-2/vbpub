@@ -65,7 +65,17 @@
 > not be "tidied" up. assay's trove does not run under the nyxloom daemon; the
 > schemas are the contract.
 >
-> **NEXT WORK IS THE SHIP MILESTONE (cmru adoption + zipapp), NOT P34.**
+> **SHIP IS IMPLEMENTED BUT NOT PUBLISHED (A-249/A-250).**
+> `gate/distribution/build_release.py` builds the wheel + a reproducible zipapp
+> + sidecars + (tagged only) A-200's manifest; `cmru.toml` carries
+> `[project.assay]`; cmru's `wheel-publish` gained an additive `--extra-asset`.
+> **The one remaining step is the first real release**, which
+> `cmru release --project assay --dry-run` correctly refuses: *"Local main is
+> 103 commit(s) ahead of origin/main"* — cmru's own global guard, identical for
+> `--project ciu`. It needs `main` pushed and explicit operator authorisation.
+> After that, P34.
+>
+> **NEXT WORK WAS THE SHIP MILESTONE (cmru adoption + zipapp), NOT P34.**
 > Resequenced 2026-08-11 by A-248: the execution order is now
 > **P33 (done) → \[ship: cmru + zipapp\] → P34 → P27 (resumed) → P28 → P29 →
 > P30 → P31 → P32.** P34's carve must NOT be dispatched until ship is landed.

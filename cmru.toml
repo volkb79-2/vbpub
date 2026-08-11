@@ -18,16 +18,16 @@ registry = ["ghcr.io"]       # OCI registries to push images to (S11.3)
 [orchestration]
 # Only projects listed here are auto-tagged/released by `status`/`release` (S-CLI.2).
 # empyrion-translation stays on-demand (date-tagged game asset, not in this set).
-project_order    = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-default_projects = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+project_order    = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+default_projects = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
 default_steps    = ["run-tests", "build", "push", "validate"]
 execution_mode   = "project-first"
 
 [orchestration.step_project_order]
-run-tests = ["ciu", "topos", "modern-debian-tools-python-debug", "pwmcp"]
-build     = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-push      = ["ciu", "cmru", "nyxloom", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-validate  = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+run-tests = ["ciu", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp"]
+build     = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+push      = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+validate  = ["ciu", "assay", "modern-debian-tools-python-debug", "pwmcp"]
 
 [cleanup]
 release_tag_prefixes = ["*"]
@@ -133,6 +133,59 @@ commands = [
 ]
 [project.nyxloom.env]
 NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development. Installs the `nyxloom` CLI: project onboarding, handoff lint, gate verify, doctor, resync, and the reconciler daemon.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
+
+# ─── assay — Python wheel + zipapp (OWN build; cmru orchestrates only) ────────
+# assay adopts cmru's ORCHESTRATION (semver tag, GitHub Release, per-product
+# prefix, latest.json, the isolated release worktree) and DECLINES its BUILD.
+#
+# WHY, because this reads as an unnecessary override until you check
+# (assay/nyxloom-trove/decisions.md A-247/A-249): cmru's built-in wheel-build is
+# `python -m build --wheel` (handlers.py cmd_wheel_build). assay's own release
+# build is a private, exact-OID, --no-local sparse clone, built with a
+# hash-checked five-wheel offline closure installed via `pip --require-hashes`
+# from a committed wheelhouse, then `pip wheel --no-index --no-build-isolation`
+# (A-198/A-199). Taking the built-in would silently replace that with an
+# unpinned ambient build -- a regression in the one property assay's P24 exists
+# to establish. So steps.build runs assay's own builder, which ALSO emits the
+# reproducible zipapp, both .sha256 sidecars, and -- only for a tagged release --
+# the hash-bound release manifest A-200 defines.
+#
+# CAUTION, the same trap nyxloom documents above: an explicit [steps.<step>]
+# wins over the profile built-in for that step, for the WHOLE project. So
+# steps.push invokes the built-in wheel-publish EXPLICITLY, with --extra-asset
+# globs for the zipapp and the manifest (globs because the step cannot know the
+# version string in the filename).
+#
+# `prefix` MUST stay "assay-v": assay/pyproject.toml's setuptools_scm reads
+# `--match assay-v*` and gate/distribution/build_release.py's TAG_GLOB is the
+# same string. assay/tests/test_distribution_build_release.py pins all three
+# together, because the monorepo shares one tag line and a mismatch would
+# version an assay release off another product's tag.
+[project.assay]
+prefix    = "assay-v"
+artifacts = ["wheel"]
+scm_dist  = "assay"
+cwd       = "assay"
+[project.assay.version]
+strategy = "scm"
+bump     = "conventional"
+[project.assay.steps.run-tests]
+# assay's REGISTERED gate, not a bare pytest: it builds the wheel from a
+# committed OID, installs it into a separate run-venv, and self-hosts through
+# it. A-040 is explicit that a bare-pytest green is NOT a ship signal.
+commands = [
+  { label = "assay: registered tester-unified gate (self-hosted through the built wheel)", argv = ["bash", "assay/tools/tester-unified-gate.sh", "/workspaces/vbpub"], cwd = "." },
+]
+[project.assay.steps.build]
+commands = [
+  { label = "assay: hash-bound release build (wheel + reproducible zipapp + sidecars)", argv = ["python3", "assay/gate/distribution/build_release.py", "--repo", ".", "--outdir", "assay/dist"], cwd = "." },
+]
+[project.assay.steps.push]
+commands = [
+  { label = "assay: publish wheel + zipapp + manifest (cmru built-in, invoked explicitly)", argv = ["python3", "cmru/src/cmru/handlers.py", "wheel-publish", "--prefix", "assay", "--cwd", "assay", "--notes-env", "ASSAY_RELEASE_NOTES", "--extra-asset", "assay/dist/assay-*.pyz", "--extra-asset", "assay/dist/assay-*.pyz.sha256"], cwd = "." },
+]
+[project.assay.env]
+ASSAY_RELEASE_NOTES = "## assay wheel + zipapp\nHow to judge a change: declared lanes, declared rigor, one machine-readable verdict per lane per commit. Zero runtime dependencies, stdlib only.\n\n**Install (wheel)**\n```bash\npipx install assay-*.whl\n```\n\n**No Python package manager? Use the zipapp**\n```bash\nchmod +x assay-*.pyz && ./assay-*.pyz --help\n```\n\nThe wheel's identity is bound by `release-manifest.json`; feed its PEP 508 line to `pip install --require-hashes` so pip rechecks the bytes it opens. `assay/gate/distribution/release_wheel.py verify` emits that line and is stdlib-only, so it runs before assay is installed."
 
 # ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
 # Deliverable is the ghcr image(s) only — NOT a GitHub Release. So: no semver git tag

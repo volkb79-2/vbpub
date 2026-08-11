@@ -24,6 +24,7 @@ fallback below makes ``import cmru.release`` resolve when invoked by file path).
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import shutil
 import subprocess
@@ -236,12 +237,35 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     version = read_wheel_version(wheel)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or f"{args.prefix} {version}"
 
+    # `--extra-asset` (repeatable, default none): additional files to attach to
+    # the SAME release. `publish_versioned` has always accepted `extra_assets`;
+    # this handler simply never exposed it, so a wheel project could not publish
+    # a companion artifact without reimplementing the release call. assay needs
+    # it for its zipapp and its hash-bound release manifest. Purely additive --
+    # every existing project passes no such flag and is byte-for-byte unaffected.
+    # Each value is a path OR a glob, because a companion artifact's filename
+    # carries the version the release is being cut at (`assay-1.2.3.pyz`) and the
+    # step declaring it cannot know that string. Zero matches is a hard error, not
+    # a silent skip: publishing a release whose notes advertise a companion that
+    # was never uploaded is worse than not publishing.
+    extras: list[Path] = []
+    for pattern in getattr(args, "extra_asset", None) or []:
+        matched = sorted(Path(item).resolve() for item in glob.glob(pattern))
+        files = [item for item in matched if item.is_file()]
+        if not files:
+            raise SystemExit(
+                f"[ERROR] --extra-asset {pattern!r} matched no existing file"
+            )
+        extras.extend(files)
+
     gh = GitHubReleases(owner, repo, token)
     result = publish_versioned(
         gh, prefix=args.prefix, version=version, asset_path=wheel,
-        notes=notes, latest_pointer=True,
+        notes=notes, extra_assets=extras or None, latest_pointer=True,
     )
     print(f"[INFO] Published {args.prefix} {version}")
+    for item in extras:
+        print(f"[INFO] {args.prefix.upper()}_EXTRA_ASSET={item.name}")
     print(f"[INFO] {args.prefix.upper()}_WHEEL_SHA256={result['sha256']}")
     if result.get("asset_url"):
         print(f"[INFO] {args.prefix.upper()}_WHEEL_ASSET_URL={result['asset_url']}")
@@ -421,6 +445,9 @@ def main(argv: list | None = None) -> None:
     p_pub.add_argument("--glob", help="wheel glob (default: <prefix>-*.whl)")
     p_pub.add_argument("--notes-env", dest="notes_env",
                        help="env var holding release notes (default notes: '<prefix> <version>')")
+    p_pub.add_argument("--extra-asset", dest="extra_asset", action="append", default=[],
+                       metavar="PATH",
+                       help="additional file to attach to the same release; repeatable")
     p_pub.add_argument("--env-file", dest="env_file",
                        help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_pub.set_defaults(func=cmd_wheel_publish)
