@@ -120,9 +120,12 @@ class ReasonCode(StrEnum):
     #: deliberately stopped. A refusal BEFORE submission, never a truncated
     #: sample -- the sentinel payload proves zero mutants were attempted.
     MUTANT_LIMIT_EXCEEDED = "MUTANT_LIMIT_EXCEEDED"
-    #: (P21/A-163, RESERVED for P22) a committed-object snapshot exceeded its
-    #: declared bound. Reserved here for the same one-migration reason
-    #: `MISSING_EXTERNAL_TOOL` is.
+    #: (P21/A-163) a committed-object snapshot exceeded its declared bound.
+    #: No longer reserved: P22/P23 landed both producers -- `isolation.py`'s
+    #: `_limit_exceeded` and `git.py`'s object-closure bound raise it, and
+    #: `tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json`
+    #: is the real artifact. `MISSING_EXTERNAL_TOOL` above is still reserved;
+    #: this one is live.
     SNAPSHOT_LIMIT_EXCEEDED = "SNAPSHOT_LIMIT_EXCEEDED"
     # INCONCLUSIVE
     NO_MUTANTS = "NO_MUTANTS"
