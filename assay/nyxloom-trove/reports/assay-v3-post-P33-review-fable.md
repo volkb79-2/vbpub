@@ -238,3 +238,224 @@ Concretely: attach a small probe to P28 (which already runs against srdm's real 
 - **Async Tier-3 producers (A-O08):** blocked behind claim-level `enforcement` design (A-O09) by the project's own analysis; sequencing it before A-O09 would improvise externally visible grammar, the exact move this project keeps catching itself avoiding.
 
 **Summary recommendation for the post-Go horizon:** A-O06 as the next capability package (biggest evidence gain per unit cost, all consumers at once, machinery already paid for), the verdict comparer as the next infrastructure package (first real A-029 consumer; makes the ratchet visible; settles open schema-boundary questions with evidence instead of doctrine), and the A-O04 packaging probe attached to P28 (so the wave's stated payoff — retiring covergate — actually has a deployment path when the code is ready). All three are read-side or leverage-side; that is deliberate, because the write side is, by a wide margin, the most rigorously proven part of this codebase already.
+
+---
+
+# Addendum 2 — round 3 (2026-08-11): review of C-sol-1's work, Open-section
+# deep-dive, full decision-validity audit, and two operator follow-ups
+
+> **Controller note:** resumed again after C-sol-1 formalized the three
+> accepted recommendations (A-239/A-242/A-243) and independently re-examined
+> its own A-237 (superseded by A-240, with a new gap A-241 found and
+> deliberately left open). Asked Fable to review that work's fidelity, then
+> independently re-verify the empirical claims in A-240/A-241 by driving the
+> real shipped verifier, deep-dive the "Open — NOT decided" section, audit
+> every decision A-001-A-244 for continued validity, and answer two follow-up
+> questions (a concrete verdict-comparer example; whether assay can ship
+> without a consumer-side Python dependency). Verified against HEAD
+> `7fcf1020be6127c46e876839381aa1b879187105`. The controller independently
+> spot-checked the report's central claim about committed R2 FAIL fixtures
+> before relaying it further and found it accurate.
+>
+> **Headline: this round found that C-sol-1's own second empirical attempt
+> at A-240 was also measurably wrong** — not the original A-237 evidence,
+> which C-sol-1 had already corrected, but the *replacement* justification.
+> The restored schema branches C-sol-1 tested were broader than the actual
+> recommendation (they included an R2-FAIL-requires-payload branch that was
+> never part of what was accepted), and that overbroad branch — not the
+> correctly-scoped one — is what broke the existing test. Under the
+> correctly-scoped branch set, Fable swept all 49 committed v5 verdict
+> documents and found zero breaks. Relayed back to C-sol-1 for independent
+> re-verification, not accepted at face value.
+
+All verification complete. HEAD confirmed at `7fcf1020`; everything below is grounded in the current tree, and every empirical claim was produced by driving the real shipped verifier, not reading it.
+
+**The headline first, because it's the one that changes a recorded decision: A-241 is confirmed exactly as written, but A-240's replacement evidence is measurably wrong, and the revert it justifies doesn't follow from what I measured.** Details in Part 2.
+
+---
+
+# Part 1 — Fidelity of A-239 / A-242 / A-243
+
+## A-239 (Go seam) — faithful, and the "information-theoretic" framing holds as scoped
+
+The landed shape is my recommendation transcribed: parser emits block extents as an explicit representation, statement positions arrive through a **new** protocol hook (not `statement_spans`, whose "only for unattributed lines" gating and line-only, column-less type I flagged), the intersection is a pure language-free core function on the P07 rule-3b pattern, and it's built Go-specific because Istanbul is statement-precise and SQL has no coverage tool. All four elements match, including the reasoning.
+
+On the "strengthening": the prompt's framing has it backwards — "information-theoretically insufficient" was *my* round-3 wording; A-239 transcribed it, not strengthened it. Does it hold up? **Yes, with one boundary condition that A-239's own wording correctly carries.** The claim is airtight *relative to candidate (ii)'s defining constraint* — a correction that consumes the shared model's post-merge line sets. `go_cover.py:64–73` merges executed-wins during parsing; a statement on a shared block boundary (proven real by the probe, per A-218's Rbrace analysis) is collapsed to "executed" before any downstream code runs, and no function of the merged sets can recover which block owned it. The one escape hatch — the adapter re-reading the raw profile itself — is excluded architecturally (it duplicates the parser and breaks A-006's format/language axis), not information-theoretically. A-239 says "no **post-merge** correction can recover it," which is exactly the right scope qualifier. No overclaim.
+
+## A-242 (flat protocol) — faithful, count verified correct; one attribution nit
+
+I recounted against the real code. The protocol (`base.py`) has 5 attributes + 7 methods. `resolve_mutation_targets` (`mutation.py:398–402`) consumes `excluded_dir_names`, `source_globs`, `is_test_path` on the R2 path; `generate_mutation_sites` is called at `mutation.py:578`; `name` keys the registry. So SQL needs 2 of the 7 methods and the attributes, and **exactly five methods are dead: `has_executable_code`, `normalize_coverage_key`, `statement_spans`, `inject_import_break`, `inject_uncovered_line`** — A-242's list is exactly right, and matches what I said in round 3. Two small precision notes: (a) `external_tools` and `requires_span_attribution` are listed as "needed," which is true only in the declared-constant sense — nothing in the shipped code consumes `external_tools` at all yet (verified: zero consumers outside docstrings; the preflight is still unbuilt, see Part 4), and `requires_span_attribution` is consulted only on the R1 path; (b) the prompt paraphrases A-242 as saying *I* overstated the deadness — the actual entry says "**A-238** overstated," which is the carver's own prior entry, and my round-3 text made the same correction A-242 makes. No misattribution in the record itself; the counts agree everywhere. The `GoAdapter.statement_spans`-returns-`None` distinction (correct-by-contract no-op vs. no-correct-value-exists) and the named reopen trigger both landed as recommended.
+
+## A-243 (helpers widening) — faithful, verbatim
+
+All three scope guards landed as stated: `MUTATION_DISCOVERY_FAILED` only, with `MUTATION_UNSUPPORTED` and `MISSING_EXTERNAL_TOOL` explicitly excluded and the reason for the asymmetry stated; the generic phrasing for P27's reuse; both layers plus the negative test requirement. The no-schema-change fact is correctly recorded (I re-verified: the helpers-correspondence rule exists only in `verdict.py:2024` and `verify.py:612`; the schema never had it). The helper-succeeded-but-run-failed-elsewhere sub-case is correctly left to P34's carve. Nothing narrowed or reinterpreted. Nothing has landed in code — correct, since the SQLAdapter doesn't exist yet.
+
+---
+
+# Part 2 — A-240 and A-241, verified empirically
+
+## What I ran
+
+I took the misreport test's own fixture (`r2_error_exec_failed_baseline_crashed.json`, baseline R0 = `ERROR/EXEC_FAILED`), forged the payload-free R2 claim to each status in A-240's list plus controls, and ran the real `verify_document`:
+
+| Forged payload-free R2 claim | Shipped verifier |
+|---|---|
+| `ERROR/GIT_FAILED` | **accepted, zero failures** |
+| `ERROR/UNREADABLE_ARTIFACT` | **accepted, zero failures** |
+| `ERROR/MUTATION_DISCOVERY_FAILED` | **accepted, zero failures** |
+| `NO_MEASUREMENT/EMPTY_COVERAGE` | **CAUGHT** by the re-derivation oracle |
+| `BUDGET_EXCEEDED/LANE_TIMEOUT` | **CAUGHT** |
+| `ERROR/FORMAT_MISMATCH` (control) | **CAUGHT** |
+| `NO_MEASUREMENT/DIRTY_TREE` (control) | accepted (correct — truthfully co-occurable per A-175/A-178) |
+| `FAIL/COMMAND_FAILED` | CAUGHT (the existing test's case) |
+| `PASS` (payload-free) | refused by **reconstruction** ("schema: claim[R2]: PASS without a mutation payload") — the re-derivation oracle never runs |
+
+## A-241: confirmed, exactly as recorded
+
+The three accepted `ERROR/*` cases are precisely `_INDEPENDENT_R2_TERMINALS`' non-DIRTY/HEAD members (`verify.py:1103–1112`): the branch checks only that the status matches the closed vocabulary for the reason and never compares against the baseline. A-241's three-item list is correct, its mechanism description is correct, and its "found by driving, not reading" claim is borne out.
+
+**Severity, honestly:** low today, and "record and move on" was the right call — with one addition. The forgery changes *diagnosis*, not gate outcome (both spellings are `ERROR`, exit 2; it doesn't even cross A-020's retry-policy boundary). No producer can emit the shape (the six independent terminals arise only while R0 passed, per the set's own documentation), no consumer reads artifacts today, and both model and verifier share the same information limit. What raises it later: the moment external artifact consumers exist (the comparer below would be the first), a forged-but-accepted foreign document becomes a real input. The addition: **the fix is subtler than A-241's framing implies, and my DIRTY_TREE control shows why** — a blanket verbatim-comparison over all six set members would be *wrong*, because `DIRTY_TREE`/`HEAD_CHANGED` legitimately co-occur with a non-PASS baseline (post-command refusals preserve the real R0 claim), and whether `BASE_IS_HEAD` can co-occur needs a `run_lane` control-flow read, not an assumption. The repair needs per-terminal reachability evidence — which is precisely why not improvising it in a doc commit was correct. Natural home: the same P34-era `verify.py` touch A-243 already schedules.
+
+## A-240: the correction of A-237 stands; the replacement evidence does not
+
+Three of A-240's empirical claims are wrong:
+
+1. **"All five pass re-derivation as independent terminals" — false for two of five.** `EMPTY_COVERAGE` and `LANE_TIMEOUT` are not in the independent set; their misreports are caught by the verbatim comparison. The five-item list appears hand-assembled rather than read off `_INDEPENDENT_R2_TERMINALS`.
+2. **"The oracle fires for PASS and FAIL" — false for PASS.** A payload-free R2 PASS is refused by reconstruction (`Claim._check_a_judged_status_carries_its_own_payload`) before stage 3 ever runs; the re-derivation oracle is *already* structurally unreachable for PASS, today, branches or no branches.
+3. **"Closing the gap makes that oracle structurally unreachable" — false under the correctly-scoped branch set.** My recommended branches were R1-PASS/FAIL, **R2-PASS-only**, R3-PASS/FAIL/INCONCLUSIVE — R2-FAIL must stay payload-free-legal because that is A-116's own truthful propagation shape. I added exactly those branches to the schema in memory and swept every committed v5 verdict document in the repo (49 checked): **zero break** (the only six failures are P33 templates with `@STARTED@` placeholders, which fail the *unmodified* schema's timestamp pattern identically — pre-existing, template-by-design). The misreport test's forged `FAIL/COMMAND_FAILED` document **stays schema-valid** under the added branches, so the test survives untouched.
+
+What evidently happened: the restored branches included R2-FAIL-requires-payload — overbroad, and refuting *that* set is not refuting the recommendation. Notably, there are zero committed payload-free R2 FAIL fixtures (I checked), so the overbroad branch produced no fixture red to flag the scope error — only the forged test doc went red, which was then read as the boundary defending itself.
+
+**Is A-240's conclusion correct now?** As *doctrine*, it can still stand: "the schema owns refusal of impossible payloads, not requiredness of evidence" is a coherent boundary, every case is caught by model + verify, and the operator may simply prefer schema stability. But it now stands on preference, not measurement — the recorded justification is disproven, and by this project's own rules (A-232: a stated result is not evidence; paste the real output) that must be corrected in the record either way. There is a pattern worth naming without drama: A-237 was justified by evidence that didn't hold; A-240 corrected it and substituted evidence that also doesn't fully hold. Both times the error was measuring (or citing) something adjacent to the actual question. My probe output above is the artifact A-232 asks for.
+
+**My recommendation:** record an A-240 correction, then reopen the enforcement question on its true cost, which has collapsed: the correctly-scoped branches break nothing (measured), the two conformance-vehicle fixes were already written once during the A-240 attempt, and A-236(b) established the in-place-tightening precedent. I now lean toward adding the branches — weakly before, less weakly now, because the counter-argument ("it forces deleting a real test") is gone. If the operator still prefers the doctrine boundary, that is a legitimate choice — but it should be recorded as a choice, not as a forced result.
+
+---
+
+# Part 3 — The Open section, item by item
+
+Three entries are **resolved-but-not-marked** — the exact pattern the section's own A-O19 entry models handling correctly:
+
+- **A-O14 — RESOLVED by P21.** `ERROR/OUTPUT_WRITE_FAILED` shipped (A-157/A-163/A-181); `errors.py:85` literally cites "(P21/A-O14/A-181)". The open question ("does write failure need a code, or is the uncaught OSError acceptable?") was answered: it got the code *and* the whole `VerdictOutput` reservation state machine. Mark it.
+- **A-O15 — RESOLVED by P26.** The entry's subject, `attestation._changed_paths` with its `splitlines()` transport, **no longer exists**: A-211 replaced the changed-display-names approach with per-path `ls-tree`/`diff --quiet` queries under `--literal-pathspecs`, and I verified `attestation.py` today contains no `_changed_paths`, no `splitlines`, and executes no `--name-only` (the one grep hit is a docstring describing the old defect). The U+2028/C-quoting hazard is gone because the representation that carried it is gone. Mark it, crediting A-165/A-211.
+- **A-O16 — RESOLVED by P21.** `exclusion_capability` ("reported"/"unavailable") is exactly the "sibling flag" candidate the entry names; `verdict.py:144–151` cites A-O16 as the thing it closes. The entry's own deadline ("decide before P25") was met by P21. Mark it.
+
+The genuinely open ones, with opinions:
+
+- **A-O01, A-O02 — stale-open, discharge them.** Both were P01-era questions; the trove has existed and the gate has run for 33 packages, and A-123/P24 settled the image question empirically (wheelhouse added without a rebuild). Zero-cost cleanup.
+- **A-O03 (TS adapter) — open, but the row needs two updates.** First, its "and the lcov/Istanbul parsers" clause is half-shipped: `coverage_parsers/lcov.py` exists with tests since P03; only Istanbul JSON is missing. Second, the carved queue now contains **P32 "real Vitest format conformance"** — the row and the queue don't reference each other, so a reader can't tell whether P32 subsumes, partially covers, or is orthogonal to A-O03. My read: P32 is format-level conformance and A-O03's adapter question (shell out to `tsc`/`node` or stay text-only) remains genuinely open and correctly deferred until dstdns's webapp lane is in scope. When it opens, note Istanbul's `statementMap` is statement-precise — no Go-style oracle needed, which makes the TS adapter cheaper than Go, not another instance of it.
+- **A-O04 (srdm) — open, and now the most actionable.** Part 5b below is effectively this item's analysis. My standing recommendation (packaging probe attached to P28) is unchanged and now code-verified.
+- **A-O05 — open, correctly parked.** A-244 explicitly chose A-O06 over it; the budget-decision blocker stands.
+- **A-O06 — well-maintained.** The A-244 acceptance banner is exactly how a live table should track a status change. This is the model the three stale entries above should follow.
+- **A-O07 — open.** My opinion from round 3 stands: natural companion to the A-O06 package post-P32; both are "run the declared lane twice under one controlled variation." Don't carve it alone.
+- **A-O08/A-O09 — open, correctly ordered (A-O08 blocked on A-O09).** But A-O09's blocking text is stale: "the artifact schema should be checked for room **before v1 freezes**" — five schema versions have shipped and the room-check never happened (a per-claim `enforcement` field would today be a v6, since `claim` is `additionalProperties: false`). That's fine — v-bumps are routine here now — but the row should say "will ride the first async producer's schema bump" instead of naming a v1 deadline that's five versions gone.
+- **A-O10 — open, correctly consumer-pulled.** No change.
+- **A-O11 — open, still genuinely blocked** (nyxloom's redesign is at CR-13a-next, short of the CR-14 trigger).
+- **A-O12 — open, correctly assigned to ciu.** Worth one added cross-reference: B44 (gate identity, filed from dstdns two days ago) is adjacent evidence that provenance-of-what-actually-ran is the estate's live pain; when ciu's `worktree` verb materializes, both items likely resolve together.
+- **A-O13 (mdt) — open, trivially resolvable.** One look at whether mdt has a testable surface. Do it whenever adoption order next matters; not before.
+
+---
+
+# Part 4 — Full audit, A-001 through A-244
+
+I read every entry, including sessions 5–37 which I had only grepped before. The overall verdict first, because it's earned: **the supersession discipline is the best I have seen in a decision record.** The chains I traced end-to-end all hold: A-050→A-073, A-024→A-074, A-055→A-071, A-086→A-087→A-142→A-144→A-163, A-011/A-114→A-183, A-153→A-167, A-116's bucket shape→A-157/A-180, A-172→A-218, A-189→A-212, A-237→A-240. A-128's "unreachable pairs" were closed by A-141 *with* the audit moved. Against that baseline, here is everything I found that is actually stale — contradicted by later code or decisions with no recorded correction:
+
+1. **A-240's evidence paragraph** — Part 2. The one that matters most, because it's three days old and load-bearing for a live boundary.
+2. **A-129's mechanism clause.** It rules that `assay verify` "validates it against packaged schema v2 (**reusing `verdict.load_schema()`**, imported not reimplemented)." The shipped `verify.py` deliberately does the opposite — its docstring says `load_schema()` is *not* called; conformance is dataclass reconstruction, for the A-005 zero-runtime-deps reason. The contract half of A-129 (artifact validator, not lane runner) stands; the mechanism half was silently superseded by the implementation and never corrected by id. Risk: a future reader "restoring" `load_schema()` use in verify, citing A-129 in good faith. One supersession line fixes it.
+3. **A-163's "P26 owns effective-PATH reachability" — silently transferred.** P26 merged as attestation/deadline hardening; I verified there is **no `MISSING_EXTERNAL_TOOL` producer anywhere in `src/`** (only the errors.py reservation, and `registry.py`'s docstring explicitly declining preflight machinery). The shipped `errors.py:111–115` comment says "RESERVED for **P27**." So ownership hopped P22→P26→P27, and the last hop is recorded nowhere — the exact A-072/A-147 shape (a deferral whose executor changed without a ruling). It's benign today (the state is unreachable; both adapters declare no tools) and P27's re-carve is the obviously right owner now (the statement-position helper is the first real external tool) — but the re-carve should claim it explicitly, and the record should note the hop.
+4. **A-069 "built wheels version as 0.0.0" — superseded in fact by P24, uncorrected by id.** A-198/A-199 gave the gate a hash-bound setuptools-scm closure; gate/release builds now produce real SCM identities (clean tag → `1.2.3`, untagged → dev identity, no-VCS → the `0.1.0` fallback — meaning A-069's *other* claim, "fallback_version is declared but unexercised," is also no longer true). The `0.0.0` shape now survives only on the standalone-fixture path inside the gate image. A-124 built test logic on A-069's blanket claim; the devcontainer red I found in round 1 (now a skip) was this staleness surfacing. One qualifying line pointing at A-198/A-199 closes it.
+5. **A-102 — conclusion intact, premise disproven, no forward pointer.** Its ruling (`requires_span_attribution=False`; the span path is never reached for Go) is still literally true of the shipped code, and its narrow claim (Go structurally lacks Python's vanishing-interior-line gap) remains correct. But its supporting frame — block expansion confirmed as trustworthy per-line classification — is the premise A-O19/A-217 demolished, and A-235/A-239 will change exactly the gating A-102 settled. A-234 bannered the *code files*; A-102 itself is the decision a P27 re-carve implementer would grep. One qualifier line ("see A-217/A-239; the False setting survives but the seam is being redesigned") prevents a confident wrong citation.
+6. **Minor record hygiene, batched:** `errors.py:123`'s "(RESERVED for P22)" on `SNAPSHOT_LIMIT_EXCEEDED` is stale — P22/P23 landed it and fixtures exist (A-190). The session numbering collides: two "session 24" headers exist (2026-08-08 post-series review and 2026-08-10 "P24 JIT freeze," the latter sitting between sessions 31 and 32 — almost certainly a mislabel). A-107's committed Go canary profiles are stale per A-234, which names the file but doesn't amend A-107 — acceptable since A-234 is discoverable, listed here only for completeness.
+
+Everything else I checked — including every ruling in sessions 5–18 against the current protocol/adapter/config code, the P20–P26 security rulings against `git.py`/`safeio.py`/`isolation.py`'s docstrings, and A-133's permanent-R0 self-lane against `assay.toml` — is still true of the codebase as it stands.
+
+---
+
+# Part 5 — Operator follow-ups
+
+## 5a. The verdict comparer, worked concretely
+
+All field names below are real — taken from the shipped schema and the committed `r2_pass.json` fixture shape I dumped above.
+
+**Setup.** Lane `package`, two runs. *Prior* at commit `aaa…`, *current* at commit `bbb…`. Both declare `rigor = ["R0","R1","R2"]`; both end `outcome: "PASS"`, `exit_code: 0`.
+
+Prior artifact (abridged to the load-bearing fields):
+
+```json
+{ "schema_version": 5, "lane": "package", "commit": "aaa…", "outcome": "PASS",
+  "judgment": {
+    "resolved": {"language": "python", "source_roots": ["pkg"], "base": "990…"},
+    "r1": {"coverage_format": "coverage-py-json", "coverage_artifact": "cov.json",
+           "fail_under": 100.0, "allow_excluded": false},
+    "r2": {"jobs": 2, "max_mutants": 50,
+           "operators": ["python:compare-swap","python:boolop-swap",
+                         "python:bool-const-flip","python:falsy-swap"],
+           "kill_attribution": "unattributed"} },
+  "claims": [
+    {"rigor":"R0","status":"PASS", …},
+    {"rigor":"R1","status":"PASS","coverage":{
+       "covered": 31, "changed_executable": 31, "pct": 100.0, "considered": 38,
+       "exclusion_capability": "reported",
+       "missing_lines": {}, "files_missing_coverage": [],
+       "unclassified_lines": {}, "files_with_unclassified_lines": [],
+       "excluded_lines": {}, "files_with_excluded_lines": []}},
+    {"rigor":"R2","status":"PASS","mutation":{
+       "candidate_count": 6, "total": 6,
+       "killed": [ …6 mutant_outcome entries… ],
+       "survived": [], "crashed": [], "budget_exceeded": [], "equivalent": []}} ],
+  "evidence": [ {"source":"attested","key":"security-review","status":"PASS",
+                 "verified_by_assay": false, "producer":"j.doe",
+                 "attested_commit":"aaa…","reviewed_paths":["pkg/auth.py"]} ] }
+```
+
+Current artifact, same shape, different numbers: `r1.coverage` = `{covered: 2, changed_executable: 2, pct: 100.0, considered: 3}`; `r2` declares `operators: ["python:compare-swap"]` and `equivalence_artifact: "schema.sql.dump"`, and `mutation` = `{candidate_count: 7, total: 7, killed: 3, survived: [], equivalent: [ …4 entries… ]}`; the evidence entry still names `attested_commit: "aaa…"` (now an ancestor) and still PASSes because `pkg/auth.py` is byte-identical.
+
+**Invocation and output:**
+
+```
+$ assay compare prior.json current.json
+assay compare: lane "package", aaa1111 → bbb2222 (schema v5 both)
+
+R1 changed-line coverage    PASS → PASS
+  pct 100.0 → 100.0 (unchanged)
+  evidence mass: changed_executable 31 → 2, considered 38 → 3
+  ⚠ the floor held, but this run proved coverage of 2 lines where the prior proved 31
+  missing lines: none → none (0 resolved, 0 new, 0 persistent)
+
+R2 mutation                 PASS → PASS
+  score 100.0% (6/6) → 100.0% (3/3)   [equivalent excluded from denominator, v5]
+  buckets: killed 6 → 3, survived 0 → 0, equivalent 0 → 4
+  ⚠ 4 of 7 attempted mutants were provably inert this run; the score's
+    denominator shrank from 6 to 3
+  policy drift: judgment.r2.operators narrowed 4 → 1 (dropped: python:boolop-swap,
+    python:bool-const-flip, python:falsy-swap)
+
+Evidence (attested, "security-review")   PASS → PASS
+  attested_commit aaa1111 both runs: fresh at prior, now 1 commit behind HEAD
+  (still current — every reviewed path byte-identical; will go STALE when
+  pkg/auth.py changes)
+
+3 advisories, 0 regressions in judged status.  exit 0
+```
+
+`--json` emits the same as a structured document; the human text is the default. The comparer is **diagnostic, never a gate** — exit 0 unless an input is unreadable or the two artifacts fail its own preconditions (same `lane`, same `schema_version` — a cross-version pair is refused with one version diagnostic, A-138's spirit; differing `commit`s expected, with the same-commit case explicitly supported as a rerun-comparison, which is A-O07's shape for free). Making it a gate would put policy in a tool whose whole value is having none; a consumer that wants a ratchet gate wraps the `--json` output.
+
+**The worked catch — what neither artifact alone shows a reviewer:** both runs are `PASS`, `pct: 100.0`, exit 0, schema-valid, `verify`-clean. A reviewer reading either verdict sees a green gate at full coverage. Only the *pair* shows that (a) the coverage floor is now standing on a 2-line denominator where it stood on 31 — real fields: `coverage.changed_executable`/`considered`; (b) the mutation score's denominator collapsed by the `equivalent` bucket's surge — real fields: `mutation.killed`/`equivalent`, with the v5 exclusion rule applied; and (c) the declared kill policy quietly narrowed from four operators to one — real field: `judgment.r2.operators`, which is precisely the recorded-policy data P16–P19 fought to get *into* the artifact and which nothing currently reads back. One honest caveat belongs in the tool's own output: cross-commit comparison compares *different diffs*, so a falling denominator is evidence-mass telemetry, not by itself a defect claim — which is exactly why it should be an advisory, not a failure.
+
+## 5b. Shipping without consumer-side Python
+
+**What I checked in the actual codebase** (all verified this session): zero runtime dependencies and `requires-python = ">=3.11"` (`pyproject.toml`); the only packaged data file is the schema, read via `importlib.resources.files(__package__)` (`verdict.py:244–252`) — the one mechanism that works identically in a source tree, a wheel, and a zip; version via `importlib.metadata` with a `PackageNotFoundError` fallback (`__init__.py:19`); **no dynamic import machinery anywhere** — no `entry_points`, no `__import__`, no plugin discovery; the registry is explicit code construction; the only function-level imports are three first-party circular-avoidance imports (`mutation.py:800`, `config.py:1153`, `runner.py:1522`), all statically resolvable. This is about as packaging-friendly as a Python codebase gets, and that is A-005 paying out a second time — the constraint adopted to make the scratch-venv proof trivially offline is the same one that makes freezing trivial.
+
+**What no packaging can remove:** `git.py` resolves the `git` binary from the caller-declared `PATH` and refuses to guess without one (`git.py:337–339`), and the lane's own argv needs the consumer's test toolchain. So the true consumer-side footprint is: *assay's form* + `git` + the project's own toolchain. Every option below only changes the first term.
+
+**The options, ranked:**
+
+1. **zipapp — the right light artifact.** A single `.pyz` needs only `python3 ≥ 3.11` in the container. Cost: near zero. One thing to verify in the probe rather than assume (I'm flagging this as informed expectation, not tested here): `importlib.resources.files()` over zipimport for the schema read — stdlib supports it, but the probe should execute `assay verify` from the `.pyz` to prove it, in this project's own paste-the-output style.
+2. **Single self-contained binary (PyInstaller/Nuitka/PyOxidizer) — feasible precisely because of A-005, but not free, and I'd hold it.** No C-extension deps, no dynamic imports, one data file — the freeze itself is about as low-risk as this tooling gets. The real costs are estate-shaped, not technical: the freezer becomes a build dependency that P24's own discipline (hash-bound `--require-hashes` wheelhouse, A-198) would demand be pinned and closed the same way — PyInstaller's closure is much larger than five wheels; you inherit a glibc/arch matrix; and the entire release/verification grammar is wheel-first (A-200's manifest binds `{filename, version, sha256}` to a wheel and feeds pip's own hash mode — a binary needs a parallel manifest grammar and loses the pip-rechecks-what-it-opens property). Nothing in the codebase *fights* it; the distribution machinery would simply need a second, carved lane. Justified only if a consumer class appears where installing `python3` is genuinely impossible — and none exists in this estate, because every gate image is estate-owned.
+3. **Go reimplementation — no, and the record itself is the argument.** It recreates the founding problem (§2's four-diverged-copies) one language later, against 17.7k lines of source, 2,377 tests, and a three-layer artifact contract that took five schema versions and six adversarial rounds to freeze — all of which would fork on day one. `covergate` is the cautionary tale *for* consolidation, not a precedent for rewriting: it exists because adoption was too hard, and it now carries a live defect (it silently skipped an srdm package's coverage). The one durable Go-shaped piece is already planned as the *helper* (P27/P29's statement-position oracle — real Go, compiled in the Go image, speaking a narrow protocol), which is the correct way for Go-native capability to exist without forking the judge.
+
+**Recommendation, unchanged in direction and now code-verified in substance:** the container probe is the near-term answer — add `python3` plus the assay wheel (or the zipapp) to `tester-unified-go`, measured for image-size/pull-time cost, attached to P28 since that package already runs against srdm's real repository. The zipapp is the preferred artifact if image weight matters. Keep the single binary as a documented, deliberately-untriggered option with a named condition ("a consumer environment where python3 cannot be installed"), in exactly the style A-242 just used for its protocol-factoring reopen trigger. And close the loop in the record: whatever the probe measures should land as the A-O04 resolution, so the srdm question stops being open-by-default.
+
+---
+
+**One process note to end on.** Two of this session's three real findings (A-240's evidence, A-163's silent ownership hop) and both prior rounds' headline findings (A-237's evidence, the Go fixtures) are instances of a single failure mode: *a claim about what code or tests do, recorded without the output that would prove it, by someone confident enough not to run it.* A-232 already names the rule. The addition this round suggests: it applies to decision *reasons* — especially reverts — exactly as much as to carve receipts. Every claim in this report that could be produced by running something was produced by running it.
