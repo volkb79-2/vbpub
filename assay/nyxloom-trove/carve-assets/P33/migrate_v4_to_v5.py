@@ -341,7 +341,13 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
 
     # --- V5-5: helper provenance -------------------------------------------
     d["properties"]["helpers"] = {
+        "minItems": 1,
         "description": (
+            "A-230a: OMITTED when no helper ran, never serialized as []. "
+            "minItems enforces it -- round 5 found the rule was prose-only, so "
+            "an empty array validated against everything the rule forbade. Same "
+            "discipline as judgment, which is absent rather than empty when "
+            "nothing was judged (A-025/A-136). "
             "Every external helper an adapter actually invoked to produce a "
             "claim payload. external_tools (A-013) declares what a lane needs; "
             "this records what ran, so a coverage or mutation claim is "

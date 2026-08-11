@@ -84,8 +84,8 @@ e63577513ab78c284f9d3e2efe2d3f4af8c884829fcb8060be94143c3be5ee3f  migrate_v4_to_
 
 | asset | what it fixes |
 |---|---|
-| `sweep_v4_consumers.py` **v2** | closes the five closure gaps round 3 demonstrated: seeds from `assay.toml`'s real argv + inline heredocs, follows subprocess targets, resolves dotted modules through the package layout, handles `from . import X`, and replaces the name/regex predicate with "reads a frozen tree by any idiom and compares". Adds `indirect-path-from-caller` for `release_wheel.py`, whose frozen path arrives on its command line and which **no name-based predicate could ever find**. Closure 147 → 189, consumers 11 → 40 |
-| `test_acceptance_v5.py` | now 38 tests, **30 failed / 8 passed** pre-implementation. New: the planted-decoy oracle that pins the sweep itself, the five frozen consumers, the closure boundary, three config-layer negatives, the manifest check, and the rebuilt third-helpers-role differential |
+| `sweep_v4_consumers.py` **v2** | closes the five closure gaps round 3 demonstrated: seeds from `assay.toml`'s real argv + inline heredocs, follows subprocess targets, resolves dotted modules through the package layout, handles `from . import X`, and replaces the name/regex predicate with "reads a frozen tree by any idiom and compares". Adds an indirect category for `release_wheel.py`, whose frozen path arrives on its command line and which **no name-based predicate could ever find**. Closure and consumer counts: `CANONICAL_COUNTS` |
+| `test_acceptance_v5.py` | the planted-decoy oracle that pins the sweep itself, the frozen consumer set, the closure boundary, config-layer negatives, the manifest check, and the rebuilt third-helpers-role differential. Counts: `CANONICAL_COUNTS` |
 | `migration-manifest.json` | schema v3, regenerated at the current anchor and **unioned with the sweep's own output**, so inventory and ownership cannot drift apart |
 
 The decoy is reached by a real dotted-subpackage import edge. A decoy nothing
@@ -96,6 +96,6 @@ and the sweep would be right to ignore it.
 
 | change | what it fixes |
 |---|---|
-| `sweep_v4_consumers.py` **v3** | bare-token matching removed (12 false positives, and it was misclassifying a real environ-sourced consumer as `direct`); `indirect-path-from-environ` is now its own named, separately-tested category; an argv entry is only a finding when another closure member actually supplies it a frozen path, which removes the `verify.py` noise without losing `release_wheel.py`. Consumers 40 → 28 |
+| `sweep_v4_consumers.py` **v3** | bare-token matching removed (12 false positives, and it was misclassifying a real environ-sourced consumer as `direct`); `indirect-path-from-environ` is now its own named, separately-tested category; an argv entry is only a finding when another closure member actually supplies it a frozen path, which removes the `verify.py` noise without losing `release_wheel.py`. Consumer counts: `CANONICAL_COUNTS` |
 | `test_acceptance_v5.py` | config tests call the **real** `load_lane_file` and pin `LaneConfigError`; a symbol-existence test holds the API surface; the gate script itself is now checked at source level, so O5's wiring claim has an oracle; the environ category and the indirect-noise rule each have a test |
 | `migration-manifest.json` | schema v4, with `CANONICAL_COUNTS` as the one place numbers live |

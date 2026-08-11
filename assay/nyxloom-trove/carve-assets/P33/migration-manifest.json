@@ -1,28 +1,32 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "generated_for": "P33 schema v5 migration",
-  "frozen_at_main": "f9363543a9722d4b09baf0e1570f225357b79f17",
+  "frozen_at_main": "27e3a998d555a137f406e46baed51fe38104dc3f",
   "CANONICAL_COUNTS": {
     "locked_carver_owned": 23,
-    "implementer_owned": 105,
-    "carver_owned_prose_excluded": 18,
-    "locked_suite_tests": 43,
-    "locked_suite_pre_implementation": "33 failed / 10 passed",
-    "sweep_consumers": 28,
+    "implementer_owned": 104,
+    "carver_owned_prose_excluded": 19,
+    "sweep_consumers": 27,
+    "sweep_consumers_by_kind": {
+      "direct": 24,
+      "indirect-path-from-argv": 1,
+      "indirect-path-from-environ": 2
+    },
     "p26_deselected": 4,
-    "p26_retained": 20
+    "p26_retained": 20,
+    "locked_suite_pre_implementation": "see the pasted pytest output in reports/assay-P33-JIT-CARVE.md"
   },
-  "note": "CANONICAL_COUNTS is the single source of truth. The handoff, README and carve report cite it and must not restate numbers independently -- round 4 found four different count pairs across those documents.",
-  "scan_command": "git ls-files + four content patterns, UNION sweep_v4_consumers.py --json, plus tools/tester-unified-gate.sh for gate wiring",
+  "note": "CANONICAL_COUNTS is the ONLY place a count lives. Round 5: a stated pass/fail count is not evidence -- the carve report pastes real command output instead.",
+  "scan_command": "git ls-files + four content patterns, UNION sweep_v4_consumers.py --json, plus tools/tester-unified-gate.sh",
   "counts": {
     "locked_carver_owned": 23,
-    "implementer_owned": 105,
-    "carver_owned_prose_excluded": 18
+    "implementer_owned": 104,
+    "carver_owned_prose_excluded": 19
   },
   "ownership_rule": {
-    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-222/A-224/A-226 retire or repoint their EXECUTION instead of editing them.",
+    "locked_carver_owned": "A-176/A-206/A-214 lock these; A-222/A-224/A-226 retire or repoint their EXECUTION.",
     "implementer_owned": "P33's implementer migrates or repoints these; every path is inside scope.touch.",
-    "carver_owned_prose_excluded": "Historical narrative or carver-owned design prose. Not migrated."
+    "carver_owned_prose_excluded": "Historical narrative or carver-owned design prose."
   },
   "buckets": {
     "locked_carver_owned": [
@@ -706,12 +710,6 @@
         ]
       },
       {
-        "path": "tests/test_runner_plan_env.py",
-        "why": [
-          "frozen-expectation-consumer(sweep)"
-        ]
-      },
-      {
         "path": "tests/test_runner_run_lane.py",
         "why": [
           "judgment.r1-hoisted-keys"
@@ -952,6 +950,13 @@
         "path": "nyxloom-trove/reports/assay-P33-pre-dispatch-adversarial-review-round4.md",
         "why": [
           "judgment.r1-hoisted-keys"
+        ]
+      },
+      {
+        "path": "nyxloom-trove/reports/assay-P33-pre-dispatch-adversarial-review-round5.md",
+        "why": [
+          "judgment.r1-hoisted-keys",
+          "bare-operator-name"
         ]
       },
       {

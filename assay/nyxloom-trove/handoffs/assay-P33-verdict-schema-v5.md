@@ -4,7 +4,7 @@ id: assay-P33-verdict-schema-v5
 project: assay
 title: "The verdict artifact expresses a coverage-less mutation language without inventing one"
 tier: implement-2
-input_revision: "51668c0d4e1e7e1902dd8fe9d7f3a291471a3f98"
+input_revision: "@LANDING_COMMIT@"
 source: {kind: product-goal, ref: "docs/DESIGN-GUIDE.md"}
 stack: none
 depends_on: [assay-P26-attested-evidence-cli-hardening]
@@ -26,8 +26,8 @@ oracles:
     negative: "An all-equivalent run renders PASS, so a run that proved nothing about the tests reads as green; or equivalent entries appear with no declared equivalence_artifact"
     gate: tester-unified
   - id: O4
-    observable: "kill_attribution is derived from judge.mutation.kill_signal_artifact and self-consistent: declared requires a kill_signal on every killed entry, unattributed forbids one anywhere, and no bucket other than killed may carry a kill_signal under either value"
-    negative: "A survived or equivalent entry carries a kill_signal, so a mutant nothing killed reports the mechanism that supposedly killed it"
+    observable: "kill_attribution is SPECIFIED as declared iff judge.mutation.kill_signal_artifact is present, and every P33 lane derives unattributed because that field is refused until P34; the artifact rules are enforced for documents -- declared requires a kill_signal on every killed entry, unattributed forbids one anywhere, and no bucket other than killed may carry one under either value"
+    negative: "A survived or equivalent entry carries a kill_signal; or P33 claims to WITNESS the derivation, which it cannot -- its only input is P33-refused, so no P33 fixture distinguishes a real derivation from a hardcoded constant (A-230d)"
     gate: tester-unified
   - id: O5
     observable: "The whole registered gate is green after v5: P33's locked suite runs and passes, P26's module still runs with exactly FOUR tests deselected (20 of 24), and both P25 qualification consumers compare against the carver-supplied v5 siblings"
@@ -52,7 +52,8 @@ one, without inventing capability for any language that lacks it.**
 - Contract class: **2b — contract migration**.
 - Required roles: **Opus xhigh implementer → fresh Opus xhigh independent
   reviewer**. Opus because the change is a closed-vocabulary schema plus two
-  cross-object invariants, and because 92 files migrate behind it.
+  cross-object invariants, and because of the migration breadth recorded in
+  `migration-manifest.json` → `CANONICAL_COUNTS`.
 - Readiness: **re-carved three times, after three NOT READY pre-dispatch reviews.**
   `nyxloom-trove/SCHEMA-V5-DESIGN.md` and decisions A-220/A-221/A-222 plus the
   repair sets A-223/A-224/A-225, A-226/A-227/A-228 and **A-229** fix every
@@ -74,8 +75,11 @@ branch `feat/assay-P33-verdict-schema-v5`.
 
 ## Context to read first
 
-1. `nyxloom-trove/SCHEMA-V5-DESIGN.md` in full — it is the specification, and it
-   records what v5 deliberately does *not* do and why.
+1. `nyxloom-trove/SCHEMA-V5-DESIGN.md` in full — it records what v5 deliberately
+   does *not* do and why. **It is not the last word (A-231):** where it conflicts
+   with `carve-assets/P33/verdict.schema.v5.json` or a named decision, the locked
+   schema and the decision win. Two conflicts are already marked SUPERSEDED
+   inline there; raise any other divergence rather than following the prose.
 2. Decisions **A-220** (v5's shape), **A-221** (the `go:*` vocabulary and its
    deliberate exclusions), **A-222** (locked v4 evidence is not rewritten),
    **A-223** (the repair set: conditional `base`, derived `kill_attribution`,
@@ -210,9 +214,14 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
 
 6b. **`equivalence_artifact` gets the identical disposition (A-230b):** reserved
    in the artifact contract, refused at config load with the same typed
-   `LaneConfigError` naming P34. P33 ships a producer for neither field, so
-   allowing one and refusing the other was an inconsistency with nothing behind
-   it.
+   `LaneConfigError` **whose message names P34**. P33 ships a producer for
+   neither field, so allowing one and refusing the other was an inconsistency
+   with nothing behind it.
+
+   **Same oracle caveat as work item 6, verified by running the loader:**
+   `judge.mutation` already refuses `equivalence_artifact` today with "unknown
+   judge.mutation key(s)". "It is refused" is therefore true with or without your
+   change and proves nothing. The locked suite requires `P34` in the message.
 
 6c. **`helpers` is OMITTED when no helper ran (A-230a)** — never serialized as
    `helpers: []`. The same rule the artifact already follows for `judgment`,
@@ -269,7 +278,7 @@ refused by version, as it already is — `verify_text` on a v5 tree must reject
    harness: an unfrozen proof source is not an expectation.
    The inventory is `carve-assets/P33/sweep_v4_consumers.py`; re-run it and
    confirm it reports no consumer you have not addressed. It now also reports
-   `gate/distribution/release_wheel.py` as `indirect-path-from-caller`: it
+   `gate/distribution/release_wheel.py` as `indirect-path-from-argv`: it
    compares a frozen release manifest whose path arrives on its command line, so
    v5 does not break it, but it is in the inventory because the closure claim has
    to be true regardless of whether a given instance happens to be harmless.

@@ -92,11 +92,54 @@ def _seg_variants(tree: str) -> list[str]:
     parts = tree.split("/")
     out = [tree, tree.replace("/", '" / "'), tree.replace("/", "', '")]
     for a, b in zip(parts, parts[1:]):
-        out += [f'"{a}" / "{b}"', f'"{a}", "{b}"', f"{a}/{b}"]
+        out += [
+            f'"{a}" / "{b}"', f'"{a}", "{b}"', f"{a}/{b}",
+            f"'{a}' / '{b}'", f"'{a}', '{b}'",
+            # head-of-chain: Path("tests") / "fixtures"
+            f'Path("{a}") / "{b}"', f"Path('{a}') / '{b}'",
+        ]
     return out
 
 
+def lives_in_frozen_tree(path: Path) -> str | None:
+    """A file located INSIDE a frozen tree that resolves paths relative to itself.
+
+    Round 5's missed consumer: `carve-assets/P20/test_acceptance.py` does
+    `ASSET_ROOT = Path(__file__).resolve().parent` and reads its expectations
+    from there. No string in it names a frozen tree, so NO text matcher can ever
+    find it -- this is a fact about the file's LOCATION, not its contents. It
+    appeared in an earlier inventory only by accident, because it mentions
+    `os.environ` elsewhere for an unrelated reason.
+    """
+    try:
+        rel = path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return None
+    for tree in FROZEN_TREES:
+        if rel.startswith(tree + "/"):
+            return tree
+    return None
+
+
 def reads_frozen_tree(text: str) -> list[str]:
+    """Textual detection of a frozen-tree read. **Bounded, and named as such.**
+
+    Round 5 probed ten construction idioms and this matched three. It now covers
+    more -- including the head-of-chain `Path("tests") / "fixtures"` shape the
+    old docstring wrongly claimed -- but text matching cannot be complete for a
+    dynamic language, and the honest statement is:
+
+      COVERED : literal paths; adjacent `/`-joined string components; adjacent
+                comma-joined components; `Path(a) / b` heads; a module constant
+                whose own assignment names the tree.
+      NOT COVERED : a path assembled from variables across statements, from a
+                config value, or from a caller. Those are what the two indirect
+                categories exist for, and why `_supplying_callers` tracks edges
+                rather than trusting this function.
+
+    This is a filter, not a proof. The decoy test and the frozen-consumer test
+    are what make its output falsifiable.
+    """
     hits = []
     for tree in FROZEN_TREES:
         if any(v in text for v in _seg_variants(tree)):
@@ -236,6 +279,52 @@ INDIRECT_ARGV = re.compile(r"(--manifest|argparse|sys\.argv)")
 INDIRECT_ENV = re.compile(r"os\.environ|getenv")
 
 
+def _env_var_names(text: str) -> list[str]:
+    """Environment variables this file reads a path out of.
+
+    Resolves module-level constants: `tests/test_self_hosting.py` writes
+    `ENV_VAR = "ASSAY_SELF_HOSTING_VERDICT"` and then `os.environ.get(ENV_VAR)`,
+    so a regex over the `environ` call alone sees a local name and nothing
+    useful. Round 5's live instance turned on exactly this.
+    """
+    names: set[str] = set()
+    consts = dict(re.findall(r'^([A-Z][A-Z0-9_]*)\s*=\s*[\'"]([A-Z0-9_]+)[\'"]',
+                             text, re.M))
+    for m in re.finditer(r'environ(?:\.get)?[\(\[]\s*([A-Za-z_][A-Za-z0-9_]*|[\'"][A-Z0-9_]+[\'"])',
+                         text):
+        token = m.group(1).strip("'\"")
+        names.add(consts.get(token, token))
+    for m in re.finditer(r'getenv\(\s*([A-Za-z_][A-Za-z0-9_]*|[\'"][A-Z0-9_]+[\'"])', text):
+        token = m.group(1).strip("'\"")
+        names.add(consts.get(token, token))
+    return sorted(n for n in names if n.isupper() and len(n) > 3)
+
+
+def _env_suppliers(names: list[str], files: list[Path]) -> list[str]:
+    """Anything in the gate's execution path that SETS one of those variables.
+
+    The supplier is frequently the gate SHELL SCRIPT rather than a Python file --
+    `ASSAY_SELF_HOSTING_VERDICT` is exported by `tester-unified-gate.sh`, not by
+    any module. Scanning only the Python closure dropped a real consumer, so the
+    gate script is searched too.
+    """
+    out = []
+    for f in [GATE, *files]:
+        try:
+            text = f.read_text()
+        except Exception:
+            continue
+        if not reads_frozen_tree(text) and "verdict" not in text:
+            continue
+        for n in names:
+            # the setter may be shell (`NAME="$path"`), a dict entry
+            # (`env["NAME"] = ...`), or a kwarg -- all three spellings count.
+            if re.search(rf"(?:[\"']{n}[\"']\s*\]?\s*[:=]|(?<![A-Z_]){n}\s*=)", text):
+                out.append(f"{f.relative_to(ROOT)}::{n}")
+                break
+    return sorted(set(out))
+
+
 def _subprocess_callers(target: Path, files: list[Path]) -> list[str]:
     """Closure members that invoke `target` AND name a frozen tree.
 
@@ -269,6 +358,9 @@ def find_consumers() -> list[dict]:
         if not COMPARISON.search(text):
             continue
         trees = reads_frozen_tree(text)
+        own = lives_in_frozen_tree(f)
+        if own and re.search(r"__file__|\bparent\b", text) and own not in trees:
+            trees = trees + [own]
         if trees:
             kind = "direct"
         else:
@@ -276,9 +368,17 @@ def find_consumers() -> list[dict]:
             # member actually hands it a frozen path. Without that edge it is a
             # library that happens to compare documents -- noise, not a finding.
             callers = _subprocess_callers(f, files)
+            env_names = _env_var_names(text)
+            env_suppliers = _env_suppliers(env_names, files) if env_names else []
             if INDIRECT_ARGV.search(text) and callers:
                 kind = "indirect-path-from-argv"
-            elif INDIRECT_ENV.search(text):
+            elif env_names and env_suppliers:
+                # Round 5: the environ branch had NO supplier guard, so any file
+                # merely mentioning os.environ was reported. Two false positives,
+                # and -- worse -- it masked a real consumer that appeared only
+                # because it happened to mention os.environ for an unrelated
+                # reason. An environ entry is a finding only when some other
+                # closure member actually SETS that variable to a frozen path.
                 kind = "indirect-path-from-environ"
             else:
                 continue
@@ -291,7 +391,9 @@ def find_consumers() -> list[dict]:
             ),
         }
         if kind == "indirect-path-from-argv":
-            entry["frozen_path_supplied_by"] = _subprocess_callers(f, files)
+            entry["frozen_path_supplied_by"] = callers
+        elif kind == "indirect-path-from-environ":
+            entry["frozen_path_supplied_by"] = env_suppliers
         out.append(entry)
     return out
 
