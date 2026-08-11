@@ -2,7 +2,8 @@
 
 ## Current pre-adoption queue: P20–P32
 
-P00–P26 are merged. P27–P32 are the remaining active implementation queue,
+P00–P26 **and P33** are merged (P33 as `e41ea99f`). P27–P32 and P34 are the
+remaining implementation queue,
 recarved at `2f2167f5928e5deacd93f1e9565238aef8acfe32` under canonical AUTHORING
 revision `2026-08-08-r5` (A-167). They are serial on purpose: downstream
 contracts are JIT-frozen after the predecessor merges, so a future packet does
@@ -38,8 +39,8 @@ mandatory for this semi-manual wave, not permanent product routing:
 | P30 | real Go/srdm R2 integration | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P31 | real Go/srdm R3 canary | 2d | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
 | P32 | real Vitest format conformance | 2c | drift-triggered | Sonnet xhigh | fresh Opus xhigh |
-| P33 | **schema v5 contract** (language-qualified operators, hoisted lane facts, equivalence bucket, kill attribution, helper provenance) | 2b | `SCHEMA-V5-DESIGN.md` landed; JIT freeze pending | Opus xhigh | fresh Opus xhigh |
-| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | PROVISIONAL until P33 merges | Sonnet xhigh | fresh Opus xhigh |
+| P33 | **schema v5 contract** (language-qualified operators, hoisted lane facts, equivalence bucket, kill attribution, helper provenance) | 2b | **merged as `e41ea99f` (A-220–A-233); post-review carve repair `62305df3`** | Opus xhigh | fresh Opus xhigh |
+| P34 | **SQL/DDL source-mutation adapter + real PostgreSQL integration** | 2d | NEXT: JIT freeze required; two rulings owed first (A-238) | Sonnet xhigh | fresh Opus xhigh |
 
 P20 through P26 are **MERGED**. P25's implementation-shaped contract, pinned
 966-entry Topos manifest, explicit three-symlink prospective adoption patch,
@@ -86,6 +87,19 @@ run later: A-153/A-167 already warn that ids from before the two renumbers are
 not interpretable at face value, and those ids are cited across merged packets,
 briefs, decisions and reports. Renumbering a third time would corrupt that
 trail. Read the chain above for order and the table for identity.
+
+**Before P27's re-carve is dispatched (A-234/A-235):** the committed Go coverage
+fixtures contradict A-172's own disproven premise and must be regenerated *and*
+their consumer expectations re-derived from the option-2 oracle — regenerating
+alone would encode the over-approximation as truth. And `statement_spans` has no
+seam through which that oracle could be invoked, because `go_cover.py` leaves no
+unattributed line; closing it needs a real interface ruling with its own probe.
+Evidence: `carve-assets/P27/GO-FIXTURES-STALE.md`.
+
+**Before P34 is dispatched (A-238):** its carve must rule on whether the flat
+seven-method `LanguageAdapter` stays honest for an R2-only language (B001 item 3,
+still open), and on the A-183/V5-5 tension that makes a failed SQL parser's
+provenance unrecordable.
 
 B001 is **absorbed**, not deleted: A-215's checkpoint questions are answered by
 P33's design (`SCHEMA-V5-DESIGN.md`) and proved by P34's real-PostgreSQL

@@ -551,7 +551,8 @@ def evaluate_r1(
     resolved full base commit (:attr:`~assay.measurability.ResolvedBase.
     base_rev`) the moment :func:`assay.measurability.check_base_is_head`
     produces it -- never on a path where that guard itself trips. This is
-    how :func:`run_lane` builds ``judgment.r1.base`` (P16's "the FULL
+    how :func:`run_lane` builds ``judgment.resolved.base`` (V5-1 hoisted it out
+    of ``judgment.r1``; P16's "the FULL
     resolved comparison commit, never the lane's own possibly-symbolic
     ``base`` ref") WITHOUT this function's own signature or return type
     changing: :mod:`assay.canary` calls this function directly today and

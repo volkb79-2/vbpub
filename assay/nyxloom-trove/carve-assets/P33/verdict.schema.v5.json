@@ -1213,7 +1213,46 @@
           "minLength": 1
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "A-227/A-236b: the pairing its own description already claimed. kill_attribution is DERIVED from this field's presence, so the two can never disagree in a real producer; this closes the gap for a foreign document.",
+          "if": {
+            "required": [
+              "kill_attribution"
+            ],
+            "properties": {
+              "kill_attribution": {
+                "const": "declared"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "kill_signal_artifact"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kill_attribution"
+            ],
+            "properties": {
+              "kill_attribution": {
+                "const": "unattributed"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "kill_signal_artifact"
+              ]
+            }
+          }
+        }
+      ]
     },
     "judgment_r3": {
       "description": "The effective R3 policy populated by the isolated R3 CLI pipeline (P19) and correspondence-checked against the R3 claim (A-148). P21 closed A-152: `canary.target` now exists, so BOTH `mechanism` and `target` are witnessable -- though the equality itself is cross-object and therefore owned by the model and the raw verifier, not by this document.",
@@ -1584,7 +1623,7 @@
           }
         },
         {
-          "description": "A-228/A-223d: ALL_MUTANTS_EQUIVALENT is the SUPPORTED all-inert result, so it must carry the payload that proves an analysis ran and every attempted mutant was provably no-op. A payload-free variant would be indistinguishable from capability absence, which is the same forgery branch 7 closes for NO_MUTANTS. Whether killed + survived == 0 with a non-empty equivalent bucket is cross-object and lives in the model and raw verifier.",
+          "description": "A-228/A-223d: ALL_MUTANTS_EQUIVALENT is the SUPPORTED all-inert result, so it must carry the payload that proves an analysis ran and every attempted mutant was provably no-op. A payload-free variant would be indistinguishable from capability absence, which is the same forgery branch 7 closes for NO_MUTANTS. killed, survived and equivalent are siblings inside this same `mutation` object, so the killed + survived == 0 rule is LOCAL (A-236c corrects an earlier description that called it cross-object); the model and raw verifier still re-derive the status, which is what makes an implementation ignoring `equivalent` observably wrong.",
           "if": {
             "required": [
               "reason_code"

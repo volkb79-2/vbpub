@@ -39,9 +39,24 @@
 > unverified — the same tests still unsatisfiable — and made the remedy
 > procedural: **A-232, a stated pass/fail count is not evidence; paste real
 > command output and classify each pre-implementation red as legitimate or
-> illegitimate.** It awaits a SIXTH mandatory carve review — read `reports/assay-P33-JIT-CARVE.md` and
-> `carve-assets/P33/README.md`. Its design is `SCHEMA-V5-DESIGN.md` with
-> decisions A-220/A-221/A-222 as amended by A-223/A-224/A-225.**
+> illegitimate.**
+>
+> **P33 IS MERGED.** Round 6's three narrow oracle bugs were fixed in
+> `e82da152`; the implementation landed and was reviewed through both phases
+> with **zero behavioural gaps** across 33 adversarial attacks and 13
+> controlled breaks; the post-review carve-asset repair (one locked-asset
+> defect only the carver may correct, plus four documentation staleness items)
+> is `62305df3`; the merge is `e41ea99f`. **No further P33 review is owed —
+> a session resuming from an older banner would re-do finished work.**
+> Read `reports/assay-P33-JIT-CARVE.md` and `carve-assets/P33/README.md`; the
+> design is `SCHEMA-V5-DESIGN.md` (which carries its own precedence banner per
+> A-231) with decisions A-220–A-233 plus A-234–A-237 from the Fable
+> full-codebase review.
+>
+> **NEXT WORK IS P34 (SQL adapter).** Before P27's re-carve is dispatched, read
+> **A-235** (the statement-position oracle has no seam to be called through)
+> and **A-234** (the committed Go coverage fixtures contradict A-172's own
+> disproven premise and must be regenerated first).**
 > **P27's** pinned image inputs, two-commit fixture with real reproduced
 > profiles, independent statement manifest, and locked v4 missing-tool artifact
 > remain frozen and survived the A-O19 ruling; P27's expected R1 `Coverage` line

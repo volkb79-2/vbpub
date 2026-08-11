@@ -325,6 +325,71 @@ def transform(doc: dict) -> tuple[dict, list[str]]:
             "judgment.r1.source_roots", "judgment.resolved.source_roots")
         log.append("wire_path.description: judgment.r1 -> judgment.resolved.source_roots")
 
+    # --- A-236: close the three gaps the Fable full-codebase review found -----
+    # A-182 claims the schema owns "every LOCALLY expressible rule ... including
+    # reason/payload conditionals within a single object", and A-029 makes the
+    # shipped schema the ONLY contract an external consumer gets -- they never
+    # run verdict.py or verify.py. Three families did not match that claim.
+
+    # (a) WITHDRAWN before landing. A first version of this repair added
+    #     PASS/FAIL-requires-its-payload branches for R1/R2/R3. Running the full
+    #     suite showed they break two tests in tests/test_verdict_conformance.py
+    #     whose assertions read "claims-cover-declared-rigor is NOT expressible
+    #     in JSON Schema 2020-12 -- this stays schema-valid ON PURPOSE". That file
+    #     carries a FAMILY of four such assertions, so the schema's silence here
+    #     is a documented layer boundary authored by a prior package, not
+    #     accretion. A-237 narrows A-182's overclaiming text instead of
+    #     overriding that boundary; the model and raw verifier keep sole
+    #     ownership of requiredness-of-evidence, and verify.py catches every
+    #     case. Reverted deliberately, recorded so it is not re-attempted.
+
+    # (b) judgment_r2's own description already stated the rule -- "Required when
+    #     kill_attribution is 'declared'; forbidden when 'unattributed'" -- with
+    #     nothing behind it, so `declared` with no artifact validated.
+    r2["allOf"] = [
+        {
+            "description": (
+                "A-227/A-236b: the pairing its own description already claimed. "
+                "kill_attribution is DERIVED from this field's presence, so the "
+                "two can never disagree in a real producer; this closes the gap "
+                "for a foreign document."
+            ),
+            "if": {
+                "required": ["kill_attribution"],
+                "properties": {"kill_attribution": {"const": "declared"}},
+            },
+            "then": {"required": ["kill_signal_artifact"]},
+        },
+        {
+            "if": {
+                "required": ["kill_attribution"],
+                "properties": {"kill_attribution": {"const": "unattributed"}},
+            },
+            "then": {"not": {"required": ["kill_signal_artifact"]}},
+        },
+    ]
+    log.append("judgment_r2.allOf: +kill_attribution/kill_signal_artifact pairing (A-236b)")
+
+    # (c) One description was factually WRONG, not merely unenforced: the
+    #     ALL_MUTANTS_EQUIVALENT branch called its own check "cross-object" when
+    #     killed/survived/equivalent are siblings inside one `mutation` object --
+    #     and the neighbouring MUTANT_LIMIT_EXCEEDED branch already constrains
+    #     exactly those fields locally. Same stale-description class six review
+    #     rounds found one instance at a time.
+    for branch in defs["claim"]["allOf"]:
+        d0 = branch.get("description", "")
+        if "ALL_MUTANTS_EQUIVALENT" in d0 and "cross-object" in d0:
+            branch["description"] = d0.replace(
+                "Whether killed + survived == 0 with a non-empty equivalent "
+                "bucket is cross-object and lives in the model and raw verifier.",
+                "killed, survived and equivalent are siblings inside this same "
+                "`mutation` object, so the killed + survived == 0 rule is LOCAL "
+                "(A-236c corrects an earlier description that called it "
+                "cross-object); the model and raw verifier still re-derive the "
+                "status, which is what makes an implementation ignoring "
+                "`equivalent` observably wrong.")
+            log.append("claim.allOf: ALL_MUTANTS_EQUIVALENT description corrected (A-236c)")
+
     # R2-B4 repair (A-227): the base rule was `if`, never `only-if`. An r3-only
     # judgment carrying a base validated. The producer cannot reach that state
     # (A-062 refuses judge.base on an R0,R3 lane as inert config) but verify.py

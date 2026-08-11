@@ -64,6 +64,7 @@ materialised as a literal string/temp file at test time.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -137,6 +138,17 @@ def _run_assay(standalone: Standalone, lane_file: Path) -> subprocess.CompletedP
 # --- O1: a real `assay run` through the installed console script -------------
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("setuptools_scm") is not None,
+    reason=(
+        "A-069/A-124: this asserts the installed wheel's version is the "
+        "documented '0.0.0' fallback, which holds only where setuptools_scm is "
+        "ABSENT -- true in the tester-unified gate image, false in this "
+        "devcontainer. The gate oracle is unweakened (setuptools_scm is absent "
+        "there, so this runs); the skip only stops the cockpit carrying a "
+        "permanent red, which trains people to stop reading the signal."
+    ),
+)
 def test_a_real_pass_matches_the_documented_r0_pass_shape(
     standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
 ):

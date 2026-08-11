@@ -1,4 +1,13 @@
-"""Go coverprofile parser (``go test -coverprofile=...``).
+"""
+STALE PREMISE, TRACKED (A-234/A-217). The reasoning below states that "a block
+spans [startLine, endLine] and every line in that range is executable". A-172's
+probe disproved exactly that: a block carries a positional extent plus a
+statement COUNT, never the statements' own positions, so the expansion here is a
+strict over-approximation that attributes function signatures, closing braces and
+statement continuations. A-218 closed the inclusive-versus-half-open question as
+inert; A-217 ruled option 2. This file has an explicit scope status for the
+re-carve per A-217(b). Do not re-derive the correction from this docstring.
+Go coverprofile parser (``go test -coverprofile=...``).
 
 Format: a ``mode: <mode>`` header line, then one BLOCK per subsequent line::
 

@@ -1,5 +1,13 @@
 # Schema v5 — the design, and what it deliberately does not do
 
+> **SCHEMA OWNERSHIP, NARROWED (A-237).** The shipped schema owns refusal of
+> *impossible* payloads, not requiredness of *evidence*. A payload-free PASS
+> validates against the schema alone and is refused by the model and raw
+> verifier — deliberately, and `tests/test_verdict_conformance.py` carries a
+> family of four assertions documenting that boundary. A-182's "every locally
+> expressible rule" should be read with this narrowing. Enforcing it in the
+> schema was attempted and reverted; see A-237 for the evidence.
+>
 > **PRECEDENCE (A-231).** This document was written before three pre-dispatch
 > repair rounds. Where it conflicts with `carve-assets/P33/verdict.schema.v5.json`
 > or with a named decision (A-221, A-223 – A-230), **the locked schema and the

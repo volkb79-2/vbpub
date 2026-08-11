@@ -62,8 +62,8 @@ PYTHONPATH=src python3 -m pytest \
 
 ## Asset hashes
 
-Regenerated after the post-implementation carve-asset repair. The table had gone
-stale at `081d945b`, before round 5's `e82da152` changed the suite.
+Regenerated after the Fable full-codebase review repair (A-236b/c touched the
+transform and therefore the generated schema).
 
 ```text
 f9f7bc86b316928a752e29ec52b352d51c0bd74ccef1096f60dc1bf5a421af47  expected/ca1-r3-no-base-v5-template.json
@@ -72,13 +72,13 @@ f1734e62782558b47799b3f77d933a37c6c63de2fcc4f54f21e226ddb768e408  expected/ca4-a
 e4378a0e85189b9f9b2c59184df0760bcbfeb7efbc01e44417af0b960ac128e7  expected/p25-missing-v5-template.json
 7d2685455f70f8e7d4a2d55deba4aff1e6b4799d9e885ca7bda5bf8da985dea1  expected/p25-pass-v5-template.json
 c1544667e2ec25fa9fe22d97598809e0ffe8836a600e7e296c6d9e6120831adb  expected/sql-r2-v5-template.json
-5e6c113a752dffed9a4cede7fba47dc16a045c9b91dafc71a5345f67fed2da41  migrate_v4_to_v5.py
+16ac55ce0c2ec25c61dbce2e3595a883dc46aae12593cca724622947404d3515  migrate_v4_to_v5.py
 83b3641214f5e74bc7ac3152b446e3ceb3b4f6d9f87704e2569f3b9ea2f7e925  migration-manifest.json
 41e57d3208575fae8dc8c7b2e0794ac805ec62d44861df240f36e01207a70d3f  probe_v5_controlled_red.py
 262899cca2bb7ed667bd248b41473535d4ceae07068546f644f695f3dfb9e2a1  sweep_v4_consumers.py
 b0ed316e28c9e052fa2601ea40ec975659cec8eca9a8b51ffda191930a6f4001  test_acceptance_v5.py
 4e8bcbf46eca1836e52502114c6583a7dc1af88d85eff6772e837a9b9a1c3df0  verdict.schema.v4-snapshot.json
-f5ed2cb390547bb6136a896a2bd789513eb06c2da69a469f921a9ba437cba476  verdict.schema.v5.json
+d62d9377d17a3841fab7ac84b606bb1ccd83491d3e7195d8f96cb78b0573ffce  verdict.schema.v5.json
 ```
 
 `README.md` is excluded because it carries the list.

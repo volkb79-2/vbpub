@@ -30,7 +30,7 @@ Two things this module refuses to be, on purpose:
 
 Three stages:
 
-1. Checks the packaged schema v4 (`load_schema()` is not called here — schema
+1. Checks the packaged schema v5 (`load_schema()` is not called here — schema
    *conformance* is the RECONSTRUCTION below; loading the raw schema document
    would only be useful to a real JSON-Schema evaluator, which this module
    deliberately is not) cannot skip: reconstructing ``claims``/``evidence``

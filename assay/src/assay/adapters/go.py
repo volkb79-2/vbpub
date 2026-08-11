@@ -1,4 +1,14 @@
-"""The Go :class:`~assay.adapters.base.LanguageAdapter` -- the SECOND real
+"""
+    STALE PREMISE, TRACKED (A-234/A-217). The prose below states
+    ``requires_span_attribution = False`` is "settled, not assumed" and that the
+    alternative is "structurally impossible". A-172's probe disproved the premise
+    that a cover block's extent equals its statement lines, A-O19 ruled it a
+    product decision, and A-217 ruled **option 2**: Go needs a real source-side
+    statement-position oracle. Read A-217, A-218 and A-235 before trusting any
+    span-attribution statement in this file. A-235 additionally records that
+    ``statement_spans`` currently has no seam through which that oracle would ever
+    be invoked, because this parser leaves no unattributed line.
+The Go :class:`~assay.adapters.base.LanguageAdapter` -- the SECOND real
 adapter (P08), proving the boundary P05 built is genuinely additive: adding
 Go requires ZERO changes to the frozen protocol (``adapters/base.py``), the
 language-free core (``evaluate.py``), or the registry (``registry.py``) --
