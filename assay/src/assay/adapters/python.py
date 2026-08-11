@@ -557,7 +557,7 @@ def _compare_swap_sites(node: ast.Compare, text_bytes: bytes) -> list[_Site]:
         sites.append(
             _Site(
                 lineno=line_for_offset(text_bytes, start),
-                operator="compare-swap",
+                operator="python:compare-swap",
                 description=f"{op_cls.__name__}->{target_cls.__name__}",
                 start=start,
                 end=end,
@@ -587,7 +587,7 @@ def _boolop_swap_sites(node: ast.BoolOp, text_bytes: bytes) -> list[_Site]:
         sites.append(
             _Site(
                 lineno=line_for_offset(text_bytes, start),
-                operator="boolop-swap",
+                operator="python:boolop-swap",
                 description=description,
                 start=start,
                 end=end,
@@ -608,7 +608,7 @@ def _bool_const_flip_site(node: ast.Constant, text_bytes: bytes) -> _Site:
     end = byte_offset(text_bytes, node.end_lineno, node.end_col_offset)
     return _Site(
         lineno=line_for_offset(text_bytes, start),
-        operator="bool-const-flip",
+        operator="python:bool-const-flip",
         description=f"{node.value}->{new_value}",
         start=start,
         end=end,
@@ -669,7 +669,7 @@ def _falsy_swap_site(node: ast.Return, text_bytes: bytes) -> _Site | None:
     # find the bytes this experiment actually replaces.
     return _Site(
         lineno=line_for_offset(text_bytes, start),
-        operator="falsy-swap",
+        operator="python:falsy-swap",
         description=f"{original_text}->{replacement_text}",
         start=start,
         end=end,

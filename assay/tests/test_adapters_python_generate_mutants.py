@@ -62,79 +62,79 @@ def _with_line_replaced(text: str, lineno: int, new_line: str) -> str:
 # filter would add an identity this manifest does not expect.
 
 EXPECTED_MUTATIONS: dict[tuple[int, str, str], list[str]] = {
-    (24, "compare-swap", "Lt->LtE"): [
+    (24, "python:compare-swap", "Lt->LtE"): [
         _with_line_replaced(SAMPLE_TEXT, 24, "    if a <= b:\n")
     ],
-    (26, "compare-swap", "LtE->Lt"): [
+    (26, "python:compare-swap", "LtE->Lt"): [
         _with_line_replaced(SAMPLE_TEXT, 26, "    if a < b:\n")
     ],
-    (28, "compare-swap", "Gt->GtE"): [
+    (28, "python:compare-swap", "Gt->GtE"): [
         _with_line_replaced(SAMPLE_TEXT, 28, "    if a >= b:\n")
     ],
-    (30, "compare-swap", "GtE->Gt"): [
+    (30, "python:compare-swap", "GtE->Gt"): [
         _with_line_replaced(SAMPLE_TEXT, 30, "    if a > b:\n")
     ],
-    (32, "compare-swap", "Eq->NotEq"): [
+    (32, "python:compare-swap", "Eq->NotEq"): [
         _with_line_replaced(SAMPLE_TEXT, 32, "    if a != b:\n")
     ],
-    (34, "compare-swap", "NotEq->Eq"): [
+    (34, "python:compare-swap", "NotEq->Eq"): [
         _with_line_replaced(SAMPLE_TEXT, 34, "    if a == b:\n")
     ],
-    (36, "compare-swap", "Is->IsNot"): [
+    (36, "python:compare-swap", "Is->IsNot"): [
         _with_line_replaced(SAMPLE_TEXT, 36, "    if a is not b:\n")
     ],
-    (38, "compare-swap", "IsNot->Is"): [
+    (38, "python:compare-swap", "IsNot->Is"): [
         _with_line_replaced(SAMPLE_TEXT, 38, "    if a is b:\n")
     ],
-    (44, "falsy-swap", "None->[]"): [
+    (44, "python:falsy-swap", "None->[]"): [
         _with_line_replaced(SAMPLE_TEXT, 44, "    return []\n")
     ],
-    (48, "boolop-swap", "And->Or"): [
+    (48, "python:boolop-swap", "And->Or"): [
         _with_line_replaced(SAMPLE_TEXT, 48, "    if a or b and c:\n"),
         _with_line_replaced(SAMPLE_TEXT, 48, "    if a and b or c:\n"),
     ],
-    (49, "bool-const-flip", "True->False"): [
+    (49, "python:bool-const-flip", "True->False"): [
         _with_line_replaced(SAMPLE_TEXT, 49, "        return False\n")
     ],
-    (50, "bool-const-flip", "False->True"): [
+    (50, "python:bool-const-flip", "False->True"): [
         _with_line_replaced(SAMPLE_TEXT, 50, "    return True\n")
     ],
-    (54, "boolop-swap", "Or->And"): [
+    (54, "python:boolop-swap", "Or->And"): [
         _with_line_replaced(SAMPLE_TEXT, 54, "    if a and b or c or d:\n"),
         _with_line_replaced(SAMPLE_TEXT, 54, "    if a or b and c or d:\n"),
         _with_line_replaced(SAMPLE_TEXT, 54, "    if a or b or c and d:\n"),
     ],
-    (55, "bool-const-flip", "True->False"): [
+    (55, "python:bool-const-flip", "True->False"): [
         _with_line_replaced(SAMPLE_TEXT, 55, "        return False\n")
     ],
-    (56, "bool-const-flip", "False->True"): [
+    (56, "python:bool-const-flip", "False->True"): [
         _with_line_replaced(SAMPLE_TEXT, 56, "    return True\n")
     ],
-    (60, "bool-const-flip", "True->False"): [
+    (60, "python:bool-const-flip", "True->False"): [
         _with_line_replaced(SAMPLE_TEXT, 60, "    x = False\n")
     ],
-    (61, "bool-const-flip", "False->True"): [
+    (61, "python:bool-const-flip", "False->True"): [
         _with_line_replaced(SAMPLE_TEXT, 61, "    y = True\n")
     ],
-    (66, "falsy-swap", "None->[]"): [
+    (66, "python:falsy-swap", "None->[]"): [
         _with_line_replaced(SAMPLE_TEXT, 66, "    return []\n")
     ],
-    (70, "falsy-swap", "0->None"): [
+    (70, "python:falsy-swap", "0->None"): [
         _with_line_replaced(SAMPLE_TEXT, 70, "    return None\n")
     ],
-    (74, "falsy-swap", "''->None"): [
+    (74, "python:falsy-swap", "''->None"): [
         _with_line_replaced(SAMPLE_TEXT, 74, "    return None\n")
     ],
-    (78, "falsy-swap", "b''->None"): [
+    (78, "python:falsy-swap", "b''->None"): [
         _with_line_replaced(SAMPLE_TEXT, 78, "    return None\n")
     ],
-    (82, "falsy-swap", "[]->None"): [
+    (82, "python:falsy-swap", "[]->None"): [
         _with_line_replaced(SAMPLE_TEXT, 82, "    return None\n")
     ],
-    (86, "falsy-swap", "()->None"): [
+    (86, "python:falsy-swap", "()->None"): [
         _with_line_replaced(SAMPLE_TEXT, 86, "    return None\n")
     ],
-    (90, "falsy-swap", "{}->None"): [
+    (90, "python:falsy-swap", "{}->None"): [
         _with_line_replaced(SAMPLE_TEXT, 90, "    return None\n")
     ],
 }
@@ -147,7 +147,7 @@ EXPECTED_IDENTITIES = frozenset(
 
 #: Every operator the catalogue knows -- this module exercises the fixture's
 #: whole eligible set, so it always selects all four.
-ALL_OPERATORS = ("compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap")
+ALL_OPERATORS = ("python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap")
 
 #: Comfortably above the fixture's 27 sites, so `limit` never truncates here
 #: (the bound itself is proven in `test_mutation_collect.py`).
@@ -308,7 +308,7 @@ def test_only_sites_on_the_declared_lines_are_returned():
     any of the other 26 real sites elsewhere in the same file."""
     mutants = _sites({24})
     assert len(mutants) == 1
-    assert _applied(mutants[0]) == EXPECTED_MUTATIONS[(24, "compare-swap", "Lt->LtE")][0]
+    assert _applied(mutants[0]) == EXPECTED_MUTATIONS[(24, "python:compare-swap", "Lt->LtE")][0]
 
 
 def test_an_empty_lines_set_returns_an_empty_tuple_never_unsupported():

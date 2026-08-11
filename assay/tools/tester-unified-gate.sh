@@ -225,12 +225,58 @@ run_inner() {
   # `pythonpath` ini is overridden empty, so `pyproject.toml` cannot shadow the
   # wheel with `src/`. Only the worktree's locked test asset and project root
   # are named; the imported `assay` is exactly what was just installed above.
+  #
+  # P33/A-226 as amended by A-229: the module is KEPT and exactly FOUR tests
+  # are deselected, not retired. Only four of its twenty-four tests touch v4
+  # artifact shape; retiring the module would drop the other twenty, which
+  # include A-212's process-group kill on a witnessed descendant-held pipe,
+  # A-210's aggregate bounds before the first Git call, literal-pathspec
+  # identity and annotated-tag peel refusal -- boundaries this project paid
+  # for with real incidents and which v5 does not touch. The three
+  # template-coupled tests compare against P26's locked v4 templates, which
+  # A-222 freezes as historical evidence rather than rewriting; their SHAPE
+  # coverage moves into P33's own suite
+  # (`test_p26_attestation_shapes_survive_v5`, which reads those same locked
+  # templates and bumps only `schema_version` in memory, so no locked byte
+  # moves). The fourth deselection is the marker test, which asserts this
+  # very invocation's own wiring.
+  #
+  # `test_all_structural_and_aggregate_bounds_precede_every_git_call` is
+  # deliberately NOT deselected: it tests ordering, not artifact shape.
+  #
+  # The `--deselect` values are ROOTDIR-RELATIVE NODEIDS, not `$worktree`
+  # paths. pytest matches `--deselect` as a plain nodeid PREFIX, and the
+  # nodeid of a test collected from an absolute file argument is still
+  # relative to rootdir -- which is `$worktree/assay`, the directory holding
+  # `pyproject.toml`. An absolute spelling here would match no nodeid at all
+  # and silently deselect nothing, which is exactly the shape of failure
+  # that leaves a gate looking wired while running the tests it claims to
+  # have suppressed.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= ASSAY_P26_PROJECT_ROOT="$worktree/assay" \
     "$scratch/run-venv/bin/python" -m pytest \
       "$worktree/assay/nyxloom-trove/carve-assets/P26/test_acceptance.py" \
-      -q -p no:randomly --override-ini=pythonpath=
+      -q -p no:randomly --override-ini=pythonpath= \
+      --deselect nyxloom-trove/carve-assets/P26/test_acceptance.py::test_cli_emits_the_complete_hand_authored_v4_artifact \
+      --deselect nyxloom-trove/carve-assets/P26/test_acceptance.py::test_cli_preserves_independent_malformed_missing_and_current_evidence \
+      --deselect nyxloom-trove/carve-assets/P26/test_acceptance.py::test_attestation_timeout_is_atomic_and_does_not_run_a_failing_command \
+      --deselect nyxloom-trove/carve-assets/P26/test_acceptance.py::test_registered_gate_runs_locked_acceptance_from_the_wheel_and_marks_it
   echo 'ASSAY_GATE_PHASE=attestation-hardened'
+
+  # P33: the locked v5 acceptance suite, run the same way against the same
+  # installed wheel. It carries forward the artifact-shape coverage the four
+  # deselections above gave up, and adds v5's own contract: the hoisted
+  # `judgment.resolved`, the per-language operator vocabulary, the
+  # `equivalent` bucket and its pairing, kill attribution, and helper
+  # correspondence. Every negative in it is differential -- it asserts the
+  # unmodified control verifies clean in the same test that asserts the
+  # injected defect does not -- so none can pass on a version mismatch.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= ASSAY_P26_PROJECT_ROOT="$worktree/assay" \
+    "$scratch/run-venv/bin/python" -m pytest \
+      "$worktree/assay/nyxloom-trove/carve-assets/P33/test_acceptance_v5.py" \
+      -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=verdict-v5-accepted'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version"
 

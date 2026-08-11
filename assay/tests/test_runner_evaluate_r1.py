@@ -38,12 +38,13 @@ from jsonschema import Draft202012Validator
 from assay import runner
 from assay.adapters.base import StatementSpan
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.verdict import Judgment, JudgmentR1
+from assay.verdict import Judgment, JudgmentR1, JudgmentResolved
 
 ADAPTER = FakeAdapter()
 
 
-#: The placeholder every hand-written fixture spells `judgment.r1.base` as.
+#: The placeholder every hand-written fixture spells
+#: `judgment.resolved.base` as (P33/V5-1 moved it out of `judgment.r1`).
 #: A real `base_rev` is a genuine git commit SHA and therefore NOT
 #: deterministic across test runs (``GitRepo.commit_all`` does not pin
 #: ``GIT_AUTHOR_DATE``) -- each test asserts the REAL value independently,
@@ -65,15 +66,20 @@ def _r1_judgment(judge, base_rev: str) -> Judgment:
     derived string as `.source_root_paths`, which would make this field
     non-deterministic across runs too."""
     return Judgment(
-        r1=JudgmentR1(
+        # P33/V5-1: the three lane facts moved out of the R1 tier into the
+        # shared `resolved`, which is the only place an R0,R2 lane could ever
+        # have recorded them.
+        resolved=JudgmentResolved(
             language=judge.language,
             source_roots=("pkg",),
+            base=base_rev,
+        ),
+        r1=JudgmentR1(
             coverage_format=judge.coverage.format,
             coverage_artifact=judge.coverage.artifact,
             fail_under=judge.fail_under,
             allow_excluded=judge.allow_excluded,
-            base=base_rev,
-        )
+        ),
     )
 
 
@@ -81,8 +87,8 @@ def _normalize_judgment_base(document: dict, base_rev: str) -> None:
     """Assert the REAL resolved base commit was recorded, then normalize it
     to the fixture's own fixed placeholder so the surrounding full-document
     comparison stays possible against a hand-written, stable JSON file."""
-    assert document["judgment"]["r1"]["base"] == base_rev
-    document["judgment"]["r1"]["base"] = FIXTURE_BASE_PLACEHOLDER
+    assert document["judgment"]["resolved"]["base"] == base_rev
+    document["judgment"]["resolved"]["base"] = FIXTURE_BASE_PLACEHOLDER
 
 
 @dataclass(frozen=True, kw_only=True)

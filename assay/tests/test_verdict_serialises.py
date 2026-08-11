@@ -39,6 +39,7 @@ from assay.verdict import (
     Judgment,
     JudgmentR1,
     JudgmentR2,
+    JudgmentResolved,
     Mutation,
     Verdict,
     iso_utc,
@@ -47,15 +48,17 @@ from assay.verdict import (
 )
 
 R1_JUDGMENT = Judgment(
-    r1=JudgmentR1(
+    resolved=JudgmentResolved(
         language="python",
         source_roots=("src",),
+        base="0000000000000000000000000000000000000a",
+    ),
+    r1=JudgmentR1(
         coverage_format="coverage-py-json",
         coverage_artifact="cov.json",
         fail_under=100.0,
         allow_excluded=False,
-        base="0000000000000000000000000000000000000a",
-    )
+    ),
 )
 
 VERSION = "0.1.0"
@@ -275,7 +278,19 @@ def build_inconclusive() -> Verdict:
         env_effective={},
         scope="S1",
         enforcement="gate",
-        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))),
+        judgment=Judgment(
+            resolved=JudgmentResolved(
+                language="python",
+                source_roots=("pkg",),
+                base="0000000000000000000000000000000000000a",
+            ),
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                kill_attribution="unattributed",
+            ),
+        ),
         claims=(
             Claim(
                 rigor="R0",

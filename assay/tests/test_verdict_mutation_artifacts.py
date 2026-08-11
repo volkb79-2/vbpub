@@ -31,7 +31,15 @@ from conftest import mutation_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Claim, Judgment, JudgmentR2, Mutation, MutantOutcome, Verdict
+from assay.verdict import (
+    Claim,
+    Judgment,
+    JudgmentR2,
+    JudgmentResolved,
+    Mutation,
+    MutantOutcome,
+    Verdict,
+)
 
 BASE = {
     "lane": "package",
@@ -48,6 +56,22 @@ BASE = {
 }
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)
+
+#: (P33/V5-1) Every R0,R2 verdict below now records what it judged. Under v4
+#: it recorded none of this -- no language, no source roots, no comparison
+#: commit -- even though R2 scopes mutation to changed lines against exactly
+#: that commit. These values match the committed expected fixtures byte for
+#: byte, which is what makes the equality assertions below real.
+RESOLVED = JudgmentResolved(
+    language="python",
+    source_roots=("pkg",),
+    base="0000000000000000000000000000000000000a",
+)
+
+#: (P33/V5-4) Derived, not declared: `kill_signal_artifact` is refused at
+#: config load until P34, so every lane this build can run renders
+#: `unattributed`.
+UNATTRIBUTED = {"kill_attribution": "unattributed"}
 
 #: Replacement hashes, hand-computed rather than read back from the code
 #: under test (A-067). Each is sha256 of the REPLACEMENT BYTES only.
@@ -71,12 +95,12 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
         killed=(
             MutantOutcome(
                 path="pkg/checks.py", lineno=12, start_byte=100, end_byte=101,
-                replacement_sha256=SHA_LTE, operator="compare-swap",
+                replacement_sha256=SHA_LTE, operator="python:compare-swap",
                 description="Lt->LtE",
             ),
             MutantOutcome(
                 path="pkg/checks.py", lineno=18, start_byte=240, end_byte=243,
-                replacement_sha256=SHA_OR, operator="boolop-swap",
+                replacement_sha256=SHA_OR, operator="python:boolop-swap",
                 description="And->Or",
             ),
         ),
@@ -91,7 +115,15 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
         outcome=Outcome.PASS,
         started="2026-08-07T14:00:00+00:00",
         ended="2026-08-07T14:00:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap", "boolop-swap"))),
+        judgment=Judgment(
+            resolved=RESOLVED,
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap", "python:boolop-swap"),
+                **UNATTRIBUTED,
+            ),
+        ),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -102,12 +134,12 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
 def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft202012Validator):
     survivor = MutantOutcome(
         path="pkg/checks.py", lineno=30, start_byte=300, end_byte=302,
-        replacement_sha256=SHA_NE, operator="compare-swap",
+        replacement_sha256=SHA_NE, operator="python:compare-swap",
         description="Eq->NotEq",
     )
     killed = MutantOutcome(
         path="pkg/checks.py", lineno=14, start_byte=120, end_byte=121,
-        replacement_sha256=SHA_LTE, operator="compare-swap",
+        replacement_sha256=SHA_LTE, operator="python:compare-swap",
         description="Lt->LtE",
     )
     mutation = Mutation(
@@ -124,7 +156,15 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
         reason_code=ReasonCode.MUTANTS_SURVIVED,
         started="2026-08-07T14:05:00+00:00",
         ended="2026-08-07T14:05:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=2, max_mutants=50, operators=("compare-swap",))),
+        judgment=Judgment(
+            resolved=RESOLVED,
+            r2=JudgmentR2(
+                jobs=2,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                **UNATTRIBUTED,
+            ),
+        ),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -145,7 +185,15 @@ def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Valid
         reason_code=ReasonCode.NO_MUTANTS,
         started="2026-08-07T14:10:00+00:00",
         ended="2026-08-07T14:10:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))),
+        judgment=Judgment(
+            resolved=RESOLVED,
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                **UNATTRIBUTED,
+            ),
+        ),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -156,11 +204,11 @@ def test_no_mutants_matches_the_hand_written_fixture(validator: Draft202012Valid
 def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012Validator):
     stopped = MutantOutcome(
         path="pkg/slow.py", lineno=9, start_byte=96, end_byte=99,
-        replacement_sha256=SHA_OR, operator="boolop-swap", description="And->Or",
+        replacement_sha256=SHA_OR, operator="python:boolop-swap", description="And->Or",
     )
     killed = MutantOutcome(
         path="pkg/slow.py", lineno=5, start_byte=40, end_byte=41,
-        replacement_sha256=SHA_LTE, operator="compare-swap",
+        replacement_sha256=SHA_LTE, operator="python:compare-swap",
         description="Lt->LtE",
     )
     mutation = Mutation(
@@ -177,7 +225,15 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
         reason_code=ReasonCode.LANE_TIMEOUT,
         started="2026-08-07T14:15:00+00:00",
         ended="2026-08-07T14:15:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=2, max_mutants=50, operators=("boolop-swap", "compare-swap"))),
+        judgment=Judgment(
+            resolved=RESOLVED,
+            r2=JudgmentR2(
+                jobs=2,
+                max_mutants=50,
+                operators=("python:boolop-swap", "python:compare-swap"),
+                **UNATTRIBUTED,
+            ),
+        ),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())
@@ -191,12 +247,12 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
     attempted mutant's process crashed."""
     crashed = MutantOutcome(
         path="pkg/broken.py", lineno=4, start_byte=60, end_byte=64,
-        replacement_sha256=SHA_FALSE, operator="bool-const-flip",
+        replacement_sha256=SHA_FALSE, operator="python:bool-const-flip",
         description="True->False",
     )
     killed = MutantOutcome(
         path="pkg/broken.py", lineno=2, start_byte=20, end_byte=21,
-        replacement_sha256=SHA_LTE, operator="compare-swap",
+        replacement_sha256=SHA_LTE, operator="python:compare-swap",
         description="Lt->LtE",
     )
     mutation = Mutation(
@@ -213,7 +269,15 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
         reason_code=ReasonCode.EXEC_FAILED,
         started="2026-08-07T14:20:00+00:00",
         ended="2026-08-07T14:20:05+00:00",
-        judgment=Judgment(r2=JudgmentR2(jobs=2, max_mutants=50, operators=("bool-const-flip", "compare-swap"))),
+        judgment=Judgment(
+            resolved=RESOLVED,
+            r2=JudgmentR2(
+                jobs=2,
+                max_mutants=50,
+                operators=("python:bool-const-flip", "python:compare-swap"),
+                **UNATTRIBUTED,
+            ),
+        ),
         claims=(R0_PASS, r2_claim),
     )
     document = json.loads(verdict.to_json())

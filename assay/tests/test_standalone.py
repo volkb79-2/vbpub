@@ -324,7 +324,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 4,
+        "schema_version": 5,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -340,16 +340,21 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {
-            "r1": {
+            # P33/V5-1: hoisted out of `r1`, so an R0,R2 lane can record them
+            # too. `base` is here and not in `r1` because it is a fact of
+            # what was judged, not of R1's own floor policy.
+            "resolved": {
                 "language": "python",
                 "source_roots": ["pkg"],
+                # the SYMBOLIC `control-baseline` above, resolved.
+                "base": base_rev,
+            },
+            "r1": {
                 "coverage_format": "coverage-py-json",
                 "coverage_artifact": "cov.json",
                 "fail_under": 100.0,
                 "allow_excluded": False,
-                # the SYMBOLIC `control-baseline` above, resolved.
-                "base": base_rev,
-            }
+            },
         },
         "claims": [
             {
@@ -430,7 +435,7 @@ def _r2_lane_toml(
     *,
     script: str,
     base: str,
-    operators: tuple[str, ...] = ("compare-swap",),
+    operators: tuple[str, ...] = ("python:compare-swap",),
     jobs: int = 1,
     budget: str = "2m",
 ) -> str:
@@ -489,7 +494,7 @@ def _gt_site(lineno: int) -> dict:
         "start_byte": start,
         "end_byte": start + 1,
         "replacement_sha256": hashlib.sha256(b">=").hexdigest(),
-        "operator": "compare-swap",
+        "operator": "python:compare-swap",
         "description": "Gt->GtE",
     }
 
@@ -530,6 +535,7 @@ def _expected_r2_artifact(
     jobs: int = 1,
     operators: list[str] | None = None,
     r0_claim: dict | None = None,
+    base_rev: str | None = None,
 ) -> dict:
     """The COMPLETE expected document, written out in full so a field the
     producer adds, drops, or fills in wrongly fails even though no assertion
@@ -539,7 +545,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 4,
+        "schema_version": 5,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -572,13 +578,27 @@ def _expected_r2_artifact(
     }
     if operators is not None:
         document["judgment"] = {
+            # P33/V5-1: THE change this schema exists for. An R0,R2 lane is
+            # legal (A-192) and renders no `r1`, so under v4 this artifact
+            # recorded no language, no source roots and no comparison commit
+            # at all -- while R2 scopes mutation to changed lines against
+            # exactly that commit. `base` is the RESOLVED 40-hex, never the
+            # lane's declared `control-baseline` branch name.
+            "resolved": {
+                "language": "python",
+                "source_roots": ["src"],
+                "base": base_rev,
+            },
             "r2": {
                 "jobs": jobs,
                 # P21/A-163: the declared ceiling every R2 lane in this
                 # module writes (see `_r2_lane_toml`).
                 "max_mutants": MAX_MUTANTS,
                 "operators": operators,
-            }
+                # P33/V5-4: derived from the absence of
+                # `kill_signal_artifact`, which `config` refuses until P34.
+                "kill_attribution": "unattributed",
+            },
         }
     return document
 
@@ -604,7 +624,7 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
     tree is hashed before and after: live-tree mutation (the third negative)
     changes ``src/mod.py``'s digest.
     """
-    _seed_two_compare_swap_sites(git_repo)
+    base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path,
         _r2_lane_toml(script=_GREP_LINE_2, base="control-baseline"),
@@ -621,11 +641,12 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
         real,
         _expected_r2_artifact(
             git_repo=git_repo,
+            base_rev=base_rev,
             script=_GREP_LINE_2,
             outcome="FAIL",
             reason_code="MUTANTS_SURVIVED",
             exit_code=1,
-            operators=["compare-swap"],
+            operators=["python:compare-swap"],
             r2_claim={
                 "rigor": "R2",
                 "source": "computed",
@@ -648,6 +669,10 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
                     "survived": [_gt_site(6)],
                     "crashed": [],
                     "budget_exceeded": [],
+                    # P33/V5-3: present and empty through the REAL installed
+                    # wheel. A Python run proves nothing inert, which is a
+                    # different fact from the bucket being absent.
+                    "equivalent": [],
                 },
             },
         ),
@@ -736,11 +761,12 @@ def test_a_real_r2_lane_with_no_declared_operator_site_is_inconclusive(
         real,
         _expected_r2_artifact(
             git_repo=git_repo,
+            base_rev=base_rev,
             script="exit 0",
             outcome="INCONCLUSIVE",
             reason_code="NO_MUTANTS",
             exit_code=5,
-            operators=["compare-swap"],
+            operators=["python:compare-swap"],
             r2_claim={
                 "rigor": "R2",
                 "source": "computed",
@@ -756,6 +782,7 @@ def test_a_real_r2_lane_with_no_declared_operator_site_is_inconclusive(
                     "survived": [],
                     "crashed": [],
                     "budget_exceeded": [],
+                    "equivalent": [],
                 },
             },
         ),
@@ -770,7 +797,7 @@ def test_a_real_r2_lane_propagates_an_adverse_baseline_verbatim(
     R2 claim reuses R0's own ``(outcome, reason_code)`` VERBATIM with NO
     mutation payload -- and no ``judgment.r2``, because no policy was ever
     applied to anything."""
-    _seed_two_compare_swap_sites(git_repo)
+    base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path, _r2_lane_toml(script="exit 7", base="control-baseline")
     )
@@ -785,6 +812,7 @@ def test_a_real_r2_lane_propagates_an_adverse_baseline_verbatim(
         real,
         _expected_r2_artifact(
             git_repo=git_repo,
+            base_rev=base_rev,
             script="exit 7",
             outcome="FAIL",
             reason_code="COMMAND_FAILED",
@@ -829,7 +857,7 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
     red here would be a TRUE red).
     """
     script = "grep -q 'x > 0' src/mod.py || sleep 300"
-    _seed_two_compare_swap_sites(git_repo)
+    base_rev = _seed_two_compare_swap_sites(git_repo)
     lane_file = _write_lane_file(
         git_repo.path,
         _r2_lane_toml(script=script, base="control-baseline", jobs=2, budget="5s"),
@@ -846,12 +874,13 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
         real,
         _expected_r2_artifact(
             git_repo=git_repo,
+            base_rev=base_rev,
             script=script,
             outcome="BUDGET_EXCEEDED",
             reason_code="LANE_TIMEOUT",
             exit_code=4,
             jobs=2,
-            operators=["compare-swap"],
+            operators=["python:compare-swap"],
             r2_claim={
                 "rigor": "R2",
                 "source": "computed",
@@ -867,6 +896,7 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
                     "survived": [_gt_site(6)],
                     "crashed": [],
                     "budget_exceeded": [_gt_site(2)],
+                    "equivalent": [],
                 },
             },
         ),
@@ -966,7 +996,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 4,
+        "schema_version": 5,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -981,7 +1011,13 @@ def _expected_r3_artifact(
         "env_effective": env,
         "scope": "S1",
         "enforcement": "gate",
-        "judgment": {"r3": {"mechanism": mechanism, "target": target}},
+        # P33/V5-1 + A-223a: an R0,R3 lane records language and source roots
+        # and NO base -- R3 reads no comparison commit, so recording one
+        # would be an invented fact (and A-227 now refuses it outright).
+        "judgment": {
+            "resolved": {"language": "python", "source_roots": ["pkg"]},
+            "r3": {"mechanism": mechanism, "target": target},
+        },
         "claims": [
             r0_claim
             or {
@@ -1309,7 +1345,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 4,
+        "schema_version": 5,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1325,14 +1361,18 @@ def _r1_r3_expected(
         "scope": "S1",
         "enforcement": "gate",
         "judgment": {
-            "r1": {
+            # P33/V5-1: shared by both tiers, recorded once. `base` is
+            # present because r1 is (A-223a).
+            "resolved": {
                 "language": "python",
                 "source_roots": ["pkg"],
+                "base": base_rev,
+            },
+            "r1": {
                 "coverage_format": "coverage-py-json",
                 "coverage_artifact": "cov.json",
                 "fail_under": 100.0,
                 "allow_excluded": False,
-                "base": base_rev,
             },
             "r3": {"mechanism": mechanism, "target": target},
         },

@@ -20,7 +20,14 @@ from conftest import fixed_clock, make_lane
 
 from assay import runner
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Claim, Judgment, JudgmentR2, MutantOutcome, Mutation
+from assay.verdict import (
+    Claim,
+    Judgment,
+    JudgmentR2,
+    JudgmentResolved,
+    MutantOutcome,
+    Mutation,
+)
 
 #: A PASSING R2 claim carries the buckets it passed on, and a
 #: MUTANTS_SURVIVED one carries the survivor it names (P16 review) -- an R2
@@ -38,7 +45,7 @@ def _outcome(lineno: int, start: int, sha: str, description: str) -> MutantOutco
         start_byte=start,
         end_byte=start + 1,
         replacement_sha256=sha,
-        operator="compare-swap",
+        operator="python:compare-swap",
         description=description,
     )
 
@@ -90,7 +97,15 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
         assay_version="0.1.0",
         mutation_claim=mutation_claim,
         judgment=Judgment(
-            r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))
+            resolved=JudgmentResolved(
+                language="python", source_roots=("src",), base="a" * 40
+            ),
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                kill_attribution="unattributed",
+            ),
         ),
     )
 
@@ -118,7 +133,15 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
         assay_version="0.1.0",
         mutation_claim=mutation_claim,
         judgment=Judgment(
-            r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))
+            resolved=JudgmentResolved(
+                language="python", source_roots=("src",), base="a" * 40
+            ),
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                kill_attribution="unattributed",
+            ),
         ),
     )
 

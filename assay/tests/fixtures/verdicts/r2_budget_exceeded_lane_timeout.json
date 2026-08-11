@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "444444444444444444444444444444444444444d",
@@ -30,10 +30,16 @@
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": ["pkg"],
+      "base": "0000000000000000000000000000000000000a"
+    },
     "r2": {
       "jobs": 2,
       "max_mutants": 50,
-      "operators": ["boolop-swap", "compare-swap"]
+      "operators": ["python:boolop-swap", "python:compare-swap"],
+      "kill_attribution": "unattributed"
     }
   },
   "claims": [
@@ -59,7 +65,7 @@
             "start_byte": 40,
             "end_byte": 41,
             "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
-            "operator": "compare-swap",
+            "operator": "python:compare-swap",
             "description": "Lt->LtE"
           }
         ],
@@ -72,10 +78,11 @@
             "start_byte": 96,
             "end_byte": 99,
             "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
-            "operator": "boolop-swap",
+            "operator": "python:boolop-swap",
             "description": "And->Or"
           }
-        ]
+        ],
+        "equivalent": []
       }
     }
   ],

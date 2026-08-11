@@ -42,7 +42,7 @@ def _outcome(**overrides) -> MutantOutcome:
         start_byte=40,
         end_byte=41,
         replacement_sha256=SHA_LTE,
-        operator="compare-swap",
+        operator="python:compare-swap",
         description="Lt->LtE",
     )
     fields.update(overrides)
@@ -59,7 +59,7 @@ def test_a_mutant_outcome_constructs_with_valid_fields():
     assert outcome.start_byte == 40
     assert outcome.end_byte == 41
     assert outcome.replacement_sha256 == SHA_LTE
-    assert outcome.operator == "compare-swap"
+    assert outcome.operator == "python:compare-swap"
     assert outcome.description == "Lt->LtE"
 
 
@@ -75,7 +75,7 @@ def test_identity_is_the_site_not_its_diagnosis():
     of these backwards."""
     assert _outcome().identity == _outcome(lineno=99, description="other").identity
     assert _outcome().identity != _outcome(start_byte=50, end_byte=51).identity
-    assert _outcome().identity != _outcome(operator="boolop-swap").identity
+    assert _outcome().identity != _outcome(operator="python:boolop-swap").identity
     assert _outcome().identity != _outcome(replacement_sha256=SHA_OR).identity
 
 
@@ -122,7 +122,7 @@ def test_to_dict_carries_the_whole_identity_plus_its_diagnosis():
         "start_byte": 40,
         "end_byte": 41,
         "replacement_sha256": SHA_LTE,
-        "operator": "compare-swap",
+        "operator": "python:compare-swap",
         "description": "Lt->LtE",
     }
 
@@ -240,14 +240,14 @@ def test_two_sites_sharing_a_line_and_description_stay_distinct():
     is one AST node but two independently targetable `and` tokens, so two
     outcomes legitimately share line AND description."""
     first = _outcome(
-        operator="boolop-swap",
+        operator="python:boolop-swap",
         description="And->Or",
         replacement_sha256=SHA_OR,
         start_byte=44,
         end_byte=47,
     )
     second = _outcome(
-        operator="boolop-swap",
+        operator="python:boolop-swap",
         description="And->Or",
         replacement_sha256=SHA_OR,
         start_byte=52,

@@ -41,7 +41,7 @@ _R2_JUDGE = """
 language = "python"
 source_roots = ["src"]
 base = "main"
-mutation = { jobs = 1, max_mutants = 3, operators = ["compare-swap"] }
+mutation = { jobs = 1, max_mutants = 3, operators = ["python:compare-swap"] }
 """
 
 
@@ -56,7 +56,7 @@ def _r2_and_canary(mechanism: str) -> str:
 def _r1_r2_and_canary(mechanism: str) -> str:
     return (
         _R1_JUDGE
-        + 'mutation = { jobs = 1, max_mutants = 3, operators = ["compare-swap"] }\n'
+        + 'mutation = { jobs = 1, max_mutants = 3, operators = ["python:compare-swap"] }\n'
         + _canary(mechanism)
     )
 
@@ -150,7 +150,7 @@ def test_an_invalid_declaration_is_refused_at_load_before_any_boundary(
         ('["R0", "R1", "R3"]', _R1_JUDGE + _canary("uncovered-line")),
         ('["R0", "R1", "R2", "R3"]',
          _R1_JUDGE
-         + 'mutation = { jobs = 1, max_mutants = 3, operators = ["compare-swap"] }\n'
+         + 'mutation = { jobs = 1, max_mutants = 3, operators = ["python:compare-swap"] }\n'
          + _canary("uncovered-line")),
     ],
     ids=["r0", "r0-r1", "r0-r2", "r0-r3", "r0-r1-r3-uncovered", "all-four"],

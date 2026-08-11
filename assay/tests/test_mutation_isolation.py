@@ -155,7 +155,7 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("bool-const-flip",),
+            operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=_clock,
             executor_factory=lambda jobs: _SynchronousExecutor(),
@@ -197,7 +197,7 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
                 adapter=PythonAdapter(),
                 jobs=jobs,
                 max_mutants=50,
-                operators=("bool-const-flip",),
+                operators=("python:bool-const-flip",),
                 process_runner=decide,
                 clock=_clock,
             )
@@ -240,7 +240,7 @@ def test_the_shared_source_tree_is_byte_identical_after_all_four_terminal_cases(
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("bool-const-flip",),
+            operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=_clock,
         )
@@ -278,7 +278,7 @@ def test_scratch_copies_are_discarded_after_every_mutant_run(tmp_path: Path):
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("bool-const-flip",),
+            operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=_clock,
         )
@@ -344,7 +344,7 @@ class _ReverseOrderAdapter:
                     end_byte=start + len(b"True"),
                     replacement=b"False",
                     lineno=lineno,
-                    operator="bool-const-flip",
+                    operator="python:bool-const-flip",
                     description=f"True->False (line {lineno})",
                 )
             )
@@ -394,7 +394,7 @@ def test_the_recorded_buckets_come_out_identity_ordered_across_files(
             adapter=_ReverseOrderAdapter(),
             jobs=3,
             max_mutants=50,
-            operators=("bool-const-flip",),
+            operators=("python:bool-const-flip",),
             process_runner=_always_pass,
             clock=_clock,
         )

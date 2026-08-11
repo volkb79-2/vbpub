@@ -22,7 +22,7 @@ FIXTURE_PATH = PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "go" / "sample
 SAMPLE_TEXT = FIXTURE_PATH.read_text(encoding="utf-8")
 
 ADAPTER = GoAdapter()
-OPERATORS = ("compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap")
+OPERATORS = ("python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap")
 
 
 def test_discovery_is_unsupported_for_real_go_source_with_real_targets():
@@ -51,7 +51,7 @@ def test_discovery_is_unsupported_regardless_of_lines_operators_or_limit():
         ADAPTER.generate_mutation_sites(
             SAMPLE_TEXT,
             set(range(1, len(SAMPLE_TEXT.splitlines()) + 1)),
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             limit=1,
         )
         == "UNSUPPORTED"

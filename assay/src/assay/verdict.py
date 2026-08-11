@@ -65,14 +65,22 @@ from typing import Any, Iterable, Mapping
 
 from .config import ENFORCEMENTS, RIGOR_LEVELS, SCOPES
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
-from .vocabulary import MUTATION_OPERATORS
+from .vocabulary import (
+    MUTATION_OPERATORS,
+    MUTATION_OPERATORS_BY_LANGUAGE,
+    operator_language,
+)
 
 __all__ = [
     "CLAIM_SOURCES",
     "EVIDENCE_SOURCES",
     "EXCLUSION_CAPABILITIES",
     "EXIT_CODES",
+    "HELPER_ROLES",
+    "KILL_ATTRIBUTIONS",
+    "MUTATION_BUCKETS",
     "MUTATION_OPERATORS",
+    "MUTATION_OPERATORS_BY_LANGUAGE",
     "LANE_RESOLVED_FIELDS",
     "REASON_CODES",
     "ROLLUP_PRECEDENCE",
@@ -83,12 +91,15 @@ __all__ = [
     "Coverage",
     "Evidence",
     "EvidenceDeclaration",
+    "Helper",
     "Judgment",
     "JudgmentR1",
     "JudgmentR2",
     "JudgmentR3",
+    "JudgmentResolved",
     "Mutation",
     "MutantOutcome",
+    "operator_language",
     "Outcome",
     "ReasonCode",
     "Verdict",
@@ -116,7 +127,19 @@ __all__ = [
 #: distinction (closing A-O16). Only ONE schema is active in a released build
 #: (A-170): producers emit v4 only, and `assay verify` rejects v1-v3 with a
 #: single version diagnostic rather than negotiating or upgrading.
-VERDICT_SCHEMA_VERSION = 4
+#:
+#: Bumped 4 -> 5 (P33/A-220): the artifact must be able to describe a language
+#: that has mutation but no coverage. `language`/`source_roots`/`base` hoist
+#: out of `judgment.r1` into a required `judgment.resolved` -- a v4 fix, not
+#: an SQL accommodation, because `R0,R2` has been legal since A-192 and such
+#: a lane recorded no language, no source roots and no comparison commit at
+#: all; the operator vocabulary becomes language-qualified and closed per
+#: language; `mutation` gains a fifth `equivalent` bucket paired with
+#: `judgment.r2.equivalence_artifact`; `judgment.r2` gains a required
+#: `kill_attribution`; and a new optional top-level `helpers` records what an
+#: adapter actually invoked. Still exactly ONE active schema per build
+#: (A-170): a v4 artifact is refused on its version, never upgraded in place.
+VERDICT_SCHEMA_VERSION = 5
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -126,6 +149,25 @@ VERDICT_SCHEMA_VERSION = 4
 #: exclusion set serialised identically, so a reader could not tell a clean
 #: lane from a blind format (A-O16).
 EXCLUSION_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
+
+#: (P33/V5-4) the closed kill-attribution vocabulary. `declared` means the
+#: run named the mechanism that refused each kill, via the lane's declared
+#: `kill_signal_artifact`; `unattributed` means a killed mutant proves only
+#: that the suite failed. Assay cannot observe a database's causality, so
+#: this discriminator exists to make that limit visible in every artifact
+#: rather than absent from all of them (A-220).
+KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
+
+#: (P33/V5-5) the closed `helpers[].role` vocabulary -- exactly the three
+#: helper jobs that exist or are ruled (A-227): `statement-positions`
+#: (A-217's Go oracle), `mutation-sites` (SQL's parser and P29's Go helper),
+#: `executable-code` (Go's existing `has_executable_code`). A fourth role is
+#: an additive enum change, not a version bump.
+HELPER_ROLES: tuple[str, ...] = (
+    "statement-positions",
+    "mutation-sites",
+    "executable-code",
+)
 
 #: Where the shipped schema lives inside the installed package. Declared as
 #: package data in `pyproject.toml`; without that it exists in the source tree
@@ -145,8 +187,19 @@ EVIDENCE_SOURCES: tuple[str, ...] = ("adjudicated", "attested")
 #: unproducible, and is refused at construction rather than left for a
 #: consumer to trust. See
 #: :meth:`Claim._check_a_judged_status_carries_its_own_payload`.
+#:
+#: (P33/A-228) ``ALL_MUTANTS_EQUIVALENT`` joins them for exactly the same
+#: reason: it is read off the ``equivalent``/``killed``/``survived`` buckets
+#: and nowhere else, so a claim wearing it without the payload it was read
+#: from is unproducible. Adding the terminal without adding it here would
+#: have reopened, one bucket over, the forgery A-136 closed for
+#: ``NO_MUTANTS``.
 _MUTATION_ONLY_REASON_CODES: frozenset[ReasonCode] = frozenset(
-    {ReasonCode.MUTANTS_SURVIVED, ReasonCode.NO_MUTANTS}
+    {
+        ReasonCode.MUTANTS_SURVIVED,
+        ReasonCode.NO_MUTANTS,
+        ReasonCode.ALL_MUTANTS_EQUIVALENT,
+    }
 )
 
 #: A-023, in order. `PASS` is not a member: it is what remains when no adverse
@@ -275,6 +328,19 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 #: This is a defence against a malicious declared cap, not a policy knob.
 MAX_CANDIDATE_CEILING = 10_001
 
+#: (P33/V5-3) `Mutation`'s identity buckets, in wire order. FIVE since v5.
+#: Named once rather than transcribed at each of the five sites that iterate
+#: them: A-228's own root cause was a new bucket reaching some of the layers
+#: that constrain the others and not the rest, and a literal list repeated
+#: per call site is exactly how that happens again.
+MUTATION_BUCKETS: tuple[str, ...] = (
+    "killed",
+    "survived",
+    "crashed",
+    "budget_exceeded",
+    "equivalent",
+)
+
 
 def _check_wire_path(value: Any, what: str) -> None:
     """The normalized forward-slash path grammar every WIRE path in a v4
@@ -289,7 +355,8 @@ def _check_wire_path(value: Any, what: str) -> None:
     non-normalized spelling. Refusing the spelling at construction is what
     makes that equality mean what it says.
 
-    Deliberately NOT applied to `judgment.r1.source_roots`: a source root is
+    Deliberately NOT applied to `judgment.resolved.source_roots` (P33/V5-1
+    moved it there from `judgment.r1`): a source root is
     a declared DIRECTORY spelling, and `"."` is both legal and common there
     (a Go module rooted at its own repository top declares exactly that).
     Widening this grammar to cover it would reject a truthful policy record.
@@ -841,6 +908,15 @@ class MutantOutcome:
     replacement_sha256: str
     operator: str
     description: str
+    #: (P33/V5-4) the mechanism this kill was attributed to, verbatim from
+    #: the declared ``judgment.r2.kill_signal_artifact``. Legal ONLY on a
+    #: ``killed`` entry (A-223e) -- a kill signal on a mutant nothing killed
+    #: is a contradiction -- and present on EVERY killed entry exactly when
+    #: ``judgment.r2.kill_attribution`` is ``declared``. Both of those are
+    #: relations between this entry and a policy object it cannot see, so
+    #: they live one and two levels up rather than here; what this class owns
+    #: is the field's own grammar.
+    kill_signal: str | None = None
 
     def __post_init__(self) -> None:
         _check_wire_path(self.path, "MutantOutcome.path")
@@ -879,6 +955,8 @@ class MutantOutcome:
                 f"MutantOutcome.description must be a non-empty string, got "
                 f"{self.description!r}"
             )
+        if self.kill_signal is not None:
+            _check_nonempty(self.kill_signal, "MutantOutcome.kill_signal")
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -893,7 +971,7 @@ class MutantOutcome:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "path": self.path,
             "lineno": self.lineno,
             "start_byte": self.start_byte,
@@ -902,10 +980,15 @@ class MutantOutcome:
             "operator": self.operator,
             "description": self.description,
         }
+        # Omitted, never null -- the A-051 discipline this artifact applies to
+        # every optional field.
+        if self.kill_signal is not None:
+            payload["kill_signal"] = self.kill_signal
+        return payload
 
 
 def _check_mutant_outcome_tuple(value: Any, what: str) -> None:
-    """Every one of :class:`Mutation`'s FOUR buckets shares this shape: a
+    """Every one of :class:`Mutation`'s FIVE buckets shares this shape: a
     tuple of :class:`MutantOutcome` sorted by :attr:`MutantOutcome.identity`
     — never by whichever mutant's subprocess happened to finish first (O3).
 
@@ -938,12 +1021,24 @@ class Mutation:
     against changed-line mutants, isolated per mutant, bounded by a
     caller-declared ``jobs`` executor (A-082).
 
-    FOUR buckets, not three, matching O3/O4's own explicit four-way
-    enumeration (killed / survived / crashed / budget-exceeded) — nyxloom's
-    own ``MutationResult`` collapses crashed and budget-exceeded into
-    "killed" (confirmed reading ``mutation_gate.py`` directly, A-122), which
-    is exactly the ambiguity this project's own oracles exist to catch, so
-    it is not ported.
+    FIVE buckets, not three, matching O3/O4's own explicit four-way
+    enumeration (killed / survived / crashed / budget-exceeded) plus P33's
+    ``equivalent`` — nyxloom's own ``MutationResult`` collapses crashed and
+    budget-exceeded into "killed" (confirmed reading ``mutation_gate.py``
+    directly, A-122), which is exactly the ambiguity this project's own
+    oracles exist to catch, so it is not ported.
+
+    **P33/V5-3: ``equivalent`` is the fifth bucket, and it is NOT
+    ``survived``.** A mutant that provably produces no change in the judged
+    artifact is evidence about the MUTATION, not about the tests. Reporting a
+    migration-chain or idempotent-DDL no-op as "survived" says "no test
+    asserts this constraint" when the constraint is still enforced — a false
+    statement about the suite. The proof is a byte comparison of the declared
+    ``judgment.r2.equivalence_artifact`` against the baseline run's, which is
+    why the bucket is paired both-present-or-both-absent with that
+    declaration one level up (A-209's pattern): no declaration, no
+    equivalence claims, because an implementation may not infer equivalence
+    from anything else.
 
     **P21/A-180: ``killed`` is an identity list, not a count.** v3's bare
     count meant the one bucket a reader most needs to audit — *which* sites
@@ -955,7 +1050,7 @@ class Mutation:
     **``candidate_count`` is a BOUNDED OBSERVATION, not a hidden total.**
     Normally it equals :attr:`total` and the buckets sum to both. At the
     limit terminal it is exactly ``max_mutants + 1``, :attr:`total` is zero
-    and all four buckets are empty: assay observed that many candidates and
+    and all five buckets are empty: assay observed that many candidates and
     deliberately STOPPED, so all it honestly knows is "at least this many
     exist". That sentinel is the independent evidence for the refusal —
     the alternative, a silently truncated list, is indistinguishable from a
@@ -970,6 +1065,11 @@ class Mutation:
     survived: tuple[MutantOutcome, ...] = ()
     crashed: tuple[MutantOutcome, ...] = ()
     budget_exceeded: tuple[MutantOutcome, ...] = ()
+    #: (P33/V5-3) mutants proven inert by artifact comparison. Excluded from
+    #: the mutation score's denominator, and counted in :attr:`total` and
+    #: :attr:`candidate_count` like every other attempted mutant — they WERE
+    #: attempted; what they failed to do is change anything.
+    equivalent: tuple[MutantOutcome, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("candidate_count", "total"):
@@ -984,10 +1084,11 @@ class Mutation:
                 f"product ceiling {MAX_CANDIDATE_CEILING}; discovery stops at "
                 f"max_mutants + 1 and max_mutants is bounded at 10,000"
             )
-        for name in ("killed", "survived", "crashed", "budget_exceeded"):
+        for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
         self._check_identities_are_unique()
         self._check_arithmetic()
+        self._check_kill_signal_is_killed_only()
 
     def _check_identities_are_unique(self) -> None:
         """One mutant is in exactly one bucket (A-182).
@@ -998,7 +1099,7 @@ class Mutation:
         would use to claim a better result than it earned.
         """
         seen: dict[tuple[str, int, int, str, str], str] = {}
-        for name in ("killed", "survived", "crashed", "budget_exceeded"):
+        for name in MUTATION_BUCKETS:
             for item in getattr(self, name):
                 previous = seen.get(item.identity)
                 if previous is not None:
@@ -1009,18 +1110,36 @@ class Mutation:
                     )
                 seen[item.identity] = name
 
+    def _check_kill_signal_is_killed_only(self) -> None:
+        """(P33/A-223e) a ``kill_signal`` is legal ONLY on a ``killed`` entry.
+
+        A kill signal names the mechanism that refused the mutated schema; a
+        mutant that survived, crashed, ran out of budget or was proven inert
+        was refused by nothing, so a signal on it is a contradiction rather
+        than a merely unusual record. The locked schema encodes the same rule
+        locally, per bucket (A-182 assigns it there); this is the model's
+        independent statement of it, so a hand-built
+        :class:`Mutation` cannot carry what a validated document cannot.
+        """
+        for name in MUTATION_BUCKETS:
+            if name == "killed":
+                continue
+            for item in getattr(self, name):
+                if item.kill_signal is not None:
+                    raise ValueError(
+                        f"mutation.{name} entry {item.identity} carries "
+                        f"kill_signal {item.kill_signal!r}, but a kill signal "
+                        f"names the mechanism that refused a mutant -- only a "
+                        f"killed mutant was refused by anything"
+                    )
+
     def _check_arithmetic(self) -> None:
         """Exactly two legal shapes (A-163), and nothing between them."""
-        attempted = (
-            len(self.killed)
-            + len(self.survived)
-            + len(self.crashed)
-            + len(self.budget_exceeded)
-        )
+        attempted = sum(len(getattr(self, name)) for name in MUTATION_BUCKETS)
         if self.total != attempted:
             raise ValueError(
                 f"mutation.total ({self.total}) must equal the number of "
-                f"recorded identities across all four buckets ({attempted})"
+                f"recorded identities across all five buckets ({attempted})"
             )
         if self.total == self.candidate_count:
             return
@@ -1031,8 +1150,8 @@ class Mutation:
         raise ValueError(
             f"mutation records {self.candidate_count} candidate(s) but "
             f"{self.total} attempted mutant(s); a payload is either normal "
-            f"(candidate_count == total == sum of the four buckets) or the "
-            f"pre-submission limit sentinel (total 0, four empty buckets, "
+            f"(candidate_count == total == sum of the five buckets) or the "
+            f"pre-submission limit sentinel (total 0, five empty buckets, "
             f"candidate_count in 1..{MAX_CANDIDATE_CEILING})"
         )
 
@@ -1048,48 +1167,99 @@ class Mutation:
         return self.total == 0 and self.candidate_count > 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "candidate_count": self.candidate_count,
             "total": self.total,
-            "killed": [item.to_dict() for item in self.killed],
-            "survived": [item.to_dict() for item in self.survived],
-            "crashed": [item.to_dict() for item in self.crashed],
-            "budget_exceeded": [item.to_dict() for item in self.budget_exceeded],
         }
+        for name in MUTATION_BUCKETS:
+            payload[name] = [item.to_dict() for item in getattr(self, name)]
+        return payload
 
 
 @dataclass(frozen=True, kw_only=True)
-class JudgmentR1:
-    """The effective R1 policy (P16, sol finding 2): the resolved
-    ``language``/``source_roots``/coverage format+artifact spelling the run
-    used, the ``fail_under`` floor and ``allow_excluded`` choice that
-    decided the R1 claim's ``PASS``/``FAIL``, and the FULL resolved
-    comparison commit the diff was measured against — never the lane's own
-    possibly-symbolic ``base`` ref. Without this, an independent consumer
-    has a percentage but not the policy that judged it: "schema v2 does not
-    record fail_under/allow_excluded, so an independent consumer cannot even
-    in principle re-derive whether an R1 status was correct from the payload
-    alone."
+class JudgmentResolved:
+    """(P33/V5-1) What was judged, shared by every computed tier above R0.
+
+    Hoisted out of :class:`JudgmentR1` because ``R0,R2`` has been a legal
+    rigor declaration since A-192, while ``judgment`` permits ``{r2}`` with
+    no ``r1`` — so a v4 ``R0,R2`` lane, Python or Go and with no SQL
+    involved, recorded **no language, no source roots and no comparison
+    commit at all**, even though R2 scopes mutation to changed lines against
+    exactly that commit. That is a v4 bug; SQL is merely the first language
+    for which ``R0,R2`` is the *only* honest declaration.
+
+    Two provenance rules, both of which have been got wrong before (A-223f):
+
+    * :attr:`source_roots` is the DECLARED project-relative spelling
+      (A-049), never the relocated absolute scratch paths a snapshot run
+      works in (A-149). A consumer reading ``/tmp/...`` learns nothing about
+      the project.
+    * :attr:`base` is the PRE-SNAPSHOT resolution against the consumer's own
+      repository. R1's in-snapshot resolution must equal it — merge-base is
+      idempotent on an already-ancestor value — and v5 records one field
+      where v4 had two independently-resolved values, so which one wins is
+      stated rather than left to an implementer.
+
+    :attr:`base` is CONDITIONAL (A-223a/A-227): required exactly when
+    ``judgment`` carries ``r1`` or ``r2``, forbidden otherwise.
+    ``JUDGE_FIELDS_BY_RIGOR`` carries ``base`` for R1 and R2 and not for R3,
+    so an ``R0,R3`` lane genuinely has no comparison commit and must not be
+    made to invent one. That conditional needs to see the sibling tiers, so
+    it lives on :class:`Judgment`, not here.
     """
 
     language: str
     source_roots: tuple[str, ...]
+    #: the full resolved comparison commit, never a symbolic ref; absent on a
+    #: judgment that carries neither r1 nor r2
+    base: str | None = None
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.language, "judgment.resolved.language")
+        if not isinstance(self.source_roots, tuple) or not self.source_roots:
+            raise ValueError(
+                f"judgment.resolved.source_roots must be a non-empty tuple, got "
+                f"{self.source_roots!r}"
+            )
+        for root in self.source_roots:
+            _check_nonempty(root, "judgment.resolved.source_roots entry")
+        if self.base is not None:
+            _check_nonempty(self.base, "judgment.resolved.base")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "language": self.language,
+            "source_roots": list(self.source_roots),
+        }
+        if self.base is not None:
+            payload["base"] = self.base
+        return payload
+
+
+@dataclass(frozen=True, kw_only=True)
+class JudgmentR1:
+    """The effective R1 policy (P16, sol finding 2): the coverage
+    format+artifact spelling the run used, and the ``fail_under`` floor and
+    ``allow_excluded`` choice that decided the R1 claim's ``PASS``/``FAIL``.
+    Without this, an independent consumer has a percentage but not the
+    policy that judged it: "schema v2 does not record
+    fail_under/allow_excluded, so an independent consumer cannot even in
+    principle re-derive whether an R1 status was correct from the payload
+    alone."
+
+    **P33/V5-1 moved ``language``, ``source_roots`` and ``base`` out** to
+    :class:`JudgmentResolved`. What remains here is genuinely R1 *policy*;
+    what left were facts about the lane that every computed tier above R0
+    consumes, and keeping them in the R1 tier made them unrecordable for a
+    lane that declares no R1.
+    """
+
     coverage_format: str
     coverage_artifact: str
     fail_under: float
     allow_excluded: bool
-    #: the full resolved comparison commit, never a symbolic ref
-    base: str
 
     def __post_init__(self) -> None:
-        _check_nonempty(self.language, "judgment.r1.language")
-        if not isinstance(self.source_roots, tuple) or not self.source_roots:
-            raise ValueError(
-                f"judgment.r1.source_roots must be a non-empty tuple, got "
-                f"{self.source_roots!r}"
-            )
-        for root in self.source_roots:
-            _check_nonempty(root, "judgment.r1.source_roots entry")
         _check_nonempty(self.coverage_format, "judgment.r1.coverage_format")
         _check_nonempty(self.coverage_artifact, "judgment.r1.coverage_artifact")
         if isinstance(self.fail_under, bool) or not isinstance(
@@ -1108,17 +1278,13 @@ class JudgmentR1:
                 f"judgment.r1.allow_excluded must be a boolean, got "
                 f"{self.allow_excluded!r}"
             )
-        _check_nonempty(self.base, "judgment.r1.base")
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "language": self.language,
-            "source_roots": list(self.source_roots),
             "coverage_format": self.coverage_format,
             "coverage_artifact": self.coverage_artifact,
             "fail_under": float(self.fail_under),
             "allow_excluded": self.allow_excluded,
-            "base": self.base,
         }
 
 
@@ -1150,6 +1316,30 @@ class JudgmentR2:
     #: one, so this is required rather than optional.
     max_mutants: int
     operators: tuple[str, ...]
+    #: (P33/V5-4) whether kills in this run are attributed to a declared
+    #: mechanism or merely observed. **Derived, never declared** (A-223b):
+    #: ``declared`` exactly when :attr:`kill_signal_artifact` is present.
+    #: A-036 derives ``argv_modified`` from ``argv_appended`` for precisely
+    #: this reason -- deriving removes the whole class of artifact in which
+    #: the two disagree. `unattributed` is honest and common: it means a
+    #: killed mutant proves only that the suite failed, not that it failed
+    #: for the reason the mutant created. v5 does NOT close that gap and does
+    #: not claim to (A-220/V5-4); it makes the weakness visible instead of
+    #: absent.
+    kill_attribution: str
+    #: (P33/V5-4) a project-relative path the declared command writes, naming
+    #: the mechanism that refused. **Reserved in the artifact contract but
+    #: NOT declarable in lane config until P34** (A-227): assay ships no
+    #: producer for the `kill_signal` values it implies, so a lane declaring
+    #: it could not emit a consistent artifact.
+    kill_signal_artifact: str | None = None
+    #: (P33/V5-3) a project-relative path the lane's own declared command
+    #: writes after applying a mutant, whose bytes assay compares against the
+    #: baseline run's. Same disposition as `kill_signal_artifact`: reserved
+    #: here, refused at config load until P34 (A-230b). Comparing two
+    #: command-written artifacts is what keeps A-215's no-DSN boundary
+    #: exactly where it is -- assay never connects to a database.
+    equivalence_artifact: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.jobs, bool) or not isinstance(self.jobs, int):
@@ -1189,13 +1379,52 @@ class JudgmentR2:
                 f"judgment.r2.operators contains a duplicate: "
                 f"{list(self.operators)}"
             )
+        if self.kill_attribution not in KILL_ATTRIBUTIONS:
+            raise ValueError(
+                f"judgment.r2.kill_attribution must be one of "
+                f"{list(KILL_ATTRIBUTIONS)}, got {self.kill_attribution!r}"
+            )
+        # A-223b: the derivation IS the contract, so the two fields cannot
+        # disagree even in a hand-built model object. `declared` with no
+        # artifact names an attribution source that does not exist;
+        # `unattributed` with one hides a source the run actually had.
+        if self.kill_signal_artifact is not None:
+            _check_nonempty(
+                self.kill_signal_artifact, "judgment.r2.kill_signal_artifact"
+            )
+            if self.kill_attribution != "declared":
+                raise ValueError(
+                    f"judgment.r2 records kill_attribution "
+                    f"{self.kill_attribution!r} beside a kill_signal_artifact "
+                    f"{self.kill_signal_artifact!r}; attribution is DERIVED "
+                    f"from that artifact's presence (A-223b), so the only "
+                    f"consistent value here is 'declared'"
+                )
+        elif self.kill_attribution == "declared":
+            raise ValueError(
+                "judgment.r2 records kill_attribution 'declared' with no "
+                "kill_signal_artifact; attribution is DERIVED from that "
+                "artifact's presence (A-223b), and a declared attribution "
+                "whose source is absent names a mechanism nothing recorded"
+            )
+        if self.equivalence_artifact is not None:
+            _check_nonempty(
+                self.equivalence_artifact, "judgment.r2.equivalence_artifact"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "jobs": self.jobs,
             "max_mutants": self.max_mutants,
             "operators": list(self.operators),
+            "kill_attribution": self.kill_attribution,
         }
+        # Omitted, never null (A-051).
+        if self.kill_signal_artifact is not None:
+            payload["kill_signal_artifact"] = self.kill_signal_artifact
+        if self.equivalence_artifact is not None:
+            payload["equivalence_artifact"] = self.equivalence_artifact
+        return payload
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1239,21 +1468,56 @@ class Judgment:
     between every populated policy and the :class:`Claim` it describes.
     Schema v3 cannot witness ``r3.target`` (A-152); that requires a payload
     field and a schema migration rather than an inferred correspondence.
+
+    **P33/V5-1: :attr:`resolved` is REQUIRED whenever a judgment exists**,
+    and the at-least-one-real-tier guarantee is restored explicitly (A-223g).
+    v4 expressed that guarantee as ``minProperties: 1``, which silently
+    stopped meaning it the moment a fourth key joined the object: a
+    ``judgment`` holding only ``resolved`` would have satisfied the count
+    while judging nothing.
     """
 
+    #: (P33/V5-1) required. A judgment describes something that was judged;
+    #: what was judged is a fact of the lane, not of any one tier.
+    resolved: JudgmentResolved
     r1: JudgmentR1 | None = None
     r2: JudgmentR2 | None = None
     r3: JudgmentR3 | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.resolved, JudgmentResolved):
+            raise ValueError(
+                f"judgment.resolved must be a JudgmentResolved, got "
+                f"{self.resolved!r}"
+            )
         if self.r1 is None and self.r2 is None and self.r3 is None:
             raise ValueError(
                 "judgment declares none of r1/r2/r3 -- an empty judgment "
                 "records no policy and should be omitted (None) instead"
             )
+        # A-223a/A-227: `base` is required IF r1|r2 and forbidden UNLESS
+        # r1|r2. Both halves, because each is a different lie: a missing base
+        # on an R2 lane hides the commit mutation was scoped against, and a
+        # present base on an r3-only judgment records a comparison commit no
+        # tier in it reads.
+        compares_a_base = self.r1 is not None or self.r2 is not None
+        if compares_a_base and self.resolved.base is None:
+            raise ValueError(
+                "judgment carries r1 or r2 but judgment.resolved records no "
+                "base -- both tiers are scoped to changed lines against a "
+                "resolved comparison commit, so omitting it leaves the "
+                "judgment unre-derivable"
+            )
+        if not compares_a_base and self.resolved.base is not None:
+            raise ValueError(
+                f"judgment carries neither r1 nor r2 yet judgment.resolved "
+                f"records base {self.resolved.base!r} -- JUDGE_FIELDS_BY_RIGOR "
+                f"gives R3 no base, so a comparison commit here describes a "
+                f"comparison nothing in this judgment made"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = {"resolved": self.resolved.to_dict()}
         if self.r1 is not None:
             payload["r1"] = self.r1.to_dict()
         if self.r2 is not None:
@@ -1418,7 +1682,7 @@ class Claim:
             if self.mutation is None or not self.mutation.is_limit_sentinel:
                 raise ValueError(
                     "claim[R2]: MUTANT_LIMIT_EXCEEDED requires the exact "
-                    "pre-submission sentinel payload (total 0, four empty "
+                    "pre-submission sentinel payload (total 0, five empty "
                     "buckets, a positive candidate_count) as its evidence"
                 )
 
@@ -1628,6 +1892,51 @@ class Evidence:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Helper:
+    """(P33/V5-5) one external helper an adapter actually INVOKED.
+
+    ``LanguageAdapter.external_tools`` (A-013) declares what a lane *needs*;
+    nothing recorded what actually *ran*. The P27 probe's whole pinning
+    exercise existed because a symbolic toolchain reference makes a verdict
+    unreproducible, and Go's eventual statement-position oracle (A-217) and
+    SQL's parser are the same architectural shape — an adapter shelling out
+    to a language tool that must be exact.
+
+    :attr:`identity` is what the tool reports about ITSELF, verbatim (``go
+    version go1.25.12 linux/amd64``), never inferred from a package name or
+    a tag: the inference is the part that goes stale silently.
+
+    P33 only VALIDATES this array; it populates nothing, because it ships no
+    helper-invoking adapter. The emission default is therefore OMISSION
+    (A-230a) — an artifact that used no helper has no ``helpers`` key and
+    never serialises ``helpers: []``, the same rule ``judgment`` already
+    follows when nothing was judged.
+    """
+
+    role: str
+    tool: str
+    resolved_path: str
+    identity: str
+
+    def __post_init__(self) -> None:
+        if self.role not in HELPER_ROLES:
+            raise ValueError(
+                f"helpers[].role must be one of {list(HELPER_ROLES)}, got "
+                f"{self.role!r}"
+            )
+        for name in ("tool", "resolved_path", "identity"):
+            _check_nonempty(getattr(self, name), f"helpers[].{name}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role": self.role,
+            "tool": self.tool,
+            "resolved_path": self.resolved_path,
+            "identity": self.identity,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class Verdict:
     """One verdict: one lane, one commit (§7).
 
@@ -1667,6 +1976,11 @@ class Verdict:
     #: part of the strict lane-resolved group): a lane may resolve and
     #: render only R0, which judges nothing R1+ policy could describe.
     judgment: Judgment | None = None
+    #: (P33/V5-5) every external helper an adapter actually invoked.
+    #: ``None`` means none ran and the key is OMITTED (A-230a); an EMPTY
+    #: tuple is refused, because ``helpers: []`` would assert a known-empty
+    #: fact that no producer in this build can witness.
+    helpers: tuple[Helper, ...] | None = None
     schema_version: int = VERDICT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -1703,8 +2017,60 @@ class Verdict:
         self._check_evidence_covers_declarations()
         self._check_outcome_agrees_with_rollup()
         self._check_judgment_matches_claims()
+        self._check_helpers()
 
     # --- the rules the schema cannot express ---------------------------------
+
+    def _check_helpers(self) -> None:
+        """(P33/V5-5, A-223c/A-227) helper correspondence, in the OBSERVABLE
+        direction only.
+
+        Every ``helpers`` entry requires a correspondingly-judged claim:
+        ``mutation-sites`` an R2 claim carrying a ``mutation`` payload,
+        ``statement-positions`` an R1 claim carrying ``coverage``, and
+        ``executable-code`` either, because executability gates both
+        changed-line classification and mutation-site discovery.
+
+        **The converse is deliberately NOT implemented here.** "A claim
+        produced with a helper requires an entry" has no readable antecedent
+        — nothing in the artifact bytes says a claim *used* a helper — so any
+        implementation of it would be vacuous. P34 owns that direction, with
+        the adapter that makes the state reachable (A-142/A-144's precedent
+        for deferring a check until a producer makes it witnessable).
+        """
+        if self.helpers is None:
+            return
+        if not isinstance(self.helpers, tuple):
+            raise ValueError(f"helpers must be a tuple, got {self.helpers!r}")
+        if not self.helpers:
+            raise ValueError(
+                "helpers is present but empty; a run that invoked no helper "
+                "OMITS the field entirely (A-230a) rather than recording a "
+                "known-empty list nothing witnessed"
+            )
+        r1_judged = any(
+            claim.rigor == "R1" and claim.coverage is not None for claim in self.claims
+        )
+        r2_judged = any(
+            claim.rigor == "R2" and claim.mutation is not None for claim in self.claims
+        )
+        requirement = {
+            "statement-positions": (r1_judged, "an R1 claim carrying a coverage payload"),
+            "mutation-sites": (r2_judged, "an R2 claim carrying a mutation payload"),
+            "executable-code": (
+                r1_judged or r2_judged,
+                "an R1 claim carrying coverage or an R2 claim carrying mutation",
+            ),
+        }
+        for helper in self.helpers:
+            satisfied, what = requirement[helper.role]
+            if not satisfied:
+                raise ValueError(
+                    f"helpers records a {helper.role!r} helper ({helper.tool!r}) "
+                    f"but this verdict carries no {what} -- a helper is recorded "
+                    f"because it produced a claim payload, so an entry with no "
+                    f"such payload describes work that judged nothing"
+                )
 
     def _check_interval_is_ordered(self) -> None:
         """(P21/A-182, work item 7) ``ended >= started`` as INSTANTS.
@@ -1914,6 +2280,8 @@ class Verdict:
                 "an independent consumer cannot re-derive R2's status without "
                 "the policy that decided it"
             )
+        if judgment_r2 is not None:
+            self._check_operator_language_agrees(judgment_r2)
         if r2_judged and judgment_r2 is not None:
             # P21/A-180: `killed` is now in this sweep. Under v3 it was a bare
             # count, so a killed mutant produced by an operator the lane never
@@ -1922,13 +2290,8 @@ class Verdict:
             # its policy.
             observed_operators = {
                 outcome.operator
-                for bucket in (
-                    r2_claim.mutation.killed,
-                    r2_claim.mutation.survived,
-                    r2_claim.mutation.crashed,
-                    r2_claim.mutation.budget_exceeded,
-                )
-                for outcome in bucket
+                for name in MUTATION_BUCKETS
+                for outcome in getattr(r2_claim.mutation, name)
             }
             unknown_operators = sorted(observed_operators - set(judgment_r2.operators))
             if unknown_operators:
@@ -1939,6 +2302,8 @@ class Verdict:
                     f"never selected cannot have been submitted"
                 )
             self._check_mutation_cardinality(r2_claim.mutation, judgment_r2)
+            self._check_equivalence_pairing(r2_claim.mutation, judgment_r2)
+            self._check_kill_attribution(r2_claim.mutation, judgment_r2)
 
         r3_claim = next((claim for claim in self.claims if claim.rigor == "R3"), None)
         r3_judged = r3_claim is not None and r3_claim.canary is not None
@@ -1972,6 +2337,115 @@ class Verdict:
                     f"answers for a different file than the one declared is "
                     f"evidence about nothing the lane asked for"
                 )
+
+    def _check_operator_language_agrees(self, policy: JudgmentR2) -> None:
+        """(P33/V5-2, invariant 1) every operator's prefix equals
+        ``judgment.resolved.language``.
+
+        The shipped schema closes each language's vocabulary, so it already
+        refuses an operator no language owns. What it structurally CANNOT do
+        is relate the operator to the resolved language recorded elsewhere in
+        the document — draft 2020-12 has no ``$data`` — so without this a
+        Python lane could record a full set of SQL operators it could not
+        possibly have applied, and every layer would agree the artifact was
+        well-formed.
+
+        Applied to the DECLARED policy and to every recorded outcome, because
+        the two are separately forgeable: a payload naming an operator the
+        policy never declared is already caught above, but a policy AND a
+        payload that agree with each other while both disagreeing with the
+        language is not.
+        """
+        language = self.judgment.resolved.language
+        wrong = sorted(
+            operator
+            for operator in policy.operators
+            if operator_language(operator) != language
+        )
+        if wrong:
+            raise ValueError(
+                f"judgment.r2.operators names {wrong} on a lane whose "
+                f"judgment.resolved.language is {language!r} -- each operator "
+                f"is qualified with the language that owns it, and a lane "
+                f"cannot apply another language's catalogue"
+            )
+        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
+        if r2_claim is None or r2_claim.mutation is None:
+            return
+        wrong_outcomes = sorted(
+            {
+                outcome.operator
+                for name in MUTATION_BUCKETS
+                for outcome in getattr(r2_claim.mutation, name)
+                if operator_language(outcome.operator) != language
+            }
+        )
+        if wrong_outcomes:
+            raise ValueError(
+                f"claim[R2].mutation records outcome(s) for {wrong_outcomes} on "
+                f"a lane whose judgment.resolved.language is {language!r} -- a "
+                f"mutant carries the operator that produced it, so a foreign "
+                f"prefix says the run applied a catalogue it does not have"
+            )
+
+    def _check_equivalence_pairing(
+        self, mutation: Mutation, policy: JudgmentR2
+    ) -> None:
+        """(P33/V5-3, invariant 2) the ``equivalent`` bucket and
+        ``equivalence_artifact`` are both present or both absent.
+
+        Equivalence is PROVEN by comparing the declared artifact's bytes
+        against the baseline run's. With no declaration there is no proof
+        source, so an equivalence claim would have been inferred from
+        something else — which is exactly what A-209's both-present pattern
+        exists to forbid one field over.
+        """
+        if mutation.equivalent and policy.equivalence_artifact is None:
+            raise ValueError(
+                f"claim[R2].mutation records {len(mutation.equivalent)} "
+                f"equivalent mutant(s) but judgment.r2 declares no "
+                f"equivalence_artifact -- equivalence is established by "
+                f"comparing that artifact's bytes, so with none declared there "
+                f"is nothing the proof could have been read from"
+            )
+
+    def _check_kill_attribution(self, mutation: Mutation, policy: JudgmentR2) -> None:
+        """(P33/V5-4, invariant 4) attribution consistency, per clause.
+
+        ``declared`` requires a ``kill_signal`` on EVERY killed entry — an
+        attributed run that attributed only some of its kills is recording
+        two different kinds of evidence under one claim. ``unattributed``
+        forbids one anywhere, which is the clause the schema deliberately
+        leaves open: ``kill_signal`` on a *killed* entry is locally legal, so
+        only a layer that can see ``kill_attribution`` can refuse it.
+        ``JudgmentR2`` itself already binds ``declared`` to the presence of
+        ``kill_signal_artifact`` (A-223b's derivation).
+        """
+        if policy.kill_attribution == "declared":
+            unattributed_kills = [
+                item.identity for item in mutation.killed if item.kill_signal is None
+            ]
+            if unattributed_kills:
+                raise ValueError(
+                    f"judgment.r2 records kill_attribution 'declared' but "
+                    f"killed mutant(s) {unattributed_kills} carry no "
+                    f"kill_signal -- an attributed run names the mechanism "
+                    f"that refused every kill, or it is not attributed"
+                )
+            return
+        signalled = [
+            item.identity
+            for name in MUTATION_BUCKETS
+            for item in getattr(mutation, name)
+            if item.kill_signal is not None
+        ]
+        if signalled:
+            raise ValueError(
+                f"judgment.r2 records kill_attribution "
+                f"{policy.kill_attribution!r} but mutant(s) {signalled} carry a "
+                f"kill_signal -- an unattributed run observed exit status and "
+                f"nothing else, so it has no mechanism to name"
+            )
 
     def _check_mutation_cardinality(
         self, mutation: Mutation, policy: JudgmentR2
@@ -2050,6 +2524,9 @@ class Verdict:
             payload["enforcement"] = self.enforcement
         if self.judgment is not None:
             payload["judgment"] = self.judgment.to_dict()
+        # A-230a: omitted when no helper ran, never `helpers: []`.
+        if self.helpers is not None:
+            payload["helpers"] = [helper.to_dict() for helper in self.helpers]
         payload["claims"] = [claim.to_dict() for claim in self.claims]
         payload["evidence"] = [item.to_dict() for item in self.evidence]
         return payload

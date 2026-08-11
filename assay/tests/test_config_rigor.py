@@ -52,7 +52,7 @@ MUTATION_TABLE = """
 [lanes.package.judge.mutation]
 jobs = 4
 max_mutants = 50
-operators = ["compare-swap", "boolop-swap"]
+operators = ["python:compare-swap", "python:boolop-swap"]
 """
 
 CANARY_TABLE = """
@@ -135,7 +135,7 @@ def test_r2_additionally_requires_mutation(project: Project):
     assert judge is not None
     assert judge.mutation is not None
     assert judge.mutation.jobs == 4
-    assert judge.mutation.operators == ("compare-swap", "boolop-swap")
+    assert judge.mutation.operators == ("python:compare-swap", "python:boolop-swap")
     assert judge.canary is None
 
 
@@ -265,7 +265,7 @@ def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
     assert declared["judge"]["mutation"] == {
         "jobs": 4,
         "max_mutants": 50,
-        "operators": ["compare-swap", "boolop-swap"],
+        "operators": ["python:compare-swap", "python:boolop-swap"],
     }
     assert declared["judge"]["canary"] == {
         "mechanism": "import-break",
@@ -298,7 +298,7 @@ def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
         "mutation": {
             "jobs": 4,
             "max_mutants": 50,
-            "operators": ["compare-swap", "boolop-swap"],
+            "operators": ["python:compare-swap", "python:boolop-swap"],
         },
         "base": "main",
     }

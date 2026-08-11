@@ -43,7 +43,7 @@ _PASSING_PAYLOAD = {
                     replacement_sha256=(
                         "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
                     ),
-                    operator="compare-swap",
+                    operator="python:compare-swap",
                     description="Lt->LtE",
                 ),
             ),
@@ -168,6 +168,21 @@ def test_an_unknown_coverage_key_is_rejected(validator: Draft202012Validator):
     assert not validator.is_valid(document)
 
 
+#: (P33/A-228) The reason codes the shipped schema binds to an R2 claim AND
+#: to a particular mutation-payload shape. A test that only wants "some code
+#: valid for this outcome" must not pick one of these, or it silently starts
+#: testing the rigor binding instead of the rule it names.
+_R2_BOUND_CODES = frozenset(
+    {
+        ReasonCode.NO_MUTANTS,
+        ReasonCode.MUTATION_UNSUPPORTED,
+        ReasonCode.MUTATION_DISCOVERY_FAILED,
+        ReasonCode.MUTANT_LIMIT_EXCEEDED,
+        ReasonCode.ALL_MUTANTS_EQUIVALENT,
+    }
+)
+
+
 # --- A-022: reason_code is required on every non-PASS outcome ------------------
 
 
@@ -191,7 +206,16 @@ def test_a_non_pass_claim_missing_reason_code_is_rejected(
     outcome: str, validator: Draft202012Validator
 ):
     """The same rule one level down — a FAIL claim must name its cause too."""
-    code = sorted(REASON_CODES[Outcome(outcome)])[0].value
+    # (P33/A-228) Five codes are bound BY THE SCHEMA to an R2 claim carrying a
+    # specific mutation payload, so none of them can ride on the plain R0
+    # claim this test builds -- a rejection would then be about rigor, not
+    # about the missing `reason_code` this test exists to check. Excluded by
+    # derivation rather than by naming one substitute, so a sixth such code
+    # cannot silently reintroduce the problem. `ALL_MUTANTS_EQUIVALENT` sorts
+    # first among INCONCLUSIVE's members, which is how it surfaced.
+    code = sorted(
+        code for code in REASON_CODES[Outcome(outcome)] if code not in _R2_BOUND_CODES
+    )[0].value
     document = verdict_fixture("PASS")
     document["declared_rigor"] = ["R0"]
     claim = {

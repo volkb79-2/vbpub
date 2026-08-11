@@ -29,7 +29,7 @@ from assay import canary
 from assay.adapters.python import PythonAdapter
 from assay.config import CoverageConfig, JudgeConfig, Lane
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Judgment, JudgmentR3, Verdict
+from assay.verdict import Judgment, JudgmentR3, JudgmentResolved, Verdict
 
 FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "canary" / "python"
 assert (FIXTURE_DIR / "pkg" / "greet.py").is_file(), (
@@ -140,7 +140,9 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
         scope="S1",
         enforcement="gate",
         judgment=Judgment(
-            r3=JudgmentR3(mechanism=canary.MECHANISM_IMPORT_BREAK, target=TARGET_PATH)
+            # P33/A-223a: an R0,R3 judgment records no comparison base.
+            resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
+            r3=JudgmentR3(mechanism=canary.MECHANISM_IMPORT_BREAK, target=TARGET_PATH),
         ),
         claims=(r0_claim, claim),
     )

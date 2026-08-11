@@ -99,7 +99,7 @@ def test_a_real_pytest_run_produces_a_genuine_killed_and_a_genuine_survived_muta
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             process_runner=default_process_runner,
             clock=lambda: datetime.now(timezone.utc),
         )
@@ -115,7 +115,7 @@ def test_a_real_pytest_run_produces_a_genuine_killed_and_a_genuine_survived_muta
     survivor = mutation.survived[0]
     assert survivor.path == _TARGET_PATH
     assert survivor.lineno == _SURVIVED_LINE
-    assert survivor.operator == "compare-swap"
+    assert survivor.operator == "python:compare-swap"
 
     claim = build_mutation_claim(baseline, mutation)
     assert claim.rigor == "R2"
@@ -172,7 +172,7 @@ def test_a_real_broken_baseline_stops_before_any_real_mutant_run(tmp_path: Path)
         adapter=PythonAdapter(),
         jobs=2,
         max_mutants=50,
-        operators=("compare-swap",),
+        operators=("python:compare-swap",),
         process_runner=default_process_runner,
         clock=lambda: datetime.now(timezone.utc),
     )

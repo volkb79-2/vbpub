@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:4",
+  "$id": "urn:assay:schema:verdict:5",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.target against judgment.r3.target), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks.",
   "type": "object",
@@ -20,157 +20,775 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 4
+      "const": 5
     },
-    "assay_version": {"type": "string", "minLength": 1},
-    "lane": {"type": "string", "minLength": 1},
-    "commit": {"type": "string", "minLength": 1},
-    "outcome": {"$ref": "#/$defs/outcome"},
-    "reason_code": {"$ref": "#/$defs/reason_code"},
-    "exit_code": {"type": "integer", "minimum": 0, "maximum": 5},
-    "started": {"$ref": "#/$defs/timestamp"},
-    "ended": {"$ref": "#/$defs/timestamp"},
+    "assay_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lane": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "$ref": "#/$defs/outcome"
+    },
+    "reason_code": {
+      "$ref": "#/$defs/reason_code"
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "started": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "ended": {
+      "$ref": "#/$defs/timestamp"
+    },
     "declared_rigor": {
       "description": "The computed rigor levels the resolved lane declared.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"$ref": "#/$defs/rigor"}
+      "items": {
+        "$ref": "#/$defs/rigor"
+      }
     },
     "declared_evidence": {
       "description": "External requirements, keyed independently by source and key. Empty means the resolved lane declared none; absent means no lane resolved.",
       "type": "array",
       "uniqueItems": true,
-      "items": {"$ref": "#/$defs/evidence_declaration"}
+      "items": {
+        "$ref": "#/$defs/evidence_declaration"
+      }
     },
-    "argv_declared": {"$ref": "#/$defs/argv_nonempty"},
-    "argv_appended": {"$ref": "#/$defs/argv"},
-    "argv_effective": {"$ref": "#/$defs/argv_nonempty"},
-    "argv_modified": {"type": "boolean"},
-    "env_declared": {"$ref": "#/$defs/env"},
-    "env_effective": {"$ref": "#/$defs/env"},
-    "scope": {"$ref": "#/$defs/scope"},
-    "enforcement": {"$ref": "#/$defs/enforcement"},
-    "judgment": {"$ref": "#/$defs/judgment"},
+    "argv_declared": {
+      "$ref": "#/$defs/argv_nonempty"
+    },
+    "argv_appended": {
+      "$ref": "#/$defs/argv"
+    },
+    "argv_effective": {
+      "$ref": "#/$defs/argv_nonempty"
+    },
+    "argv_modified": {
+      "type": "boolean"
+    },
+    "env_declared": {
+      "$ref": "#/$defs/env"
+    },
+    "env_effective": {
+      "$ref": "#/$defs/env"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "enforcement": {
+      "$ref": "#/$defs/enforcement"
+    },
+    "judgment": {
+      "$ref": "#/$defs/judgment"
+    },
     "claims": {
       "description": "Exactly one computed claim per declared rigor level; model construction enforces the cross-array equality.",
       "type": "array",
-      "items": {"$ref": "#/$defs/claim"}
+      "items": {
+        "$ref": "#/$defs/claim"
+      }
     },
     "evidence": {
       "description": "Exactly one result per declared external evidence identity; model construction enforces the cross-array equality.",
       "type": "array",
-      "items": {"$ref": "#/$defs/evidence"}
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "helpers": {
+      "minItems": 1,
+      "description": "A-230a: OMITTED when no helper ran, never serialized as []. minItems enforces it -- round 5 found the rule was prose-only, so an empty array validated against everything the rule forbade. Same discipline as judgment, which is absent rather than empty when nothing was judged (A-025/A-136). Every external helper an adapter actually invoked to produce a claim payload. external_tools (A-013) declares what a lane needs; this records what ran, so a coverage or mutation claim is reproducible against a known tool identity. Same reason P27's carve pinned image digests: a symbolic toolchain reference makes a verdict unreproducible.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "tool",
+          "resolved_path",
+          "identity"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "statement-positions",
+              "mutation-sites",
+              "executable-code"
+            ]
+          },
+          "tool": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resolved_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "identity": {
+            "description": "What the tool reports about itself, verbatim (e.g. 'go version go1.25.12 linux/amd64'). Never inferred from a package name or a tag.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "dependentRequired": {
-    "declared_rigor": ["declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
-    "declared_evidence": ["declared_rigor", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
-    "argv_declared": ["declared_rigor", "declared_evidence", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
-    "argv_appended": ["declared_rigor", "declared_evidence", "argv_declared", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
-    "argv_effective": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_modified", "env_declared", "env_effective", "scope", "enforcement"],
-    "argv_modified": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "env_declared", "env_effective", "scope", "enforcement"],
-    "env_declared": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_effective", "scope", "enforcement"],
-    "env_effective": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "scope", "enforcement"],
-    "scope": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "enforcement"],
-    "enforcement": ["declared_rigor", "declared_evidence", "argv_declared", "argv_appended", "argv_effective", "argv_modified", "env_declared", "env_effective", "scope"]
+    "declared_rigor": [
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "declared_evidence": [
+      "declared_rigor",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "argv_declared": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "argv_appended": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "argv_effective": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "argv_modified": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "env_declared": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_effective",
+      "scope",
+      "enforcement"
+    ],
+    "env_effective": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "scope",
+      "enforcement"
+    ],
+    "scope": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "enforcement"
+    ],
+    "enforcement": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope"
+    ]
   },
   "allOf": [
     {
-      "if": {"required": ["outcome"], "properties": {"outcome": {"const": "PASS"}}},
-      "then": {"not": {"required": ["reason_code"]}, "properties": {"exit_code": {"const": 0}}}
+      "if": {
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "PASS"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "reason_code"
+          ]
+        },
+        "properties": {
+          "exit_code": {
+            "const": 0
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["outcome"], "properties": {"outcome": {"const": "FAIL"}}},
-      "then": {"required": ["reason_code"], "properties": {"exit_code": {"const": 1}, "reason_code": {"$ref": "#/$defs/reason_codes/FAIL"}}}
+      "if": {
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "FAIL"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason_code"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 1
+          },
+          "reason_code": {
+            "$ref": "#/$defs/reason_codes/FAIL"
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["outcome"], "properties": {"outcome": {"const": "ERROR"}}},
-      "then": {"required": ["reason_code"], "properties": {"exit_code": {"const": 2}, "reason_code": {"$ref": "#/$defs/reason_codes/ERROR"}}}
+      "if": {
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "ERROR"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason_code"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 2
+          },
+          "reason_code": {
+            "$ref": "#/$defs/reason_codes/ERROR"
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["outcome"], "properties": {"outcome": {"const": "NO_MEASUREMENT"}}},
-      "then": {"required": ["reason_code"], "properties": {"exit_code": {"const": 3}, "reason_code": {"$ref": "#/$defs/reason_codes/NO_MEASUREMENT"}}}
+      "if": {
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "NO_MEASUREMENT"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason_code"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 3
+          },
+          "reason_code": {
+            "$ref": "#/$defs/reason_codes/NO_MEASUREMENT"
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["outcome"], "properties": {"outcome": {"const": "BUDGET_EXCEEDED"}}},
-      "then": {"required": ["reason_code"], "properties": {"exit_code": {"const": 4}, "reason_code": {"$ref": "#/$defs/reason_codes/BUDGET_EXCEEDED"}}}
+      "if": {
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "BUDGET_EXCEEDED"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason_code"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 4
+          },
+          "reason_code": {
+            "$ref": "#/$defs/reason_codes/BUDGET_EXCEEDED"
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["outcome"], "properties": {"outcome": {"const": "INCONCLUSIVE"}}},
-      "then": {"required": ["reason_code"], "properties": {"exit_code": {"const": 5}, "reason_code": {"$ref": "#/$defs/reason_codes/INCONCLUSIVE"}}}
+      "if": {
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "const": "INCONCLUSIVE"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason_code"
+        ],
+        "properties": {
+          "exit_code": {
+            "const": 5
+          },
+          "reason_code": {
+            "$ref": "#/$defs/reason_codes/INCONCLUSIVE"
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["argv_appended"], "properties": {"argv_appended": {"minItems": 1}}},
-      "then": {"properties": {"argv_modified": {"const": true}}}
+      "if": {
+        "required": [
+          "argv_appended"
+        ],
+        "properties": {
+          "argv_appended": {
+            "minItems": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "argv_modified": {
+            "const": true
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["argv_appended"], "properties": {"argv_appended": {"maxItems": 0}}},
-      "then": {"properties": {"argv_modified": {"const": false}}}
+      "if": {
+        "required": [
+          "argv_appended"
+        ],
+        "properties": {
+          "argv_appended": {
+            "maxItems": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "argv_modified": {
+            "const": false
+          }
+        }
+      }
     }
   ],
   "unevaluatedProperties": false,
   "$defs": {
-    "outcome": {"enum": ["PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED", "INCONCLUSIVE"]},
-    "rigor": {"enum": ["R0", "R1", "R2", "R3"]},
-    "evidence_source": {"enum": ["adjudicated", "attested"]},
-    "scope": {"enum": ["S0", "S1", "S2", "S3", "S4"]},
-    "enforcement": {"enum": ["gate", "advisory"]},
+    "outcome": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "ERROR",
+        "NO_MEASUREMENT",
+        "BUDGET_EXCEEDED",
+        "INCONCLUSIVE"
+      ]
+    },
+    "rigor": {
+      "enum": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ]
+    },
+    "evidence_source": {
+      "enum": [
+        "adjudicated",
+        "attested"
+      ]
+    },
+    "scope": {
+      "enum": [
+        "S0",
+        "S1",
+        "S2",
+        "S3",
+        "S4"
+      ]
+    },
+    "enforcement": {
+      "enum": [
+        "gate",
+        "advisory"
+      ]
+    },
     "timestamp": {
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})(?![\\s\\S])"
     },
-    "argv": {"type": "array", "items": {"type": "string"}},
-    "argv_nonempty": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-    "env": {"type": "object", "additionalProperties": {"type": "string"}},
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "argv_nonempty": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "reason_code": {
       "enum": [
-        "UNCOVERED_LINES", "EXCLUDED_LINES", "UNCLASSIFIED_LINES",
-        "MUTANTS_SURVIVED", "CANARY_SURVIVED", "COMMAND_FAILED",
-        "GIT_FAILED", "UNREADABLE_ARTIFACT", "FORMAT_MISMATCH",
-        "BAD_LANE_CONFIG", "EXEC_FAILED", "OUTPUT_WRITE_FAILED",
-        "MUTATION_DISCOVERY_FAILED", "DIRTY_TREE", "HEAD_CHANGED",
-        "BASE_IS_HEAD", "EMPTY_COVERAGE", "MISSING_ATTESTATION",
-        "STALE_ATTESTATION", "MISSING_EXTERNAL_TOOL", "LANE_TIMEOUT",
-        "MUTANT_LIMIT_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED", "NO_MUTANTS",
-        "MUTATION_UNSUPPORTED", "CANARY_INCONCLUSIVE"
+        "UNCOVERED_LINES",
+        "EXCLUDED_LINES",
+        "UNCLASSIFIED_LINES",
+        "MUTANTS_SURVIVED",
+        "CANARY_SURVIVED",
+        "COMMAND_FAILED",
+        "GIT_FAILED",
+        "UNREADABLE_ARTIFACT",
+        "FORMAT_MISMATCH",
+        "BAD_LANE_CONFIG",
+        "EXEC_FAILED",
+        "OUTPUT_WRITE_FAILED",
+        "MUTATION_DISCOVERY_FAILED",
+        "DIRTY_TREE",
+        "HEAD_CHANGED",
+        "BASE_IS_HEAD",
+        "EMPTY_COVERAGE",
+        "MISSING_ATTESTATION",
+        "STALE_ATTESTATION",
+        "MISSING_EXTERNAL_TOOL",
+        "LANE_TIMEOUT",
+        "MUTANT_LIMIT_EXCEEDED",
+        "SNAPSHOT_LIMIT_EXCEEDED",
+        "NO_MUTANTS",
+        "MUTATION_UNSUPPORTED",
+        "CANARY_INCONCLUSIVE",
+        "ALL_MUTANTS_EQUIVALENT"
       ]
     },
     "reason_codes": {
-      "FAIL": {"enum": ["UNCOVERED_LINES", "EXCLUDED_LINES", "UNCLASSIFIED_LINES", "MUTANTS_SURVIVED", "CANARY_SURVIVED", "COMMAND_FAILED"]},
-      "ERROR": {"enum": ["GIT_FAILED", "UNREADABLE_ARTIFACT", "FORMAT_MISMATCH", "BAD_LANE_CONFIG", "EXEC_FAILED", "OUTPUT_WRITE_FAILED", "MUTATION_DISCOVERY_FAILED"]},
-      "NO_MEASUREMENT": {"enum": ["DIRTY_TREE", "HEAD_CHANGED", "BASE_IS_HEAD", "EMPTY_COVERAGE", "MISSING_ATTESTATION", "STALE_ATTESTATION", "MISSING_EXTERNAL_TOOL"]},
-      "BUDGET_EXCEEDED": {"enum": ["LANE_TIMEOUT", "MUTANT_LIMIT_EXCEEDED", "SNAPSHOT_LIMIT_EXCEEDED"]},
-      "INCONCLUSIVE": {"enum": ["NO_MUTANTS", "MUTATION_UNSUPPORTED", "CANARY_INCONCLUSIVE"]}
+      "FAIL": {
+        "enum": [
+          "UNCOVERED_LINES",
+          "EXCLUDED_LINES",
+          "UNCLASSIFIED_LINES",
+          "MUTANTS_SURVIVED",
+          "CANARY_SURVIVED",
+          "COMMAND_FAILED"
+        ]
+      },
+      "ERROR": {
+        "enum": [
+          "GIT_FAILED",
+          "UNREADABLE_ARTIFACT",
+          "FORMAT_MISMATCH",
+          "BAD_LANE_CONFIG",
+          "EXEC_FAILED",
+          "OUTPUT_WRITE_FAILED",
+          "MUTATION_DISCOVERY_FAILED"
+        ]
+      },
+      "NO_MEASUREMENT": {
+        "enum": [
+          "DIRTY_TREE",
+          "HEAD_CHANGED",
+          "BASE_IS_HEAD",
+          "EMPTY_COVERAGE",
+          "MISSING_ATTESTATION",
+          "STALE_ATTESTATION",
+          "MISSING_EXTERNAL_TOOL"
+        ]
+      },
+      "BUDGET_EXCEEDED": {
+        "enum": [
+          "LANE_TIMEOUT",
+          "MUTANT_LIMIT_EXCEEDED",
+          "SNAPSHOT_LIMIT_EXCEEDED"
+        ]
+      },
+      "INCONCLUSIVE": {
+        "enum": [
+          "NO_MUTANTS",
+          "MUTATION_UNSUPPORTED",
+          "CANARY_INCONCLUSIVE",
+          "ALL_MUTANTS_EQUIVALENT"
+        ]
+      }
     },
     "status_contract": {
       "allOf": [
-        {"if": {"required": ["status"], "properties": {"status": {"const": "PASS"}}}, "then": {"not": {"required": ["reason_code"]}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "FAIL"}}}, "then": {"required": ["reason_code"], "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/FAIL"}}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "ERROR"}}}, "then": {"required": ["reason_code"], "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/ERROR"}}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"required": ["reason_code"], "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/NO_MEASUREMENT"}}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "BUDGET_EXCEEDED"}}}, "then": {"required": ["reason_code"], "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/BUDGET_EXCEEDED"}}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "INCONCLUSIVE"}}}, "then": {"required": ["reason_code"], "properties": {"reason_code": {"$ref": "#/$defs/reason_codes/INCONCLUSIVE"}}}}
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "PASS"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "reason_code"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "FAIL"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "$ref": "#/$defs/reason_codes/FAIL"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "ERROR"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "$ref": "#/$defs/reason_codes/ERROR"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "NO_MEASUREMENT"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "$ref": "#/$defs/reason_codes/NO_MEASUREMENT"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "BUDGET_EXCEEDED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "$ref": "#/$defs/reason_codes/BUDGET_EXCEEDED"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "INCONCLUSIVE"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "$ref": "#/$defs/reason_codes/INCONCLUSIVE"
+              }
+            }
+          }
+        }
       ]
     },
     "coverage": {
       "type": "object",
-      "required": ["covered", "changed_executable", "pct", "considered", "exclusion_capability", "missing_lines", "files_missing_coverage", "unclassified_lines", "files_with_unclassified_lines", "excluded_lines", "files_with_excluded_lines"],
+      "required": [
+        "covered",
+        "changed_executable",
+        "pct",
+        "considered",
+        "exclusion_capability",
+        "missing_lines",
+        "files_missing_coverage",
+        "unclassified_lines",
+        "files_with_unclassified_lines",
+        "excluded_lines",
+        "files_with_excluded_lines"
+      ],
       "allOf": [
         {
           "description": "A-183: a format that cannot report exclusions cannot have reported any. The converse is deliberately NOT a rule -- 'reported' with an empty mapping is a capable format that truthfully found nothing, and forbidding it would re-collapse the very distinction A-008 keeps.",
-          "if": {"required": ["exclusion_capability"], "properties": {"exclusion_capability": {"const": "unavailable"}}},
-          "then": {"properties": {"excluded_lines": {"maxProperties": 0}, "files_with_excluded_lines": {"maxItems": 0}}}
+          "if": {
+            "required": [
+              "exclusion_capability"
+            ],
+            "properties": {
+              "exclusion_capability": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "excluded_lines": {
+                "maxProperties": 0
+              },
+              "files_with_excluded_lines": {
+                "maxItems": 0
+              }
+            }
+          }
         }
       ],
       "properties": {
-        "covered": {"type": "integer", "minimum": 0},
-        "changed_executable": {"type": "integer", "minimum": 0},
-        "pct": {"type": "number", "minimum": 0, "maximum": 100},
-        "considered": {"type": "integer", "minimum": 0},
+        "covered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "changed_executable": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "considered": {
+          "type": "integer",
+          "minimum": 0
+        },
         "exclusion_capability": {
           "description": "Whether the coverage FORMAT could report exclusions at all (A-008/A-183), derived from unanimous parser evidence -- never inferred from an empty exclusion mapping, never from a format name.",
-          "enum": ["reported", "unavailable"]
+          "enum": [
+            "reported",
+            "unavailable"
+          ]
         },
         "missing_lines": {
           "description": "Changed, executable, non-excluded lines that were not executed, keyed by path (A-096). A file contributing none is absent, never present with an empty array.",
@@ -179,14 +797,20 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": {"type": "integer", "minimum": 1}
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "files_missing_coverage": {
           "description": "Changed files under the source roots contributing executable lines with no entry at all in the coverage artifact, sorted (A-096).",
           "type": "array",
           "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "unclassified_lines": {
           "description": "Changed lines whose enclosing multi-line statement could not be confidently attributed -- overlapping/malformed spans, or a genuinely untracked enclosing statement (A-100/A-101), keyed by path. A file contributing none is absent, never present with an empty array.",
@@ -195,14 +819,20 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": {"type": "integer", "minimum": 1}
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "files_with_unclassified_lines": {
           "description": "Paths appearing in unclassified_lines, sorted (A-096's pattern, P07's third pair).",
           "type": "array",
           "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "excluded_lines": {
           "description": "Changed, considered lines the coverage artifact classifies EXCLUDED, keyed by path (P16). A file contributing none is absent, never present with an empty array. Present so an independent consumer can re-derive a FAIL/EXCLUDED_LINES claim from the payload plus judgment.r1.allow_excluded alone.",
@@ -211,14 +841,20 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": {"type": "integer", "minimum": 1}
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "files_with_excluded_lines": {
           "description": "Paths appearing in excluded_lines, sorted (P16, the same pattern files_with_unclassified_lines already established).",
           "type": "array",
           "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "additionalProperties": false
@@ -226,170 +862,746 @@
     "canary": {
       "description": "The R3 claim payload (P09, A-092/A-108): a known-good control run alongside a deliberately minimal known-bad transform of the same input, both through the real pipeline, compared by cause -- not merely by pass/fail.",
       "type": "object",
-      "required": ["mechanism", "target", "description", "control_outcome"],
+      "required": [
+        "mechanism",
+        "target",
+        "description",
+        "control_outcome"
+      ],
       "properties": {
-        "mechanism": {"type": "string", "minLength": 1},
+        "mechanism": {
+          "type": "string",
+          "minLength": 1
+        },
         "target": {
           "description": "The project-relative file the transform ran against (A-152/A-183). Its EQUALITY with judgment.r3.target is cross-object and belongs to the model and the raw verifier; this schema owns only the normalized spelling.",
           "$ref": "#/$defs/wire_path"
         },
-        "description": {"type": "string", "minLength": 1},
-        "control_outcome": {"$ref": "#/$defs/outcome"},
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "control_outcome": {
+          "$ref": "#/$defs/outcome"
+        },
         "transformed_outcome": {
           "description": "Absent exactly when the transformed half was never genuinely run: a malformed/unrecognised mechanism, or a transform that changed nothing to judge (O3).",
           "$ref": "#/$defs/outcome"
         },
-        "expected_reason_code": {"$ref": "#/$defs/reason_codes/FAIL"},
-        "observed_reason_code": {"$ref": "#/$defs/reason_code"}
+        "expected_reason_code": {
+          "$ref": "#/$defs/reason_codes/FAIL"
+        },
+        "observed_reason_code": {
+          "$ref": "#/$defs/reason_code"
+        }
       },
       "allOf": [
         {
-          "if": {"not": {"required": ["transformed_outcome"]}},
-          "then": {"not": {"required": ["observed_reason_code"]}}
-        },
-        {
-          "if": {"required": ["transformed_outcome"], "properties": {"transformed_outcome": {"const": "PASS"}}},
-          "then": {"not": {"required": ["observed_reason_code"]}}
+          "if": {
+            "not": {
+              "required": [
+                "transformed_outcome"
+              ]
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "observed_reason_code"
+              ]
+            }
+          }
         },
         {
           "if": {
-            "required": ["transformed_outcome"],
-            "properties": {"transformed_outcome": {"not": {"const": "PASS"}}}
+            "required": [
+              "transformed_outcome"
+            ],
+            "properties": {
+              "transformed_outcome": {
+                "const": "PASS"
+              }
+            }
           },
-          "then": {"required": ["observed_reason_code"]}
+          "then": {
+            "not": {
+              "required": [
+                "observed_reason_code"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "transformed_outcome"
+            ],
+            "properties": {
+              "transformed_outcome": {
+                "not": {
+                  "const": "PASS"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "observed_reason_code"
+            ]
+          }
         }
       ],
       "additionalProperties": false
     },
     "wire_path": {
-      "description": "A normalized relative forward-slash path (A-182): at least one component, no empty/'.'/'..' component, no leading or trailing slash, no backslash, no NUL. Deliberately NOT applied to judgment.r1.source_roots, where '.' is a legal declared directory (a Go module rooted at its own repository top declares exactly that).",
+      "description": "A normalized relative forward-slash path (A-182): at least one component, no empty/'.'/'..' component, no leading or trailing slash, no backslash, no NUL. Deliberately NOT applied to judgment.resolved.source_roots, where '.' is a legal declared directory (a Go module rooted at its own repository top declares exactly that).",
       "type": "string",
       "minLength": 1,
       "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$"
     },
-    "mutation_operator": {"enum": ["compare-swap", "boolop-swap", "bool-const-flip", "falsy-swap"]},
+    "mutation_operator": {
+      "description": "A language-qualified operator name. The prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump.",
+      "oneOf": [
+        {
+          "enum": [
+            "python:compare-swap",
+            "python:boolop-swap",
+            "python:bool-const-flip",
+            "python:falsy-swap"
+          ]
+        },
+        {
+          "enum": [
+            "go:compare-swap",
+            "go:boolop-swap",
+            "go:bool-const-flip"
+          ]
+        },
+        {
+          "enum": [
+            "sql:drop-check",
+            "sql:drop-unique",
+            "sql:drop-not-null",
+            "sql:drop-foreign-key",
+            "sql:weaken-delete-action",
+            "sql:drop-trigger",
+            "sql:widen-check-in"
+          ]
+        }
+      ]
+    },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
       "type": "object",
-      "required": ["path", "lineno", "start_byte", "end_byte", "replacement_sha256", "operator", "description"],
+      "required": [
+        "path",
+        "lineno",
+        "start_byte",
+        "end_byte",
+        "replacement_sha256",
+        "operator",
+        "description"
+      ],
       "properties": {
-        "path": {"$ref": "#/$defs/wire_path"},
-        "lineno": {"type": "integer", "minimum": 1},
-        "start_byte": {"type": "integer", "minimum": 0},
-        "end_byte": {"type": "integer", "minimum": 1},
-        "replacement_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "operator": {"$ref": "#/$defs/mutation_operator"},
-        "description": {"type": "string", "minLength": 1}
+        "path": {
+          "$ref": "#/$defs/wire_path"
+        },
+        "lineno": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_byte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_byte": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "replacement_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "operator": {
+          "$ref": "#/$defs/mutation_operator"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kill_signal": {
+          "description": "The mechanism this kill was attributed to, verbatim from the declared kill_signal_artifact. Present on every killed entry when kill_attribution is 'declared'; absent otherwise. Legal ONLY on a killed entry (A-223e) -- a kill signal on a mutant nothing killed is a contradiction. Enforced below, per bucket.",
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "mutation": {
-      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FOUR identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants, is cross-object and lives in the model and the raw verifier.",
+      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FIVE identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants, is cross-object and lives in the model and the raw verifier.",
       "type": "object",
-      "required": ["candidate_count", "total", "killed", "survived", "crashed", "budget_exceeded"],
+      "required": [
+        "candidate_count",
+        "total",
+        "killed",
+        "survived",
+        "crashed",
+        "budget_exceeded",
+        "equivalent"
+      ],
       "properties": {
-        "candidate_count": {"type": "integer", "minimum": 0, "maximum": 10001},
-        "total": {"type": "integer", "minimum": 0},
-        "killed": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
-        "survived": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
-        "crashed": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}},
-        "budget_exceeded": {"type": "array", "items": {"$ref": "#/$defs/mutant_outcome"}}
+        "candidate_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10001
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "killed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mutant_outcome"
+          }
+        },
+        "survived": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "crashed": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "budget_exceeded": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "equivalent": {
+          "description": "Mutants proven to produce no change in the judged artifact, established by byte comparison of judgment.r2.equivalence_artifact against the baseline run's. NOT survived: a no-op mutant is evidence about the mutation, not about the tests. Excluded from the mutation-score denominator (arithmetic is cross-object and belongs to the model and raw verifier).",
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
+        }
       },
       "additionalProperties": false
     },
     "judgment_r1": {
       "description": "The effective R1 policy (P16, sol finding 2): what decided the R1 claim's PASS/FAIL, so an independent consumer can re-derive it from coverage alone.",
       "type": "object",
-      "required": ["language", "source_roots", "coverage_format", "coverage_artifact", "fail_under", "allow_excluded", "base"],
+      "required": [
+        "coverage_format",
+        "coverage_artifact",
+        "fail_under",
+        "allow_excluded"
+      ],
       "properties": {
-        "language": {"type": "string", "minLength": 1},
-        "source_roots": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-        "coverage_format": {"type": "string", "minLength": 1},
-        "coverage_artifact": {"type": "string", "minLength": 1},
-        "fail_under": {"type": "number", "minimum": 0, "maximum": 100},
-        "allow_excluded": {"type": "boolean"},
-        "base": {"description": "The full resolved comparison commit, never a symbolic ref.", "type": "string", "minLength": 1}
+        "coverage_format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coverage_artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fail_under": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "allow_excluded": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
     "judgment_r2": {
       "description": "The effective R2 policy populated by the R2 CLI pipeline (P18) and correspondence-checked against the R2 claim (A-148).",
       "type": "object",
-      "required": ["jobs", "max_mutants", "operators"],
+      "required": [
+        "jobs",
+        "max_mutants",
+        "operators",
+        "kill_attribution"
+      ],
       "properties": {
-        "jobs": {"description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122).", "type": "integer", "minimum": 1},
-        "max_mutants": {"description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory.", "type": "integer", "minimum": 1, "maximum": 10000},
-        "operators": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/mutation_operator"}}
+        "jobs": {
+          "description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_mutants": {
+          "description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "operators": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mutation_operator"
+          }
+        },
+        "equivalence_artifact": {
+          "description": "A project-relative path the lane's own declared command writes after applying a mutant, whose bytes Assay compares against the baseline run's. For SQL this is a schema-only dump. Assay compares two artifacts; it never opens a database connection or receives a DSN. If absent, the equivalent bucket must be empty -- both-present-or-both-absent, following A-209's attestation pair.",
+          "type": "string",
+          "minLength": 1
+        },
+        "kill_attribution": {
+          "description": "Whether kills in this run are attributed to a declared mechanism or merely observed. 'unattributed' is honest and common: it means a killed mutant proves only that the suite failed, not that it failed for the reason the mutant created. Assay cannot verify a database's causality, so v5 makes the weakness visible rather than absent (A-220).",
+          "enum": [
+            "declared",
+            "unattributed"
+          ]
+        },
+        "kill_signal_artifact": {
+          "description": "A project-relative path the declared command writes, naming the mechanism that refused. Required when kill_attribution is 'declared'; forbidden when it is 'unattributed'.",
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "judgment_r3": {
       "description": "The effective R3 policy populated by the isolated R3 CLI pipeline (P19) and correspondence-checked against the R3 claim (A-148). P21 closed A-152: `canary.target` now exists, so BOTH `mechanism` and `target` are witnessable -- though the equality itself is cross-object and therefore owned by the model and the raw verifier, not by this document.",
       "type": "object",
-      "required": ["mechanism", "target"],
+      "required": [
+        "mechanism",
+        "target"
+      ],
       "properties": {
-        "mechanism": {"type": "string", "minLength": 1},
-        "target": {"$ref": "#/$defs/wire_path"}
+        "mechanism": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "$ref": "#/$defs/wire_path"
+        }
       },
       "additionalProperties": false
     },
     "judgment": {
       "description": "The resolved judge policy for whichever declared rigor levels rendered a real computed judgment (P16). Independently optional -- a lane may resolve and render only R0.",
       "type": "object",
-      "minProperties": 1,
       "properties": {
-        "r1": {"$ref": "#/$defs/judgment_r1"},
-        "r2": {"$ref": "#/$defs/judgment_r2"},
-        "r3": {"$ref": "#/$defs/judgment_r3"}
+        "r1": {
+          "$ref": "#/$defs/judgment_r1"
+        },
+        "r2": {
+          "$ref": "#/$defs/judgment_r2"
+        },
+        "r3": {
+          "$ref": "#/$defs/judgment_r3"
+        },
+        "resolved": {
+          "$ref": "#/$defs/judgment_resolved"
+        }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "resolved"
+      ],
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "r1"
+              ]
+            },
+            {
+              "required": [
+                "r2"
+              ]
+            },
+            {
+              "required": [
+                "r3"
+              ]
+            }
+          ]
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "r1"
+                ]
+              },
+              {
+                "required": [
+                  "r2"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolved": {
+                "required": [
+                  "language",
+                  "source_roots",
+                  "base"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "A-227: base is required IF r1|r2 and forbidden UNLESS r1|r2. Closes the only-if half, so a foreign artifact cannot record a comparison commit for a tier that reads none.",
+          "if": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "r1"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "r2"
+                  ]
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolved": {
+                "not": {
+                  "required": [
+                    "base"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "claim": {
       "type": "object",
-      "required": ["rigor", "source", "status", "verified_by_assay"],
+      "required": [
+        "rigor",
+        "source",
+        "status",
+        "verified_by_assay"
+      ],
       "properties": {
-        "rigor": {"$ref": "#/$defs/rigor"},
-        "source": {"const": "computed"},
-        "status": {"$ref": "#/$defs/outcome"},
-        "verified_by_assay": {"const": true},
-        "reason_code": {"$ref": "#/$defs/reason_code"},
-        "coverage": {"$ref": "#/$defs/coverage"},
-        "canary": {"$ref": "#/$defs/canary"},
-        "mutation": {"$ref": "#/$defs/mutation"}
+        "rigor": {
+          "$ref": "#/$defs/rigor"
+        },
+        "source": {
+          "const": "computed"
+        },
+        "status": {
+          "$ref": "#/$defs/outcome"
+        },
+        "verified_by_assay": {
+          "const": true
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "canary": {
+          "$ref": "#/$defs/canary"
+        },
+        "mutation": {
+          "$ref": "#/$defs/mutation"
+        }
       },
       "allOf": [
-        {"$ref": "#/$defs/status_contract"},
-        {"not": {"required": ["reason_code"], "properties": {"reason_code": {"enum": ["MISSING_ATTESTATION", "STALE_ATTESTATION"]}}}},
-        {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R1"}}}}, "then": {"not": {"required": ["coverage"]}}},
-        {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R3"}}}}, "then": {"not": {"required": ["canary"]}}},
-        {"if": {"not": {"required": ["rigor"], "properties": {"rigor": {"const": "R2"}}}}, "then": {"not": {"required": ["mutation"]}}},
-        {"if": {"required": ["status"], "properties": {"status": {"const": "NO_MEASUREMENT"}}}, "then": {"not": {"anyOf": [{"required": ["coverage"]}, {"required": ["canary"]}, {"required": ["mutation"]}]}}},
+        {
+          "$ref": "#/$defs/status_contract"
+        },
+        {
+          "not": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "MISSING_ATTESTATION",
+                  "STALE_ATTESTATION"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "rigor"
+              ],
+              "properties": {
+                "rigor": {
+                  "const": "R1"
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "coverage"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "rigor"
+              ],
+              "properties": {
+                "rigor": {
+                  "const": "R3"
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "canary"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "rigor"
+              ],
+              "properties": {
+                "rigor": {
+                  "const": "R2"
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "mutation"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "NO_MEASUREMENT"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "coverage"
+                  ]
+                },
+                {
+                  "required": [
+                    "canary"
+                  ]
+                },
+                {
+                  "required": [
+                    "mutation"
+                  ]
+                }
+              ]
+            }
+          }
+        },
         {
           "description": "A-183: capability absence and a failed discovery boundary are both payload-free. Attaching a zero/zero mutation payload to either would make 'no analysis happened' indistinguishable from 'an analysis observed nothing'.",
-          "if": {"required": ["reason_code"], "properties": {"reason_code": {"enum": ["MUTATION_UNSUPPORTED", "MUTATION_DISCOVERY_FAILED"]}}},
-          "then": {"not": {"required": ["mutation"]}, "properties": {"rigor": {"const": "R2"}}}
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "MUTATION_UNSUPPORTED",
+                  "MUTATION_DISCOVERY_FAILED"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "mutation"
+              ]
+            },
+            "properties": {
+              "rigor": {
+                "const": "R2"
+              }
+            }
+          }
         },
         {
           "description": "A-183: NO_MUTANTS is the SUPPORTED empty result, so it must carry the zero/zero payload that proves an analysis ran. A payload-free NO_MUTANTS is the forgery this closes.",
-          "if": {"required": ["reason_code"], "properties": {"reason_code": {"const": "NO_MUTANTS"}}},
-          "then": {"required": ["mutation"], "properties": {"rigor": {"const": "R2"}}}
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "const": "NO_MUTANTS"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mutation"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R2"
+              }
+            }
+          }
         },
         {
-          "description": "A-163: the pre-submission limit refusal carries the exact sentinel -- nothing attempted, four empty buckets. Whether candidate_count equals max_mutants + 1 is cross-object and lives in the model and raw verifier.",
-          "if": {"required": ["reason_code"], "properties": {"reason_code": {"const": "MUTANT_LIMIT_EXCEEDED"}}},
-          "then": {
-            "required": ["mutation"],
+          "description": "A-163: the pre-submission limit refusal carries the exact sentinel -- nothing attempted, five empty buckets. Whether candidate_count equals max_mutants + 1 is cross-object and lives in the model and raw verifier.",
+          "if": {
+            "required": [
+              "reason_code"
+            ],
             "properties": {
-              "rigor": {"const": "R2"},
+              "reason_code": {
+                "const": "MUTANT_LIMIT_EXCEEDED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mutation"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R2"
+              },
               "mutation": {
                 "properties": {
-                  "total": {"const": 0},
-                  "candidate_count": {"minimum": 1},
-                  "killed": {"maxItems": 0},
-                  "survived": {"maxItems": 0},
-                  "crashed": {"maxItems": 0},
-                  "budget_exceeded": {"maxItems": 0}
+                  "total": {
+                    "const": 0
+                  },
+                  "candidate_count": {
+                    "minimum": 1
+                  },
+                  "killed": {
+                    "maxItems": 0
+                  },
+                  "survived": {
+                    "maxItems": 0
+                  },
+                  "crashed": {
+                    "maxItems": 0
+                  },
+                  "budget_exceeded": {
+                    "maxItems": 0
+                  },
+                  "equivalent": {
+                    "maxItems": 0
+                  }
                 }
+              }
+            }
+          }
+        },
+        {
+          "description": "A-228/A-223d: ALL_MUTANTS_EQUIVALENT is the SUPPORTED all-inert result, so it must carry the payload that proves an analysis ran and every attempted mutant was provably no-op. A payload-free variant would be indistinguishable from capability absence, which is the same forgery branch 7 closes for NO_MUTANTS. Whether killed + survived == 0 with a non-empty equivalent bucket is cross-object and lives in the model and raw verifier.",
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "const": "ALL_MUTANTS_EQUIVALENT"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "mutation"
+            ],
+            "properties": {
+              "rigor": {
+                "const": "R2"
               }
             }
           }
@@ -399,59 +1611,268 @@
     },
     "evidence_declaration": {
       "type": "object",
-      "required": ["source", "key"],
+      "required": [
+        "source",
+        "key"
+      ],
       "properties": {
-        "source": {"$ref": "#/$defs/evidence_source"},
-        "key": {"type": "string", "minLength": 1}
+        "source": {
+          "$ref": "#/$defs/evidence_source"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     },
     "evidence": {
       "type": "object",
-      "required": ["source", "key", "status", "verified_by_assay"],
+      "required": [
+        "source",
+        "key",
+        "status",
+        "verified_by_assay"
+      ],
       "properties": {
-        "source": {"$ref": "#/$defs/evidence_source"},
-        "key": {"type": "string", "minLength": 1},
-        "status": {"$ref": "#/$defs/outcome"},
-        "verified_by_assay": {"type": "boolean"},
-        "reason_code": {"$ref": "#/$defs/reason_code"},
-        "producer": {"type": "string", "minLength": 1},
-        "attested_commit": {"type": "string", "minLength": 1},
+        "source": {
+          "$ref": "#/$defs/evidence_source"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "$ref": "#/$defs/outcome"
+        },
+        "verified_by_assay": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason_code"
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attested_commit": {
+          "type": "string",
+          "minLength": 1
+        },
         "reviewed_paths": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "allOf": [
-        {"$ref": "#/$defs/status_contract"},
         {
-          "if": {"required": ["source"], "properties": {"source": {"const": "attested"}}},
-          "then": {"properties": {"verified_by_assay": {"const": false}}},
-          "else": {"not": {"anyOf": [{"required": ["producer"]}, {"required": ["attested_commit"]}, {"required": ["reviewed_paths"]}]}}
+          "$ref": "#/$defs/status_contract"
         },
         {
-          "if": {"required": ["source", "status"], "properties": {"source": {"const": "attested"}, "status": {"const": "PASS"}}},
-          "then": {"required": ["producer", "attested_commit", "reviewed_paths"]}
+          "if": {
+            "required": [
+              "source"
+            ],
+            "properties": {
+              "source": {
+                "const": "attested"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "verified_by_assay": {
+                "const": false
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "producer"
+                  ]
+                },
+                {
+                  "required": [
+                    "attested_commit"
+                  ]
+                },
+                {
+                  "required": [
+                    "reviewed_paths"
+                  ]
+                }
+              ]
+            }
+          }
         },
         {
-          "if": {"required": ["source", "reason_code"], "properties": {"source": {"const": "attested"}, "reason_code": {"const": "STALE_ATTESTATION"}}},
-          "then": {"required": ["producer", "attested_commit", "reviewed_paths"]}
+          "if": {
+            "required": [
+              "source",
+              "status"
+            ],
+            "properties": {
+              "source": {
+                "const": "attested"
+              },
+              "status": {
+                "const": "PASS"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "producer",
+              "attested_commit",
+              "reviewed_paths"
+            ]
+          }
         },
         {
-          "if": {"required": ["reason_code"], "properties": {"reason_code": {"const": "MISSING_ATTESTATION"}}},
-          "then": {"properties": {"source": {"const": "attested"}}, "not": {"anyOf": [{"required": ["producer"]}, {"required": ["attested_commit"]}, {"required": ["reviewed_paths"]}]}}
+          "if": {
+            "required": [
+              "source",
+              "reason_code"
+            ],
+            "properties": {
+              "source": {
+                "const": "attested"
+              },
+              "reason_code": {
+                "const": "STALE_ATTESTATION"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "producer",
+              "attested_commit",
+              "reviewed_paths"
+            ]
+          }
         },
         {
-          "if": {"required": ["reason_code"], "properties": {"reason_code": {"const": "STALE_ATTESTATION"}}},
-          "then": {"properties": {"source": {"const": "attested"}}}
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "const": "MISSING_ATTESTATION"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "const": "attested"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "producer"
+                  ]
+                },
+                {
+                  "required": [
+                    "attested_commit"
+                  ]
+                },
+                {
+                  "required": [
+                    "reviewed_paths"
+                  ]
+                }
+              ]
+            }
+          }
         },
         {
-          "if": {"anyOf": [{"required": ["producer"]}, {"required": ["attested_commit"]}, {"required": ["reviewed_paths"]}]},
-          "then": {"required": ["producer", "attested_commit", "reviewed_paths"]}
+          "if": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "const": "STALE_ATTESTATION"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "const": "attested"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "producer"
+                ]
+              },
+              {
+                "required": [
+                  "attested_commit"
+                ]
+              },
+              {
+                "required": [
+                  "reviewed_paths"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "producer",
+              "attested_commit",
+              "reviewed_paths"
+            ]
+          }
         }
       ],
+      "additionalProperties": false
+    },
+    "judgment_resolved": {
+      "description": "What was judged, shared by every computed tier above R0. Hoisted out of judgment.r1 in v5 because an R0,R2 lane -- legal since A-192 -- renders no r1 and would otherwise record no language, source roots, or comparison base at all, even though R2 scopes mutation to changed lines against exactly that base. `base` is REQUIRED ONLY when r1 or r2 is present (A-223a): JUDGE_FIELDS_BY_RIGOR carries `base` for R1 and R2 and not for R3, so an R0,R3 lane genuinely has no comparison commit and must not be made to invent one. That conditional lives on `judgment`, which can see its own tiers. `source_roots` is the DECLARED project-relative spelling (A-049), never the relocated absolute scratch paths (A-149); `base` is the pre-snapshot consumer-repository resolution, which R1's in-snapshot resolution must equal (A-223f). Both are cross-object and belong to the model and raw verifier.",
+      "type": "object",
+      "required": [
+        "language",
+        "source_roots"
+      ],
+      "properties": {
+        "language": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "base": {
+          "description": "The full resolved comparison commit, never a symbolic ref.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
       "additionalProperties": false
     }
   }

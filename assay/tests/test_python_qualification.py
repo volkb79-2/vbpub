@@ -255,8 +255,18 @@ def test_materialize_scenario_baseline_is_identical_across_different_scenarios(
     assert base_a == base_b
 
 
+#: (P33/A-226) P25's own locked `expected/` templates stay frozen at v4 as
+#: historical evidence (A-222); the harness they feed now compares against
+#: P33's carver-supplied v5 siblings, so this consumer follows it. Reading
+#: the v4 original here would test the harness against a contract the
+#: product no longer emits.
+P33_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P33" / "expected"
+
+
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
-    template = json.loads((ASSET_ROOT / "expected" / "pass-v4-template.json").read_text())
+    template = json.loads(
+        (P33_EXPECTED_ROOT / "p25-pass-v5-template.json").read_text()
+    )
     actual = json.loads(json.dumps(template))
     substitutions: dict[str, object] = {
         "@ASSAY_VERSION@": "9.9.9",

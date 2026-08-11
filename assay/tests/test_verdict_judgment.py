@@ -19,10 +19,12 @@ from assay.verdict import (
     CanaryResult,
     Claim,
     Coverage,
+    Helper,
     Judgment,
     JudgmentR1,
     JudgmentR2,
     JudgmentR3,
+    JudgmentResolved,
     MutantOutcome,
     Mutation,
     Verdict,
@@ -35,15 +37,27 @@ from assay.errors import Outcome, ReasonCode
 #: proves only that the function is deterministic.
 _SHA_LTE = "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866"
 
-BASE_R1_POLICY = dict(
+#: (P33/V5-1) the lane facts every computed tier above R0 shares. Hoisted out
+#: of `BASE_R1_POLICY` because they are facts about what was judged, not about
+#: R1's own policy -- which is precisely why an `R0,R2` lane could record none
+#: of them under v4.
+BASE_RESOLVED = dict(
     language="python",
     source_roots=("src",),
+    base="a" * 40,
+)
+
+BASE_R1_POLICY = dict(
     coverage_format="coverage-py-json",
     coverage_artifact="cov.json",
     fail_under=100.0,
     allow_excluded=False,
-    base="a" * 40,
 )
+
+#: (P33/V5-4) `kill_attribution` is REQUIRED on every `JudgmentR2`, and it is
+#: derived from `kill_signal_artifact`'s presence -- which P33 refuses at
+#: config load, so `unattributed` is what every lane in this build renders.
+BASE_R2_POLICY = dict(kill_attribution="unattributed")
 
 BASE_VERDICT = {
     "lane": "package",
@@ -105,7 +119,7 @@ def r2_pass_claim(*, survivor_operator: str | None = None) -> Claim:
                 start_byte=4,
                 end_byte=5,
                 replacement_sha256=_SHA_LTE,
-                operator="compare-swap",
+                operator="python:compare-swap",
                 description="Lt->LtE",
             ),
         )
@@ -352,8 +366,50 @@ def test_an_r3_claim_whose_machinery_failed_needs_no_canary():
 
 def test_judgment_r1_untouched_form_builds():
     policy = JudgmentR1(**BASE_R1_POLICY)
-    assert policy.language == "python"
-    assert policy.to_dict()["base"] == "a" * 40
+    assert policy.coverage_format == "coverage-py-json"
+    assert policy.to_dict()["fail_under"] == 100.0
+    # P33/V5-1: the three hoisted keys are GONE from R1, not merely optional.
+    # An R1 policy that still accepted them would leave two places to record
+    # one fact, which is the shape v5 exists to remove.
+    assert set(policy.to_dict()) == {
+        "coverage_format",
+        "coverage_artifact",
+        "fail_under",
+        "allow_excluded",
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        ({"coverage_format": ""}, "coverage_format"),
+        ({"coverage_artifact": ""}, "coverage_artifact"),
+        ({"fail_under": "100"}, "must be a number"),
+        ({"fail_under": True}, "must be a number"),
+        ({"fail_under": 101.0}, "between 0 and 100"),
+        ({"fail_under": -1.0}, "between 0 and 100"),
+        ({"allow_excluded": "false"}, "must be a boolean"),
+    ],
+)
+def test_judgment_r1_refuses_malformed_fields(overrides: dict, match: str):
+    with pytest.raises(ValueError, match=match):
+        JudgmentR1(**{**BASE_R1_POLICY, **overrides})
+
+
+# --- JudgmentResolved (P33/V5-1) ---------------------------------------------
+
+
+def test_judgment_resolved_untouched_form_builds():
+    resolved = JudgmentResolved(**BASE_RESOLVED)
+    assert resolved.language == "python"
+    assert resolved.to_dict()["base"] == "a" * 40
+
+
+def test_judgment_resolved_omits_base_when_none_rather_than_nulling_it():
+    """A-051's discipline, one field over: absent means "no tier here reads a
+    comparison commit", which is a different statement from `base: null`."""
+    resolved = JudgmentResolved(language="python", source_roots=("src",))
+    assert "base" not in resolved.to_dict()
 
 
 @pytest.mark.parametrize(
@@ -363,39 +419,72 @@ def test_judgment_r1_untouched_form_builds():
         ({"source_roots": []}, "non-empty tuple"),
         ({"source_roots": ()}, "non-empty tuple"),
         ({"source_roots": ("",)}, "source_roots entry"),
-        ({"coverage_format": ""}, "coverage_format"),
-        ({"coverage_artifact": ""}, "coverage_artifact"),
-        ({"fail_under": "100"}, "must be a number"),
-        ({"fail_under": True}, "must be a number"),
-        ({"fail_under": 101.0}, "between 0 and 100"),
-        ({"fail_under": -1.0}, "between 0 and 100"),
-        ({"allow_excluded": "false"}, "must be a boolean"),
         ({"base": ""}, "base"),
     ],
 )
-def test_judgment_r1_refuses_malformed_fields(overrides: dict, match: str):
+def test_judgment_resolved_refuses_malformed_fields(overrides: dict, match: str):
     with pytest.raises(ValueError, match=match):
-        JudgmentR1(**{**BASE_R1_POLICY, **overrides})
+        JudgmentResolved(**{**BASE_RESOLVED, **overrides})
 
 
 # --- JudgmentR2 (reserved) ----------------------------------------------------
 
 
 def test_judgment_r2_untouched_form_builds():
-    r2 = JudgmentR2(jobs=4, max_mutants=50, operators=("compare-swap", "boolop-swap"))
+    r2 = JudgmentR2(
+        jobs=4,
+        max_mutants=50,
+        operators=("python:compare-swap", "python:boolop-swap"),
+        **BASE_R2_POLICY,
+    )
     assert r2.to_dict() == {
         "jobs": 4,
         "max_mutants": 50,
-        "operators": ["compare-swap", "boolop-swap"],
+        "operators": ["python:compare-swap", "python:boolop-swap"],
+        "kill_attribution": "unattributed",
     }
+    # The two P34-reserved paths are OMITTED, never nulled (A-051/A-230b).
+    assert "kill_signal_artifact" not in r2.to_dict()
+    assert "equivalence_artifact" not in r2.to_dict()
+
+
+def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
+    """A-223(b): attribution is DERIVED from `kill_signal_artifact`'s
+    presence, so the model refuses the two states in which they disagree --
+    the same reason A-036 derives `argv_modified` from `argv_appended`."""
+    with pytest.raises(ValueError, match="only\n?.*consistent value here is 'declared'"):
+        JudgmentR2(
+            jobs=1,
+            max_mutants=50,
+            operators=("python:compare-swap",),
+            kill_attribution="unattributed",
+            kill_signal_artifact=".assay/kill-signal.txt",
+        )
+    with pytest.raises(ValueError, match="no kill_signal_artifact"):
+        JudgmentR2(
+            jobs=1,
+            max_mutants=50,
+            operators=("python:compare-swap",),
+            kill_attribution="declared",
+        )
+
+
+def test_judgment_r2_refuses_an_unknown_kill_attribution():
+    with pytest.raises(ValueError, match="kill_attribution must be one of"):
+        JudgmentR2(
+            jobs=1,
+            max_mutants=50,
+            operators=("python:compare-swap",),
+            kill_attribution="probably",
+        )
 
 
 @pytest.mark.parametrize(
     "kwargs,match",
     [
-        ({"jobs": "4", "max_mutants": 50, "operators": ("compare-swap",)}, "must be an integer"),
-        ({"jobs": True, "max_mutants": 50, "operators": ("compare-swap",)}, "must be an integer"),
-        ({"jobs": 0, "max_mutants": 50, "operators": ("compare-swap",)}, ">= 1"),
+        ({"jobs": "4", "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be an integer"),
+        ({"jobs": True, "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be an integer"),
+        ({"jobs": 0, "max_mutants": 50, "operators": ("python:compare-swap",)}, ">= 1"),
         ({"jobs": 4, "max_mutants": 50, "operators": []}, "non-empty tuple"),
         ({"jobs": 4, "max_mutants": 50, "operators": ()}, "non-empty tuple"),
         # P21 work item 2: the vocabulary is CLOSED in the model now, so an
@@ -404,17 +493,33 @@ def test_judgment_r2_untouched_form_builds():
         # shipped schema's own enum rejected it.
         ({"jobs": 4, "max_mutants": 50, "operators": ("",)}, "unknown operator"),
         ({"jobs": 4, "max_mutants": 50, "operators": ("invented-swap",)}, "unknown operator"),
-        ({"jobs": 4, "max_mutants": 50, "operators": ("compare-swap", "compare-swap")}, "duplicate"),
+        ({"jobs": 4, "max_mutants": 50, "operators": ("python:compare-swap", "python:compare-swap")}, "duplicate"),
         # P21/A-163: the declared ceiling is bounded at both ends.
-        ({"jobs": 4, "max_mutants": "50", "operators": ("compare-swap",)}, "must be an integer"),
-        ({"jobs": 4, "max_mutants": True, "operators": ("compare-swap",)}, "must be an integer"),
-        ({"jobs": 4, "max_mutants": 0, "operators": ("compare-swap",)}, "1..10,000"),
-        ({"jobs": 4, "max_mutants": 10_001, "operators": ("compare-swap",)}, "1..10,000"),
+        ({"jobs": 4, "max_mutants": "50", "operators": ("python:compare-swap",)}, "must be an integer"),
+        ({"jobs": 4, "max_mutants": True, "operators": ("python:compare-swap",)}, "must be an integer"),
+        ({"jobs": 4, "max_mutants": 0, "operators": ("python:compare-swap",)}, "1..10,000"),
+        ({"jobs": 4, "max_mutants": 10_001, "operators": ("python:compare-swap",)}, "1..10,000"),
     ],
 )
 def test_judgment_r2_refuses_malformed_fields(kwargs: dict, match: str):
     with pytest.raises(ValueError, match=match):
-        JudgmentR2(**kwargs)
+        JudgmentR2(**{**kwargs, **BASE_R2_POLICY})
+
+
+@pytest.mark.parametrize(
+    "operators",
+    [("sql:drop-check",), ("go:compare-swap",), ("python:compare-swap", "sql:drop-check")],
+)
+def test_judgment_r2_operators_may_name_any_language_the_catalogue_knows(operators):
+    """(P33/V5-2) The MODEL closes the catalogue; it does not close the
+    LANGUAGE, because the language lives in a sibling object it cannot see
+    from here. `Verdict` owns the prefix-equals-resolved-language rule, and
+    the test below proves it. Splitting the two is what lets a SQL lane's own
+    policy build at all."""
+    r2 = JudgmentR2(
+        jobs=1, max_mutants=50, operators=operators, **BASE_R2_POLICY
+    )
+    assert r2.to_dict()["operators"] == list(operators)
 
 
 # --- JudgmentR3 (reserved) ----------------------------------------------------
@@ -441,17 +546,76 @@ def test_judgment_r3_refuses_malformed_fields(kwargs: dict, match: str):
 
 
 def test_judgment_refuses_when_none_of_r1_r2_r3_are_given():
+    """(P33/A-223g) v4 expressed this as `minProperties: 1`, which silently
+    stopped meaning it once `resolved` became a fourth key: a judgment holding
+    only `resolved` would have satisfied the count while judging nothing."""
     with pytest.raises(ValueError, match="declares none of r1/r2/r3"):
-        Judgment()
+        Judgment(resolved=JudgmentResolved(**BASE_RESOLVED))
 
 
 def test_judgment_to_dict_includes_only_the_populated_members():
-    r2 = JudgmentR2(jobs=2, max_mutants=50, operators=("compare-swap",))
+    resolved = JudgmentResolved(**BASE_RESOLVED)
+    r2 = JudgmentR2(
+        jobs=2, max_mutants=50, operators=("python:compare-swap",), **BASE_R2_POLICY
+    )
     r3 = JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py")
+    r3_only = JudgmentResolved(language="python", source_roots=("src",))
 
-    assert Judgment(r2=r2).to_dict() == {"r2": r2.to_dict()}
-    assert Judgment(r3=r3).to_dict() == {"r3": r3.to_dict()}
-    assert Judgment(r2=r2, r3=r3).to_dict() == {"r2": r2.to_dict(), "r3": r3.to_dict()}
+    assert Judgment(resolved=resolved, r2=r2).to_dict() == {
+        "resolved": resolved.to_dict(),
+        "r2": r2.to_dict(),
+    }
+    assert Judgment(resolved=r3_only, r3=r3).to_dict() == {
+        "resolved": r3_only.to_dict(),
+        "r3": r3.to_dict(),
+    }
+    assert Judgment(resolved=resolved, r2=r2, r3=r3).to_dict() == {
+        "resolved": resolved.to_dict(),
+        "r2": r2.to_dict(),
+        "r3": r3.to_dict(),
+    }
+
+
+# --- Judgment: the conditional base (P33/A-223a, A-227) ----------------------
+
+
+def test_judgment_requires_a_base_when_r1_or_r2_is_present():
+    """Both tiers scope a diff to a resolved comparison commit, so a judgment
+    that carries one and records no base is unre-derivable."""
+    for tier in (
+        {"r1": JudgmentR1(**BASE_R1_POLICY)},
+        {
+            "r2": JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                **BASE_R2_POLICY,
+            )
+        },
+    ):
+        with pytest.raises(ValueError, match="records no base"):
+            Judgment(
+                resolved=JudgmentResolved(language="python", source_roots=("src",)),
+                **tier,
+            )
+
+
+def test_judgment_forbids_a_base_when_only_r3_is_present():
+    """The only-if half (A-227). `JUDGE_FIELDS_BY_RIGOR` gives R3 no base, so
+    an r3-only judgment recording one describes a comparison nothing in it
+    made. Unreachable for this producer -- A-062 refuses `judge.base` on an
+    R0,R3 lane as inert config -- and reachable for any foreign document,
+    which is the population `verify.py` exists for."""
+    with pytest.raises(ValueError, match="neither r1 nor r2"):
+        Judgment(
+            resolved=JudgmentResolved(**BASE_RESOLVED),
+            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py"),
+        )
+
+
+def test_judgment_refuses_a_resolved_that_is_not_a_judgment_resolved():
+    with pytest.raises(ValueError, match="must be a JudgmentResolved"):
+        Judgment(resolved={"language": "python"}, r1=JudgmentR1(**BASE_R1_POLICY))
 
 
 # --- Verdict: scope/enforcement -----------------------------------------------
@@ -486,7 +650,10 @@ def test_verdict_refuses_judgment_present_without_a_resolved_lane():
             started="2026-08-07T09:00:00+00:00",
             ended="2026-08-07T09:00:01+00:00",
             assay_version="0.1.0",
-            judgment=Judgment(r1=JudgmentR1(**BASE_R1_POLICY)),
+            judgment=Judgment(
+                resolved=JudgmentResolved(**BASE_RESOLVED),
+                r1=JudgmentR1(**BASE_R1_POLICY),
+            ),
         )
 
 
@@ -497,7 +664,10 @@ def test_verdict_refuses_judgment_r1_present_without_an_r1_coverage_claim():
             outcome=Outcome.PASS,
             declared_rigor=("R0",),
             claims=(r0_pass(),),
-            judgment=Judgment(r1=JudgmentR1(**BASE_R1_POLICY)),
+            judgment=Judgment(
+                resolved=JudgmentResolved(**BASE_RESOLVED),
+                r1=JudgmentR1(**BASE_R1_POLICY),
+            ),
         )
 
 
@@ -517,9 +687,14 @@ def test_verdict_accepts_the_matched_r1_coverage_and_judgment_pair():
         outcome=Outcome.PASS,
         declared_rigor=("R0", "R1"),
         claims=(r0_pass(), r1_pass_claim()),
-        judgment=Judgment(r1=JudgmentR1(**BASE_R1_POLICY)),
+        judgment=Judgment(
+            resolved=JudgmentResolved(**BASE_RESOLVED),
+            r1=JudgmentR1(**BASE_R1_POLICY),
+        ),
     )
-    assert verdict.judgment.r1.language == "python"
+    # P33/V5-1: the language now lives on `resolved`, where an R0,R2 lane can
+    # record it too.
+    assert verdict.judgment.resolved.language == "python"
 
 
 # --- Verdict: the judgment.r2 <-> R2-mutation correspondence (P19/A-148) ----
@@ -532,7 +707,15 @@ def test_verdict_refuses_judgment_r2_present_without_an_r2_mutation_claim():
             outcome=Outcome.PASS,
             declared_rigor=("R0",),
             claims=(r0_pass(),),
-            judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))),
+            judgment=Judgment(
+                resolved=JudgmentResolved(**BASE_RESOLVED),
+                r2=JudgmentR2(
+                    jobs=1,
+                    max_mutants=50,
+                    operators=("python:compare-swap",),
+                    **BASE_R2_POLICY,
+                ),
+            ),
         )
 
 
@@ -542,7 +725,7 @@ def test_verdict_refuses_an_r2_mutation_claim_without_judgment_r2():
         outcome=Outcome.FAIL,
         reason_code=ReasonCode.MUTANTS_SURVIVED,
         declared_rigor=("R0", "R2"),
-        claims=(r0_pass(), r2_pass_claim(survivor_operator="compare-swap")),
+        claims=(r0_pass(), r2_pass_claim(survivor_operator="python:compare-swap")),
     )
     with pytest.raises(ValueError, match="judgment.r2 is absent"):
         Verdict(**verdict_kwargs)
@@ -554,7 +737,15 @@ def test_verdict_accepts_the_matched_r2_mutation_and_judgment_pair():
         outcome=Outcome.PASS,
         declared_rigor=("R0", "R2"),
         claims=(r0_pass(), r2_pass_claim()),
-        judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))),
+        judgment=Judgment(
+            resolved=JudgmentResolved(**BASE_RESOLVED),
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                **BASE_R2_POLICY,
+            ),
+        ),
     )
     assert verdict.judgment.r2.jobs == 1
 
@@ -566,8 +757,16 @@ def test_verdict_refuses_a_survivor_naming_an_operator_judgment_r2_never_declare
             outcome=Outcome.FAIL,
             reason_code=ReasonCode.MUTANTS_SURVIVED,
             declared_rigor=("R0", "R2"),
-            claims=(r0_pass(), r2_pass_claim(survivor_operator="compare-swap")),
-            judgment=Judgment(r2=JudgmentR2(jobs=1, max_mutants=50, operators=("boolop-swap",))),
+            claims=(r0_pass(), r2_pass_claim(survivor_operator="python:compare-swap")),
+            judgment=Judgment(
+                resolved=JudgmentResolved(**BASE_RESOLVED),
+                r2=JudgmentR2(
+                    jobs=1,
+                    max_mutants=50,
+                    operators=("python:boolop-swap",),
+                    **BASE_R2_POLICY,
+                ),
+            ),
         )
 
 
@@ -582,7 +781,8 @@ def test_verdict_refuses_judgment_r3_present_without_an_r3_canary_claim():
             declared_rigor=("R0",),
             claims=(r0_pass(),),
             judgment=Judgment(
-                r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py")
+                resolved=JudgmentResolved(language="python", source_roots=("src",)),
+                r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py"),
             ),
         )
 
@@ -604,14 +804,218 @@ def test_verdict_accepts_the_matched_r3_canary_and_judgment_pair():
         declared_rigor=("R0", "R3"),
         claims=(r0_pass(), r3_pass_claim()),
         judgment=Judgment(
+            # P33/A-223a: an R0,R3 judgment records NO base -- R3 reads none.
+            resolved=JudgmentResolved(language="python", source_roots=("src",)),
             # P21/A-152: the payload's own target must EQUAL this one now.
             # Under v3 these two could name different files and nothing in
             # the artifact could tell, which is the gap A-152 recorded as
             # accepted-and-waiting-for-v4.
-            r3=JudgmentR3(mechanism="uncovered-line", target="a.py")
+            r3=JudgmentR3(mechanism="uncovered-line", target="a.py"),
         ),
     )
     assert verdict.judgment.r3.target == "a.py"
+
+
+# --- Verdict: P33's cross-object invariants ----------------------------------
+
+
+def _sql_mutant(*, operator: str, kill_signal: str | None = None) -> MutantOutcome:
+    return MutantOutcome(
+        path="schema/001.sql",
+        lineno=3,
+        start_byte=10,
+        end_byte=20,
+        replacement_sha256="c" * 64,
+        operator=operator,
+        description="drop the constraint",
+        kill_signal=kill_signal,
+    )
+
+
+def _r2_verdict(*, mutation: Mutation, policy: JudgmentR2, language: str, **overrides):
+    """One R0,R2 verdict, so each invariant below is a same-document
+    differential rather than a comparison between two different fixtures."""
+    status, reason_code = (
+        (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
+        if mutation.survived
+        else (Outcome.INCONCLUSIVE, ReasonCode.ALL_MUTANTS_EQUIVALENT)
+        if mutation.equivalent and not mutation.killed
+        else (Outcome.PASS, None)
+    )
+    return Verdict(
+        **BASE_VERDICT,
+        outcome=status,
+        reason_code=reason_code,
+        declared_rigor=("R0", "R2"),
+        claims=(
+            r0_pass(),
+            Claim(
+                rigor="R2",
+                source="computed",
+                status=status,
+                verified_by_assay=True,
+                reason_code=reason_code,
+                mutation=mutation,
+            ),
+        ),
+        judgment=Judgment(
+            resolved=JudgmentResolved(
+                language=language, source_roots=("schema",), base="a" * 40
+            ),
+            r2=policy,
+        ),
+        **overrides,
+    )
+
+
+def test_verdict_refuses_an_operator_whose_prefix_is_not_the_resolved_language():
+    """(P33/V5-2, invariant 1) The schema closes each language's vocabulary
+    but has no `$data`, so it cannot relate an operator to the language
+    recorded elsewhere. Without this a Python lane records a full set of SQL
+    operators it could not possibly have applied, and every layer agrees the
+    document is well formed."""
+    sql_policy = JudgmentR2(
+        jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
+    )
+    mutation = Mutation(
+        candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
+    )
+    # The control: a genuinely SQL lane builds.
+    assert _r2_verdict(mutation=mutation, policy=sql_policy, language="sql")
+    # The defect: the same policy and payload under a python resolution.
+    with pytest.raises(ValueError, match="another language|judgment.resolved.language"):
+        _r2_verdict(mutation=mutation, policy=sql_policy, language="python")
+
+
+def test_verdict_refuses_equivalent_mutants_with_no_declared_equivalence_artifact():
+    """(P33/V5-3, invariant 2) Equivalence is proven by comparing the declared
+    artifact's bytes; with none declared the claim was inferred from something
+    else, which is what A-209's both-present pattern forbids."""
+    mutation = Mutation(
+        candidate_count=1,
+        total=1,
+        equivalent=(_sql_mutant(operator="sql:drop-check"),),
+    )
+    paired = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("sql:drop-check",),
+        equivalence_artifact=".assay/schema-dump.sql",
+        **BASE_R2_POLICY,
+    )
+    assert _r2_verdict(mutation=mutation, policy=paired, language="sql")
+    unpaired = JudgmentR2(
+        jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
+    )
+    with pytest.raises(ValueError, match="declares no\n?.*equivalence_artifact"):
+        _r2_verdict(mutation=mutation, policy=unpaired, language="sql")
+
+
+def test_verdict_refuses_an_unattributed_run_carrying_a_kill_signal():
+    """(P33/V5-4, invariant 4) The clause the schema deliberately leaves open:
+    a `kill_signal` on a KILLED entry is locally legal, so only a layer that
+    can see `kill_attribution` can refuse it."""
+    clean = Mutation(
+        candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
+    )
+    policy = JudgmentR2(
+        jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
+    )
+    assert _r2_verdict(mutation=clean, policy=policy, language="sql")
+    signalled = Mutation(
+        candidate_count=1,
+        total=1,
+        killed=(_sql_mutant(operator="sql:drop-check", kill_signal="23514"),),
+    )
+    with pytest.raises(ValueError, match="has no mechanism to name"):
+        _r2_verdict(mutation=signalled, policy=policy, language="sql")
+
+
+def test_verdict_refuses_a_declared_attribution_leaving_a_kill_unexplained():
+    """Invariant 4's other clause: attribution that covers only some kills is
+    not attribution."""
+    policy = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("sql:drop-check",),
+        kill_attribution="declared",
+        kill_signal_artifact=".assay/kill-signal.txt",
+    )
+    explained = Mutation(
+        candidate_count=1,
+        total=1,
+        killed=(_sql_mutant(operator="sql:drop-check", kill_signal="23514"),),
+    )
+    assert _r2_verdict(mutation=explained, policy=policy, language="sql")
+    unexplained = Mutation(
+        candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
+    )
+    with pytest.raises(ValueError, match="carry no\n?.*kill_signal"):
+        _r2_verdict(mutation=unexplained, policy=policy, language="sql")
+
+
+def test_mutation_refuses_a_kill_signal_outside_the_killed_bucket():
+    """(P33/A-223e) A kill signal names the mechanism that refused a mutant;
+    a survived, crashed, budget-stopped or provably-inert mutant was refused
+    by nothing. Checked on every non-killed bucket, not just one."""
+    for bucket in ("survived", "crashed", "budget_exceeded", "equivalent"):
+        with pytest.raises(ValueError, match="only a killed mutant was refused"):
+            Mutation(
+                candidate_count=1,
+                total=1,
+                **{
+                    bucket: (
+                        _sql_mutant(operator="sql:drop-check", kill_signal="23514"),
+                    )
+                },
+            )
+
+
+def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
+    """(P33/V5-5, A-223c) Only the observable direction. The converse -- a
+    claim produced with a helper requires an entry -- has no readable
+    antecedent in the artifact bytes, so P34 owns it."""
+    mutation = Mutation(
+        candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
+    )
+    policy = JudgmentR2(
+        jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
+    )
+    helper = Helper(
+        role="mutation-sites",
+        tool="assay-sql-sites",
+        resolved_path="/opt/assay-helpers/bin/assay-sql-sites",
+        identity="assay-sql-sites 0.1.0",
+    )
+    # An R2 mutation payload is exactly what a mutation-sites helper produces.
+    assert _r2_verdict(
+        mutation=mutation, policy=policy, language="sql", helpers=(helper,)
+    )
+    # A statement-positions helper needs an R1 coverage payload, and this
+    # verdict has none.
+    positions = Helper(
+        role="statement-positions",
+        tool="assay-go-positions",
+        resolved_path="/opt/assay-helpers/bin/assay-go-positions",
+        identity="assay-go-positions 0.1.0",
+    )
+    with pytest.raises(ValueError, match="carries no an R1 claim|statement-positions"):
+        _r2_verdict(
+            mutation=mutation, policy=policy, language="sql", helpers=(positions,)
+        )
+
+
+def test_verdict_refuses_an_empty_helpers_array():
+    """(A-230a) Omission is the emission default; `helpers: []` would assert a
+    known-empty fact nothing witnessed."""
+    mutation = Mutation(
+        candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
+    )
+    policy = JudgmentR2(
+        jobs=1, max_mutants=50, operators=("sql:drop-check",), **BASE_R2_POLICY
+    )
+    with pytest.raises(ValueError, match="present but empty"):
+        _r2_verdict(mutation=mutation, policy=policy, language="sql", helpers=())
 
 
 def test_verdict_refuses_a_canary_payload_whose_mechanism_disagrees_with_judgment_r3():
@@ -622,6 +1026,7 @@ def test_verdict_refuses_a_canary_payload_whose_mechanism_disagrees_with_judgmen
             declared_rigor=("R0", "R3"),
             claims=(r0_pass(), r3_pass_claim(mechanism="uncovered-line")),
             judgment=Judgment(
-                r3=JudgmentR3(mechanism="import-break", target="pkg/mod.py")
+                resolved=JudgmentResolved(language="python", source_roots=("src",)),
+                r3=JudgmentR3(mechanism="import-break", target="pkg/mod.py"),
             ),
         )

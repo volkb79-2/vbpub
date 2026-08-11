@@ -93,7 +93,7 @@ def test_baseline_and_every_mutant_receive_byte_identical_argv(tmp_path: Path):
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             process_runner=recorder,
             clock=lambda: datetime.now(timezone.utc),
         )
@@ -133,7 +133,7 @@ def test_cwd_is_the_only_thing_that_varies_between_calls(tmp_path: Path):
             adapter=PythonAdapter(),
             jobs=2,
             max_mutants=50,
-            operators=("compare-swap",),
+            operators=("python:compare-swap",),
             process_runner=recorder,
             clock=lambda: datetime.now(timezone.utc),
         )

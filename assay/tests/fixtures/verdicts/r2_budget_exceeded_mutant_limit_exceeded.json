@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "333333333333333333333333333333333333333f",
@@ -30,10 +30,16 @@
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": ["pkg"],
+      "base": "0000000000000000000000000000000000000a"
+    },
     "r2": {
       "jobs": 2,
       "max_mutants": 3,
-      "operators": ["compare-swap", "boolop-swap"]
+      "operators": ["python:compare-swap", "python:boolop-swap"],
+      "kill_attribution": "unattributed"
     }
   },
   "claims": [
@@ -55,7 +61,8 @@
         "killed": [],
         "survived": [],
         "crashed": [],
-        "budget_exceeded": []
+        "budget_exceeded": [],
+        "equivalent": []
       }
     }
   ],

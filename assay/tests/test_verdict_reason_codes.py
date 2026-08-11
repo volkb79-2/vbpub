@@ -98,6 +98,12 @@ _R2_ONLY_CODES = frozenset(
         "MUTATION_UNSUPPORTED",
         "MUTATION_DISCOVERY_FAILED",
         "MUTANT_LIMIT_EXCEEDED",
+        # (P33/A-228) the new terminal inherits every constraint its three
+        # siblings carry, in every layer that owns one. It was added to the
+        # schema's own claim branches for exactly this reason: a payload-free,
+        # non-R2 ALL_MUTANTS_EQUIVALENT would otherwise validate, which is
+        # verbatim the forgery A-136 closed for NO_MUTANTS, one bucket over.
+        "ALL_MUTANTS_EQUIVALENT",
     }
 )
 
@@ -105,10 +111,35 @@ _R2_ONLY_CODES = frozenset(
 #: `NO_MUTANTS` is the SUPPORTED empty analysis, so it records its
 #: zero/zero result; `MUTANT_LIMIT_EXCEEDED` records the pre-submission
 #: sentinel; the two capability/boundary terminals carry nothing at all.
-_EMPTY_BUCKETS = {"killed": [], "survived": [], "crashed": [], "budget_exceeded": []}
+_EMPTY_BUCKETS = {
+    "killed": [],
+    "survived": [],
+    "crashed": [],
+    "budget_exceeded": [],
+    # (P33/V5-3) five buckets since v5, and the limit sentinel's own branch in
+    # the schema pins this one empty too (A-228).
+    "equivalent": [],
+}
+#: (P33/V5-3) one provably-inert mutant, for the terminal that exists to
+#: report exactly that. `ALL_MUTANTS_EQUIVALENT` is the SUPPORTED all-inert
+#: result, so unlike the two capability terminals it carries its payload.
+_ONE_EQUIVALENT_MUTANT = {
+    "path": "schema/001.sql",
+    "lineno": 3,
+    "start_byte": 10,
+    "end_byte": 20,
+    "replacement_sha256": "c" * 64,
+    "operator": "sql:drop-check",
+    "description": "drop the CHECK constraint",
+}
 _MUTATION_PAYLOAD_FOR: dict[str | None, dict | None] = {
     "NO_MUTANTS": {"candidate_count": 0, "total": 0, **_EMPTY_BUCKETS},
     "MUTANT_LIMIT_EXCEEDED": {"candidate_count": 3, "total": 0, **_EMPTY_BUCKETS},
+    "ALL_MUTANTS_EQUIVALENT": {
+        "candidate_count": 1,
+        "total": 1,
+        **{**_EMPTY_BUCKETS, "equivalent": [_ONE_EQUIVALENT_MUTANT]},
+    },
 }
 
 
@@ -197,7 +228,8 @@ def test_every_declared_code_is_exercised_by_the_accept_half():
     # MISSING_EXTERNAL_TOOL, MUTANT_LIMIT_EXCEEDED, SNAPSHOT_LIMIT_EXCEEDED,
     # MUTATION_UNSUPPORTED). The literal is kept rather than derived: it is
     # the thing that makes an accidental vocabulary addition a red test.
-    assert len(VALID_PAIRS) == len(ReasonCode) == 26
+    # P33/A-223d adds the 27th: ALL_MUTANTS_EQUIVALENT.
+    assert len(VALID_PAIRS) == len(ReasonCode) == 27
 
 
 # --- a code valid for a DIFFERENT outcome is rejected -------------------------
@@ -218,7 +250,7 @@ def test_a_code_belonging_to_another_outcome_is_rejected(
 
 def test_the_cross_matrix_is_not_empty():
     assert len(CROSS_PAIRS) == len(NON_PASS) * len(ReasonCode) - len(VALID_PAIRS)
-    assert len(CROSS_PAIRS) == 5 * 26 - 26
+    assert len(CROSS_PAIRS) == 5 * 27 - 27
 
 
 @pytest.mark.parametrize("outcome", [o.value for o in NON_PASS])

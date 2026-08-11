@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "222222222222222222222222222222222222222b",
@@ -30,10 +30,16 @@
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": ["pkg"],
+      "base": "0000000000000000000000000000000000000a"
+    },
     "r2": {
       "jobs": 2,
       "max_mutants": 50,
-      "operators": ["compare-swap"]
+      "operators": ["python:compare-swap"],
+      "kill_attribution": "unattributed"
     }
   },
   "claims": [
@@ -59,7 +65,7 @@
             "start_byte": 120,
             "end_byte": 121,
             "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
-            "operator": "compare-swap",
+            "operator": "python:compare-swap",
             "description": "Lt->LtE"
           }
         ],
@@ -70,12 +76,13 @@
             "start_byte": 300,
             "end_byte": 302,
             "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2",
-            "operator": "compare-swap",
+            "operator": "python:compare-swap",
             "description": "Eq->NotEq"
           }
         ],
         "crashed": [],
-        "budget_exceeded": []
+        "budget_exceeded": [],
+        "equivalent": []
       }
     }
   ],

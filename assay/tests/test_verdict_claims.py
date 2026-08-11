@@ -34,6 +34,7 @@ from assay.verdict import (
     Judgment,
     JudgmentR1,
     JudgmentR2,
+    JudgmentResolved,
     MutantOutcome,
     Mutation,
     Verdict,
@@ -65,15 +66,17 @@ BASE = {
 #: it is refused, so the two travel together here exactly as they do in a
 #: real artifact.
 R1_JUDGMENT = Judgment(
-    r1=JudgmentR1(
+    resolved=JudgmentResolved(
         language="python",
         source_roots=("src",),
+        base="b" * 40,
+    ),
+    r1=JudgmentR1(
         coverage_format="coverage-py-json",
         coverage_artifact="cov.json",
         fail_under=100.0,
         allow_excluded=False,
-        base="b" * 40,
-    )
+    ),
 )
 
 
@@ -106,7 +109,7 @@ def passing(rigor: str, source: str = "computed") -> Claim:
                     start_byte=40,
                     end_byte=41,
                     replacement_sha256=_SHA_LTE,
-                    operator="compare-swap",
+                    operator="python:compare-swap",
                     description="Lt->LtE",
                 ),
             ),
@@ -324,7 +327,14 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
         declared_rigor=("R0", "R1", "R2"),
         claims=(passing("R0"), passing("R1"), passing("R2")),
         judgment=Judgment(
-            r1=R1_JUDGMENT.r1, r2=JudgmentR2(jobs=1, max_mutants=50, operators=("compare-swap",))
+            resolved=R1_JUDGMENT.resolved,
+            r1=R1_JUDGMENT.r1,
+            r2=JudgmentR2(
+                jobs=1,
+                max_mutants=50,
+                operators=("python:compare-swap",),
+                kill_attribution="unattributed",
+            ),
         ),
     )
     assert [claim.rigor for claim in verdict.claims] == ["R0", "R1", "R2"]
@@ -735,15 +745,17 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
         ),
     )
     judgment = Judgment(
-        r1=JudgmentR1(
+        resolved=JudgmentResolved(
             language="python",
             source_roots=("src",),
+            base="b" * 40,
+        ),
+        r1=JudgmentR1(
             coverage_format="coverage-py-json",
             coverage_artifact="cov.json",
             fail_under=100.0,
             allow_excluded=False,
-            base="b" * 40,
-        )
+        ),
     )
     # The honest form builds.
     Verdict(
