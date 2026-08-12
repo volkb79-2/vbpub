@@ -46,6 +46,8 @@ paths = ["shared"]
 commands = [ { label = "build", argv = ["true"], cwd = "alpha" } ]
 [project.alpha.steps.push]
 commands = [ { label = "push", argv = ["true"], cwd = "alpha" } ]
+[project.alpha.release]
+changelog = "CHANGES.md"
 """
 
 
@@ -76,6 +78,7 @@ def test_load_config_s2_schema(tmp_path):
     assert alpha.version.strategy == "scm"
     # change-detection watches cwd plus extra version.paths (S12.3)
     assert alpha.paths == ["alpha", "shared"]
+    assert alpha.changelog == "CHANGES.md"
     assert set(alpha.steps) == {"build", "push"}
 
 

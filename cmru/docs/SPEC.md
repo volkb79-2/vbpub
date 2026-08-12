@@ -274,6 +274,13 @@ MAY derive a version or regenerate mechanical source inputs. Every tracked outpu
 declared in `release.commit_generated`; cmru rejects undeclared writes, commits only declared
 paths, gates that commit, fast-forwards remote main, and only then tags/builds/publishes.
 Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
+An optional `release.changelog` is an equally explicit, project-relative generated output:
+CMRU derives the pending version and project-scoped commit range, inserts one marked section
+at that document's `<!-- cmru: release history -->` marker, commits it before the gate, and
+refuses to guess an insertion point or overwrite a hand-authored same-version section. It is
+valid only for CMRU-owned tags; delegated and no-tag registry releases have no stable version
+for CMRU to record. A resumed retained transaction recognizes its marked section and does not
+duplicate it.
 
 **S-REL.4b — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
 the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
@@ -364,6 +371,7 @@ bump     = "conventional"         # conventional | patch
 
 [project.<name>.release]
 commit_generated = ["generated-input.json"]  # project-relative, mechanical only
+changelog = "CHANGES.md"                     # optional project-relative generated history
 
 [project.<name>.publish]
 source      = "dist/*.whl"        # glob for artifact file(s)

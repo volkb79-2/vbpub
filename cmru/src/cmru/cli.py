@@ -73,6 +73,7 @@ class ProjectConfig:
     artifacts: tuple = ()           # e.g. ("wheel",) | ("oci-image",) | ("oci-image","bundle")
     mint_tag: bool = True           # does cmru mint+push <prefix><semver> at HEAD?
     commit_generated: tuple = ()    # project-relative paths cmru commits after build
+    changelog: Optional[str] = None # optional generated release history, project-relative
     oci: Optional[OCIConfig] = None  # OCI build settings (from [project.<name>.oci])
 
 
@@ -548,6 +549,18 @@ def load_config(
         artifacts, mint_tag, commit_generated = _resolve_release_profile(
             project, name, version_spec
         )
+        release_cfg = project.get("release") or {}
+        changelog = release_cfg.get("changelog")
+        if changelog is not None:
+            if not isinstance(changelog, str) or not changelog.strip():
+                raise ValueError(f"project.{name}.release.changelog must be a non-empty string")
+            changelog_path = Path(changelog)
+            if (changelog_path.is_absolute() or ".." in changelog_path.parts
+                    or changelog_path.name in ("", ".")):
+                raise ValueError(
+                    f"project.{name}.release.changelog must be a project-relative path"
+                )
+            changelog = changelog.strip()
         # A project must be runnable: either it declares steps, or it declares an
         # artifacts profile cmru can build/publish itself (S-REL batteries-included).
         if not steps and not any(a in _PROFILE_BUILTIN_STEPS for a in artifacts):
@@ -615,6 +628,7 @@ def load_config(
             cwd=proj_cwd, artifact=proj_artifact,
             version=version_spec, paths=watch_paths,
             artifacts=artifacts, mint_tag=mint_tag, commit_generated=commit_generated,
+            changelog=changelog,
             oci=oci_cfg,
         )
 
@@ -1570,7 +1584,9 @@ def _release_projects_sequentially(
         project = configs[name]
         log_info(f"=== {name}: releasing ===")
 
-        _prepare_release_projects(repo_root, configs, [name])
+        _prepare_release_projects(
+            repo_root, configs, [name], minor=minor, major=major, set_version=set_version,
+        )
         _run_release_gates(repo_root, configs, [name])
 
         transaction.promote_workspace(workspace)
@@ -1741,7 +1757,11 @@ def _commit_prepared_generated(repo_root: Path, project: "ProjectConfig") -> boo
     a prepare script cannot hide an unrelated mutation behind one allowlisted file.
     """
     cwd = project.cwd or project.name
-    declared = [f"{cwd}/{path}" for path in project.commit_generated]
+    declared_outputs = [*project.commit_generated]
+    changelog = getattr(project, "changelog", None)
+    if changelog:
+        declared_outputs.append(changelog)
+    declared = [f"{cwd}/{path}" for path in declared_outputs]
     changed = _worktree_changed_paths(repo_root)
     if not changed:
         return False
@@ -1764,16 +1784,30 @@ def _prepare_release_projects(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
     project_names: List[str],
+    *,
+    minor: bool = False,
+    major: bool = False,
+    set_version: Optional[str] = None,
 ) -> None:
-    """Run optional prepare steps and commit their declared source outputs."""
+    """Prepare declared source inputs, including an optional generated changelog."""
+    from cmru.changelog import generate_release_changelog
+
     log_dir = repo_root / "logs"
     for name in project_names:
         project = configs[name]
-        if "prepare" not in project.steps:
-            continue
-        log_info(f"{name}: preparing release inputs")
-        run_project_step(project, "prepare", repo_root, log_dir)
-        _commit_prepared_generated(repo_root, project)
+        if "prepare" in project.steps:
+            log_info(f"{name}: preparing release inputs")
+            run_project_step(project, "prepare", repo_root, log_dir)
+        changelog = getattr(project, "changelog", None)
+        if changelog:
+            log_info(f"{name}: generating release history")
+            changed = generate_release_changelog(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+            )
+            if changed:
+                log_info(f"{name}: updated {changelog}")
+        if "prepare" in project.steps or changelog:
+            _commit_prepared_generated(repo_root, project)
 
 
 def main(argv: Optional[List[str]] = None) -> None:

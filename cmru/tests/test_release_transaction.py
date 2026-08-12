@@ -162,6 +162,27 @@ def test_prepare_rejects_undeclared_write(tmp_path, monkeypatch):
         cli._commit_prepared_generated(tmp_path, project)
 
 
+def test_prepare_generates_and_commits_declared_changelog(tmp_path, monkeypatch):
+    """A changelog-only release has a source-first prepare commit before its gate."""
+    project = _project("alpha")
+    project.changelog = "CHANGES.md"
+    generated: list[tuple] = []
+    committed: list[object] = []
+
+    import cmru.changelog
+    monkeypatch.setattr(
+        cmru.changelog, "generate_release_changelog",
+        lambda *args, **kwargs: generated.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(cli, "_commit_prepared_generated", lambda *_args: committed.append(True) or True)
+
+    cli._prepare_release_projects(tmp_path, {"alpha": project}, ["alpha"], minor=True)
+
+    assert generated[0][0][:2] == (tmp_path, project)
+    assert generated[0][1]["minor"] is True
+    assert committed == [True]
+
+
 def test_worktree_changed_paths_accepts_clean_git_queries(tmp_path):
     """A clean diff has empty stdout, not an absent Git result."""
     import subprocess

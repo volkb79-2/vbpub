@@ -117,6 +117,7 @@ class ProjectS2Config:
     installer: Optional[InstallerConfig]
     delegated: Optional[DelegatedConfig]
     steps: Mapping[str, list]
+    changelog: Optional[str] = None  # [project.X.release].changelog, release-only
     variants: List[VariantConfig] = field(default_factory=list)  # empty ⇒ single-asset (S-REL.6)
 
 
@@ -364,6 +365,24 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
             nfpm=bool(d.get("nfpm", False)),
         )
 
+    changelog: Optional[str] = None
+    release = raw.get("release")
+    if release is not None:
+        if not isinstance(release, dict):
+            print(f"[ERROR] project.{name}.release must be a table")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        value = release.get("changelog")
+        if value is not None:
+            if not isinstance(value, str) or not value.strip():
+                print(f"[ERROR] project.{name}.release.changelog must be a non-empty string")
+                raise SystemExit(exit_codes.CONFIG_ERROR)
+            candidate = Path(value)
+            if (candidate.is_absolute() or ".." in candidate.parts
+                    or candidate.name in ("", ".")):
+                print(f"[ERROR] project.{name}.release.changelog must be project-relative")
+                raise SystemExit(exit_codes.CONFIG_ERROR)
+            changelog = value.strip()
+
     steps = raw.get("steps") or {}
     if not isinstance(steps, dict):
         print(f"[ERROR] project.{name}.steps must be a table")
@@ -383,6 +402,7 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         installer=installer,
         delegated=delegated,
         steps=steps,
+        changelog=changelog,
         variants=variants,
     )
 
