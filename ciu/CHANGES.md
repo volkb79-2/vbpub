@@ -7,6 +7,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.0.2] - 2026-08-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=afcbc2ef654e46bacd506104f9d6ecc6597159ac -->
+
+### Fixed
+- fix(ciu): defer provenance deployment imports (afcbc2ef)
+
 ## [6.0.1] - 2026-08-12
 <!-- cmru: generated -->
 <!-- cmru: source-end=b413d2ec031680f86b832ec8d8284e91b3a6c7e3 -->
